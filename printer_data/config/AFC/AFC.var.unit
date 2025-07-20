@@ -270,7 +270,7 @@
             "hub": "direct",
             "extruder": "extruder2",
             "buffer": "TN2",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 3,
             "map": "T2",
             "load": true,
@@ -288,7 +288,7 @@
             "runout_lane": null,
             "filament_status": "Not Ready",
             "filament_status_led": "#ff0000",
-            "status": "None"
+            "status": "Tool Unloading"
         },
         "lane3": {
             "name": "lane3",
