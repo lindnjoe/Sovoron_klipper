@@ -1,0 +1,1 @@
+[variable_input_pin]
