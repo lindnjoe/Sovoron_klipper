@@ -135,6 +135,18 @@ def test_watchers_trigger(printer, vpin):
     assert triggered == [1]
 
 
+def test_remove_watcher(printer, vpin):
+    triggered = []
+    def cb(val):
+        triggered.append(val)
+
+    vpin.add_watcher(cb)
+    vpin.set_value(1)
+    vpin.remove_watcher(cb)
+    vpin.set_value(0)
+    assert triggered == [1]
+
+
 def test_filament_sensor_updates(vpin, fil_sensor):
     assert not fil_sensor.runout_helper.filament_present
     vpin.set_value(1)
