@@ -45,7 +45,8 @@ class VirtualInputPin:
         self.printer = config.get_printer()
         self.name = config.get_name().split()[-1]
         self.state = config.getboolean('initial_value', False)
-        self._watchers = []
+        # Use a set to avoid duplicate callbacks
+        self._watchers = set()
 
         ppins = self.printer.lookup_object('pins')
         try:
@@ -89,7 +90,7 @@ class VirtualInputPin:
                 logging.exception('Virtual pin callback error')
 
     def register_watcher(self, callback):
-        self._watchers.append(callback)
+        self._watchers.add(callback)
 
     cmd_SET_VIRTUAL_PIN_help = 'Set the value of a virtual input pin'
     def cmd_SET_VIRTUAL_PIN(self, gcmd):
