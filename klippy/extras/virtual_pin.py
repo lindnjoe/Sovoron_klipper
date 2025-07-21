@@ -45,6 +45,7 @@ class VirtualInputPin:
         self.printer = config.get_printer()
         self.name = config.get_name().split()[-1]
         self.state = config.getboolean('initial_value', False)
+        self.watchers = []
 
         ppins = self.printer.lookup_object('pins')
         try:
@@ -77,7 +78,21 @@ class VirtualInputPin:
         return {'value': int(self.state)}
 
     def set_value(self, val):
+        prev = self.state
         self.state = bool(val)
+        if prev != self.state:
+            for cb in list(self.watchers):
+                try:
+                    cb(self.state)
+                except Exception:
+                    logging.exception("Virtual pin watcher failed")
+
+    def add_watcher(self, callback):
+        self.watchers.append(callback)
+
+    def remove_watcher(self, callback):
+        if callback in self.watchers:
+            self.watchers.remove(callback)
 
     cmd_SET_VIRTUAL_PIN_help = 'Set the value of a virtual input pin'
     def cmd_SET_VIRTUAL_PIN(self, gcmd):
@@ -203,13 +218,16 @@ class VirtualFilamentSensor:
         gcode.register_mux_command('QUERY_VIRTUAL_FILAMENT_PIN', 'SENSOR', cname,
                                    self.cmd_QUERY_VIRTUAL_FILAMENT_PIN,
                                    desc=self.cmd_QUERY_VIRTUAL_FILAMENT_PIN_help)
+        self.vpin.add_watcher(self._vpin_changed)
         self.runout_helper.note_filament_present(self.reactor.monotonic(),
                                                  bool(self.vpin.state))
 
+    def _vpin_changed(self, val):
+        self.runout_helper.note_filament_present(self.reactor.monotonic(),
+                                                 bool(val))
+
     def set_value(self, val):
         self.vpin.set_value(val)
-        self.runout_helper.note_filament_present(self.reactor.monotonic(),
-                                                 bool(self.vpin.state))
 
     def get_status(self, eventtime):
         status = self.runout_helper.get_status(eventtime)
