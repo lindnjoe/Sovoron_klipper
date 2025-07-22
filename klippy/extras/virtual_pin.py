@@ -49,12 +49,3 @@ class VirtualInputPin:
         self._watchers = set()
         self._button_handlers = []
         self._ack_count = 0
-
-        ppins = self.printer.lookup_object('pins')
-        try:
-            ppins.register_chip('ams_pin', self)
-        except ppins.error:
-            pass
-
-        gcode = self.printer.lookup_object('gcode')
-        cname = self.name
