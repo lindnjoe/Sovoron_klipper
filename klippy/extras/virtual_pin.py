@@ -196,67 +196,10 @@ class RunoutHelper:
     def cmd_SET_FILAMENT_SENSOR(self, gcmd):
         self.sensor_enabled = gcmd.get_int('ENABLE', 1)
 
-class VirtualFilamentSensor:
-    """Software emulated filament switch sensor"""
-    def __init__(self, config):
-        self.printer = config.get_printer()
-        self.name = config.get_name().split()[-1]
-        pin_name = config.get('pin')
-        self.vpin = self.printer.lookup_object('virtual_pin ' + pin_name, None)
-        if self.vpin is None:
-            raise config.error('Virtual pin %s not configured' % (pin_name,))
-        self.reactor = self.printer.get_reactor()
-        self.runout_helper = RunoutHelper(config)
-
-        gcode = self.printer.lookup_object('gcode')
-        cname = self.name
-        gcode.register_mux_command('SET_VIRTUAL_FILAMENT_SENSOR', 'SENSOR', cname,
-                                   self.cmd_SET_VIRTUAL_FILAMENT_SENSOR,
-                                   desc=self.cmd_SET_VIRTUAL_FILAMENT_SENSOR_help)
-        gcode.register_mux_command('QUERY_VIRTUAL_FILAMENT_SENSOR', 'SENSOR', cname,
-                                   self.cmd_QUERY_VIRTUAL_FILAMENT_SENSOR,
-                                   desc=self.cmd_QUERY_VIRTUAL_FILAMENT_SENSOR_help)
-        self.vpin.register_watcher(self._pin_changed)
-        self.runout_helper.note_filament_present(self.reactor.monotonic(),
-                                                 bool(self.vpin.state))
-
-    def set_value(self, val):
-        self.vpin.set_value(val)
-        self.runout_helper.note_filament_present(self.reactor.monotonic(),
-                                                 bool(self.vpin.state))
-
-    def _pin_changed(self, val):
-        self.runout_helper.note_filament_present(self.reactor.monotonic(), bool(val))
-
-    def get_status(self, eventtime):
-        status = self.runout_helper.get_status(eventtime)
-        status['value'] = int(self.vpin.state)
-        return status
-
-    cmd_SET_VIRTUAL_FILAMENT_SENSOR_help = 'Set the value of a virtual filament sensor'
-    def cmd_SET_VIRTUAL_FILAMENT_SENSOR(self, gcmd):
-        val = gcmd.get_int('VALUE', 1)
-        self.set_value(val)
-
-    cmd_QUERY_VIRTUAL_FILAMENT_SENSOR_help = 'Report the value of a virtual filament sensor'
-    def cmd_QUERY_VIRTUAL_FILAMENT_SENSOR(self, gcmd):
-        gcmd.respond_info('virtual_filament_sensor %s: %d' % (self.name, self.vpin.state))
-
-# Configuration entry points
-
-def load_config_prefix_virtual_pin(config):
-    """Config handler for [virtual_pin] sections."""
-    return VirtualInputPin(config)
-
-def load_config_prefix_virtual_filament_sensor(config):
-    """Config handler for [virtual_filament_sensor] sections."""
-    return VirtualFilamentSensor(config)
+# Configuration entry point
 
 def load_config_prefix(config):
-    """Dispatch handler for backward compatibility."""
-    prefix = config.get_name().split()[0]
-    if prefix == 'virtual_pin':
-        return load_config_prefix_virtual_pin(config)
-    if prefix == 'virtual_filament_sensor':
-        return load_config_prefix_virtual_filament_sensor(config)
-    raise config.error('Unknown prefix %s' % prefix)
+    """Config handler for [virtual_pin] sections."""
+    if config.get_name().split()[0] != 'virtual_pin':
+        raise config.error('Unknown prefix %s' % config.get_name())
+    return VirtualInputPin(config)
