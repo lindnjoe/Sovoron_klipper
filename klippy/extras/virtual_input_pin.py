@@ -74,35 +74,3 @@ class VirtualInputPin:
         return VirtualEndstop(self, pin_params['invert'])
 
     def register_watcher(self, callback):
-        self._watchers.add(callback)
-
-    def set_value(self, val):
-        val = bool(val)
-        if self.state == val:
-            return
-        self.state = val
-        for cb in list(self._watchers):
-            try:
-                cb(val)
-            except Exception:
-                logging.exception('Virtual pin callback error')
-
-    def get_status(self, eventtime):
-        return {'value': int(self.state)}
-
-    cmd_SET_AMS_PIN_help = 'Set the value of a virtual input pin'
-    def cmd_SET_AMS_PIN(self, gcmd):
-        val = gcmd.get_int('VALUE', 1)
-        self.set_value(val)
-
-    cmd_QUERY_AMS_PIN_help = 'Report the value of a virtual input pin'
-    def cmd_QUERY_AMS_PIN(self, gcmd):
-        gcmd.respond_info('ams_pin %s: %d' % (self.name, self.state))
-
-
-def load_config_prefix(config):
-    """Config handler for [ams_pin] and [virtual_pin] sections."""
-    prefix = config.get_name().split()[0]
-    if prefix not in ('ams_pin', 'virtual_pin'):
-        raise config.error('Unknown prefix %s' % prefix)
-    return VirtualInputPin(config)
