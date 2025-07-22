@@ -252,11 +252,15 @@ def load_config_prefix_virtual_filament_sensor(config):
     """Config handler for [virtual_filament_sensor] sections."""
     return VirtualFilamentSensor(config)
 
+def load_config_prefix_filament_switch_sensor(config):
+    """Config handler for [filament_switch_sensor] sections."""
+    return VirtualFilamentSensor(config)
+
 def load_config_prefix(config):
     """Dispatch handler for backward compatibility."""
     prefix = config.get_name().split()[0]
     if prefix == 'virtual_pin':
         return load_config_prefix_virtual_pin(config)
-    if prefix == 'virtual_filament_sensor':
+    if prefix in ('virtual_filament_sensor', 'filament_switch_sensor'):
         return load_config_prefix_virtual_filament_sensor(config)
     raise config.error('Unknown prefix %s' % prefix)
