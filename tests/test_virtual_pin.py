@@ -163,3 +163,12 @@ def test_gcode_handlers(printer, vpin):
     gcmd = FakeGcmd()
     cmd_query(gcmd)
     assert 'virtual_pin %s: 1' % vpin.name in gcmd.responses[0]
+
+
+def test_sensor_shutdown_clears_watcher(vpin):
+    cfg = FakeConfig(vpin.printer, 'virtual_filament_sensor sensor',
+                     {'pin': vpin.name})
+    sensor = virtual_pin.VirtualFilamentSensor(cfg)
+    assert sensor._pin_changed in vpin._watchers
+    sensor.shutdown()
+    assert sensor._pin_changed not in vpin._watchers
