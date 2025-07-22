@@ -131,4 +131,3 @@ class SwitchSensor:
     def _button_handler(self, eventtime, state):
         self.runout_helper.note_filament_present(eventtime, state)
 
-
