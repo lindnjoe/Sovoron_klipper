@@ -6,23 +6,3 @@ pins.  This avoids unknown pin errors when modules look up
 `ams_pin:<name>` before the pin sections load.
 """
 
-
-def _register_chip(printer):
-    """Register the ams_pin chip on demand."""
-    ppins = printer.lookup_object('pins')
-    if 'ams_pin' in ppins.chips:
-        return
-    # Import lazily to avoid potential circular imports
-    from .ams_pin import AmsPinChip
-    chip = AmsPinChip(printer)
-    ppins.register_chip('ams_pin', chip)
-    try:
-        setattr(printer, 'ams_pins', chip)
-    except Exception:
-        pass
-
-
-def load_config(config):
-    """Config handler for a bare [ams_pins] section."""
-    _register_chip(config.get_printer())
-    return None
