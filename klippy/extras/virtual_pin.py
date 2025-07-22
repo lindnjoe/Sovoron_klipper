@@ -92,6 +92,9 @@ class VirtualInputPin:
     def register_watcher(self, callback):
         self._watchers.add(callback)
 
+    def unregister_watcher(self, callback):
+        self._watchers.discard(callback)
+
     cmd_SET_VIRTUAL_PIN_help = 'Set the value of a virtual input pin'
     def cmd_SET_VIRTUAL_PIN(self, gcmd):
         val = gcmd.get_int('VALUE', 1)
@@ -219,6 +222,9 @@ class VirtualFilamentSensor:
         self.vpin.register_watcher(self._pin_changed)
         self.runout_helper.note_filament_present(self.reactor.monotonic(),
                                                  bool(self.vpin.state))
+
+    def shutdown(self):
+        self.vpin.unregister_watcher(self._pin_changed)
 
     def set_value(self, val):
         self.vpin.set_value(val)
