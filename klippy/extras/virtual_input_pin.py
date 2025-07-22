@@ -101,7 +101,3 @@ class VirtualInputPin:
 
 
 def load_config_prefix(config):
-    """Config handler for [ams_pin] sections."""
-    if config.get_name().split()[0] != 'ams_pin':
-        raise config.error('Unknown prefix %s' % config.get_name())
-    return VirtualInputPin(config)
