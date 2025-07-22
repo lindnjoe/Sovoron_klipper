@@ -132,36 +132,4 @@ class SwitchSensor:
         self.runout_helper.note_filament_present(eventtime, state)
 
 
-class VirtualSwitchSensor:
-    """Emulated filament sensor triggered by a virtual pin."""
-    def __init__(self, config, vpin):
-        self.printer = config.get_printer()
-        self.vpin = vpin
-        self.reactor = self.printer.get_reactor()
-        self.runout_helper = RunoutHelper(config)
-        self.vpin.register_watcher(self._pin_changed)
-        self.runout_helper.note_filament_present(self.reactor.monotonic(),
-                                                 bool(self.vpin.state))
-        self.get_status = self.runout_helper.get_status
-
-    def _pin_changed(self, val):
-        self.runout_helper.note_filament_present(self.reactor.monotonic(),
-                                                 bool(val))
-
-
-def load_config_prefix(config):
-    printer = config.get_printer()
-    switch_pin = config.get('switch_pin')
-    ppins = printer.lookup_object('pins')
-    try:
-        pin_params = ppins.parse_pin(switch_pin, can_invert=True, can_pullup=True)
-        is_virtual = pin_params['chip_name'] == 'virtual_pin'
-    except Exception:
-        is_virtual = False
-    if is_virtual:
-        vpin = printer.lookup_object('virtual_pin ' + pin_params['pin'], None)
-        if vpin is None:
-            raise config.error('Virtual pin %s not configured' % (pin_params['pin'],))
-        return VirtualSwitchSensor(config, vpin)
-    return SwitchSensor(config)
 
