@@ -35,3 +35,4 @@ class AmsPinChip:
         vpin = self.pins.get(pin_name)
         if vpin is None:
             raise ppins.error("%s %s not configured" % (CHIP_NAME, pin_name))
+<<<<
