@@ -196,10 +196,3 @@ class RunoutHelper:
     def cmd_SET_FILAMENT_SENSOR(self, gcmd):
         self.sensor_enabled = gcmd.get_int('ENABLE', 1)
 
-# Configuration entry point
-
-def load_config_prefix(config):
-    """Config handler for [virtual_pin] sections."""
-    if config.get_name().split()[0] != 'virtual_pin':
-        raise config.error('Unknown prefix %s' % config.get_name())
-    return VirtualInputPin(config)
