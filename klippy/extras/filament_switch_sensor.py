@@ -132,6 +132,4 @@ class SwitchSensor:
         self.runout_helper.note_filament_present(eventtime, state)
 
 
-def load_config_prefix(config):
-    return SwitchSensor(config)
 
