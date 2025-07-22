@@ -132,4 +132,3 @@ class SwitchSensor:
         self.runout_helper.note_filament_present(eventtime, state)
 
 
-
