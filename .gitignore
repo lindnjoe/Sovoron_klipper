@@ -7,3 +7,5 @@ printer-[0-9]*_[0-9]*.cfg
 *.bkp
 *.csv
 *.zip
+__pycache__/
+*/__pycache__/
