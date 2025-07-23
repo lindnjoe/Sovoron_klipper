@@ -41,11 +41,14 @@ class AmsPinChip:
 
     def register_pin(self, vpin):
         self._register_gcode()
-        # Store the pin only under a single normalized key so each
-        # configured pin is looked up independently.
+        # Store the pin only under its normalized name so lookups are
+        # unambiguous.  Previous revisions attempted to store multiple
+        # aliases here which caused later pins to overwrite earlier ones.
         key = _norm(getattr(vpin, 'raw_name', vpin.name))
+        if key in self.pins:
+            logging.warning('Duplicate ams_pin %s ignored', key)
+            return
         self.pins[key] = vpin
-        self.pins[f'{CHIP_NAME}:{key}'] = vpin
         for handler in self._button_handlers:
             vpin.register_response(handler, 'buttons_state')
 
