@@ -6,7 +6,6 @@ This backup is provided by [Klipper-Backup](https://github.com/Staubgeborener/kl
 
 ## Virtual input pins
 
-
 This repository includes a small Klipper module that provides software
 **input** pins. Each pin behaves as an endstop-style input so other
 modules treat it like any physical input pin.  Pins register under the
@@ -54,4 +53,3 @@ The optional `[ams_pins]` section automatically creates eight pins
 named `pin1` through `pin8`.  These can be referenced as `ams:pin1`,
 `ams:pin2`, and so on when defining `switch_pin` options.
 
-=======
