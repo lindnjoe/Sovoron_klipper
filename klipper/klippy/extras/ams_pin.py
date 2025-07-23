@@ -151,6 +151,8 @@ class VirtualInputPin:
         self._ack = 0
         self._callbacks = []
 
+        # Make pin discoverable like other config objects
+        self.printer.add_object('ams_pin ' + self.name, self)
         self.printer.register_event_handler('klippy:ready', self._run_callbacks)
         chip = _ensure_chip(self.printer)
         chip.register_pin(self)
