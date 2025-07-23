@@ -258,8 +258,16 @@ class VirtualInputPin:
         """
 
         self._watchers.add(callback)
+        et = self.printer.get_reactor().monotonic()
         try:
-            callback(self.printer.get_reactor().monotonic(), self.state)
+            callback(et, self.state)
+        except TypeError:
+            # Backwards compatibility for old callbacks that expect only
+            # the pin state argument
+            try:
+                callback(self.state)
+            except Exception:
+                logging.exception("Virtual pin callback error")
         except Exception:
             logging.exception("Virtual pin callback error")
 
@@ -272,6 +280,11 @@ class VirtualInputPin:
         for cb in list(self._watchers):
             try:
                 cb(et, val)
+            except TypeError:
+                try:
+                    cb(val)
+                except Exception:
+                    logging.exception("Virtual pin callback error")
             except Exception:
                 logging.exception("Virtual pin callback error")
         if self._button_handlers:
