@@ -1,5 +1,4 @@
-# Klipper-Backup 💾 
-Klipper backup script for manual or automated GitHub backups 
+
 
 This backup is provided by [Klipper-Backup](https://github.com/Staubgeborener/klipper-backup).
 
@@ -40,4 +39,6 @@ As of this version every pin allocates its own unique OID so subsystems
 like the button handler can treat each virtual pin as a separate MCU
 input.  This fixes issues where only the first configured pin responded
 to changes.
+
+=======
 
