@@ -161,18 +161,28 @@ class VirtualInputPin:
 
     # watcher helpers ----------------------------------------------------
     def register_watcher(self, cb):
-        self._watchers.add(cb)
+        # Determine the callback signature once and store it
+        try:
+            argc = cb.__code__.co_argcount
+        except Exception:
+            argc = 2
+        if argc >= 2:
+            mode = 2
+        elif argc == 1:
+            mode = 1
+        else:
+            mode = 0
+        self._watchers.add((cb, mode))
         et = self.printer.get_reactor().monotonic()
         try:
-            cb(et, self.state)
-        except TypeError:
-            try:
+            if mode == 2:
+                cb(et, self.state)
+            elif mode == 1:
                 cb(self.state)
-            except TypeError:
-                try:
-                    cb(et)
-                except Exception:
-                    logging.exception('Virtual pin callback error')
+            else:
+                cb(et)
+        except Exception:
+            logging.exception('Virtual pin callback error')
 
     def set_value(self, val):
         val = bool(val)
@@ -180,17 +190,16 @@ class VirtualInputPin:
             return
         self.state = val
         et = self.printer.get_reactor().monotonic()
-        for cb in list(self._watchers):
+        for cb, mode in list(self._watchers):
             try:
-                cb(et, val)
-            except TypeError:
-                try:
+                if mode == 2:
+                    cb(et, val)
+                elif mode == 1:
                     cb(val)
-                except TypeError:
-                    try:
-                        cb(et)
-                    except Exception:
-                        logging.exception('Virtual pin callback error')
+                else:
+                    cb(et)
+            except Exception:
+                logging.exception('Virtual pin callback error')
         for handler, oid in list(self._button_handlers):
             params = {'ack_count': self._ack & 0xFF,
                       'state': bytes([int(val)]),
