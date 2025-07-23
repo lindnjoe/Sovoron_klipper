@@ -163,28 +163,30 @@ class VirtualInputPin:
 
     # watcher helpers ----------------------------------------------------
     def register_watcher(self, cb):
-        # Determine the callback signature once and store it
-        try:
-            argc = cb.__code__.co_argcount
-        except Exception:
-            argc = 2
-        if argc >= 2:
-            mode = 2
-        elif argc == 1:
-            mode = 1
-        else:
-            mode = 0
-        self._watchers.add((cb, mode))
+        """Register a callback for pin changes.
+
+        Callbacks may accept ``(eventtime, state)``, ``(state)``, or just
+        ``(eventtime)``.  The signature is detected automatically and the
+        callback immediately invoked with the current state.
+        """
         et = self.printer.get_reactor().monotonic()
-        try:
-            if mode == 2:
-                cb(et, self.state)
-            elif mode == 1:
-                cb(self.state)
+        for mode in (2, 1, 0):
+            try:
+                if mode == 2:
+                    cb(et, self.state)
+                elif mode == 1:
+                    cb(self.state)
+                else:
+                    cb(et)
+            except TypeError:
+                continue
+            except Exception:
+                logging.exception('Virtual pin callback error')
+                continue
             else:
-                cb(et)
-        except Exception:
-            logging.exception('Virtual pin callback error')
+                self._watchers.add((cb, mode))
+                return
+        logging.error('Virtual pin watcher with incompatible signature')
 
     def set_value(self, val):
         val = bool(val)
