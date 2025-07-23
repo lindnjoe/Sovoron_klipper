@@ -37,4 +37,3 @@ names differ only by case.
 
 As of this version every pin allocates its own unique OID so subsystems
 like the button handler can treat each virtual pin as a separate MCU
-
