@@ -262,10 +262,13 @@ class VirtualInputPin:
         try:
             callback(et, self.state)
         except TypeError:
-            # Backwards compatibility for old callbacks that expect only
-            # the pin state argument
             try:
                 callback(self.state)
+            except TypeError:
+                try:
+                    callback(et)
+                except Exception:
+                    logging.exception("Virtual pin callback error")
             except Exception:
                 logging.exception("Virtual pin callback error")
         except Exception:
@@ -283,6 +286,11 @@ class VirtualInputPin:
             except TypeError:
                 try:
                     cb(val)
+                except TypeError:
+                    try:
+                        cb(et)
+                    except Exception:
+                        logging.exception("Virtual pin callback error")
                 except Exception:
                     logging.exception("Virtual pin callback error")
             except Exception:
