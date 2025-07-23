@@ -42,5 +42,12 @@ input.  Button events now include this OID so handlers can distinguish
 between multiple virtual pins.  This fixes issues where only the first
 configured pin responded to changes.
 
+
+Watcher callbacks attached to an `ams_pin` may accept either both
+`(eventtime, state)`, a single `state` argument, or just the event time.
+The pin detects the callback signature automatically and invokes it
+immediately with the current state when registered.
 =======
+=======
+
 
