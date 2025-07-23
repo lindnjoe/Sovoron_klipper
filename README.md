@@ -8,17 +8,30 @@ This backup is provided by [Klipper-Backup](https://github.com/Staubgeborener/kl
 
 This repository includes a small Klipper module that provides software
 **input** pins. Each pin behaves as an endstop-style input so other
+er
+modules treat it like any physical input pin.  Pins register under the
+chip name `ams`, so they are referenced as `ams:<name>` just like a real
+MCU pin.
+=======
 modules treat it like any physical input pin.  Define a pin with an
 `[ams_pin]` section and reference it elsewhere as `ams_pin:<name>`.
 
+
 Use the `SET_AMS_PIN` and `QUERY_AMS_PIN` gcode commands to
 manually update or read the pin state.
+If other modules parse pin names before any `[ams_pins]` or `[ams_pin]`
+section is encountered, add an empty `[ams_pins]` section near the start
+of the config file to register the virtual chip before those modules
+load.
 
+Example defining a single pin:
+=======
 If other modules parse pin names before any `[ams_pin]` section is
 encountered, add an empty `[ams_pin]` section near the start of the
 config file to register the virtual chip before those modules load.
 
 Example:
+
 
 ```
 [ams_pin runout_button]
@@ -30,7 +43,11 @@ and `QUERY_AMS_PIN PIN=runout_button` to report its current state.
 
 Pin names are matched case-insensitively, so `RUNOUT_BUTTON` and
 `runout_button` refer to the same pin.  Pins also register with an
+
+`ams:` prefix for modules that expect the chip name to be present.
+=======
 `ams_pin:` prefix for modules that expect the chip name to be present.
+
 
 Each pin is stored internally under a single normalized name.  This
 ensures that multiple `[ams_pin]` sections act independently even when
@@ -47,7 +64,14 @@ Watcher callbacks attached to an `ams_pin` may accept either both
 `(eventtime, state)`, a single `state` argument, or just the event time.
 The pin detects the callback signature automatically and invokes it
 immediately with the current state when registered.
+
+irtual-input-pins-module-for-klipper
+The optional `[ams_pins]` section automatically creates eight pins
+named `pin1` through `pin8`.  These can be referenced as `ams:pin1`,
+`ams:pin2`, and so on when defining `switch_pin` options.
 =======
 =======
+=======
+
 
 
