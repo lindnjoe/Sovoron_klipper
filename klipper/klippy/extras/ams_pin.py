@@ -33,6 +33,7 @@ class AmsPinChip:
     def __init__(self, printer):
         self.printer = printer
         self.pins = {}
+        self._next_oid = 0
         self._config_callbacks = []
         self._button_handlers = []
         self.printer.register_event_handler('klippy:ready',
@@ -120,7 +121,9 @@ class AmsPinChip:
         self._config_callbacks = []
 
     def create_oid(self):
-        return 0
+        oid = self._next_oid
+        self._next_oid += 1
+        return oid
 
     def add_config_cmd(self, cmd, is_init=False, on_restart=False):
         pass
