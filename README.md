@@ -1,9 +1,11 @@
+
 # Klipper-Backup 💾 
 Klipper backup script for manual or automated GitHub backups 
 
 This backup is provided by [Klipper-Backup](https://github.com/Staubgeborener/klipper-backup).
 
 ## Virtual input pins
+
 
 This repository includes a small Klipper module that provides software
 **input** pins. Each pin behaves as an endstop-style input so other
@@ -52,3 +54,4 @@ The optional `[ams_pins]` section automatically creates eight pins
 named `pin1` through `pin8`.  These can be referenced as `ams:pin1`,
 `ams:pin2`, and so on when defining `switch_pin` options.
 
+=======
