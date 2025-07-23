@@ -279,9 +279,13 @@ class VirtualInputPin:
                 logging.exception("Virtual pin config callback error")
         self._config_callbacks = []
 
+    _next_oid = 0
+
     def create_oid(self):
+        oid = VirtualInputPin._next_oid
+        VirtualInputPin._next_oid += 1
         self._ack_count = 0
-        return 0
+        return oid
 
     def add_config_cmd(self, cmd, is_init=False, on_restart=False):
         pass
