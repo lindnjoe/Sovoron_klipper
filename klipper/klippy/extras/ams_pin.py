@@ -55,8 +55,8 @@ class AmsPinChip:
                     logging.warning('Duplicate ams_pin %s ignored', alias)
                 continue
             self.pins[n] = vpin
-        for handler in self._button_handlers:
-            vpin.register_response(handler, 'buttons_state')
+        for handler, oid in self._button_handlers:
+            vpin.register_response(handler, 'buttons_state', oid)
 
     # G-code command registration --------------------------------------------
     def _register_gcode(self):
@@ -146,7 +146,7 @@ class AmsPinChip:
 
     def register_response(self, handler, resp_name=None, oid=None):
         if resp_name == 'buttons_state':
-            self._button_handlers.append(handler)
+            self._button_handlers.append((handler, oid))
             for pin in self.pins.values():
                 pin.register_response(handler, resp_name, oid)
 
@@ -207,6 +207,7 @@ class VirtualInputPin:
         self.name = _norm(raw_name)
         self.state = config.getboolean("initial_value", False)
         self._watchers = set()
+        # (handler, oid) tuples for button style callbacks
         self._button_handlers = []
         self._ack_count = 0
         self._config_callbacks = []
@@ -255,13 +256,15 @@ class VirtualInputPin:
             except Exception:
                 logging.exception("Virtual pin callback error")
         if self._button_handlers:
-            params = {
-                "ack_count": self._ack_count & 0xFF,
-                "state": bytes([int(val)]),
-                "#receive_time": self.printer.get_reactor().monotonic(),
-            }
-            self._ack_count += 1
-            for handler in list(self._button_handlers):
+            for handler, oid in list(self._button_handlers):
+                params = {
+                    "ack_count": self._ack_count & 0xFF,
+                    "state": bytes([int(val)]),
+                    "#receive_time": self.printer.get_reactor().monotonic(),
+                }
+                if oid is not None:
+                    params["oid"] = oid
+                self._ack_count += 1
                 try:
                     handler(params)
                 except Exception:
@@ -311,12 +314,16 @@ class VirtualInputPin:
 
     def register_response(self, handler, resp_name=None, oid=None):
         if resp_name == "buttons_state":
-            self._button_handlers.append(handler)
+            # Track handler along with the oid it registered with so events
+            # can be attributed to the correct button
+            self._button_handlers.append((handler, oid))
             params = {
                 "ack_count": self._ack_count & 0xFF,
                 "state": bytes([int(self.state)]),
                 "#receive_time": self.printer.get_reactor().monotonic(),
             }
+            if oid is not None:
+                params["oid"] = oid
             self._ack_count += 1
             try:
                 handler(params)
