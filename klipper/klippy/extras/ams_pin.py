@@ -35,6 +35,10 @@ class AmsPinChip:
         self.pins = {}
         self._next_oid = 0
         self._config_callbacks = []
+        # button handlers registered by modules like buttons.py
+        # Each pin gets its own handlers when those modules register
+        # with the pin object returned from setup_pin(), so this list
+        # is no longer used but kept for backward compatibility.
         self._button_handlers = []
         self.printer.register_event_handler('klippy:ready',
                                             self._run_config_callbacks)
@@ -55,8 +59,11 @@ class AmsPinChip:
                     logging.warning('Duplicate ams_pin %s ignored', alias)
                 continue
             self.pins[n] = vpin
-        for handler, oid in self._button_handlers:
-            vpin.register_response(handler, 'buttons_state', oid)
+        # Previously this function forwarded any already registered
+        # button handlers to newly created pins.  That caused all pins
+        # to report events for every handler, so a change on one pin
+        # looked like it came from all pins.  New pins now start with no
+        # handlers; modules register on the specific pin they operate on.
 
     # G-code command registration --------------------------------------------
     def _register_gcode(self):
@@ -145,10 +152,17 @@ class AmsPinChip:
         return 0
 
     def register_response(self, handler, resp_name=None, oid=None):
+        # Historical behaviour attempted to forward button callbacks for
+        # every registered handler to every pin.  This resulted in all
+        # pins generating events for all OIDs, causing only the first pin
+        # to appear responsive.  The chip itself no longer routes these
+        # callbacks; modules should register with the specific pin object
+        # returned from ``setup_pin()``.  Keep a record in case some
+        # external code relies on it, but otherwise ignore.
         if resp_name == 'buttons_state':
+            logging.debug('ams_pin: handler registered on chip; '
+                          'events will not be forwarded automatically')
             self._button_handlers.append((handler, oid))
-            for pin in self.pins.values():
-                pin.register_response(handler, resp_name, oid)
 
 
 def _ensure_chip(printer):
