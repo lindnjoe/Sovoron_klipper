@@ -60,16 +60,17 @@ class VirtualMCU:
         return [pin.name for pin in self.pins.values()]
 
     def register_chip(self) -> None:
-        """Register this MCU with Klipper's pin subsystem."""
+        """Register this MCU with Klipper's pin subsystem when available."""
         if self._registered:
             return
         try:
             pins_mod = importlib.import_module("pins")
         except Exception:
             return
-        pins_mod.register_chip(
-            self.prefix, lambda config=None: VirtualPinChip(self)
-        )
+        register_fn = getattr(pins_mod, "register_chip", None)
+        if register_fn is None:
+            return
+        register_fn(self.prefix, lambda config=None: VirtualPinChip(self))
         self._registered = True
 
 
