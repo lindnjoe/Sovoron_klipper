@@ -1,7 +1,11 @@
 .env
-secrets.conf
+secrets.confter-[0-9]*_[0-9]*.cfg
+*.bak
+*.bkp
 *.swp
 *.tmp
+*.csv
+*.zip
 printer-[0-9]*_[0-9]*.cfg
 *.bak
 *.bkp
