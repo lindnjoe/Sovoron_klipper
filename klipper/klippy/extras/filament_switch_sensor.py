@@ -141,6 +141,9 @@ class VirtualSwitchSensor:
         self.vpin = None
         self.reactor = self.printer.get_reactor()
         self.runout_helper = RunoutHelper(config)
+        # Record the canonical switch_pin string so other modules can
+        # inspect the sensor configuration just like a hardware sensor.
+        self.switch_pin = f"{CHIP_NAME}:{self.vpin_name}"
         # Defer binding until Klipper is ready so virtual pin sections can
         # appear anywhere in the config file
         self.printer.register_event_handler('klippy:ready', self._bind_pin)
@@ -154,6 +157,13 @@ class VirtualSwitchSensor:
             logging.error('virtual pin %s not configured', self.vpin_name)
             return
         self.vpin = vpin
+        # Obtain a VirtualEndstop object so other modules treating this
+        # sensor like a hardware one can access an endstop-style pin
+        ppins = self.printer.lookup_object('pins')
+        try:
+            self.pin = ppins.setup_pin('endstop', self.switch_pin)
+        except Exception:
+            self.pin = None
         self.vpin.register_watcher(self._pin_changed)
         self.runout_helper.note_filament_present(self.reactor.monotonic(),
                                                  bool(self.vpin.state))
