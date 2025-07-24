@@ -45,6 +45,19 @@ class _VirtualPinChip:
 
     def __init__(self, printer):
         self.printer = printer
+        self._config_callbacks = []
+        self._response_callbacks = []
+
+    def register_config_callback(self, cb):
+        """Immediately invoke configuration callbacks."""
+        self._config_callbacks.append(cb)
+        try:
+            cb(self.printer.get_reactor().monotonic())
+        except TypeError:
+            cb()
+
+    def register_response(self, cb):
+        self._response_callbacks.append(cb)
 
     def setup_pin(self, pin_type, pin_params):
         ppins = self.printer.lookup_object('pins')
