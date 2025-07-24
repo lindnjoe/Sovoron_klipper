@@ -12,9 +12,10 @@
 import logging
 
 CHIP_NAME = "ams"
-# Allow either "ams" or "virtual_pin" as the chip name so existing
-# configurations using the virtual_pin prefix continue to work.
-CHIP_ALIASES = (CHIP_NAME, "virtual_pin")
+# Allow either "ams", "ams_pin", or "virtual_pin" as the chip name so
+# existing configurations using the virtual_pin prefix continue to work and
+# newer configs may reference ams_pin directly.
+CHIP_ALIASES = (CHIP_NAME, "ams_pin", "virtual_pin")
 
 def _norm(name: str) -> str:
     """Normalize a pin name for lookups."""
