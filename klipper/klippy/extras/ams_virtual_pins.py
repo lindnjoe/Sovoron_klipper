@@ -12,6 +12,9 @@
 import logging
 
 CHIP_NAME = "ams"
+# Allow either "ams" or "virtual_pin" as the chip name so existing
+# configurations using the virtual_pin prefix continue to work.
+CHIP_ALIASES = (CHIP_NAME, "virtual_pin")
 
 def _norm(name: str) -> str:
     """Normalize a pin name for lookups."""
@@ -179,7 +182,11 @@ def load_config(config):
     printer = config.get_printer()
     chip = VirtualPinChip(printer)
     ppins = printer.lookup_object('pins')
-    ppins.register_chip(CHIP_NAME, chip)
+    for name in CHIP_ALIASES:
+        try:
+            ppins.register_chip(name, chip)
+        except ppins.error:
+            pass
     # create eight pins pin1..pin8
     for i in range(1,9):
         name = f'pin{i}'

@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import logging
-from .ams_virtual_pins import _norm, CHIP_NAME
+from .ams_virtual_pins import _norm, CHIP_NAME, CHIP_ALIASES
 
 
 class RunoutHelper:
@@ -171,8 +171,9 @@ def load_config_prefix(config):
     # has already been registered
     try:
         pin_params = ppins.parse_pin(switch_pin, can_invert=True, can_pullup=True)
-        if pin_params['chip_name'] == CHIP_NAME:
+        if pin_params['chip_name'] in CHIP_ALIASES:
             vpin_name = _norm(pin_params['pin'])
+            # Look up using canonical chip name
             vpin = printer.lookup_object(CHIP_NAME + ' ' + vpin_name, None)
             if vpin is None:
                 # Delay binding until klippy:ready if pin not loaded yet
@@ -188,14 +189,14 @@ def load_config_prefix(config):
     # f"^!{CHIP_NAME}:name".  Pullup and invert modifiers are ignored
     # since virtual pins do not use them.
     clean_pin = switch_pin.lstrip('!^')
-    prefix = CHIP_NAME + ':'
-    if clean_pin.startswith(prefix):
-        vpin_name = _norm(clean_pin.split(prefix, 1)[1])
-        vpin = printer.lookup_object(CHIP_NAME + ' ' + vpin_name, None)
-        if vpin is None:
-            # Delay binding until klippy:ready if pin not loaded yet
+    for prefix in (alias + ':' for alias in CHIP_ALIASES):
+        if clean_pin.startswith(prefix):
+            vpin_name = _norm(clean_pin.split(prefix, 1)[1])
+            vpin = printer.lookup_object(CHIP_NAME + ' ' + vpin_name, None)
+            if vpin is None:
+                # Delay binding until klippy:ready if pin not loaded yet
+                return VirtualSwitchSensor(config, vpin_name)
             return VirtualSwitchSensor(config, vpin_name)
-        return VirtualSwitchSensor(config, vpin_name)
 
     # If all checks fail, fall back to the normal hardware switch sensor
     return SwitchSensor(config)
