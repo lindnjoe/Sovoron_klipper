@@ -47,6 +47,7 @@ class _VirtualPinChip:
         self.printer = printer
         self._config_callbacks = []
         self._response_callbacks = []
+        self._oid_counter = 0
 
     def register_config_callback(self, cb):
         """Record a callback to run once the chip is ready."""
@@ -67,6 +68,10 @@ class _VirtualPinChip:
 
     def register_response(self, cb):
         self._response_callbacks.append(cb)
+
+    def create_oid(self):
+        self._oid_counter += 1
+        return self._oid_counter
 
     def setup_pin(self, pin_type, pin_params):
         ppins = self.printer.lookup_object('pins')
