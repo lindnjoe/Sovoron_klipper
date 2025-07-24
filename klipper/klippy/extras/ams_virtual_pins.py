@@ -210,6 +210,10 @@ def load_config(config):
         # expose for macros via printer.objects
         objs = getattr(printer, 'objects', None)
         if isinstance(objs, dict):
+            # expose under canonical chip name and the alias so lookups
+            # from other modules succeed regardless of which prefix was
+            # used
+            objs[f'{CHIP_NAME} {name}'] = vp
             objs[f'ams_pin {name}'] = vp
     # register gcode commands
     gcode = printer.lookup_object('gcode')
