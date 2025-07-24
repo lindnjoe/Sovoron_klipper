@@ -48,6 +48,7 @@ class _VirtualPinChip:
         self._config_callbacks = []
         self._response_callbacks = []
         self._oid_counter = 0
+        self._config_cmds = []
 
     def register_config_callback(self, cb):
         """Record a callback to run once the chip is ready."""
@@ -68,6 +69,30 @@ class _VirtualPinChip:
 
     def register_response(self, cb):
         self._response_callbacks.append(cb)
+
+    # minimal MCU interface -------------------------------------------------
+    def add_config_cmd(self, cmd, is_init=False):
+        # store commands for debugging; they are not sent anywhere
+        self._config_cmds.append((cmd, is_init))
+
+    def alloc_command_queue(self):
+        class DummyCQ:
+            def send(self, *args, **kwargs):
+                pass
+        return DummyCQ()
+
+    class _DummyCmd:
+        def send(self, *args, **kwargs):
+            pass
+
+    def lookup_command(self, *args, **kwargs):
+        return self._DummyCmd()
+
+    def get_query_slot(self, oid):
+        return 0
+
+    def seconds_to_clock(self, seconds):
+        return 0
 
     def create_oid(self):
         self._oid_counter += 1
