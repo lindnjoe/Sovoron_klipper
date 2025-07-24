@@ -53,7 +53,7 @@ class VirtualInputPin:
         self.chip = chip
         self.name = name
         self.state = False
-        self._watchers = []
+        self._watchers = set()
 
     # MCU helpers forwarded from chip
     def register_config_callback(self, cb):
@@ -82,18 +82,25 @@ class VirtualInputPin:
 
     def register_watcher(self, cb):
         if cb not in self._watchers:
-            self._watchers.append(cb)
-        self._invoke(cb, self.state)
+            self._watchers.add(cb)
+            self._invoke(cb, self.state)
 
     def _invoke(self, cb, state):
         et = self.chip.printer.get_reactor().monotonic()
         try:
             cb(et, state)
+            return
         except TypeError:
-            try:
-                cb(state)
-            except Exception:
-                logging.exception('Virtual pin callback error')
+            pass
+        try:
+            cb(state)
+            return
+        except TypeError:
+            pass
+        try:
+            cb(et)
+        except Exception:
+            logging.exception('Virtual pin callback error')
 
     def set_value(self, val):
         val = bool(val)
@@ -150,7 +157,7 @@ class VirtualPinChip:
         return self._oid
 
     def setup_pin(self, pin_type, pin_params):
-        name = pin_params['pin']
+        name = _norm(pin_params['pin'])
         vp = self.pins.get(name)
         if vp is None:
             ppins = self.printer.lookup_object('pins')
