@@ -11,6 +11,12 @@
 
 import logging
 
+CHIP_NAME = "ams"
+
+def _norm(name: str) -> str:
+    """Normalize a pin name for lookups."""
+    return str(name).strip().lower()
+
 class VirtualEndstop:
     def __init__(self, vpin, invert):
         self._vpin = vpin
@@ -151,7 +157,7 @@ class VirtualPinChip:
 # G-code handlers -------------------------------------------------------
 
     def cmd_SET_AMS_PIN(self, gcmd):
-        name = gcmd.get('PIN').lower()
+        name = _norm(gcmd.get('PIN'))
         val = gcmd.get_int('VALUE', 1)
         pin = self.pins.get(name)
         if pin is None:
@@ -160,7 +166,7 @@ class VirtualPinChip:
         pin.set_value(val)
 
     def cmd_QUERY_AMS_PIN(self, gcmd):
-        name = gcmd.get('PIN').lower()
+        name = _norm(gcmd.get('PIN'))
         pin = self.pins.get(name)
         if pin is None:
             gcmd.respond_error('Unknown ams pin %s' % name)
@@ -173,12 +179,12 @@ def load_config(config):
     printer = config.get_printer()
     chip = VirtualPinChip(printer)
     ppins = printer.lookup_object('pins')
-    ppins.register_chip('ams', chip)
+    ppins.register_chip(CHIP_NAME, chip)
     # create eight pins pin1..pin8
     for i in range(1,9):
         name = f'pin{i}'
         vp = VirtualInputPin(chip, name)
-        chip.pins[name] = vp
+        chip.pins[_norm(name)] = vp
         # expose for macros via printer.objects
         objs = getattr(printer, 'objects', None)
         if isinstance(objs, dict):
