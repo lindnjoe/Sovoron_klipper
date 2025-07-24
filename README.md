@@ -1,7 +1,9 @@
+
 # Klipper-Backup 💾 
 Klipper backup script for manual or automated GitHub backups 
 
 This backup is provided by [Klipper-Backup](https://github.com/Staubgeborener/klipper-backup).
+
 
 ## Virtual AMS pins
 
@@ -26,3 +28,5 @@ If other modules need to reference these pins before the `[ams_pin]` or
 `[ams_pins]` sections load, add an empty `[ams_chip]` section near the
 top of your configuration file.  This registers the virtual `ams` chip
 early so pin lookups succeed.
+=======
+
