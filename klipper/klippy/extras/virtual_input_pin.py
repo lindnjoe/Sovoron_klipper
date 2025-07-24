@@ -67,7 +67,8 @@ class _VirtualPinChip:
                 # older callbacks may not accept an event time
                 cb()
 
-    def register_response(self, cb):
+    def register_response(self, cb, *args):
+        """Store response callback; ignore extra args."""
         self._response_callbacks.append(cb)
 
     # minimal MCU interface -------------------------------------------------
