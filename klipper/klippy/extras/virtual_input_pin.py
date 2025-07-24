@@ -50,10 +50,11 @@ class VirtualInputPin:
         self._watchers = []
 
         ppins = self.printer.lookup_object('pins')
-        try:
-            ppins.register_chip('virtual_pin', self)
-        except ppins.error:
-            pass
+        for cname in ('virtual_pin', 'ams_pin', 'ams'):
+            try:
+                ppins.register_chip(cname, self)
+            except ppins.error:
+                pass
 
         gcode = self.printer.lookup_object('gcode')
         cname = self.name
