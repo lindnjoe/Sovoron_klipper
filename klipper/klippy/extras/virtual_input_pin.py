@@ -49,12 +49,21 @@ class _VirtualPinChip:
         self._response_callbacks = []
 
     def register_config_callback(self, cb):
-        """Immediately invoke configuration callbacks."""
+        """Record a callback to run once the chip is ready."""
         self._config_callbacks.append(cb)
-        try:
-            cb(self.printer.get_reactor().monotonic())
-        except TypeError:
-            cb()
+
+    def run_config_callbacks(self, eventtime=None):
+        callbacks = list(self._config_callbacks)
+        self._config_callbacks.clear()
+        for cb in callbacks:
+            try:
+                if eventtime is None:
+                    cb()
+                else:
+                    cb(eventtime)
+            except TypeError:
+                # older callbacks may not accept an event time
+                cb()
 
     def register_response(self, cb):
         self._response_callbacks.append(cb)
@@ -86,6 +95,7 @@ def _ensure_chip(printer):
             ppins.register_chip(cname, chip)
         except ppins.error:
             pass
+    printer.register_event_handler('klippy:connect', chip.run_config_callbacks)
     _CHIPS[printer] = chip
     return chip
 
