@@ -40,6 +40,43 @@ class VirtualEndstop:
         return bool(self._vpin.state) ^ bool(self._invert)
 
 
+class _VirtualPinChip:
+    """Chip object that delegates pin setup to registered pins."""
+
+    def __init__(self, printer):
+        self.printer = printer
+
+    def setup_pin(self, pin_type, pin_params):
+        ppins = self.printer.lookup_object('pins')
+        if pin_type != 'endstop':
+            raise ppins.error('virtual_pin only supports endstop type')
+        name = pin_params['pin']
+        obj = self.printer.lookup_object('virtual_input_pin ' + name, None)
+        if obj is None:
+            obj = self.printer.lookup_object('virtual_pin ' + name, None)
+        if obj is None:
+            raise ppins.error('virtual_pin %s not configured' % (name,))
+        return obj.setup_pin(pin_type, pin_params)
+
+
+_CHIPS = {}
+
+
+def _ensure_chip(printer):
+    chip = _CHIPS.get(printer)
+    if chip is not None:
+        return chip
+    chip = _VirtualPinChip(printer)
+    ppins = printer.lookup_object('pins')
+    for cname in ('virtual_pin', 'ams_pin', 'ams'):
+        try:
+            ppins.register_chip(cname, chip)
+        except ppins.error:
+            pass
+    _CHIPS[printer] = chip
+    return chip
+
+
 class VirtualInputPin:
     """Representation of a virtual input pin."""
 
@@ -49,12 +86,7 @@ class VirtualInputPin:
         self.state = config.getboolean('initial_value', False)
         self._watchers = []
 
-        ppins = self.printer.lookup_object('pins')
-        for cname in ('virtual_pin', 'ams_pin', 'ams'):
-            try:
-                ppins.register_chip(cname, self)
-            except ppins.error:
-                pass
+        _ensure_chip(self.printer)
 
         gcode = self.printer.lookup_object('gcode')
         cname = self.name
