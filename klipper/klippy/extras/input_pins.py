@@ -9,5 +9,3 @@ the full Klipper MCU protocol.
 """
 
 import configparser
-from typing import Optional
-
