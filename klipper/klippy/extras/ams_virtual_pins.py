@@ -164,7 +164,7 @@ class VirtualPinChip:
         val = gcmd.get_int('VALUE', 1)
         pin = self.pins.get(name)
         if pin is None:
-            gcmd.respond_error('Unknown ams pin %s' % name)
+            gcmd.respond_info('Unknown ams pin %s' % name)
             return
         pin.set_value(val)
 
@@ -172,7 +172,7 @@ class VirtualPinChip:
         name = _norm(gcmd.get('PIN'))
         pin = self.pins.get(name)
         if pin is None:
-            gcmd.respond_error('Unknown ams pin %s' % name)
+            gcmd.respond_info('Unknown ams pin %s' % name)
             return
         gcmd.respond_info('ams:%s=%d' % (name, pin.state))
 
