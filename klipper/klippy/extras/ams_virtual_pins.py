@@ -166,8 +166,16 @@ class VirtualPinChip:
 
 # G-code handlers -------------------------------------------------------
 
-    def cmd_SET_AMS_PIN(self, gcmd):
+    def _parse_pin_arg(self, gcmd):
         name = _norm(gcmd.get('PIN'))
+        for prefix in (alias + ':' for alias in CHIP_ALIASES):
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+                break
+        return name
+
+    def cmd_SET_AMS_PIN(self, gcmd):
+        name = self._parse_pin_arg(gcmd)
         val = gcmd.get_int('VALUE', 1)
         pin = self.pins.get(name)
         if pin is None:
@@ -176,7 +184,7 @@ class VirtualPinChip:
         pin.set_value(val)
 
     def cmd_QUERY_AMS_PIN(self, gcmd):
-        name = _norm(gcmd.get('PIN'))
+        name = self._parse_pin_arg(gcmd)
         pin = self.pins.get(name)
         if pin is None:
             gcmd.respond_info('Unknown ams pin %s' % name)
