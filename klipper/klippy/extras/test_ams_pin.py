@@ -60,21 +60,3 @@ def printer():
 @pytest.fixture
 def chip(printer):
     cfg = FakeConfig(printer, 'ams_pin')
-    return ams_pin.load_config_prefix(cfg)
-
-
-def test_watcher_and_gcode(printer, chip):
-    pin = chip.pins['pin1']
-    triggered = []
-    pin.register_watcher(lambda v: triggered.append(v))
-    gcode = printer.lookup_object('gcode')
-    set_cmd = gcode.commands[('SET_AMS_PIN', 'pin1')]
-    query_cmd = gcode.commands[('QUERY_AMS_PIN', 'pin1')]
-
-    set_cmd(FakeGcmd({'VALUE': 1}))
-    assert pin.state
-    assert triggered == [False, True]
-
-    gcmd = FakeGcmd()
-    query_cmd(gcmd)
-    assert 'ams_pin pin1: 1' in gcmd.responses[0]

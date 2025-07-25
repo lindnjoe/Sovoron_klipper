@@ -170,17 +170,3 @@ def get_virtual_pins(printer):
     return chip
 
 
-def load_config_prefix(config):
-    """Config handler for `[ams_pin]` sections."""
-    chip = get_virtual_pins(config.get_printer())
-    name = config.get_name().split()[-1]
-    pin = chip.pins.get(name)
-    if pin is not None:
-        return pin
-    if name != 'ams_pin':
-        raise config.error('Unknown ams pin %s' % name)
-    return chip
-
-
-# Only expose the entry point to Klipper
-__all__ = ['load_config_prefix']
