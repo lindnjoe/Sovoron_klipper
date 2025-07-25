@@ -144,20 +144,3 @@ def load_config_file(cfg_path: str) -> InputPins:
 
 
 def load_config_prefix(config):  # pragma: no cover - used by Klipper
-    """Ensure the virtual chip is registered before other sections load."""
-    MODULE_MCU.register_chip()
-    return config
-
-
-def load_config(config):  # pragma: no cover - used by Klipper
-    """Entry point used by Klipper when [input_pins] is present."""
-    ip = InputPins()
-    MODULE_MCU.register_chip()
-    ip.mcu = MODULE_MCU
-    config.get_printer().add_object('virtual_mcu', ip.mcu)
-    return ip
-
-
-# For backward compatibility with earlier revisions that expected
-# ``load_config_prefix`` to create the object directly.
-load_config_legacy = load_config
