@@ -193,8 +193,8 @@
             "buffer_status": null,
             "lane": 4,
             "map": "T11",
-            "load": false,
-            "prep": false,
+            "load": true,
+            "prep": true,
             "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "PLA",
@@ -206,9 +206,9 @@
             "weight": 681,
             "extruder_temp": null,
             "runout_lane": null,
-            "filament_status": "Not Ready",
-            "filament_status_led": "#ff0000",
-            "status": "Loaded"
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "None"
         }
     },
     "Turtle_1": {
@@ -318,7 +318,7 @@
         }
     },
     "system": {
-        "current_load": "lane0",
+        "current_load": "lane5",
         "num_units": 3,
         "num_lanes": 12,
         "num_extruders": 6,
