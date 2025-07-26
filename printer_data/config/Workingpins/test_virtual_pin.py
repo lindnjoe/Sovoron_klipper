@@ -2,8 +2,9 @@ import os
 import sys
 import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from klippy.extras import virtual_pin
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+sys.path.insert(0, os.path.join(repo_root, "klipper", "klippy"))
+from extras import virtual_input_pin as virtual_pin
 
 class FakeReactor:
     NEVER = float('inf')
@@ -130,6 +131,13 @@ def vpin(printer):
     return pin
 
 @pytest.fixture
+def vpin2(printer):
+    cfg = FakeConfig(printer, 'virtual_pin alt')
+    pin = TestVirtualPin(cfg)
+    printer.objects['virtual_pin ' + pin.name] = pin
+    return pin
+
+@pytest.fixture
 def fil_sensor(printer, vpin):
     cfg = FakeConfig(printer, 'virtual_filament_sensor sensor', {'pin': vpin.name})
     sensor = virtual_pin.VirtualFilamentSensor(cfg)
@@ -163,3 +171,31 @@ def test_gcode_handlers(printer, vpin):
     gcmd = FakeGcmd()
     cmd_query(gcmd)
     assert 'virtual_pin %s: 1' % vpin.name in gcmd.responses[0]
+
+
+def test_multiple_pins(printer, vpin, vpin2):
+    gcode = printer.lookup_object('gcode')
+    cmd1 = gcode.commands[('SET_VIRTUAL_PIN', vpin.name)]
+    cmd2 = gcode.commands[('SET_VIRTUAL_PIN', vpin2.name)]
+    cmd1(FakeGcmd({'VALUE': 1}))
+    assert vpin.state and not vpin2.state
+    cmd2(FakeGcmd({'VALUE': 1}))
+    assert vpin2.state
+
+
+def test_pin_order_mapping(printer, vpin, vpin2):
+    chip = printer.lookup_object('virtual_pin_chip')
+    events = []
+
+    class Handler:
+        def __init__(self):
+            self.pin_list = [(vpin2.name, 0), (vpin.name, 0)]
+        def __call__(self, params):
+            events.append(params['state'][0])
+
+    h = Handler()
+    chip.register_response(h, 'buttons_state', 0)
+    vpin.set_value(1)
+    assert events[-1] == 0b10
+    vpin2.set_value(1)
+    assert events[-1] == 0b11
