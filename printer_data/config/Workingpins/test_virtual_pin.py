@@ -2,8 +2,9 @@ import os
 import sys
 import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from klippy.extras import virtual_pin
+repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+sys.path.insert(0, os.path.join(repo_root, "klipper", "klippy"))
+from extras import virtual_input_pin as virtual_pin
 
 class FakeReactor:
     NEVER = float('inf')
