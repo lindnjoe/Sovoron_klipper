@@ -4,14 +4,6 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import re
-import sys
-
-# Expose this module under the short name "pins" for compatibility with
-# scripts that import ``pins`` before updating ``sys.path`` to include
-# Klipper's package.  Registering here avoids the need to modify
-# ``__init__`` while ensuring ``pins.error`` and other attributes are
-# globally accessible.
-sys.modules.setdefault('pins', sys.modules[__name__])
 
 class error(Exception):
     pass
@@ -143,13 +135,4 @@ class PrinterPins:
         self.allow_multi_use_pins[share_name] = True
 
 def add_printer_objects(config):
-    printer = config.get_printer()
-    printer.add_object('pins', PrinterPins())
-    # If the config defines any virtual input pins, ensure the virtual_pin
-    # chip is registered before other modules attempt to parse pins.
-    if config.get_prefix_sections('virtual_input_pin'):
-        try:
-            from .extras import virtual_input_pin
-        except ImportError:
-            from extras import virtual_input_pin
-        virtual_input_pin.add_printer_objects(config)
+    config.get_printer().add_object('pins', PrinterPins())
