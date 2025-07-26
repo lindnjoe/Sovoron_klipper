@@ -208,7 +208,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None"
+            "status": "Tool Loading"
         }
     },
     "Turtle_1": {
