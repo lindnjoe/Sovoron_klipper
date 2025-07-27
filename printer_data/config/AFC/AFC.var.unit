@@ -3,7 +3,7 @@
         "lane4": {
             "name": "lane4",
             "unit": "AMS_1",
-            "hub": "direct",
+            "hub": "Hub_1",
             "extruder": "extruder4",
             "buffer": null,
             "buffer_status": null,
@@ -29,7 +29,7 @@
         "lane6": {
             "name": "lane6",
             "unit": "AMS_1",
-            "hub": "direct",
+            "hub": "Hub_2",
             "extruder": "extruder4",
             "buffer": null,
             "buffer_status": null,
@@ -55,7 +55,7 @@
         "lane7": {
             "name": "lane7",
             "unit": "AMS_1",
-            "hub": "direct",
+            "hub": "Hub_3",
             "extruder": "extruder4",
             "buffer": null,
             "buffer_status": null,
@@ -81,7 +81,7 @@
         "lane8": {
             "name": "lane8",
             "unit": "AMS_1",
-            "hub": "direct",
+            "hub": "Hub_4",
             "extruder": "extruder4",
             "buffer": null,
             "buffer_status": null,
@@ -109,7 +109,7 @@
         "lane5": {
             "name": "lane5",
             "unit": "AMS_2",
-            "hub": "direct",
+            "hub": "Hub_5",
             "extruder": "extruder5",
             "buffer": null,
             "buffer_status": null,
@@ -135,7 +135,7 @@
         "lane9": {
             "name": "lane9",
             "unit": "AMS_2",
-            "hub": "direct",
+            "hub": "Hub_6",
             "extruder": "extruder5",
             "buffer": null,
             "buffer_status": null,
@@ -161,7 +161,7 @@
         "lane10": {
             "name": "lane10",
             "unit": "AMS_2",
-            "hub": "direct",
+            "hub": "Hub_7",
             "extruder": "extruder5",
             "buffer": null,
             "buffer_status": null,
@@ -187,7 +187,7 @@
         "lane11": {
             "name": "lane11",
             "unit": "AMS_2",
-            "hub": "direct",
+            "hub": "Hub_8",
             "extruder": "extruder5",
             "buffer": null,
             "buffer_status": null,
