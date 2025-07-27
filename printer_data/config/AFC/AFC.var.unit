@@ -61,8 +61,8 @@
             "buffer_status": null,
             "lane": 3,
             "map": "T7",
-            "load": false,
-            "prep": false,
+            "load": true,
+            "prep": true,
             "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "PLA",
@@ -74,8 +74,8 @@
             "weight": 650,
             "extruder_temp": null,
             "runout_lane": null,
-            "filament_status": "Not Ready",
-            "filament_status_led": "#ff0000",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
             "status": "Loaded"
         },
         "lane8": {
@@ -87,8 +87,8 @@
             "buffer_status": null,
             "lane": 4,
             "map": "T8",
-            "load": true,
-            "prep": true,
+            "load": false,
+            "prep": false,
             "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "PLA",
@@ -100,8 +100,8 @@
             "weight": 700,
             "extruder_temp": null,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
+            "filament_status": "Not Ready",
+            "filament_status_led": "#ff0000",
             "status": "Loaded"
         }
     },
