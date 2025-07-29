@@ -299,7 +299,7 @@
             "buffer_status": "Advancing",
             "lane": 4,
             "map": "T3",
-            "load": false,
+            "load": true,
             "prep": false,
             "tool_loaded": true,
             "loaded_to_hub": false,
@@ -318,7 +318,7 @@
         }
     },
     "system": {
-        "current_load": "lane3",
+        "current_load": "",
         "num_units": 3,
         "num_lanes": 12,
         "num_extruders": 6,
@@ -333,7 +333,7 @@
                 "lane_loaded": "lane2"
             },
             "extruder3": {
-                "lane_loaded": "lane3"
+                "lane_loaded": ""
             },
             "extruder4": {
                 "lane_loaded": "lane4"
