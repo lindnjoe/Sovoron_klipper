@@ -218,7 +218,7 @@
             "hub": "direct",
             "extruder": "extruder",
             "buffer": "TN",
-            "buffer_status": "Trailing",
+            "buffer_status": "Advancing",
             "lane": 1,
             "map": "T0",
             "load": true,
