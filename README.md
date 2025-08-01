@@ -4,33 +4,35 @@ This backup is provided by [Klipper-Backup](https://github.com/Staubgeborener/kl
 
 ## AMS virtual pins
 
-This repository includes a small Klipper module that creates eight
-software input pins on a fake MCU named `ams`.  After adding the section
+Create virtual pins with Klipper's `virtual_input_pin` module and use
+`auto_ams_update` to automatically mirror AMS lane status. Define pin
+sections named `pin1` through `pin16` and configure `auto_ams_update`
+to update them:
 
 ```
-[ams_virtual_pins]
+[virtual_input_pin pin1]
+[virtual_input_pin pin2]
+...
+[virtual_input_pin pin16]
+
+[auto_ams_update]
+oams1: oams1
+oams2: oams2
+pins: pin1, pin2, pin3, pin4, pin5, pin6, pin7, pin8, \
+      pin9, pin10, pin11, pin12, pin13, pin14, pin15, pin16
+interval: 1
 ```
 
-to your configuration, pins `pin1` through `pin8` become available under
-the chip name `ams` (or the aliases `ams_pin` and `virtual_pin`).  They may be referenced
-like normal endstop pins,
-for example:
+Use these pins like normal endstop pins:
 
 ```
 [filament_switch_sensor my_sensor]
-    switch_pin: ams:pin1
+    switch_pin: virtual_pin:pin1
 ```
 
-Change a pin state at runtime with:
-
-```
-SET_AMS_PIN PIN=pin1 VALUE=1
-QUERY_AMS_PIN PIN=pin1
-# The `PIN` parameter may use either `pin1`, `ams_pin:pin1`, or `virtual_pin:pin1`.
-```
-
-These pins behave like real endstop inputs, so they can be used anywhere
-an input pin is expected.
+Change a pin state at runtime with `SET_VIRTUAL_PIN` and query it with
+`QUERY_VIRTUAL_PIN`. These pins behave like real endstop inputs, so they
+can be used anywhere an input pin is expected.
 
 ## Virtual input pins
 

@@ -34,37 +34,23 @@ class AutoAMSUpdate:
             vals2 = getattr(oams2, 'f1s_hes_value', [0,0,0,0]) if oams2 else [0,0,0,0]
             hubs1 = getattr(oams1, 'hub_hes_value', [0,0,0,0]) if oams1 else [0,0,0,0]
             hubs2 = getattr(oams2, 'hub_hes_value', [0,0,0,0]) if oams2 else [0,0,0,0]
-            class GC:
-                def __init__(self, val):
-                    self.val = val
-                def get_int(self, name, default=None):
-                    return self.val if name == 'VALUE' else default
+            def update_pin(name, value):
+                cmdline = f"SET_VIRTUAL_PIN PIN={name} VALUE={int(value)}"
+                self.gcode.run_script_from_command(cmdline)
             # f1s_hes values -> pins1..8
             for i in range(4):
                 pin = self.pin_names[i]
-                val = int(vals1[i])
-                cmd = self.gcode.commands.get(('SET_VIRTUAL_PIN', pin))
-                if cmd is not None:
-                    cmd(GC(val))
+                update_pin(pin, vals1[i])
             for i in range(4):
                 pin = self.pin_names[i+4]
-                val = int(vals2[i])
-                cmd = self.gcode.commands.get(('SET_VIRTUAL_PIN', pin))
-                if cmd is not None:
-                    cmd(GC(val))
+                update_pin(pin, vals2[i])
             # hub_hes values -> pins9..16
             for i in range(4):
                 pin = self.pin_names[i+8]
-                val = int(hubs1[i])
-                cmd = self.gcode.commands.get(('SET_VIRTUAL_PIN', pin))
-                if cmd is not None:
-                    cmd(GC(val))
+                update_pin(pin, hubs1[i])
             for i in range(4):
                 pin = self.pin_names[i+12]
-                val = int(hubs2[i])
-                cmd = self.gcode.commands.get(('SET_VIRTUAL_PIN', pin))
-                if cmd is not None:
-                    cmd(GC(val))
+                update_pin(pin, hubs2[i])
         except Exception:
             logging.exception('auto AMS update error')
         return eventtime + self.interval
