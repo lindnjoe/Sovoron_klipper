@@ -4,33 +4,53 @@ This backup is provided by [Klipper-Backup](https://github.com/Staubgeborener/kl
 
 ## AMS virtual pins
 
-This repository includes a small Klipper module that creates eight
-software input pins on a fake MCU named `ams`.  After adding the section
+Create virtual pins with Klipper's `virtual_input_pin` module and use
+`auto_ams_update` to automatically mirror AMS lane status. Define
+virtual pins for each AMS lane and hub input and configure
+`auto_ams_update` to update them:
 
 ```
-[ams_virtual_pins]
+[virtual_input_pin ams1lane0pl]
+[virtual_input_pin ams1lane1pl]
+[virtual_input_pin ams1lane2pl]
+[virtual_input_pin ams1lane3pl]
+[virtual_input_pin ams2lane0pl]
+[virtual_input_pin ams2lane1pl]
+[virtual_input_pin ams2lane2pl]
+[virtual_input_pin ams2lane3pl]
+[virtual_input_pin ams1hub0]
+[virtual_input_pin ams1hub1]
+[virtual_input_pin ams1hub2]
+[virtual_input_pin ams1hub3]
+[virtual_input_pin ams2hub0]
+[virtual_input_pin ams2hub1]
+[virtual_input_pin ams2hub2]
+[virtual_input_pin ams2hub3]
+
+[auto_ams_update]
+oams1: oams1
+oams2: oams2
+pins: ams1lane0pl, ams1lane1pl, ams1lane2pl, ams1lane3pl, \
+      ams2lane0pl, ams2lane1pl, ams2lane2pl, ams2lane3pl, \
+      ams1hub0, ams1hub1, ams1hub2, ams1hub3, \
+      ams2hub0, ams2hub1, ams2hub2, ams2hub3
+interval: 1
 ```
 
-to your configuration, pins `pin1` through `pin8` become available under
-the chip name `ams` (or the aliases `ams_pin` and `virtual_pin`).  They may be referenced
-like normal endstop pins,
-for example:
+Add more `oams#` options (for example, `oams3: oams3`) and extend the
+`pins` list with that AMS's pin names. List the lane pins for all AMS
+units first, followed by the hub pins for all AMS units.
+
+Use these pins like normal endstop pins:
 
 ```
 [filament_switch_sensor my_sensor]
-    switch_pin: ams:pin1
+    switch_pin: virtual_pin:ams1lane0pl
 ```
 
-Change a pin state at runtime with:
-
-```
-SET_AMS_PIN PIN=pin1 VALUE=1
-QUERY_AMS_PIN PIN=pin1
-# The `PIN` parameter may use either `pin1`, `ams_pin:pin1`, or `virtual_pin:pin1`.
-```
-
-These pins behave like real endstop inputs, so they can be used anywhere
-an input pin is expected.
+Change a pin state at runtime with `SET_VIRTUAL_PIN` and query it with
+`QUERY_VIRTUAL_PIN`. These pins behave like real endstop inputs, so they
+can be used anywhere an input pin is expected.
 
 ## Virtual input pins
 

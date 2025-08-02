@@ -10,16 +10,24 @@ class AutoAMSUpdate:
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
         self.interval = config.getfloat('interval', SYNC_INTERVAL, above=0.)
-        self.oams1_name = config.get('oams1', 'oams1').strip()
-        self.oams2_name = config.get('oams2', 'oams2').strip()
-        self.pin_names = config.getlist(
-            'pins',
-            (
-                'pin1','pin2','pin3','pin4','pin5','pin6','pin7','pin8',
-                'pin9','pin10','pin11','pin12','pin13','pin14','pin15','pin16',
-            ))
-        if len(self.pin_names) != 16:
-            raise config.error('pins option must contain sixteen pin names')
+        # Find all oams#: options and sort by numeric suffix
+        oams_opts = config.get_prefix_options('oams')
+        if oams_opts:
+            def sort_key(opt):
+                suffix = opt[4:]
+                return int(suffix) if suffix.isdigit() else opt
+            oams_opts = sorted(oams_opts, key=sort_key)
+            self.oams_names = [config.get(opt).strip() for opt in oams_opts]
+        else:
+            # Default to two AMS objects for backwards compatibility
+            self.oams_names = ['oams1', 'oams2']
+        # Expect eight pins (4 lane + 4 hub) per AMS unit
+        default_pins = [f'pin{i+1}' for i in range(8 * len(self.oams_names))]
+        self.pin_names = config.getlist('pins', default_pins)
+        expected = 8 * len(self.oams_names)
+        if len(self.pin_names) != expected:
+            raise config.error(
+                f'pins option must contain {expected} pin names')
         self.timer = self.reactor.register_timer(self._sync_event)
         self.printer.register_event_handler('klippy:ready', self.handle_ready)
 
@@ -28,43 +36,24 @@ class AutoAMSUpdate:
 
     def _sync_event(self, eventtime):
         try:
-            oams1 = self.printer.lookup_object('oams ' + self.oams1_name, None)
-            oams2 = self.printer.lookup_object('oams ' + self.oams2_name, None)
-            vals1 = getattr(oams1, 'f1s_hes_value', [0,0,0,0]) if oams1 else [0,0,0,0]
-            vals2 = getattr(oams2, 'f1s_hes_value', [0,0,0,0]) if oams2 else [0,0,0,0]
-            hubs1 = getattr(oams1, 'hub_hes_value', [0,0,0,0]) if oams1 else [0,0,0,0]
-            hubs2 = getattr(oams2, 'hub_hes_value', [0,0,0,0]) if oams2 else [0,0,0,0]
-            class GC:
-                def __init__(self, val):
-                    self.val = val
-                def get_int(self, name, default=None):
-                    return self.val if name == 'VALUE' else default
-            # f1s_hes values -> pins1..8
-            for i in range(4):
-                pin = self.pin_names[i]
-                val = int(vals1[i])
-                cmd = self.gcode.commands.get(('SET_VIRTUAL_PIN', pin))
-                if cmd is not None:
-                    cmd(GC(val))
-            for i in range(4):
-                pin = self.pin_names[i+4]
-                val = int(vals2[i])
-                cmd = self.gcode.commands.get(('SET_VIRTUAL_PIN', pin))
-                if cmd is not None:
-                    cmd(GC(val))
-            # hub_hes values -> pins9..16
-            for i in range(4):
-                pin = self.pin_names[i+8]
-                val = int(hubs1[i])
-                cmd = self.gcode.commands.get(('SET_VIRTUAL_PIN', pin))
-                if cmd is not None:
-                    cmd(GC(val))
-            for i in range(4):
-                pin = self.pin_names[i+12]
-                val = int(hubs2[i])
-                cmd = self.gcode.commands.get(('SET_VIRTUAL_PIN', pin))
-                if cmd is not None:
-                    cmd(GC(val))
+            # Lookup all configured AMS objects
+            oams_objs = [
+                self.printer.lookup_object('oams ' + name, None)
+                for name in self.oams_names
+            ]
+            def update_pin(name, value):
+                cmdline = f"SET_VIRTUAL_PIN PIN={name} VALUE={int(value)}"
+                self.gcode.run_script_from_command(cmdline)
+            num = len(oams_objs)
+            lane_offset = 0
+            hub_offset = 4 * num
+            for idx, oams in enumerate(oams_objs):
+                vals = getattr(oams, 'f1s_hes_value', [0,0,0,0]) if oams else [0,0,0,0]
+                hubs = getattr(oams, 'hub_hes_value', [0,0,0,0]) if oams else [0,0,0,0]
+                for i in range(4):
+                    update_pin(self.pin_names[lane_offset + idx*4 + i], vals[i])
+                for i in range(4):
+                    update_pin(self.pin_names[hub_offset + idx*4 + i], hubs[i])
         except Exception:
             logging.exception('auto AMS update error')
         return eventtime + self.interval
