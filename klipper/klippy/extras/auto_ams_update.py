@@ -1,6 +1,6 @@
 import logging
 
-SYNC_INTERVAL = 1.0
+SYNC_INTERVAL = 0.5
 
 class AutoAMSUpdate:
     """Periodically update virtual pins from AMS lane status."""
