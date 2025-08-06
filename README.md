@@ -25,28 +25,7 @@ default pin names, supply a `pins` option listing lane pins for all AMS
 units followed by the hub pins. Additional virtual pins may still be
 defined manually using `[virtual_input_pin my_pin]` if needed.
 =======
-Create virtual pins with Klipper's `virtual_input_pin` module and use
-`auto_ams_update` to automatically mirror AMS lane status. Define
-virtual pins for each AMS lane and hub input and configure
-`auto_ams_update` to update them:
 
-```
-[virtual_input_pin ams1lane0pl]
-[virtual_input_pin ams1lane1pl]
-[virtual_input_pin ams1lane2pl]
-[virtual_input_pin ams1lane3pl]
-[virtual_input_pin ams2lane0pl]
-[virtual_input_pin ams2lane1pl]
-[virtual_input_pin ams2lane2pl]
-[virtual_input_pin ams2lane3pl]
-[virtual_input_pin ams1hub0]
-[virtual_input_pin ams1hub1]
-[virtual_input_pin ams1hub2]
-[virtual_input_pin ams1hub3]
-[virtual_input_pin ams2hub0]
-[virtual_input_pin ams2hub1]
-[virtual_input_pin ams2hub2]
-[virtual_input_pin ams2hub3]
 
 [auto_ams_update]
 oams1: oams1
