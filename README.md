@@ -27,15 +27,7 @@ defined manually using `[virtual_input_pin my_pin]` if needed.
 =======
 
 
-[auto_ams_update]
-oams1: oams1
-oams2: oams2
-pins: ams1lane0pl, ams1lane1pl, ams1lane2pl, ams1lane3pl, \
-      ams2lane0pl, ams2lane1pl, ams2lane2pl, ams2lane3pl, \
-      ams1hub0, ams1hub1, ams1hub2, ams1hub3, \
-      ams2hub0, ams2hub1, ams2hub2, ams2hub3
-interval: 1
-```
+
 
 Add more `oams#` options (for example, `oams3: oams3`) and extend the
 `pins` list with that AMS's pin names. List the lane pins for all AMS
