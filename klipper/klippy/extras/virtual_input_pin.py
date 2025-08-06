@@ -357,9 +357,3 @@ def add_printer_objects(config):
         printer.lookup_object('pins').register_chip('virtual_pin', chip)
     except pins.error:
         pass
-def add_printer_objects(config):
-    printer = config.get_printer()
-    printer.add_object('pins', PrinterPins())
-    # If the config defines any virtual input pins, ensure the virtual_pin
-    # chip is registered before other modules attempt to parse pins.
-    virtual_input_pin.add_printer_objects(config)
