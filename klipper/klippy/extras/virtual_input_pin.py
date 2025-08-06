@@ -357,5 +357,8 @@ def add_printer_objects(config):
         printer.lookup_object('pins').register_chip('virtual_pin', chip)
     except pins.error:
         pass
-def load_config(config):
-    return Virtual_Input_Pin(config)
+def load_config_prefix(config):
+    """Config handler for [virtual_pin] sections."""
+    if config.get_name().split()[0] != 'virtual_pin':
+        raise config.error('Unknown prefix %s' % config.get_name())
+    return VirtualInputPin(config)
