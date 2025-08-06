@@ -358,4 +358,4 @@ def add_printer_objects(config):
     except pins.error:
         pass
 def load_config(config):
-    return VirtualPin(config)
+    return Virtual_Input_Pin(config)
