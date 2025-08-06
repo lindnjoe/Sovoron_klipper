@@ -16,6 +16,7 @@ virtual pins for each configured AMS using the naming pattern
 oams1: oams1
 oams2: oams2
 interval: 1
+#pins: ams1lane0pl, ams1lane1pl, ams1lane2pl, ams1lane3pl, ams2lane0pl, ams2lane1pl, ams2lane2pl, ams2lane3pl, ams1hub0, ams1hub1, ams1hub2, ams1hub3, ams2hub0, ams2hub1, ams2hub2, ams2hub3
 ```
 
 Pins `ams1lane0pl` through `ams1hub3` and `ams2lane0pl` through
@@ -24,7 +25,7 @@ example, `oams3: oams3`) to manage additional AMS units. To override the
 default pin names, supply a `pins` option listing lane pins for all AMS
 units followed by the hub pins. Additional virtual pins may still be
 defined manually using `[virtual_input_pin my_pin]` if needed.
-=======
+
 
 
 
