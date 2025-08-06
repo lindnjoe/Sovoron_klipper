@@ -4,6 +4,27 @@ This backup is provided by [Klipper-Backup](https://github.com/Staubgeborener/kl
 
 ## AMS virtual pins
 
+
+Use Klipper's `virtual_input_pin` module with `auto_ams_update` to
+mirror AMS lane status. `auto_ams_update` will automatically create
+virtual pins for each configured AMS using the naming pattern
+`ams#lane{0-3}pl` and `ams#hub{0-3}`. List AMS objects under
+`oams#:` options:
+
+```
+[auto_ams_update]
+oams1: oams1
+oams2: oams2
+interval: 1
+```
+
+Pins `ams1lane0pl` through `ams1hub3` and `ams2lane0pl` through
+`ams2hub3` are created automatically. Add more `oams#` options (for
+example, `oams3: oams3`) to manage additional AMS units. To override the
+default pin names, supply a `pins` option listing lane pins for all AMS
+units followed by the hub pins. Additional virtual pins may still be
+defined manually using `[virtual_input_pin my_pin]` if needed.
+=======
 Create virtual pins with Klipper's `virtual_input_pin` module and use
 `auto_ams_update` to automatically mirror AMS lane status. Define
 virtual pins for each AMS lane and hub input and configure
@@ -40,6 +61,7 @@ interval: 1
 Add more `oams#` options (for example, `oams3: oams3`) and extend the
 `pins` list with that AMS's pin names. List the lane pins for all AMS
 units first, followed by the hub pins for all AMS units.
+
 
 Use these pins like normal endstop pins:
 
