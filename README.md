@@ -1,97 +1,13 @@
+This is an example with 2 ams units that are hooked up to indivdual tool heads. This is for use with AFC_klipper_addon
 
+Put the pins.py file in klipper/klippy replacing the original file *this will result in a "dirty" klipper install*
 
-This backup is provided by [Klipper-Backup](https://github.com/Staubgeborener/klipper-backup).
+Put auto_ams_update.py and virtual_input_pin.py in klipper/klippy/extras
+
+AFC_AMS1.cfg and AFC_AMS2.cfg are example AFC configs that go in printer_data/config/AFC.
+
+Add [virtual_input_pin enable] in your cfg, or create at least one virtual pin to enable the module
+
 
 ## AMS virtual pins
-
-Enable the virtual pin system with an empty `[virtual_pin_chip]`
-section, create virtual pins for each AMS lane and hub input, and use
-`auto_ams_update` to mirror AMS status. For two AMS units the
-configuration might look like:
-
-```
-[virtual_pin_chip]
-
-[virtual_input_pin ams1lane0pl]
-[virtual_input_pin ams1lane1pl]
-[virtual_input_pin ams1lane2pl]
-[virtual_input_pin ams1lane3pl]
-[virtual_input_pin ams2lane0pl]
-[virtual_input_pin ams2lane1pl]
-[virtual_input_pin ams2lane2pl]
-[virtual_input_pin ams2lane3pl]
-[virtual_input_pin ams1hub0]
-[virtual_input_pin ams1hub1]
-[virtual_input_pin ams1hub2]
-[virtual_input_pin ams1hub3]
-[virtual_input_pin ams2hub0]
-[virtual_input_pin ams2hub1]
-[virtual_input_pin ams2hub2]
-[virtual_input_pin ams2hub3]
-
-[auto_ams_update]
-oams1: oams1
-oams2: oams2
-pins: ams1lane0pl, ams1lane1pl, ams1lane2pl, ams1lane3pl, \\
-      ams2lane0pl, ams2lane1pl, ams2lane2pl, ams2lane3pl, \\
-      ams1hub0, ams1hub1, ams1hub2, ams1hub3, \\
-      ams2hub0, ams2hub1, ams2hub2, ams2hub3
-interval: 1
-```
-
-Add more `oams#` options (for example, `oams3: oams3`) and extend the
-`pins` list with that AMS's pin names. List the lane pins for all AMS
-units first, followed by the hub pins for all AMS units.
-
-If no `oams#` options are given, `auto_ams_update` defaults to tracking
-`oams1` only.
-
-Use these pins like normal endstop pins:
-
-```
-[filament_switch_sensor my_sensor]
-    switch_pin: virtual_pin:ams1lane0pl
-```
-
-To emulate a filament sensor directly with a virtual pin, use the
-`virtual_filament_sensor` module:
-
-```
-[virtual_filament_sensor my_sensor]
-pin: virtual_pin:ams1lane0pl
-```
-
-Change a pin state at runtime with `SET_VIRTUAL_PIN` and query it with
-`QUERY_VIRTUAL_PIN`. These pins behave like real endstop inputs, so they
-can be used anywhere an input pin is expected.
-
-## Virtual input pins
-
-All virtual pin features require the `[virtual_pin_chip]` section to be
-present. Individual pins are created with `[virtual_input_pin <name>]`
-and may set an `initial_value`:
-
-```
-[virtual_pin_chip]
-
-[virtual_input_pin my_pin]
-initial_value: 0
-```
-
-Pins can be used anywhere an endstop pin is accepted by referencing
-`virtual_pin:my_pin`. Change a pin at runtime using:
-
-```
-SET_VIRTUAL_PIN PIN=my_pin VALUE=1
-QUERY_VIRTUAL_PIN PIN=my_pin
-```
-
-To expose a virtual pin as an endstop object use the `virtual_endstop`
-module:
-
-```
-[virtual_endstop my_vstop]
-pin: my_pin
-invert: False
-```
 
