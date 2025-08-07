@@ -110,3 +110,4 @@ class AutoAMSUpdate:
 
 def load_config(config):
     return AutoAMSUpdate(config)
+
