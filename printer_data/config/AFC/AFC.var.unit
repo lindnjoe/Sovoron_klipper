@@ -256,7 +256,7 @@
             "diameter": 1.75,
             "empty_spool_weight": 190.0,
             "spool_id": null,
-            "color": "",
+            "color": "#690F0F",
             "weight": 999.540357219753,
             "extruder_temp": null,
             "runout_lane": null,
