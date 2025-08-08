@@ -236,7 +236,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled"
+            "status": "Tool Unloading"
         },
         "lane1": {
             "name": "lane1",
@@ -318,7 +318,7 @@
         }
     },
     "system": {
-        "current_load": "lane6",
+        "current_load": "lane0",
         "num_units": 3,
         "num_lanes": 12,
         "num_extruders": 6,
