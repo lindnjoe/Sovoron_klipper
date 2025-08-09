@@ -50,7 +50,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled"
+            "status": "Loaded"
         },
         "lane7": {
             "name": "lane7",
@@ -262,7 +262,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled"
+            "status": "Loaded"
         },
         "lane2": {
             "name": "lane2",
@@ -270,7 +270,7 @@
             "hub": "direct_load",
             "extruder": "extruder2",
             "buffer": "TN2",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 3,
             "map": "T2",
             "load": true,
@@ -288,7 +288,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled"
+            "status": "Loaded"
         },
         "lane3": {
             "name": "lane3",
@@ -296,7 +296,7 @@
             "hub": "direct_load",
             "extruder": "extruder3",
             "buffer": "TN3",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 4,
             "map": "T3",
             "load": true,
@@ -314,7 +314,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled"
+            "status": "Loaded"
         }
     },
     "system": {
