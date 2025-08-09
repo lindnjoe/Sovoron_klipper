@@ -193,8 +193,8 @@
             "buffer_status": null,
             "lane": 4,
             "map": "T0",
-            "load": false,
-            "prep": false,
+            "load": true,
+            "prep": true,
             "tool_loaded": true,
             "loaded_to_hub": false,
             "material": "PLA",
@@ -206,9 +206,9 @@
             "weight": 831.3019128772025,
             "extruder_temp": null,
             "runout_lane": null,
-            "filament_status": "Not Ready",
-            "filament_status_led": "#ff0000",
-            "status": "Tooled"
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tool Unloading"
         }
     },
     "Turtle_1": {
