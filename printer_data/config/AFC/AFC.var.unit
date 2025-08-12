@@ -24,7 +24,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled"
+            "status": "Loaded"
         },
         "lane6": {
             "name": "lane6",
@@ -130,7 +130,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None"
+            "status": "Loaded"
         },
         "lane9": {
             "name": "lane9",
@@ -203,12 +203,12 @@
             "empty_spool_weight": 190,
             "spool_id": null,
             "color": "",
-            "weight": 998.1389746579763,
+            "weight": 998,
             "extruder_temp": null,
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled"
+            "status": "Loaded"
         }
     },
     "Turtle_1": {
