@@ -102,7 +102,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None"
+            "status": "Loaded"
         }
     },
     "AMS_2": {
@@ -182,7 +182,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None"
+            "status": "Loaded"
         },
         "lane11": {
             "name": "lane11",
@@ -203,7 +203,7 @@
             "empty_spool_weight": 190,
             "spool_id": null,
             "color": "",
-            "weight": 877.0688427483519,
+            "weight": 877,
             "extruder_temp": null,
             "runout_lane": null,
             "filament_status": "In Tool",
