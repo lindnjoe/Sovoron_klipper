@@ -48,6 +48,7 @@ class MCU_stepper:
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.stepcompress_set_invert_sdir(self._stepqueue, self._invert_dir)
         self._stepper_kinematics = None
+        self._itersolve_generate_steps = ffi_lib.itersolve_generate_steps
         self._itersolve_check_active = ffi_lib.itersolve_check_active
         self._trapq = ffi_main.NULL
         printer.register_event_handler('klippy:connect',
@@ -134,7 +135,7 @@ class MCU_stepper:
         mcu_pos = self.get_mcu_position()
         self._rotation_dist = rotation_dist
         self._step_dist = rotation_dist / self._steps_per_rotation
-        self.set_trapq(self._trapq)
+        self.set_stepper_kinematics(self._stepper_kinematics)
         self._set_mcu_position(mcu_pos)
     def get_dir_inverted(self):
         return self._invert_dir, self._orig_invert_dir
@@ -192,7 +193,7 @@ class MCU_stepper:
             mcu_pos = self.get_mcu_position()
         self._stepper_kinematics = sk
         ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.stepcompress_set_stepper_kinematics(self._stepqueue, sk);
+        ffi_lib.itersolve_set_stepcompress(sk, self._stepqueue, self._step_dist)
         self.set_trapq(self._trapq)
         self._set_mcu_position(mcu_pos)
         return old_sk
@@ -228,32 +229,27 @@ class MCU_stepper:
         ffi_main, ffi_lib = chelper.get_ffi()
         if tq is None:
             tq = ffi_main.NULL
-        ffi_lib.itersolve_set_trapq(self._stepper_kinematics,
-                                    tq, self._step_dist)
+        ffi_lib.itersolve_set_trapq(self._stepper_kinematics, tq)
         old_tq = self._trapq
         self._trapq = tq
         return old_tq
     def add_active_callback(self, cb):
         self._active_callbacks.append(cb)
-        if len(self._active_callbacks) == 1:
-            printer = self._mcu.get_printer()
-            motion_queuing = printer.lookup_object('motion_queuing')
-            motion_queuing.register_flush_callback(self._check_active)
-    def _check_active(self, must_flush_time, max_step_gen_time):
+    def generate_steps(self, flush_time):
+        # Check for activity if necessary
+        if self._active_callbacks:
+            sk = self._stepper_kinematics
+            ret = self._itersolve_check_active(sk, flush_time)
+            if ret:
+                cbs = self._active_callbacks
+                self._active_callbacks = []
+                for cb in cbs:
+                    cb(ret)
+        # Generate steps
         sk = self._stepper_kinematics
-        ret = self._itersolve_check_active(sk, max_step_gen_time)
-        if not ret:
-            # Stepper motor still not active
-            return
-        # Motor is active, disable future checking
-        printer = self._mcu.get_printer()
-        motion_queuing = printer.lookup_object('motion_queuing')
-        motion_queuing.unregister_flush_callback(self._check_active)
-        cbs = self._active_callbacks
-        self._active_callbacks = []
-        # Invoke callbacks
-        for cb in cbs:
-            cb(ret)
+        ret = self._itersolve_generate_steps(sk, flush_time)
+        if ret:
+            raise error("Internal error in stepcompress")
     def is_active_axis(self, axis):
         ffi_main, ffi_lib = chelper.get_ffi()
         a = axis.encode()
@@ -276,7 +272,8 @@ def PrinterStepper(config, units_in_radians=False):
                               rotation_dist, steps_per_rotation,
                               step_pulse_duration, units_in_radians)
     # Register with helper modules
-    for mname in ['stepper_enable', 'force_move', 'motion_report']:
+    mods = ['stepper_enable', 'force_move', 'motion_report', 'motion_queuing']
+    for mname in mods:
         m = printer.load_object(config, mname)
         m.register_stepper(config, mcu_stepper)
     return mcu_stepper
