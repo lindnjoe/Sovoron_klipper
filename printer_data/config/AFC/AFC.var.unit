@@ -24,7 +24,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None"
+            "status": "Loaded"
         },
         "lane6": {
             "name": "lane6",
@@ -130,7 +130,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None"
+            "status": "Loaded"
         },
         "lane9": {
             "name": "lane9",
@@ -182,7 +182,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None"
+            "status": "Loaded"
         },
         "lane11": {
             "name": "lane11",
@@ -215,7 +215,7 @@
         "lane0": {
             "name": "lane0",
             "unit": "Turtle_1",
-            "hub": "direct",
+            "hub": "direct_load",
             "extruder": "extruder",
             "buffer": "TN",
             "buffer_status": "Advancing",
@@ -241,7 +241,7 @@
         "lane1": {
             "name": "lane1",
             "unit": "Turtle_1",
-            "hub": "direct",
+            "hub": "direct_load",
             "extruder": "extruder1",
             "buffer": "TN1",
             "buffer_status": "Advancing",
@@ -267,7 +267,7 @@
         "lane2": {
             "name": "lane2",
             "unit": "Turtle_1",
-            "hub": "direct",
+            "hub": "direct_load",
             "extruder": "extruder2",
             "buffer": "TN2",
             "buffer_status": "Trailing",
@@ -293,7 +293,7 @@
         "lane3": {
             "name": "lane3",
             "unit": "Turtle_1",
-            "hub": "direct",
+            "hub": "direct_load",
             "extruder": "extruder3",
             "buffer": "TN3",
             "buffer_status": "Advancing",
