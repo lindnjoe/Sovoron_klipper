@@ -52,6 +52,7 @@ class RotaryDeltaKinematics:
                               math.radians(a), ua, la)
         for s in self.get_steppers():
             s.set_trapq(toolhead.get_trapq())
+            toolhead.register_step_generator(s.generate_steps)
         # Setup boundary checks
         self.need_home = True
         self.limit_xy2 = -1.
