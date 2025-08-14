@@ -53,12 +53,10 @@ class PrinterMotionQueuing:
             fcbs = list(self.flush_callbacks)
             fcbs.remove(callback)
             self.flush_callbacks = fcbs
-    def flush_motion_queues(self, must_flush_time, max_step_gen_time,
-                            trapq_free_time):
+    def flush_motion_queues(self, must_flush_time, max_step_gen_time):
         # Invoke flush callbacks (if any)
         for cb in self.flush_callbacks:
             cb(must_flush_time, max_step_gen_time)
-        # Generate stepper movement and transmit
         for mcu, ss in self.steppersyncs:
             clock = max(0, mcu.print_time_to_clock(must_flush_time))
             # Generate steps
@@ -71,7 +69,7 @@ class PrinterMotionQueuing:
             if ret:
                 raise mcu.error("Internal error in MCU '%s' stepcompress"
                                 % (mcu.get_name(),))
-        # Determine maximum history to keep
+    def clean_motion_queues(self, trapq_free_time):
         clear_history_time = self.clear_history_time
         if self.is_debugoutput:
             clear_history_time = trapq_free_time - MOVE_HISTORY_EXPIRE
