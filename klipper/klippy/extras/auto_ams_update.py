@@ -1,7 +1,8 @@
 import logging
 from . import virtual_input_pin
 
-SYNC_INTERVAL = 2
+# Default timer interval (in seconds) between pin updates
+SYNC_INTERVAL = 2.0
 
 
 class _VPinConfig:
@@ -76,6 +77,7 @@ class AutoAMSUpdate:
             vcfg = _VPinConfig(self.printer, name)
             virtual_input_pin.VirtualInputPin(vcfg)
         self.timer = self.reactor.register_timer(self._sync_event)
+        self.last_values = [None] * len(self.pin_names)
         self.printer.register_event_handler('klippy:ready', self.handle_ready)
 
     def handle_ready(self, eventtime=None):
@@ -89,9 +91,14 @@ class AutoAMSUpdate:
                 for name in self.oams_names
             ]
 
-            def update_pin(name, value):
-                cmdline = f"SET_VIRTUAL_PIN PIN={name} VALUE={int(value)}"
+            def update_pin(index, name, value):
+                if self.last_values[index] == value:
+                    return
+                cmdline = (
+                    f"SET_VIRTUAL_PIN PIN={name} VALUE={int(value)} SYNCHRONIZED=0"
+                )
                 self.gcode.run_script_from_command(cmdline)
+                self.last_values[index] = value
 
             num = len(oams_objs)
             lane_offset = 0
@@ -100,9 +107,11 @@ class AutoAMSUpdate:
                 vals = getattr(oams, 'f1s_hes_value', [0, 0, 0, 0]) if oams else [0, 0, 0, 0]
                 hubs = getattr(oams, 'hub_hes_value', [0, 0, 0, 0]) if oams else [0, 0, 0, 0]
                 for i in range(4):
-                    update_pin(self.pin_names[lane_offset + idx * 4 + i], vals[i])
+                    pin_idx = lane_offset + idx * 4 + i
+                    update_pin(pin_idx, self.pin_names[pin_idx], vals[i])
                 for i in range(4):
-                    update_pin(self.pin_names[hub_offset + idx * 4 + i], hubs[i])
+                    pin_idx = hub_offset + idx * 4 + i
+                    update_pin(pin_idx, self.pin_names[pin_idx], hubs[i])
         except Exception:
             logging.exception('auto AMS update error')
         return eventtime + self.interval
