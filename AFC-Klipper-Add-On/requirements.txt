@@ -1,3 +1,0 @@
-ruff==0.6.9
-configfile
-pip~=24.3.1
