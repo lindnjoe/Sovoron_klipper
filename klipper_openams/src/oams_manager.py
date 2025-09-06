@@ -16,7 +16,8 @@ ENCODER_SAMPLES = 2  # Number of encoder samples to collect
 MIN_ENCODER_DIFF = 1  # Minimum encoder difference to consider movement
 FILAMENT_PATH_LENGTH_FACTOR = 1.14  # Factor for calculating filament path traversal
 MONITOR_ENCODER_LOADING_SPEED_AFTER = 2.0  # seconds
-MONITOR_ENCODER_PERIOD = 2.0 # seconds
+# Poll runout and spool state once per second for faster reaction times
+MONITOR_ENCODER_PERIOD = 2.0  # seconds
 MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0  # seconds
 
 
@@ -600,11 +601,9 @@ class OAMSManager:
     
     def start_monitors(self):
         self.monitor_timers = []
-        reactor = self.printer.get_reactor()        
+        reactor = self.printer.get_reactor()
         for (fps_name, fps_state) in self.current_state.fps_state.items():
-            self.monitor_timers.append(reactor.register_timer(self._monitor_unload_speed_for_fps(fps_name), reactor.NOW))
-            self.monitor_timers.append(reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), reactor.NOW))
-            
+
             def _reload_callback():
                 for (oam, bay_index) in self.filament_groups[fps_state.current_group].bays:
                     if oam.is_bay_ready(bay_index):
@@ -625,11 +624,19 @@ class OAMSManager:
                 self._pause_printer_message("No spool available for group %s" % fps_state.current_group)
                 self.runout_monitor.paused()
                 return
-            
-            self.runout_monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], fps_state, self.oams, _reload_callback, reload_before_toolhead_distance=self.reload_before_toolhead_distance)
+
+            # Register runout monitor first so it gets priority
+            self.runout_monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name],
+                                                    fps_state, self.oams, _reload_callback,
+                                                    reload_before_toolhead_distance=self.reload_before_toolhead_distance)
             self.monitor_timers.append(self.runout_monitor.timer)
             self.runout_monitor.start()
-            
+
+            # Delay speed monitors slightly to let runout checks run first
+            start_time = reactor.monotonic() + MONITOR_ENCODER_PERIOD
+            self.monitor_timers.append(reactor.register_timer(self._monitor_unload_speed_for_fps(fps_name), start_time))
+            self.monitor_timers.append(reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), start_time))
+
         logging.info("OAMS: All monitors started")
     
     def stop_monitors(self):

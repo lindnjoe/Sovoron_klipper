@@ -49,15 +49,15 @@ class afc_hub:
         self.config_unload_bowden_length = self.afc_unload_bowden_length
         self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui", self.afc.enable_sensors_in_gui) # Set to True to show hub sensor switche as filament sensor in mainsail/fluidd gui, overrides value set in AFC.cfg
 
-        buttons = self.printer.load_object(config, "buttons")
-        if self.switch_pin is not None:
-            self.state = False
-            buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
+        if not self.afc.openams_enabled:
+            buttons = self.printer.load_object(config, "buttons")
+            if self.switch_pin is not None:
+                self.state = False
+                buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
 
-
-        if self.enable_sensors_in_gui:
-            self.filament_switch_name = "filament_switch_sensor {}_Hub".format(self.name)
-            self.fila = add_filament_switch(self.filament_switch_name, self.switch_pin, self.printer )
+            if self.enable_sensors_in_gui:
+                self.filament_switch_name = "filament_switch_sensor {}_Hub".format(self.name)
+                self.fila = add_filament_switch(self.filament_switch_name, self.switch_pin, self.printer )
 
         # Adding self to AFC hubs
         self.afc.hubs[self.name]=self

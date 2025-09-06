@@ -60,7 +60,7 @@
             "buffer": null,
             "buffer_status": null,
             "lane": 3,
-            "map": "T3",
+            "map": "T7",
             "load": true,
             "prep": true,
             "tool_loaded": false,
@@ -125,12 +125,12 @@
             "empty_spool_weight": 190,
             "spool_id": null,
             "color": "#F70404",
-            "weight": 649,
+            "weight": 621.0648634615892,
             "extruder_temp": null,
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Loaded"
+            "status": "Tooled"
         },
         "lane9": {
             "name": "lane9",
@@ -156,7 +156,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "Loaded"
+            "status": "None"
         },
         "lane10": {
             "name": "lane10",
@@ -298,7 +298,7 @@
             "buffer": "TN3",
             "buffer_status": "Advancing",
             "lane": 4,
-            "map": "T7",
+            "map": "T3",
             "load": true,
             "prep": true,
             "tool_loaded": true,
