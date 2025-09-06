@@ -536,7 +536,7 @@ class afc:
 
             self.logger.info('Setting extruder temperature to {} {}'.format(target_temp, "and waiting for extruder to reach temperature" if wait else ""))
             pheaters.set_temperature(extruder.get_heater(), target_temp)
-        
+
         if wait:
             self._wait_for_temp_within_tolerance(self.heater, target_temp, self.temp_wait_tolerance*2)
 
@@ -1834,13 +1834,13 @@ class afc:
         name = cur_lane.extruder_obj.name
         tool_index = 0 if name == "extruder" else int(name.replace("extruder", ""))
         self.gcode.run_script_from_command('SELECT_TOOL T={}'.format(tool_index))
-        
+
         # Switching toolhead extruders, this is mainly for setups with multiple extruders
         cur_lane.activate_toolhead_extruder()
         # Need to call again since KTC activate callback happens before switching to new extruder
         # Take double call out once transitioned away from KTC
-        self.function._handle_activate_extruder(0)
-        
+        self.function.handle_activate_extruder()
+
         self.afcDeltaTime.log_with_time("Tool swap done")
         self.current_state = State.IDLE
         # Update the base position and homing position after the tool swap.
@@ -2007,7 +2007,7 @@ class afc:
             self.error.AFC_error("Next lane load is None, cannot proceed with tool change", pause=self.function.in_print())
             next_extruder = None
             return False
-        
+
         # get the current extruder from the toolhead and it's current temperature
         pheaters = self.printer.lookup_object('heaters')
         extruder = self.toolhead.get_extruder()
