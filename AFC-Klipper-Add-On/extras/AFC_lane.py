@@ -140,17 +140,13 @@ class AFCLane:
         self.prep_state = False
         self.load = config.get('load', None)                                    # MCU pin load trigger
         self.load_state = False
-        if not self.afc.openams_enabled:
-            buttons = self.printer.load_object(config, "buttons")
-            if self.prep is not None:
-                buttons.register_buttons([self.prep], self.prep_callback)
-            if self.load is not None:
-                buttons.register_buttons([self.load], self.load_callback)
-            else:
-                self.load_state = True
+        buttons = self.printer.load_object(config, "buttons")
+        if self.prep is not None:
+            buttons.register_buttons([self.prep], self.prep_callback)
+        if self.load is not None:
+            buttons.register_buttons([self.load], self.load_callback)
         else:
-            if self.load is None:
-                self.load_state = True
+            self.load_state = True
 
         self.espooler = AFC_assist.Espooler(self.name, config)
         self.lane_load_count = None
@@ -170,7 +166,7 @@ class AFCLane:
         # Defaulting to false so that extruder motors to not move until PREP has been called
         self._afc_prep_done = False
 
-        if self.enable_sensors_in_gui and not self.afc.openams_enabled:
+        if self.enable_sensors_in_gui:
             if self.prep is not None and (self.sensor_to_show is None or self.sensor_to_show == 'prep'):
                 self.prep_filament_switch_name = "filament_switch_sensor {}_prep".format(self.name)
                 self.fila_prep = add_filament_switch(self.prep_filament_switch_name, self.prep, self.printer )
@@ -429,7 +425,7 @@ class AFCLane:
 
     def is_direct_hub(self):
         return self.hub and 'direct' in self.hub
-    
+
     def select_lane(self):
         self.unit_obj.select_lane( self )
 
