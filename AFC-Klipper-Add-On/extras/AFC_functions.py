@@ -34,6 +34,8 @@ class afcFunction:
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.printer.register_event_handler("afc_stepper:register_macros",self.register_lane_macros)
         self.printer.register_event_handler("afc_hub:register_macros",self.register_hub_macros)
+        self.reactor = self.printer.get_reactor()
+        # self.activate_extruder_cb = self.reactor.register_timer( self._handle_activate_extruder )
         self.auto_var_file = None
         self.errorLog = {}
         self.pause    = False
@@ -320,8 +322,9 @@ class afcFunction:
         :return string: Current lane name that is loaded, None if nothing is loaded
         """
         if self.printer.state_message == 'Printer is ready':
-            if self.get_current_extruder() is not None:
-                return self.afc.tools[self.get_current_extruder()].lane_loaded
+            current_extruder = self.get_current_extruder()
+            if current_extruder is not None:
+                return self.afc.tools[current_extruder].lane_loaded
         return None
 
     def get_current_lane_obj(self):
@@ -344,7 +347,9 @@ class afcFunction:
         """
         current_extruder = self.afc.toolhead.get_extruder().name
         if current_extruder in self.afc.tools:
-            return current_extruder
+            tool_obj = self.afc.tools[current_extruder].tool_obj
+            detected_state = tool_obj.detect_state if hasattr(tool_obj, "detect_state") else 1
+            return current_extruder if detected_state else None
         else:
             return None
 
@@ -411,6 +416,12 @@ class afcFunction:
 
         This will also be tied to a callback once multiple extruders are implemented
         """
+        # Wait until printer is not moving so klipper does not crash
+        # self.reactor.update_timer( self.activate_extruder_cb, self.reactor.monotonic() + 5 )
+        self._handle_activate_extruder(0)
+    
+    def _handle_activate_extruder(self, eventtime):
+
         cur_lane_loaded = self.get_current_lane_obj()
         self.logger.debug("Activating extruder lane: {}".format(cur_lane_loaded.name if cur_lane_loaded else "None"))
 
@@ -419,6 +430,8 @@ class afcFunction:
             if cur_lane_loaded is None or key != cur_lane_loaded.name:
                 obj.do_enable(False)
                 obj.disable_buffer()
+                obj.unit_obj.return_to_home()
+                obj.unsync_to_extruder()
                 if obj.prep_state and obj.load_state:
                     if obj.tool_loaded:
                         # If tool is loaded, set led to tool loaded color
@@ -446,6 +459,10 @@ class afcFunction:
         cur_lane_loaded.do_enable(True)
         # Enable buffer
         cur_lane_loaded.enable_buffer()
+        cur_lane_loaded.sync_to_extruder()
+        cur_lane_loaded.unit_obj.select_lane( cur_lane_loaded )
+        self.logger.debug("Activate extruder done")
+        # return self.reactor.NEVER
 
     def unset_lane_loaded(self):
         """
