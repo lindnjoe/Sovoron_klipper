@@ -5,7 +5,6 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import logging
-import time
 from functools import partial
 from collections import deque
 from typing import Optional, Tuple, Dict, List, Any, Callable
@@ -17,7 +16,9 @@ MIN_ENCODER_DIFF = 1  # Minimum encoder difference to consider movement
 FILAMENT_PATH_LENGTH_FACTOR = 1.14  # Factor for calculating filament path traversal
 MONITOR_ENCODER_LOADING_SPEED_AFTER = 2.0  # seconds
 # Poll runout and spool state once per second for faster reaction times
-MONITOR_ENCODER_PERIOD = 2.0  # seconds
+# Polling period for encoder and runout checks. A faster interval
+# improves responsiveness for runout detection, so use a 1s period.
+MONITOR_ENCODER_PERIOD = 1.0  # seconds
 MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0  # seconds
 
 
