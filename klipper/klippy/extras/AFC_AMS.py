@@ -18,7 +18,7 @@ except Exception:
     raise error("Error when trying to import AFC_lane\n{trace}".format(trace=traceback.format_exc()))
 
 # -----------------------------------------------------------------------------
-# Monkey patch afc_hub to allow virtual switch pins for AMS hubs
+# Patch afc_hub to allow virtual switch pins for AMS hubs
 # -----------------------------------------------------------------------------
 try:
     import extras.AFC_hub as _AFC_HUB
@@ -34,7 +34,7 @@ try:
         self.lanes = {}
         self.state = False
 
-        # HUB Cut variables
+       
         # Next two variables are used in AFC
         self.switch_pin = config.get('switch_pin', None)
         self.hub_clear_move_dis = config.getfloat("hub_clear_move_dis", 25)
@@ -86,7 +86,7 @@ SYNC_INTERVAL = 2.0
 
 
 class afcAMS(afcUnit):
-    """AFK unit that synchronizes lane and hub states with OpenAMS."""
+    """AFC unit that synchronizes lane and hub states with OpenAMS."""
 
     def __init__(self, config):
         super().__init__(config)
