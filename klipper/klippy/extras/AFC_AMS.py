@@ -17,6 +17,69 @@ try:
 except Exception:
     raise error("Error when trying to import AFC_lane\n{trace}".format(trace=traceback.format_exc()))
 
+# ---------------------------------------------------------------------------
+# Provide compatibility with the unmodified AFC_hub by gracefully handling
+# hubs that do not define a physical switch_pin in the configuration.  This is
+# done by monkey patching the hub loader so missing options default to ``None``
+# instead of raising a configuration error.  Additionally, the helper used to
+# register filament switches is wrapped to silently ignore ``None`` pins.
+# ---------------------------------------------------------------------------
+try:
+    from extras import AFC_hub as _afc_hub
+
+    _orig_hub_load_cfg = _afc_hub.load_config_prefix
+
+    def _patched_hub_load_cfg(config):
+        # Patch config getters so missing values (e.g. switch_pin) return None
+        orig_get = config.get
+
+        def safe_get(name, default=None):
+            try:
+                return orig_get(name)
+            except Exception:
+                return default
+
+        if hasattr(config, "getboolean"):
+            orig_getboolean = config.getboolean
+
+            def safe_getboolean(name, default=None):
+                try:
+                    return orig_getboolean(name)
+                except Exception:
+                    return default
+
+            config.getboolean = safe_getboolean
+
+        config.get = safe_get
+
+        hub = _orig_hub_load_cfg(config)
+
+        # Normalize empty strings to None for downstream logic
+        if getattr(hub, "switch_pin", None) in (None, "", "None"):
+            hub.switch_pin = None
+
+        return hub
+
+    _afc_hub.load_config_prefix = _patched_hub_load_cfg
+except Exception:
+    pass
+
+# Patch add_filament_switch so that it tolerates missing pins.  This mirrors
+# the behaviour of AFC_hub1.py where the call is skipped if no pin is provided.
+try:
+    from extras import AFC_utils as _afc_utils
+
+    _orig_add_filament_switch = _afc_utils.add_filament_switch
+
+    def _safe_add_filament_switch(name, pin, printer):
+        if pin in (None, "", "None"):
+            return None
+        return _orig_add_filament_switch(name, pin, printer)
+
+    _afc_utils.add_filament_switch = _safe_add_filament_switch
+except Exception:
+    pass
+
 SYNC_INTERVAL = 2.0
 
 
