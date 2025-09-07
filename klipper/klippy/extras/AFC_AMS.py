@@ -55,11 +55,15 @@ class afcAMS(afcBoxTurtle):
             f1s = getattr(self.oams, "f1s_hes_value", [0, 0, 0, 0])
             hubs = getattr(self.oams, "hub_hes_value", [0, 0, 0, 0])
             for lane in self.lanes.values():
-                idx = getattr(lane, "index", 0)
+                idx = max(0, getattr(lane, "index", 1) - 1)
                 lane_state = bool(f1s[idx])
                 if self.last_lane_vals[idx] != lane_state:
-                    lane.prep_callback(eventtime, lane_state)
-                    lane.load_callback(eventtime, lane_state)
+                    lane.prep_state = lane_state
+                    lane.load_state = lane_state
+                    if hasattr(lane, "fila_prep"):
+                        lane.fila_prep.note_filament_present(eventtime, lane_state)
+                    if hasattr(lane, "fila_load"):
+                        lane.fila_load.note_filament_present(eventtime, lane_state)
                     self.last_lane_vals[idx] = lane_state
                 hub_state = bool(hubs[idx])
                 hub = lane.hub_obj
