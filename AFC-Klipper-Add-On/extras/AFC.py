@@ -42,19 +42,7 @@ class State:
     MOVING_LANE     = "Moving"
     RESTORING_POS   = "Restoring"
 
-class AFCOpenAMS:
-    """Configuration wrapper for OpenAMS integration."""
-
-    def __init__(self, config):
-        printer = config.get_printer()
-        afc_obj = printer.lookup_object('AFC')
-        afc_obj.configure_openams(config)
-
-
 def load_config(config):
-    name = config.get_name().split()[0]
-    if name == 'afc_openams':
-        return AFCOpenAMS(config)
     return afc(config)
 
 class afc:
@@ -110,6 +98,7 @@ class afc:
         self.openams_enabled = False
         self.openams_names = []
         self.openams_timer = None
+        self.openams_interval = 1.0
         self._openams_lane_values = []
         self._openams_hub_values = []
 
@@ -305,18 +294,18 @@ class afc:
     def configure_openams(self, cfg):
         """Enable OpenAMS integration using the provided config section."""
         self.openams_interval = cfg.getfloat('interval', 1.0, above=0.0)
-        oams_opts = cfg.get_prefix_options('oams')
-        if oams_opts:
-            def sort_key(opt):
-                suffix = opt[4:]
-                return int(suffix) if suffix.isdigit() else opt
-            oams_opts = sorted(oams_opts, key=sort_key)
-            self.openams_names = [cfg.get(opt).strip() for opt in oams_opts]
-        else:
-            self.openams_names = ['oams1']
-        self.openams_enabled = True
-        self.openams_timer = self.reactor.register_timer(self._openams_sync_event)
-        self.printer.register_event_handler('klippy:ready', self._openams_handle_ready)
+        if not self.openams_enabled:
+            self.openams_enabled = True
+            self.openams_timer = self.reactor.register_timer(self._openams_sync_event)
+            self.printer.register_event_handler('klippy:ready', self._openams_handle_ready)
+
+    def add_openams(self, cfg):
+        """Register an OpenAMS instance for lane and hub synchronization."""
+        name = cfg.get('oams', 'oams1').strip()
+        if name and name not in self.openams_names:
+            self.openams_names.append(name)
+        if not self.openams_enabled:
+            self.configure_openams(cfg)
 
     def _openams_handle_ready(self, eventtime=None):
         if self.openams_timer is not None:
