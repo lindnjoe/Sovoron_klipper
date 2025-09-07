@@ -136,17 +136,17 @@ class AFCLane:
         self.config_dist_hub = self.dist_hub
 
         # lane triggers
+        buttons = self.printer.load_object(config, "buttons")
         self.prep = config.get('prep', None)                                    # MCU pin for prep trigger
         self.prep_state = False
-        self.load = config.get('load', None)                                    # MCU pin load trigger
-        self.load_state = False
-        buttons = self.printer.load_object(config, "buttons")
         if self.prep is not None:
             buttons.register_buttons([self.prep], self.prep_callback)
+
+        self.load = config.get('load', None)                                    # MCU pin load trigger
+        self.load_state = False
         if self.load is not None:
             buttons.register_buttons([self.load], self.load_callback)
-        else:
-            self.load_state = True
+        else: self.load_state = True
 
         self.espooler = AFC_assist.Espooler(self.name, config)
         self.lane_load_count = None
@@ -258,7 +258,7 @@ class AFCLane:
 
         self.hub_obj = self.unit_obj.hub_obj
 
-        if not self.is_direct_hub():
+        if self.hub != 'direct':
             if self.hub is not None:
                 try:
                     self.hub_obj = self.printer.lookup_object("AFC_hub {}".format(self.hub))
@@ -423,11 +423,6 @@ class AFCLane:
         else:
             return self.dist_hub_move_speed, self.dist_hub_move_accel
 
-    def is_direct_hub(self):
-        return self.hub and 'direct' in self.hub
-
-    def select_lane(self):
-        self.unit_obj.select_lane( self )
 
     def move(self, distance, speed, accel, assist_active=False):
         """
@@ -526,17 +521,14 @@ class AFCLane:
 
     def load_callback(self, eventtime, state):
         self.load_state = state
-        if self.printer.state_message == 'Printer is ready' and True == self._afc_prep_done and self.unit_obj.type == "HTLF":
+        if self.printer.state_message == 'Printer is ready' and self.unit_obj.type == "HTLF":
             self.prep_state = state
 
             if self.load_state:
                 self.status = AFCLaneState.LOADED
                 self.unit_obj.lane_loaded(self)
-                self.afc.spool._set_values(self)
-                if self.hub == 'direct_load':
-                    self.afc.afcDeltaTime.set_start_time()
-                    self.afc.TOOL_LOAD(self)
-                    self.material = self.afc.default_material_type
+                self.material = self.afc.default_material_type
+                self.weight = 1000 # Defaulting weight to 1000 upon load
             else:
                 if self.unit_obj.check_runout(self):
                     # Checking to make sure runout_lane is set
@@ -562,7 +554,7 @@ class AFCLane:
         if self.prep_active:
             return
 
-        if self.printer.state_message == 'Printer is ready' and self.is_direct_hub() and not self.afc.function.is_homed():
+        if self.printer.state_message == 'Printer is ready' and self.hub =='direct' and not self.afc.function.is_homed():
             self.afc.error.AFC_error("Please home printer before directly loading to toolhead", False)
             return False
 
@@ -575,7 +567,6 @@ class AFCLane:
             if self.printer.state_message == 'Printer is ready' and True == self._afc_prep_done and self.status != AFCLaneState.TOOL_UNLOADING:
                 # Only try to load when load state trigger is false
                 if self.prep_state == True and self.load_state == False:
-                    self.logger.debug(f"Prep: callback triggered {self.name}")
                     x = 0
                     # Checking to make sure last time prep switch was activated was less than 1 second, returning to keep is printing message from spamming
                     # the console since it takes klipper some time to transition to idle when idle_resume=printing
@@ -599,20 +590,17 @@ class AFCLane:
                             self.status = AFCLaneState.NONE
                             break
                     self.status = AFCLaneState.NONE
-                    self.logger.debug(f"Prep: Load Done-{self.name}")
 
                     # Verify that load state is still true as this would still trigger if prep sensor was triggered and then filament was removed
-                    #   This is only really a issue when using direct_load and still using load sensor
-                    if self.hub == 'direct_load' and self.prep_state:
-                        self.logger.debug(f"Prep: direct load logic-{self.name}-{self.hub}")
+                    #   This is only really a issue when using direct and still using load sensor
+                    if self.hub == 'direct' and self.prep_state:
                         self.afc.afcDeltaTime.set_start_time()
                         self.afc.TOOL_LOAD(self)
-                        self.afc.spool._set_values(self)
-                        self.logger.debug(f"Prep: direct load logic done-{self.name}-{self.hub}")
+                        self.material = self.afc.default_material_type
                         break
 
                     # Checking if loaded to hub(it should not be since filament was just inserted), if false load to hub. Does a fast load if hub distance is over 200mm
-                    if self.load_to_hub and not self.loaded_to_hub and self.load_state and self.prep_state and not self.is_direct_hub():
+                    if self.load_to_hub and not self.loaded_to_hub and self.load_state and self.prep_state:
                         self.move(self.dist_hub, self.dist_hub_move_speed, self.dist_hub_move_accel, self.dist_hub > 200)
                         self.loaded_to_hub = True
 
@@ -657,7 +645,8 @@ class AFCLane:
         :param update_current: Sets current to specified print current when True
         """
         if self.drive_stepper is not None:
-            self.drive_stepper.sync_to_extruder(update_current, extruder_name=self.extruder_name)
+            self.drive_stepper.sync_to_extruder(self.extruder_name)
+            if update_current: self.drive_stepper.set_print_current()
 
     def unsync_to_extruder(self, update_current=True):
         """
@@ -666,7 +655,8 @@ class AFCLane:
         :param update_current: Sets current to specified load current when True
         """
         if self.drive_stepper is not None:
-            self.drive_stepper.unsync_to_extruder(update_current)
+            self.drive_stepper.unsync_to_extruder(None)
+            if update_current: self.drive_stepper.set_load_current()
 
     def _set_current(self, current):
         return
@@ -1164,8 +1154,6 @@ class AFCLane:
         response['filament_status'] = filament_stat[0]
         response['filament_status_led'] = filament_stat[1]
         response['status'] = self.status
-        # if hasattr(self, "extruder_stepper"):
-        #     response['extruder_status'] = self.extruder_stepper.get_status(eventtime)
         return response
 
 

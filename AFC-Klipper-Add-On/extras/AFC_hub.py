@@ -27,10 +27,7 @@ class afc_hub:
 
         # HUB Cut variables
         # Next two variables are used in AFC
-        # When OpenAMS is enabled, hub sensor states are provided virtually so a
-        # physical `switch_pin` is not required. Default to `None` to avoid
-        # configuration errors in that scenario.
-        self.switch_pin             = config.get('switch_pin', None)                # Pin hub sensor it connected to
+        self.switch_pin             = config.get('switch_pin')                      # Pin hub sensor it connected to
         self.hub_clear_move_dis     = config.getfloat("hub_clear_move_dis", 25)     # How far to move filament so that it's not block the hub exit
         self.afc_bowden_length      = config.getfloat("afc_bowden_length", 900)     # Length of the Bowden tube from the hub to the toolhead sensor in mm.
         self.afc_unload_bowden_length= config.getfloat("afc_unload_bowden_length", self.afc_bowden_length) # Length to unload when retracting back from toolhead to hub in mm. Defaults to afc_bowden_length
@@ -56,13 +53,11 @@ class afc_hub:
         if self.switch_pin is not None:
             self.state = False
             buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
-            if self.enable_sensors_in_gui:
-                self.filament_switch_name = "filament_switch_sensor {}_Hub".format(self.name)
-                self.fila = add_filament_switch(self.filament_switch_name, self.switch_pin, self.printer)
-        else:
-            # Defer validation until the connect event so OpenAMS can enable
-            # virtual hub sensors without requiring a physical switch pin.
-            self.state = False
+
+
+        if self.enable_sensors_in_gui:
+            self.filament_switch_name = "filament_switch_sensor {}_Hub".format(self.name)
+            self.fila = add_filament_switch(self.filament_switch_name, self.switch_pin, self.printer )
 
         # Adding self to AFC hubs
         self.afc.hubs[self.name]=self
@@ -80,9 +75,6 @@ class afc_hub:
         self.reactor = self.afc.reactor
 
         self.printer.send_event("afc_hub:register_macros", self)
-
-        if self.switch_pin is None and not self.afc.openams_enabled:
-            raise error("switch_pin must be configured")
 
     def switch_pin_callback(self, eventtime, state):
         self.state = state
@@ -149,4 +141,3 @@ class afc_hub:
 
 def load_config_prefix(config):
     return afc_hub(config)
-

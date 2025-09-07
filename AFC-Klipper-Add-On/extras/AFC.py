@@ -4,7 +4,6 @@
 #
 
 import json
-import logging
 import re
 import traceback
 from configfile import error
@@ -76,7 +75,6 @@ class afc:
         self.spoolman       = None
         self.prep_done      = False         # Variable used to hold of save_vars function from saving too early and overriding save before prep can be ran
         self.in_print_timer = None
-        self.activate_cb_done = True
 
         # Objects for everything configured for AFC
         self.units      = {}
@@ -93,14 +91,6 @@ class afc:
         self.monitoring = False
         self.number_of_toolchanges  = 0
         self.current_toolchange     = 0
-
-        # OpenAMS integration
-        self.openams_enabled = False
-        self.openams_names = []
-        self.openams_timer = None
-        self.openams_interval = 2.0
-        self._openams_lane_values = []
-        self._openams_hub_values = []
 
         # tool position when tool change was requested
         self.change_tool_pos = None
@@ -291,62 +281,6 @@ class afc:
         # Function needed for virtual pins, does nothing
         return
 
-    def configure_openams(self, cfg):
-        """Enable OpenAMS integration using the provided config section."""
-        self.openams_interval = cfg.getfloat('interval', 2.0, above=0.0)
-        if not self.openams_enabled:
-            self.openams_enabled = True
-            self.openams_timer = self.reactor.register_timer(self._openams_sync_event)
-            self.printer.register_event_handler('klippy:ready', self._openams_handle_ready)
-
-    def add_openams(self, cfg):
-        """Register an OpenAMS instance for lane and hub synchronization."""
-        name = cfg.get('oams', 'oams1').strip()
-        if name and name not in self.openams_names:
-            self.openams_names.append(name)
-        if not self.openams_enabled:
-            self.configure_openams(cfg)
-
-    def _openams_handle_ready(self, eventtime=None):
-        if self.openams_timer is not None:
-            self.reactor.update_timer(self.openams_timer, self.reactor.NOW)
-
-    def _openams_sync_event(self, eventtime):
-        try:
-            oams_objs = [
-                self.printer.lookup_object('oams ' + name, None)
-                for name in self.openams_names
-            ]
-            lane_vals = []
-            hub_vals = []
-            for oams in oams_objs:
-                lane_vals.extend(getattr(oams, 'f1s_hes_value', [0, 0, 0, 0]) if oams else [0, 0, 0, 0])
-                hub_vals.extend(getattr(oams, 'hub_hes_value', [0, 0, 0, 0]) if oams else [0, 0, 0, 0])
-            now = self.reactor.monotonic()
-            lane_objs = list(self.lanes.values())
-            for i, val in enumerate(lane_vals):
-                if i >= len(lane_objs):
-                    break
-                if i >= len(self._openams_lane_values):
-                    self._openams_lane_values.append(None)
-                if self._openams_lane_values[i] != val:
-                    lane = lane_objs[i]
-                    lane.prep_callback(now, bool(val))
-                    lane.load_callback(now, bool(val))
-                    self._openams_lane_values[i] = val
-            hub_objs = list(self.hubs.values())
-            for i, val in enumerate(hub_vals):
-                if i >= len(hub_objs):
-                    break
-                if i >= len(self._openams_hub_values):
-                    self._openams_hub_values.append(None)
-                if self._openams_hub_values[i] != val:
-                    hub_objs[i].switch_pin_callback(now, bool(val))
-                    self._openams_hub_values[i] = val
-        except Exception:
-            logging.exception('OpenAMS sync error')
-        return eventtime + self.openams_interval
-
     def register_lane_macros(self, lane_obj):
         """
         Callback function to register macros with proper lane names so that klipper errors out correctly when users supply lanes that
@@ -516,7 +450,7 @@ class afc:
         # Check if the current temp is below the set temp, if it is heat to set temp
         if current_temp[0] < (self.heater.target_temp-self.temp_wait_tolerance):
             wait = False
-            pheaters.set_temperature(extruder.get_heater(), current_temp[0])
+            pheaters.set_temperature(extruder.get_heater(), current_temp[0], wait=wait)
             self.logger.info('Current temp {:.1f} is below set temp {}'.format(current_temp[0], target_temp))
 
         # Check to make sure temp is with +/- self.temp_wait_tolerance of target temp, not setting if temp is over target temp and using min_extrude_temp value
@@ -524,10 +458,7 @@ class afc:
             wait = False if self.heater.target_temp >= (target_temp+self.temp_wait_tolerance) else True
 
             self.logger.info('Setting extruder temperature to {} {}'.format(target_temp, "and waiting for extruder to reach temperature" if wait else ""))
-            pheaters.set_temperature(extruder.get_heater(), target_temp)
-
-        if wait:
-            self._wait_for_temp_within_tolerance(self.heater, target_temp, self.temp_wait_tolerance*2)
+            pheaters.set_temperature(extruder.get_heater(), target_temp, wait=wait)
 
         return wait
 
@@ -1024,8 +955,7 @@ class afc:
 
         self.current_state = State.EJECTING_LANE
 
-        # TODO: add a check for multi-tools to verify lane is not loaded to toolhead before trying to unload
-        if cur_lane.name != cur_lane.extruder_obj.lane_loaded and not cur_lane.is_direct_hub():
+        if cur_lane.name != cur_lane.extruder_obj.lane_loaded and cur_lane.hub != 'direct':
             # Setting status as ejecting so if filament is removed and de-activates the prep sensor while
             # extruder motors are still running it does not trigger infinite spool or pause logic
             # once user removes filament lanes status will go to None
@@ -1053,7 +983,7 @@ class afc:
         elif cur_lane.name == cur_lane.extruder_obj.lane_loaded:
             self.logger.info("LANE {} is loaded in toolhead, can't unload.".format(cur_lane.name))
 
-        elif cur_lane.is_direct_hub():
+        elif cur_lane.hub == 'direct':
             self.logger.info("LANE {} is a direct lane must be tool unloaded.".format(cur_lane.name))
 
         self.current_state = State.IDLE
@@ -1127,7 +1057,7 @@ class afc:
             cur_hub = cur_lane.hub_obj
 
             # Check if the lane is in a state ready to load and hub is clear.
-            if cur_lane.load_state and (not cur_hub.state or cur_lane.is_direct_hub()):
+            if (cur_lane.load_state and not cur_hub.state) or cur_lane.hub == 'direct':
 
                 self.logger.info("Loading {}".format(cur_lane.name))
 
@@ -1192,7 +1122,7 @@ class afc:
 
             else:
                 # Handle errors if the hub is not clear or the lane is not ready for loading.
-                if cur_hub is not None and cur_hub.state:
+                if cur_hub.state:
                     message = 'Hub not clear when trying to load.\nPlease check that hub does not contain broken filament and is clear'
                     if self.function.in_print():
                         message += '\nOnce issue is resolved please manually load {} with {} macro and click resume to continue printing.'.format(cur_lane.name, cur_lane.map)
@@ -1240,7 +1170,7 @@ class afc:
             cur_lane.do_enable(True)
 
             # Move filament to the hub if it's not already loaded there.
-            if not cur_lane.loaded_to_hub or cur_lane.is_direct_hub():
+            if not cur_lane.loaded_to_hub or cur_lane.hub == 'direct':
                 cur_lane.move_advanced(cur_lane.dist_hub, SpeedMode.HUB, assist_active = AssistActive.DYNAMIC)
                 self.afcDeltaTime.log_with_time("Loaded to hub")
 
@@ -1248,7 +1178,7 @@ class afc:
             hub_attempts = 0
 
             # Ensure filament moves past the hub.
-            while not cur_hub.state and not cur_lane.is_direct_hub():
+            while not cur_hub.state and cur_lane.hub != 'direct':
                 if hub_attempts == 0:
                     cur_lane.move_advanced(cur_hub.move_dis, SpeedMode.SHORT)
                 else:
@@ -1265,7 +1195,7 @@ class afc:
             self.afcDeltaTime.log_with_time("Filament loaded to hub")
 
             # Move filament towards the toolhead.
-            if not cur_lane.is_direct_hub():
+            if cur_lane.hub != 'direct':
                 cur_lane.move_advanced(cur_hub.afc_bowden_length, SpeedMode.LONG, assist_active = AssistActive.YES)
 
             # Ensure filament reaches the toolhead.
@@ -1405,34 +1335,25 @@ class afc:
         # toolhead wait is needed here as it will cause TTC for some if wait does not occur
         self.move_z_pos(pos[2], "Tool_Unload quick pull", wait_moves=True)
 
-        # TO->T1
-        # next_lane_load = lane1
-
         # Check if the current extruder is loaded with the lane to be unloaded.
-        # if self.next_lane_load is not None:
-        #     next_extruder = self.lanes[self.next_lane_load].extruder_obj.name
-        # else:
-        #     next_extruder = None
-        # TODO: need to check if its just a tool swap, or tool swap with a lane unload
+        if self.next_lane_load is not None:
+            next_extruder = self.lanes[self.next_lane_load].extruder_obj.name
+        else:
+            next_extruder = None
 
         # If the next extruder is specified and it is not the current extruder, perform a tool swap.
-        if self.function.get_current_extruder() != cur_lane.extruder_obj.name:
-            self.tool_swap( cur_lane )
+        if next_extruder is not None and self.function.get_current_extruder() != next_extruder:
+            self.tool_swap(self.lanes[self.next_lane_load])
 
             # Lookup the current extruder and lane objects based on the next lane to load.
             # This is necessary to ensure the correct extruder and lane are used for unloading.
-            cur_extruder = cur_lane.extruder_obj
+            cur_extruder = self.lanes[self.next_lane_load].extruder_obj
             if cur_extruder.lane_loaded is not None:
                 cur_lane = self.lanes[cur_extruder.lane_loaded]
             else:
                 cur_lane = None
 
-        # Default to true
-        unload_toolhead = True
-        if self.next_lane_load is not None:
-            unload_toolhead = True if self.next_lane_load in cur_lane.extruder_obj.lanes else False
-
-        if self.current is not None and unload_toolhead:
+        if self.current is not None and cur_lane.name != self.next_lane_load:
             self.current_state  = State.UNLOADING
             self.current_loading = cur_lane.name
             self.logger.info("Unloading {}".format(cur_lane.name))
@@ -1488,7 +1409,6 @@ class afc:
 
             # Enable the lane for unloading operations.
             cur_lane.do_enable(True)
-            cur_lane.select_lane()
 
             # Perform filament cutting and parking if specified.
             if self.tool_cut:
@@ -1586,7 +1506,7 @@ class afc:
             self.save_vars()
             # Synchronize and move filament out of the hub.
             cur_lane.unsync_to_extruder()
-            if not cur_lane.is_direct_hub():
+            if cur_lane.hub != 'direct':
                 cur_lane.move_advanced(cur_hub.afc_unload_bowden_length * -1, SpeedMode.LONG, assist_active = AssistActive.YES)
             else:
                 cur_lane.move_advanced(cur_lane.dist_hub * -1, SpeedMode.HUB, assist_active = AssistActive.DYNAMIC)
@@ -1620,7 +1540,7 @@ class afc:
             self.afcDeltaTime.log_with_time("Hub cleared")
 
             #Move to make sure hub path is clear based on the move_clear_dis var
-            if not cur_lane.is_direct_hub():
+            if cur_lane.hub != 'direct':
                 cur_lane.move_advanced(cur_hub.hub_clear_move_dis * -1, SpeedMode.SHORT, assist_active = AssistActive.YES)
 
                 # Cut filament at the hub, if configured.
@@ -1647,7 +1567,7 @@ class afc:
             cur_lane.unit_obj.lane_tool_unloaded(cur_lane)
             cur_lane.status = AFCLaneState.LOADED
 
-            if cur_lane.is_direct_hub():
+            if cur_lane.hub == 'direct':
                 while cur_lane.load_state:
                     cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT, assist_active = AssistActive.YES)
                 cur_lane.move_advanced(cur_lane.short_move_dis * -5, SpeedMode.SHORT)
@@ -1787,6 +1707,8 @@ class afc:
                 total_time = self.afcDeltaTime.log_total_time("Total change time:")
                 self.afc_stats.average_toolchange_time.average_time(total_time)
                 self.in_toolchange = False
+                # Setting next lane load as none since toolchange was successful
+                self.next_lane_load = None
                 self.afc_stats.increase_toolcount_change()
             else:
                 # Error happened, reset toolchanges without error count
@@ -1794,10 +1716,10 @@ class afc:
                     self.afc_stats.reset_toolchange_wo_error()
         else:
             self.logger.info("{} already loaded".format(cur_lane.name))
+            self.next_lane_load = None
             if not self.error_state and self.current_toolchange == -1:
                 self.current_toolchange += 1
 
-        self.next_lane_load = None
         self.function.log_toolhead_pos("Final Change Tool: Error State: {}, Is Paused {}, Position_saved {}, in toolchange: {}, POS: ".format(
                 self.error_state, self.function.is_paused(), self.position_saved, self.in_toolchange ))
 
@@ -1823,13 +1745,8 @@ class afc:
         name = cur_lane.extruder_obj.name
         tool_index = 0 if name == "extruder" else int(name.replace("extruder", ""))
         self.gcode.run_script_from_command('SELECT_TOOL T={}'.format(tool_index))
-
         # Switching toolhead extruders, this is mainly for setups with multiple extruders
         cur_lane.activate_toolhead_extruder()
-        # Need to call again since KTC activate callback happens before switching to new extruder
-        # Take double call out once transitioned away from KTC
-        self.function.handle_activate_extruder()
-
         self.afcDeltaTime.log_with_time("Tool swap done")
         self.current_state = State.IDLE
         # Update the base position and homing position after the tool swap.
@@ -1945,8 +1862,6 @@ class afc:
         This function sets the temperature of the specified extruder and waits for it to reach the target temperature.
         Supports T (tool), S (temp), and D (deadband).
         """
-
-        # TODO: this currently does not work correctly when lanes are remapped and KTC calls M109
         toolnum  = gcmd.get_int('T', None, minval=0)
         temp     = gcmd.get_float('S', 0.0)
         deadband = gcmd.get_float('D', None)
@@ -1979,7 +1894,6 @@ class afc:
         current_temp = heater.get_temp(self.reactor.monotonic())[0]
         should_wait = wait and abs(current_temp - temp) > self.temp_wait_tolerance
         pheaters.set_temperature(heater, temp, should_wait)
-        self.logger.debug("Done setting temp")
 
     def _heat_next_extruder(self, wait=True):
         """
@@ -1996,7 +1910,7 @@ class afc:
             self.error.AFC_error("Next lane load is None, cannot proceed with tool change", pause=self.function.in_print())
             next_extruder = None
             return False
-
+        
         # get the current extruder from the toolhead and it's current temperature
         pheaters = self.printer.lookup_object('heaters')
         extruder = self.toolhead.get_extruder()
@@ -2213,13 +2127,3 @@ class afc:
         self.logger.error("Test Message 1")
         self.logger.error("Test Message 2")
         self.logger.error("Test Message 3")
-
-
-class AFCOpenAMS:
-    """Dedicated wrapper to enable OpenAMS via an [afc_openams] section."""
-
-    def __init__(self, config):
-        printer = config.get_printer()
-        afc_obj = printer.load_object(config, "AFC")
-        afc_obj.configure_openams(config)
-        self.afc = afc_obj
