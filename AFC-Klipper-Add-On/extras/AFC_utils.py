@@ -21,32 +21,64 @@ from urllib.parse import (
 
 ERROR_STR = "Error trying to import {import_lib}, please rerun install-afc.sh script in your AFC-Klipper-Add-On directory then restart klipper\n\n{trace}"
 
-def add_filament_switch( switch_name, switch_pin, printer ):
+def add_filament_switch(switch_name, switch_pin, printer):
     """
-    Helper function to register pins as filament switch sensor so it will show up in web guis
+    Helper function to register filament switches so they show up in web GUIs.
 
-    :param switch_name: Name of switch to register, should be in the following format: `filament_switch_sensor <name>`
-    :param switch_pin: Pin to add to config for switch
-    :param printer: printer object
+    When ``switch_pin`` is ``None`` a pinless virtual filament switch object is
+    created.  Otherwise the switch is registered using Klipper's
+    ``filament_switch_sensor`` module.
 
-    :return returns filament_switch_sensor object
+    :param switch_name: Name of switch to register, should be in the following
+                        format: ``filament_switch_sensor <name>``
+    :param switch_pin:  Pin to add to config for switch or ``None`` for a
+                        virtual sensor
+    :param printer:     printer object
+
+    :return: returns an object with ``note_filament_present`` and
+             ``get_status`` methods (``RunoutHelper`` for real pins, a simple
+             virtual switch otherwise)
     """
     import configparser
     import configfile
-    ppins = printer.lookup_object('pins')
-    ppins.allow_multi_use_pin(switch_pin.strip("!^"))
-    filament_switch_config = configparser.RawConfigParser()
-    filament_switch_config.add_section( switch_name )
-    filament_switch_config.set( switch_name, 'switch_pin', switch_pin)
-    filament_switch_config.set( switch_name, 'pause_on_runout', 'False')
 
-    cfg_wrap = configfile.ConfigWrapper( printer, filament_switch_config, {}, switch_name)
+    if switch_pin is not None:
+        ppins = printer.lookup_object('pins')
+        ppins.allow_multi_use_pin(switch_pin.strip("!^"))
+        filament_switch_config = configparser.RawConfigParser()
+        filament_switch_config.add_section(switch_name)
+        filament_switch_config.set(switch_name, 'switch_pin', switch_pin)
+        filament_switch_config.set(switch_name, 'pause_on_runout', 'False')
 
-    fila = printer.load_object(cfg_wrap, switch_name)
-    fila.runout_helper.sensor_enabled = False
-    fila.runout_helper.runout_pause = False
+        cfg_wrap = configfile.ConfigWrapper(printer, filament_switch_config, {}, switch_name)
 
-    return fila
+        fila = printer.load_object(cfg_wrap, switch_name)
+        fila.runout_helper.sensor_enabled = False
+        fila.runout_helper.runout_pause = False
+        return fila.runout_helper
+
+    class _VirtualFilamentSwitch:
+        def __init__(self, printer, name):
+            self.printer = printer
+            self.name = name
+            self.filament_present = False
+            self.sensor_enabled = True
+            add_obj = getattr(printer, "add_object", None)
+            if add_obj is not None:
+                add_obj(name, self)
+            else:
+                printer.objects[name] = self
+
+        def note_filament_present(self, eventtime, state):
+            self.filament_present = state
+
+        def get_status(self, eventtime=None):
+            return {
+                "filament_detected": bool(self.filament_present),
+                "enabled": bool(self.sensor_enabled),
+            }
+
+    return _VirtualFilamentSwitch(printer, switch_name)
 
 def check_and_return( value_str:str, data_values:dict ) -> str:
     """

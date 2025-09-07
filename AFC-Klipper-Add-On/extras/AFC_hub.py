@@ -7,11 +7,17 @@ import traceback
 
 from configparser import Error as error
 
-try: from extras.AFC_utils import ERROR_STR
-except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
-
-try: from extras.AFC_utils import add_filament_switch
-except: raise error(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
+try:
+    from extras.AFC_utils import (
+        ERROR_STR,
+        add_filament_switch,
+    )
+except Exception:
+    raise error(
+        "Error when trying to import AFC_utils helpers\n{trace}".format(
+            trace=traceback.format_exc()
+        )
+    )
 
 class afc_hub:
     def __init__(self, config):
@@ -27,7 +33,7 @@ class afc_hub:
 
         # HUB Cut variables
         # Next two variables are used in AFC
-        self.switch_pin             = config.get('switch_pin')                      # Pin hub sensor it connected to
+        self.switch_pin             = config.get('switch_pin', None)                 # Pin hub sensor it connected to
         self.hub_clear_move_dis     = config.getfloat("hub_clear_move_dis", 25)     # How far to move filament so that it's not block the hub exit
         self.afc_bowden_length      = config.getfloat("afc_bowden_length", 900)     # Length of the Bowden tube from the hub to the toolhead sensor in mm.
         self.afc_unload_bowden_length= config.getfloat("afc_unload_bowden_length", self.afc_bowden_length) # Length to unload when retracting back from toolhead to hub in mm. Defaults to afc_bowden_length
@@ -47,17 +53,19 @@ class afc_hub:
 
         self.config_bowden_length   = self.afc_bowden_length                        # Used by SET_BOWDEN_LENGTH macro
         self.config_unload_bowden_length = self.afc_unload_bowden_length
-        self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui", self.afc.enable_sensors_in_gui) # Set to True to show hub sensor switche as filament sensor in mainsail/fluidd gui, overrides value set in AFC.cfg
+        self.enable_sensors_in_gui  = config.getboolean(
+            "enable_sensors_in_gui", self.afc.enable_sensors_in_gui
+        )  # Show hub switch in gui when enabled
 
-        buttons = self.printer.load_object(config, "buttons")
         if self.switch_pin is not None:
+            buttons = self.printer.load_object(config, "buttons")
             self.state = False
             buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
-
-
         if self.enable_sensors_in_gui:
             self.filament_switch_name = "filament_switch_sensor {}_Hub".format(self.name)
-            self.fila = add_filament_switch(self.filament_switch_name, self.switch_pin, self.printer )
+            self.fila = add_filament_switch(
+                self.filament_switch_name, self.switch_pin, self.printer
+            )
 
         # Adding self to AFC hubs
         self.afc.hubs[self.name]=self
@@ -78,6 +86,8 @@ class afc_hub:
 
     def switch_pin_callback(self, eventtime, state):
         self.state = state
+        if hasattr(self, "fila"):
+            self.fila.note_filament_present(eventtime, state)
         # Only trigger runout for the currently loaded lane (in the toolhead) if it belongs to this hub
         current_lane_name = getattr(self.afc, 'current', None)
         if current_lane_name and current_lane_name in self.lanes:
