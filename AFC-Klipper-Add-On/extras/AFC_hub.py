@@ -11,7 +11,6 @@ try:
     from extras.AFC_utils import (
         ERROR_STR,
         add_filament_switch,
-        add_virtual_filament_switch,
     )
 except Exception:
     raise error(
@@ -62,15 +61,10 @@ class afc_hub:
             buttons = self.printer.load_object(config, "buttons")
             self.state = False
             buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
-            if self.enable_sensors_in_gui:
-                self.filament_switch_name = "filament_switch_sensor {}_Hub".format(self.name)
-                self.fila = add_filament_switch(
-                    self.filament_switch_name, self.switch_pin, self.printer
-                )
-        elif self.enable_sensors_in_gui:
+        if self.enable_sensors_in_gui:
             self.filament_switch_name = "filament_switch_sensor {}_Hub".format(self.name)
-            self.fila = add_virtual_filament_switch(
-                self.filament_switch_name, self.printer
+            self.fila = add_filament_switch(
+                self.filament_switch_name, self.switch_pin, self.printer
             )
 
         # Adding self to AFC hubs

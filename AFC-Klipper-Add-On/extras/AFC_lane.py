@@ -11,8 +11,8 @@ from contextlib import contextmanager
 from configfile import error
 from enum import Enum
 
-try: from extras.AFC_utils import ERROR_STR, add_filament_switch, add_virtual_filament_switch
-except: raise error("Error when trying to import AFC_utils.ERROR_STR, add_filament_switch, add_virtual_filament_switch\n{trace}".format(trace=traceback.format_exc()))
+try: from extras.AFC_utils import ERROR_STR, add_filament_switch
+except: raise error("Error when trying to import AFC_utils.ERROR_STR, add_filament_switch\n{trace}".format(trace=traceback.format_exc()))
 
 try: from extras import AFC_assist
 except: raise error(ERROR_STR.format(import_lib="AFC_assist", trace=traceback.format_exc()))
@@ -168,21 +168,15 @@ class AFCLane:
         if self.enable_sensors_in_gui:
             if self.sensor_to_show is None or self.sensor_to_show == 'prep':
                 self.prep_filament_switch_name = "filament_switch_sensor {}_prep".format(self.name)
-                if self.prep is not None:
-                    self.fila_prep = add_filament_switch(self.prep_filament_switch_name, self.prep, self.printer)
-                else:
-                    self.fila_prep = add_virtual_filament_switch(
-                        self.prep_filament_switch_name, self.printer
-                    )
+                self.fila_prep = add_filament_switch(
+                    self.prep_filament_switch_name, self.prep, self.printer
+                )
 
             if self.sensor_to_show is None or self.sensor_to_show == 'load':
                 self.load_filament_switch_name = "filament_switch_sensor {}_load".format(self.name)
-                if self.load is not None:
-                    self.fila_load = add_filament_switch(self.load_filament_switch_name, self.load, self.printer)
-                else:
-                    self.fila_load = add_virtual_filament_switch(
-                        self.load_filament_switch_name, self.printer
-                    )
+                self.fila_load = add_filament_switch(
+                    self.load_filament_switch_name, self.load, self.printer
+                )
         self.connect_done = False
         self.prep_active = False
         self.last_prep_time = 0
