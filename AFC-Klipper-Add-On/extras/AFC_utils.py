@@ -50,25 +50,14 @@ def add_filament_switch( switch_name, switch_pin, printer ):
 
 
 def add_virtual_filament_switch(switch_name, printer):
-    """Create a filament switch using Klipper's RunoutHelper without a pin."""
-
-    import configparser
-    import configfile
-    from filament_switch_sensor import RunoutHelper
-
-    filament_switch_config = configparser.RawConfigParser()
-    filament_switch_config.add_section(switch_name)
-    filament_switch_config.set(switch_name, 'pause_on_runout', 'False')
-
-    cfg_wrap = configfile.ConfigWrapper(printer, filament_switch_config, {}, switch_name)
+    """Register a filament switch object without requiring a hardware pin."""
 
     class _VirtualFilamentSwitch:
         def __init__(self, printer, name):
             self.printer = printer
             self.name = name
-            self.runout_helper = RunoutHelper(cfg_wrap)
-            self.runout_helper.sensor_enabled = False
-            self.runout_helper.runout_pause = False
+            self.filament_present = False
+            self.enabled = True
             add_obj = getattr(printer, "add_object", None)
             if add_obj is not None:
                 add_obj(name, self)
@@ -76,10 +65,11 @@ def add_virtual_filament_switch(switch_name, printer):
                 printer.objects[name] = self
 
         def note_filament_present(self, eventtime, state):
-            self.runout_helper.note_filament_present(eventtime, state)
+            self.filament_present = state
 
         def get_status(self, eventtime=None):
-            return self.runout_helper.get_status(eventtime)
+            return {"filament_detected": bool(self.filament_present),
+                    "enabled": bool(self.enabled)}
 
     return _VirtualFilamentSwitch(printer, switch_name)
 
