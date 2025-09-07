@@ -48,6 +48,31 @@ def add_filament_switch( switch_name, switch_pin, printer ):
 
     return fila
 
+
+def add_virtual_filament_switch(switch_name, printer):
+    """Register a filament switch object without requiring a hardware pin."""
+
+    class _VirtualFilamentSwitch:
+        def __init__(self, printer, name):
+            self.printer = printer
+            self.name = name
+            self.filament_present = False
+            self.enabled = True
+            add_obj = getattr(printer, "add_object", None)
+            if add_obj is not None:
+                add_obj(name, self)
+            else:
+                printer.objects[name] = self
+
+        def note_filament_present(self, eventtime, state):
+            self.filament_present = state
+
+        def get_status(self, eventtime=None):
+            return {"filament_detected": bool(self.filament_present),
+                    "enabled": bool(self.enabled)}
+
+    return _VirtualFilamentSwitch(printer, switch_name)
+
 def check_and_return( value_str:str, data_values:dict ) -> str:
     """
     Common function to check if value exists in dictionary and returns value if it does.
