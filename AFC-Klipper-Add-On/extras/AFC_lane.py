@@ -146,6 +146,7 @@ class AFCLane:
         self.load_state = False
         if self.load is not None:
             buttons.register_buttons([self.load], self.load_callback)
+        else: self.load_state = True
 
         self.espooler = AFC_assist.Espooler(self.name, config)
         self.lane_load_count = None
@@ -166,17 +167,13 @@ class AFCLane:
         self._afc_prep_done = False
 
         if self.enable_sensors_in_gui:
-            if self.sensor_to_show is None or self.sensor_to_show == 'prep':
+            if self.prep is not None and (self.sensor_to_show is None or self.sensor_to_show == 'prep'):
                 self.prep_filament_switch_name = "filament_switch_sensor {}_prep".format(self.name)
-                self.fila_prep = add_filament_switch(
-                    self.prep_filament_switch_name, self.prep, self.printer
-                )
+                self.fila_prep = add_filament_switch(self.prep_filament_switch_name, self.prep, self.printer )
 
-            if self.sensor_to_show is None or self.sensor_to_show == 'load':
+            if self.load is not None and (self.sensor_to_show is None or self.sensor_to_show == 'load'):
                 self.load_filament_switch_name = "filament_switch_sensor {}_load".format(self.name)
-                self.fila_load = add_filament_switch(
-                    self.load_filament_switch_name, self.load, self.printer
-                )
+                self.fila_load = add_filament_switch(self.load_filament_switch_name, self.load, self.printer )
         self.connect_done = False
         self.prep_active = False
         self.last_prep_time = 0
