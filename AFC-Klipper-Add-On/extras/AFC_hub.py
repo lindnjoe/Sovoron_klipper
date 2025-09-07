@@ -8,44 +8,17 @@ import traceback
 from configparser import Error as error
 
 try:
-    from extras.AFC_utils import ERROR_STR
+    from extras.AFC_utils import (
+        ERROR_STR,
+        add_filament_switch,
+        add_virtual_filament_switch,
+    )
 except Exception:
     raise error(
-        "Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(
+        "Error when trying to import AFC_utils helpers\n{trace}".format(
             trace=traceback.format_exc()
         )
     )
-
-try:
-    from extras.AFC_utils import add_filament_switch
-except Exception:
-    raise error(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
-
-try:
-    import virtual_input_pin
-except Exception:
-    raise error(ERROR_STR.format(import_lib="virtual_input_pin", trace=traceback.format_exc()))
-
-
-class _VPinConfig:
-    def __init__(self, printer, name):
-        self._printer = printer
-        self._name = f"virtual_input_pin {name}"
-
-    def get_printer(self):
-        return self._printer
-
-    def get_name(self):
-        return self._name
-
-    def getboolean(self, key, default=False):
-        return default
-
-    def get(self, key, default=None):
-        return default
-
-    def error(self, msg):
-        raise Exception(msg)
 
 class afc_hub:
     def __init__(self, config):
@@ -95,16 +68,9 @@ class afc_hub:
                     self.filament_switch_name, self.switch_pin, self.printer
                 )
         elif self.enable_sensors_in_gui:
-            # Register a virtual pin so hub state shows in the GUI
-            virtual_input_pin.add_printer_objects(config)
-            self._vpin_name = f"afc_hub_{self.name}"
-            vcfg = _VPinConfig(self.printer, self._vpin_name)
-            virtual_input_pin.VirtualInputPin(vcfg)
             self.filament_switch_name = "filament_switch_sensor {}_Hub".format(self.name)
-            self.fila = add_filament_switch(
-                self.filament_switch_name,
-                f"virtual_pin:{self._vpin_name}",
-                self.printer,
+            self.fila = add_virtual_filament_switch(
+                self.filament_switch_name, self.printer
             )
 
         # Adding self to AFC hubs
