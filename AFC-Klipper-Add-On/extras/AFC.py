@@ -98,7 +98,7 @@ class afc:
         self.openams_enabled = False
         self.openams_names = []
         self.openams_timer = None
-        self.openams_interval = 1.0
+        self.openams_interval = 2.0
         self._openams_lane_values = []
         self._openams_hub_values = []
 
@@ -293,7 +293,7 @@ class afc:
 
     def configure_openams(self, cfg):
         """Enable OpenAMS integration using the provided config section."""
-        self.openams_interval = cfg.getfloat('interval', 1.0, above=0.0)
+        self.openams_interval = cfg.getfloat('interval', 2.0, above=0.0)
         if not self.openams_enabled:
             self.openams_enabled = True
             self.openams_timer = self.reactor.register_timer(self._openams_sync_event)
@@ -2213,3 +2213,13 @@ class afc:
         self.logger.error("Test Message 1")
         self.logger.error("Test Message 2")
         self.logger.error("Test Message 3")
+
+
+class AFCOpenAMS:
+    """Dedicated wrapper to enable OpenAMS via an [afc_openams] section."""
+
+    def __init__(self, config):
+        printer = config.get_printer()
+        afc_obj = printer.load_object(config, "AFC")
+        afc_obj.configure_openams(config)
+        self.afc = afc_obj

@@ -56,12 +56,13 @@ class afc_hub:
         if self.switch_pin is not None:
             self.state = False
             buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
-
             if self.enable_sensors_in_gui:
                 self.filament_switch_name = "filament_switch_sensor {}_Hub".format(self.name)
-                self.fila = add_filament_switch(self.filament_switch_name, self.switch_pin, self.printer )
-        elif not self.afc.openams_enabled:
-            raise error("switch_pin must be configured")
+                self.fila = add_filament_switch(self.filament_switch_name, self.switch_pin, self.printer)
+        else:
+            # Defer validation until the connect event so OpenAMS can enable
+            # virtual hub sensors without requiring a physical switch pin.
+            self.state = False
 
         # Adding self to AFC hubs
         self.afc.hubs[self.name]=self
@@ -79,6 +80,9 @@ class afc_hub:
         self.reactor = self.afc.reactor
 
         self.printer.send_event("afc_hub:register_macros", self)
+
+        if self.switch_pin is None and not self.afc.openams_enabled:
+            raise error("switch_pin must be configured")
 
     def switch_pin_callback(self, eventtime, state):
         self.state = state
@@ -145,3 +149,4 @@ class afc_hub:
 
 def load_config_prefix(config):
     return afc_hub(config)
+
