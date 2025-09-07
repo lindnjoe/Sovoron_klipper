@@ -12,6 +12,10 @@ try:
     from extras.AFC_unit import afcUnit
 except Exception:
     raise error("Error when trying to import AFC_unit\n{trace}".format(trace=traceback.format_exc()))
+try:
+    from extras.AFC_lane import AFCLaneState
+except Exception:
+    raise error("Error when trying to import AFC_lane\n{trace}".format(trace=traceback.format_exc()))
 
 SYNC_INTERVAL = 2.0
 
@@ -36,6 +40,48 @@ class afcAMS(afcUnit):
     def handle_connect(self):
         """Ensure base AFC connectivity."""
         super().handle_connect()
+
+    def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
+        msg = ''
+        succeeded = True
+
+        cur_lane.unsync_to_extruder(False)
+
+        if not cur_lane.prep_state:
+            if not cur_lane.load_state:
+                self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
+                msg += 'EMPTY READY FOR SPOOL'
+            else:
+                self.afc.function.afc_led(cur_lane.led_fault, cur_lane.led_index)
+                msg += '<span class=error--text> NOT READY</span>'
+                cur_lane.do_enable(False)
+                succeeded = False
+        else:
+            self.afc.function.afc_led(cur_lane.led_ready, cur_lane.led_index)
+            msg += '<span class=success--text>LOCKED</span>'
+            if not cur_lane.load_state:
+                msg += '<span class=error--text> NOT LOADED</span>'
+                self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
+                succeeded = False
+            else:
+                cur_lane.status = AFCLaneState.LOADED
+                msg += '<span class=success--text> AND LOADED</span>'
+                self.afc.function.afc_led(cur_lane.led_spool_illum, cur_lane.led_spool_index)
+
+        hub = getattr(cur_lane, 'hub_obj', None)
+        if hub is not None:
+            if hub.state:
+                msg += '<span class=primary--text> HUB ACTIVE</span>'
+            else:
+                msg += '<span class=error--text> HUB INACTIVE</span>'
+                succeeded = False
+
+        if assignTcmd:
+            self.afc.function.TcmdAssign(cur_lane)
+        cur_lane.do_enable(False)
+        self.logger.info('{lane_name} {msg}'.format(lane_name=cur_lane.name, msg=msg))
+        cur_lane.set_afc_prep_done()
+        return succeeded
 
     def handle_ready(self):
         # Resolve OpenAMS object and start periodic polling
