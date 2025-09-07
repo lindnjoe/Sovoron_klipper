@@ -84,7 +84,7 @@ class afcError:
 
                 cur_lane.tool_load = False
                 cur_lane.loaded_to_hub = False
-                cur_lane.extruder_obj.lane_loaded = None
+                cur_lane.extruder_obj.lane_loaded = ''
                 self.afc.save_vars()
                 self.pause = False
                 return True
