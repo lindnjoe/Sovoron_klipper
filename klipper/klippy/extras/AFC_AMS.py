@@ -17,67 +17,69 @@ try:
 except Exception:
     raise error("Error when trying to import AFC_lane\n{trace}".format(trace=traceback.format_exc()))
 
-# ---------------------------------------------------------------------------
-# Provide compatibility with the unmodified AFC_hub by gracefully handling
-# hubs that do not define a physical switch_pin in the configuration.  This is
-# done by monkey patching the hub loader so missing options default to ``None``
-# instead of raising a configuration error.  Additionally, the helper used to
-# register filament switches is wrapped to silently ignore ``None`` pins.
-# ---------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Monkey patch afc_hub to allow virtual switch pins for AMS hubs
+# -----------------------------------------------------------------------------
 try:
-    from extras import AFC_hub as _afc_hub
+    import extras.AFC_hub as _AFC_HUB
 
-    _orig_hub_load_cfg = _afc_hub.load_config_prefix
+    def _patched_hub_init(self, config):
+        self.printer = config.get_printer()
+        self.printer.register_event_handler("klippy:connect", self.handle_connect)
+        self.afc = self.printer.lookup_object('AFC')
+        self.fullname = config.get_name()
+        self.name = self.fullname.split()[-1]
 
-    def _patched_hub_load_cfg(config):
-        # Patch config getters so missing values (e.g. switch_pin) return None
-        orig_get = config.get
+        self.unit = None
+        self.lanes = {}
+        self.state = False
 
-        def safe_get(name, default=None):
-            try:
-                return orig_get(name)
-            except Exception:
-                return default
+        # HUB Cut variables
+        # Next two variables are used in AFC
+        self.switch_pin = config.get('switch_pin', None)
+        self.hub_clear_move_dis = config.getfloat("hub_clear_move_dis", 25)
+        self.afc_bowden_length = config.getfloat("afc_bowden_length", 900)
+        self.afc_unload_bowden_length = config.getfloat(
+            "afc_unload_bowden_length", self.afc_bowden_length)
+        self.assisted_retract = config.getboolean("assisted_retract", False)
+        self.move_dis = config.getfloat("move_dis", 50)
+        # Servo settings
+        self.cut = config.getboolean("cut", False)
+        self.cut_cmd = config.get('cut_cmd', None)
+        self.cut_servo_name = config.get('cut_servo_name', 'cut')
+        self.cut_dist = config.getfloat("cut_dist", 50)
+        self.cut_clear = config.getfloat("cut_clear", 120)
+        self.cut_min_length = config.getfloat("cut_min_length", 200)
+        self.cut_servo_pass_angle = config.getfloat("cut_servo_pass_angle", 0)
+        self.cut_servo_clip_angle = config.getfloat("cut_servo_clip_angle", 160)
+        self.cut_servo_prep_angle = config.getfloat("cut_servo_prep_angle", 75)
+        self.cut_confirm = config.getboolean("cut_confirm", 0)
 
-        if hasattr(config, "getboolean"):
-            orig_getboolean = config.getboolean
+        self.config_bowden_length = self.afc_bowden_length
+        self.config_unload_bowden_length = self.afc_unload_bowden_length
+        self.enable_sensors_in_gui = config.getboolean(
+            "enable_sensors_in_gui", self.afc.enable_sensors_in_gui)
 
-            def safe_getboolean(name, default=None):
-                try:
-                    return orig_getboolean(name)
-                except Exception:
-                    return default
+        buttons = self.printer.load_object(config, "buttons")
+        if self.switch_pin in (None, "None", ""):
+            # Create a virtual pin so the hub can be referenced without
+            # requiring a physical switch pin in the config.
+            self.switch_pin = f"afc_virtual_bypass:hub_{self.name}"
+        self.state = False
+        buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
 
-            config.getboolean = safe_getboolean
+        if self.enable_sensors_in_gui:
+            self.filament_switch_name = (
+                "filament_switch_sensor {}_Hub".format(self.name))
+            self.fila = _AFC_HUB.add_filament_switch(
+                self.filament_switch_name, self.switch_pin, self.printer)
 
-        config.get = safe_get
+        # Adding self to AFC hubs
+        self.afc.hubs[self.name] = self
 
-        hub = _orig_hub_load_cfg(config)
-
-        # Normalize empty strings to None for downstream logic
-        if getattr(hub, "switch_pin", None) in (None, "", "None"):
-            hub.switch_pin = None
-
-        return hub
-
-    _afc_hub.load_config_prefix = _patched_hub_load_cfg
+    _AFC_HUB.afc_hub.__init__ = _patched_hub_init
 except Exception:
-    pass
-
-# Patch add_filament_switch so that it tolerates missing pins.  This mirrors
-# the behaviour of AFC_hub1.py where the call is skipped if no pin is provided.
-try:
-    from extras import AFC_utils as _afc_utils
-
-    _orig_add_filament_switch = _afc_utils.add_filament_switch
-
-    def _safe_add_filament_switch(name, pin, printer):
-        if pin in (None, "", "None"):
-            return None
-        return _orig_add_filament_switch(name, pin, printer)
-
-    _afc_utils.add_filament_switch = _safe_add_filament_switch
-except Exception:
+    # If the hub module isn't present we silently ignore the patch
     pass
 
 SYNC_INTERVAL = 2.0
@@ -223,6 +225,9 @@ class afcAMS(afcUnit):
                 last_hub = self._last_hub_states.get(hub.name)
                 if hub_val != last_hub:
                     hub.switch_pin_callback(eventtime, hub_val)
+                    if hasattr(hub, "fila"):
+                        hub.fila.runout_helper.note_filament_present(
+                            eventtime, hub_val)
                     self._last_hub_states[hub.name] = hub_val
 
         except Exception:
