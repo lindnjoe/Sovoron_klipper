@@ -11,7 +11,7 @@
             "map": "T4",
             "load": true,
             "prep": true,
-            "tool_loaded": false,
+            "tool_loaded": true,
             "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
@@ -22,8 +22,8 @@
             "weight": 250,
             "extruder_temp": null,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
             "status": "Loaded"
         },
         "lane6": {
@@ -89,7 +89,7 @@
             "map": "T8",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
+            "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
@@ -100,8 +100,8 @@
             "weight": 774,
             "extruder_temp": null,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
             "status": "Loaded"
         }
     },
@@ -130,7 +130,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "Loaded"
+            "status": "None"
         },
         "lane9": {
             "name": "lane9",
@@ -203,12 +203,12 @@
             "empty_spool_weight": 190,
             "spool_id": null,
             "color": "#05F713",
-            "weight": 865,
+            "weight": 818.2321103554748,
             "extruder_temp": null,
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Loaded"
+            "status": "Tooled"
         }
     },
     "Turtle_1": {
@@ -231,7 +231,7 @@
             "empty_spool_weight": 190.0,
             "spool_id": null,
             "color": "#000000",
-            "weight": 749,
+            "weight": 714.3793195867511,
             "extruder_temp": null,
             "runout_lane": null,
             "filament_status": "In Tool",
@@ -336,7 +336,7 @@
                 "lane_loaded": "lane3"
             },
             "extruder4": {
-                "lane_loaded": "lane8"
+                "lane_loaded": "lane4"
             },
             "extruder5": {
                 "lane_loaded": "lane11"
