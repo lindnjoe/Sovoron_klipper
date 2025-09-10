@@ -330,6 +330,7 @@ class OAMSManager:
     def _initialize_oams(self) -> None:
         """Discover and register all OAMS hardware units."""
         for name, oam in self.printer.lookup_objects(module="oams"):
+            name = name.split()[-1]
             self.oams[name] = oam
         
     def _initialize_filament_groups(self) -> None:
