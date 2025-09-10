@@ -330,8 +330,13 @@ class OAMSManager:
     def _initialize_oams(self) -> None:
         """Discover and register all OAMS hardware units."""
         for name, oam in self.printer.lookup_objects(module="oams"):
-            name = name.split()[-1]
-            self.oams[name] = oam
+            # Configuration sections are typically named "oams <name>".
+            # Normalize to the short name (e.g. "oams1") for dictionary keys
+            # and update the OAMS object's name attribute so any later
+            # references use the same identifier.
+            short_name = name.split()[-1]
+            oam.name = short_name
+            self.oams[short_name] = oam
         
     def _initialize_filament_groups(self) -> None:
         """Discover and register all filament group configurations."""
