@@ -268,14 +268,19 @@ class OAMSManager:
             - state_name: Loading state (LOADED/UNLOADED/LOADING/UNLOADING)
             - since: Timestamp when current state began
         """
-        attributes = {}
+        attributes = {
+            "oams": {
+                name: {"action_status_code": oam.action_status_code}
+                for name, oam in self.oams.items()
+            }
+        }
         for fps_name, fps_state in self.current_state.fps_state.items():
             attributes[fps_name] = {
                 "current_group": fps_state.current_group,
                 "current_oams": fps_state.current_oams,
                 "current_spool_idx": fps_state.current_spool_idx,
                 "state_name": fps_state.state_name,
-                "since": fps_state.since
+                "since": fps_state.since,
             }
         return attributes
     
