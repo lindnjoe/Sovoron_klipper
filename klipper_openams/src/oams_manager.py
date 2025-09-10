@@ -268,14 +268,19 @@ class OAMSManager:
             - state_name: Loading state (LOADED/UNLOADED/LOADING/UNLOADING)
             - since: Timestamp when current state began
         """
-        attributes = {}
+        attributes = {
+            "oams": {
+                name: {"action_status_code": oam.action_status_code}
+                for name, oam in self.oams.items()
+            }
+        }
         for fps_name, fps_state in self.current_state.fps_state.items():
             attributes[fps_name] = {
                 "current_group": fps_state.current_group,
                 "current_oams": fps_state.current_oams,
                 "current_spool_idx": fps_state.current_spool_idx,
                 "state_name": fps_state.state_name,
-                "since": fps_state.since
+                "since": fps_state.since,
             }
         return attributes
     
@@ -325,7 +330,13 @@ class OAMSManager:
     def _initialize_oams(self) -> None:
         """Discover and register all OAMS hardware units."""
         for name, oam in self.printer.lookup_objects(module="oams"):
-            self.oams[name] = oam
+            # Configuration sections are typically named "oams <name>".
+            # Normalize to the short name (e.g. "oams1") for dictionary keys
+            # and update the OAMS object's name attribute so any later
+            # references use the same identifier.
+            short_name = name.split()[-1]
+            oam.name = short_name
+            self.oams[short_name] = oam
         
     def _initialize_filament_groups(self) -> None:
         """Discover and register all filament group configurations."""
