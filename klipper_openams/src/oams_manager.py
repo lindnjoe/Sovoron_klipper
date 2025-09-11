@@ -81,14 +81,19 @@ class OAMSRunoutMonitor:
                 pass
             elif self.state == OAMSRunoutState.MONITORING:
                 #logging.info("OAMS: Monitoring runout, is_printing: %s, fps_state: %s, fps_state.current_group: %s, fps_state.current_spool_idx: %s, oams: %s" % (is_printing, fps_state.state_name, fps_state.current_group, fps_state.current_spool_idx, fps_state.current_oams))
-                if is_printing and \
-                fps_state.state_name == "LOADED" and \
-                fps_state.current_group is not None and \
-                fps_state.current_spool_idx is not None and \
-                not bool(self.oams[fps_state.current_oams].hub_hes_value[fps_state.current_spool_idx]):
-                    self.state = OAMSRunoutState.DETECTED
-                    logging.info(f"OAMS: Runout detected on FPS {self.fps_name}, pausing for {PAUSE_DISTANCE} mm before coasting the follower.")
-                    self.runout_position = fps.extruder.last_position
+                if (is_printing and
+                    fps_state.state_name == "LOADED" and
+                    fps_state.current_group is not None and
+                    fps_state.current_spool_idx is not None):
+                    oams = self.oams[fps_state.current_oams]
+                    spool_empty = not bool(oams.f1s_hes_value[fps_state.current_spool_idx])
+                    hub_empty = not bool(oams.hub_hes_value[fps_state.current_spool_idx])
+                    if spool_empty and hub_empty:
+                        self.state = OAMSRunoutState.DETECTED
+                        logging.info(
+                            f"OAMS: Runout detected on FPS {self.fps_name}, "
+                            f"pausing for {PAUSE_DISTANCE} mm before coasting the follower.")
+                        self.runout_position = fps.extruder.last_position
             
             elif self.state == OAMSRunoutState.DETECTED:
                 traveled_distance = fps.extruder.last_position - self.runout_position
@@ -243,9 +248,12 @@ class OAMSManager:
         # Monitoring and control
         self.monitor_timers: List[Any] = []  # Active monitoring timers
         self.ready: bool = False  # System initialization complete
-        
+
         # Configuration parameters
         self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
+
+        # External integration
+        self.runout_callback: Optional[Callable[[str, str, int], None]] = None
         
         # Initialize hardware collections
         self._initialize_oams()
@@ -255,7 +263,17 @@ class OAMSManager:
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
         self.printer.add_object("oams_manager", self)
         self.register_commands()
-        
+
+    def register_runout_callback(self, callback: Callable[[str, str, int], None]) -> None:
+        """Register a callback for runout events.
+
+        After the manager attempts to reload from the filament group the
+        callback is invoked with ``fps_name``, ``group`` and ``spool_idx``.
+        ``spool_idx`` is the index of the newly loaded spool or ``-1`` if no
+        spool was available so external handling is required.
+        """
+        self.runout_callback = callback
+
     def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
         """
         Return current status of all FPS units for monitoring.
@@ -616,12 +634,13 @@ class OAMSManager:
             self.monitor_timers.append(reactor.register_timer(self._monitor_unload_speed_for_fps(fps_name), reactor.NOW))
             self.monitor_timers.append(reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), reactor.NOW))
             
-            def _reload_callback():
+            def _reload_callback(fps_name=fps_name, fps_state=fps_state):
                 for (oam, bay_index) in self.filament_groups[fps_state.current_group].bays:
                     if oam.is_bay_ready(bay_index):
                         success, message = oam.load_spool(bay_index)
                         if success:
-                            logging.info(f"OAMS: Successfully loaded spool in bay {bay_index} of OAM {oam.name}")
+                            logging.info(
+                                f"OAMS: Successfully loaded spool in bay {bay_index} of OAM {oam.name}")
                             fps_state.state_name = "LOADED"
                             fps_state.since = self.reactor.monotonic()
                             fps_state.current_spool_idx = bay_index
@@ -629,14 +648,23 @@ class OAMSManager:
                             fps_state.reset_runout_positions()
                             self.runout_monitor.reset()
                             self.runout_monitor.start()
+                            if self.runout_callback is not None:
+                                self.runout_callback(fps_name, fps_state.current_group, bay_index)
                             return
                         else:
                             logging.error(f"OAMS: Failed to load spool: {message}")
                             break
-                self._pause_printer_message("No spool available for group %s" % fps_state.current_group)
+                self._pause_printer_message(
+                    "No spool available for group %s" % fps_state.current_group)
                 self.runout_monitor.paused()
+                if self.runout_callback is not None:
+                    self.runout_callback(
+                        fps_name,
+                        fps_state.current_group,
+                        -1,
+                    )
                 return
-            
+
             self.runout_monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], fps_state, self.oams, _reload_callback, reload_before_toolhead_distance=self.reload_before_toolhead_distance)
             self.monitor_timers.append(self.runout_monitor.timer)
             self.runout_monitor.start()
