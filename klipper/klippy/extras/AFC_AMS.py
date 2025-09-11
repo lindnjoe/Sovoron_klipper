@@ -93,6 +93,7 @@ class afcAMS(afcUnit):
         self.type = "AMS"
         self.oams_name = config.get("oams", "oams1")
         self.interval = config.getfloat("interval", SYNC_INTERVAL, above=0.0)
+        self.oams_manager = None
 
         self.reactor = self.printer.get_reactor()
         self.timer = self.reactor.register_timer(self._sync_event)
@@ -202,9 +203,21 @@ class afcAMS(afcUnit):
                 and cur_lane.status not in (AFCLaneState.EJECTING,
                                             AFCLaneState.CALIBRATING))
 
+    def _on_oams_runout(self, fps_name, group, spool_idx):
+        """Callback from OAMSManager when a runout occurs."""
+        lane = self.lanes.get(group)
+        if lane is None:
+            return
+        eventtime = self.reactor.monotonic()
+        self._last_load_states[lane.name] = False
+        lane.handle_load_runout(eventtime, False)
+
     def handle_ready(self):
         # Resolve OpenAMS object and start periodic polling
         self.oams = self.printer.lookup_object("oams " + self.oams_name, None)
+        self.oams_manager = self.printer.lookup_object("oams_manager", None)
+        if self.oams_manager is not None:
+            self.oams_manager.register_runout_callback(self._on_oams_runout)
         self.reactor.update_timer(self.timer, self.reactor.NOW)
 
     def _sync_event(self, eventtime):
