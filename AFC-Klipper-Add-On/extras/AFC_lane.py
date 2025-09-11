@@ -544,29 +544,26 @@ class AFCLane:
             self.prep_state = state
 
     def handle_load_runout(self, eventtime, load_state):
-        """
-        Callback function for load switch runout/loading. This is different than
-        `load_callback` as this function can be delayed and is called from the
-        filament_switch_sensor class when it detects a runout event.
+        """Handle load switch changes and trigger runout logic.
 
-        Before exiting `min_event_systime` is updated as this mimics how it's
-        done in `_exec_gcode` function in RunoutHelper class as AFC overrides
-        `_runout_event_handler` function with this function callback. If
-        `min_event_systime` does not get updated then future switch changes will
-        not be detected.
+        This differs from ``load_callback`` as it may be invoked by the
+        ``filament_switch_sensor`` class when a delayed runout event is
+        detected. ``min_event_systime`` must be updated to ensure future
+        switch changes are detected.
 
         :param eventtime: Event time from the button press
+        :param load_state: True if filament present at the load sensor
         """
         # Call filament sensor callback so that state is registered when a
-        # load switch is configured. AMS lanes often rely on virtual sensors
-        # so `load_debounce_button` may not exist.
+        # physical load switch exists. AMS lanes may not define one.
         if hasattr(self, "load_debounce_button") and self.load_debounce_button is not None:
             try:
                 self.load_debounce_button._old_note_filament_present(load_state)
             except Exception:
                 self.load_debounce_button._old_note_filament_present(eventtime, load_state)
 
-        self.load_state = load_state
+        if self.load is not None:
+            self.load_state = load_state
 
         if self.printer.state_message == 'Printer is ready':
             if load_state:
@@ -575,9 +572,11 @@ class AFCLane:
                 self.material = self.afc.default_material_type
                 self.weight = 1000  # Defaulting weight to 1000 upon load
             else:
-                # Don't run if user disabled sensor in gui
-                if not self.fila_load.runout_helper.sensor_enabled and self.afc.function.is_printing():
-                    self.logger.warning("Load runout has been detected, but pause and runout detection has been disabled")
+                if (getattr(self, "fila_load", None) is not None and
+                        not self.fila_load.runout_helper.sensor_enabled and
+                        self.afc.function.is_printing()):
+                    self.logger.warning(
+                        "Load runout has been detected, but pause and runout detection has been disabled")
                 elif self.unit_obj.check_runout(self):
                     # Checking to make sure runout_lane is set
                     if self.runout_lane is not None:
