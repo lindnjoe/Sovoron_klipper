@@ -286,7 +286,12 @@ class afcAMS(afcUnit):
                         lane.handle_load_runout(eventtime, load_val)
                     else:
                         lane.load_callback(eventtime, load_val)
-                        if not load_val:
+                        # Only trigger runout when both the hub and prep
+                        # sensors report no filament. This avoids clearing
+                        # spool assignments during lane switches where the
+                        # hub sensor may briefly go low even though a spool
+                        # remains present.
+                        if not load_val and not prep_val:
                             self._trigger_runout(lane)
             except (IndexError, KeyError):
                 # Skip lanes that aren't reported by OpenAMS
