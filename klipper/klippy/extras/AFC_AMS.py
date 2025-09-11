@@ -268,12 +268,14 @@ class afcAMS(afcUnit):
                 # in sync for AMS lanes while still allowing active lanes to
                 # reflect true hub sensor readings.
                 prep_val = bool(self.oams.f1s_hes_value[idx])
+                hub_val = bool(self.oams.hub_hes_value[idx])
+
                 last_prep = self._last_prep_states.get(lane.name)
                 if prep_val != last_prep:
                     lane.prep_callback(eventtime, prep_val)
                     self._last_prep_states[lane.name] = prep_val
 
-                load_val = bool(self.oams.hub_hes_value[idx])
+                load_val = hub_val
                 if not lane.tool_loaded:
                     load_val = prep_val
 
@@ -295,12 +297,12 @@ class afcAMS(afcUnit):
                 continue
 
             last_hub = self._last_hub_states.get(hub.name)
-            if load_val != last_hub:
-                hub.switch_pin_callback(eventtime, load_val)
+            if hub_val != last_hub:
+                hub.switch_pin_callback(eventtime, hub_val)
                 if hasattr(hub, "fila"):
                     hub.fila.runout_helper.note_filament_present(
-                        eventtime, load_val)
-                self._last_hub_states[hub.name] = load_val
+                        eventtime, hub_val)
+                self._last_hub_states[hub.name] = hub_val
 
         return eventtime + self.interval
 
