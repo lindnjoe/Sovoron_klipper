@@ -545,27 +545,35 @@ class AFCLane:
 
     def handle_load_runout(self, eventtime, load_state):
         """
-        Callback function for load switch runout/loading for HTLF, this is different than `load_callback`
-        function as this function can be delayed and is called from filament_switch_sensor class when it detects a runout event.
+        Callback function for load switch runout/loading. This is different than
+        `load_callback` as this function can be delayed and is called from the
+        filament_switch_sensor class when it detects a runout event.
 
-        Before exiting `min_event_systime` is updated as this mimics how its done in `_exec_gcode` function in RunoutHelper class
-        as AFC overrides `_runout_event_handler` function with this function callback. If `min_event_systime` does not get
-        updated then future switch changes will not be detected.
+        Before exiting `min_event_systime` is updated as this mimics how it's
+        done in `_exec_gcode` function in RunoutHelper class as AFC overrides
+        `_runout_event_handler` function with this function callback. If
+        `min_event_systime` does not get updated then future switch changes will
+        not be detected.
 
         :param eventtime: Event time from the button press
         """
-        # Call filament sensor callback so that state is registered
-        try:
-            self.load_debounce_button._old_note_filament_present(load_state)
-        except:
-            self.load_debounce_button._old_note_filament_present(eventtime, load_state)
+        # Call filament sensor callback so that state is registered when a
+        # load switch is configured. AMS lanes often rely on virtual sensors
+        # so `load_debounce_button` may not exist.
+        if hasattr(self, "load_debounce_button") and self.load_debounce_button is not None:
+            try:
+                self.load_debounce_button._old_note_filament_present(load_state)
+            except Exception:
+                self.load_debounce_button._old_note_filament_present(eventtime, load_state)
 
-        if self.printer.state_message == 'Printer is ready' and self.unit_obj.type == "HTLF":
+        self.load_state = load_state
+
+        if self.printer.state_message == 'Printer is ready':
             if load_state:
                 self.status = AFCLaneState.LOADED
                 self.unit_obj.lane_loaded(self)
                 self.material = self.afc.default_material_type
-                self.weight = 1000 # Defaulting weight to 1000 upon load
+                self.weight = 1000  # Defaulting weight to 1000 upon load
             else:
                 # Don't run if user disabled sensor in gui
                 if not self.fila_load.runout_helper.sensor_enabled and self.afc.function.is_printing():
