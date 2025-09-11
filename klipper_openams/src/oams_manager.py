@@ -5,29 +5,16 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import logging
-import time
 from functools import partial
 from collections import deque
-from typing import Optional, Tuple, Dict, List, Any, Callable
+from typing import Optional, Tuple, Dict, List, Any
 
 # Configuration constants
-PAUSE_DISTANCE = 60  # mm to pause before coasting follower
 ENCODER_SAMPLES = 2  # Number of encoder samples to collect
 MIN_ENCODER_DIFF = 1  # Minimum encoder difference to consider movement
-FILAMENT_PATH_LENGTH_FACTOR = 1.14  # Factor for calculating filament path traversal
 MONITOR_ENCODER_LOADING_SPEED_AFTER = 2.0  # seconds
 MONITOR_ENCODER_PERIOD = 2.0 # seconds
 MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0  # seconds
-
-
-class OAMSRunoutState:
-    """Enum for runout monitor states."""
-    STOPPED = "STOPPED"          # Monitor is disabled
-    MONITORING = "MONITORING"    # Actively watching for runout
-    DETECTED = "DETECTED"        # Runout detected, pausing before coast
-    COASTING = "COASTING"        # Follower coasting, preparing next spool
-    RELOADING = "RELOADING"      # Loading next spool in sequence
-    PAUSED = "PAUSED"           # Monitor paused due to error/manual intervention
 
 
 class FPSLoadState:
@@ -37,105 +24,6 @@ class FPSLoadState:
     LOADING = "LOADING"      # Currently loading filament
     UNLOADING = "UNLOADING"  # Currently unloading filament
     
-class OAMSRunoutMonitor:
-    """
-    Monitors filament runout for a specific FPS and handles automatic reload.
-    
-    State Management:
-    - Tracks runout detection and follower coasting
-    - Manages automatic spool switching within filament groups
-    - Coordinates with OAMS hardware for filament loading
-    """
-    
-    def __init__(self, 
-                 printer,
-                 fps_name: str,
-                 fps, 
-                 fps_state,
-                 oams: Dict[str, Any],
-                 reload_callback: Callable, 
-                 reload_before_toolhead_distance: float = 0.0):
-        # Core references
-        self.oams = oams
-        self.printer = printer
-        self.fps_name = fps_name
-        self.fps_state = fps_state
-        self.fps = fps
-        
-        # State tracking
-        self.state = OAMSRunoutState.STOPPED
-        self.runout_position: Optional[float] = None
-        self.bldc_clear_position: Optional[float] = None
-        
-        # Configuration
-        self.reload_before_toolhead_distance = reload_before_toolhead_distance
-        self.reload_callback = reload_callback
-        
-        reactor = self.printer.get_reactor()
-        
-        def _monitor_runout(eventtime):
-            idle_timeout = self.printer.lookup_object("idle_timeout")
-            is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
-            
-            if self.state == OAMSRunoutState.STOPPED or self.state == OAMSRunoutState.PAUSED or self.state == OAMSRunoutState.RELOADING:
-                pass
-            elif self.state == OAMSRunoutState.MONITORING:
-                #logging.info("OAMS: Monitoring runout, is_printing: %s, fps_state: %s, fps_state.current_group: %s, fps_state.current_spool_idx: %s, oams: %s" % (is_printing, fps_state.state_name, fps_state.current_group, fps_state.current_spool_idx, fps_state.current_oams))
-                if is_printing and \
-                fps_state.state_name == "LOADED" and \
-                fps_state.current_group is not None and \
-                fps_state.current_spool_idx is not None and \
-                not bool(self.oams[fps_state.current_oams].hub_hes_value[fps_state.current_spool_idx]):
-                    self.state = OAMSRunoutState.DETECTED
-                    logging.info(f"OAMS: Runout detected on FPS {self.fps_name}, pausing for {PAUSE_DISTANCE} mm before coasting the follower.")
-                    self.runout_position = fps.extruder.last_position
-            
-            elif self.state == OAMSRunoutState.DETECTED:
-                traveled_distance = fps.extruder.last_position - self.runout_position
-                if traveled_distance >= PAUSE_DISTANCE:
-                    logging.info("OAMS: Pause complete, coasting the follower.")
-                    self.oams[fps_state.current_oams].set_oams_follower(0, 1)
-                    self.bldc_clear_position = fps.extruder.last_position
-                    self.state = OAMSRunoutState.COASTING
-                    
-            elif self.state == OAMSRunoutState.COASTING:
-                traveled_distance_after_bldc_clear = fps.extruder.last_position - self.bldc_clear_position
-                if traveled_distance_after_bldc_clear + self.reload_before_toolhead_distance > self.oams[fps_state.current_oams].filament_path_length / FILAMENT_PATH_LENGTH_FACTOR:
-                    logging.info("OAMS: Loading next spool in the filament group.")
-                    self.state = OAMSRunoutState.RELOADING
-                    self.reload_callback()
-            else:
-                raise ValueError(f"Invalid state: {self.state}")
-            return eventtime + MONITOR_ENCODER_PERIOD
-        self.timer = reactor.register_timer(_monitor_runout, reactor.NOW)
-        
-    def start(self) -> None:
-        """Start monitoring for filament runout."""
-        self.state = OAMSRunoutState.MONITORING    
-    
-    def stop(self) -> None:
-        """Stop monitoring for filament runout."""
-        self.state = OAMSRunoutState.STOPPED
-        
-    def reloading(self) -> None:
-        """Set state to reloading and reset positions."""
-        self.state = OAMSRunoutState.RELOADING
-        self.runout_position = None
-        self.runout_after_position = None
-        
-    def paused(self) -> None:
-        """Pause the monitor due to error or manual intervention."""
-        self.state = OAMSRunoutState.PAUSED
-        
-    def reset(self) -> None:
-        """Reset monitor to stopped state and clean up."""
-        self.state = OAMSRunoutState.STOPPED
-        self.runout_position = None
-        self.runout_after_position = None
-        if self.timer is not None:
-            self.printer.get_reactor().unregister_timer(self.timer)
-            self.timer = None
-
 class OAMSState:
     """
     Global state container for all FPS units in the system.
@@ -245,7 +133,6 @@ class OAMSManager:
         self.ready: bool = False  # System initialization complete
         
         # Configuration parameters
-        self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
         
         # Initialize hardware collections
         self._initialize_oams()
@@ -611,36 +498,19 @@ class OAMSManager:
     
     def start_monitors(self):
         self.monitor_timers = []
-        reactor = self.printer.get_reactor()        
+        reactor = self.printer.get_reactor()
         for (fps_name, fps_state) in self.current_state.fps_state.items():
-            self.monitor_timers.append(reactor.register_timer(self._monitor_unload_speed_for_fps(fps_name), reactor.NOW))
-            self.monitor_timers.append(reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), reactor.NOW))
-            
-            def _reload_callback():
-                for (oam, bay_index) in self.filament_groups[fps_state.current_group].bays:
-                    if oam.is_bay_ready(bay_index):
-                        success, message = oam.load_spool(bay_index)
-                        if success:
-                            logging.info(f"OAMS: Successfully loaded spool in bay {bay_index} of OAM {oam.name}")
-                            fps_state.state_name = "LOADED"
-                            fps_state.since = self.reactor.monotonic()
-                            fps_state.current_spool_idx = bay_index
-                            fps_state.current_oams = oam.name
-                            fps_state.reset_runout_positions()
-                            self.runout_monitor.reset()
-                            self.runout_monitor.start()
-                            return
-                        else:
-                            logging.error(f"OAMS: Failed to load spool: {message}")
-                            break
-                self._pause_printer_message("No spool available for group %s" % fps_state.current_group)
-                self.runout_monitor.paused()
-                return
-            
-            self.runout_monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], fps_state, self.oams, _reload_callback, reload_before_toolhead_distance=self.reload_before_toolhead_distance)
-            self.monitor_timers.append(self.runout_monitor.timer)
-            self.runout_monitor.start()
-            
+            self.monitor_timers.append(
+                reactor.register_timer(
+                    self._monitor_unload_speed_for_fps(fps_name), reactor.NOW
+                )
+            )
+            self.monitor_timers.append(
+                reactor.register_timer(
+                    self._monitor_load_speed_for_fps(fps_name), reactor.NOW
+                )
+            )
+
         logging.info("OAMS: All monitors started")
     
     def stop_monitors(self):

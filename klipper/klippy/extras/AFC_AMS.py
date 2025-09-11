@@ -194,6 +194,13 @@ class afcAMS(afcUnit):
 
         return succeeded
 
+    def check_runout(self, cur_lane):
+        """Return True if a runout should trigger for the given lane."""
+        return (cur_lane.name == self.afc.function.get_current_lane()
+                and self.afc.function.is_printing()
+                and cur_lane.status not in (AFCLaneState.EJECTING,
+                                            AFCLaneState.CALIBRATING))
+
     def handle_ready(self):
         # Resolve OpenAMS object and start periodic polling
         self.oams = self.printer.lookup_object("oams " + self.oams_name, None)
@@ -204,31 +211,39 @@ class afcAMS(afcUnit):
             if self.oams is None:
                 return eventtime + self.interval
 
+            # Request updated sensor values from the OpenAMS controller so new
+            # spools inserted into empty bays are detected promptly.
+            try:
+                self.oams.determine_current_spool()
+            except Exception:
+                pass
+
             # Iterate through lanes belonging to this unit
             for lane in list(self.lanes.values()):
                 idx = getattr(lane, "index", 0) - 1
                 if idx < 0:
                     continue
 
-                lane_val = bool(self.oams.f1s_hes_value[idx])
-                last_lane = self._last_lane_states.get(lane.name)
-                if lane_val != last_lane:
-                    lane.load_callback(eventtime, lane_val)
-                    lane.prep_callback(eventtime, lane_val)
-                    self._last_lane_states[lane.name] = lane_val
+                prep_val = bool(self.oams.f1s_hes_value[idx])
+                last_prep = self._last_lane_states.get(lane.name)
+                if prep_val != last_prep:
+                    lane.load_callback(eventtime, prep_val)
+                    lane.prep_callback(eventtime, prep_val)
+                    self._last_lane_states[lane.name] = prep_val
 
                 hub = getattr(lane, "hub_obj", None)
                 if hub is None:
                     continue
 
-                hub_val = bool(self.oams.hub_hes_value[idx])
+                load_val = bool(self.oams.hub_hes_value[idx])
                 last_hub = self._last_hub_states.get(hub.name)
-                if hub_val != last_hub:
-                    hub.switch_pin_callback(eventtime, hub_val)
+                if load_val != last_hub:
+                    hub.switch_pin_callback(eventtime, load_val)
                     if hasattr(hub, "fila"):
                         hub.fila.runout_helper.note_filament_present(
-                            eventtime, hub_val)
-                    self._last_hub_states[hub.name] = hub_val
+                            eventtime, load_val)
+                    lane.handle_load_runout(eventtime, load_val)
+                    self._last_hub_states[hub.name] = load_val
 
         except Exception:
             # Avoid breaking the reactor loop if OpenAMS query fails
