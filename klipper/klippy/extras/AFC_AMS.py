@@ -260,13 +260,12 @@ class afcAMS(afcUnit):
                 continue
 
             try:
-                # OpenAMS exposes separate sensors for spool presence (prep)
-                # and filament loaded into the hub (load). For AMS units the
-                # hub sensor only reports a value for the lane currently
-                # feeding the toolhead, so idle lanes must mirror the prep
-                # state in their load value. This keeps "locked" and "loaded"
-                # in sync for AMS lanes while still allowing active lanes to
-                # reflect true hub sensor readings.
+                # OpenAMS exposes separate sensors for spool presence
+                # (f1s_hes_value) and the hub path (hub_hes_value). The
+                # spool sensor should drive both the prep and load states so
+                # that inserting filament reflects immediately in AFC, while
+                # the hub sensor is reported separately for informational
+                # purposes.
                 prep_val = bool(self.oams.f1s_hes_value[idx])
                 hub_val = bool(self.oams.hub_hes_value[idx])
 
@@ -275,9 +274,7 @@ class afcAMS(afcUnit):
                     lane.prep_callback(eventtime, prep_val)
                     self._last_prep_states[lane.name] = prep_val
 
-                load_val = hub_val
-                if not lane.tool_loaded:
-                    load_val = prep_val
+                load_val = prep_val
 
                 last_load = self._last_load_states.get(lane.name)
                 if load_val != last_load:
@@ -286,12 +283,7 @@ class afcAMS(afcUnit):
                         lane.handle_load_runout(eventtime, load_val)
                     else:
                         lane.load_callback(eventtime, load_val)
-                        # Only trigger runout when both the hub and prep
-                        # sensors report no filament. This avoids clearing
-                        # spool assignments during lane switches where the
-                        # hub sensor may briefly go low even though a spool
-                        # remains present.
-                        if not load_val and not prep_val:
+                        if not load_val:
                             self._trigger_runout(lane)
             except (IndexError, KeyError):
                 # Skip lanes that aren't reported by OpenAMS
