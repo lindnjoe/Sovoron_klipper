@@ -261,8 +261,12 @@ class afcAMS(afcUnit):
 
             try:
                 # OpenAMS exposes separate sensors for spool presence (prep)
-                # and filament loaded into the hub (load). Track changes for
-                # each independently so lane callbacks mirror physical state.
+                # and filament loaded into the hub (load). For AMS units the
+                # hub sensor only reports a value for the lane currently
+                # feeding the toolhead, so idle lanes must mirror the prep
+                # state in their load value. This keeps "locked" and "loaded"
+                # in sync for AMS lanes while still allowing active lanes to
+                # reflect true hub sensor readings.
                 prep_val = bool(self.oams.f1s_hes_value[idx])
                 last_prep = self._last_prep_states.get(lane.name)
                 if prep_val != last_prep:
@@ -270,6 +274,9 @@ class afcAMS(afcUnit):
                     self._last_prep_states[lane.name] = prep_val
 
                 load_val = bool(self.oams.hub_hes_value[idx])
+                if not lane.tool_loaded:
+                    load_val = prep_val
+
                 last_load = self._last_load_states.get(lane.name)
                 if load_val != last_load:
                     self._last_load_states[lane.name] = load_val
