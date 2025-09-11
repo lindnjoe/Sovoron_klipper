@@ -194,6 +194,13 @@ class afcAMS(afcUnit):
 
         return succeeded
 
+    def check_runout(self, cur_lane):
+        """Determine if runout logic should trigger for the current lane."""
+        return (cur_lane.name == self.afc.function.get_current_lane()
+                and self.afc.function.is_printing()
+                and cur_lane.status not in (AFCLaneState.EJECTING,
+                                            AFCLaneState.CALIBRATING))
+
     def handle_ready(self):
         # Resolve OpenAMS object and start periodic polling
         self.oams = self.printer.lookup_object("oams " + self.oams_name, None)
@@ -213,8 +220,8 @@ class afcAMS(afcUnit):
                 lane_val = bool(self.oams.f1s_hes_value[idx])
                 last_lane = self._last_lane_states.get(lane.name)
                 if lane_val != last_lane:
-                    lane.load_callback(eventtime, lane_val)
                     lane.prep_callback(eventtime, lane_val)
+                    lane.handle_load_runout(eventtime, lane_val)
                     self._last_lane_states[lane.name] = lane_val
 
                 hub = getattr(lane, "hub_obj", None)
