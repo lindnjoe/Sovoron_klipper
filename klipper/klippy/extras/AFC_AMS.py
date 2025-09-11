@@ -219,7 +219,12 @@ class afcAMS(afcUnit):
         self.afc.save_vars()
 
     def _on_oams_runout(self, fps_name, group, spool_idx):
-        """Callback from OAMSManager when a runout occurs."""
+        """Callback from OAMSManager when a runout occurs.
+
+        ``spool_idx`` is the index of the newly loaded spool or ``-1`` if the
+        manager could not load another spool and external runout handling is
+        required.
+        """
         lane = self.lanes.get(group)
         if lane is None:
             return
@@ -232,7 +237,11 @@ class afcAMS(afcUnit):
             hub.switch_pin_callback(eventtime, False)
             if hasattr(hub, "fila"):
                 hub.fila.runout_helper.note_filament_present(eventtime, False)
-        self._trigger_runout(lane)
+        if spool_idx < 0:
+            self._trigger_runout(lane)
+        else:
+            self.afc.spool._clear_values(lane)
+            self.afc.save_vars()
 
     def handle_ready(self):
         # Resolve OpenAMS object and start periodic polling
@@ -283,8 +292,6 @@ class afcAMS(afcUnit):
                         lane.handle_load_runout(eventtime, load_val)
                     else:
                         lane.load_callback(eventtime, load_val)
-                        if not load_val:
-                            self._trigger_runout(lane)
             except (IndexError, KeyError):
                 # Skip lanes that aren't reported by OpenAMS
                 continue
@@ -300,6 +307,8 @@ class afcAMS(afcUnit):
                     hub.fila.runout_helper.note_filament_present(
                         eventtime, hub_val)
                 self._last_hub_states[hub.name] = hub_val
+                if not hub_val and not load_val:
+                    self._trigger_runout(lane)
 
         return eventtime + self.interval
 
