@@ -557,11 +557,14 @@ class AFCLane:
 
         :param eventtime: Event time from the button press
         """
-        # Call filament sensor callback so that state is registered
-        try:
-            self.load_debounce_button._old_note_filament_present(load_state)
-        except:
-            self.load_debounce_button._old_note_filament_present(eventtime, load_state)
+        # Call filament sensor callback so that state is registered when a
+        # load switch is configured. AMS lanes often rely on virtual sensors
+        # so `load_debounce_button` may not exist.
+        if hasattr(self, "load_debounce_button") and self.load_debounce_button is not None:
+            try:
+                self.load_debounce_button._old_note_filament_present(load_state)
+            except Exception:
+                self.load_debounce_button._old_note_filament_present(eventtime, load_state)
 
         self.load_state = load_state
 
