@@ -203,6 +203,21 @@ class afcAMS(afcUnit):
                 and cur_lane.status not in (AFCLaneState.EJECTING,
                                             AFCLaneState.CALIBRATING))
 
+    def _trigger_runout(self, lane):
+        """Handle runout for lanes without dedicated load sensors."""
+        if self.check_runout(lane):
+            if lane.runout_lane is not None:
+                lane._perform_infinite_runout()
+            else:
+                lane._perform_pause_runout()
+        elif lane.status != "calibrating":
+            self.afc.function.afc_led(lane.led_not_ready, lane.led_index)
+            lane.status = AFCLaneState.NONE
+            lane.loaded_to_hub = False
+            self.afc.spool._clear_values(lane)
+            self.afc.function.afc_led(self.afc.led_not_ready, lane.led_index)
+        self.afc.save_vars()
+
     def _on_oams_runout(self, fps_name, group, spool_idx):
         """Callback from OAMSManager when a runout occurs."""
         lane = self.lanes.get(group)
@@ -210,7 +225,14 @@ class afcAMS(afcUnit):
             return
         eventtime = self.reactor.monotonic()
         self._last_load_states[lane.name] = False
-        lane.handle_load_runout(eventtime, False)
+        lane.load_callback(eventtime, False)
+        hub = getattr(lane, "hub_obj", None)
+        if hub is not None:
+            self._last_hub_states[hub.name] = False
+            hub.switch_pin_callback(eventtime, False)
+            if hasattr(hub, "fila"):
+                hub.fila.runout_helper.note_filament_present(eventtime, False)
+        self._trigger_runout(lane)
 
     def handle_ready(self):
         # Resolve OpenAMS object and start periodic polling
@@ -250,8 +272,13 @@ class afcAMS(afcUnit):
                 load_val = bool(self.oams.hub_hes_value[idx])
                 last_load = self._last_load_states.get(lane.name)
                 if load_val != last_load:
-                    lane.handle_load_runout(eventtime, load_val)
                     self._last_load_states[lane.name] = load_val
+                    if hasattr(lane, "load_debounce_button"):
+                        lane.handle_load_runout(eventtime, load_val)
+                    else:
+                        lane.load_callback(eventtime, load_val)
+                        if not load_val:
+                            self._trigger_runout(lane)
             except (IndexError, KeyError):
                 # Skip lanes that aren't reported by OpenAMS
                 continue
