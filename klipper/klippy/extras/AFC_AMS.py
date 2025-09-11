@@ -211,6 +211,13 @@ class afcAMS(afcUnit):
             if self.oams is None:
                 return eventtime + self.interval
 
+            # Request updated sensor values from the OpenAMS controller so
+            # new spools inserted into empty bays are detected.
+            try:
+                self.oams.determine_current_spool()
+            except Exception:
+                pass
+
             # Iterate through lanes belonging to this unit
             for lane in list(self.lanes.values()):
                 idx = getattr(lane, "index", 0) - 1
