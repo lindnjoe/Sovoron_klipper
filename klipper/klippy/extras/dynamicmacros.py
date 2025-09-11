@@ -1,42 +1,31 @@
 import ast
 import configparser
-import glob
 import json
 import logging
-import textwrap
 import os
 import re
-import subprocess
-from io import StringIO
 from pathlib import Path
 from secrets import token_hex
-
-DYNAMICMACROS_PATH = Path.home() / 'DynamicMacros'
+from io import StringIO
 
 import jinja2
 
 try:
-    from .gcode_macro import TemplateWrapper  # Klipper
+    from .gcode_macro import TemplateWrapper # Klipper
 except:
-    from .gcode_macro import TemplateWrapperJinja as TemplateWrapper  # Kalico
+    from .gcode_macro import TemplateWrapperJinja as TemplateWrapper # Kalico
 
 # Define the path to the configuration files
 config_path = Path(os.path.expanduser('~')) / 'printer_data' / 'config'
 
 logger = None
 
-def clean_gcode(gcode):
-    gcode = '\n' + gcode.strip() + '\n'
-    gcode = re.sub(r'\n+', '\n', gcode)
-    gcode = textwrap.indent(gcode, ' '*4)
-    return gcode.strip()
-
 class MacroConfigParser:
-    def __init__(self, printer, delimiter):
+    def __init__(self, printer, delimeter):
         global config_path
         self.printer = printer
-        self.delimiter = delimiter
-
+        self.delimeter = delimeter
+        
         self.config_file = printer.start_args['config_file']
         self.config_path = Path(os.path.dirname(self.config_file))
         config_path = self.config_path
@@ -48,26 +37,22 @@ class MacroConfigParser:
             strict=False, inline_comment_prefixes=(';', '#'))
         config.read_file(sbuffer, filename)
         return config
-
+    
     def _read_file(self, filename, visited=[]):
         path = self.config_path / filename
         if not os.path.exists(path):
             raise MissingConfigError(f'Missing Configuration at {path}')
         if path in visited:
             raise RecursiveConfigError(f'Recursively included file at {path}')
-        visited.append(path) # Keep a list of files previously included
-        buffer = [] # List of lines in the file
+        visited.append(path)
+        buffer = []
         with open(path, 'r') as file:
             for line in file.readlines():
                 mo = configparser.RawConfigParser.SECTCRE.match(line)
                 header = mo and mo.group('header')
-                # Handle [include xxx.cfg] sections
                 if header and header.startswith('include '):
                     include_spec = header[8:].strip()
-                    include_path = str(path.parent / include_spec)
-                    include_filenames = glob.glob(include_path, recursive=True)
-                    for filename in include_filenames:
-                        buffer.extend(self._read_file(filename, visited))
+                    buffer.extend(self._read_file(include_spec, visited))
                 else:
                     buffer.append(line)
         visited.remove(path)
@@ -76,21 +61,16 @@ class MacroConfigParser:
     def extract_macros(self, config):
         macros = {}
         for section in config.sections():
-            logging.info(f'DynamicMacros: Reading section {section}')
-            if section.startswith('gcode_macro') or \
-                section.startswith('delayed_gcode'):
+            logger.info(f'DynamicMacros: Reading section {section}')
+            if section.startswith('gcode_macro'):
                 macro = DynamicMacro.from_section(
-                    config, section, DynamicMacros.printer, self.delimiter)
+                    config, section, DynamicMacros.printer, self.delimeter)
+                macros[macro.name] = macro
+            elif section.startswith('delayed_gcode'):
+                macro = DelayedDynamicMacro.from_section(
+                    config, section, DynamicMacros.printer, self.delimeter)
                 macros[macro.name] = macro
         return macros
-
-    def get_workaround_gcode(self, prev_gcode):
-        lines = []
-        for line in prev_gcode.splitlines():
-            if '{% set ' in line and 'python' not in line:
-                lines.append(line)
-        compiled_gcode = '\n'.join(lines)
-        return compiled_gcode
 
 class MissingConfigError(Exception):
     pass
@@ -102,92 +82,45 @@ class DynamicMacros:
     clusters = {}
 
     def __init__(self, config):
-        self._init(config)
-
-    def _init(self, config, is_cluster=False):
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
         self.fnames = config.getlist('configs')
 
-        self.delimiter = config.get('delimiter', '---')
+        self.delimeter = config.get('delimeter', '\n\n\n')
 
-        if is_cluster:
-            self.name = config.get_name().split()[1]
-            DynamicMacros.clusters[self.name] = self
-            self.python_enabled = config.getboolean('python_enabled', True)
-            self.printer_enabled = config.getboolean('printer_enabled', True)
-        else:
-            self._setup_logging()
-            DynamicMacros.printer = self.printer
+        log_path = Path(os.path.dirname(self.printer.start_args['log_file'])) / 'DynamicMacros.log'
+        self.delimeter = self.delimeter
+        FORMAT = logging.Formatter('%(asctime)s-%(name)s-[%(levelname)s]-%(message)s')
+        file_handler = logging.FileHandler(log_path, mode='w')
+        file_handler.setFormatter(FORMAT)
+        logger = logging.getLogger(__name__)
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(file_handler)
+        globals()['logger'] = logger
+        logging.info('DYNAMICMACROS LOGGER INIT')
 
-            # Register commands
-            self.gcode.register_command(
-                'DYNAMIC_MACRO', self.cmd_DYNAMIC_MACRO, desc='Run a Dynamic Macro')
-            self.gcode.register_command(
-                'DYNAMIC_RENDER', self.cmd_DYNAMIC_RENDER, desc='Render a Dynamic Macro')
-            self.gcode.register_command('SET_DYNAMIC_VARIABLE', self.cmd_SET_DYNAMIC_VARIABLE, desc="Set the variable of a Dynamic Macro.")
-
+        DynamicMacros.printer = self.printer
         self.macros = {}
         self.placeholder = DynamicMacro(
             'Error', 'RESPOND MSG="ERROR"', self.printer)
 
+        # Register commands
+        self.gcode.register_command(
+            'DYNAMIC_MACRO', self.cmd_DYNAMIC_MACRO, desc='Run a Dynamic Macro')
+        self.gcode.register_command(
+            'DYNAMIC_RENDER', self.cmd_DYNAMIC_RENDER, desc='Render a Dynamic Macro')
+        self.gcode.register_command('SET_DYNAMIC_VARIABLE', self.cmd_SET_DYNAMIC_VARIABLE, desc="Set the variable of a Dynamic Macro.")
+
         self.configfile = self.printer.lookup_object('configfile')
 
-        self.config_parser = MacroConfigParser(self.printer, self.delimiter)
-
-        # Interface workaround
-        # - Allows macros to display on KlipperScreen
-        # - Allows macro parameters to display on all interfaces
-        if config.getboolean('interface_workaround', True):
+        self.config_parser = MacroConfigParser(self.printer, self.delimeter)
+        
+        # Interface workaround for KlipperScreen (latest Fluidd release no longer requires this)
+        if config.getboolean('interface_workaround', False):
             self.interface_workaround()
-
+        
         self._update_macros()
-
-        self.reactor = self.printer.get_reactor()
-        self.printer.register_event_handler(
-            "klippy:ready", self._handle_ready)
-
-    def _setup_logging(self):
-        # Get git short version hash
-        try:
-            result = subprocess.run(
-                ['git', 'rev-parse', '--short', 'HEAD'],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                check=True,
-                cwd=DYNAMICMACROS_PATH
-            )
-            git_hash = result.stdout.strip()
-        except subprocess.CalledProcessError:
-            git_hash = 'unknown'
-
-        # Setup logging
-        if not globals().get('LOG_SETUP', False):
-            logger = logging.Logger('DynamicMacros')
-            klippy_log = self.printer.start_args['log_file']
-            log_dir = os.path.dirname(klippy_log)
-            mimo_log = os.path.join(log_dir, 'dynamicmacros.log')
-            handler = logging.FileHandler(mimo_log, mode='w')
-            formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-            logger.setLevel(logging.DEBUG)
-            globals()['logging'] = logger
-            globals()['LOG_SETUP'] = True
-            logger.info('DynamicMacros Startup')
-            logger.info(f'Git version: {git_hash}')
-
-    def _handle_ready(self):
-        self._update_macros()
-        waketime = self.reactor.monotonic() + 1
-        self.timer_handler = self.reactor.register_timer(
-            self._gcode_timer_event, waketime)
-
-    def _gcode_timer_event(self, eventtime):
-        self._update_macros()
-        return self.reactor.NEVER
-
+    
     def interface_workaround(self):
         full_cfg = StringIO()
         for fname in self.fnames:
@@ -197,11 +130,15 @@ class DynamicMacros:
                     cfg.remove_section(section)
                     continue
                 prev_gcode = cfg.get(section, 'gcode')
-                compiled_gcode = self.config_parser.get_workaround_gcode(prev_gcode)
+                lines = []
+                for line in prev_gcode.splitlines():
+                    if '{% set ' in line:
+                        lines.append(line)
+                compiled_gcode = '\n'.join(lines)
                 if hasattr(self, 'name'):
-                    cmd = f'DYNAMIC_MACRO MACRO={section.split()[1]} CLUSTER={self.name}' + ' {rawparams}'
+                    cmd = f'DYNAMIC_MACRO MACRO={section.split()[1]} CLUSTER={self.name}'
                 else:
-                    cmd = f'DYNAMIC_MACRO MACRO={section.split()[1]}' + ' {rawparams}'
+                    cmd = f'DYNAMIC_MACRO MACRO={section.split()[1]}'
                 cfg.set(section, 'gcode', f'{compiled_gcode}\n{cmd}')
             cfg.write(full_cfg)
 
@@ -210,23 +147,11 @@ class DynamicMacros:
             file.write(full_cfg.getvalue())
 
         # Update printer.cfg to [include .dynamicmacros.cfg]
-        include_statement = '[include .dynamicmacros.cfg]'
         with open(config_path / 'printer.cfg', 'r') as file:
             lines = file.readlines()
-            found = False
-            for line in lines:
-                if len(line.strip()) < 1:
-                    # Ignore empty lines
-                    continue
-                if line.strip()[0] in ('#', ';', '//'):
-                    # Ignore comments
-                    continue
-                if include_statement in line:
-                    found = True
-                    break
-            if not found:
-                lines.insert(0, include_statement+'\n')
-
+            if '[include .dynamicmacros.cfg]' not in '\n'.join(lines):
+                lines.insert(0, '[include .dynamicmacros.cfg]\n')
+        
         with open(config_path / 'printer.cfg', 'w+') as file:
             file.writelines(lines)
 
@@ -236,7 +161,7 @@ class DynamicMacros:
             _ = self.gcode.register_command(macro.name.upper(), None, desc=macro.desc)
             self.gcode.register_command(
                 macro.name.upper(), self.generate_cmd(macro), desc=macro.desc)
-            if macro.is_delayed_gcode:
+            if isinstance(macro, DelayedDynamicMacro):
                 prev = self.gcode.mux_commands.get('UPDATE_DELAYED_GCODE')
                 if prev is not None:
                     prev_key, prev_values = prev
@@ -251,8 +176,7 @@ class DynamicMacros:
             def get_status(eventtime):
                 status = original_get_status(eventtime)
                 config = status['config']
-                workaround_gcode = self.config_parser.get_workaround_gcode(macro.raw)
-                config.update({f'gcode_macro {macro.name}': {'gcode': workaround_gcode}})
+                config.update({f'gcode_macro {macro.name}': {'key': 'value'}})
                 status.update({'config': config})
                 return status
             self.configfile.get_status = get_status
@@ -286,25 +210,25 @@ class DynamicMacros:
     def unregister_macro(self, macro):
         macro.repeat = False
         self.gcode.register_command(macro.name.upper(), None)
-        if macro.is_delayed_gcode:
+        if isinstance(macro, DelayedDynamicMacro):
             _, vals = self.gcode.mux_commands.get('UPDATE_DELAYED_GCODE')
             if macro.name in vals:
                 del vals[macro.name]
         self.gcode._build_status_commands()
         self.macros.pop(macro.name.upper(), None)
-
+    
     def cmd_DYNAMIC_RENDER(self, gcmd):
         cluster = gcmd.get('CLUSTER', None)
         if cluster and cluster in self.clusters:
             return self.clusters[cluster]._cmd_DYNAMIC_RENDER(gcmd)
         return self._cmd_DYNAMIC_RENDER(gcmd)
-
+    
     def _cmd_DYNAMIC_RENDER(self, gcmd):
         try:
             # self._update_macros()
-            logging.info('DynamicMacros Macros:')
+            logger.info('DynamicMacros Macros:')
             for name in self.macros:
-                logging.info(f'    Name: {name}')
+                logger.info(f'    Name: {name}')
             macro_name = gcmd.get('MACRO', '').upper()
             if macro_name:
                 params = gcmd.get_command_parameters()
@@ -315,7 +239,7 @@ class DynamicMacros:
                 gcmd.respond_info(f'Rendered {macro.name}:\n\n{rendered}')
         except Exception as e:
             gcmd.respond_info(str(e))
-
+    
     def _render_macro(self, macro, params, rawparams):
         rendered = []
         for template in macro.templates:
@@ -324,18 +248,17 @@ class DynamicMacros:
         return '\n'.join(rendered)
 
     def cmd_DYNAMIC_MACRO(self, gcmd):
-        cluster_name = gcmd.get('CLUSTER', None)
-        if cluster_name and cluster_name in self.clusters:
-            cluster = self.clusters[cluster_name]
-            return cluster._cmd_DYNAMIC_MACRO(gcmd)
+        cluster = gcmd.get('CLUSTER', None)
+        if cluster and cluster in self.clusters:
+            return self.clusters[cluster]._cmd_DYNAMIC_MACRO(gcmd)
         return self._cmd_DYNAMIC_MACRO(gcmd)
 
     def _cmd_DYNAMIC_MACRO(self, gcmd):
         try:
             self._update_macros()
-            logging.info('DynamicMacros Macros:')
+            logger.info('DynamicMacros Macros:')
             for name in self.macros:
-                logging.info(f'    Name: {name}')
+                logger.info(f'    Name: {name}')
             macro_name = gcmd.get('MACRO', '')
             if macro_name:
                 params = gcmd.get_command_parameters()
@@ -380,7 +303,43 @@ class DynamicMacros:
 
 class DynamicMacrosCluster(DynamicMacros):
     def __init__(self, config):
-        self._init(config, is_cluster=True)
+        self.printer = config.get_printer()
+        self.name = config.get_name().split()[1]
+        self.gcode = self.printer.lookup_object('gcode')
+        self.fnames = config.getlist('configs')
+
+        self.delimeter = config.get('delimeter', '\n\n\n')
+
+        log_path = Path(os.path.dirname(self.printer.start_args['log_file'])) / 'DynamicMacros.log'
+        self.delimeter = self.delimeter
+        FORMAT = logging.Formatter('%(asctime)s-%(name)s-[%(levelname)s]-%(message)s')
+        file_handler = logging.FileHandler(log_path, mode='w')
+        file_handler.setFormatter(FORMAT)
+        logger = logging.getLogger(__name__)
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(file_handler)
+        globals()['logger'] = logger
+        logging.info('DYNAMICMACROS LOGGER INIT')
+
+        DynamicMacros.printer = self.printer
+        self.macros = {}
+        self.placeholder = DynamicMacro(
+            'Error', 'RESPOND MSG="ERROR"', self.printer)
+        
+        DynamicMacros.printer = self.printer
+        DynamicMacros.clusters[self.name] = self
+
+        self.python_enabled = config.getboolean('python_enabled', True)
+        self.printer_enabled = config.getboolean('printer_enabled', True)
+
+        self.configfile = self.printer.lookup_object('configfile')
+
+        self.config_parser = MacroConfigParser(self.printer, self.delimeter)
+        
+        if config.getboolean('interface_workaround', False):
+            self.interface_workaround()
+
+        self._update_macros()
 
     def disabled_func(self, name, msg):
         def func(*args, **kwargs):
@@ -408,43 +367,30 @@ class DynamicMacrosCluster(DynamicMacros):
 
 
 class DynamicMacro:
-    def __init__(self,
-                name,
-                raw,
-                printer,
-                desc='',
-                variables={},
-                delimiter='---',
-                rename_existing=None,
-                initial_duration=None,
-                repeat=False,
-                is_delayed_gcode=False):
+    def __init__(self, name, raw, printer, desc='', variables={}, delimeter='\n\n\n', rename_existing=None, initial_duration=None):
         self.name = name
         self.raw = raw
         self.printer = printer
         self.gcode = self.printer.lookup_object('gcode')
         self.desc = desc
         self.variables = variables
-        self.delimiter = delimiter if delimiter != 'NO_DELIMITER' else None
+        self.delimeter = delimeter if delimeter != 'NO_DELIMETER' else None
         self.rename_existing = rename_existing
         self.duration = initial_duration
-        self.repeat = repeat
         self.vars = {}
-
-        self.is_delayed_gcode = is_delayed_gcode
 
         if self.duration:
             self.reactor = self.printer.get_reactor()
             self.timer_handler = None
-            self.inside_timer = self.repeat
+            self.inside_timer = self.repeat = False
             self.printer.register_event_handler(
                 "klippy:ready", self._handle_ready)
 
         if self.rename_existing:
             self.rename()
-
-        if self.delimiter:
-            self.gcodes = self.raw.split(self.delimiter)
+        
+        if self.delimeter:
+            self.gcodes = self.raw.split(self.delimeter)
         else:
             self.gcodes = [self.raw]
         self.templates = [self.generate_template(
@@ -466,12 +412,12 @@ class DynamicMacro:
         nextwake = self.reactor.NEVER
         if self.repeat:
             nextwake = eventtime + self.duration
-        self.inside_timer = False
+        self.inside_timer = self.repeat = False
         return nextwake
 
     def generate_template(self, gcode):
         env = jinja2.Environment('{%', '%}', '{', '}')
-        logging.info(f'DynamicMacros [{self.name}]: \n{clean_gcode(gcode)}')
+        logger.info(f'DynamicMacros [{self.name}]: \n{gcode.strip()}')
         return TemplateWrapper(self.printer, env, self.name, gcode)
 
     def rename(self):
@@ -519,39 +465,17 @@ class DynamicMacro:
         return self.python(text, *args, **kwargs)
 
     @staticmethod
-    def from_section(config, section, printer, delimiter):
+    def from_section(config, section, printer, delimeter):
         raw = config.get(section, 'gcode')
-        raw = clean_gcode(raw)
-
         name = section.split()[1]
-        # logging.info(f'DynamicMacros [{name}] Raw:\n{raw}')
-
+        logger.info(f'DynamicMacros [{name}] Raw:\n{raw.strip()}')
         desc = config.get(section, 'description', fallback='No Description')
         rename_existing = config.get(section, 'rename_existing', fallback=None)
-
         initial_duration = config.getfloat(
             section, 'initial_duration', fallback=None)
-        repeat = config.getboolean(section, 'repeat', fallback=False)
-        is_delayed_gcode = 'delayed_gcode' in section
-
         variables = {key[len('variable_'):]: value for key, value in config.items(
             section) if key.startswith('variable_')}
-        for k, v in variables.items():
-            try:
-                variables[k] = ast.literal_eval(v)
-            except:
-                pass
-
-        return DynamicMacro(name,
-                            raw,
-                            printer,
-                            desc=desc,
-                            variables=variables,
-                            delimiter=delimiter,
-                            rename_existing=rename_existing,
-                            initial_duration=initial_duration,
-                            repeat=repeat,
-                            is_delayed_gcode=is_delayed_gcode)
+        return DynamicMacro(name, raw, printer, desc=desc, variables=variables, delimeter=delimeter, rename_existing=rename_existing, initial_duration=initial_duration)
 
     def get_status(self, eventtime=None):
         return self.variables
@@ -574,10 +498,51 @@ class DynamicMacro:
         self.update_kwparams(template, params, rawparams)
         template.run_gcode_from_command(self.kwparams)
 
+
+class DelayedDynamicMacro(DynamicMacro):
+    def __init__(self, name, raw, printer, desc='', variables={}, delimeter='\n\n\n', rename_existing=None, initial_duration=None):
+        self.name = name
+        self.raw = raw
+        self.printer = printer
+        self.gcode = self.printer.lookup_object('gcode')
+        self.desc = desc
+        self.variables = variables
+        self.delimeter = delimeter if delimeter != 'NO_DELIMETER' else None
+        self.rename_existing = rename_existing
+        self.duration = initial_duration
+        self.vars = {}
+
+        if self.duration:
+            self.reactor = self.printer.get_reactor()
+            self.timer_handler = None
+            self.inside_timer = self.repeat = False
+            self.printer.register_event_handler(
+                "klippy:ready", self._handle_ready)
+
+        if self.rename_existing:
+            self.rename()
+        
+        if self.delimeter:
+            self.gcodes = self.raw.split(self.delimeter)
+        else:
+            self.gcodes = [self.raw]
+        self.templates = [self.generate_template(
+            gcode) for gcode in self.gcodes]
+
+    @staticmethod
+    def from_section(config, section, printer, delimeter):
+        raw = config.get(section, 'gcode')
+        name = section.split()[1]
+        desc = config.get(section, 'description', fallback='No Description')
+        rename_existing = config.get(section, 'rename_existing', fallback=None)
+        initial_duration = config.getfloat(
+            section, 'initial_duration', fallback=None)
+        variables = {key[len('variable_'):]: value for key, value in config.items(
+            section) if key.startswith('variable_')}
+        return DelayedDynamicMacro(name, raw, printer, desc=desc, variables=variables, delimeter=delimeter, rename_existing=rename_existing, initial_duration=initial_duration)
+
     # Handle UPDATE_DELAYED_GCODE command
     def cmd_UPDATE_DELAYED_GCODE(self, gcmd):
-        if not self.is_delayed_gcode:
-            raise gcmd.error('Not a [delayed_gcode]!')
         self.duration = gcmd.get_float('DURATION', minval=0)
         if self.inside_timer:
             self.repeat = (self.duration != 0.)
@@ -586,6 +551,7 @@ class DynamicMacro:
             if self.duration:
                 waketime = self.reactor.monotonic() + self.duration
             self.reactor.update_timer(self.timer_handler, waketime)
+
 
 def load_config(config):
     return DynamicMacros(config)
