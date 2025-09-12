@@ -276,13 +276,18 @@ class afcAMS(afcUnit):
                 if hub is None:
                     continue
 
+                # Idle AMS lanes don't feed filament through the hub, so their
+                # load state mirrors spool presence. Use that derived load
+                # state when updating the hub sensor so "locked" and "loaded"
+                # stay in sync for non-active lanes.
+                hub_state = load_val
                 last_hub = self._last_hub_states.get(hub.name)
-                if hub_val != last_hub:
-                    hub.switch_pin_callback(eventtime, hub_val)
+                if hub_state != last_hub:
+                    hub.switch_pin_callback(eventtime, hub_state)
                     if hasattr(hub, "fila"):
                         hub.fila.runout_helper.note_filament_present(
-                            eventtime, hub_val)
-                    self._last_hub_states[hub.name] = hub_val
+                            eventtime, hub_state)
+                    self._last_hub_states[hub.name] = hub_state
             except Exception:
                 # Skip lanes that can't be queried but continue updating others
                 continue
