@@ -98,6 +98,8 @@ class afcAMS(afcUnit):
         self.timer = self.reactor.register_timer(self._sync_event)
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
+        self.oams_manager = None
+
         # Track last sensor states so callbacks only trigger on changes
         self._last_prep_states = {}
         self._last_load_states = {}
@@ -203,9 +205,24 @@ class afcAMS(afcUnit):
                                             AFCLaneState.CALIBRATING))
 
     def handle_ready(self):
-        # Resolve OpenAMS object and start periodic polling
+        # Resolve OpenAMS objects and register for runout callbacks
         self.oams = self.printer.lookup_object("oams " + self.oams_name, None)
+        self.oams_manager = self.printer.lookup_object("oams_manager", None)
+        if self.oams_manager is not None:
+            self.oams_manager.register_runout_callback(self._on_oams_runout)
         self.reactor.update_timer(self.timer, self.reactor.NOW)
+
+    def _on_oams_runout(self, fps_name, spool_idx):
+        """Forward OpenAMS runout events to the active lane."""
+        if spool_idx >= 0:
+            # A spool was successfully reloaded; no action required
+            return
+        lane_name = self.afc.function.get_current_lane()
+        lane = self.lanes.get(lane_name)
+        if lane is None:
+            return
+        eventtime = self.reactor.monotonic()
+        lane.handle_load_runout(eventtime, False)
 
     def _sync_event(self, eventtime):
         try:
