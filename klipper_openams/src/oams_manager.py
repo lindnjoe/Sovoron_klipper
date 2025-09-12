@@ -249,16 +249,34 @@ class OAMSManager:
         self.ready: bool = False  # System initialization complete
         
         # Configuration parameters
-        self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
-        
+        self.reload_before_toolhead_distance: float = config.getfloat(
+            "reload_before_toolhead_distance", 0.0
+        )
+
+        # External runout callback (fps_name, new_spool_idx)
+        self._runout_callback: Optional[Callable[[str, int], None]] = None
+
         # Initialize hardware collections
         self._initialize_oams()
         self._initialize_filament_groups()
-        
+
         # Register with printer and setup event handlers
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
         self.printer.add_object("oams_manager", self)
         self.register_commands()
+
+    def register_runout_callback(self, callback: Callable[[str, int], None]) -> None:
+        """Register a callback invoked after a runout reload attempt."""
+        self._runout_callback = callback
+
+    def _notify_runout(self, fps_name: str, spool_idx: int) -> None:
+        cb = self._runout_callback
+        if cb is None:
+            return
+        try:
+            cb(fps_name, spool_idx)
+        except Exception:
+            logging.exception("OAMS: runout callback failed")
         
     def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
         """
@@ -633,10 +651,12 @@ class OAMSManager:
                             fps_state.reset_runout_positions()
                             self.runout_monitor.reset()
                             self.runout_monitor.start()
+                            self._notify_runout(fps_name, bay_index)
                             return
                         else:
                             logging.error(f"OAMS: Failed to load spool: {message}")
                             break
+                self._notify_runout(fps_name, -1)
                 self._pause_printer_message("No spool available for group %s" % fps_state.current_group)
                 self.runout_monitor.paused()
                 return
