@@ -238,6 +238,22 @@ class afcAMS(afcUnit):
             if hasattr(hub, "fila"):
                 hub.fila.runout_helper.note_filament_present(eventtime, False)
         if spool_idx < 0:
+            ro_lane_name = lane.runout_lane
+            if ro_lane_name:
+                ro_lane = self.afc.lanes.get(ro_lane_name)
+                idx = getattr(ro_lane, "index", 0) - 1 if ro_lane else -1
+                if (ro_lane is not None and idx >= 0 and
+                    getattr(ro_lane, "unit_obj", None) is getattr(lane, "unit_obj", None) and
+                    self.oams_manager is not None and
+                    self.oams_manager.load_spool_for_lane(
+                        fps_name, ro_lane.name, self.oams_name, idx)):
+                    cur_ext = self.afc.function.get_current_extruder()
+                    if cur_ext in self.afc.tools:
+                        self.afc.tools[cur_ext].lane_loaded = ro_lane.name
+                    ro_lane.unit_obj.lane_loaded(ro_lane)
+                    self.afc.spool._clear_values(lane)
+                    self.afc.save_vars()
+                    return
             self._trigger_runout(lane)
         else:
             self.afc.spool._clear_values(lane)

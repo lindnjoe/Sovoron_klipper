@@ -274,6 +274,39 @@ class OAMSManager:
         """
         self.runout_callback = callback
 
+    def load_spool_for_lane(self, fps_name: str, group_name: str,
+                             oams_name: str, bay_index: int) -> bool:
+        """Manually load a spool from a specific bay and resume monitoring.
+
+        This allows external systems like AFC to trigger OpenAMS reload logic
+        without pre-configuring filament groups. Returns ``True`` if the spool
+        was loaded successfully.
+        """
+        fps_state = self.current_state.fps_state.get(fps_name)
+        oam = self.oams.get(oams_name)
+        if fps_state is None or oam is None:
+            return False
+        if not oam.is_bay_ready(bay_index):
+            return False
+
+        success, _ = oam.load_spool(bay_index)
+        if not success:
+            return False
+
+        now = self.reactor.monotonic()
+        fps_state.state_name = "LOADED"
+        fps_state.since = now
+        fps_state.current_group = group_name
+        fps_state.current_oams = oams_name
+        fps_state.current_spool_idx = bay_index
+        fps_state.reset_runout_positions()
+
+        if self.runout_monitor is not None:
+            self.runout_monitor.reset()
+            self.runout_monitor.start()
+
+        return True
+
     def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
         """
         Return current status of all FPS units for monitoring.
