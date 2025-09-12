@@ -225,21 +225,25 @@ class afcAMS(afcUnit):
         lane.handle_load_runout(eventtime, False)
 
     def _sync_event(self, eventtime):
+        if self.oams is None:
+            return eventtime + self.interval
+
+        # Request updated sensor values from the OpenAMS controller so
+        # new spools inserted into empty bays are detected.
         try:
-            if self.oams is None:
-                return eventtime + self.interval
+            self.oams.determine_current_spool()
+        except Exception:
+            pass
 
-            # Request updated sensor values from the OpenAMS controller so
-            # new spools inserted into empty bays are detected.
+        # Iterate through lanes belonging to this unit
+        for lane in list(self.lanes.values()):
             try:
-                self.oams.determine_current_spool()
-            except Exception:
-                pass
-
-            # Iterate through lanes belonging to this unit
-            for lane in list(self.lanes.values()):
                 idx = getattr(lane, "index", 0) - 1
-                if idx < 0:
+                if (
+                    idx < 0
+                    or idx >= len(self.oams.f1s_hes_value)
+                    or idx >= len(self.oams.hub_hes_value)
+                ):
                     continue
 
                 # OpenAMS exposes separate sensors for spool presence (prep)
@@ -268,10 +272,9 @@ class afcAMS(afcUnit):
                         hub.fila.runout_helper.note_filament_present(
                             eventtime, load_val)
                     self._last_hub_states[hub.name] = load_val
-
-        except Exception:
-            # Avoid breaking the reactor loop if OpenAMS query fails
-            pass
+            except Exception:
+                # Skip lanes that can't be queried but continue updating others
+                continue
 
         return eventtime + self.interval
 
