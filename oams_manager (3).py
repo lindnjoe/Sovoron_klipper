@@ -16,6 +16,7 @@ ENCODER_SAMPLES = 2
 MIN_ENCODER_DIFF = 1
 FILAMENT_PATH_LENGTH_FACTOR = 1.14  # Replace magic number with a named constant
 MONITOR_ENCODER_LOADING_SPEED_AFTER = 2.0 # in seconds
+MONITOR_ENCODER_PERIOD = 2.0 # seconds
 MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0 # in seconds
 
 
@@ -57,14 +58,18 @@ class OAMSRunoutMonitor:
                 pass
             elif self.state == OAMSRunoutStateEnum.MONITORING:
                 #logging.info("OAMS: Monitoring runout, is_printing: %s, fps_state: %s, fps_state.current_group: %s, fps_state.current_spool_idx: %s, oams: %s" % (is_printing, fps_state.state_name, fps_state.current_group, fps_state.current_spool_idx, fps_state.current_oams))
-                if is_printing and \
-                fps_state.state_name == "LOADED" and \
-                fps_state.current_group is not None and \
-                fps_state.current_spool_idx is not None and \
-                not bool(self.oams[fps_state.current_oams].hub_hes_value[fps_state.current_spool_idx]):
-                    self.state = OAMSRunoutStateEnum.DETECTED
-                    logging.info(f"OAMS: Runout detected on FPS {self.fps_name}, pausing for {PAUSE_DISTANCE} mm before coasting the follower.")
-                    self.runout_position = fps.extruder.last_position
+                if (is_printing and
+                    fps_state.state_name == "LOADED" and
+                    fps_state.current_group is not None and
+                    fps_state.current_spool_idx is not None):
+                    oams = self.oams[fps_state.current_oams]
+                    spool_empty = not bool(oams.f1s_hes_value[fps_state.current_spool_idx])
+                    hub_empty = not bool(oams.hub_hes_value[fps_state.current_spool_idx])
+                    if spool_empty and hub_empty:
+                        self.state = OAMSRunoutStateEnum.DETECTED
+                        logging.info(
+                            f"OAMS: Runout detected on FPS {self.fps_name}, pausing for {PAUSE_DISTANCE} mm before coasting the follower.")
+                        self.runout_position = fps.extruder.last_position
             
             elif self.state == OAMSRunoutStateEnum.DETECTED:
                 traveled_distance = fps.extruder.last_position - self.runout_position
@@ -82,7 +87,7 @@ class OAMSRunoutMonitor:
                     self.reload_callback()
             else:
                 raise ValueError(f"Invalid state: {self.state}")
-            return eventtime + 1.0
+            return eventtime + MONITOR_ENCODER_PERIOD
         self.timer = reactor.register_timer(_monitor_runout, reactor.NOW)
         
     def start(self):
@@ -419,7 +424,7 @@ class OAMSManager:
             if fps_state.state_name == "UNLOADING" and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_UNLOADING_SPEED_AFTER:
                 fps_state.encoder_samples.append(oams.encoder_clicks)
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
-                    return eventtime + 1.0
+                    return eventtime + MONITOR_ENCODER_PERIOD
                 encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
                 logging.info("OAMS[%d] Unload Monitor: Encoder diff %d" %(oams.oams_idx, encoder_diff))
                 if encoder_diff < MIN_ENCODER_DIFF:              
@@ -428,7 +433,7 @@ class OAMSManager:
                     logging.info("after unload speed too low")
                     self.stop_monitors()
                     return self.printer.get_reactor().NEVER
-            return eventtime + 1.0
+            return eventtime + MONITOR_ENCODER_PERIOD
         return partial(_monitor_unload_speed, self)
     
     def _monitor_load_speed_for_fps(self, fps_name):
@@ -441,7 +446,7 @@ class OAMSManager:
             if fps_state.state_name == "LOADING" and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_LOADING_SPEED_AFTER:
                 fps_state.encoder_samples.append(oams.encoder_clicks)
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
-                    return eventtime + 1.0
+                    return eventtime + MONITOR_ENCODER_PERIOD
                 encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
                 logging.info("OAMS[%d] Load Monitor: Encoder diff %d" % (oams.oams_idx, encoder_diff))
                 if encoder_diff < MIN_ENCODER_DIFF:
@@ -449,7 +454,7 @@ class OAMSManager:
                     self._pause_printer_message("Printer paused because the loading speed of the moving filament was too low")
                     self.stop_monitors()
                     return self.printer.get_reactor().NEVER
-            return eventtime + 1.0
+            return eventtime + MONITOR_ENCODER_PERIOD
         return partial(_monitor_load_speed, self)
     
     def start_monitors(self):
