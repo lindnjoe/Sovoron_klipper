@@ -151,12 +151,12 @@
             "empty_spool_weight": 250.0,
             "spool_id": 13,
             "color": "#000000",
-            "weight": 627.9128130176198,
+            "weight": 627.9113258214936,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "Not Ready",
             "filament_status_led": "#ff0000",
-            "status": "Error"
+            "status": "None"
         },
         "lane10": {
             "name": "lane10",
