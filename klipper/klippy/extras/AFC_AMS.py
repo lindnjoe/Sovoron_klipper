@@ -94,6 +94,7 @@ class afcAMS(afcUnit):
         self.oams_name = config.get("oams", "oams1")
         self.interval = config.getfloat("interval", SYNC_INTERVAL, above=0.0)
         self.oams_manager = None
+        self._pending_oams = {}
 
         self.reactor = self.printer.get_reactor()
         self.timer = self.reactor.register_timer(self._sync_event)
@@ -206,6 +207,17 @@ class afcAMS(afcUnit):
     def _trigger_runout(self, lane):
         """Handle runout for lanes without dedicated load sensors."""
         if self.check_runout(lane):
+            pending = self._pending_oams.pop(lane.name, None)
+            if pending and self.oams_manager is not None:
+                fps_name, ro_lane_name, idx = pending
+                if self.oams_manager.load_spool_for_lane(
+                        fps_name, ro_lane_name, self.oams_name, idx):
+                    cur_ext = self.afc.function.get_current_extruder()
+                    if cur_ext in self.afc.tools:
+                        self.afc.tools[cur_ext].lane_loaded = ro_lane_name
+                    ro_lane = self.afc.lanes.get(ro_lane_name)
+                    if ro_lane is not None:
+                        ro_lane.unit_obj.lane_loaded(ro_lane)
             if lane.runout_lane is not None:
                 lane._perform_infinite_runout()
             else:
@@ -228,36 +240,14 @@ class afcAMS(afcUnit):
         lane = self.lanes.get(group)
         if lane is None:
             return
-        eventtime = self.reactor.monotonic()
-        self._last_load_states[lane.name] = False
-        lane.load_callback(eventtime, False)
-        hub = getattr(lane, "hub_obj", None)
-        if hub is not None:
-            self._last_hub_states[hub.name] = False
-            hub.switch_pin_callback(eventtime, False)
-            if hasattr(hub, "fila"):
-                hub.fila.runout_helper.note_filament_present(eventtime, False)
         if spool_idx < 0:
             ro_lane_name = lane.runout_lane
             if ro_lane_name:
                 ro_lane = self.afc.lanes.get(ro_lane_name)
                 idx = getattr(ro_lane, "index", 0) - 1 if ro_lane else -1
                 if (ro_lane is not None and idx >= 0 and
-                    getattr(ro_lane, "unit_obj", None) is getattr(lane, "unit_obj", None) and
-                    self.oams_manager is not None and
-                    self.oams_manager.load_spool_for_lane(
-                        fps_name, ro_lane.name, self.oams_name, idx)):
-                    cur_ext = self.afc.function.get_current_extruder()
-                    if cur_ext in self.afc.tools:
-                        self.afc.tools[cur_ext].lane_loaded = ro_lane.name
-                    ro_lane.unit_obj.lane_loaded(ro_lane)
-                    self.afc.spool._clear_values(lane)
-                    self.afc.save_vars()
-                    return
-            self._trigger_runout(lane)
-        else:
-            self.afc.spool._clear_values(lane)
-            self.afc.save_vars()
+                    getattr(ro_lane, "unit_obj", None) is getattr(lane, "unit_obj", None)):
+                    self._pending_oams[lane.name] = (fps_name, ro_lane.name, idx)
 
     def handle_ready(self):
         # Resolve OpenAMS object and start periodic polling
@@ -323,8 +313,6 @@ class afcAMS(afcUnit):
                     hub.fila.runout_helper.note_filament_present(
                         eventtime, hub_val)
                 self._last_hub_states[hub.name] = hub_val
-                if not hub_val and not load_val:
-                    self._trigger_runout(lane)
 
         return eventtime + self.interval
 
