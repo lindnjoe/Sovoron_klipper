@@ -206,28 +206,39 @@ class afcAMS(afcUnit):
 
     def _trigger_runout(self, lane):
         """Handle runout for lanes without dedicated load sensors."""
-        if self.check_runout(lane):
-            pending = self._pending_oams.pop(lane.name, None)
-            if pending and self.oams_manager is not None:
-                fps_name, ro_lane_name, idx = pending
-                if self.oams_manager.load_spool_for_lane(
-                        fps_name, ro_lane_name, self.oams_name, idx):
-                    cur_ext = self.afc.function.get_current_extruder()
-                    if cur_ext in self.afc.tools:
-                        self.afc.tools[cur_ext].lane_loaded = ro_lane_name
-                    ro_lane = self.afc.lanes.get(ro_lane_name)
-                    if ro_lane is not None:
-                        ro_lane.unit_obj.lane_loaded(ro_lane)
-            if lane.runout_lane is not None:
-                lane._perform_infinite_runout()
-            else:
-                lane._perform_pause_runout()
-        elif lane.status != "calibrating":
-            self.afc.function.afc_led(lane.led_not_ready, lane.led_index)
-            lane.status = AFCLaneState.NONE
-            lane.loaded_to_hub = False
-            self.afc.spool._clear_values(lane)
-            self.afc.function.afc_led(self.afc.led_not_ready, lane.led_index)
+        if not self.check_runout(lane):
+            if lane.status != "calibrating":
+                self.afc.function.afc_led(lane.led_not_ready, lane.led_index)
+                lane.status = AFCLaneState.NONE
+                lane.loaded_to_hub = False
+                self.afc.spool._clear_values(lane)
+                self.afc.function.afc_led(self.afc.led_not_ready, lane.led_index)
+            self.afc.save_vars()
+            return
+
+        pending = self._pending_oams.pop(lane.name, None)
+        loaded_via_oams = False
+        if pending and self.oams_manager is not None:
+            fps_name, ro_lane_name, idx = pending
+            if self.oams_manager.load_spool_for_lane(
+                    fps_name, ro_lane_name, self.oams_name, idx):
+                loaded_via_oams = True
+                cur_ext = self.afc.function.get_current_extruder()
+                if cur_ext in self.afc.tools:
+                    self.afc.tools[cur_ext].lane_loaded = ro_lane_name
+                    self.afc.current = ro_lane_name
+                ro_lane = self.afc.lanes.get(ro_lane_name)
+                if ro_lane is not None:
+                    ro_lane.unit_obj.lane_loaded(ro_lane)
+
+        if loaded_via_oams:
+            self.afc.save_vars()
+            return
+
+        if lane.runout_lane is not None:
+            lane._perform_infinite_runout()
+        else:
+            lane._perform_pause_runout()
         self.afc.save_vars()
 
     def _on_oams_runout(self, fps_name, group, spool_idx):

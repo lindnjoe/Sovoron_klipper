@@ -115,8 +115,8 @@
             "buffer_status": null,
             "lane": 1,
             "map": "T5",
-            "load": false,
-            "prep": false,
+            "load": true,
+            "prep": true,
             "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "PLA",
@@ -125,12 +125,12 @@
             "empty_spool_weight": 250.0,
             "spool_id": 5,
             "color": "#f20808",
-            "weight": 691.1107143925353,
+            "weight": 691.1092248849332,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "Not Ready",
-            "filament_status_led": "#ff0000",
-            "status": "None"
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded"
         },
         "lane9": {
             "name": "lane9",
@@ -141,9 +141,9 @@
             "buffer_status": null,
             "lane": 2,
             "map": "T9",
-            "load": true,
-            "prep": true,
-            "tool_loaded": true,
+            "load": false,
+            "prep": false,
+            "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
@@ -151,12 +151,12 @@
             "empty_spool_weight": 250.0,
             "spool_id": 13,
             "color": "#000000",
-            "weight": 638.9207656993532,
+            "weight": 627.9128130176198,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled"
+            "filament_status": "Not Ready",
+            "filament_status_led": "#ff0000",
+            "status": "Error"
         },
         "lane10": {
             "name": "lane10",
@@ -339,7 +339,7 @@
                 "lane_loaded": "lane4"
             },
             "extruder5": {
-                "lane_loaded": "lane9"
+                "lane_loaded": null
             }
         },
         "bypass": {
