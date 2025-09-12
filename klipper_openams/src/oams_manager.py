@@ -12,6 +12,7 @@ from typing import Optional, Tuple, Dict, List, Any, Callable
 
 # Configuration constants
 PAUSE_DISTANCE = 60  # mm to pause before coasting follower
+EXTRA_COAST_DISTANCE = 30  # additional mm to coast before loading next spool
 ENCODER_SAMPLES = 2  # Number of encoder samples to collect
 MIN_ENCODER_DIFF = 1  # Minimum encoder difference to consider movement
 FILAMENT_PATH_LENGTH_FACTOR = 1.14  # Factor for calculating filament path traversal
@@ -100,7 +101,10 @@ class OAMSRunoutMonitor:
                     
             elif self.state == OAMSRunoutState.COASTING:
                 traveled_distance_after_bldc_clear = fps.extruder.last_position - self.bldc_clear_position
-                if traveled_distance_after_bldc_clear + self.reload_before_toolhead_distance > self.oams[fps_state.current_oams].filament_path_length / FILAMENT_PATH_LENGTH_FACTOR:
+                if traveled_distance_after_bldc_clear + self.reload_before_toolhead_distance > (
+                    self.oams[fps_state.current_oams].filament_path_length / FILAMENT_PATH_LENGTH_FACTOR
+                    + EXTRA_COAST_DISTANCE
+                ):
                     logging.info("OAMS: Loading next spool in the filament group.")
                     self.state = OAMSRunoutState.RELOADING
                     self.reload_callback()
