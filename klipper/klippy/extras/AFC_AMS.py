@@ -253,7 +253,9 @@ class afcAMS(afcUnit):
             pass
 
         # Iterate through lanes belonging to this unit
-        sensor_len = min(len(self.oams.f1s_hes_value), len(self.oams.hub_hes_value))
+        prep_values = self.oams.f1s_hes_value
+        hub_values = getattr(self.oams, "hub_hes_value", [])
+        sensor_len = len(prep_values)
         if sensor_len == 0:
             return eventtime + self.interval
 
@@ -272,13 +274,13 @@ class afcAMS(afcUnit):
                 # load state based on spool presence so "locked" and
                 # "loaded" remain in sync, while the active lane reflects the
                 # true hub sensor. Track each of these values independently.
-                prep_val = bool(self.oams.f1s_hes_value[idx])
+                prep_val = bool(prep_values[idx])
                 last_prep = self._last_prep_states.get(lane.name)
                 if prep_val != last_prep:
                     lane.prep_callback(eventtime, prep_val)
                     self._last_prep_states[lane.name] = prep_val
 
-                hub_val = bool(self.oams.hub_hes_value[idx])
+                hub_val = bool(hub_values[idx]) if idx < len(hub_values) else False
                 if lane.name == self.afc.function.get_current_lane():
                     load_val = hub_val
                 else:
@@ -293,11 +295,9 @@ class afcAMS(afcUnit):
                 if hub is None:
                     continue
 
-                # Idle AMS lanes don't feed filament through the hub, so their
-                # load state mirrors spool presence. Use that derived load
-                # state when updating the hub sensor so "locked" and "loaded"
-                # stay in sync for non-active lanes.
-                hub_state = load_val
+                # Always report the actual hub sensor value so AFC hubs remain
+                # accurate regardless of spool presence in idle lanes.
+                hub_state = hub_val
                 last_hub = self._last_hub_states.get(hub.name)
                 if hub_state != last_hub:
                     hub.switch_pin_callback(eventtime, hub_state)
