@@ -961,7 +961,9 @@ class AFCLane:
             self.afc.error.pause_resume.send_pause_command()
             self.afc.save_pos()
             self.afc.error.AFC_error(msg)
-        # No else: do not trigger infinite runout or pause runout here
+        else:
+            if hasattr(self.unit_obj, "_trigger_runout"):
+                self.unit_obj._trigger_runout(self)
 
     def handle_hub_runout(self, sensor=None):
         """
