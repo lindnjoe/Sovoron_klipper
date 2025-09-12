@@ -236,15 +236,19 @@ class afcAMS(afcUnit):
             pass
 
         # Iterate through lanes belonging to this unit
+        sensor_len = min(len(self.oams.f1s_hes_value), len(self.oams.hub_hes_value))
+        if sensor_len == 0:
+            return eventtime + self.interval
+
         for lane in list(self.lanes.values()):
             try:
                 idx = getattr(lane, "index", 0) - 1
-                if (
-                    idx < 0
-                    or idx >= len(self.oams.f1s_hes_value)
-                    or idx >= len(self.oams.hub_hes_value)
-                ):
+                if idx < 0:
                     continue
+                # Each AMS unit only reports four bays, but AFC lane
+                # indices may be global across multiple units. Wrap the
+                # lane index so the correct sensor slot is used.
+                idx %= sensor_len
 
                 # OpenAMS exposes separate sensors for spool presence (prep)
                 # and filament at the hub. Idle AMS lanes should report their
