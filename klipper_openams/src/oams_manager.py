@@ -65,6 +65,7 @@ class OAMSRunoutMonitor:
         # State tracking
         self.state = OAMSRunoutState.STOPPED
         self.runout_position: Optional[float] = None
+        self.bldc_clear_position: Optional[float] = None
         
         # Configuration
         self.reload_before_toolhead_distance = reload_before_toolhead_distance
@@ -99,12 +100,12 @@ class OAMSRunoutMonitor:
                 if traveled_distance >= PAUSE_DISTANCE:
                     logging.info("OAMS: Pause complete, coasting the follower.")
                     self.oams[fps_state.current_oams].set_oams_follower(0, 1)
+                    self.bldc_clear_position = fps.extruder.last_position
                     self.state = OAMSRunoutState.COASTING
-
+                    
             elif self.state == OAMSRunoutState.COASTING:
-                total_distance = fps.extruder.last_position - self.runout_position
-                if total_distance + self.reload_before_toolhead_distance > \
-                        self.oams[fps_state.current_oams].filament_path_length / FILAMENT_PATH_LENGTH_FACTOR:
+                traveled_distance_after_bldc_clear = fps.extruder.last_position - self.bldc_clear_position
+                if traveled_distance_after_bldc_clear + self.reload_before_toolhead_distance > self.oams[fps_state.current_oams].filament_path_length / FILAMENT_PATH_LENGTH_FACTOR:
                     logging.info("OAMS: Loading next spool in the filament group.")
                     self.state = OAMSRunoutState.RELOADING
                     self.reload_callback()
@@ -125,6 +126,7 @@ class OAMSRunoutMonitor:
         """Set state to reloading and reset positions."""
         self.state = OAMSRunoutState.RELOADING
         self.runout_position = None
+        self.runout_after_position = None
         
     def paused(self) -> None:
         """Pause the monitor due to error or manual intervention."""
@@ -134,6 +136,7 @@ class OAMSRunoutMonitor:
         """Reset monitor to stopped state and clean up."""
         self.state = OAMSRunoutState.STOPPED
         self.runout_position = None
+        self.runout_after_position = None
         if self.timer is not None:
             self.printer.get_reactor().unregister_timer(self.timer)
             self.timer = None
