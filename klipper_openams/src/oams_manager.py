@@ -54,7 +54,7 @@ class OAMSRunoutMonitor:
                  fps_state,
                  oams: Dict[str, Any],
                  reload_callback: Callable, 
-                 reload_before_toolhead_distance: float = 0.0):
+                 reload_before_toolhead_distance: float = 10.0):
         # Core references
         self.oams = oams
         self.printer = printer
