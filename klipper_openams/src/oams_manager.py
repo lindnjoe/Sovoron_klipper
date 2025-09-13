@@ -681,6 +681,8 @@ class OAMSManager:
                             fps_state.reset_runout_positions()
                             self.runout_monitor.reset()
                             self.runout_monitor.start()
+                            gcode = self.printer.lookup_object("gcode")
+                            gcode.run_script(fps_state.current_group)
                             if self.runout_callback is not None:
                                 self.runout_callback(fps_name, fps_state.current_group, bay_index)
                             return
