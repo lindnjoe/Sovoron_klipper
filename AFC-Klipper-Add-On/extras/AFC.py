@@ -203,9 +203,6 @@ class afc:
         self.enable_assist          = config.getboolean("enable_assist",        True)
         # Weight spool has to be below to activate print assist
         self.enable_assist_weight   = config.getfloat("enable_assist_weight",   500.0)
-        self.enable_hub_runout      = config.getboolean("enable_hub_runout",    True)
-        self.enable_tool_runout     = config.getboolean("enable_tool_runout",   True)
-        self.debounce_delay         = config.getfloat("debounce_delay",         0.)
 
         self.debug                  = config.getboolean('debug', False)             # Setting to True turns on more debugging to show on console
         self.testing                = config.getboolean('testing', False)           # Set to true for testing only so that failure states can be tested without stats being reset
@@ -328,10 +325,10 @@ class afc:
         try:
             self.bypass = self.printer.lookup_object('filament_switch_sensor bypass').runout_helper
         except:
-            self.bypass = add_filament_switch("virtual_bypass", "afc_virtual_bypass:virtual_bypass", self.printer ).runout_helper
+            self.bypass = add_filament_switch("filament_switch_sensor virtual_bypass", "afc_virtual_bypass:virtual_bypass", self.printer ).runout_helper
 
         if self.show_quiet_mode:
-            self.quiet_switch = add_filament_switch("quiet_mode", "afc_quiet_mode:afc_quiet_mode", self.printer ).runout_helper
+            self.quiet_switch = add_filament_switch("filament_switch_sensor quiet_mode", "afc_quiet_mode:afc_quiet_mode", self.printer ).runout_helper
 
         # Register G-Code commands for macros we don't want to show up in mainsail/fluidd
         self.gcode.register_command('TOOL_UNLOAD',          self.cmd_TOOL_UNLOAD,           desc=self.cmd_TOOL_UNLOAD_help)
@@ -1861,24 +1858,9 @@ class afc:
 
     _cmd_AFC_M109_help = "Set extruder temperature and wait for it to reach the target"
     def _cmd_AFC_M109(self, gcmd, wait=True):
-        """Set extruder temperature and optionally wait for it to stabilize.
-
-        Parameters
-        ----------
-        T : int, optional
-            Tool number to select a specific extruder.
-        S : float
-            Target temperature in degrees Celsius.
-        D : float, optional
-            Deadband/tolerance around the target temperature.
-
-        Notes
-        -----
-        If ``D`` is omitted and waiting is requested, the extruder will be
-        considered ready once its temperature is within
-        ``self.temp_wait_tolerance`` of ``S``. The underlying
-        ``set_temperature`` call is always issued with ``wait=False`` and the
-        explicit wait is handled by :py:meth:`_wait_for_temp_within_tolerance`.
+        """
+        This function sets the temperature of the specified extruder and waits for it to reach the target temperature.
+        Supports T (tool), S (temp), and D (deadband).
         """
         toolnum  = gcmd.get_int('T', None, minval=0)
         temp     = gcmd.get_float('S', 0.0)
@@ -1901,15 +1883,17 @@ class afc:
 
         pheaters = self.printer.lookup_object('heaters')
         heater = extruder.get_heater()
-        # Always set temperature without waiting; explicit waits follow
-        pheaters.set_temperature(heater, temp, False)
+        pheaters.set_temperature(heater, temp, False)  # Always set temp, don't wait yet
 
-        # Perform an explicit wait using either the provided deadband or the
-        # default tolerance when a wait is requested
-        if wait and temp > 0:
-            tolerance = deadband if deadband is not None else self.temp_wait_tolerance
-            self._wait_for_temp_within_tolerance(heater, temp, tolerance)
+        # If deadband is specified, wait for temp within tolerance
+        if wait and deadband is not None and temp > 0:
+            self._wait_for_temp_within_tolerance(heater, temp, deadband)
             return
+
+        # Default: wait if needed
+        current_temp = heater.get_temp(self.reactor.monotonic())[0]
+        should_wait = wait and abs(current_temp - temp) > self.temp_wait_tolerance
+        pheaters.set_temperature(heater, temp, should_wait)
 
     def _heat_next_extruder(self, wait=True):
         """
