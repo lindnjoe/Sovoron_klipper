@@ -197,7 +197,20 @@ class afcAMS(afcUnit):
         return succeeded
 
     def check_runout(self, cur_lane):
-        """Determine if runout logic should trigger for the current lane."""
+        """Determine if AFC should handle runout for the current lane."""
+
+        # Runout handling is suppressed when both the current lane and its
+        # configured runout lane are AMS lanes that share the same FPS
+        # (extruder). In that scenario the OpenAMS manager will perform the
+        # spool hand-off automatically.
+        if (cur_lane.runout_lane is not None
+                and getattr(cur_lane.unit_obj, "type", "") == "AMS"):
+            ro_lane = self.afc.lanes.get(cur_lane.runout_lane)
+            if (ro_lane is not None
+                    and getattr(ro_lane.unit_obj, "type", "") == "AMS"
+                    and ro_lane.extruder == cur_lane.extruder):
+                return False
+
         return (cur_lane.name == self.afc.function.get_current_lane()
                 and self.afc.function.is_printing()
                 and cur_lane.status not in (AFCLaneState.EJECTING,
@@ -242,11 +255,14 @@ class afcAMS(afcUnit):
             if ro_lane_name:
                 ro_lane = self.afc.lanes.get(ro_lane_name)
                 idx = getattr(ro_lane, "index", 0) - 1 if ro_lane else -1
-                if (ro_lane is not None and idx >= 0 and
-                    getattr(ro_lane, "unit_obj", None) is getattr(lane, "unit_obj", None) and
-                    self.oams_manager is not None and
-                    self.oams_manager.load_spool_for_lane(
-                        fps_name, ro_lane.name, self.oams_name, idx)):
+                ro_unit = getattr(ro_lane, "unit_obj", None) if ro_lane else None
+                if (ro_lane is not None and idx >= 0
+                        and ro_unit is not None
+                        and getattr(ro_unit, "type", "") == "AMS"
+                        and ro_lane.extruder == lane.extruder
+                        and self.oams_manager is not None
+                        and self.oams_manager.load_spool_for_lane(
+                            fps_name, ro_lane.name, ro_unit.oams_name, idx)):
                     cur_ext = self.afc.function.get_current_extruder()
                     if cur_ext in self.afc.tools:
                         self.afc.tools[cur_ext].lane_loaded = ro_lane.name
