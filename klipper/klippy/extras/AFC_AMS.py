@@ -208,7 +208,7 @@ class afcAMS(afcUnit):
             ro_lane = self.afc.lanes.get(cur_lane.runout_lane)
             if (ro_lane is not None
                     and getattr(ro_lane.unit_obj, "type", "") == "AMS"
-                    and ro_lane.extruder == cur_lane.extruder):
+                    and ro_lane.extruder_obj == cur_lane.extruder_obj):
                 return False
 
         return (cur_lane.name == self.afc.function.get_current_lane()
@@ -259,7 +259,7 @@ class afcAMS(afcUnit):
                 if (ro_lane is not None and idx >= 0
                         and ro_unit is not None
                         and getattr(ro_unit, "type", "") == "AMS"
-                        and ro_lane.extruder == lane.extruder
+                        and ro_lane.extruder_obj == lane.extruder_obj
                         and self.oams_manager is not None
                         and self.oams_manager.load_spool_for_lane(
                             fps_name, ro_lane.name, ro_unit.oams_name, idx)):
