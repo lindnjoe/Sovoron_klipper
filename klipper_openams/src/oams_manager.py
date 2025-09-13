@@ -434,8 +434,6 @@ class OAMSManager:
                         fps_state.current_spool_idx = bay_index
                         fps_state.reset_runout_positions()
                         self._register_monitor_spool_timer_for_fps(fps_name)
-                        if self.runout_callback is not None:
-                            self.runout_callback(fps_name, fps_state.current_group, bay_index)
                         return self.printer.get_reactor().NEVER
                     logging.error(f"OAMS: Failed to load spool: {message}")
                 if self.runout_callback is not None:
