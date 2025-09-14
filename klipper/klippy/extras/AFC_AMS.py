@@ -13,31 +13,9 @@ try:
 except Exception:
     raise error("Error when trying to import AFC_unit\n{trace}".format(trace=traceback.format_exc()))
 try:
-    from extras.AFC_lane import AFCLane, AFCLaneState
+    from extras.AFC_lane import AFCLaneState
 except Exception:
     raise error("Error when trying to import AFC_lane\n{trace}".format(trace=traceback.format_exc()))
-
-# -----------------------------------------------------------------------------
-# Monkey patch AFCLane.load_callback so AMS lanes defer runout handling to
-# OpenAMS when a manager is present. This preserves the original AFCLane
-# implementation while allowing coordination without modifying AFC_lane.py.
-# -----------------------------------------------------------------------------
-try:
-    _orig_load_callback = AFCLane.load_callback
-
-    def _patched_load_callback(self, eventtime, state):
-        if (not state
-                and getattr(self.unit_obj, "oams_manager", None) is not None
-                and hasattr(self.unit_obj, "_is_ams_lane")
-                and self.unit_obj._is_ams_lane(self)):
-            self.load_state = state
-            self.afc.save_vars()
-            return
-        return _orig_load_callback(self, eventtime, state)
-
-    AFCLane.load_callback = _patched_load_callback
-except Exception:
-    pass
 
 # -----------------------------------------------------------------------------
 # Monkey patch afc_hub to allow virtual switch pins for AMS hubs
@@ -108,13 +86,7 @@ SYNC_INTERVAL = 2.0
 
 
 class afcAMS(afcUnit):
-    """AFK unit that synchronizes lane and hub states with OpenAMS.
-
-    OpenAMS reports separate sensors for spool presence (prep) and for
-    filament traveling through the hub.  Prep sensors track whether a
-    spool is loaded, while hub sensors drive the load state and runout
-    detection.
-    """
+    """AFK unit that synchronizes lane and hub states with OpenAMS."""
 
     def __init__(self, config):
         super().__init__(config)
@@ -224,46 +196,16 @@ class afcAMS(afcUnit):
 
         return succeeded
 
-    def _is_ams_lane(self, lane):
-        """Return True if ``lane`` belongs to an OpenAMS-managed unit."""
-        unit = getattr(lane, "unit_obj", None)
-        if unit is None:
-            return False
-        if getattr(unit, "type", "").upper() == "AMS":
-            return True
-        return hasattr(unit, "oams_name")
-
     def check_runout(self, cur_lane):
-        """Determine if AFC should handle runout for the current lane."""
-        if self._is_ams_lane(cur_lane):
-            # When the OpenAMS manager is present defer runout handling so it
-            # can attempt a spool swap before AFC intervenes.
-            if self.oams_manager is not None:
-                return False
-
-            # Legacy runout lane check - if both lanes are AMS and on the same
-            # extruder then OpenAMS can perform the rollover automatically.
-            if cur_lane.runout_lane is not None:
-                ro_lane = self.afc.lanes.get(cur_lane.runout_lane)
-                if (ro_lane is not None
-                        and self._is_ams_lane(ro_lane)
-                        and getattr(ro_lane.extruder_obj, "name", None)
-                        == getattr(cur_lane.extruder_obj, "name", None)):
-                    return False
-
+        """Determine if runout logic should trigger for the current lane."""
         return (cur_lane.name == self.afc.function.get_current_lane()
                 and self.afc.function.is_printing()
                 and cur_lane.status not in (AFCLaneState.EJECTING,
                                             AFCLaneState.CALIBRATING))
 
-    def _trigger_runout(self, lane, force=False):
-        """Handle runout for lanes without dedicated load sensors.
-
-        The ``force`` parameter bypasses ``check_runout`` and executes the
-        appropriate AFC runout routine unconditionally. This is used when
-        OpenAMS reports a runout but cannot reload a backup spool.
-        """
-        if force or self.check_runout(lane):
+    def _trigger_runout(self, lane):
+        """Handle runout for lanes without dedicated load sensors."""
+        if self.check_runout(lane):
             if lane.runout_lane is not None:
                 lane._perform_infinite_runout()
             else:
@@ -297,38 +239,22 @@ class afcAMS(afcUnit):
                 hub.fila.runout_helper.note_filament_present(eventtime, False)
         if spool_idx < 0:
             ro_lane_name = lane.runout_lane
-            ro_lane = self.afc.lanes.get(ro_lane_name) if ro_lane_name else None
-            idx = getattr(ro_lane, "index", -1) if ro_lane else -1
-            if idx > 0:
-                idx = (idx - 1) % 4
-            ro_unit = getattr(ro_lane, "unit_obj", None) if ro_lane else None
-            if (ro_lane is not None and idx >= 0
-                    and ro_unit is not None
-                    and self._is_ams_lane(ro_lane)
-                    and getattr(ro_lane.extruder_obj, "name", None)
-                    == getattr(lane.extruder_obj, "name", None)
-                    and self.oams_manager is not None
-                    and self.oams_manager.load_spool_for_lane(
-                        fps_name, ro_lane.name, ro_unit.oams_name, idx)):
-                cur_ext = self.afc.function.get_current_extruder()
-                if cur_ext in self.afc.tools:
-                    self.afc.tools[cur_ext].lane_loaded = ro_lane.name
-                ro_lane.unit_obj.lane_loaded(ro_lane)
-                self.afc.spool._clear_values(lane)
-                self.afc.save_vars()
-                return
-            self._trigger_runout(lane, force=True)
-            if self.oams_manager is not None:
-                fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
-                if fps_state is not None:
-                    fps_state.state_name = "LOADED"
-                    if ro_lane_name and ro_lane and ro_unit and idx >= 0:
-                        fps_state.current_group = ro_lane.name
-                        fps_state.current_oams = ro_unit.oams_name
-                        fps_state.current_spool_idx = idx
-                if self.oams_manager.runout_monitor is not None:
-                    self.oams_manager.runout_monitor.reset()
-                    self.oams_manager.runout_monitor.start()
+            if ro_lane_name:
+                ro_lane = self.afc.lanes.get(ro_lane_name)
+                idx = getattr(ro_lane, "index", 0) - 1 if ro_lane else -1
+                if (ro_lane is not None and idx >= 0 and
+                    getattr(ro_lane, "unit_obj", None) is getattr(lane, "unit_obj", None) and
+                    self.oams_manager is not None and
+                    self.oams_manager.load_spool_for_lane(
+                        fps_name, ro_lane.name, self.oams_name, idx)):
+                    cur_ext = self.afc.function.get_current_extruder()
+                    if cur_ext in self.afc.tools:
+                        self.afc.tools[cur_ext].lane_loaded = ro_lane.name
+                    ro_lane.unit_obj.lane_loaded(ro_lane)
+                    self.afc.spool._clear_values(lane)
+                    self.afc.save_vars()
+                    return
+            self._trigger_runout(lane)
         else:
             self.afc.spool._clear_values(lane)
             self.afc.save_vars()
@@ -360,11 +286,11 @@ class afcAMS(afcUnit):
 
             try:
                 # OpenAMS exposes separate sensors for spool presence
-                # (``f1s_hes_value``) and the hub path (``hub_hes_value``).
-                # The prep sensor tracks whether a spool is present so that
-                # inserting filament is immediately reflected in AFC, while
-                # the hub sensor represents filament actually loaded through
-                # the hub and therefore drives runout detection.
+                # (f1s_hes_value) and the hub path (hub_hes_value). The
+                # spool sensor should drive both the prep and load states so
+                # that inserting filament reflects immediately in AFC, while
+                # the hub sensor is reported separately for informational
+                # purposes.
                 prep_val = bool(self.oams.f1s_hes_value[idx])
                 hub_val = bool(self.oams.hub_hes_value[idx])
 
@@ -373,9 +299,6 @@ class afcAMS(afcUnit):
                     lane.prep_callback(eventtime, prep_val)
                     self._last_prep_states[lane.name] = prep_val
 
-                # Keep the load state in sync with the prep sensor so that
-                # inserting filament updates both states simultaneously.  The
-                # hub sensor is still tracked separately for runout detection.
                 load_val = prep_val
 
                 last_load = self._last_load_states.get(lane.name)
@@ -401,16 +324,7 @@ class afcAMS(afcUnit):
                         eventtime, hub_val)
                 self._last_hub_states[hub.name] = hub_val
                 if not hub_val and not load_val:
-                    # For AMS lanes managed by OpenAMS we rely on the
-                    # manager's runout callback to attempt a rollover before
-                    # invoking AFC runout routines. Only trigger AFC runout
-                    # directly for non-AMS lanes or when OpenAMS isn't
-                    # available.
-                    if (self._is_ams_lane(lane) and
-                            self.oams_manager is not None):
-                        pass
-                    elif self.check_runout(lane):
-                        self._trigger_runout(lane)
+                    self._trigger_runout(lane)
 
         return eventtime + self.interval
 
