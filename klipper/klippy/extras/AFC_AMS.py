@@ -283,8 +283,12 @@ class afcAMS(afcUnit):
                 hub_val = bool(hub_values[idx]) if idx < len(hub_values) else False
                 if lane.name == self.afc.function.get_current_lane():
                     load_val = hub_val
+                    hub_state = hub_val
                 else:
+                    # For idle lanes, mirror spool presence so "locked" and
+                    # hub indicators stay in sync.
                     load_val = prep_val
+                    hub_state = prep_val
 
                 last_load = self._last_load_states.get(lane.name)
                 if load_val != last_load:
@@ -295,9 +299,6 @@ class afcAMS(afcUnit):
                 if hub is None:
                     continue
 
-                # Always report the actual hub sensor value so AFC hubs remain
-                # accurate regardless of spool presence in idle lanes.
-                hub_state = hub_val
                 last_hub = self._last_hub_states.get(hub.name)
                 if hub_state != last_hub:
                     hub.switch_pin_callback(eventtime, hub_state)
