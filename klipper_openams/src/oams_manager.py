@@ -12,6 +12,7 @@ from typing import Optional, Tuple, Dict, List, Any, Callable
 
 # Configuration constants
 PAUSE_DISTANCE = 60  # mm to pause before coasting follower
+EXTRA_COAST_DISTANCE = 30  # additional mm to coast before loading next spool
 ENCODER_SAMPLES = 2  # Number of encoder samples to collect
 MIN_ENCODER_DIFF = 1  # Minimum encoder difference to consider movement
 FILAMENT_PATH_LENGTH_FACTOR = 1.14  # Factor for calculating filament path traversal
@@ -100,7 +101,10 @@ class OAMSRunoutMonitor:
                     
             elif self.state == OAMSRunoutState.COASTING:
                 traveled_distance_after_bldc_clear = fps.extruder.last_position - self.bldc_clear_position
-                if traveled_distance_after_bldc_clear + self.reload_before_toolhead_distance > self.oams[fps_state.current_oams].filament_path_length / FILAMENT_PATH_LENGTH_FACTOR:
+                if traveled_distance_after_bldc_clear + self.reload_before_toolhead_distance > (
+                    self.oams[fps_state.current_oams].filament_path_length / FILAMENT_PATH_LENGTH_FACTOR
+                    + EXTRA_COAST_DISTANCE
+                ):
                     logging.info("OAMS: Loading next spool in the filament group.")
                     self.state = OAMSRunoutState.RELOADING
                     self.reload_callback()
@@ -245,16 +249,64 @@ class OAMSManager:
         self.ready: bool = False  # System initialization complete
         
         # Configuration parameters
-        self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
-        
+        self.reload_before_toolhead_distance: float = config.getfloat(
+            "reload_before_toolhead_distance", 0.0
+        )
+
+        # External runout callback (fps_name, new_spool_idx)
+        self._runout_callback: Optional[Callable[[str, int], None]] = None
+
         # Initialize hardware collections
         self._initialize_oams()
         self._initialize_filament_groups()
-        
+
         # Register with printer and setup event handlers
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
         self.printer.add_object("oams_manager", self)
         self.register_commands()
+
+    def register_runout_callback(self, callback: Callable[[str, int], None]) -> None:
+        """Register a callback invoked after a runout reload attempt."""
+        self._runout_callback = callback
+
+    def _notify_runout(self, fps_name: str, spool_idx: int) -> None:
+        cb = self._runout_callback
+        if cb is None:
+            return
+        try:
+            cb(fps_name, spool_idx)
+        except Exception:
+            logging.exception("OAMS: runout callback failed")
+
+    def load_spool_for_lane(self, fps_name: str, oams_name: str, bay_index: int) -> bool:
+        """Load a specific spool bay and restart monitoring.
+
+        Returns ``True`` if the spool was successfully loaded.
+        """
+        fps_state = self.current_state.fps_state.get(fps_name)
+        oam = self.oams.get(oams_name)
+        if fps_state is None or oam is None:
+            return False
+        if not oam.is_bay_ready(bay_index):
+            return False
+        success, message = oam.load_spool(bay_index)
+        if success:
+            logging.info(
+                f"OAMS: Loaded spool in bay {bay_index} of OAM {oams_name}"
+            )
+            fps_state.state_name = "LOADED"
+            fps_state.since = self.printer.get_reactor().monotonic()
+            fps_state.current_spool_idx = bay_index
+            fps_state.current_oams = oams_name
+            fps_state.reset_runout_positions()
+            if hasattr(self, "runout_monitor"):
+                self.runout_monitor.reset()
+                self.runout_monitor.start()
+        else:
+            logging.error(
+                f"OAMS: Failed to load spool in bay {bay_index} of OAM {oams_name}: {message}"
+            )
+        return success
         
     def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
         """
@@ -629,10 +681,12 @@ class OAMSManager:
                             fps_state.reset_runout_positions()
                             self.runout_monitor.reset()
                             self.runout_monitor.start()
+                            self._notify_runout(fps_name, bay_index)
                             return
                         else:
                             logging.error(f"OAMS: Failed to load spool: {message}")
                             break
+                self._notify_runout(fps_name, -1)
                 self._pause_printer_message("No spool available for group %s" % fps_state.current_group)
                 self.runout_monitor.paused()
                 return
