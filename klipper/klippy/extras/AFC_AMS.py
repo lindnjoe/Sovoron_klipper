@@ -275,27 +275,37 @@ class afcAMS(afcUnit):
                 hub.fila.runout_helper.note_filament_present(eventtime, False)
         if spool_idx < 0:
             ro_lane_name = lane.runout_lane
-            if ro_lane_name:
-                ro_lane = self.afc.lanes.get(ro_lane_name)
-                idx = ((getattr(ro_lane, "index", 0) - 1) % 4
-                       if ro_lane else -1)
-                ro_unit = getattr(ro_lane, "unit_obj", None) if ro_lane else None
-                if (ro_lane is not None and idx >= 0
-                        and ro_unit is not None
-                        and self._is_ams_lane(ro_lane)
-                        and getattr(ro_lane.extruder_obj, "name", None)
-                        == getattr(lane.extruder_obj, "name", None)
-                        and self.oams_manager is not None
-                        and self.oams_manager.load_spool_for_lane(
-                            fps_name, ro_lane.name, ro_unit.oams_name, idx)):
-                    cur_ext = self.afc.function.get_current_extruder()
-                    if cur_ext in self.afc.tools:
-                        self.afc.tools[cur_ext].lane_loaded = ro_lane.name
-                    ro_lane.unit_obj.lane_loaded(ro_lane)
-                    self.afc.spool._clear_values(lane)
-                    self.afc.save_vars()
-                    return
+            ro_lane = self.afc.lanes.get(ro_lane_name) if ro_lane_name else None
+            idx = ((getattr(ro_lane, "index", 0) - 1) % 4
+                   if ro_lane else -1)
+            ro_unit = getattr(ro_lane, "unit_obj", None) if ro_lane else None
+            if (ro_lane is not None and idx >= 0
+                    and ro_unit is not None
+                    and self._is_ams_lane(ro_lane)
+                    and getattr(ro_lane.extruder_obj, "name", None)
+                    == getattr(lane.extruder_obj, "name", None)
+                    and self.oams_manager is not None
+                    and self.oams_manager.load_spool_for_lane(
+                        fps_name, ro_lane.name, ro_unit.oams_name, idx)):
+                cur_ext = self.afc.function.get_current_extruder()
+                if cur_ext in self.afc.tools:
+                    self.afc.tools[cur_ext].lane_loaded = ro_lane.name
+                ro_lane.unit_obj.lane_loaded(ro_lane)
+                self.afc.spool._clear_values(lane)
+                self.afc.save_vars()
+                return
             self._trigger_runout(lane, force=True)
+            if self.oams_manager is not None:
+                fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
+                if fps_state is not None:
+                    fps_state.state_name = "LOADED"
+                    if ro_lane_name and ro_lane and ro_unit and idx >= 0:
+                        fps_state.current_group = ro_lane.name
+                        fps_state.current_oams = ro_unit.oams_name
+                        fps_state.current_spool_idx = idx
+                if self.oams_manager.runout_monitor is not None:
+                    self.oams_manager.runout_monitor.reset()
+                    self.oams_manager.runout_monitor.start()
         else:
             self.afc.spool._clear_values(lane)
             self.afc.save_vars()
