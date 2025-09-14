@@ -280,7 +280,7 @@ class afcAMS(afcUnit):
                 load_val = prep_val
                 last_load = self._last_load_states.get(lane.name)
                 if load_val != last_load:
-                    lane.handle_load_runout(eventtime, load_val)
+                    lane.load_callback(eventtime, load_val)
                     self._last_load_states[lane.name] = load_val
 
                 # Each AMS bay has its own hub sensor reported via
