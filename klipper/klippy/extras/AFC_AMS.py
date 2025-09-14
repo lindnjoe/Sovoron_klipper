@@ -196,12 +196,18 @@ class afcAMS(afcUnit):
 
         return succeeded
 
+    def _is_ams_lane(self, lane):
+        """Return True if ``lane`` belongs to an OpenAMS-managed unit."""
+        unit = getattr(lane, "unit_obj", None)
+        if unit is None:
+            return False
+        if getattr(unit, "type", "").upper() == "AMS":
+            return True
+        return hasattr(unit, "oams_name")
+
     def check_runout(self, cur_lane):
         """Determine if AFC should handle runout for the current lane."""
-
-        unit_type = getattr(cur_lane.unit_obj, "type", "")
-
-        if unit_type == "AMS":
+        if self._is_ams_lane(cur_lane):
             # If OpenAMS is actively managing this extruder (a filament group is
             # loaded on the associated FPS and the currently loaded spool comes
             # from this AMS unit) then OpenAMS will handle the spool swap and
@@ -217,8 +223,7 @@ class afcAMS(afcUnit):
                 if fps_name is not None:
                     fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
                     if (fps_state is not None
-                            and fps_state.current_group is not None
-                            and fps_state.current_oams == cur_lane.unit_obj.oams_name):
+                            and fps_state.current_group is not None):
                         return False
 
             # Legacy runout lane check – if both lanes are AMS and on the same
@@ -226,8 +231,9 @@ class afcAMS(afcUnit):
             if cur_lane.runout_lane is not None:
                 ro_lane = self.afc.lanes.get(cur_lane.runout_lane)
                 if (ro_lane is not None
-                        and getattr(ro_lane.unit_obj, "type", "") == "AMS"
-                        and ro_lane.extruder_obj == cur_lane.extruder_obj):
+                        and self._is_ams_lane(ro_lane)
+                        and getattr(ro_lane.extruder_obj, "name", None)
+                        == getattr(cur_lane.extruder_obj, "name", None)):
                     return False
 
         return (cur_lane.name == self.afc.function.get_current_lane()
@@ -282,8 +288,9 @@ class afcAMS(afcUnit):
                 ro_unit = getattr(ro_lane, "unit_obj", None) if ro_lane else None
                 if (ro_lane is not None and idx >= 0
                         and ro_unit is not None
-                        and getattr(ro_unit, "type", "") == "AMS"
-                        and ro_lane.extruder_obj == lane.extruder_obj
+                        and self._is_ams_lane(ro_lane)
+                        and getattr(ro_lane.extruder_obj, "name", None)
+                        == getattr(lane.extruder_obj, "name", None)
                         and self.oams_manager is not None
                         and self.oams_manager.load_spool_for_lane(
                             fps_name, ro_lane.name, ro_unit.oams_name, idx)):
@@ -363,9 +370,17 @@ class afcAMS(afcUnit):
                     hub.fila.runout_helper.note_filament_present(
                         eventtime, hub_val)
                 self._last_hub_states[hub.name] = hub_val
-                if (not hub_val and not load_val and
-                        self.check_runout(lane)):
-                    self._trigger_runout(lane)
+                if not hub_val and not load_val:
+                    # For AMS lanes managed by OpenAMS we rely on the
+                    # manager's runout callback to attempt a rollover before
+                    # invoking AFC runout routines. Only trigger AFC runout
+                    # directly for non-AMS lanes or when OpenAMS isn't
+                    # available.
+                    if (self._is_ams_lane(lane) and
+                            self.oams_manager is not None):
+                        pass
+                    elif self.check_runout(lane):
+                        self._trigger_runout(lane)
 
         return eventtime + self.interval
 
