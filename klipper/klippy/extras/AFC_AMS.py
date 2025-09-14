@@ -248,22 +248,20 @@ class afcAMS(afcUnit):
             and isinstance(getattr(ro_lane, "unit_obj", None), afcAMS)
             and self.oams_manager is not None
         ):
-            fps_obj = self.oams_manager.fpss.get(fps_name)
             ro_unit = ro_lane.unit_obj
-            if fps_obj is not None and getattr(fps_obj, "oams", None) == ro_unit.oams_name:
-                bay = getattr(ro_lane, "index", 0) - 1
-                if bay >= 0 and self.oams_manager.load_spool_for_lane(
-                    fps_name, ro_unit.oams_name, bay
-                ):
-                    tool = (
-                        self.oams_manager.oams[ro_unit.oams_name].oams_idx - 1
-                    ) * 4 + bay + 1
-                    gcode = self.printer.lookup_object("gcode")
-                    gcode.run_script_from_command(f"T{tool}")
-                    pause = self.printer.lookup_object("pause_resume", None)
-                    if pause is not None:
-                        pause.send_resume_command()
-                    return
+            bay = (getattr(ro_lane, "index", 0) - 1) % 4
+            if self.oams_manager.load_spool_for_lane(
+                fps_name, ro_unit.oams_name, bay
+            ):
+                tool = (
+                    self.oams_manager.oams[ro_unit.oams_name].oams_idx - 1
+                ) * 4 + bay + 1
+                gcode = self.printer.lookup_object("gcode")
+                gcode.run_script_from_command(f"T{tool}")
+                pause = self.printer.lookup_object("pause_resume", None)
+                if pause is not None:
+                    pause.send_resume_command()
+                return
 
         eventtime = self.reactor.monotonic()
         lane.handle_load_runout(eventtime, False)
