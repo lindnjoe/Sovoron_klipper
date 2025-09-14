@@ -269,32 +269,24 @@ class afcAMS(afcUnit):
                 # lane index so the correct sensor slot is used.
                 idx %= sensor_len
 
-                # OpenAMS exposes separate sensors for spool presence (prep)
-                # and filament at the hub. Idle AMS lanes should report their
-                # load state based on spool presence so "locked" and
-                # "loaded" remain in sync, while the active lane reflects the
-                # true hub sensor. Track each of these values independently.
+                # Load and prep sensors for AMS lanes both originate from the
+                # F1S HES values. They should always mirror each other.
                 prep_val = bool(prep_values[idx])
                 last_prep = self._last_prep_states.get(lane.name)
                 if prep_val != last_prep:
                     lane.prep_callback(eventtime, prep_val)
                     self._last_prep_states[lane.name] = prep_val
 
-                hub_val = bool(hub_values[idx]) if idx < len(hub_values) else False
-                if lane.name == self.afc.function.get_current_lane():
-                    load_val = hub_val
-                    hub_state = hub_val
-                else:
-                    # For idle lanes, mirror spool presence so "locked" and
-                    # hub indicators stay in sync.
-                    load_val = prep_val
-                    hub_state = prep_val
-
+                load_val = prep_val
                 last_load = self._last_load_states.get(lane.name)
                 if load_val != last_load:
                     lane.handle_load_runout(eventtime, load_val)
                     self._last_load_states[lane.name] = load_val
 
+                # Each AMS bay has its own hub sensor reported via
+                # f1s_hub values. Track those independently of spool
+                # presence.
+                hub_state = bool(hub_values[idx]) if idx < len(hub_values) else False
                 hub = getattr(lane, "hub_obj", None)
                 if hub is None:
                     continue
