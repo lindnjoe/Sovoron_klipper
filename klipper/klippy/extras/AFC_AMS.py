@@ -216,9 +216,14 @@ class afcAMS(afcUnit):
                 and cur_lane.status not in (AFCLaneState.EJECTING,
                                             AFCLaneState.CALIBRATING))
 
-    def _trigger_runout(self, lane):
-        """Handle runout for lanes without dedicated load sensors."""
-        if self.check_runout(lane):
+    def _trigger_runout(self, lane, force=False):
+        """Handle runout for lanes without dedicated load sensors.
+
+        The ``force`` parameter bypasses ``check_runout`` and executes the
+        appropriate AFC runout routine unconditionally. This is used when
+        OpenAMS reports a runout but cannot reload a backup spool.
+        """
+        if force or self.check_runout(lane):
             if lane.runout_lane is not None:
                 lane._perform_infinite_runout()
             else:
@@ -270,7 +275,7 @@ class afcAMS(afcUnit):
                     self.afc.spool._clear_values(lane)
                     self.afc.save_vars()
                     return
-            self._trigger_runout(lane)
+            self._trigger_runout(lane, force=True)
         else:
             self.afc.spool._clear_values(lane)
             self.afc.save_vars()
@@ -339,7 +344,8 @@ class afcAMS(afcUnit):
                     hub.fila.runout_helper.note_filament_present(
                         eventtime, hub_val)
                 self._last_hub_states[hub.name] = hub_val
-                if not hub_val and not load_val:
+                if (not hub_val and not load_val and
+                        self.check_runout(lane)):
                     self._trigger_runout(lane)
 
         return eventtime + self.interval
