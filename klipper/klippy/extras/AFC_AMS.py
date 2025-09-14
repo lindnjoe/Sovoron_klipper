@@ -238,6 +238,33 @@ class afcAMS(afcUnit):
             gcode.run_script_from_command(f"T{tool}")
             return
 
+        # OpenAMS could not reload a spool automatically. If the current lane
+        # has an infinite-spool fallback that is an AMS lane on the same FPS,
+        # attempt to load it via OpenAMS before falling back to AFC logic.
+        runout_name = getattr(lane, "runout_lane", None)
+        ro_lane = self.afc.lanes.get(runout_name) if runout_name else None
+        if (
+            ro_lane is not None
+            and isinstance(getattr(ro_lane, "unit_obj", None), afcAMS)
+            and self.oams_manager is not None
+        ):
+            fps_obj = self.oams_manager.fpss.get(fps_name)
+            ro_unit = ro_lane.unit_obj
+            if fps_obj is not None and getattr(fps_obj, "oams", None) == ro_unit.oams_name:
+                bay = getattr(ro_lane, "index", 0) - 1
+                if bay >= 0 and self.oams_manager.load_spool_for_lane(
+                    fps_name, ro_unit.oams_name, bay
+                ):
+                    tool = (
+                        self.oams_manager.oams[ro_unit.oams_name].oams_idx - 1
+                    ) * 4 + bay + 1
+                    gcode = self.printer.lookup_object("gcode")
+                    gcode.run_script_from_command(f"T{tool}")
+                    pause = self.printer.lookup_object("pause_resume", None)
+                    if pause is not None:
+                        pause.send_resume_command()
+                    return
+
         eventtime = self.reactor.monotonic()
         lane.handle_load_runout(eventtime, False)
 

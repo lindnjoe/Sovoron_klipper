@@ -277,6 +277,36 @@ class OAMSManager:
             cb(fps_name, spool_idx)
         except Exception:
             logging.exception("OAMS: runout callback failed")
+
+    def load_spool_for_lane(self, fps_name: str, oams_name: str, bay_index: int) -> bool:
+        """Load a specific spool bay and restart monitoring.
+
+        Returns ``True`` if the spool was successfully loaded.
+        """
+        fps_state = self.current_state.fps_state.get(fps_name)
+        oam = self.oams.get(oams_name)
+        if fps_state is None or oam is None:
+            return False
+        if not oam.is_bay_ready(bay_index):
+            return False
+        success, message = oam.load_spool(bay_index)
+        if success:
+            logging.info(
+                f"OAMS: Loaded spool in bay {bay_index} of OAM {oams_name}"
+            )
+            fps_state.state_name = "LOADED"
+            fps_state.since = self.printer.get_reactor().monotonic()
+            fps_state.current_spool_idx = bay_index
+            fps_state.current_oams = oams_name
+            fps_state.reset_runout_positions()
+            if hasattr(self, "runout_monitor"):
+                self.runout_monitor.reset()
+                self.runout_monitor.start()
+        else:
+            logging.error(
+                f"OAMS: Failed to load spool in bay {bay_index} of OAM {oams_name}: {message}"
+            )
+        return success
         
     def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
         """
