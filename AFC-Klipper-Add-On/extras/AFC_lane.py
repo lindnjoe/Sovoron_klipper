@@ -530,13 +530,15 @@ class AFCLane:
                 self.material = self.afc.default_material_type
                 self.weight = 1000 # Defaulting weight to 1000 upon load
             else:
-                if self.unit_obj.check_runout(self):
+                runout = self.unit_obj.check_runout(self)
+                if runout:
                     # Checking to make sure runout_lane is set
                     if self.runout_lane is not None:
                         self._perform_infinite_runout()
                     else:
                         self._perform_pause_runout()
-                elif self.status != "calibrating":
+                elif (self.status != "calibrating"
+                        and getattr(self.unit_obj, "oams_manager", None) is None):
                     self.afc.function.afc_led(self.led_not_ready, self.led_index)
                     self.status = AFCLaneState.NONE
                     self.loaded_to_hub = False
@@ -611,11 +613,12 @@ class AFCLane:
                         self.afc.spool._set_values(self)
 
                 elif self.prep_state == False and self.name == self.afc.current and self.afc.function.is_printing() and self.load_state and self.status != AFCLaneState.EJECTING:
-                    # Checking to make sure runout_lane is set
-                    if self.runout_lane is not None:
-                        self._perform_infinite_runout()
-                    else:
-                        self._perform_pause_runout()
+                    if self.unit_obj.check_runout(self):
+                        # Checking to make sure runout_lane is set
+                        if self.runout_lane is not None:
+                            self._perform_infinite_runout()
+                        else:
+                            self._perform_pause_runout()
 
                 elif self.prep_state == True and self.load_state == True and not self.afc.function.is_printing():
                     message = 'Cannot load {} load sensor is triggered.'.format(self.name)
