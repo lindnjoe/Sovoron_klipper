@@ -98,6 +98,8 @@ class afcAMS(afcUnit):
         self.timer = self.reactor.register_timer(self._sync_event)
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
+        self.oams_manager = None
+
         # Track last sensor states so callbacks only trigger on changes
         self._last_prep_states = {}
         self._last_load_states = {}
@@ -203,58 +205,102 @@ class afcAMS(afcUnit):
                                             AFCLaneState.CALIBRATING))
 
     def handle_ready(self):
-        # Resolve OpenAMS object and start periodic polling
+        # Resolve OpenAMS objects and register for runout callbacks
         self.oams = self.printer.lookup_object("oams " + self.oams_name, None)
+        self.oams_manager = self.printer.lookup_object("oams_manager", None)
+        if self.oams_manager is not None:
+            self.oams_manager.register_runout_callback(self._on_oams_runout)
         self.reactor.update_timer(self.timer, self.reactor.NOW)
 
+    def _on_oams_runout(self, fps_name, spool_idx):
+        """Forward OpenAMS runout events to the active lane.
+
+        When a new spool is loaded on the same FPS, switch to its lane by
+        issuing the corresponding ``T#`` command. If no spool could be loaded,
+        invoke AFC's standard runout handling for the active lane.
+        """
+        lane_name = self.afc.function.get_current_lane()
+        lane = self.lanes.get(lane_name)
+        if lane is None:
+            return
+
+        if spool_idx >= 0 and self.oams_manager is not None:
+            # Determine which OAMS and bay were loaded and compute the global
+            # lane number so the printer switches tools accordingly.
+            fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
+            if fps_state is None:
+                return
+            oams_obj = self.oams_manager.oams.get(fps_state.current_oams)
+            if oams_obj is None:
+                return
+            tool = (oams_obj.oams_idx - 1) * 4 + spool_idx + 1
+            gcode = self.printer.lookup_object("gcode")
+            gcode.run_script_from_command(f"T{tool}")
+            return
+
+        eventtime = self.reactor.monotonic()
+        lane.handle_load_runout(eventtime, False)
+
     def _sync_event(self, eventtime):
+        if self.oams is None:
+            return eventtime + self.interval
+
+        # Request updated sensor values from the OpenAMS controller so
+        # new spools inserted into empty bays are detected.
         try:
-            if self.oams is None:
-                return eventtime + self.interval
+            self.oams.determine_current_spool()
+        except Exception:
+            pass
 
-            # Request updated sensor values from the OpenAMS controller so
-            # new spools inserted into empty bays are detected.
+        # Iterate through lanes belonging to this unit
+        prep_values = self.oams.f1s_hes_value
+        hub_values = getattr(self.oams, "hub_hes_value", [])
+        sensor_len = len(prep_values)
+        if sensor_len == 0:
+            return eventtime + self.interval
+
+        for lane in list(self.lanes.values()):
             try:
-                self.oams.determine_current_spool()
-            except Exception:
-                pass
-
-            # Iterate through lanes belonging to this unit
-            for lane in list(self.lanes.values()):
                 idx = getattr(lane, "index", 0) - 1
                 if idx < 0:
                     continue
+                # Each AMS unit only reports four bays, but AFC lane
+                # indices may be global across multiple units. Wrap the
+                # lane index so the correct sensor slot is used.
+                idx %= sensor_len
 
-                # OpenAMS exposes separate sensors for spool presence (prep)
-                # and filament loaded into the hub (load). Track changes for
-                # each independently so lane callbacks mirror physical state.
-                prep_val = bool(self.oams.f1s_hes_value[idx])
+                # Load and prep sensors for AMS lanes both originate from the
+                # F1S HES values. They should always mirror each other.
+                prep_val = bool(prep_values[idx])
                 last_prep = self._last_prep_states.get(lane.name)
                 if prep_val != last_prep:
                     lane.prep_callback(eventtime, prep_val)
                     self._last_prep_states[lane.name] = prep_val
 
-                load_val = bool(self.oams.hub_hes_value[idx])
+                load_val = prep_val
                 last_load = self._last_load_states.get(lane.name)
                 if load_val != last_load:
                     lane.handle_load_runout(eventtime, load_val)
                     self._last_load_states[lane.name] = load_val
 
+                # Each AMS bay has its own hub sensor reported via
+                # f1s_hub values. Track those independently of spool
+                # presence.
+                hub_state = bool(hub_values[idx]) if idx < len(hub_values) else False
                 hub = getattr(lane, "hub_obj", None)
                 if hub is None:
                     continue
 
                 last_hub = self._last_hub_states.get(hub.name)
-                if load_val != last_hub:
-                    hub.switch_pin_callback(eventtime, load_val)
+                if hub_state != last_hub:
+                    hub.switch_pin_callback(eventtime, hub_state)
                     if hasattr(hub, "fila"):
                         hub.fila.runout_helper.note_filament_present(
-                            eventtime, load_val)
-                    self._last_hub_states[hub.name] = load_val
-
-        except Exception:
-            # Avoid breaking the reactor loop if OpenAMS query fails
-            pass
+                            eventtime, hub_state)
+                    self._last_hub_states[hub.name] = hub_state
+            except Exception:
+                # Skip lanes that can't be queried but continue updating others
+                continue
 
         return eventtime + self.interval
 
