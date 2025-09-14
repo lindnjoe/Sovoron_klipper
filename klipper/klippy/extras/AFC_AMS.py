@@ -297,23 +297,24 @@ class afcAMS(afcUnit):
                 idx %= sensor_len
 
                 # Load and prep sensors for AMS lanes both originate from the
-                # F1S HES values. They should always mirror each other.
+                # F1S HES values. Hub sensors report filament at the follower
+                # gears. Consider the lane "loaded" until both sensors are
+                # clear so OpenAMS can finish coasting before AFC runs runout.
                 prep_val = bool(prep_values[idx])
+                hub_state = bool(hub_values[idx]) if idx < len(hub_values) else False
+
                 last_prep = self._last_prep_states.get(lane.name)
                 if prep_val != last_prep:
                     lane.prep_callback(eventtime, prep_val)
                     self._last_prep_states[lane.name] = prep_val
 
-                load_val = prep_val
+                load_val = prep_val or hub_state
                 last_load = self._last_load_states.get(lane.name)
                 if load_val != last_load:
                     lane.load_callback(eventtime, load_val)
                     self._last_load_states[lane.name] = load_val
 
-                # Each AMS bay has its own hub sensor reported via
-                # f1s_hub values. Track those independently of spool
-                # presence.
-                hub_state = bool(hub_values[idx]) if idx < len(hub_values) else False
+                # Update dedicated hub sensor state
                 hub = getattr(lane, "hub_obj", None)
                 if hub is None:
                     continue
