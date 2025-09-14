@@ -13,14 +13,14 @@
             "prep": false,
             "tool_loaded": false,
             "loaded_to_hub": false,
-            "material": "",
+            "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
             "empty_spool_weight": 250.0,
-            "spool_id": null,
-            "color": "",
-            "weight": 0,
-            "extruder_temp": null,
+            "spool_id": 4,
+            "color": "#000000",
+            "weight": 10.741698228810057,
+            "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "Not Ready",
             "filament_status_led": "#ff0000",
@@ -89,7 +89,7 @@
             "map": "T8",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
+            "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
@@ -97,12 +97,12 @@
             "empty_spool_weight": 250.0,
             "spool_id": 11,
             "color": "#27ea51",
-            "weight": 778.423775888845,
+            "weight": 778.3896882259287,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled"
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "None"
         }
     },
     "AMS_2": {
@@ -231,7 +231,7 @@
             "empty_spool_weight": 250.0,
             "spool_id": 1,
             "color": "#2D2B28",
-            "weight": 744.225377052452,
+            "weight": 736.6833147531863,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "In Tool",
@@ -336,7 +336,7 @@
                 "lane_loaded": "lane3"
             },
             "extruder4": {
-                "lane_loaded": "lane8"
+                "lane_loaded": null
             },
             "extruder5": {
                 "lane_loaded": "lane11"

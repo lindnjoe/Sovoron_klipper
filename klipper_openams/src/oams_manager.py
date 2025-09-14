@@ -11,7 +11,7 @@ from collections import deque
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 # Configuration constants
-PAUSE_DISTANCE = 360  # mm to pause before coasting follower
+PAUSE_DISTANCE = 60  # mm to pause before coasting follower
 ENCODER_SAMPLES = 2  # Number of encoder samples to collect
 MIN_ENCODER_DIFF = 1  # Minimum encoder difference to consider movement
 FILAMENT_PATH_LENGTH_FACTOR = 1.14  # Factor for calculating filament path traversal
