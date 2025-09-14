@@ -277,7 +277,8 @@ class afcAMS(afcUnit):
             ro_lane_name = lane.runout_lane
             if ro_lane_name:
                 ro_lane = self.afc.lanes.get(ro_lane_name)
-                idx = getattr(ro_lane, "index", 0) - 1 if ro_lane else -1
+                idx = ((getattr(ro_lane, "index", 0) - 1) % 4
+                       if ro_lane else -1)
                 ro_unit = getattr(ro_lane, "unit_obj", None) if ro_lane else None
                 if (ro_lane is not None and idx >= 0
                         and ro_unit is not None
