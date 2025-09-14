@@ -199,17 +199,36 @@ class afcAMS(afcUnit):
     def check_runout(self, cur_lane):
         """Determine if AFC should handle runout for the current lane."""
 
-        # Runout handling is suppressed when both the current lane and its
-        # configured runout lane are AMS lanes that share the same FPS
-        # (extruder). In that scenario the OpenAMS manager will perform the
-        # spool hand-off automatically.
-        if (cur_lane.runout_lane is not None
-                and getattr(cur_lane.unit_obj, "type", "") == "AMS"):
-            ro_lane = self.afc.lanes.get(cur_lane.runout_lane)
-            if (ro_lane is not None
-                    and getattr(ro_lane.unit_obj, "type", "") == "AMS"
-                    and ro_lane.extruder_obj == cur_lane.extruder_obj):
-                return False
+        unit_type = getattr(cur_lane.unit_obj, "type", "")
+
+        if unit_type == "AMS":
+            # If OpenAMS is actively managing this extruder (a filament group is
+            # loaded on the associated FPS and the currently loaded spool comes
+            # from this AMS unit) then OpenAMS will handle the spool swap and
+            # AFC runout handling should be suppressed.
+            if self.oams_manager is not None:
+                fps_name = None
+                extruder_name = getattr(cur_lane.extruder_obj, "name", None)
+                for name, fps in getattr(self.oams_manager, "fpss", {}).items():
+                    if getattr(fps, "extruder_name", None) == extruder_name:
+                        fps_name = name
+                        break
+
+                if fps_name is not None:
+                    fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
+                    if (fps_state is not None
+                            and fps_state.current_group is not None
+                            and fps_state.current_oams == cur_lane.unit_obj.oams_name):
+                        return False
+
+            # Legacy runout lane check – if both lanes are AMS and on the same
+            # extruder then OpenAMS can perform the rollover automatically.
+            if cur_lane.runout_lane is not None:
+                ro_lane = self.afc.lanes.get(cur_lane.runout_lane)
+                if (ro_lane is not None
+                        and getattr(ro_lane.unit_obj, "type", "") == "AMS"
+                        and ro_lane.extruder_obj == cur_lane.extruder_obj):
+                    return False
 
         return (cur_lane.name == self.afc.function.get_current_lane()
                 and self.afc.function.is_printing()
