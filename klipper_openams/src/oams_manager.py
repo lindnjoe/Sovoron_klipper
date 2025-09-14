@@ -11,7 +11,7 @@ from collections import deque
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 # Configuration constants
-PAUSE_DISTANCE = 60  # mm to pause before coasting follower
+PAUSE_DISTANCE = 360  # mm to pause before coasting follower
 ENCODER_SAMPLES = 2  # Number of encoder samples to collect
 MIN_ENCODER_DIFF = 1  # Minimum encoder difference to consider movement
 FILAMENT_PATH_LENGTH_FACTOR = 1.14  # Factor for calculating filament path traversal
@@ -54,7 +54,7 @@ class OAMSRunoutMonitor:
                  fps_state,
                  oams: Dict[str, Any],
                  reload_callback: Callable, 
-                 reload_before_toolhead_distance: float = 0.0):
+                 reload_before_toolhead_distance: float = 10.0):
         # Core references
         self.oams = oams
         self.printer = printer
@@ -687,8 +687,6 @@ class OAMSManager:
                         else:
                             logging.error(f"OAMS: Failed to load spool: {message}")
                             break
-                self._pause_printer_message(
-                    "No spool available for group %s" % fps_state.current_group)
                 self.runout_monitor.paused()
                 if self.runout_callback is not None:
                     self.runout_callback(
@@ -696,6 +694,10 @@ class OAMSManager:
                         fps_state.current_group,
                         -1,
                     )
+                    if fps_state.state_name == "LOADED":
+                        return
+                self._pause_printer_message(
+                    "No spool available for group %s" % fps_state.current_group)
                 return
 
             self.runout_monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], fps_state, self.oams, _reload_callback, reload_before_toolhead_distance=self.reload_before_toolhead_distance)

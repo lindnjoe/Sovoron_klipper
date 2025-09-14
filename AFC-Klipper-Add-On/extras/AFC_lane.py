@@ -521,6 +521,16 @@ class AFCLane:
 
     def load_callback(self, eventtime, state):
         self.load_state = state
+        if (not state
+                and getattr(self.unit_obj, "oams_manager", None) is not None
+                and hasattr(self.unit_obj, "_is_ams_lane")
+                and self.unit_obj._is_ams_lane(self)):
+            # When OpenAMS manages this AMS lane, defer runout handling until
+            # the manager reports a hub runout so AFC's infinite spool logic
+            # doesn't trigger early on prep/load runout events.
+            self.afc.save_vars()
+            return
+
         if self.printer.state_message == 'Printer is ready' and self.unit_obj.type == "HTLF":
             self.prep_state = state
 
