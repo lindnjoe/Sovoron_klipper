@@ -617,12 +617,6 @@ class AFCLane:
                             self._perform_infinite_runout()
                         else:
                             self._perform_pause_runout()
-                    elif self.status != "calibrating":
-                        self.afc.function.afc_led(self.led_not_ready, self.led_index)
-                        self.status = AFCLaneState.NONE
-                        self.loaded_to_hub = False
-                        self.afc.spool._clear_values(self)
-                        self.afc.function.afc_led(self.afc.led_not_ready, self.led_index)
 
                 elif self.prep_state == True and self.load_state == True and not self.afc.function.is_printing():
                     message = 'Cannot load {} load sensor is triggered.'.format(self.name)
