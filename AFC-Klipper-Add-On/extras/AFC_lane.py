@@ -611,11 +611,12 @@ class AFCLane:
                         self.afc.spool._set_values(self)
 
                 elif self.prep_state == False and self.name == self.afc.current and self.afc.function.is_printing() and self.load_state and self.status != AFCLaneState.EJECTING:
-                    # Checking to make sure runout_lane is set
-                    if self.runout_lane is not None:
-                        self._perform_infinite_runout()
-                    else:
-                        self._perform_pause_runout()
+                    if self.unit_obj.check_runout(self):
+                        # Checking to make sure runout_lane is set
+                        if self.runout_lane is not None:
+                            self._perform_infinite_runout()
+                        else:
+                            self._perform_pause_runout()
 
                 elif self.prep_state == True and self.load_state == True and not self.afc.function.is_printing():
                     message = 'Cannot load {} load sensor is triggered.'.format(self.name)
