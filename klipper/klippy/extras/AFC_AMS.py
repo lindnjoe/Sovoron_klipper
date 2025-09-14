@@ -13,9 +13,31 @@ try:
 except Exception:
     raise error("Error when trying to import AFC_unit\n{trace}".format(trace=traceback.format_exc()))
 try:
-    from extras.AFC_lane import AFCLaneState
+    from extras.AFC_lane import AFCLane, AFCLaneState
 except Exception:
     raise error("Error when trying to import AFC_lane\n{trace}".format(trace=traceback.format_exc()))
+
+# -----------------------------------------------------------------------------
+# Monkey patch AFCLane.load_callback so AMS lanes defer runout handling to
+# OpenAMS when a manager is present. This preserves the original AFCLane
+# implementation while allowing coordination without modifying AFC_lane.py.
+# -----------------------------------------------------------------------------
+try:
+    _orig_load_callback = AFCLane.load_callback
+
+    def _patched_load_callback(self, eventtime, state):
+        if (not state
+                and getattr(self.unit_obj, "oams_manager", None) is not None
+                and hasattr(self.unit_obj, "_is_ams_lane")
+                and self.unit_obj._is_ams_lane(self)):
+            self.load_state = state
+            self.afc.save_vars()
+            return
+        return _orig_load_callback(self, eventtime, state)
+
+    AFCLane.load_callback = _patched_load_callback
+except Exception:
+    pass
 
 # -----------------------------------------------------------------------------
 # Monkey patch afc_hub to allow virtual switch pins for AMS hubs
@@ -214,23 +236,10 @@ class afcAMS(afcUnit):
     def check_runout(self, cur_lane):
         """Determine if AFC should handle runout for the current lane."""
         if self._is_ams_lane(cur_lane):
-            # If OpenAMS is actively managing this extruder (a filament group is
-            # loaded on the associated FPS and the currently loaded spool comes
-            # from this AMS unit) then OpenAMS will handle the spool swap and
-            # AFC runout handling should be suppressed.
+            # When the OpenAMS manager is present defer runout handling so it
+            # can attempt a spool swap before AFC intervenes.
             if self.oams_manager is not None:
-                fps_name = None
-                extruder_name = getattr(cur_lane.extruder_obj, "name", None)
-                for name, fps in getattr(self.oams_manager, "fpss", {}).items():
-                    if getattr(fps, "extruder_name", None) == extruder_name:
-                        fps_name = name
-                        break
-
-                if fps_name is not None:
-                    fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
-                    if (fps_state is not None
-                            and fps_state.current_group is not None):
-                        return False
+                return False
 
             # Legacy runout lane check - if both lanes are AMS and on the same
             # extruder then OpenAMS can perform the rollover automatically.
@@ -288,26 +297,38 @@ class afcAMS(afcUnit):
                 hub.fila.runout_helper.note_filament_present(eventtime, False)
         if spool_idx < 0:
             ro_lane_name = lane.runout_lane
-            if ro_lane_name:
-                ro_lane = self.afc.lanes.get(ro_lane_name)
-                idx = getattr(ro_lane, "index", 0) - 1 if ro_lane else -1
-                ro_unit = getattr(ro_lane, "unit_obj", None) if ro_lane else None
-                if (ro_lane is not None and idx >= 0
-                        and ro_unit is not None
-                        and self._is_ams_lane(ro_lane)
-                        and getattr(ro_lane.extruder_obj, "name", None)
-                        == getattr(lane.extruder_obj, "name", None)
-                        and self.oams_manager is not None
-                        and self.oams_manager.load_spool_for_lane(
-                            fps_name, ro_lane.name, ro_unit.oams_name, idx)):
-                    cur_ext = self.afc.function.get_current_extruder()
-                    if cur_ext in self.afc.tools:
-                        self.afc.tools[cur_ext].lane_loaded = ro_lane.name
-                    ro_lane.unit_obj.lane_loaded(ro_lane)
-                    self.afc.spool._clear_values(lane)
-                    self.afc.save_vars()
-                    return
+            ro_lane = self.afc.lanes.get(ro_lane_name) if ro_lane_name else None
+            idx = getattr(ro_lane, "index", -1) if ro_lane else -1
+            if idx > 0:
+                idx = (idx - 1) % 4
+            ro_unit = getattr(ro_lane, "unit_obj", None) if ro_lane else None
+            if (ro_lane is not None and idx >= 0
+                    and ro_unit is not None
+                    and self._is_ams_lane(ro_lane)
+                    and getattr(ro_lane.extruder_obj, "name", None)
+                    == getattr(lane.extruder_obj, "name", None)
+                    and self.oams_manager is not None
+                    and self.oams_manager.load_spool_for_lane(
+                        fps_name, ro_lane.name, ro_unit.oams_name, idx)):
+                cur_ext = self.afc.function.get_current_extruder()
+                if cur_ext in self.afc.tools:
+                    self.afc.tools[cur_ext].lane_loaded = ro_lane.name
+                ro_lane.unit_obj.lane_loaded(ro_lane)
+                self.afc.spool._clear_values(lane)
+                self.afc.save_vars()
+                return
             self._trigger_runout(lane, force=True)
+            if self.oams_manager is not None:
+                fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
+                if fps_state is not None:
+                    fps_state.state_name = "LOADED"
+                    if ro_lane_name and ro_lane and ro_unit and idx >= 0:
+                        fps_state.current_group = ro_lane.name
+                        fps_state.current_oams = ro_unit.oams_name
+                        fps_state.current_spool_idx = idx
+                if self.oams_manager.runout_monitor is not None:
+                    self.oams_manager.runout_monitor.reset()
+                    self.oams_manager.runout_monitor.start()
         else:
             self.afc.spool._clear_values(lane)
             self.afc.save_vars()

@@ -286,8 +286,6 @@ class OAMSManager:
         oam = self.oams.get(oams_name)
         if fps_state is None or oam is None:
             return False
-        if not oam.is_bay_ready(bay_index):
-            return False
 
         success, _ = oam.load_spool(bay_index)
         if not success:
@@ -687,8 +685,6 @@ class OAMSManager:
                         else:
                             logging.error(f"OAMS: Failed to load spool: {message}")
                             break
-                self._pause_printer_message(
-                    "No spool available for group %s" % fps_state.current_group)
                 self.runout_monitor.paused()
                 if self.runout_callback is not None:
                     self.runout_callback(
@@ -696,6 +692,10 @@ class OAMSManager:
                         fps_state.current_group,
                         -1,
                     )
+                    if fps_state.state_name == "LOADED":
+                        return
+                self._pause_printer_message(
+                    "No spool available for group %s" % fps_state.current_group)
                 return
 
             self.runout_monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], fps_state, self.oams, _reload_callback, reload_before_toolhead_distance=self.reload_before_toolhead_distance)
