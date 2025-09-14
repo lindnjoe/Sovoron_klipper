@@ -86,7 +86,13 @@ SYNC_INTERVAL = 2.0
 
 
 class afcAMS(afcUnit):
-    """AFK unit that synchronizes lane and hub states with OpenAMS."""
+    """AFK unit that synchronizes lane and hub states with OpenAMS.
+
+    OpenAMS reports separate sensors for spool presence (prep) and for
+    filament traveling through the hub.  Prep sensors track whether a
+    spool is loaded, while hub sensors drive the load state and runout
+    detection.
+    """
 
     def __init__(self, config):
         super().__init__(config)
@@ -333,11 +339,11 @@ class afcAMS(afcUnit):
 
             try:
                 # OpenAMS exposes separate sensors for spool presence
-                # (f1s_hes_value) and the hub path (hub_hes_value). The
-                # spool sensor should drive both the prep and load states so
-                # that inserting filament reflects immediately in AFC, while
-                # the hub sensor is reported separately for informational
-                # purposes.
+                # (``f1s_hes_value``) and the hub path (``hub_hes_value``).
+                # The prep sensor tracks whether a spool is present so that
+                # inserting filament is immediately reflected in AFC, while
+                # the hub sensor represents filament actually loaded through
+                # the hub and therefore drives runout detection.
                 prep_val = bool(self.oams.f1s_hes_value[idx])
                 hub_val = bool(self.oams.hub_hes_value[idx])
 
@@ -346,7 +352,9 @@ class afcAMS(afcUnit):
                     lane.prep_callback(eventtime, prep_val)
                     self._last_prep_states[lane.name] = prep_val
 
-                load_val = prep_val
+                # Drive the load state from the hub sensor so runout checks
+                # only occur when the hub path goes empty.
+                load_val = hub_val
 
                 last_load = self._last_load_states.get(lane.name)
                 if load_val != last_load:
