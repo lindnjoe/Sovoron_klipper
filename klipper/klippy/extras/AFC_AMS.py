@@ -98,6 +98,8 @@ class afcAMS(afcUnit):
         self.timer = self.reactor.register_timer(self._sync_event)
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
+        self.oams_manager = None
+
         # Track last sensor states so callbacks only trigger on changes
         self._last_prep_states = {}
         self._last_load_states = {}
@@ -203,58 +205,129 @@ class afcAMS(afcUnit):
                                             AFCLaneState.CALIBRATING))
 
     def handle_ready(self):
-        # Resolve OpenAMS object and start periodic polling
+        # Resolve OpenAMS objects and register for runout callbacks
         self.oams = self.printer.lookup_object("oams " + self.oams_name, None)
+        self.oams_manager = self.printer.lookup_object("oams_manager", None)
+        if self.oams_manager is not None:
+            self.oams_manager.register_runout_callback(self._on_oams_runout)
         self.reactor.update_timer(self.timer, self.reactor.NOW)
 
+    def _on_oams_runout(self, fps_name, spool_idx):
+        """Forward OpenAMS runout events to the active lane.
+
+        When OpenAMS successfully reloads a spool on the same FPS, allow the
+        print to continue without issuing a ``T#`` tool change.  If OpenAMS
+        fails to reload a spool, attempt to load the fallback AMS lane via
+        ``OAMSM_LOAD_FILAMENT`` before falling back to AFC's standard runout
+        handling.
+        """
+        lane_name = self.afc.function.get_current_lane()
+        lane = self.lanes.get(lane_name)
+        if lane is None:
+            return
+
+        if spool_idx >= 0:
+            # OpenAMS already loaded a new spool on this FPS; nothing further
+            # to do.
+            return
+
+        # OpenAMS could not reload a spool automatically. If the current lane
+        # has an infinite-spool fallback that is an AMS lane on the same FPS,
+        # attempt to load it via OpenAMS before falling back to AFC logic.
+        runout_name = getattr(lane, "runout_lane", None)
+        ro_lane = self.afc.lanes.get(runout_name) if runout_name else None
+        if (
+            ro_lane is not None
+            and isinstance(getattr(ro_lane, "unit_obj", None), afcAMS)
+            and self.oams_manager is not None
+        ):
+            # Only attempt an OpenAMS reload if the fallback lane resides on
+            # the same FPS as the lane that ran out.
+            ro_fps = self.oams_manager.group_fps_name(ro_lane.map)
+            if ro_fps == fps_name:
+                fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
+                if fps_state is not None:
+                    # Mark the FPS as unloaded so the load command proceeds.
+                    fps_state.state_name = "UNLOADED"
+                    fps_state.current_group = None
+                    fps_state.current_oams = None
+                    fps_state.current_spool_idx = None
+                gcode = self.printer.lookup_object("gcode")
+                gcode.run_script_from_command(
+                    f"OAMSM_LOAD_FILAMENT GROUP={ro_lane.map}"
+                )
+                if hasattr(self.oams_manager, "runout_monitor"):
+                    self.oams_manager.runout_monitor.reset()
+                    self.oams_manager.runout_monitor.start()
+                pause = self.printer.lookup_object("pause_resume", None)
+                if pause is not None:
+                    pause.send_resume_command()
+                return
+
+        eventtime = self.reactor.monotonic()
+        lane.handle_load_runout(eventtime, False)
+
     def _sync_event(self, eventtime):
+        if self.oams is None:
+            return eventtime + self.interval
+
+        # Request updated sensor values from the OpenAMS controller so
+        # new spools inserted into empty bays are detected.
         try:
-            if self.oams is None:
-                return eventtime + self.interval
+            self.oams.determine_current_spool()
+        except Exception:
+            pass
 
-            # Request updated sensor values from the OpenAMS controller so
-            # new spools inserted into empty bays are detected.
+        # Iterate through lanes belonging to this unit
+        prep_values = self.oams.f1s_hes_value
+        hub_values = getattr(self.oams, "hub_hes_value", [])
+        sensor_len = len(prep_values)
+        if sensor_len == 0:
+            return eventtime + self.interval
+
+        for lane in list(self.lanes.values()):
             try:
-                self.oams.determine_current_spool()
-            except Exception:
-                pass
-
-            # Iterate through lanes belonging to this unit
-            for lane in list(self.lanes.values()):
                 idx = getattr(lane, "index", 0) - 1
                 if idx < 0:
                     continue
+                # Each AMS unit only reports four bays, but AFC lane
+                # indices may be global across multiple units. Wrap the
+                # lane index so the correct sensor slot is used.
+                idx %= sensor_len
 
-                # OpenAMS exposes separate sensors for spool presence (prep)
-                # and filament loaded into the hub (load). Track changes for
-                # each independently so lane callbacks mirror physical state.
-                prep_val = bool(self.oams.f1s_hes_value[idx])
+                # Load and prep sensors for AMS lanes both originate from the
+                # F1S HES values. Hub sensors report filament at the follower
+                # gears. Consider the lane "loaded" until both sensors are
+                # clear so OpenAMS can finish coasting before AFC runs runout.
+                prep_val = bool(prep_values[idx])
+                hub_state = bool(hub_values[idx]) if idx < len(hub_values) else False
+
                 last_prep = self._last_prep_states.get(lane.name)
                 if prep_val != last_prep:
                     lane.prep_callback(eventtime, prep_val)
                     self._last_prep_states[lane.name] = prep_val
 
-                load_val = bool(self.oams.hub_hes_value[idx])
+                load_val = prep_val or hub_state
                 last_load = self._last_load_states.get(lane.name)
                 if load_val != last_load:
-                    lane.handle_load_runout(eventtime, load_val)
+                    lane.load_callback(eventtime, load_val)
                     self._last_load_states[lane.name] = load_val
 
+                # Update dedicated hub sensor state
                 hub = getattr(lane, "hub_obj", None)
                 if hub is None:
                     continue
 
                 last_hub = self._last_hub_states.get(hub.name)
-                if load_val != last_hub:
-                    hub.switch_pin_callback(eventtime, load_val)
+                if hub_state != last_hub:
+                    hub.switch_pin_callback(eventtime, hub_state)
                     if hasattr(hub, "fila"):
                         hub.fila.runout_helper.note_filament_present(
-                            eventtime, load_val)
-                    self._last_hub_states[hub.name] = load_val
-
-        except Exception:
-            # Avoid breaking the reactor loop if OpenAMS query fails
-            pass
+                            eventtime, hub_state)
+                    self._last_hub_states[hub.name] = hub_state
+            except Exception:
+                # Skip lanes that can't be queried but continue updating others
+                continue
 
         return eventtime + self.interval
 
