@@ -214,23 +214,10 @@ class afcAMS(afcUnit):
     def check_runout(self, cur_lane):
         """Determine if AFC should handle runout for the current lane."""
         if self._is_ams_lane(cur_lane):
-            # If OpenAMS is actively managing this extruder (a filament group is
-            # loaded on the associated FPS and the currently loaded spool comes
-            # from this AMS unit) then OpenAMS will handle the spool swap and
-            # AFC runout handling should be suppressed.
+            # When the OpenAMS manager is present defer runout handling so it
+            # can attempt a spool swap before AFC intervenes.
             if self.oams_manager is not None:
-                fps_name = None
-                extruder_name = getattr(cur_lane.extruder_obj, "name", None)
-                for name, fps in getattr(self.oams_manager, "fpss", {}).items():
-                    if getattr(fps, "extruder_name", None) == extruder_name:
-                        fps_name = name
-                        break
-
-                if fps_name is not None:
-                    fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
-                    if (fps_state is not None
-                            and fps_state.current_group is not None):
-                        return False
+                return False
 
             # Legacy runout lane check - if both lanes are AMS and on the same
             # extruder then OpenAMS can perform the rollover automatically.
@@ -290,7 +277,8 @@ class afcAMS(afcUnit):
             ro_lane_name = lane.runout_lane
             if ro_lane_name:
                 ro_lane = self.afc.lanes.get(ro_lane_name)
-                idx = getattr(ro_lane, "index", 0) - 1 if ro_lane else -1
+                idx = ((getattr(ro_lane, "index", 0) - 1) % 4
+                       if ro_lane else -1)
                 ro_unit = getattr(ro_lane, "unit_obj", None) if ro_lane else None
                 if (ro_lane is not None and idx >= 0
                         and ro_unit is not None
