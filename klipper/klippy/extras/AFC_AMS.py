@@ -13,9 +13,31 @@ try:
 except Exception:
     raise error("Error when trying to import AFC_unit\n{trace}".format(trace=traceback.format_exc()))
 try:
-    from extras.AFC_lane import AFCLaneState
+    from extras.AFC_lane import AFCLane, AFCLaneState
 except Exception:
     raise error("Error when trying to import AFC_lane\n{trace}".format(trace=traceback.format_exc()))
+
+# -----------------------------------------------------------------------------
+# Monkey patch AFCLane.load_callback so AMS lanes defer runout handling to
+# OpenAMS when a manager is present. This preserves the original AFCLane
+# implementation while allowing coordination without modifying AFC_lane.py.
+# -----------------------------------------------------------------------------
+try:
+    _orig_load_callback = AFCLane.load_callback
+
+    def _patched_load_callback(self, eventtime, state):
+        if (not state
+                and getattr(self.unit_obj, "oams_manager", None) is not None
+                and hasattr(self.unit_obj, "_is_ams_lane")
+                and self.unit_obj._is_ams_lane(self)):
+            self.load_state = state
+            self.afc.save_vars()
+            return
+        return _orig_load_callback(self, eventtime, state)
+
+    AFCLane.load_callback = _patched_load_callback
+except Exception:
+    pass
 
 # -----------------------------------------------------------------------------
 # Monkey patch afc_hub to allow virtual switch pins for AMS hubs
@@ -276,8 +298,9 @@ class afcAMS(afcUnit):
         if spool_idx < 0:
             ro_lane_name = lane.runout_lane
             ro_lane = self.afc.lanes.get(ro_lane_name) if ro_lane_name else None
-            idx = ((getattr(ro_lane, "index", 0) - 1) % 4
-                   if ro_lane else -1)
+            idx = getattr(ro_lane, "index", -1) if ro_lane else -1
+            if idx > 0:
+                idx = (idx - 1) % 4
             ro_unit = getattr(ro_lane, "unit_obj", None) if ro_lane else None
             if (ro_lane is not None and idx >= 0
                     and ro_unit is not None

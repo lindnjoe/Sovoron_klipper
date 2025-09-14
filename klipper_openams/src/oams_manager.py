@@ -286,8 +286,6 @@ class OAMSManager:
         oam = self.oams.get(oams_name)
         if fps_state is None or oam is None:
             return False
-        if not oam.is_bay_ready(bay_index):
-            return False
 
         success, _ = oam.load_spool(bay_index)
         if not success:
