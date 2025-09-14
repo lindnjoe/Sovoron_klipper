@@ -215,27 +215,20 @@ class afcAMS(afcUnit):
     def _on_oams_runout(self, fps_name, spool_idx):
         """Forward OpenAMS runout events to the active lane.
 
-        When a new spool is loaded on the same FPS, switch to its lane by
-        issuing the corresponding ``T#`` command. If no spool could be loaded,
-        invoke AFC's standard runout handling for the active lane.
+        When OpenAMS successfully reloads a spool on the same FPS, allow the
+        print to continue without issuing a ``T#`` tool change.  If OpenAMS
+        fails to reload a spool, attempt to load the fallback AMS lane via
+        ``OAMSM_LOAD_FILAMENT`` before falling back to AFC's standard runout
+        handling.
         """
         lane_name = self.afc.function.get_current_lane()
         lane = self.lanes.get(lane_name)
         if lane is None:
             return
 
-        if spool_idx >= 0 and self.oams_manager is not None:
-            # Determine which OAMS and bay were loaded and compute the global
-            # lane number so the printer switches tools accordingly.
-            fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
-            if fps_state is None:
-                return
-            oams_obj = self.oams_manager.oams.get(fps_state.current_oams)
-            if oams_obj is None:
-                return
-            tool = (oams_obj.oams_idx - 1) * 4 + spool_idx + 1
-            gcode = self.printer.lookup_object("gcode")
-            gcode.run_script_from_command(f"T{tool}")
+        if spool_idx >= 0:
+            # OpenAMS already loaded a new spool on this FPS; nothing further
+            # to do.
             return
 
         # OpenAMS could not reload a spool automatically. If the current lane
@@ -248,16 +241,24 @@ class afcAMS(afcUnit):
             and isinstance(getattr(ro_lane, "unit_obj", None), afcAMS)
             and self.oams_manager is not None
         ):
-            ro_unit = ro_lane.unit_obj
-            bay = (getattr(ro_lane, "index", 0) - 1) % 4
-            if self.oams_manager.load_spool_for_lane(
-                fps_name, ro_unit.oams_name, bay
-            ):
-                tool = (
-                    self.oams_manager.oams[ro_unit.oams_name].oams_idx - 1
-                ) * 4 + bay + 1
+            # Only attempt an OpenAMS reload if the fallback lane resides on
+            # the same FPS as the lane that ran out.
+            ro_fps = self.oams_manager.group_fps_name(ro_lane.map)
+            if ro_fps == fps_name:
+                fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
+                if fps_state is not None:
+                    # Mark the FPS as unloaded so the load command proceeds.
+                    fps_state.state_name = "UNLOADED"
+                    fps_state.current_group = None
+                    fps_state.current_oams = None
+                    fps_state.current_spool_idx = None
                 gcode = self.printer.lookup_object("gcode")
-                gcode.run_script_from_command(f"T{tool}")
+                gcode.run_script_from_command(
+                    f"OAMSM_LOAD_FILAMENT GROUP={ro_lane.map}"
+                )
+                if hasattr(self.oams_manager, "runout_monitor"):
+                    self.oams_manager.runout_monitor.reset()
+                    self.oams_manager.runout_monitor.start()
                 pause = self.printer.lookup_object("pause_resume", None)
                 if pause is not None:
                     pause.send_resume_command()
