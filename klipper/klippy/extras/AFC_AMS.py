@@ -232,7 +232,7 @@ class afcAMS(afcUnit):
                             and fps_state.current_group is not None):
                         return False
 
-            # Legacy runout lane check – if both lanes are AMS and on the same
+            # Legacy runout lane check - if both lanes are AMS and on the same
             # extruder then OpenAMS can perform the rollover automatically.
             if cur_lane.runout_lane is not None:
                 ro_lane = self.afc.lanes.get(cur_lane.runout_lane)
@@ -352,9 +352,10 @@ class afcAMS(afcUnit):
                     lane.prep_callback(eventtime, prep_val)
                     self._last_prep_states[lane.name] = prep_val
 
-                # Drive the load state from the hub sensor so runout checks
-                # only occur when the hub path goes empty.
-                load_val = hub_val
+                # Keep the load state in sync with the prep sensor so that
+                # inserting filament updates both states simultaneously.  The
+                # hub sensor is still tracked separately for runout detection.
+                load_val = prep_val
 
                 last_load = self._last_load_states.get(lane.name)
                 if load_val != last_load:
