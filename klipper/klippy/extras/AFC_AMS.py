@@ -260,6 +260,14 @@ class afcAMS(afcUnit):
                     ro_lane.index - 1,
                 )
                 if loaded:
+                    # Update AFC state to reflect the newly loaded lane so
+                    # subsequent runout checks do not trigger for the empty
+                    # lane and the correct stepper drives the filament.
+                    ro_lane.set_loaded()
+                    ro_lane.sync_to_extruder()
+                    self.afc.current = ro_lane.name
+                    self.afc.function.handle_activate_extruder()
+
                     if hasattr(self.oams_manager, "runout_monitor"):
                         self.oams_manager.runout_monitor.reset()
                         self.oams_manager.runout_monitor.start()
