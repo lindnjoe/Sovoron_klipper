@@ -617,6 +617,10 @@ class AFCLane:
                     and self.load_state
                     and self.status != AFCLaneState.EJECTING
                 ):
+                    self.logger.info(
+                        "%s: prep went low during print; evaluating runout",
+                        self.name,
+                    )
                     # Skip AFC runout handling while OpenAMS is actively
                     # managing a reload on this FPS.  This prevents custom
                     # runout macros from firing when the OpenAMS runout
@@ -631,10 +635,22 @@ class AFCLane:
                         "COASTING",
                         "RELOADING",
                     ):
-                        pass
+                        self.logger.info(
+                            "%s: skipping runout; OpenAMS monitor state %s",
+                            self.name,
+                            monitor.state,
+                        )
                     elif self.runout_lane is not None:
+                        self.logger.info(
+                            "%s: performing infinite runout to %s",
+                            self.name,
+                            self.runout_lane,
+                        )
                         self._perform_infinite_runout()
                     else:
+                        self.logger.info(
+                            "%s: performing pause runout", self.name
+                        )
                         self._perform_pause_runout()
 
                 elif self.prep_state == True and self.load_state == True and not self.afc.function.is_printing():
