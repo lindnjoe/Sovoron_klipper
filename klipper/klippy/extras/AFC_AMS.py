@@ -198,11 +198,24 @@ class afcAMS(afcUnit):
         return succeeded
 
     def check_runout(self, cur_lane):
-        """Determine if runout logic should trigger for the current lane."""
-        return (cur_lane.name == self.afc.function.get_current_lane()
-                and self.afc.function.is_printing()
-                and cur_lane.status not in (AFCLaneState.EJECTING,
-                                            AFCLaneState.CALIBRATING))
+        """Determine if runout logic should trigger for the current lane.
+
+        Suppresses AFC's standard runout handling while OpenAMS is actively
+        reloading filament.  This prevents custom runout macros from firing
+        when the OpenAMS runout monitor is already managing a reload.
+        """
+        monitor = getattr(getattr(self, "oams_manager", None),
+                          "runout_monitor", None)
+        if monitor is not None and monitor.state in (
+            "DETECTED", "COASTING", "RELOADING"
+        ):
+            return False
+        return (
+            cur_lane.name == self.afc.function.get_current_lane()
+            and self.afc.function.is_printing()
+            and cur_lane.status
+            not in (AFCLaneState.EJECTING, AFCLaneState.CALIBRATING)
+        )
 
     def handle_ready(self):
         # Resolve OpenAMS objects and register for runout callbacks
