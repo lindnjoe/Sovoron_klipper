@@ -342,16 +342,19 @@ class afcAMS(afcUnit):
         lane_name = self.afc.function.get_current_lane()
         fps_state = None
         group_name = None
+        mapped_group = None
         if self.oams_manager is not None:
             fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
             if fps_state is not None:
                 group_name = fps_state.current_group
+            mapped_group = self.oams_manager.group_for_lane(lane_name)
         self.logger.info(
-            "AMS runout: fps=%s spool_idx=%s lane=%s group=%s",
+            "AMS runout: fps=%s spool_idx=%s lane=%s group=%s mapped_group=%s",
             fps_name,
             spool_idx,
             lane_name,
             group_name,
+            mapped_group,
         )
         lane = self.lanes.get(lane_name)
         lane_map = getattr(lane, "map", None) if lane is not None else None
@@ -383,15 +386,43 @@ class afcAMS(afcUnit):
                 group_name,
             )
             return
-        if fps_state is not None and lane_map and lane_map != group_name:
+        lane_group = None
+        fallback_group = None
+        if self.oams_manager is not None:
+            lane_group = self.oams_manager.group_for_lane(lane.name)
+        if (
+            self.oams_manager is not None
+            and group_name
+            and group_name not in self.oams_manager.filament_groups
+        ):
             self.logger.info(
-                "AMS runout: updating FPS %s group from %s to %s",
+                "AMS runout: clearing stale FPS %s group %s", fps_name, group_name
+            )
+            group_name = None
+        if lane_group and lane_group != group_name:
+            self.logger.info(
+                "AMS runout: syncing FPS %s group from %s to %s via lane %s",
                 fps_name,
                 group_name,
-                lane_map,
+                lane_group,
+                lane.name,
             )
-            fps_state.current_group = lane_map
-            group_name = lane_map
+            group_name = lane_group
+            if fps_state is not None:
+                fps_state.current_group = lane_group
+        elif (
+            lane_group
+            and group_name is None
+            and fps_state is not None
+        ):
+            self.logger.info(
+                "AMS runout: setting FPS %s group to %s via lane %s",
+                fps_name,
+                lane_group,
+                lane.name,
+            )
+            fps_state.current_group = lane_group
+            group_name = lane_group
 
         if spool_idx >= 0:
             # OpenAMS already loaded a new spool on this FPS; nothing further
@@ -417,6 +448,7 @@ class afcAMS(afcUnit):
             ro_fps = self.oams_manager.fps_name_for_oams(
                 ro_lane.unit_obj.oams_name
             )
+            fallback_group = self.oams_manager.group_for_lane(ro_lane.name)
             self.logger.info(
                 "AMS runout: fallback lane %s on FPS %s (current FPS %s)",
                 ro_lane.name,
@@ -424,7 +456,13 @@ class afcAMS(afcUnit):
                 fps_name,
             )
             if ro_fps == fps_name:
-                previous_group = group_name or lane_map or getattr(ro_lane, "map", None)
+                previous_group = (
+                    group_name
+                    or lane_group
+                    or fallback_group
+                    or lane_map
+                    or getattr(ro_lane, "map", None)
+                )
                 if fps_state is not None:
                     # Mark the FPS as unloaded so the load command proceeds.
                     fps_state.state_name = "UNLOADED"
@@ -545,6 +583,35 @@ class afcAMS(afcUnit):
                 if load_val != last_load:
                     lane.load_callback(eventtime, load_val)
                     self._last_load_states[lane.name] = load_val
+                if (
+                    load_val
+                    and self.oams_manager is not None
+                    and lane.name == self.afc.current
+                ):
+                    group = self.oams_manager.group_for_lane(lane.name)
+                    if group:
+                        fps_name = self.oams_manager.fps_name_for_oams(
+                            self.oams_name
+                        )
+                        if fps_name is not None:
+                            fps_state = (
+                                self.oams_manager.current_state.fps_state.get(
+                                    fps_name
+                                )
+                            )
+                        else:
+                            fps_state = None
+                        if (
+                            fps_state is not None
+                            and fps_state.current_group != group
+                        ):
+                            self.logger.info(
+                                "AMS sync: lane %s active; setting FPS %s group to %s",
+                                lane.name,
+                                fps_name,
+                                group,
+                            )
+                            fps_state.current_group = group
 
                 # Update dedicated hub sensor state
                 hub = getattr(lane, "hub_obj", None)

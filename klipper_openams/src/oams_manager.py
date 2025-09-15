@@ -241,6 +241,7 @@ class OAMSManager:
         self.filament_groups: Dict[str, Any] = {}  # Group name -> FilamentGroup object
         self.oams: Dict[str, Any] = {}  # OAMS name -> OAMS object
         self.fpss: Dict[str, Any] = {}  # FPS name -> FPS object
+        self.lane_groups: Dict[str, str] = {}  # Lane name -> filament group name
         
         # State management
         self.current_state = OAMSState()  # Tracks state of all FPS units
@@ -527,6 +528,13 @@ class OAMSManager:
         logging.info("OAMS manager: %s not found in any FPS", oams_name)
         return None
 
+    def group_for_lane(self, lane_name: Optional[str]) -> Optional[str]:
+        """Return the filament group assigned to ``lane_name`` if any."""
+
+        if lane_name is None:
+            return None
+        return self.lane_groups.get(lane_name)
+
     def ensure_group_for_lanes(self, group_name, lane_a, lane_b):
         """Create or remove a filament group for two AMS lanes.
 
@@ -539,6 +547,11 @@ class OAMSManager:
             if group_name in self.filament_groups:
                 logging.info("OAMS manager: removing group %s", group_name)
                 del self.filament_groups[group_name]
+            # Remove any cached lane mappings that referenced this group
+            self.lane_groups.pop(lane_a.name, None)
+            for lane_name, mapped_group in list(self.lane_groups.items()):
+                if mapped_group == group_name:
+                    self.lane_groups.pop(lane_name, None)
             # Clear the active group if it matched the removed group
             for state in self.current_state.fps_state.values():
                 if state.current_group == group_name:
@@ -577,6 +590,13 @@ class OAMSManager:
 
         group.bays = [(oam_a, bay_a), (oam_b, bay_b)]
         group.oams = [oam_a] if oam_a is oam_b else [oam_a, oam_b]
+        # Cache the group assignment for both lanes so future lookups can
+        # resolve the correct filament group even before a reload occurs.
+        for lane_name, mapped_group in list(self.lane_groups.items()):
+            if mapped_group == group_name and lane_name not in (lane_a.name, lane_b.name):
+                self.lane_groups.pop(lane_name, None)
+        self.lane_groups[lane_a.name] = group_name
+        self.lane_groups[lane_b.name] = group_name
         logging.info(
             "OAMS manager: group %s set to %s-%s, %s-%s",
             group_name,
