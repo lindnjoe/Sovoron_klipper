@@ -281,18 +281,29 @@ class afcAMS(afcUnit):
                     fps_state.current_group = None
                     fps_state.current_oams = None
                     fps_state.current_spool_idx = None
+                # Determine the local bay index for the fallback lane since AFC
+                # lane indices are global across multiple AMS units.
+                oam = self.oams_manager.oams.get(ro_lane.unit_obj.oams_name)
+                bay_count = len(getattr(oam, "f1s_hes_value", [])) or 4
+                bay_index = (ro_lane.index - 1) % bay_count
                 self.logger.info(
-                    "AMS runout: attempting OpenAMS load for %s", ro_lane.name
+                    "AMS runout: attempting OpenAMS load for %s bay %s",
+                    ro_lane.name,
+                    bay_index,
                 )
                 loaded = self.oams_manager.load_spool_for_lane(
                     fps_name,
                     ro_lane.unit_obj.oams_name,
-                    ro_lane.index - 1,
+                    bay_index,
                 )
                 self.logger.info(
                     "AMS runout: load result %s for lane %s", loaded, ro_lane.name
                 )
                 if loaded:
+                    if fps_state is not None:
+                        # Track the newly active filament group so OpenAMS can
+                        # continue monitoring runout on the correct lane.
+                        fps_state.current_group = ro_lane.map
                     # Update AFC state to reflect the newly loaded lane so
                     # subsequent runout checks do not trigger for the empty
                     # lane and the correct stepper drives the filament.
