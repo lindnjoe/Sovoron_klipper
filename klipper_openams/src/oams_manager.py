@@ -514,6 +514,17 @@ class OAMSManager:
                             if fps_oam in c_group.oams:
                                 return fps_name
         return None
+
+    def fps_name_for_oams(self, oams_name):
+        logging.info("OAMS manager: resolving FPS for %s", oams_name)
+        for fps_name, fps in self.fpss.items():
+            if oams_name in fps.oams:
+                logging.info(
+                    "OAMS manager: %s belongs to %s", oams_name, fps_name
+                )
+                return fps_name
+        logging.info("OAMS manager: %s not found in any FPS", oams_name)
+        return None
     
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
     def cmd_UNLOAD_FILAMENT(self, gcmd):

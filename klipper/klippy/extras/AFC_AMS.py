@@ -198,11 +198,24 @@ class afcAMS(afcUnit):
         return succeeded
 
     def check_runout(self, cur_lane):
-        """Determine if runout logic should trigger for the current lane."""
-        return (cur_lane.name == self.afc.function.get_current_lane()
-                and self.afc.function.is_printing()
-                and cur_lane.status not in (AFCLaneState.EJECTING,
-                                            AFCLaneState.CALIBRATING))
+        """Determine if runout logic should trigger for the current lane.
+
+        Suppresses AFC's standard runout handling while OpenAMS is actively
+        reloading filament.  This prevents custom runout macros from firing
+        when the OpenAMS runout monitor is already managing a reload.
+        """
+        monitor = getattr(getattr(self, "oams_manager", None),
+                          "runout_monitor", None)
+        if monitor is not None and monitor.state in (
+            "DETECTED", "COASTING", "RELOADING"
+        ):
+            return False
+        return (
+            cur_lane.name == self.afc.function.get_current_lane()
+            and self.afc.function.is_printing()
+            and cur_lane.status
+            not in (AFCLaneState.EJECTING, AFCLaneState.CALIBRATING)
+        )
 
     def handle_ready(self):
         # Resolve OpenAMS objects and register for runout callbacks
@@ -222,13 +235,20 @@ class afcAMS(afcUnit):
         handling.
         """
         lane_name = self.afc.function.get_current_lane()
+        self.logger.info(
+            "AMS runout: fps=%s spool_idx=%s lane=%s", fps_name, spool_idx, lane_name
+        )
         lane = self.lanes.get(lane_name)
         if lane is None:
+            self.logger.info("AMS runout: no lane found for %s", lane_name)
             return
 
         if spool_idx >= 0:
             # OpenAMS already loaded a new spool on this FPS; nothing further
             # to do.
+            self.logger.info(
+                "AMS runout: OpenAMS already loaded spool %s on %s", spool_idx, fps_name
+            )
             return
 
         # OpenAMS could not reload a spool automatically. If the current lane
@@ -236,6 +256,7 @@ class afcAMS(afcUnit):
         # attempt to load it via OpenAMS before falling back to AFC logic.
         runout_name = getattr(lane, "runout_lane", None)
         ro_lane = self.afc.lanes.get(runout_name) if runout_name else None
+        self.logger.info("AMS runout: fallback lane %s", runout_name)
         if (
             ro_lane is not None
             and isinstance(getattr(ro_lane, "unit_obj", None), afcAMS)
@@ -243,7 +264,15 @@ class afcAMS(afcUnit):
         ):
             # Only attempt an OpenAMS reload if the fallback lane resides on
             # the same FPS as the lane that ran out.
-            ro_fps = self.oams_manager.group_fps_name(ro_lane.map)
+            ro_fps = self.oams_manager.fps_name_for_oams(
+                ro_lane.unit_obj.oams_name
+            )
+            self.logger.info(
+                "AMS runout: fallback lane %s on FPS %s (current FPS %s)",
+                ro_lane.name,
+                ro_fps,
+                fps_name,
+            )
             if ro_fps == fps_name:
                 fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
                 if fps_state is not None:
@@ -252,19 +281,58 @@ class afcAMS(afcUnit):
                     fps_state.current_group = None
                     fps_state.current_oams = None
                     fps_state.current_spool_idx = None
-                gcode = self.printer.lookup_object("gcode")
-                gcode.run_script_from_command(
-                    f"OAMSM_LOAD_FILAMENT GROUP={ro_lane.map}"
+                self.logger.info(
+                    "AMS runout: attempting OpenAMS load for %s", ro_lane.name
                 )
-                if hasattr(self.oams_manager, "runout_monitor"):
-                    self.oams_manager.runout_monitor.reset()
-                    self.oams_manager.runout_monitor.start()
-                pause = self.printer.lookup_object("pause_resume", None)
-                if pause is not None:
-                    pause.send_resume_command()
+                loaded = self.oams_manager.load_spool_for_lane(
+                    fps_name,
+                    ro_lane.unit_obj.oams_name,
+                    ro_lane.index - 1,
+                )
+                self.logger.info(
+                    "AMS runout: load result %s for lane %s", loaded, ro_lane.name
+                )
+                if loaded:
+                    # Update AFC state to reflect the newly loaded lane so
+                    # subsequent runout checks do not trigger for the empty
+                    # lane and the correct stepper drives the filament.
+                    ro_lane.set_loaded()
+                    ro_lane.sync_to_extruder()
+                    self.afc.current = ro_lane.name
+                    self.afc.function.handle_activate_extruder()
+
+                    if hasattr(self.oams_manager, "runout_monitor"):
+                        self.oams_manager.runout_monitor.reset()
+                        self.oams_manager.runout_monitor.start()
+                    pause = self.printer.lookup_object("pause_resume", None)
+                    if pause is not None:
+                        pause.send_resume_command()
+                    self.logger.info(
+                        "AMS runout: successfully loaded %s; resuming print",
+                        ro_lane.name,
+                    )
+                    return
+
+                # If the load fails, fall back to AFC's standard runout logic.
+                self.logger.info(
+                    "AMS runout: OpenAMS load failed for %s; invoking AFC runout",
+                    lane_name,
+                )
+                eventtime = self.reactor.monotonic()
+                lane.handle_load_runout(eventtime, False)
                 return
 
+            self.logger.info(
+                "AMS runout: fallback lane on different FPS (%s); using AFC runout",
+                ro_fps,
+            )
+
+        else:
+            self.logger.info(
+                "AMS runout: no AMS fallback lane or manager not available"
+            )
         eventtime = self.reactor.monotonic()
+        self.logger.info("AMS runout: invoking AFC runout handler for %s", lane_name)
         lane.handle_load_runout(eventtime, False)
 
     def _sync_event(self, eventtime):
