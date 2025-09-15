@@ -340,13 +340,58 @@ class afcAMS(afcUnit):
         handling.
         """
         lane_name = self.afc.function.get_current_lane()
+        fps_state = None
+        group_name = None
+        if self.oams_manager is not None:
+            fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
+            if fps_state is not None:
+                group_name = fps_state.current_group
         self.logger.info(
-            "AMS runout: fps=%s spool_idx=%s lane=%s", fps_name, spool_idx, lane_name
+            "AMS runout: fps=%s spool_idx=%s lane=%s group=%s",
+            fps_name,
+            spool_idx,
+            lane_name,
+            group_name,
         )
         lane = self.lanes.get(lane_name)
+        lane_map = getattr(lane, "map", None) if lane is not None else None
+        if lane is None or (group_name and lane_map != group_name):
+            alt_lane = None
+            if group_name:
+                alt_lane = next(
+                    (
+                        candidate
+                        for candidate in self.lanes.values()
+                        if getattr(candidate, "map", None) == group_name
+                    ),
+                    None,
+                )
+            if alt_lane is not None:
+                self.logger.info(
+                    "AMS runout: switching lane context from %s to %s via group %s",
+                    lane_name,
+                    alt_lane.name,
+                    group_name,
+                )
+                lane = alt_lane
+                lane_name = lane.name
+                lane_map = getattr(lane, "map", None)
         if lane is None:
-            self.logger.info("AMS runout: no lane found for %s", lane_name)
+            self.logger.info(
+                "AMS runout: no lane resolved for lane=%s group=%s",
+                lane_name,
+                group_name,
+            )
             return
+        if fps_state is not None and lane_map and lane_map != group_name:
+            self.logger.info(
+                "AMS runout: updating FPS %s group from %s to %s",
+                fps_name,
+                group_name,
+                lane_map,
+            )
+            fps_state.current_group = lane_map
+            group_name = lane_map
 
         if spool_idx >= 0:
             # OpenAMS already loaded a new spool on this FPS; nothing further
@@ -379,7 +424,7 @@ class afcAMS(afcUnit):
                 fps_name,
             )
             if ro_fps == fps_name:
-                fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
+                previous_group = group_name or lane_map or getattr(ro_lane, "map", None)
                 if fps_state is not None:
                     # Mark the FPS as unloaded so the load command proceeds.
                     fps_state.state_name = "UNLOADED"
@@ -408,7 +453,7 @@ class afcAMS(afcUnit):
                     if fps_state is not None:
                         # Track the newly active filament group so OpenAMS can
                         # continue monitoring runout on the correct lane.
-                        fps_state.current_group = ro_lane.map
+                        fps_state.current_group = previous_group
                     # Update AFC state to reflect the newly loaded lane so
                     # subsequent runout checks do not trigger for the empty
                     # lane and the correct stepper drives the filament.
@@ -434,6 +479,8 @@ class afcAMS(afcUnit):
                     "AMS runout: OpenAMS load failed for %s; invoking AFC runout",
                     lane_name,
                 )
+                if fps_state is not None:
+                    fps_state.current_group = previous_group
                 eventtime = self.reactor.monotonic()
                 lane.handle_load_runout(eventtime, False)
                 return
@@ -447,6 +494,8 @@ class afcAMS(afcUnit):
             self.logger.info(
                 "AMS runout: no AMS fallback lane or manager not available"
             )
+        if fps_state is not None and group_name and fps_state.current_group is None:
+            fps_state.current_group = group_name
         eventtime = self.reactor.monotonic()
         self.logger.info("AMS runout: invoking AFC runout handler for %s", lane_name)
         lane.handle_load_runout(eventtime, False)
