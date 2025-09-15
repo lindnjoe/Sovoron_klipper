@@ -534,10 +534,15 @@ class OAMSManager:
         removed.  Otherwise, a group containing the two lanes is created or
         updated, provided both lanes reside on the same FPS controller.
         """
+        fps_state = None
         if lane_b is None:
             if group_name in self.filament_groups:
                 logging.info("OAMS manager: removing group %s", group_name)
                 del self.filament_groups[group_name]
+            # Clear the active group if it matched the removed group
+            for state in self.current_state.fps_state.values():
+                if state.current_group == group_name:
+                    state.current_group = None
             return
 
         oam_a = self.oams.get(lane_a.unit_obj.oams_name)
@@ -580,6 +585,18 @@ class OAMSManager:
             oam_b.name,
             bay_b,
         )
+
+        # Update FPS state if one of the lanes in the new group is currently loaded
+        fps_state = self.current_state.fps_state.get(fps_a)
+        if fps_state is not None:
+            if (
+                fps_state.current_oams == oam_a.name
+                and fps_state.current_spool_idx == bay_a
+            ) or (
+                fps_state.current_oams == oam_b.name
+                and fps_state.current_spool_idx == bay_b
+            ):
+                fps_state.current_group = group_name
     
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
     def cmd_UNLOAD_FILAMENT(self, gcmd):
