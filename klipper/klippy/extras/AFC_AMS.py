@@ -103,12 +103,6 @@ def _patch_afc_components():
                     "%s: prep went low during print; evaluating runout",
                     self.name,
                 )
-                if getattr(self.unit_obj, "oams_manager", None) is not None:
-                    self.logger.info(
-                        "%s: OpenAMS managing runout; skipping AFC macros",
-                        self.name,
-                    )
-                    return
             return orig_prep(self, eventtime, value)
 
         AFCLane.prep_callback = prep_callback
@@ -116,22 +110,21 @@ def _patch_afc_components():
         orig_inf = AFCLane._perform_infinite_runout
 
         def _perform_infinite_runout(self):
-            monitor = getattr(
-                getattr(self.unit_obj, "oams_manager", None),
-                "runout_monitor",
-                None,
-            )
-            if monitor is not None and monitor.state in (
-                "DETECTED",
-                "COASTING",
-                "RELOADING",
-            ):
-                self.logger.info(
-                    "%s: skipping runout; OpenAMS monitor state %s",
-                    self.name,
-                    monitor.state,
-                )
-                return
+            manager = getattr(self.unit_obj, "oams_manager", None)
+            monitor = getattr(manager, "runout_monitor", None)
+            if manager is not None and self.afc.function.is_printing():
+                state = getattr(monitor, "state", "UNKNOWN")
+                if monitor is None or state in (
+                    "DETECTED",
+                    "COASTING",
+                    "RELOADING",
+                ):
+                    self.logger.info(
+                        "%s: skipping runout; OpenAMS manager active (state %s)",
+                        self.name,
+                        state,
+                    )
+                    return
             self.logger.info(
                 "%s: performing infinite runout to %s",
                 self.name,
@@ -144,22 +137,21 @@ def _patch_afc_components():
         orig_pause = AFCLane._perform_pause_runout
 
         def _perform_pause_runout(self):
-            monitor = getattr(
-                getattr(self.unit_obj, "oams_manager", None),
-                "runout_monitor",
-                None,
-            )
-            if monitor is not None and monitor.state in (
-                "DETECTED",
-                "COASTING",
-                "RELOADING",
-            ):
-                self.logger.info(
-                    "%s: skipping pause runout; OpenAMS monitor state %s",
-                    self.name,
-                    monitor.state,
-                )
-                return
+            manager = getattr(self.unit_obj, "oams_manager", None)
+            monitor = getattr(manager, "runout_monitor", None)
+            if manager is not None and self.afc.function.is_printing():
+                state = getattr(monitor, "state", "UNKNOWN")
+                if monitor is None or state in (
+                    "DETECTED",
+                    "COASTING",
+                    "RELOADING",
+                ):
+                    self.logger.info(
+                        "%s: skipping pause runout; OpenAMS manager active (state %s)",
+                        self.name,
+                        state,
+                    )
+                    return
             self.logger.info("%s: performing pause runout", self.name)
             orig_pause(self)
 
