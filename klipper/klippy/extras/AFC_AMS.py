@@ -358,27 +358,44 @@ class afcAMS(afcUnit):
         )
         lane = self.lanes.get(lane_name)
         lane_map = getattr(lane, "map", None) if lane is not None else None
-        if lane is None or (group_name and lane_map != group_name):
+        if lane is None:
             alt_lane = None
+            used_group = None
+            candidate_groups = []
             if group_name:
+                candidate_groups.append(group_name)
+            if mapped_group and mapped_group not in candidate_groups:
+                candidate_groups.append(mapped_group)
+            for candidate_group in candidate_groups:
                 alt_lane = next(
                     (
                         candidate
                         for candidate in self.lanes.values()
-                        if getattr(candidate, "map", None) == group_name
+                        if getattr(candidate, "map", None) == candidate_group
                     ),
                     None,
                 )
+                if alt_lane is not None:
+                    used_group = candidate_group
+                    break
             if alt_lane is not None:
                 self.logger.info(
                     "AMS runout: switching lane context from %s to %s via group %s",
                     lane_name,
                     alt_lane.name,
-                    group_name,
+                    used_group,
                 )
                 lane = alt_lane
                 lane_name = lane.name
                 lane_map = getattr(lane, "map", None)
+        elif group_name and lane_map != group_name:
+            self.logger.info(
+                "AMS runout: active lane %s map %s differs from FPS %s group %s",
+                lane_name,
+                lane_map,
+                fps_name,
+                group_name,
+            )
         if lane is None:
             self.logger.info(
                 "AMS runout: no lane resolved for lane=%s group=%s",
