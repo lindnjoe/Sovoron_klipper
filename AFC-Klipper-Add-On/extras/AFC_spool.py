@@ -343,6 +343,26 @@ class AFCSpool:
         cur_lane.runout_lane = None if runout == 'NONE' else runout
         self.afc.save_vars()
 
+        # Dynamically create or remove an OpenAMS filament group when setting
+        # a runout lane between AMS lanes on the same FPS.  This allows
+        # infinite-spool behavior without pre-configuring filament groups.
+        try:
+            if getattr(cur_lane.unit_obj, "type", "") == "AMS":
+                manager = getattr(cur_lane.unit_obj, "oams_manager", None)
+                if manager is not None:
+                    if runout == 'NONE':
+                        manager.ensure_group_for_lanes(cur_lane.map, cur_lane, None)
+                    else:
+                        ro_lane = self.afc.lanes[runout]
+                        if getattr(ro_lane.unit_obj, "type", "") == "AMS" and (
+                            getattr(ro_lane.unit_obj, "oams_manager", None)
+                            is manager
+                        ):
+                            manager.ensure_group_for_lanes(cur_lane.map, cur_lane, ro_lane)
+        except Exception:
+            # Never let group creation errors break the SET_RUNOUT command
+            self.logger.exception("Failed to update OpenAMS filament group")
+
     cmd_RESET_AFC_MAPPING_help = "Resets all lane mapping in AFC"
     def cmd_RESET_AFC_MAPPING(self, gcmd):
         """
