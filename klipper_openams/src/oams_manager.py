@@ -9,6 +9,7 @@ import time
 from functools import partial
 from collections import deque
 from typing import Optional, Tuple, Dict, List, Any, Callable
+from filament_group import FilamentGroup
 
 # Configuration constants
 PAUSE_DISTANCE = 60  # mm to pause before coasting follower
@@ -514,6 +515,71 @@ class OAMSManager:
                             if fps_oam in c_group.oams:
                                 return fps_name
         return None
+
+    def fps_name_for_oams(self, oams_name):
+        logging.info("OAMS manager: resolving FPS for %s", oams_name)
+        for fps_name, fps in self.fpss.items():
+            if oams_name in fps.oams:
+                logging.info(
+                    "OAMS manager: %s belongs to %s", oams_name, fps_name
+                )
+                return fps_name
+        logging.info("OAMS manager: %s not found in any FPS", oams_name)
+        return None
+
+    def ensure_group_for_lanes(self, group_name, lane_a, lane_b):
+        """Create or remove a filament group for two AMS lanes.
+
+        If ``lane_b`` is ``None``, any existing group named ``group_name`` is
+        removed.  Otherwise, a group containing the two lanes is created or
+        updated, provided both lanes reside on the same FPS controller.
+        """
+        if lane_b is None:
+            if group_name in self.filament_groups:
+                logging.info("OAMS manager: removing group %s", group_name)
+                del self.filament_groups[group_name]
+            return
+
+        oam_a = self.oams.get(lane_a.unit_obj.oams_name)
+        oam_b = self.oams.get(lane_b.unit_obj.oams_name)
+        if oam_a is None or oam_b is None:
+            return
+        fps_a = self.fps_name_for_oams(oam_a.name)
+        fps_b = self.fps_name_for_oams(oam_b.name)
+        if fps_a != fps_b or fps_a is None:
+            logging.info(
+                "OAMS manager: lanes %s and %s are on different FPS (%s vs %s)",
+                lane_a.name,
+                lane_b.name,
+                fps_a,
+                fps_b,
+            )
+            return
+
+        bay_count_a = len(getattr(oam_a, "f1s_hes_value", [])) or 4
+        bay_count_b = len(getattr(oam_b, "f1s_hes_value", [])) or 4
+        bay_a = (lane_a.index - 1) % bay_count_a
+        bay_b = (lane_b.index - 1) % bay_count_b
+
+        group = self.filament_groups.get(group_name)
+        if group is None:
+            group = FilamentGroup.__new__(FilamentGroup)
+            group.printer = self.printer
+            group.group_name = group_name
+            group.bays = []
+            group.oams = []
+            self.filament_groups[group_name] = group
+
+        group.bays = [(oam_a, bay_a), (oam_b, bay_b)]
+        group.oams = [oam_a] if oam_a is oam_b else [oam_a, oam_b]
+        logging.info(
+            "OAMS manager: group %s set to %s-%s, %s-%s",
+            group_name,
+            oam_a.name,
+            bay_a,
+            oam_b.name,
+            bay_b,
+        )
     
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
     def cmd_UNLOAD_FILAMENT(self, gcmd):
