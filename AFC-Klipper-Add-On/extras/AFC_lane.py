@@ -610,11 +610,47 @@ class AFCLane:
                         self.unit_obj.lane_loaded(self)
                         self.afc.spool._set_values(self)
 
-                elif self.prep_state == False and self.name == self.afc.current and self.afc.function.is_printing() and self.load_state and self.status != AFCLaneState.EJECTING:
-                    # Checking to make sure runout_lane is set
-                    if self.runout_lane is not None:
+                elif (
+                    self.prep_state == False
+                    and self.name == self.afc.current
+                    and self.afc.function.is_printing()
+                    and self.load_state
+                    and self.status != AFCLaneState.EJECTING
+                ):
+                    self.logger.info(
+                        "%s: prep went low during print; evaluating runout",
+                        self.name,
+                    )
+                    # Skip AFC runout handling while OpenAMS is actively
+                    # managing a reload on this FPS.  This prevents custom
+                    # runout macros from firing when the OpenAMS runout
+                    # monitor is already reloading the fallback lane.
+                    monitor = getattr(
+                        getattr(self.unit_obj, "oams_manager", None),
+                        "runout_monitor",
+                        None,
+                    )
+                    if monitor is not None and monitor.state in (
+                        "DETECTED",
+                        "COASTING",
+                        "RELOADING",
+                    ):
+                        self.logger.info(
+                            "%s: skipping runout; OpenAMS monitor state %s",
+                            self.name,
+                            monitor.state,
+                        )
+                    elif self.runout_lane is not None:
+                        self.logger.info(
+                            "%s: performing infinite runout to %s",
+                            self.name,
+                            self.runout_lane,
+                        )
                         self._perform_infinite_runout()
                     else:
+                        self.logger.info(
+                            "%s: performing pause runout", self.name
+                        )
                         self._perform_pause_runout()
 
                 elif self.prep_state == True and self.load_state == True and not self.afc.function.is_printing():
