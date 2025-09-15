@@ -267,27 +267,44 @@ class afcAMS(afcUnit):
                     fps_state.current_group = None
                     fps_state.current_oams = None
                     fps_state.current_spool_idx = None
-                loaded = self.oams_manager.load_spool_for_lane(
-                    fps_name,
-                    ro_lane.unit_obj.oams_name,
-                    ro_lane.index - 1,
-                )
-                if loaded:
-                    # Update AFC state to reflect the newly loaded lane so
-                    # subsequent runout checks do not trigger for the empty
-                    # lane and the correct stepper drives the filament.
-                    ro_lane.set_loaded()
-                    ro_lane.sync_to_extruder()
-                    self.afc.current = ro_lane.name
-                    self.afc.function.handle_activate_extruder()
 
-                    if hasattr(self.oams_manager, "runout_monitor"):
-                        self.oams_manager.runout_monitor.reset()
-                        self.oams_manager.runout_monitor.start()
-                    pause = self.printer.lookup_object("pause_resume", None)
-                    if pause is not None:
-                        pause.send_resume_command()
-                    return
+                attempts = 5
+
+                def _attempt_load(eventtime):
+                    nonlocal attempts
+                    loaded = self.oams_manager.load_spool_for_lane(
+                        fps_name,
+                        ro_lane.unit_obj.oams_name,
+                        ro_lane.index - 1,
+                    )
+                    if loaded:
+                        # Update AFC state to reflect the newly loaded lane so
+                        # subsequent runout checks do not trigger for the empty
+                        # lane and the correct stepper drives the filament.
+                        ro_lane.set_loaded()
+                        ro_lane.sync_to_extruder()
+                        self.afc.current = ro_lane.name
+                        self.afc.function.handle_activate_extruder()
+
+                        if hasattr(self.oams_manager, "runout_monitor"):
+                            self.oams_manager.runout_monitor.reset()
+                            self.oams_manager.runout_monitor.start()
+                        pause = self.printer.lookup_object("pause_resume", None)
+                        if pause is not None:
+                            pause.send_resume_command()
+                        return self.reactor.NEVER
+
+                    attempts -= 1
+                    if attempts > 0:
+                        return eventtime + 0.5
+
+                    # After exhausting retries, fall back to AFC runout logic.
+                    lane.handle_load_runout(eventtime, False)
+                    return self.reactor.NEVER
+
+                # Attempt to load immediately; retries handled by timer.
+                self.reactor.register_timer(_attempt_load, self.reactor.NOW)
+                return
 
         eventtime = self.reactor.monotonic()
         lane.handle_load_runout(eventtime, False)
