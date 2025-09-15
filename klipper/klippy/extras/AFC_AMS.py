@@ -198,11 +198,24 @@ class afcAMS(afcUnit):
         return succeeded
 
     def check_runout(self, cur_lane):
-        """Determine if runout logic should trigger for the current lane."""
-        return (cur_lane.name == self.afc.function.get_current_lane()
-                and self.afc.function.is_printing()
-                and cur_lane.status not in (AFCLaneState.EJECTING,
-                                            AFCLaneState.CALIBRATING))
+        """Determine if runout logic should trigger for the current lane.
+
+        Suppresses AFC's standard runout handling while OpenAMS is actively
+        reloading filament.  This prevents custom runout macros from firing
+        when the OpenAMS runout monitor is already managing a reload.
+        """
+        monitor = getattr(getattr(self, "oams_manager", None),
+                          "runout_monitor", None)
+        if monitor is not None and monitor.state in (
+            "DETECTED", "COASTING", "RELOADING"
+        ):
+            return False
+        return (
+            cur_lane.name == self.afc.function.get_current_lane()
+            and self.afc.function.is_printing()
+            and cur_lane.status
+            not in (AFCLaneState.EJECTING, AFCLaneState.CALIBRATING)
+        )
 
     def handle_ready(self):
         # Resolve OpenAMS objects and register for runout callbacks
@@ -243,7 +256,9 @@ class afcAMS(afcUnit):
         ):
             # Only attempt an OpenAMS reload if the fallback lane resides on
             # the same FPS as the lane that ran out.
-            ro_fps = self.oams_manager.group_fps_name(ro_lane.map)
+            ro_fps = self.oams_manager.fps_name_for_oams(
+                ro_lane.unit_obj.oams_name
+            )
             if ro_fps == fps_name:
                 fps_state = self.oams_manager.current_state.fps_state.get(fps_name)
                 if fps_state is not None:
@@ -252,16 +267,43 @@ class afcAMS(afcUnit):
                     fps_state.current_group = None
                     fps_state.current_oams = None
                     fps_state.current_spool_idx = None
-                gcode = self.printer.lookup_object("gcode")
-                gcode.run_script_from_command(
-                    f"OAMSM_LOAD_FILAMENT GROUP={ro_lane.map}"
-                )
-                if hasattr(self.oams_manager, "runout_monitor"):
-                    self.oams_manager.runout_monitor.reset()
-                    self.oams_manager.runout_monitor.start()
-                pause = self.printer.lookup_object("pause_resume", None)
-                if pause is not None:
-                    pause.send_resume_command()
+
+                attempts = 5
+
+                def _attempt_load(eventtime):
+                    nonlocal attempts
+                    loaded = self.oams_manager.load_spool_for_lane(
+                        fps_name,
+                        ro_lane.unit_obj.oams_name,
+                        ro_lane.index - 1,
+                    )
+                    if loaded:
+                        # Update AFC state to reflect the newly loaded lane so
+                        # subsequent runout checks do not trigger for the empty
+                        # lane and the correct stepper drives the filament.
+                        ro_lane.set_loaded()
+                        ro_lane.sync_to_extruder()
+                        self.afc.current = ro_lane.name
+                        self.afc.function.handle_activate_extruder()
+
+                        if hasattr(self.oams_manager, "runout_monitor"):
+                            self.oams_manager.runout_monitor.reset()
+                            self.oams_manager.runout_monitor.start()
+                        pause = self.printer.lookup_object("pause_resume", None)
+                        if pause is not None:
+                            pause.send_resume_command()
+                        return self.reactor.NEVER
+
+                    attempts -= 1
+                    if attempts > 0:
+                        return eventtime + 0.5
+
+                    # After exhausting retries, fall back to AFC runout logic.
+                    lane.handle_load_runout(eventtime, False)
+                    return self.reactor.NEVER
+
+                # Attempt to load immediately; retries handled by timer.
+                self.reactor.register_timer(_attempt_load, self.reactor.NOW)
                 return
 
         eventtime = self.reactor.monotonic()
