@@ -13,9 +13,13 @@ try:
 except Exception:
     raise error("Error when trying to import AFC_unit\n{trace}".format(trace=traceback.format_exc()))
 try:
-    from extras.AFC_lane import AFCLaneState
+    from extras.AFC_lane import AFCLane, AFCLaneState
 except Exception:
     raise error("Error when trying to import AFC_lane\n{trace}".format(trace=traceback.format_exc()))
+try:
+    from extras.AFC_spool import AFCSpool
+except Exception:
+    raise error("Error when trying to import AFC_spool\n{trace}".format(trace=traceback.format_exc()))
 
 # -----------------------------------------------------------------------------
 # Monkey patch afc_hub to allow virtual switch pins for AMS hubs
@@ -81,6 +85,118 @@ try:
 except Exception:
     # If the hub module isn't present we silently ignore the patch
     pass
+
+def _patch_afc_components():
+    """Monkey patch AFC lane and spool behavior for OpenAMS."""
+    if not getattr(AFCLane, "_ams_patched", False):
+        orig_prep = AFCLane.prep_callback
+
+        def prep_callback(self, eventtime, value):
+            if (
+                value is False
+                and self.name == self.afc.current
+                and self.afc.function.is_printing()
+                and self.load_state
+                and self.status != AFCLaneState.EJECTING
+            ):
+                self.logger.info(
+                    "%s: prep went low during print; evaluating runout",
+                    self.name,
+                )
+            return orig_prep(self, eventtime, value)
+
+        AFCLane.prep_callback = prep_callback
+
+        orig_inf = AFCLane._perform_infinite_runout
+
+        def _perform_infinite_runout(self):
+            monitor = getattr(
+                getattr(self.unit_obj, "oams_manager", None),
+                "runout_monitor",
+                None,
+            )
+            if monitor is not None and monitor.state in (
+                "DETECTED",
+                "COASTING",
+                "RELOADING",
+            ):
+                self.logger.info(
+                    "%s: skipping runout; OpenAMS monitor state %s",
+                    self.name,
+                    monitor.state,
+                )
+                return
+            self.logger.info(
+                "%s: performing infinite runout to %s",
+                self.name,
+                self.runout_lane,
+            )
+            orig_inf(self)
+
+        AFCLane._perform_infinite_runout = _perform_infinite_runout
+
+        orig_pause = AFCLane._perform_pause_runout
+
+        def _perform_pause_runout(self):
+            monitor = getattr(
+                getattr(self.unit_obj, "oams_manager", None),
+                "runout_monitor",
+                None,
+            )
+            if monitor is not None and monitor.state in (
+                "DETECTED",
+                "COASTING",
+                "RELOADING",
+            ):
+                self.logger.info(
+                    "%s: skipping pause runout; OpenAMS monitor state %s",
+                    self.name,
+                    monitor.state,
+                )
+                return
+            self.logger.info("%s: performing pause runout", self.name)
+            orig_pause(self)
+
+        AFCLane._perform_pause_runout = _perform_pause_runout
+
+        AFCLane._ams_patched = True
+
+    if not getattr(AFCSpool, "_ams_patched", False):
+        orig_cmd = AFCSpool.cmd_SET_RUNOUT
+
+        def cmd_SET_RUNOUT(self, gcmd):
+            lane = gcmd.get("LANE")
+            runout = gcmd.get("RUNOUT", "NONE")
+            orig_cmd(self, gcmd)
+            try:
+                lane_obj = self.afc.lanes.get(lane)
+                manager = getattr(
+                    getattr(lane_obj, "unit_obj", None), "oams_manager", None
+                ) if lane_obj else None
+                if manager is not None:
+                    if runout == "NONE":
+                        manager.ensure_group_for_lanes(
+                            lane_obj.map, lane_obj, None
+                        )
+                    else:
+                        ro_lane = self.afc.lanes.get(runout)
+                        if (
+                            ro_lane
+                            and getattr(ro_lane.unit_obj, "oams_manager", None)
+                            is manager
+                        ):
+                            manager.ensure_group_for_lanes(
+                                lane_obj.map, lane_obj, ro_lane
+                            )
+            except Exception:
+                self.logger.exception(
+                    "Failed to update OpenAMS filament group"
+                )
+
+        AFCSpool.cmd_SET_RUNOUT = cmd_SET_RUNOUT
+        AFCSpool._ams_patched = True
+
+_patch_afc_components()
 
 SYNC_INTERVAL = 2.0
 
