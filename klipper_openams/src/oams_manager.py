@@ -9,7 +9,7 @@ import time
 from functools import partial
 from collections import deque
 from typing import Optional, Tuple, Dict, List, Any, Callable
-from filament_group import FilamentGroup
+from .filament_group import FilamentGroup
 
 # Configuration constants
 PAUSE_DISTANCE = 60  # mm to pause before coasting follower
