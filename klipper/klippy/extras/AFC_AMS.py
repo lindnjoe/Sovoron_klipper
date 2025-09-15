@@ -103,6 +103,12 @@ def _patch_afc_components():
                     "%s: prep went low during print; evaluating runout",
                     self.name,
                 )
+                if getattr(self.unit_obj, "oams_manager", None) is not None:
+                    self.logger.info(
+                        "%s: OpenAMS managing runout; skipping AFC macros",
+                        self.name,
+                    )
+                    return
             return orig_prep(self, eventtime, value)
 
         AFCLane.prep_callback = prep_callback
@@ -314,17 +320,8 @@ class afcAMS(afcUnit):
         return succeeded
 
     def check_runout(self, cur_lane):
-        """Determine if runout logic should trigger for the current lane.
-
-        Suppresses AFC's standard runout handling while OpenAMS is actively
-        reloading filament.  This prevents custom runout macros from firing
-        when the OpenAMS runout monitor is already managing a reload.
-        """
-        monitor = getattr(getattr(self, "oams_manager", None),
-                          "runout_monitor", None)
-        if monitor is not None and monitor.state in (
-            "DETECTED", "COASTING", "RELOADING"
-        ):
+        """Return True when AFC should handle runout for ``cur_lane``."""
+        if getattr(self, "oams_manager", None) is not None:
             return False
         return (
             cur_lane.name == self.afc.function.get_current_lane()
