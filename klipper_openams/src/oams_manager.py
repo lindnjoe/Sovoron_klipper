@@ -236,9 +236,12 @@ class OAMSManager:
         self.filament_groups: Dict[str, Any] = {}  # Group name -> FilamentGroup object
         self.oams: Dict[str, Any] = {}  # OAMS name -> OAMS object
         self.fpss: Dict[str, Any] = {}  # FPS name -> FPS object
-        
+
         # State management
         self.current_state = OAMSState()  # Tracks state of all FPS units
+        self.current_group: Optional[str] = None  # Last group requested via load command
+        self.afc = None  # Optional reference to AFC for lane runout mappings
+        self._afc_logged = False  # Tracks whether AFC integration has been announced
         
         # Monitoring and control
         self.monitor_timers: List[Any] = []  # Active monitoring timers
@@ -451,7 +454,160 @@ class OAMSManager:
                             if fps_oam in c_group.oams:
                                 return fps_name
         return None
-    
+
+    def _get_afc(self):
+        """Lazily retrieve the AFC object if it is available."""
+        if self.afc is not None:
+            return self.afc
+        try:
+            afc = self.printer.lookup_object('AFC')
+        except Exception:
+            self.afc = None
+            return None
+        self.afc = afc
+        if not self._afc_logged:
+            logging.info("OAMS: AFC integration detected; enabling same-FPS infinite runout support.")
+            self._afc_logged = True
+        return self.afc
+
+    def _get_infinite_runout_target_group(self, fps_name: str, current_group: Optional[str]) -> Optional[str]:
+        """Return the target filament group for infinite runout, if configured."""
+        if current_group is None:
+            return None
+
+        afc = self._get_afc()
+        if afc is None:
+            return None
+
+        try:
+            lane_name = afc.tool_cmds.get(current_group)
+        except AttributeError:
+            return None
+
+        if not lane_name:
+            return None
+
+        lane = afc.lanes.get(lane_name)
+        if lane is None:
+            return None
+
+        runout_lane_name = getattr(lane, "runout_lane", None)
+        if not runout_lane_name:
+            return None
+
+        target_lane = afc.lanes.get(runout_lane_name)
+        if target_lane is None:
+            return None
+
+        target_group = getattr(target_lane, "map", None)
+        if not target_group or target_group == current_group:
+            return None
+
+        if target_group not in self.filament_groups or current_group not in self.filament_groups:
+            return None
+
+        source_fps = self.group_fps_name(current_group)
+        target_fps = self.group_fps_name(target_group)
+        if source_fps != fps_name or target_fps != fps_name:
+            return None
+
+        logging.info(
+            "OAMS: Infinite runout configured for %s on %s -> %s",
+            current_group,
+            fps_name,
+            target_group,
+        )
+        return target_group
+
+    def _unload_filament_for_fps(self, fps_name: str) -> Tuple[bool, str]:
+        """Unload filament from the specified FPS and update state."""
+        if fps_name not in self.fpss:
+            return False, f"FPS {fps_name} does not exist"
+
+        fps_state = self.current_state.fps_state[fps_name]
+        if fps_state.state_name not in (FPSLoadState.LOADED, FPSLoadState.RELOADING):
+            return False, f"FPS {fps_name} is not currently loaded"
+
+        if fps_state.current_oams is None:
+            return False, f"FPS {fps_name} has no OAMS loaded"
+
+        oams = self.oams.get(fps_state.current_oams)
+        if oams is None:
+            return False, f"OAMS {fps_state.current_oams} not found for FPS {fps_name}"
+
+        if oams.current_spool is None:
+            fps_state.state_name = FPSLoadState.UNLOADED
+            fps_state.following = False
+            fps_state.direction = 0
+            fps_state.current_group = None
+            fps_state.current_spool_idx = None
+            fps_state.since = self.reactor.monotonic()
+            self.current_group = None
+            return True, "Spool already unloaded"
+
+        fps_state.state_name = FPSLoadState.UNLOADING
+        fps_state.encoder = oams.encoder_clicks
+        fps_state.since = self.reactor.monotonic()
+        fps_state.current_oams = oams.name
+        fps_state.current_spool_idx = oams.current_spool
+
+        success, message = oams.unload_spool()
+
+        if success:
+            fps_state.state_name = FPSLoadState.UNLOADED
+            fps_state.following = False
+            fps_state.direction = 0
+            fps_state.since = self.reactor.monotonic()
+            fps_state.current_group = None
+            fps_state.current_spool_idx = None
+            self.current_group = None
+            return True, message
+
+        fps_state.state_name = FPSLoadState.LOADED
+        return False, message
+
+    def _load_filament_for_group(self, group_name: str) -> Tuple[bool, str]:
+        """Load filament for the provided filament group."""
+        if group_name not in self.filament_groups:
+            return False, f"Group {group_name} does not exist"
+
+        fps_name = self.group_fps_name(group_name)
+        if fps_name is None:
+            return False, f"No FPS associated with group {group_name}"
+
+        fps_state = self.current_state.fps_state[fps_name]
+
+        for (oam, bay_index) in self.filament_groups[group_name].bays:
+            if not oam.is_bay_ready(bay_index):
+                continue
+
+            fps_state.state_name = FPSLoadState.LOADING
+            fps_state.encoder = oam.encoder_clicks
+            fps_state.since = self.reactor.monotonic()
+            fps_state.current_oams = oam.name
+            fps_state.current_spool_idx = bay_index
+
+            success, message = oam.load_spool(bay_index)
+
+            if success:
+                fps_state.current_group = group_name
+                fps_state.current_oams = oam.name
+                fps_state.current_spool_idx = bay_index
+                fps_state.state_name = FPSLoadState.LOADED
+                fps_state.since = self.reactor.monotonic()
+                fps_state.following = False
+                fps_state.direction = 1
+                self.current_group = group_name
+                return True, message
+
+            fps_state.state_name = FPSLoadState.UNLOADED
+            fps_state.current_group = None
+            fps_state.current_spool_idx = None
+            fps_state.current_oams = None
+            return False, message
+
+        return False, f"No spool available for group {group_name}"
+
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
     def cmd_UNLOAD_FILAMENT(self, gcmd):
         fps_name = gcmd.get('FPS')
@@ -472,36 +628,12 @@ class OAMSManager:
         if fps_state.state_name == "UNLOADING":
             gcmd.respond_info(f"FPS {fps_name} is currently unloading a spool")
             return
-        if fps_state.state_name == "LOADED":
-            oams = self.oams[fps_state.current_oams]
-            if oams is None:
-                gcmd.respond_info(f"FPS {fps_name} has no OAMS loaded")
-                return
-            if oams.current_spool is not None:
-                fps_state.state_name = "UNLOADING"
-                fps_state.encoder = oams.encoder_clicks
-                fps_state.since = self.reactor.monotonic()
-                fps_state.current_oams = oams.name
-                fps_state.current_spool_idx = oams.current_spool
-            
-                success, message = oams.unload_spool()
-                
-                if success:
-                    fps_state.state_name = "UNLOADED"
-                    fps_state.following = False
-                    fps_state.direction = 0
-                    fps_state.since = self.reactor.monotonic()
-                    
-                    fps_state.current_group = None
-                    fps_state.current_spool_idx = None
-                    return
-                else:
-                    gcmd.respond_info(message)
-                    return
-        gcmd.respond_info("No spool is loaded in any of the OAMS")
-        self.current_group = None
+
+        success, message = self._unload_filament_for_fps(fps_name)
+        if not success or (message and message != "Spool unloaded successfully"):
+            gcmd.respond_info(message)
         return
-        
+
     cmd_LOAD_FILAMENT_help = "Load a spool from an specific group"
     def cmd_LOAD_FILAMENT(self, gcmd):
         # determine which fps this group is assigned to
@@ -514,37 +646,8 @@ class OAMSManager:
         if self.current_state.fps_state[fps_name].state_name == "LOADED":
             gcmd.respond_info(f"Group {group_name} is already loaded")
             return
-        
-        for (oam, bay_index) in self.filament_groups[group_name].bays:
-            if oam.is_bay_ready(bay_index):
-                fps_state.state_name = "LOADING"
-                fps_state.encoder = oam.encoder_clicks
-                fps_state.since = self.reactor.monotonic()
-                fps_state.current_oams = oam.name
-                fps_state.current_spool_idx = bay_index
-                
-                success, message = oam.load_spool(bay_index)
-                
-                if success:
-                    fps_state.current_group = group_name
-                    fps_state.current_oams = oam.name
-                    fps_state.current_spool_idx = bay_index
-                    
-                    
-                    fps_state.state_name = "LOADED"
-                    fps_state.since = self.reactor.monotonic()
-                    fps_state.current_oams = oam.name
-                    fps_state.current_spool_idx = bay_index
-                    fps_state.following = False
-                    fps_state.direction = 1
-                    
-                    gcmd.respond_info(message)
-                    self.current_group = group_name
-                    return
-                else:
-                    gcmd.respond_info(message)
-                    return
-        gcmd.respond_info(f"No spool available for group {group_name}")
+        success, message = self._load_filament_for_group(group_name)
+        gcmd.respond_info(message)
         return
         
     def _pause_printer_message(self, message):
@@ -606,23 +709,56 @@ class OAMSManager:
             self.monitor_timers.append(reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), reactor.NOW))
             
             def _reload_callback():
-                for (oam, bay_index) in self.filament_groups[fps_state.current_group].bays:
-                    if oam.is_bay_ready(bay_index):
-                        success, message = oam.load_spool(bay_index)
-                        if success:
-                            logging.info(f"OAMS: Successfully loaded spool in bay {bay_index} of OAM {oam.name}")
-                            fps_state.state_name = "LOADED"
-                            fps_state.since = self.reactor.monotonic()
-                            fps_state.current_spool_idx = bay_index
-                            fps_state.current_oams = oam.name
-                            fps_state.reset_runout_positions()
-                            self.runout_monitor.reset()
-                            self.runout_monitor.start()
-                            return
-                        else:
-                            logging.error(f"OAMS: Failed to load spool: {message}")
-                            break
-                self._pause_printer_message("No spool available for group %s" % fps_state.current_group)
+                source_group = fps_state.current_group
+                target_group = self._get_infinite_runout_target_group(fps_name, source_group)
+                group_to_load = target_group or source_group
+
+                if target_group:
+                    logging.info(
+                        "OAMS: Infinite runout triggered for %s on %s -> %s",
+                        fps_name,
+                        source_group,
+                        target_group,
+                    )
+                    unload_success, unload_message = self._unload_filament_for_fps(fps_name)
+                    if not unload_success:
+                        logging.error(
+                            "OAMS: Failed to unload filament during infinite runout on %s: %s",
+                            fps_name,
+                            unload_message,
+                        )
+                        failure_message = unload_message or f"Failed to unload current spool on {fps_name}"
+                        self._pause_printer_message(failure_message)
+                        self.runout_monitor.paused()
+                        return
+
+                if group_to_load is None:
+                    logging.error("OAMS: No filament group available to reload on %s", fps_name)
+                    self._pause_printer_message(f"No filament group available to reload on {fps_name}")
+                    self.runout_monitor.paused()
+                    return
+
+                load_success, load_message = self._load_filament_for_group(group_to_load)
+                if load_success:
+                    logging.info(
+                        "OAMS: Successfully loaded group %s on %s%s",
+                        group_to_load,
+                        fps_name,
+                        " after infinite runout" if target_group else "",
+                    )
+                    fps_state.reset_runout_positions()
+                    self.runout_monitor.reset()
+                    self.runout_monitor.start()
+                    return
+
+                logging.error(
+                    "OAMS: Failed to load group %s on %s: %s",
+                    group_to_load,
+                    fps_name,
+                    load_message,
+                )
+                failure_message = load_message or f"No spool available for group {group_to_load}"
+                self._pause_printer_message(failure_message)
                 self.runout_monitor.paused()
                 return
             
