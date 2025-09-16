@@ -9,11 +9,9 @@ import time
 from functools import partial
 from collections import deque
 from typing import Optional, Tuple, Dict, List, Any, Callable
-from .filament_group import FilamentGroup
 
 # Configuration constants
 PAUSE_DISTANCE = 60  # mm to pause before coasting follower
-EXTRA_COAST_DISTANCE = 30  # additional mm to coast before loading next spool
 ENCODER_SAMPLES = 2  # Number of encoder samples to collect
 MIN_ENCODER_DIFF = 1  # Minimum encoder difference to consider movement
 FILAMENT_PATH_LENGTH_FACTOR = 1.14  # Factor for calculating filament path traversal
@@ -102,10 +100,7 @@ class OAMSRunoutMonitor:
                     
             elif self.state == OAMSRunoutState.COASTING:
                 traveled_distance_after_bldc_clear = fps.extruder.last_position - self.bldc_clear_position
-                if traveled_distance_after_bldc_clear + self.reload_before_toolhead_distance > (
-                    self.oams[fps_state.current_oams].filament_path_length / FILAMENT_PATH_LENGTH_FACTOR
-                    + EXTRA_COAST_DISTANCE
-                ):
+                if traveled_distance_after_bldc_clear + self.reload_before_toolhead_distance > self.oams[fps_state.current_oams].filament_path_length / FILAMENT_PATH_LENGTH_FACTOR:
                     logging.info("OAMS: Loading next spool in the filament group.")
                     self.state = OAMSRunoutState.RELOADING
                     self.reload_callback()
@@ -241,7 +236,6 @@ class OAMSManager:
         self.filament_groups: Dict[str, Any] = {}  # Group name -> FilamentGroup object
         self.oams: Dict[str, Any] = {}  # OAMS name -> OAMS object
         self.fpss: Dict[str, Any] = {}  # FPS name -> FPS object
-        self.lane_groups: Dict[str, str] = {}  # Lane name -> filament group name
         
         # State management
         self.current_state = OAMSState()  # Tracks state of all FPS units
@@ -251,64 +245,16 @@ class OAMSManager:
         self.ready: bool = False  # System initialization complete
         
         # Configuration parameters
-        self.reload_before_toolhead_distance: float = config.getfloat(
-            "reload_before_toolhead_distance", 0.0
-        )
-
-        # External runout callback (fps_name, new_spool_idx)
-        self._runout_callback: Optional[Callable[[str, int], None]] = None
-
+        self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
+        
         # Initialize hardware collections
         self._initialize_oams()
         self._initialize_filament_groups()
-
+        
         # Register with printer and setup event handlers
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
         self.printer.add_object("oams_manager", self)
         self.register_commands()
-
-    def register_runout_callback(self, callback: Callable[[str, int], None]) -> None:
-        """Register a callback invoked after a runout reload attempt."""
-        self._runout_callback = callback
-
-    def _notify_runout(self, fps_name: str, spool_idx: int) -> None:
-        cb = self._runout_callback
-        if cb is None:
-            return
-        try:
-            cb(fps_name, spool_idx)
-        except Exception:
-            logging.exception("OAMS: runout callback failed")
-
-    def load_spool_for_lane(self, fps_name: str, oams_name: str, bay_index: int) -> bool:
-        """Load a specific spool bay and restart monitoring.
-
-        Returns ``True`` if the spool was successfully loaded.
-        """
-        fps_state = self.current_state.fps_state.get(fps_name)
-        oam = self.oams.get(oams_name)
-        if fps_state is None or oam is None:
-            return False
-        if not oam.is_bay_ready(bay_index):
-            return False
-        success, message = oam.load_spool(bay_index)
-        if success:
-            logging.info(
-                f"OAMS: Loaded spool in bay {bay_index} of OAM {oams_name}"
-            )
-            fps_state.state_name = "LOADED"
-            fps_state.since = self.printer.get_reactor().monotonic()
-            fps_state.current_spool_idx = bay_index
-            fps_state.current_oams = oams_name
-            fps_state.reset_runout_positions()
-            if hasattr(self, "runout_monitor"):
-                self.runout_monitor.reset()
-                self.runout_monitor.start()
-        else:
-            logging.error(
-                f"OAMS: Failed to load spool in bay {bay_index} of OAM {oams_name}: {message}"
-            )
-        return success
         
     def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
         """
@@ -322,19 +268,14 @@ class OAMSManager:
             - state_name: Loading state (LOADED/UNLOADED/LOADING/UNLOADING)
             - since: Timestamp when current state began
         """
-        attributes = {
-            "oams": {
-                name: {"action_status_code": oam.action_status_code}
-                for name, oam in self.oams.items()
-            }
-        }
+        attributes = {}
         for fps_name, fps_state in self.current_state.fps_state.items():
             attributes[fps_name] = {
                 "current_group": fps_state.current_group,
                 "current_oams": fps_state.current_oams,
                 "current_spool_idx": fps_state.current_spool_idx,
                 "state_name": fps_state.state_name,
-                "since": fps_state.since,
+                "since": fps_state.since
             }
         return attributes
     
@@ -384,13 +325,7 @@ class OAMSManager:
     def _initialize_oams(self) -> None:
         """Discover and register all OAMS hardware units."""
         for name, oam in self.printer.lookup_objects(module="oams"):
-            # Configuration sections are typically named "oams <name>".
-            # Normalize to the short name (e.g. "oams1") for dictionary keys
-            # and update the OAMS object's name attribute so any later
-            # references use the same identifier.
-            short_name = name.split()[-1]
-            oam.name = short_name
-            self.oams[short_name] = oam
+            self.oams[name] = oam
         
     def _initialize_filament_groups(self) -> None:
         """Discover and register all filament group configurations."""
@@ -516,121 +451,6 @@ class OAMSManager:
                             if fps_oam in c_group.oams:
                                 return fps_name
         return None
-
-    def fps_name_for_oams(self, oams_name):
-        logging.info("OAMS manager: resolving FPS for %s", oams_name)
-        for fps_name, fps in self.fpss.items():
-            if oams_name in fps.oams:
-                logging.info(
-                    "OAMS manager: %s belongs to %s", oams_name, fps_name
-                )
-                return fps_name
-        logging.info("OAMS manager: %s not found in any FPS", oams_name)
-        return None
-
-    def group_for_lane(self, lane_name: Optional[str]) -> Optional[str]:
-        """Return the filament group assigned to ``lane_name`` if any."""
-
-        if lane_name is None:
-            return None
-        return self.lane_groups.get(lane_name)
-
-    def ensure_group_for_lanes(self, group_name, lane_a, lane_b=None):
-        """Ensure ``group_name`` reflects the provided AMS lanes.
-
-        When ``lane_b`` is omitted a single-lane group is created for
-        ``lane_a``.  If both lanes share the same FPS controller the group is
-        updated to contain the pair.  Lane-to-group mappings are refreshed so
-        OpenAMS can resolve the active filament group before a reload occurs.
-        """
-
-        if group_name is None or lane_a is None:
-            return
-
-        lanes = [lane_a]
-        if lane_b is not None and lane_b is not lane_a:
-            lanes.append(lane_b)
-
-        lane_details = []
-        fps_name = None
-        for lane in lanes:
-            unit_obj = getattr(lane, "unit_obj", None)
-            oams_name = getattr(unit_obj, "oams_name", None)
-            if oams_name is None:
-                return
-            oam = self.oams.get(oams_name)
-            if oam is None:
-                return
-            lane_fps = self.fps_name_for_oams(oam.name)
-            if lane_fps is None:
-                return
-            if fps_name is None:
-                fps_name = lane_fps
-            elif fps_name != lane_fps:
-                logging.info(
-                    "OAMS manager: lanes %s and %s are on different FPS (%s vs %s)",
-                    lanes[0].name,
-                    lane.name,
-                    fps_name,
-                    lane_fps,
-                )
-                return
-
-            bay_count = len(getattr(oam, "f1s_hes_value", [])) or 4
-            bay_index = (lane.index - 1) % bay_count
-            lane_details.append((lane, oam, bay_index))
-
-        group = self.filament_groups.get(group_name)
-        if group is None:
-            group = FilamentGroup.__new__(FilamentGroup)
-            group.printer = self.printer
-            group.group_name = group_name
-            self.filament_groups[group_name] = group
-
-        group.bays = [(oam, bay) for _, oam, bay in lane_details]
-        group.oams = []
-        for _, oam, _ in lane_details:
-            if oam not in group.oams:
-                group.oams.append(oam)
-
-        lane_names = {lane.name for lane, _, _ in lane_details}
-        for lane_name, mapped_group in list(self.lane_groups.items()):
-            if mapped_group == group_name and lane_name not in lane_names:
-                self.lane_groups.pop(lane_name, None)
-
-        for lane, _, _ in lane_details:
-            self.lane_groups[lane.name] = group_name
-
-        if len(lane_details) == 1:
-            oam = lane_details[0][1]
-            bay = lane_details[0][2]
-            logging.info(
-                "OAMS manager: group %s set to %s-%s",
-                group_name,
-                oam.name,
-                bay,
-            )
-        else:
-            (_lane_a, oam_a, bay_a), (_lane_b, oam_b, bay_b) = lane_details
-            logging.info(
-                "OAMS manager: group %s set to %s-%s, %s-%s",
-                group_name,
-                oam_a.name,
-                bay_a,
-                oam_b.name,
-                bay_b,
-            )
-
-        if fps_name is not None:
-            fps_state = self.current_state.fps_state.get(fps_name)
-            if fps_state is not None:
-                for _, oam, bay in lane_details:
-                    if (
-                        fps_state.current_oams == oam.name
-                        and fps_state.current_spool_idx == bay
-                    ):
-                        fps_state.current_group = group_name
-                        break
     
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
     def cmd_UNLOAD_FILAMENT(self, gcmd):
@@ -798,12 +618,10 @@ class OAMSManager:
                             fps_state.reset_runout_positions()
                             self.runout_monitor.reset()
                             self.runout_monitor.start()
-                            self._notify_runout(fps_name, bay_index)
                             return
                         else:
                             logging.error(f"OAMS: Failed to load spool: {message}")
                             break
-                self._notify_runout(fps_name, -1)
                 self._pause_printer_message("No spool available for group %s" % fps_state.current_group)
                 self.runout_monitor.paused()
                 return
