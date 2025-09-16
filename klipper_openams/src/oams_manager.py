@@ -268,25 +268,35 @@ class OAMSManager:
         
     def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
         """
-        Return current status of all FPS units for monitoring.
-        
+        Return current status of all FPS units and OAMS hardware for monitoring.
+
         Returns:
-            Dictionary with FPS names as keys, each containing:
-            - current_group: Active filament group name
-            - current_oams: Active OAMS unit name  
-            - current_spool_idx: Active spool bay index (0-3)
-            - state_name: Loading state (LOADED/UNLOADED/LOADING/UNLOADING)
-            - since: Timestamp when current state began
+            Dictionary containing:
+            - "oams": Mapping of OAMS identifiers to their latest action status
+            - One entry per FPS with its current loading state information
         """
-        attributes = {}
+        attributes: Dict[str, Dict[str, Any]] = {"oams": {}}
+
+        for name, oam in self.oams.items():
+            status_name = name.split()[-1]
+            oam_status = {
+                "action_status": oam.action_status,
+                "action_status_code": oam.action_status_code,
+                "action_status_value": oam.action_status_value,
+            }
+            attributes["oams"][status_name] = oam_status
+            if status_name != name:
+                attributes["oams"][name] = oam_status
+
         for fps_name, fps_state in self.current_state.fps_state.items():
             attributes[fps_name] = {
                 "current_group": fps_state.current_group,
                 "current_oams": fps_state.current_oams,
                 "current_spool_idx": fps_state.current_spool_idx,
                 "state_name": fps_state.state_name,
-                "since": fps_state.since
+                "since": fps_state.since,
             }
+
         return attributes
     
     def determine_state(self) -> None:
