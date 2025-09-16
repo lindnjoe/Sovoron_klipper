@@ -1,3 +1,4 @@
+
 # OpenAMS Manager
 #
 # Copyright (C) 2025 JR Lomas <lomas.jr@gmail.com>
@@ -11,6 +12,7 @@ from collections import deque
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 # Configuration constants
+
 PAUSE_DISTANCE = 60  # mm to pause before coasting follower
 ENCODER_SAMPLES = 2  # Number of encoder samples to collect
 MIN_ENCODER_DIFF = 1  # Minimum encoder difference to consider movement
@@ -19,6 +21,7 @@ MONITOR_ENCODER_LOADING_SPEED_AFTER = 2.0  # seconds
 MONITOR_ENCODER_PERIOD = 2.0 # seconds
 MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0  # seconds
 AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout triggers
+
 
 
 class OAMSRunoutState:
@@ -80,6 +83,7 @@ class OAMSRunoutMonitor:
             
             if self.state == OAMSRunoutState.STOPPED or self.state == OAMSRunoutState.PAUSED or self.state == OAMSRunoutState.RELOADING:
                 pass
+
             elif self.state == OAMSRunoutState.MONITORING:
                 #logging.info("OAMS: Monitoring runout, is_printing: %s, fps_state: %s, fps_state.current_group: %s, fps_state.current_spool_idx: %s, oams: %s" % (is_printing, fps_state.state_name, fps_state.current_group, fps_state.current_spool_idx, fps_state.current_oams))
                 if getattr(fps_state, "afc_delegation_active", False):
@@ -93,6 +97,7 @@ class OAMSRunoutMonitor:
                 fps_state.current_group is not None and \
                 fps_state.current_spool_idx is not None and \
                 not bool(self.oams[fps_state.current_oams].hub_hes_value[fps_state.current_spool_idx]):
+
                     self.state = OAMSRunoutState.DETECTED
                     logging.info(f"OAMS: Runout detected on FPS {self.fps_name}, pausing for {PAUSE_DISTANCE} mm before coasting the follower.")
                     self.runout_position = fps.extruder.last_position
@@ -117,11 +122,13 @@ class OAMSRunoutMonitor:
         self._timer_callback = _monitor_runout
         self.timer = self.reactor.register_timer(self._timer_callback, self.reactor.NOW)
         
+
     def start(self) -> None:
         """Start monitoring for filament runout."""
         if self.timer is None:
             self.timer = self.reactor.register_timer(self._timer_callback, self.reactor.NOW)
         self.state = OAMSRunoutState.MONITORING
+
     
     def stop(self) -> None:
         """Stop monitoring for filament runout."""
@@ -200,6 +207,7 @@ class FPSState:
         self.monitor_pause_timer = None
         self.monitor_load_next_spool_timer = None
         
+
         # Motion monitoring
         self.encoder_samples = deque(maxlen=ENCODER_SAMPLES)  # Recent encoder readings
 
@@ -211,6 +219,7 @@ class FPSState:
         # AFC delegation state
         self.afc_delegation_active: bool = False
         self.afc_delegation_until: float = 0.0
+
         
     def reset_runout_positions(self) -> None:
         """Clear runout position tracking."""
@@ -246,6 +255,7 @@ class OAMSManager:
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         
+
         # Hardware object collections
         self.filament_groups: Dict[str, Any] = {}  # Group name -> FilamentGroup object
         self.oams: Dict[str, Any] = {}  # OAMS name -> OAMS object
@@ -256,7 +266,9 @@ class OAMSManager:
         self.current_group: Optional[str] = None  # Last group requested via load command
         self.afc = None  # Optional reference to AFC for lane runout mappings
         self._afc_logged = False  # Tracks whether AFC integration has been announced
+
         
+
         # Monitoring and control
         self.monitor_timers: List[Any] = []  # Active monitoring timers
         self.runout_monitors: Dict[str, OAMSRunoutMonitor] = {}
@@ -267,6 +279,7 @@ class OAMSManager:
 
         # Cached mappings
         self.group_to_fps: Dict[str, str] = {}
+
         
         # Initialize hardware collections
         self._initialize_oams()
@@ -277,6 +290,7 @@ class OAMSManager:
         self.printer.add_object("oams_manager", self)
         self.register_commands()
         
+
     def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
         """
         Return current status of all FPS units and OAMS hardware for monitoring.
@@ -309,6 +323,7 @@ class OAMSManager:
             }
 
         return attributes
+
     
     def determine_state(self) -> None:
         """
@@ -341,6 +356,7 @@ class OAMSManager:
         4. Start monitoring timers
         """
         # Discover all FPS units in the system
+
         for fps_name, fps in self.printer.lookup_objects(module="fps"):
             self.fpss[fps_name] = fps
             self.current_state.add_fps_state(fps_name)
@@ -353,6 +369,7 @@ class OAMSManager:
         # Initialize system state and start monitoring
         self.determine_state()
         self.start_monitors()
+
         self.ready = True
 
     def _initialize_oams(self) -> None:
@@ -476,6 +493,7 @@ class OAMSManager:
         fps_state.current_spool_idx = self.oams[fps_state.current_oams].current_spool
         return
     
+
     def _rebuild_group_fps_index(self) -> None:
         """Build a lookup table from filament groups to their owning FPS."""
         mapping: Dict[str, str] = {}
@@ -851,6 +869,7 @@ class OAMSManager:
         success, message = self._load_filament_for_group(group_name)
         gcmd.respond_info(message)
         return
+
         
     def _pause_printer_message(self, message):
         logging.info(f"OAMS: {message}")
@@ -903,6 +922,7 @@ class OAMSManager:
             return eventtime + MONITOR_ENCODER_PERIOD
         return partial(_monitor_load_speed, self)
     
+
     def start_monitors(self):
         self.monitor_timers = []
         self.runout_monitors = {}
@@ -1037,5 +1057,7 @@ class OAMSManager:
             monitor.reset()
         self.runout_monitors = {}
 
+
 def load_config(config):
     return OAMSManager(config)
+
