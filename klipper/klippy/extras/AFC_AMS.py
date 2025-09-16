@@ -403,9 +403,10 @@ class afcAMS(afcUnit):
 
         When OpenAMS successfully reloads a spool on the same FPS, allow the
         print to continue without issuing a ``T#`` tool change.  If OpenAMS
-        fails to reload a spool, attempt to load the fallback AMS lane via
-        ``OAMSM_LOAD_FILAMENT`` before falling back to AFC's standard runout
-        handling.
+        fails to reload a spool, unload the FPS and explicitly command a load
+        of the configured fallback lane via ``OAMSM_UNLOAD_FILAMENT`` followed
+        by ``OAMSM_LOAD_FILAMENT`` before falling back to AFC's standard
+        runout handling.
         """
         lane_name = self.afc.function.get_current_lane()
         fps_state = None
@@ -541,72 +542,80 @@ class afcAMS(afcUnit):
                 fps_name,
             )
             if ro_fps == fps_name:
-                active_group = (
-                    lane_group
-                    or fallback_group
-                    or group_name
-                    or lane_map
-                    or getattr(ro_lane, "map", None)
-                )
-                if fps_state is not None:
-                    # Mark the FPS as unloaded so the load command proceeds.
-                    fps_state.state_name = "UNLOADED"
-                    fps_state.current_group = None
-                    fps_state.current_oams = None
-                    fps_state.current_spool_idx = None
-                # Determine the local bay index for the fallback lane since AFC
-                # lane indices are global across multiple AMS units.
-                oam = self.oams_manager.oams.get(ro_lane.unit_obj.oams_name)
-                bay_count = len(getattr(oam, "f1s_hes_value", [])) or 4
-                bay_index = (ro_lane.index - 1) % bay_count
-                self.logger.info(
-                    "AMS runout: attempting OpenAMS load for %s bay %s",
-                    ro_lane.name,
-                    bay_index,
-                )
-                loaded = self.oams_manager.load_spool_for_lane(
-                    fps_name,
-                    ro_lane.unit_obj.oams_name,
-                    bay_index,
-                )
-                self.logger.info(
-                    "AMS runout: load result %s for lane %s", loaded, ro_lane.name
-                )
-                if loaded:
-                    if fps_state is not None:
-                        # Track the newly active filament group so OpenAMS can
-                        # continue monitoring runout on the correct lane.
-                        fps_state.current_group = active_group
-                    # Update AFC state to reflect the newly loaded lane so
-                    # subsequent runout checks do not trigger for the empty
-                    # lane and the correct stepper drives the filament.
-                    ro_lane.set_loaded()
-                    ro_lane.sync_to_extruder()
-                    self.afc.current = ro_lane.name
-                    self.afc.function.handle_activate_extruder()
-
-                    if hasattr(self.oams_manager, "runout_monitor"):
-                        self.oams_manager.runout_monitor.reset()
-                        self.oams_manager.runout_monitor.start()
-                    pause = self.printer.lookup_object("pause_resume", None)
-                    if pause is not None:
-                        pause.send_resume_command()
+                target_group = getattr(ro_lane, "map", None)
+                if not target_group:
+                    target_group = fallback_group
+                if not target_group:
+                    target_group = getattr(ro_lane, "name", None)
+                if not target_group:
                     self.logger.info(
-                        "AMS runout: successfully loaded %s; resuming print",
+                        "AMS runout: no group mapping available for fallback lane %s",
                         ro_lane.name,
                     )
-                    return
+                else:
+                    try:
+                        self.oams_manager.ensure_group_for_lanes(
+                            target_group,
+                            ro_lane,
+                            None,
+                        )
+                    except Exception:
+                        self.logger.exception(
+                            "AMS runout: failed to prepare fallback group %s",
+                            target_group,
+                        )
+                    else:
+                        gcode = self.printer.lookup_object("gcode", None)
+                        if gcode is None:
+                            self.logger.info(
+                                "AMS runout: gcode object unavailable; invoking AFC runout"
+                            )
+                        else:
+                            fps_param = fps_name.split()[-1] if fps_name else None
+                            if not fps_param:
+                                self.logger.info(
+                                    "AMS runout: unable to resolve FPS parameter for %s",
+                                    fps_name,
+                                )
+                            else:
+                                try:
+                                    self.logger.info(
+                                        "AMS runout: unloading %s before loading group %s",
+                                        fps_param,
+                                        target_group,
+                                    )
+                                    gcode.run_script(
+                                        f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}"
+                                    )
+                                    gcode.run_script(
+                                        f"OAMSM_LOAD_FILAMENT GROUP={target_group}"
+                                    )
+                                except Exception:
+                                    self.logger.exception(
+                                        "AMS runout: failed to command fallback load"
+                                    )
+                                else:
+                                    ro_lane.set_loaded()
+                                    ro_lane.sync_to_extruder()
+                                    self.afc.current = ro_lane.name
+                                    self.afc.function.handle_activate_extruder()
 
-                # If the load fails, fall back to AFC's standard runout logic.
-                self.logger.info(
-                    "AMS runout: OpenAMS load failed for %s; invoking AFC runout",
-                    lane_name,
-                )
-                if fps_state is not None:
-                    fps_state.current_group = active_group
-                eventtime = self.reactor.monotonic()
-                lane.handle_load_runout(eventtime, False)
-                return
+                                    if hasattr(self.oams_manager, "runout_monitor"):
+                                        self.oams_manager.runout_monitor.reset()
+                                        self.oams_manager.runout_monitor.start()
+                                    pause = self.printer.lookup_object(
+                                        "pause_resume", None
+                                    )
+                                    if pause is not None:
+                                        pause.send_resume_command()
+                                    self.logger.info(
+                                        "AMS runout: commanded load of %s via group %s",
+                                        ro_lane.name,
+                                        target_group,
+                                    )
+                                    if fps_state is not None:
+                                        fps_state.current_group = target_group
+                                    return
 
             self.logger.info(
                 "AMS runout: fallback lane on different FPS (%s); using AFC runout",
