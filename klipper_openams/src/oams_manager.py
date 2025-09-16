@@ -485,34 +485,34 @@ class OAMSManager:
             self._afc_logged = True
         return self.afc
 
-    def _get_infinite_runout_target_group(self, fps_name: str, current_group: Optional[str]) -> Optional[str]:
-        """Return the target filament group for infinite runout, if configured."""
+    def _get_infinite_runout_target_group(self, fps_name: str, current_group: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        """Return the target filament group and lane for infinite runout, if configured."""
         if current_group is None:
-            return None
+            return None, None
 
         afc = self._get_afc()
         if afc is None:
-            return None
+            return None, None
 
         try:
             lane_name = afc.tool_cmds.get(current_group)
         except AttributeError:
-            return None
+            return None, None
 
         if not lane_name:
-            return None
+            return None, None
 
         lane = afc.lanes.get(lane_name)
         if lane is None:
-            return None
+            return None, None
 
         runout_lane_name = getattr(lane, "runout_lane", None)
         if not runout_lane_name:
-            return None
+            return None, None
 
         target_lane = afc.lanes.get(runout_lane_name)
         if target_lane is None:
-            return None
+            return None, None
 
         source_extruder = getattr(lane, "extruder_obj", None)
         target_extruder = getattr(target_lane, "extruder_obj", None)
@@ -530,7 +530,7 @@ class OAMSManager:
                 runout_lane_name,
                 getattr(target_extruder, "name", "unknown"),
             )
-            return None
+            return None, None
 
         target_group = next(
             (group for group, mapped_lane in getattr(afc, "tool_cmds", {}).items()
@@ -541,15 +541,15 @@ class OAMSManager:
             target_group = getattr(target_lane, "map", None)
 
         if not target_group or target_group == current_group:
-            return None
+            return None, None
 
         if target_group not in self.filament_groups or current_group not in self.filament_groups:
-            return None
+            return None, None
 
         source_fps = self.group_fps_name(current_group)
         target_fps = self.group_fps_name(target_group)
         if source_fps != fps_name or target_fps != fps_name:
-            return None
+            return None, None
 
         logging.info(
             "OAMS: Infinite runout configured for %s on %s -> %s (lanes %s -> %s)",
@@ -559,7 +559,7 @@ class OAMSManager:
             lane_name,
             runout_lane_name,
         )
-        return target_group
+        return target_group, runout_lane_name
 
     def _unload_filament_for_fps(self, fps_name: str) -> Tuple[bool, str]:
         """Unload filament from the specified FPS and update state."""
@@ -754,7 +754,7 @@ class OAMSManager:
             def _reload_callback(fps_name=fps_name, fps_state=fps_state):
                 monitor = self.runout_monitors.get(fps_name)
                 source_group = fps_state.current_group
-                target_group = self._get_infinite_runout_target_group(fps_name, source_group)
+                target_group, target_lane = self._get_infinite_runout_target_group(fps_name, source_group)
                 group_to_load = target_group or source_group
 
                 if target_group:
@@ -792,6 +792,28 @@ class OAMSManager:
                         fps_name,
                         " after infinite runout" if target_group else "",
                     )
+                    if target_group:
+                        if target_lane:
+                            try:
+                                gcode = self.printer.lookup_object("gcode")
+                                gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
+                                logging.debug(
+                                    "OAMS: Marked lane %s as loaded after infinite runout on %s",
+                                    target_lane,
+                                    fps_name,
+                                )
+                            except Exception:
+                                logging.exception(
+                                    "OAMS: Failed to mark lane %s as loaded after infinite runout on %s",
+                                    target_lane,
+                                    fps_name,
+                                )
+                        else:
+                            logging.warning(
+                                "OAMS: No runout lane recorded for %s on %s when marking lane loaded",
+                                target_group,
+                                fps_name,
+                            )
                     fps_state.reset_runout_positions()
                     if monitor:
                         monitor.reset()
