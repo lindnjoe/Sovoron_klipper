@@ -19,12 +19,12 @@
             "empty_spool_weight": 250.0,
             "spool_id": 13,
             "color": "#000000",
-            "weight": 469.5923453153074,
+            "weight": 457.5395401200233,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "None"
+            "status": "Tooled"
         },
         "lane6": {
             "name": "lane6",
@@ -231,12 +231,12 @@
             "empty_spool_weight": 250.0,
             "spool_id": 1,
             "color": "#2D2B28",
-            "weight": 729.735598473279,
+            "weight": 737.3979646218962,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled"
+            "status": "Loaded"
         },
         "lane1": {
             "name": "lane1",
