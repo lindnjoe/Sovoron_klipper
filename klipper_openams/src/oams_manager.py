@@ -496,9 +496,17 @@ class OAMSManager:
         return self.afc
 
     def _get_infinite_runout_target_group(
-        self, fps_name: str, current_group: Optional[str]
+        self,
+        fps_name: str,
+        current_group: Optional[str],
     ) -> Tuple[Optional[str], Optional[str], bool]:
-        """Return the target group, lane, and whether OAMS should handle the swap."""
+        """
+        Return the target filament group and lane for infinite runout, if configured.
+
+        The third element of the tuple indicates whether the runout handling should be
+        delegated back to AFC (for example when the configured runout lane is not on
+        the same FPS and therefore cannot be handled by OAMS directly).
+        """
         if current_group is None:
             return None, None, False
 
@@ -516,12 +524,7 @@ class OAMSManager:
 
         lane = afc.lanes.get(lane_name)
         if lane is None:
-            logging.warning(
-                "OAMS: Runout lane %s mapped from %s not found in AFC",
-                lane_name,
-                current_group,
-            )
-            return None, lane_name, False
+            return None, None, False
 
         runout_lane_name = getattr(lane, "runout_lane", None)
         if not runout_lane_name:
@@ -530,11 +533,12 @@ class OAMSManager:
         target_lane = afc.lanes.get(runout_lane_name)
         if target_lane is None:
             logging.warning(
-                "OAMS: Configured runout lane %s for %s is not present in AFC",
+                "OAMS: Runout lane %s for %s on %s is not available; deferring to AFC",
                 runout_lane_name,
-                lane_name,
+                current_group,
+                fps_name,
             )
-            return None, runout_lane_name, False
+            return None, runout_lane_name, True
 
         source_extruder = getattr(lane, "extruder_obj", None)
         target_extruder = getattr(target_lane, "extruder_obj", None)
@@ -544,7 +548,7 @@ class OAMSManager:
             and source_extruder is not target_extruder
         ):
             logging.debug(
-                "OAMS: Ignoring infinite runout for %s on %s because lane %s (%s) spools to %s (%s)",
+                "OAMS: Deferring infinite runout for %s on %s because lane %s (%s) spools to %s (%s)",
                 current_group,
                 fps_name,
                 lane_name,
@@ -552,7 +556,7 @@ class OAMSManager:
                 runout_lane_name,
                 getattr(target_extruder, "name", "unknown"),
             )
-            return None, runout_lane_name, False
+            return None, runout_lane_name, True
 
         target_group = next(
             (group for group, mapped_lane in getattr(afc, "tool_cmds", {}).items()
@@ -563,15 +567,34 @@ class OAMSManager:
             target_group = getattr(target_lane, "map", None)
 
         if not target_group or target_group == current_group:
-            return None, runout_lane_name, False
+            logging.debug(
+                "OAMS: Runout lane %s for %s on %s does not map to a different filament group; deferring to AFC",
+                runout_lane_name,
+                current_group,
+                fps_name,
+            )
+            return None, runout_lane_name, True
 
         if target_group not in self.filament_groups or current_group not in self.filament_groups:
-            return None, runout_lane_name, False
+            logging.debug(
+                "OAMS: Runout mapping %s -> %s is not managed by OAMS; deferring to AFC",
+                current_group,
+                target_group,
+            )
+            return None, runout_lane_name, True
 
         source_fps = self.group_fps_name(current_group)
         target_fps = self.group_fps_name(target_group)
         if source_fps != fps_name or target_fps != fps_name:
-            return None, runout_lane_name, False
+            logging.info(
+                "OAMS: Deferring infinite runout for %s on %s to AFC lane %s because target group %s loads via %s",
+                current_group,
+                fps_name,
+                runout_lane_name,
+                target_group,
+                target_fps or "unknown FPS",
+            )
+            return None, runout_lane_name, True
 
         logging.info(
             "OAMS: Infinite runout configured for %s on %s -> %s (lanes %s -> %s)",
@@ -581,15 +604,7 @@ class OAMSManager:
             lane_name,
             runout_lane_name,
         )
-        return target_group, runout_lane_name, True
-
-    def _restart_runout_monitor(self, fps_name: str) -> None:
-        """Reset and restart the runout monitor for the specified FPS."""
-        monitor = self.runout_monitors.get(fps_name)
-        if monitor is None:
-            return
-        monitor.reset()
-        monitor.start()
+        return target_group, runout_lane_name, False
 
     def _unload_filament_for_fps(self, fps_name: str) -> Tuple[bool, str]:
         """Unload filament from the specified FPS and update state."""
@@ -670,8 +685,6 @@ class OAMSManager:
                 fps_state.following = False
                 fps_state.direction = 1
                 self.current_group = group_name
-                fps_state.reset_runout_positions()
-                self._restart_runout_monitor(fps_name)
                 return True, message
 
             fps_state.state_name = FPSLoadState.UNLOADED
@@ -786,26 +799,26 @@ class OAMSManager:
             def _reload_callback(fps_name=fps_name, fps_state=fps_state):
                 monitor = self.runout_monitors.get(fps_name)
                 source_group = fps_state.current_group
-                target_group, target_lane, handle_internal = self._get_infinite_runout_target_group(
-                    fps_name, source_group
+                target_group, target_lane, delegate_to_afc = self._get_infinite_runout_target_group(
+                    fps_name,
+                    source_group,
                 )
 
-                if target_lane and not handle_internal:
+                if delegate_to_afc:
                     logging.info(
-                        "OAMS: Deferring infinite runout for %s on %s to AFC-managed lane %s",
-                        source_group,
+                        "OAMS: Deferring infinite runout for %s on %s to AFC%s",
                         fps_name,
-                        target_lane,
+                        source_group or "<unknown>",
+                        f" lane {target_lane}" if target_lane else "",
                     )
+                    fps_state.reset_runout_positions()
                     if monitor:
-                        monitor.reset()
+                        monitor.start()
                     return
 
-                group_to_load = source_group
-                if handle_internal and target_group:
-                    group_to_load = target_group
+                group_to_load = target_group or source_group
 
-                if handle_internal and target_group:
+                if target_group:
                     logging.info(
                         "OAMS: Infinite runout triggered for %s on %s -> %s",
                         fps_name,
@@ -838,9 +851,9 @@ class OAMSManager:
                         "OAMS: Successfully loaded group %s on %s%s",
                         group_to_load,
                         fps_name,
-                        " after infinite runout" if handle_internal and target_group else "",
+                        " after infinite runout" if target_group else "",
                     )
-                    if handle_internal and target_group:
+                    if target_group:
                         if target_lane:
                             try:
                                 gcode = self.printer.lookup_object("gcode")
@@ -862,6 +875,10 @@ class OAMSManager:
                                 target_group,
                                 fps_name,
                             )
+                    fps_state.reset_runout_positions()
+                    if monitor:
+                        monitor.reset()
+                        monitor.start()
                     return
 
                 logging.error(
