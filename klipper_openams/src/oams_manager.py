@@ -495,34 +495,46 @@ class OAMSManager:
             self._afc_logged = True
         return self.afc
 
-    def _get_infinite_runout_target_group(self, fps_name: str, current_group: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-        """Return the target filament group and lane for infinite runout, if configured."""
+    def _get_infinite_runout_target_group(
+        self, fps_name: str, current_group: Optional[str]
+    ) -> Tuple[Optional[str], Optional[str], bool]:
+        """Return the target group, lane, and whether OAMS should handle the swap."""
         if current_group is None:
-            return None, None
+            return None, None, False
 
         afc = self._get_afc()
         if afc is None:
-            return None, None
+            return None, None, False
 
         try:
             lane_name = afc.tool_cmds.get(current_group)
         except AttributeError:
-            return None, None
+            return None, None, False
 
         if not lane_name:
-            return None, None
+            return None, None, False
 
         lane = afc.lanes.get(lane_name)
         if lane is None:
-            return None, None
+            logging.warning(
+                "OAMS: Runout lane %s mapped from %s not found in AFC",
+                lane_name,
+                current_group,
+            )
+            return None, lane_name, False
 
         runout_lane_name = getattr(lane, "runout_lane", None)
         if not runout_lane_name:
-            return None, None
+            return None, None, False
 
         target_lane = afc.lanes.get(runout_lane_name)
         if target_lane is None:
-            return None, None
+            logging.warning(
+                "OAMS: Configured runout lane %s for %s is not present in AFC",
+                runout_lane_name,
+                lane_name,
+            )
+            return None, runout_lane_name, False
 
         source_extruder = getattr(lane, "extruder_obj", None)
         target_extruder = getattr(target_lane, "extruder_obj", None)
@@ -540,7 +552,7 @@ class OAMSManager:
                 runout_lane_name,
                 getattr(target_extruder, "name", "unknown"),
             )
-            return None, None
+            return None, runout_lane_name, False
 
         target_group = next(
             (group for group, mapped_lane in getattr(afc, "tool_cmds", {}).items()
@@ -551,15 +563,15 @@ class OAMSManager:
             target_group = getattr(target_lane, "map", None)
 
         if not target_group or target_group == current_group:
-            return None, None
+            return None, runout_lane_name, False
 
         if target_group not in self.filament_groups or current_group not in self.filament_groups:
-            return None, None
+            return None, runout_lane_name, False
 
         source_fps = self.group_fps_name(current_group)
         target_fps = self.group_fps_name(target_group)
         if source_fps != fps_name or target_fps != fps_name:
-            return None, None
+            return None, runout_lane_name, False
 
         logging.info(
             "OAMS: Infinite runout configured for %s on %s -> %s (lanes %s -> %s)",
@@ -569,7 +581,15 @@ class OAMSManager:
             lane_name,
             runout_lane_name,
         )
-        return target_group, runout_lane_name
+        return target_group, runout_lane_name, True
+
+    def _restart_runout_monitor(self, fps_name: str) -> None:
+        """Reset and restart the runout monitor for the specified FPS."""
+        monitor = self.runout_monitors.get(fps_name)
+        if monitor is None:
+            return
+        monitor.reset()
+        monitor.start()
 
     def _unload_filament_for_fps(self, fps_name: str) -> Tuple[bool, str]:
         """Unload filament from the specified FPS and update state."""
@@ -650,6 +670,8 @@ class OAMSManager:
                 fps_state.following = False
                 fps_state.direction = 1
                 self.current_group = group_name
+                fps_state.reset_runout_positions()
+                self._restart_runout_monitor(fps_name)
                 return True, message
 
             fps_state.state_name = FPSLoadState.UNLOADED
@@ -764,10 +786,26 @@ class OAMSManager:
             def _reload_callback(fps_name=fps_name, fps_state=fps_state):
                 monitor = self.runout_monitors.get(fps_name)
                 source_group = fps_state.current_group
-                target_group, target_lane = self._get_infinite_runout_target_group(fps_name, source_group)
-                group_to_load = target_group or source_group
+                target_group, target_lane, handle_internal = self._get_infinite_runout_target_group(
+                    fps_name, source_group
+                )
 
-                if target_group:
+                if target_lane and not handle_internal:
+                    logging.info(
+                        "OAMS: Deferring infinite runout for %s on %s to AFC-managed lane %s",
+                        source_group,
+                        fps_name,
+                        target_lane,
+                    )
+                    if monitor:
+                        monitor.reset()
+                    return
+
+                group_to_load = source_group
+                if handle_internal and target_group:
+                    group_to_load = target_group
+
+                if handle_internal and target_group:
                     logging.info(
                         "OAMS: Infinite runout triggered for %s on %s -> %s",
                         fps_name,
@@ -800,9 +838,9 @@ class OAMSManager:
                         "OAMS: Successfully loaded group %s on %s%s",
                         group_to_load,
                         fps_name,
-                        " after infinite runout" if target_group else "",
+                        " after infinite runout" if handle_internal and target_group else "",
                     )
-                    if target_group:
+                    if handle_internal and target_group:
                         if target_lane:
                             try:
                                 gcode = self.printer.lookup_object("gcode")
@@ -824,10 +862,6 @@ class OAMSManager:
                                 target_group,
                                 fps_name,
                             )
-                    fps_state.reset_runout_positions()
-                    if monitor:
-                        monitor.reset()
-                        monitor.start()
                     return
 
                 logging.error(
