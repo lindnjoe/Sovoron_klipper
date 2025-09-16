@@ -567,7 +567,7 @@ class OAMSManager:
             return False, f"FPS {fps_name} does not exist"
 
         fps_state = self.current_state.fps_state[fps_name]
-        if fps_state.state_name not in (FPSLoadState.LOADED, FPSLoadState.RELOADING):
+        if fps_state.state_name != FPSLoadState.LOADED:
             return False, f"FPS {fps_name} is not currently loaded"
 
         if fps_state.current_oams is None:
