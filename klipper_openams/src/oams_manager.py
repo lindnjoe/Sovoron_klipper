@@ -18,6 +18,7 @@ FILAMENT_PATH_LENGTH_FACTOR = 1.14  # Factor for calculating filament path trave
 MONITOR_ENCODER_LOADING_SPEED_AFTER = 2.0  # seconds
 MONITOR_ENCODER_PERIOD = 2.0 # seconds
 MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0  # seconds
+AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout triggers
 
 
 class OAMSRunoutState:
@@ -81,6 +82,12 @@ class OAMSRunoutMonitor:
                 pass
             elif self.state == OAMSRunoutState.MONITORING:
                 #logging.info("OAMS: Monitoring runout, is_printing: %s, fps_state: %s, fps_state.current_group: %s, fps_state.current_spool_idx: %s, oams: %s" % (is_printing, fps_state.state_name, fps_state.current_group, fps_state.current_spool_idx, fps_state.current_oams))
+                if getattr(fps_state, "afc_delegation_active", False):
+                    now = self.reactor.monotonic()
+                    if now < getattr(fps_state, "afc_delegation_until", 0.0):
+                        return eventtime + MONITOR_ENCODER_PERIOD
+                    fps_state.afc_delegation_active = False
+                    fps_state.afc_delegation_until = 0.0
                 if is_printing and \
                 fps_state.state_name == "LOADED" and \
                 fps_state.current_group is not None and \
@@ -195,11 +202,15 @@ class FPSState:
         
         # Motion monitoring
         self.encoder_samples = deque(maxlen=ENCODER_SAMPLES)  # Recent encoder readings
-        
+
         # Follower state
         self.following: bool = False  # Whether follower mode is active
         self.direction: int = 0  # Follower direction (0=forward, 1=reverse)
         self.since: Optional[float] = None  # Timestamp when current state began
+
+        # AFC delegation state
+        self.afc_delegation_active: bool = False
+        self.afc_delegation_until: float = 0.0
         
     def reset_runout_positions(self) -> None:
         """Clear runout position tracking."""
@@ -499,7 +510,7 @@ class OAMSManager:
         self,
         fps_name: str,
         current_group: Optional[str],
-    ) -> Tuple[Optional[str], Optional[str], bool]:
+    ) -> Tuple[Optional[str], Optional[str], bool, Optional[str]]:
         """
         Return the target filament group and lane for infinite runout, if configured.
 
@@ -508,27 +519,37 @@ class OAMSManager:
         the same FPS and therefore cannot be handled by OAMS directly).
         """
         if current_group is None:
-            return None, None, False
+            return None, None, False, None
 
         afc = self._get_afc()
         if afc is None:
-            return None, None, False
+            return None, None, False, None
 
         try:
             lane_name = afc.tool_cmds.get(current_group)
         except AttributeError:
-            return None, None, False
+            lane_name = None
 
         if not lane_name:
-            return None, None, False
+            lane_name = next(
+                (
+                    name
+                    for name, lane in getattr(afc, "lanes", {}).items()
+                    if getattr(lane, "map", None) == current_group
+                ),
+                None,
+            )
+
+        if not lane_name:
+            return None, None, False, None
 
         lane = afc.lanes.get(lane_name)
         if lane is None:
-            return None, None, False
+            return None, None, False, lane_name
 
         runout_lane_name = getattr(lane, "runout_lane", None)
         if not runout_lane_name:
-            return None, None, False
+            return None, None, False, lane_name
 
         target_lane = afc.lanes.get(runout_lane_name)
         if target_lane is None:
@@ -538,7 +559,7 @@ class OAMSManager:
                 current_group,
                 fps_name,
             )
-            return None, runout_lane_name, True
+            return None, runout_lane_name, True, lane_name
 
         source_extruder = getattr(lane, "extruder_obj", None)
         target_extruder = getattr(target_lane, "extruder_obj", None)
@@ -556,7 +577,7 @@ class OAMSManager:
                 runout_lane_name,
                 getattr(target_extruder, "name", "unknown"),
             )
-            return None, runout_lane_name, True
+            return None, runout_lane_name, True, lane_name
 
         target_group = next(
             (group for group, mapped_lane in getattr(afc, "tool_cmds", {}).items()
@@ -566,6 +587,11 @@ class OAMSManager:
         if target_group is None:
             target_group = getattr(target_lane, "map", None)
 
+        if isinstance(target_group, str):
+            target_group = target_group.strip()
+            if " " in target_group:
+                target_group = target_group.split()[-1]
+
         if not target_group or target_group == current_group:
             logging.debug(
                 "OAMS: Runout lane %s for %s on %s does not map to a different filament group; deferring to AFC",
@@ -573,7 +599,7 @@ class OAMSManager:
                 current_group,
                 fps_name,
             )
-            return None, runout_lane_name, True
+            return None, runout_lane_name, True, lane_name
 
         if target_group not in self.filament_groups or current_group not in self.filament_groups:
             logging.debug(
@@ -581,7 +607,7 @@ class OAMSManager:
                 current_group,
                 target_group,
             )
-            return None, runout_lane_name, True
+            return None, runout_lane_name, True, lane_name
 
         source_fps = self.group_fps_name(current_group)
         target_fps = self.group_fps_name(target_group)
@@ -594,7 +620,7 @@ class OAMSManager:
                 target_group,
                 target_fps or "unknown FPS",
             )
-            return None, runout_lane_name, True
+            return None, runout_lane_name, True, lane_name
 
         logging.info(
             "OAMS: Infinite runout configured for %s on %s -> %s (lanes %s -> %s)",
@@ -604,7 +630,96 @@ class OAMSManager:
             lane_name,
             runout_lane_name,
         )
-        return target_group, runout_lane_name, False
+        return target_group, runout_lane_name, False, lane_name
+
+    def _delegate_runout_to_afc(
+        self,
+        fps_name: str,
+        fps_state: 'FPSState',
+        source_lane_name: Optional[str],
+        target_lane_name: Optional[str],
+    ) -> bool:
+        """Ask AFC to perform the infinite runout swap for the provided lane."""
+
+        afc = self._get_afc()
+        if afc is None:
+            logging.debug(
+                "OAMS: Cannot delegate infinite runout for %s; AFC not available",
+                fps_name,
+            )
+            return False
+
+        if not source_lane_name:
+            logging.debug(
+                "OAMS: Cannot delegate infinite runout for %s; no source lane recorded",
+                fps_name,
+            )
+            return False
+
+        lane = afc.lanes.get(source_lane_name)
+        if lane is None:
+            logging.warning(
+                "OAMS: AFC lane %s not found while delegating infinite runout for %s",
+                source_lane_name,
+                fps_name,
+            )
+            return False
+
+        runout_target = getattr(lane, "runout_lane", None)
+        if not runout_target:
+            logging.warning(
+                "OAMS: AFC lane %s has no runout target while delegating infinite runout for %s",
+                source_lane_name,
+                fps_name,
+            )
+            return False
+
+        if target_lane_name and target_lane_name != runout_target:
+            logging.debug(
+                "OAMS: AFC lane %s runout target mismatch (%s != %s) while delegating infinite runout for %s",
+                source_lane_name,
+                runout_target,
+                target_lane_name,
+                fps_name,
+            )
+
+        now = self.reactor.monotonic()
+        if fps_state.afc_delegation_active and now < fps_state.afc_delegation_until:
+            logging.debug(
+                "OAMS: AFC infinite runout for %s still in progress; skipping duplicate trigger",
+                fps_name,
+            )
+            return True
+
+        if runout_target not in afc.lanes:
+            logging.warning(
+                "OAMS: AFC runout lane %s referenced by %s is unavailable",
+                runout_target,
+                source_lane_name,
+            )
+            return False
+
+        try:
+            lane._perform_infinite_runout()
+        except Exception:
+            logging.exception(
+                "OAMS: AFC infinite runout failed for lane %s -> %s",
+                source_lane_name,
+                runout_target,
+            )
+            fps_state.afc_delegation_active = False
+            fps_state.afc_delegation_until = 0.0
+            return False
+
+        fps_state.afc_delegation_active = True
+        fps_state.afc_delegation_until = now + AFC_DELEGATION_TIMEOUT
+        logging.info(
+            "OAMS: Delegated infinite runout for %s via AFC lane %s -> %s",
+            fps_name,
+            source_lane_name,
+            runout_target,
+        )
+        return True
 
     def _unload_filament_for_fps(self, fps_name: str) -> Tuple[bool, str]:
         """Unload filament from the specified FPS and update state."""
@@ -799,21 +914,36 @@ class OAMSManager:
             def _reload_callback(fps_name=fps_name, fps_state=fps_state):
                 monitor = self.runout_monitors.get(fps_name)
                 source_group = fps_state.current_group
-                target_group, target_lane, delegate_to_afc = self._get_infinite_runout_target_group(
+                target_group, target_lane, delegate_to_afc, source_lane = self._get_infinite_runout_target_group(
                     fps_name,
                     source_group,
                 )
 
                 if delegate_to_afc:
-                    logging.info(
-                        "OAMS: Deferring infinite runout for %s on %s to AFC%s",
+                    delegated = self._delegate_runout_to_afc(
+                        fps_name,
+                        fps_state,
+                        source_lane,
+                        target_lane,
+                    )
+                    if delegated:
+                        fps_state.reset_runout_positions()
+                        if monitor:
+                            monitor.reset()
+                            monitor.start()
+                        return
+
+                    logging.error(
+                        "OAMS: Failed to delegate infinite runout for %s on %s via AFC",
                         fps_name,
                         source_group or "<unknown>",
-                        f" lane {target_lane}" if target_lane else "",
                     )
                     fps_state.reset_runout_positions()
+                    self._pause_printer_message(
+                        f"Unable to delegate infinite runout for {source_group or fps_name}"
+                    )
                     if monitor:
-                        monitor.start()
+                        monitor.paused()
                     return
 
                 group_to_load = target_group or source_group
