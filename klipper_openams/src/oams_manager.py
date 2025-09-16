@@ -535,88 +535,102 @@ class OAMSManager:
             return None
         return self.lane_groups.get(lane_name)
 
-    def ensure_group_for_lanes(self, group_name, lane_a, lane_b):
-        """Create or remove a filament group for two AMS lanes.
+    def ensure_group_for_lanes(self, group_name, lane_a, lane_b=None):
+        """Ensure ``group_name`` reflects the provided AMS lanes.
 
-        If ``lane_b`` is ``None``, any existing group named ``group_name`` is
-        removed.  Otherwise, a group containing the two lanes is created or
-        updated, provided both lanes reside on the same FPS controller.
+        When ``lane_b`` is omitted a single-lane group is created for
+        ``lane_a``.  If both lanes share the same FPS controller the group is
+        updated to contain the pair.  Lane-to-group mappings are refreshed so
+        OpenAMS can resolve the active filament group before a reload occurs.
         """
-        fps_state = None
-        if lane_b is None:
-            if group_name in self.filament_groups:
-                logging.info("OAMS manager: removing group %s", group_name)
-                del self.filament_groups[group_name]
-            # Remove any cached lane mappings that referenced this group
-            self.lane_groups.pop(lane_a.name, None)
-            for lane_name, mapped_group in list(self.lane_groups.items()):
-                if mapped_group == group_name:
-                    self.lane_groups.pop(lane_name, None)
-            # Clear the active group if it matched the removed group
-            for state in self.current_state.fps_state.values():
-                if state.current_group == group_name:
-                    state.current_group = None
+
+        if group_name is None or lane_a is None:
             return
 
-        oam_a = self.oams.get(lane_a.unit_obj.oams_name)
-        oam_b = self.oams.get(lane_b.unit_obj.oams_name)
-        if oam_a is None or oam_b is None:
-            return
-        fps_a = self.fps_name_for_oams(oam_a.name)
-        fps_b = self.fps_name_for_oams(oam_b.name)
-        if fps_a != fps_b or fps_a is None:
-            logging.info(
-                "OAMS manager: lanes %s and %s are on different FPS (%s vs %s)",
-                lane_a.name,
-                lane_b.name,
-                fps_a,
-                fps_b,
-            )
-            return
+        lanes = [lane_a]
+        if lane_b is not None and lane_b is not lane_a:
+            lanes.append(lane_b)
 
-        bay_count_a = len(getattr(oam_a, "f1s_hes_value", [])) or 4
-        bay_count_b = len(getattr(oam_b, "f1s_hes_value", [])) or 4
-        bay_a = (lane_a.index - 1) % bay_count_a
-        bay_b = (lane_b.index - 1) % bay_count_b
+        lane_details = []
+        fps_name = None
+        for lane in lanes:
+            unit_obj = getattr(lane, "unit_obj", None)
+            oams_name = getattr(unit_obj, "oams_name", None)
+            if oams_name is None:
+                return
+            oam = self.oams.get(oams_name)
+            if oam is None:
+                return
+            lane_fps = self.fps_name_for_oams(oam.name)
+            if lane_fps is None:
+                return
+            if fps_name is None:
+                fps_name = lane_fps
+            elif fps_name != lane_fps:
+                logging.info(
+                    "OAMS manager: lanes %s and %s are on different FPS (%s vs %s)",
+                    lanes[0].name,
+                    lane.name,
+                    fps_name,
+                    lane_fps,
+                )
+                return
+
+            bay_count = len(getattr(oam, "f1s_hes_value", [])) or 4
+            bay_index = (lane.index - 1) % bay_count
+            lane_details.append((lane, oam, bay_index))
 
         group = self.filament_groups.get(group_name)
         if group is None:
             group = FilamentGroup.__new__(FilamentGroup)
             group.printer = self.printer
             group.group_name = group_name
-            group.bays = []
-            group.oams = []
             self.filament_groups[group_name] = group
 
-        group.bays = [(oam_a, bay_a), (oam_b, bay_b)]
-        group.oams = [oam_a] if oam_a is oam_b else [oam_a, oam_b]
-        # Cache the group assignment for both lanes so future lookups can
-        # resolve the correct filament group even before a reload occurs.
-        for lane_name, mapped_group in list(self.lane_groups.items()):
-            if mapped_group == group_name and lane_name not in (lane_a.name, lane_b.name):
-                self.lane_groups.pop(lane_name, None)
-        self.lane_groups[lane_a.name] = group_name
-        self.lane_groups[lane_b.name] = group_name
-        logging.info(
-            "OAMS manager: group %s set to %s-%s, %s-%s",
-            group_name,
-            oam_a.name,
-            bay_a,
-            oam_b.name,
-            bay_b,
-        )
+        group.bays = [(oam, bay) for _, oam, bay in lane_details]
+        group.oams = []
+        for _, oam, _ in lane_details:
+            if oam not in group.oams:
+                group.oams.append(oam)
 
-        # Update FPS state if one of the lanes in the new group is currently loaded
-        fps_state = self.current_state.fps_state.get(fps_a)
-        if fps_state is not None:
-            if (
-                fps_state.current_oams == oam_a.name
-                and fps_state.current_spool_idx == bay_a
-            ) or (
-                fps_state.current_oams == oam_b.name
-                and fps_state.current_spool_idx == bay_b
-            ):
-                fps_state.current_group = group_name
+        lane_names = {lane.name for lane, _, _ in lane_details}
+        for lane_name, mapped_group in list(self.lane_groups.items()):
+            if mapped_group == group_name and lane_name not in lane_names:
+                self.lane_groups.pop(lane_name, None)
+
+        for lane, _, _ in lane_details:
+            self.lane_groups[lane.name] = group_name
+
+        if len(lane_details) == 1:
+            oam = lane_details[0][1]
+            bay = lane_details[0][2]
+            logging.info(
+                "OAMS manager: group %s set to %s-%s",
+                group_name,
+                oam.name,
+                bay,
+            )
+        else:
+            (_lane_a, oam_a, bay_a), (_lane_b, oam_b, bay_b) = lane_details
+            logging.info(
+                "OAMS manager: group %s set to %s-%s, %s-%s",
+                group_name,
+                oam_a.name,
+                bay_a,
+                oam_b.name,
+                bay_b,
+            )
+
+        if fps_name is not None:
+            fps_state = self.current_state.fps_state.get(fps_name)
+            if fps_state is not None:
+                for _, oam, bay in lane_details:
+                    if (
+                        fps_state.current_oams == oam.name
+                        and fps_state.current_spool_idx == bay
+                    ):
+                        fps_state.current_group = group_name
+                        break
     
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
     def cmd_UNLOAD_FILAMENT(self, gcmd):

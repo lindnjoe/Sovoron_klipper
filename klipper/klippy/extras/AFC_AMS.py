@@ -165,13 +165,16 @@ def _patch_afc_components():
         def cmd_SET_RUNOUT(self, gcmd):
             lane = gcmd.get("LANE")
             runout = gcmd.get("RUNOUT", "NONE")
+            lane_obj = self.afc.lanes.get(lane)
+            prev_runout = getattr(lane_obj, "runout_lane", None) if lane_obj else None
             orig_cmd(self, gcmd)
             try:
                 lane_obj = self.afc.lanes.get(lane)
                 manager = getattr(
                     getattr(lane_obj, "unit_obj", None), "oams_manager", None
                 ) if lane_obj else None
-                if manager is not None:
+                unit_obj = getattr(lane_obj, "unit_obj", None) if lane_obj else None
+                if manager is not None and lane_obj is not None:
                     if runout == "NONE":
                         manager.ensure_group_for_lanes(
                             lane_obj.map, lane_obj, None
@@ -186,6 +189,18 @@ def _patch_afc_components():
                             manager.ensure_group_for_lanes(
                                 lane_obj.map, lane_obj, ro_lane
                             )
+                    if prev_runout and prev_runout != getattr(lane_obj, "runout_lane", None):
+                        prev_lane = self.afc.lanes.get(prev_runout)
+                        if (
+                            prev_lane
+                            and getattr(prev_lane.unit_obj, "oams_manager", None)
+                            is manager
+                        ):
+                            manager.ensure_group_for_lanes(
+                                prev_lane.map, prev_lane, None
+                            )
+                    if hasattr(unit_obj, "_sync_runout_groups"):
+                        unit_obj._sync_runout_groups()
             except Exception:
                 self.logger.exception(
                     "Failed to update OpenAMS filament group"
@@ -328,7 +343,60 @@ class afcAMS(afcUnit):
         self.oams_manager = self.printer.lookup_object("oams_manager", None)
         if self.oams_manager is not None:
             self.oams_manager.register_runout_callback(self._on_oams_runout)
+            self._sync_runout_groups()
         self.reactor.update_timer(self.timer, self.reactor.NOW)
+
+    def _sync_runout_groups(self):
+        """Align OpenAMS filament groups with existing AFC runout settings."""
+
+        if self.oams_manager is None:
+            return
+
+        fallback_targets = {
+            name
+            for name in (
+                getattr(lane, "runout_lane", None)
+                for lane in self.lanes.values()
+            )
+            if name
+        }
+
+        for lane in self.lanes.values():
+            group_name = getattr(lane, "map", None)
+            if not group_name:
+                continue
+
+            runout_name = getattr(lane, "runout_lane", None)
+            try:
+                if runout_name:
+                    ro_lane = self.afc.lanes.get(runout_name)
+                    if (
+                        ro_lane is not None
+                        and isinstance(getattr(ro_lane, "unit_obj", None), afcAMS)
+                        and getattr(ro_lane.unit_obj, "oams_manager", None)
+                        is self.oams_manager
+                    ):
+                        self.oams_manager.ensure_group_for_lanes(
+                            group_name,
+                            lane,
+                            ro_lane,
+                        )
+                    else:
+                        self.oams_manager.ensure_group_for_lanes(
+                            group_name,
+                            lane,
+                            None,
+                        )
+                elif lane.name not in fallback_targets:
+                    self.oams_manager.ensure_group_for_lanes(
+                        group_name,
+                        lane,
+                        None,
+                    )
+            except Exception:
+                self.logger.exception(
+                    "%s: failed to synchronize OpenAMS filament group", lane.name
+                )
 
     def _on_oams_runout(self, fps_name, spool_idx):
         """Forward OpenAMS runout events to the active lane.
@@ -473,10 +541,10 @@ class afcAMS(afcUnit):
                 fps_name,
             )
             if ro_fps == fps_name:
-                previous_group = (
-                    group_name
-                    or lane_group
+                active_group = (
+                    lane_group
                     or fallback_group
+                    or group_name
                     or lane_map
                     or getattr(ro_lane, "map", None)
                 )
@@ -508,7 +576,7 @@ class afcAMS(afcUnit):
                     if fps_state is not None:
                         # Track the newly active filament group so OpenAMS can
                         # continue monitoring runout on the correct lane.
-                        fps_state.current_group = previous_group
+                        fps_state.current_group = active_group
                     # Update AFC state to reflect the newly loaded lane so
                     # subsequent runout checks do not trigger for the empty
                     # lane and the correct stepper drives the filament.
@@ -535,7 +603,7 @@ class afcAMS(afcUnit):
                     lane_name,
                 )
                 if fps_state is not None:
-                    fps_state.current_group = previous_group
+                    fps_state.current_group = active_group
                 eventtime = self.reactor.monotonic()
                 lane.handle_load_runout(eventtime, False)
                 return
