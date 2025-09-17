@@ -618,10 +618,15 @@ class AFCLane:
                         self._perform_pause_runout()
 
                 elif self.prep_state == True and self.load_state == True and not self.afc.function.is_printing():
-                    message = 'Cannot load {} load sensor is triggered.'.format(self.name)
-                    message += '\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.'
-                    message += '\n    Once cleared try loading again'
-                    self.afc.error.AFC_error(message, pause=False)
+                    if self.unit_obj.type == "AMS":
+                        self.status = AFCLaneState.LOADED
+                        self.unit_obj.lane_loaded(self)
+                        self.afc.spool._set_values(self)
+                    else:
+                        message = 'Cannot load {} load sensor is triggered.'.format(self.name)
+                        message += '\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.'
+                        message += '\n    Once cleared try loading again'
+                        self.afc.error.AFC_error(message, pause=False)
                 else:
                     self.status = AFCLaneState.NONE
                     self.loaded_to_hub = False
