@@ -43,11 +43,15 @@ class FPSLoadState:
 class OAMSRunoutMonitor:
     """
     Monitors filament runout for a specific FPS and handles automatic reload.
-    
+
     State Management:
     - Tracks runout detection and follower coasting
     - Manages automatic spool switching within filament groups
     - Coordinates with OAMS hardware for filament loading
+    - Triggers reload once the remaining filament in the tube reaches the
+      configured safety margin, independent of the total PTFE length. Each FPS
+      can optionally override the safety margin so coasting distance can be
+      tuned per extruder lane.
     """
     
     def __init__(self, 
@@ -71,6 +75,10 @@ class OAMSRunoutMonitor:
         self.bldc_clear_position: Optional[float] = None
         
         # Configuration
+        # Reload is triggered as soon as the follower has <= this much filament
+        # left in the tube after the BLDC clear phase, regardless of the OAMS
+        # unit's total PTFE length. This ensures AMS2-style lanes swap as soon
+        # as the configured safety margin is reached.
         self.reload_before_toolhead_distance = reload_before_toolhead_distance
         self.reload_callback = reload_callback
         
@@ -110,9 +118,22 @@ class OAMSRunoutMonitor:
                     self.state = OAMSRunoutState.COASTING
                     
             elif self.state == OAMSRunoutState.COASTING:
-                traveled_distance_after_bldc_clear = fps.extruder.last_position - self.bldc_clear_position
-                if traveled_distance_after_bldc_clear + self.reload_before_toolhead_distance > self.oams[fps_state.current_oams].filament_path_length / FILAMENT_PATH_LENGTH_FACTOR:
-                    logging.info("OAMS: Loading next spool in the filament group.")
+                traveled_distance_after_bldc_clear = max(
+                    fps.extruder.last_position - self.bldc_clear_position, 0.0
+                )
+                path_length = getattr(
+                    self.oams[fps_state.current_oams], "filament_path_length", 0.0
+                )
+                distance_remaining = max(
+                    path_length - traveled_distance_after_bldc_clear, 0.0
+                )
+
+                if distance_remaining <= self.reload_before_toolhead_distance:
+                    logging.info(
+                        "OAMS: Loading next spool (remaining %.2f mm <= margin %.2f mm).",
+                        distance_remaining,
+                        self.reload_before_toolhead_distance,
+                    )
                     self.state = OAMSRunoutState.RELOADING
                     self.reload_callback()
             else:
@@ -274,7 +295,10 @@ class OAMSManager:
         self.ready: bool = False  # System initialization complete
 
         # Configuration parameters
-        self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
+        self.reload_before_toolhead_distance: float = config.getfloat(
+            "reload_before_toolhead_distance",
+            0.0,
+        )
 
         # Cached mappings
         self.group_to_fps: Dict[str, str] = {}
@@ -1042,7 +1066,29 @@ class OAMSManager:
                     monitor.paused()
                 return
 
-            monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], fps_state, self.oams, _reload_callback, reload_before_toolhead_distance=self.reload_before_toolhead_distance)
+            fps_reload_margin = getattr(
+                self.fpss[fps_name],
+                "reload_before_toolhead_distance",
+                None,
+            )
+            if fps_reload_margin is None:
+                fps_reload_margin = self.reload_before_toolhead_distance
+            else:
+                logging.debug(
+                    "OAMS: Using FPS-specific reload margin %.2f mm for %s",
+                    fps_reload_margin,
+                    fps_name,
+                )
+
+            monitor = OAMSRunoutMonitor(
+                self.printer,
+                fps_name,
+                self.fpss[fps_name],
+                fps_state,
+                self.oams,
+                _reload_callback,
+                reload_before_toolhead_distance=fps_reload_margin,
+            )
             self.runout_monitors[fps_name] = monitor
             monitor.start()
 
