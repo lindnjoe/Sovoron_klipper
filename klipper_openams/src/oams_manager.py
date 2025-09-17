@@ -6,9 +6,10 @@
 
 import logging
 import time
-from functools import partial
+from functools import partial, wraps
 from collections import deque
-from typing import Optional, Tuple, Dict, List, Any, Callable
+from typing import Optional, Tuple, Dict, List, Any, Callable, Set
+from types import MethodType
 
 # Configuration constants
 PAUSE_DISTANCE = 60  # mm to pause before coasting follower
@@ -239,6 +240,8 @@ class OAMSManager:
         
         # State management
         self.current_state = OAMSState()  # Tracks state of all FPS units
+        self.afc = None  # Optional AFC integration
+        self._afc_lane_flagged: Set[str] = set()
         
         # Monitoring and control
         self.monitor_timers: List[Any] = []  # Active monitoring timers
@@ -321,6 +324,91 @@ class OAMSManager:
         self.determine_state()
         self.start_monitors()
         self.ready = True
+        self._setup_afc_error_suppression()
+
+    def _setup_afc_error_suppression(self) -> None:
+        """Detect AFC integration and prepare load sensor fault suppression."""
+        afc = self._get_afc()
+        if afc is None:
+            return
+        self._update_afc_lane_flags(afc)
+        self._ensure_afc_error_hook(afc)
+
+    def _get_afc(self):
+        """Return the AFC object if available."""
+        if self.afc is not None:
+            return self.afc
+        try:
+            afc = self.printer.lookup_object('AFC')
+        except Exception:
+            return None
+        self.afc = afc
+        return self.afc
+
+    def _update_afc_lane_flags(self, afc) -> None:
+        """Record AFC lanes that belong to managed filament groups."""
+        managed_groups = {
+            group_name.strip()
+            for group_name in self.filament_groups.keys()
+            if isinstance(group_name, str)
+        }
+        if not managed_groups:
+            return
+
+        for lane_name, lane in getattr(afc, 'lanes', {}).items():
+            lane_group = getattr(lane, 'map', None)
+            if not isinstance(lane_group, str):
+                continue
+
+            normalized_group = lane_group.strip()
+            if ' ' in normalized_group:
+                normalized_group = normalized_group.split()[-1]
+
+            if normalized_group in managed_groups:
+                self._afc_lane_flagged.add(lane_name)
+
+    def _ensure_afc_error_hook(self, afc) -> None:
+        """Install a filter on AFC errors so AMS lanes ignore load faults."""
+        if not self._afc_lane_flagged:
+            return
+
+        error_obj = getattr(afc, 'error', None)
+        if error_obj is None or getattr(error_obj, '_oams_error_wrapped', False):
+            return
+
+        original = getattr(error_obj, 'AFC_error', None)
+        if not callable(original):
+            return
+
+        manager = self
+
+        @wraps(original)
+        def _wrapped_afc_error(self, msg, pause=True, level=1, *args, **kwargs):
+            if not pause and isinstance(msg, str):
+                lane_name = manager._extract_lane_name_from_error(msg)
+                if lane_name and lane_name in manager._afc_lane_flagged and \
+                        'load sensor is triggered' in msg:
+                    logging.debug(
+                        "OAMS: Suppressing AFC load sensor fault for lane %s", lane_name
+                    )
+                    return None
+            return original(msg, pause, level, *args, **kwargs)
+
+        error_obj.AFC_error = MethodType(_wrapped_afc_error, error_obj)
+        setattr(error_obj, '_oams_error_wrapped', True)
+
+    @staticmethod
+    def _extract_lane_name_from_error(message: str) -> Optional[str]:
+        if not isinstance(message, str):
+            return None
+
+        prefix = 'Cannot load '
+        if not message.startswith(prefix):
+            return None
+
+        remainder = message[len(prefix):]
+        lane_part = remainder.split(' load sensor', 1)[0].strip()
+        return lane_part or None
 
     def _initialize_oams(self) -> None:
         """Discover and register all OAMS hardware units."""
