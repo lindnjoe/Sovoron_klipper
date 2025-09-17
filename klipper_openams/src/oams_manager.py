@@ -271,15 +271,30 @@ class OAMSManager:
             - state_name: Loading state (LOADED/UNLOADED/LOADING/UNLOADING)
             - since: Timestamp when current state began
         """
-        attributes = {}
+        attributes: Dict[str, Dict[str, Any]] = {}
         for fps_name, fps_state in self.current_state.fps_state.items():
             attributes[fps_name] = {
                 "current_group": fps_state.current_group,
                 "current_oams": fps_state.current_oams,
                 "current_spool_idx": fps_state.current_spool_idx,
                 "state_name": fps_state.state_name,
-                "since": fps_state.since
+                "since": fps_state.since,
             }
+
+        oams_status: Dict[str, Dict[str, Any]] = {}
+        for full_name, oam in self.oams.items():
+            short_name = full_name.split()[-1]
+            entry = {
+                "name": full_name,
+                "short_name": short_name,
+                "action_status": oam.action_status,
+                "action_status_code": oam.action_status_code,
+                "action_status_value": oam.action_status_value,
+            }
+            oams_status[short_name] = entry
+            oams_status[full_name] = entry
+
+        attributes["oams"] = oams_status
         return attributes
     
     def determine_state(self) -> None:
