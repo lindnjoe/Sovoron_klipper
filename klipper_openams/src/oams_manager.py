@@ -49,7 +49,9 @@ class OAMSRunoutMonitor:
     - Manages automatic spool switching within filament groups
     - Coordinates with OAMS hardware for filament loading
     - Triggers reload once the remaining filament in the tube reaches the
-      configured safety margin, independent of the total PTFE length
+      configured safety margin, independent of the total PTFE length. Each FPS
+      can optionally override the safety margin so coasting distance can be
+      tuned per extruder lane.
     """
     
     def __init__(self, 
@@ -293,7 +295,10 @@ class OAMSManager:
         self.ready: bool = False  # System initialization complete
 
         # Configuration parameters
-        self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
+        self.reload_before_toolhead_distance: float = config.getfloat(
+            "reload_before_toolhead_distance",
+            0.0,
+        )
 
         # Cached mappings
         self.group_to_fps: Dict[str, str] = {}
@@ -1061,7 +1066,29 @@ class OAMSManager:
                     monitor.paused()
                 return
 
-            monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], fps_state, self.oams, _reload_callback, reload_before_toolhead_distance=self.reload_before_toolhead_distance)
+            fps_reload_margin = getattr(
+                self.fpss[fps_name],
+                "reload_before_toolhead_distance",
+                None,
+            )
+            if fps_reload_margin is None:
+                fps_reload_margin = self.reload_before_toolhead_distance
+            else:
+                logging.debug(
+                    "OAMS: Using FPS-specific reload margin %.2f mm for %s",
+                    fps_reload_margin,
+                    fps_name,
+                )
+
+            monitor = OAMSRunoutMonitor(
+                self.printer,
+                fps_name,
+                self.fpss[fps_name],
+                fps_state,
+                self.oams,
+                _reload_callback,
+                reload_before_toolhead_distance=fps_reload_margin,
+            )
             self.runout_monitors[fps_name] = monitor
             monitor.start()
 
