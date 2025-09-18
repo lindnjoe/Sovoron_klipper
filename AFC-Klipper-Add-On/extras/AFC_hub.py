@@ -27,7 +27,7 @@ class afc_hub:
 
         # HUB Cut variables
         # Next two variables are used in AFC
-        self.switch_pin             = config.get('switch_pin')                      # Pin hub sensor it connected to
+        self.switch_pin             = config.get('switch_pin', None)                # Pin hub sensor it connected to
         self.hub_clear_move_dis     = config.getfloat("hub_clear_move_dis", 25)     # How far to move filament so that it's not block the hub exit
         self.afc_bowden_length      = config.getfloat("afc_bowden_length", 900)     # Length of the Bowden tube from the hub to the toolhead sensor in mm.
         self.afc_unload_bowden_length= config.getfloat("afc_unload_bowden_length", self.afc_bowden_length) # Length to unload when retracting back from toolhead to hub in mm. Defaults to afc_bowden_length
@@ -50,9 +50,13 @@ class afc_hub:
         self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui", self.afc.enable_sensors_in_gui) # Set to True to show hub sensor switche as filament sensor in mainsail/fluidd gui, overrides value set in AFC.cfg
 
         buttons = self.printer.load_object(config, "buttons")
-        if self.switch_pin is not None:
-            self.state = False
-            buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
+        if self.switch_pin in (None, "None", ""):
+            # Create a virtual pin so the hub can be referenced without
+            # requiring a physical switch pin in the config.
+            self.switch_pin = f"afc_virtual_bypass:hub_{self.name}"
+
+        self.state = False
+        buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
 
 
         if self.enable_sensors_in_gui:
