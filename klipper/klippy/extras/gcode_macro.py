@@ -78,6 +78,16 @@ class PrinterGCodeMacro:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.env = jinja2.Environment('{%', '%}', '{', '}')
+        def _reverse_filter(value):
+            if isinstance(value, (str, bytes)):
+                return value[::-1]
+            try:
+                return list(reversed(value))
+            except TypeError:
+                seq = list(value)
+                seq.reverse()
+                return seq
+        self.env.filters['reverse'] = _reverse_filter
     def load_template(self, config, option, default=None):
         name = "%s:%s" % (config.get_name(), option)
         if default is None:
