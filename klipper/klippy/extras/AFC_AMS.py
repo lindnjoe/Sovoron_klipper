@@ -207,6 +207,9 @@ class afcAMS(afcUnit):
                 if idx < 0:
                     continue
 
+                if hasattr(lane, "ams_fps_status"):
+                    lane.ams_fps_status = getattr(self.oams, "fps_value", None)
+
                 lane_val = bool(self.oams.f1s_hes_value[idx])
                 last_lane = self._last_lane_states.get(lane.name)
                 if lane_val != last_lane:

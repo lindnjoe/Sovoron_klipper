@@ -61,6 +61,7 @@ class AFCLane:
         self.hub_obj            = None
         self.buffer_obj         = None
         self.extruder_obj       = None
+        self.ams_fps_status     = None
 
         #stored status variables
         self.fullname           = config.get_name()
@@ -840,7 +841,16 @@ class AFCLane:
         if self.buffer_obj is not None:
             return self.buffer_obj.buffer_status()
 
-        else: return None
+        if (self.unit_obj is not None and getattr(self.unit_obj, "type", None) == "AMS"
+                and self.name == self.afc.current):
+            if self.ams_fps_status is None:
+                return None
+            try:
+                return f"{float(self.ams_fps_status):.2f}"
+            except (TypeError, ValueError):
+                return None
+
+        return None
 
     def get_toolhead_pre_sensor_state(self):
         """
