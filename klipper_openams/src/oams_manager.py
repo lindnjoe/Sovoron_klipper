@@ -532,51 +532,6 @@ class OAMSManager:
             self._rebuild_group_fps_index()
         return self.group_to_fps.get(group_name)
 
-    @staticmethod
-    def _normalize_group_name(group: Optional[str]) -> Optional[str]:
-        """Return a normalized filament group identifier."""
-        if not isinstance(group, str):
-            return None
-        group = group.strip()
-        if not group:
-            return None
-        if " " in group:
-            group = group.split()[-1]
-        return group or None
-
-    def _afc_lane_group_name(self, lane: Any) -> Optional[str]:
-        """Resolve the configured filament group for a given AFC lane."""
-        for attr in ("_map", "map"):
-            value = getattr(lane, attr, None)
-            group = self._normalize_group_name(value)
-            if group:
-                return group
-        return None
-
-    def _resolve_afc_lane_for_group(self, afc: Any, group_name: Optional[str]) -> Optional[str]:
-        """Return the AFC lane name mapped to the provided filament group."""
-        group = self._normalize_group_name(group_name)
-        if not group or afc is None:
-            return None
-
-        lane_name = getattr(afc, "tool_cmds", {}).get(group)
-        if lane_name:
-            return lane_name
-
-        for name, lane in getattr(afc, "lanes", {}).items():
-            if self._afc_lane_group_name(lane) == group:
-                return name
-        return None
-
-    def _resolve_afc_group_for_lane(self, afc: Any, lane_name: Optional[str]) -> Optional[str]:
-        """Return the configured filament group for a given AFC lane name."""
-        if not lane_name or afc is None:
-            return None
-        lane = getattr(afc, "lanes", {}).get(lane_name)
-        if lane is None:
-            return None
-        return self._afc_lane_group_name(lane)
-
     def _get_afc(self):
         """Lazily retrieve the AFC object if it is available."""
         if self.afc is not None:
@@ -607,14 +562,24 @@ class OAMSManager:
         if current_group is None:
             return None, None, False, None
 
-        current_group = self._normalize_group_name(current_group)
-        if not current_group:
-            return None, None, False, None
         afc = self._get_afc()
         if afc is None:
             return None, None, False, None
 
-        lane_name = self._resolve_afc_lane_for_group(afc, current_group)
+        try:
+            lane_name = afc.tool_cmds.get(current_group)
+        except AttributeError:
+            lane_name = None
+
+        if not lane_name:
+            lane_name = next(
+                (
+                    name
+                    for name, lane in getattr(afc, "lanes", {}).items()
+                    if getattr(lane, "map", None) == current_group
+                ),
+                None,
+            )
 
         if not lane_name:
             return None, None, False, None
@@ -655,7 +620,18 @@ class OAMSManager:
             )
             return None, runout_lane_name, True, lane_name
 
-        target_group = self._resolve_afc_group_for_lane(afc, runout_lane_name)
+        target_group = next(
+            (group for group, mapped_lane in getattr(afc, "tool_cmds", {}).items()
+             if mapped_lane == runout_lane_name),
+            None,
+        )
+        if target_group is None:
+            target_group = getattr(target_lane, "map", None)
+
+        if isinstance(target_group, str):
+            target_group = target_group.strip()
+            if " " in target_group:
+                target_group = target_group.split()[-1]
 
         if not target_group or target_group == current_group:
             logging.debug(
