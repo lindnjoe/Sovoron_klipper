@@ -23,22 +23,19 @@ class AFCExtruder:
         self.reactor    = None
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
 
-        self.toolhead_extruder          = None
         self.fullname                   = config.get_name()
-
         self.name                       = self.fullname.split(' ')[-1]
         self.tool_start                 = config.get('pin_tool_start', None)                                            # Pin for sensor before(pre) extruder gears
         self.tool_end                   = config.get('pin_tool_end', None)                                              # Pin for sensor after(post) extruder gears (optional)
         self.tool_stn                   = config.getfloat("tool_stn", 72)                                               # Distance in mm from the toolhead sensor to the tip of the nozzle in mm, if `tool_end` is defined then distance is from this sensor
         self.tool_stn_unload            = config.getfloat("tool_stn_unload", 100)                                       # Distance to move in mm while unloading toolhead
-        self.tool_sensor_after_extruder = config.getfloat("tool_sensor_after_extruder", 0)                              # Extra distance to move in mm once pre/post sensors are clear. Useful for when only using post sensor, so this distance can be the amout to move to clear extruder gears
+        self.tool_sensor_after_extruder = config.getfloat("tool_sensor_after_extruder", 0)                              # Extra distance to move in mm once the pre- / post-sensors are clear. Useful for when only using post sensor, so this distance can be the amount to move to clear extruder gears
         self.tool_unload_speed          = config.getfloat("tool_unload_speed", 25)                                      # Unload speed in mm/s when unloading toolhead. Default is 25mm/s.
         self.tool_load_speed            = config.getfloat("tool_load_speed", 25)                                        # Load speed in mm/s when loading toolhead. Default is 25mm/s.
         self.buffer_name                = config.get('buffer', None)                                                    # Buffer to use for extruder, this variable can be overridden per lane
         self.enable_sensors_in_gui      = config.getboolean("enable_sensors_in_gui",    self.afc.enable_sensors_in_gui) # Set to True toolhead sensors switches as filament sensors in mainsail/fluidd gui, overrides value set in AFC.cfg
         self.enable_runout              = config.getboolean("enable_tool_runout",       self.afc.enable_tool_runout)
         self.debounce_delay             = config.getfloat("debounce_delay",             self.afc.debounce_delay)
-        self.deadband                   = config.getfloat("deadband", 2)                                                # Deadband for extruder heater, default is 2 degrees Celsius
 
         self.lane_loaded                = None
         self.lanes                      = {}
@@ -83,11 +80,6 @@ class AFCExtruder:
         """
         self.reactor = self.afc.reactor
         self.afc.tools[self.name] = self
-
-        try:
-            self.toolhead_extruder = self.printer.lookup_object(self.name)
-        except:
-            raise error("[{}] not found in config file".format(self.name))
 
     def _handle_toolhead_sensor_runout(self, state, sensor_name):
         """
@@ -145,14 +137,11 @@ class AFCExtruder:
     def tool_end_callback(self, eventtime, state):
         """
         Callback for the tool_end (post-extruder) filament sensor.
-        Updates the sensor state when the button changes state.
+        Updates the sensor state and triggers runout handling if filament is missing.
         :param eventtime: Event time from the button press
         :param state: Boolean indicating sensor state (True = filament present, False = runout)
         """
         self.tool_end_state = state
-
-    def get_heater(self):
-        return self.toolhead_extruder.get_heater()
 
     def _update_tool_stn(self, length):
         """

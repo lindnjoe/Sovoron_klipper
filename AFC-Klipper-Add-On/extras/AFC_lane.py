@@ -43,7 +43,6 @@ class AFCLaneState:
     HUB_LOADING      = "HUB Loading"
     EJECTING         = "Ejecting"
     CALIBRATING      = "Calibrating"
-    INFINITE_RUNOUT  = "Infinite Runout"
 
 class AFCLane:
     UPDATE_WEIGHT_DELAY = 10.0
@@ -92,21 +91,17 @@ class AFCLane:
         self.map                = config.get('cmd', None)                               # Keeping this in so it does not break others config that may have used this, use map instead
         # Saving to self._map so that if a user has it defined it will be reset back to this when
         # the calling RESET_AFC_MAPPING macro.
-
-        # LED SETTINGS
-        # All variables use: (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
-        self._map = self.map      = config.get('map', self.map)
-        self.led_index            = config.get('led_index', None)                       # LED index of lane in chain of lane LEDs
-        self.led_fault            = config.get('led_fault',None)                        # LED color to set when faults occur in lane
-        self.led_ready            = config.get('led_ready',None)                        # LED color to set when lane is ready
-        self.led_not_ready        = config.get('led_not_ready',None)                    # LED color to set when lane not ready
-        self.led_loading          = config.get('led_loading',None)                      # LED color to set when lane is loading
-        self.led_prep_loaded      = config.get('led_loading',None)                      # LED color to set when lane is loaded
-        self.led_unloading        = config.get('led_unloading',None)                    # LED color to set when lane is unloading
-        self.led_tool_loaded      = config.get('led_tool_loaded',None)                  # LED color to set when lane is loaded into tool
-        self.led_tool_loaded_idle = config.get('led_tool_loaded_idle',None)             # LED color to set when lane is loaded into tool and idle
-        self.led_spool_index      = config.get('led_spool_index', None)                 # LED index to illuminate under spool
-        self.led_spool_illum      = config.get('led_spool_illuminate', None)            # LED color to illuminate under spool
+        self._map = self.map    = config.get('map', self.map)
+        self.led_index          = config.get('led_index', None)                         # LED index of lane in chain of lane LEDs
+        self.led_fault          = config.get('led_fault',None)                          # LED color to set when faults occur in lane        (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.led_ready          = config.get('led_ready',None)                          # LED color to set when lane is ready               (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.led_not_ready      = config.get('led_not_ready',None)                      # LED color to set when lane not ready              (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.led_loading        = config.get('led_loading',None)                        # LED color to set when lane is loading             (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.led_prep_loaded    = config.get('led_loading',None)                        # LED color to set when lane is loaded              (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.led_unloading      = config.get('led_unloading',None)                      # LED color to set when lane is unloading           (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.led_tool_loaded    = config.get('led_tool_loaded',None)                    # LED color to set when lane is loaded into tool    (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self.led_spool_index    = config.get('led_spool_index', None)                   # LED index to illuminate under spool
+        self.led_spool_illum    = config.get('led_spool_illuminate', None)              # LED color to illuminate under spool
 
         self.long_moves_speed   = config.getfloat("long_moves_speed", None)             # Speed in mm/s to move filament when doing long moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
         self.long_moves_accel   = config.getfloat("long_moves_accel", None)             # Acceleration in mm/s squared when doing long moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
@@ -115,10 +110,6 @@ class AFCLane:
         self.short_move_dis     = config.getfloat("short_move_dis", None)               # Move distance in mm for failsafe moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
         self.max_move_dis       = config.getfloat("max_move_dis", None)                 # Maximum distance to move filament. AFC breaks filament moves over this number into multiple moves. Useful to lower this number if running into timer too close errors when doing long filament moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
         self.n20_break_delay_time= config.getfloat("n20_break_delay_time", None)        # Time to wait between breaking n20 motors(nSleep/FWD/RWD all 1) and then releasing the break to allow coasting. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
-
-        # Custom Load/unload Commands
-        self.custom_load_cmd = config.get('custom_load_cmd', None)  # Custom command to run when loading lane, this will bypass the typical load sequence and run the command instead.
-        self.custom_unload_cmd = config.get('custom_unload_cmd', None)  # Custom command to run when unloading lane, this will bypass the typical unload sequence and run the command instead.
 
         self.rev_long_moves_speed_factor = config.getfloat("rev_long_moves_speed_factor", None)     # scalar speed factor when reversing filamentalist
 
@@ -351,15 +342,14 @@ class AFCLane:
 
         self.get_steppers()
 
-        if self.led_fault            is None: self.led_fault            = self.unit_obj.led_fault
-        if self.led_ready            is None: self.led_ready            = self.unit_obj.led_ready
-        if self.led_not_ready        is None: self.led_not_ready        = self.unit_obj.led_not_ready
-        if self.led_loading          is None: self.led_loading          = self.unit_obj.led_loading
-        if self.led_prep_loaded      is None: self.led_prep_loaded      = self.unit_obj.led_prep_loaded
-        if self.led_unloading        is None: self.led_unloading        = self.unit_obj.led_unloading
-        if self.led_tool_loaded      is None: self.led_tool_loaded      = self.unit_obj.led_tool_loaded
-        if self.led_tool_loaded_idle is None: self.led_tool_loaded_idle = self.unit_obj.led_tool_loaded_idle
-        if self.led_spool_illum      is None: self.led_spool_illum      = self.unit_obj.led_spool_illum
+        if self.led_fault           is None: self.led_fault         = self.unit_obj.led_fault
+        if self.led_ready           is None: self.led_ready         = self.unit_obj.led_ready
+        if self.led_not_ready       is None: self.led_not_ready     = self.unit_obj.led_not_ready
+        if self.led_loading         is None: self.led_loading       = self.unit_obj.led_loading
+        if self.led_prep_loaded     is None: self.led_prep_loaded   = self.unit_obj.led_prep_loaded
+        if self.led_unloading       is None: self.led_unloading     = self.unit_obj.led_unloading
+        if self.led_tool_loaded     is None: self.led_tool_loaded   = self.unit_obj.led_tool_loaded
+        if self.led_spool_illum     is None: self.led_spool_illum   = self.unit_obj.led_spool_illum
 
         if self.rev_long_moves_speed_factor is None: self.rev_long_moves_speed_factor  = self.unit_obj.rev_long_moves_speed_factor
         if self.long_moves_speed            is None: self.long_moves_speed  = self.unit_obj.long_moves_speed
@@ -460,7 +450,7 @@ class AFCLane:
 
     def move_advanced(self, distance, speed_mode: SpeedMode, assist_active: AssistActive = AssistActive.NO):
         """
-        Wrapper for move function and isused to compute several arguments
+        Wrapper for move function and is used to compute several arguments
         to move the lane accordingly.
         Parameters:
         distance (float): The distance to move.
@@ -497,7 +487,6 @@ class AFCLane:
         self.logger.info("Infinite Spool triggered for {}".format(self.name))
         empty_lane = self.afc.lanes[self.afc.current]
         change_lane = self.afc.lanes[self.runout_lane]
-        change_lane.status = AFCLaneState.INFINITE_RUNOUT
         # Pause printer with manual command
         self.afc.error.pause_resume.send_pause_command()
         # Saving position after printer is paused
@@ -564,8 +553,7 @@ class AFCLane:
             if load_state:
                 self.status = AFCLaneState.LOADED
                 self.unit_obj.lane_loaded(self)
-                self.material = self.afc.default_material_type
-                self.weight = 1000 # Defaulting weight to 1000 upon load
+                self.afc.spool._set_values(self)
             else:
                 # Don't run if user disabled sensor in gui
                 if not self.fila_load.runout_helper.sensor_enabled and self.afc.function.is_printing():
@@ -593,7 +581,7 @@ class AFCLane:
         if self.prep_active:
             return
 
-        if self.printer.state_message == 'Printer is ready' and self.hub =='direct' and not self.afc.function.is_homed():
+        if self.hub =='direct' and not self.afc.function.is_homed():
             self.afc.error.AFC_error("Please home printer before directly loading to toolhead", False)
             return False
 
@@ -649,20 +637,10 @@ class AFCLane:
                         self.unit_obj.lane_loaded(self)
                         self.afc.spool._set_values(self)
                 elif self.prep_state == True and self.load_state == True and not self.afc.function.is_printing():
-                    if getattr(self.unit_obj, "type", None) == "AMS":
-                        self.status = AFCLaneState.LOADED
-                        self.unit_obj.lane_loaded(self)
-                        self.afc.spool._set_values(self)
-                    else:
-                        message = 'Cannot load {} load sensor is triggered.'.format(self.name)
-                        message += '\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.'
-                        message += '\n    Once cleared try loading again'
-                        self.afc.error.AFC_error(message, pause=False)
-                else:
-                    self.status = AFCLaneState.NONE
-                    self.loaded_to_hub = False
-                    self.afc.spool._clear_values(self)
-                    self.unit_obj.lane_unloaded(self)
+                    message = 'Cannot load {} load sensor is triggered.'.format(self.name)
+                    message += '\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.'
+                    message += '\n    Once cleared try loading again'
+                    self.afc.error.AFC_error(message, pause=False)
         self.prep_active = False
         self.afc.save_vars()
 
@@ -716,8 +694,7 @@ class AFCLane:
         :param update_current: Sets current to specified print current when True
         """
         if self.drive_stepper is not None:
-            self.drive_stepper.sync_to_extruder(self.extruder_name)
-            if update_current: self.drive_stepper.set_print_current()
+            self.drive_stepper.sync_to_extruder(update_current, extruder_name=self.extruder_name)
 
     def unsync_to_extruder(self, update_current=True):
         """
@@ -726,8 +703,7 @@ class AFCLane:
         :param update_current: Sets current to specified load current when True
         """
         if self.drive_stepper is not None:
-            self.drive_stepper.unsync_to_extruder(None)
-            if update_current: self.drive_stepper.set_load_current()
+            self.drive_stepper.unsync_to_extruder(update_current)
 
     def _set_current(self, current):
         return
@@ -859,7 +835,7 @@ class AFCLane:
         Helper function for setting multiple variables when lane is loaded
         """
         self.tool_loaded = True
-        self.extruder_obj.lane_loaded = self.name
+        self.afc.current = self.extruder_obj.lane_loaded = self.name
         self.afc.current_loading = None
         self.status = AFCLaneState.TOOLED
         self.afc.spool.set_active_spool(self.spool_id)
@@ -871,8 +847,9 @@ class AFCLane:
         Helper function for setting multiple variables when lane is unloaded
         """
         self.tool_loaded = False
-        self.extruder_obj.lane_loaded = None
+        self.extruder_obj.lane_loaded = ""
         self.status = AFCLaneState.NONE
+        self.afc.current = None
         self.afc.current_loading = None
         self.afc.spool.set_active_spool(None)
         self.unit_obj.lane_tool_unloaded(self)
@@ -926,17 +903,6 @@ class AFCLane:
         if self.buffer_obj is not None:
             return self.buffer_obj.trailing_state
         else: return None
-
-    def activate_toolhead_extruder(self):
-        if self.afc.toolhead.get_extruder() is self.extruder_obj.toolhead_extruder:
-            # self.afc.gcode.respond_info("Extruder already active") #TODO remove before pushing to dev/main
-            return
-        else:
-            # self.afc.gcode.respond_info("Activating extruder")
-            # Code below is pulled exactly from klippy/kinematics/extruder.py file without the prints
-            self.afc.toolhead.flush_step_generation()
-            self.afc.toolhead.set_extruder( self.extruder_obj.toolhead_extruder, 0.)
-            self.printer.send_event("extruder:activate_extruder")
 
 
     def _is_normal_printing_state(self):
@@ -1225,6 +1191,7 @@ class AFCLane:
         response['filament_status'] = filament_stat[0]
         response['filament_status_led'] = filament_stat[1]
         response['status'] = self.status
+        response['dist_hub'] = self.dist_hub
         return response
 
 
