@@ -57,12 +57,11 @@ class AFCTrigger:
         self.multiplier_high    = config.getfloat("multiplier_high", default=1.1, minval=1.0)
         self.multiplier_low     = config.getfloat("multiplier_low", default=0.9, minval=0.0, maxval=1.0)
 
-        if self.enable_sensors_in_gui:
-            self.adv_filament_switch_name = "filament_switch_sensor {}_{}".format(self.name, "expanded")
-            self.fila_avd = add_filament_switch(self.adv_filament_switch_name, self.advance_pin, self.printer )
+        self.adv_filament_switch_name = "{}_{}".format(self.name, "expanded")
+        self.fila_avd = add_filament_switch(self.adv_filament_switch_name, self.advance_pin, self.printer, show_sensor=self.enable_sensors_in_gui )
 
-            self.trail_filament_switch_name = "filament_switch_sensor {}_{}".format(self.name, "compressed")
-            self.fila_trail = add_filament_switch(self.trail_filament_switch_name, self.trailing_pin, self.printer )
+        self.trail_filament_switch_name = "{}_{}".format(self.name, "compressed")
+        self.fila_trail = add_filament_switch(self.trail_filament_switch_name, self.trailing_pin, self.printer, show_sensor=self.enable_sensors_in_gui )
 
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
@@ -98,7 +97,6 @@ class AFCTrigger:
                 raise error(error_string)
 
     def enable_buffer(self):
-        # Check if enabled already and return if already enabled
         if self.led:
             self.afc.function.afc_led(self.led_buffer_disabled, self.led_index)
         if self.turtleneck:
@@ -143,7 +141,6 @@ class AFCTrigger:
 
         cur_stepper = self.afc.function.get_current_lane_obj()
         if cur_stepper is None: return
-        if cur_stepper.extruder_stepper is None: return
 
         cur_stepper.update_rotation_distance( 1 )
         self.logger.info("Rotation distance reset : {:.4f}".format(cur_stepper.extruder_stepper.stepper.get_rotation_distance()[0]))

@@ -30,6 +30,20 @@ class afcPrep:
         self.afc.gcode.register_command('PREP', self.PREP, desc=None)
         self.logger = self.afc.logger
 
+    def _rename(self, base_name, rename_name, rename_macro, rename_help):
+        """
+        Helper function to get stock macros, rename to something and replace stock macro with AFC functions
+        """
+        # Renaming users Resume macro so that RESUME calls AFC_Resume function instead
+        prev_cmd = self.afc.gcode.register_command(base_name, None)
+        if prev_cmd is not None:
+            pdesc = "Renamed builtin of '%s'" % (base_name,)
+            self.afc.gcode.register_command(rename_name, prev_cmd, desc=pdesc)
+        else:
+            self.logger.debug("{}Existing command {} not found in gcode_macros{}".format("<span class=warning--text>", base_name, "</span>",))
+        self.logger.debug("PREP-renaming macro {}".format(base_name))
+        self.afc.gcode.register_command(base_name, rename_macro, desc=rename_help)
+
     def _rename_macros(self):
         """
         Helper function to rename multiple macros and substitute with AFC macros.
@@ -40,12 +54,12 @@ class afcPrep:
         # Checking to see if rename has already been done, don't want to rename again if prep was already ran
         if not self.rename_occurred:
             self.rename_occurred = True
-            self.afc.function._rename(self.afc.error.BASE_RESUME_NAME, self.afc.error.AFC_RENAME_RESUME_NAME, self.afc.error.cmd_AFC_RESUME, self.afc.error.cmd_AFC_RESUME_help)
-            self.afc.function._rename(self.afc.error.BASE_PAUSE_NAME, self.afc.error.AFC_RENAME_PAUSE_NAME, self.afc.error.cmd_AFC_PAUSE, self.afc.error.cmd_AFC_RESUME_help)
+            self._rename(self.afc.error.BASE_RESUME_NAME, self.afc.error.AFC_RENAME_RESUME_NAME, self.afc.error.cmd_AFC_RESUME, self.afc.error.cmd_AFC_RESUME_help)
+            self._rename(self.afc.error.BASE_PAUSE_NAME, self.afc.error.AFC_RENAME_PAUSE_NAME, self.afc.error.cmd_AFC_PAUSE, self.afc.error.cmd_AFC_RESUME_help)
 
             # Check to see if the user does not want to rename UNLOAD_FILAMENT macro
             if not self.dis_unload_macro:
-                self.afc.function._rename(self.afc.BASE_UNLOAD_FILAMENT, self.afc.RENAMED_UNLOAD_FILAMENT, self.afc.cmd_TOOL_UNLOAD, self.afc.cmd_TOOL_UNLOAD_help)
+                self._rename(self.afc.BASE_UNLOAD_FILAMENT, self.afc.RENAMED_UNLOAD_FILAMENT, self.afc.cmd_TOOL_UNLOAD, self.afc.cmd_TOOL_UNLOAD_help)
 
     def PREP(self, gcmd):
         while self.printer.state_message != 'Printer is ready':
@@ -59,7 +73,17 @@ class afcPrep:
         ## load Unit stored variables
         units={}
         if os.path.exists('{}.unit'.format(self.afc.VarFile)) and os.stat('{}.unit'.format(self.afc.VarFile)).st_size > 0:
-            units=json.load(open('{}.unit'.format(self.afc.VarFile)))
+            try:
+                units=json.load(open('{}.unit'.format(self.afc.VarFile)))
+            except json.JSONDecodeError as e:
+                # Displaying error for user to fix, do not want to continue just in case
+                # there is actual data in this file as we do not want to overwrite and put
+                # users boxturtles into a weird state if prep continues.
+                self.afc.error.AFC_error(f"Error when trying to open and decode {self.afc.VarFile}.unit file.\n" + \
+                                          "Please fix file or delete if file is empty, then restart klipper.", False)
+                self.logger.error("", traceback=f"{e}")
+                return
+
         else:
             error_string = 'Error: {}.unit file not found. Please check the path in the '.format(self.afc.VarFile)
             error_string += 'AFC.cfg file and make sure the file and path exists.'
@@ -75,7 +99,7 @@ class afcPrep:
                   'lane_loaded' in units["system"]["extruders"][PrinterObject.name] and \
                   units["system"]["extruders"][PrinterObject.name]['lane_loaded']:
                     PrinterObject.lane_loaded = units["system"]["extruders"][PrinterObject.name]['lane_loaded']
-
+                    self.afc.current = PrinterObject.lane_loaded
 
         for lane in self.afc.lanes.keys():
             cur_lane = self.afc.lanes[lane]
@@ -163,6 +187,7 @@ class afcPrep:
         current_lane = self.afc.function.get_current_lane_obj()
         if current_lane is not None:
             current_lane.unit_obj.select_lane(current_lane)
+            current_lane.sync_to_extruder()
 
         # Restore previous bypass state if virtual bypass is active
         bypass_name = "Bypass"

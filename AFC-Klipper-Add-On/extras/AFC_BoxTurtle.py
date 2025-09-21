@@ -86,14 +86,15 @@ class afcBoxTurtle(afcUnit):
                 if cur_lane.tool_loaded:
                     if cur_lane.get_toolhead_pre_sensor_state() == True or cur_lane.extruder_obj.tool_start == "buffer" or cur_lane.extruder_obj.tool_end_state:
                         if cur_lane.extruder_obj.lane_loaded == cur_lane.name:
+                            self.afc.current = cur_lane.name
                             cur_lane.sync_to_extruder()
                             msg +="<span class=primary--text> in ToolHead</span>"
                             if cur_lane.extruder_obj.tool_start == "buffer":
                                 msg += "<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>"
 
-                            if self.afc.current == cur_lane.name:
+                            if self.afc.function.get_current_lane() == cur_lane.name:
                                 self.afc.spool.set_active_spool(cur_lane.spool_id)
-                                self.afc.function.afc_led(cur_lane.led_tool_loaded, cur_lane.led_index)
+                                cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                                 cur_lane.status = AFCLaneState.TOOLED
 
                             cur_lane.enable_buffer()
@@ -122,7 +123,7 @@ class afcBoxTurtle(afcUnit):
                                                              cur_lane.short_move_dis, 0, cur_lane.dist_hub + 200, "Moving to hub")
 
         if not success:
-            # if movement does not suceed fault and return values to calibration macro
+            # if movement does not succeed fault and return values to calibration macro
             msg = 'Failed {} after {}mm'.format(checkpoint, hub_pos)
             return False, msg, hub_pos
 
@@ -169,26 +170,27 @@ class afcBoxTurtle(afcUnit):
             else:
                 bowden_dist = bow_pos - cur_lane.short_move_dis
 
-            # Checking if user has set a custom unload length and adding the delta to the new
-            # calibrated bowden distance
-            if cur_lane.hub_obj.afc_unload_bowden_length != cur_lane.hub_obj.afc_bowden_length:
-                unload_delta = cur_lane.hub_obj.afc_unload_bowden_length - cur_lane.hub_obj.afc_bowden_length
-                unload_new = bowden_dist + unload_delta
-            else:
-                unload_new = bowden_dist
+            unload_dist = bowden_dist
 
             cal_msg = '\n afc_bowden_length: New: {} Old: {}'.format(bowden_dist, cur_lane.hub_obj.afc_bowden_length)
-            unload_cal_msg = '\n afc_unload_bowden_length: New: {} Old: {}'.format(unload_new, cur_lane.hub_obj.afc_unload_bowden_length)
+            unload_cal_msg = '\n afc_unload_bowden_length: New: {} Old: {}'.format(unload_dist, cur_lane.hub_obj.afc_unload_bowden_length)
             cur_lane.hub_obj.afc_bowden_length = bowden_dist
-            cur_lane.hub_obj.afc_unload_bowden_length = unload_new
+            cur_lane.hub_obj.afc_unload_bowden_length = unload_dist
 
             if bowden_dist < 0:
                 self.afc.error.AFC_error(
                     "'{}' is not a valid length. Please check your setup and re-run calibration.".format(bowden_dist),
                     pause=False)
                 return False, "Invalid bowden length", bowden_dist
+
+            if unload_dist < 0:
+                self.afc.error.AFC_error(
+                    "'{}' is not a valid unload length. Please check your setup and re-run calibration.".format(unload_dist),
+                    pause=False)
+                return False, "Invalid unload bowden length", unload_dist
+
             self.afc.function.ConfigRewrite(cur_hub.fullname, "afc_bowden_length", bowden_dist, cal_msg)
-            self.afc.function.ConfigRewrite(cur_hub.fullname, "afc_unload_bowden_length", unload_new, unload_cal_msg)
+            self.afc.function.ConfigRewrite(cur_hub.fullname, "afc_unload_bowden_length", unload_dist, unload_cal_msg)
             cur_lane.loaded_to_hub  = True
             cur_lane.do_enable(False)
             self.afc.save_vars()
@@ -227,7 +229,7 @@ class afcBoxTurtle(afcUnit):
         return True, msg, tuned_hub_pos
 
     def move_until_state(self, cur_lane, state, move_dis, tolerance, short_move, pos=0, fault_dis=250, checkpoint=None):
-        # moves filament until specified sensor, returns values for further czlibration
+        # moves filament until specified sensor, returns values for further calibration
         while not state():
             cur_lane.move(move_dis, cur_lane.short_moves_speed, cur_lane.short_moves_accel)
             pos += move_dis
