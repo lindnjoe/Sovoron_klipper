@@ -73,6 +73,7 @@ class OAMSRunoutMonitor:
         self.state = OAMSRunoutState.STOPPED
         self.runout_position: Optional[float] = None
         self.bldc_clear_position: Optional[float] = None
+        self.runout_after_position: Optional[float] = None
         
         # Configuration
         # Reload is triggered as soon as the follower has <= this much filament
@@ -115,24 +116,32 @@ class OAMSRunoutMonitor:
                     logging.info("OAMS: Pause complete, coasting the follower.")
                     self.oams[fps_state.current_oams].set_oams_follower(0, 1)
                     self.bldc_clear_position = fps.extruder.last_position
+                    self.runout_after_position = 0.0
                     self.state = OAMSRunoutState.COASTING
-                    
+
             elif self.state == OAMSRunoutState.COASTING:
                 traveled_distance_after_bldc_clear = max(
                     fps.extruder.last_position - self.bldc_clear_position, 0.0
                 )
+                self.runout_after_position = traveled_distance_after_bldc_clear
                 path_length = getattr(
                     self.oams[fps_state.current_oams], "filament_path_length", 0.0
                 )
-                distance_remaining = max(
-                    path_length - traveled_distance_after_bldc_clear, 0.0
+                effective_path_length = (
+                    path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0
+                )
+                consumed_with_margin = (
+                    self.runout_after_position
+                    + PAUSE_DISTANCE
+                    + self.reload_before_toolhead_distance
                 )
 
-                if distance_remaining <= self.reload_before_toolhead_distance:
+                if consumed_with_margin >= effective_path_length:
                     logging.info(
-                        "OAMS: Loading next spool (remaining %.2f mm <= margin %.2f mm).",
-                        distance_remaining,
+                        "OAMS: Loading next spool (%.2f mm consumed + margin %.2f mm >= effective path %.2f mm).",
+                        self.runout_after_position + PAUSE_DISTANCE,
                         self.reload_before_toolhead_distance,
+                        effective_path_length,
                     )
                     self.state = OAMSRunoutState.RELOADING
                     self.reload_callback()
