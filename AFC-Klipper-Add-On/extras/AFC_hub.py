@@ -1,3 +1,4 @@
+
 # Armored Turtle Automated Filament Changer
 #
 # Copyright (C) 2024 Armored Turtle
@@ -162,4 +163,5 @@ class afc_hub:
         return self.response
 
 def load_config_prefix(config):
+
     return afc_hub(config)
