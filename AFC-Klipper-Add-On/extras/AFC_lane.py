@@ -43,6 +43,7 @@ class AFCLaneState:
     HUB_LOADING      = "HUB Loading"
     EJECTING         = "Ejecting"
     CALIBRATING      = "Calibrating"
+    INFINITE_RUNOUT  = "Infinite Runout"
 
 class AFCLane:
     UPDATE_WEIGHT_DELAY = 10.0
@@ -91,17 +92,21 @@ class AFCLane:
         self.map                = config.get('cmd', None)                               # Keeping this in so it does not break others config that may have used this, use map instead
         # Saving to self._map so that if a user has it defined it will be reset back to this when
         # the calling RESET_AFC_MAPPING macro.
-        self._map = self.map    = config.get('map', self.map)
-        self.led_index          = config.get('led_index', None)                         # LED index of lane in chain of lane LEDs
-        self.led_fault          = config.get('led_fault',None)                          # LED color to set when faults occur in lane        (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
-        self.led_ready          = config.get('led_ready',None)                          # LED color to set when lane is ready               (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
-        self.led_not_ready      = config.get('led_not_ready',None)                      # LED color to set when lane not ready              (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
-        self.led_loading        = config.get('led_loading',None)                        # LED color to set when lane is loading             (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
-        self.led_prep_loaded    = config.get('led_loading',None)                        # LED color to set when lane is loaded              (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
-        self.led_unloading      = config.get('led_unloading',None)                      # LED color to set when lane is unloading           (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
-        self.led_tool_loaded    = config.get('led_tool_loaded',None)                    # LED color to set when lane is loaded into tool    (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
-        self.led_spool_index    = config.get('led_spool_index', None)                   # LED index to illuminate under spool
-        self.led_spool_illum    = config.get('led_spool_illuminate', None)              # LED color to illuminate under spool
+
+        # LED SETTINGS
+        # All variables use: (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
+        self._map = self.map      = config.get('map', self.map)
+        self.led_index            = config.get('led_index', None)                       # LED index of lane in chain of lane LEDs
+        self.led_fault            = config.get('led_fault',None)                        # LED color to set when faults occur in lane
+        self.led_ready            = config.get('led_ready',None)                        # LED color to set when lane is ready
+        self.led_not_ready        = config.get('led_not_ready',None)                    # LED color to set when lane not ready
+        self.led_loading          = config.get('led_loading',None)                      # LED color to set when lane is loading
+        self.led_prep_loaded      = config.get('led_loading',None)                      # LED color to set when lane is loaded
+        self.led_unloading        = config.get('led_unloading',None)                    # LED color to set when lane is unloading
+        self.led_tool_loaded      = config.get('led_tool_loaded',None)                  # LED color to set when lane is loaded into tool
+        self.led_tool_loaded_idle = config.get('led_tool_loaded_idle',None)             # LED color to set when lane is loaded into tool and idle
+        self.led_spool_index      = config.get('led_spool_index', None)                 # LED index to illuminate under spool
+        self.led_spool_illum      = config.get('led_spool_illuminate', None)            # LED color to illuminate under spool
 
         self.long_moves_speed   = config.getfloat("long_moves_speed", None)             # Speed in mm/s to move filament when doing long moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
         self.long_moves_accel   = config.getfloat("long_moves_accel", None)             # Acceleration in mm/s squared when doing long moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
@@ -111,15 +116,17 @@ class AFCLane:
         self.max_move_dis       = config.getfloat("max_move_dis", None)                 # Maximum distance to move filament. AFC breaks filament moves over this number into multiple moves. Useful to lower this number if running into timer too close errors when doing long filament moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
         self.n20_break_delay_time= config.getfloat("n20_break_delay_time", None)        # Time to wait between breaking n20 motors(nSleep/FWD/RWD all 1) and then releasing the break to allow coasting. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
 
+        # Custom Load/unload Commands
+        self.custom_load_cmd = config.get('custom_load_cmd', None)  # Custom command to run when loading lane, this will bypass the typical load sequence and run the command instead.
+        self.custom_unload_cmd = config.get('custom_unload_cmd', None)  # Custom command to run when unloading lane, this will bypass the typical unload sequence and run the command instead.
+
         self.rev_long_moves_speed_factor = config.getfloat("rev_long_moves_speed_factor", None)     # scalar speed factor when reversing filamentalist
 
         self.dist_hub           = config.getfloat('dist_hub', 60)                       # Bowden distance between Box Turtle extruder and hub
         self.park_dist          = config.getfloat('park_dist', 10)                      # Currently unused
 
         self.load_to_hub        = config.getboolean("load_to_hub", self.afc.load_to_hub) # Fast loads filament to hub when inserted, set to False to disable. Setting here overrides global setting in AFC.cfg
-        self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui",    self.afc.enable_sensors_in_gui) # Set to True to show prep and load sensors switches as filament sensors in mainsail/fluidd gui, overrides value set in AFC.cfg
-        self.debounce_delay         = config.getfloat("debounce_delay",             self.afc.debounce_delay)
-        self.enable_runout          = config.getboolean("enable_hub_runout",        self.afc.enable_hub_runout)
+        self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui", self.afc.enable_sensors_in_gui) # Set to True to show prep and load sensors switches as filament sensors in mainsail/fluidd gui, overrides value set in AFC.cfg
         self.sensor_to_show         = config.get("sensor_to_show", None)                # Set to prep to only show prep sensor, set to load to only show load sensor. Do not add if you want both prep and load sensors to show in web gui
 
         self.assisted_unload = config.getboolean("assisted_unload", None) # If True, the unload retract is assisted to prevent loose windings, especially on full spools. This can prevent loops from slipping off the spool. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
@@ -159,26 +166,14 @@ class AFCLane:
         # Defaulting to false so that extruder motors to not move until PREP has been called
         self._afc_prep_done = False
 
-        if self.prep is not None:
-            show_sensor = True
-            if not self.enable_sensors_in_gui or (self.sensor_to_show is not None and 'prep' not in self.sensor_to_show):
-                show_sensor = False
-            self.fila_prep, self.prep_debounce_button = add_filament_switch(f"{self.name}_prep", self.prep, self.printer,
-                                                                            show_sensor, enable_runout=self.enable_runout,
-                                                                            debounce_delay=self.debounce_delay )
-            self.prep_debounce_button.button_action = self.handle_prep_runout
-            self.prep_debounce_button.debounce_delay = 0 # Delay will be set once klipper is ready
+        if self.enable_sensors_in_gui:
+            if self.prep is not None and (self.sensor_to_show is None or self.sensor_to_show == 'prep'):
+                self.prep_filament_switch_name = "filament_switch_sensor {}_prep".format(self.name)
+                self.fila_prep = add_filament_switch(self.prep_filament_switch_name, self.prep, self.printer )
 
-        if self.load is not None:
-            show_sensor = True
-            if not self.enable_sensors_in_gui or (self.sensor_to_show is not None and 'load' not in self.sensor_to_show):
-                show_sensor = False
-            self.fila_load, self.load_debounce_button = add_filament_switch(f"{self.name}_load", self.load, self.printer,
-                                                                            show_sensor, enable_runout=self.enable_runout,
-                                                                            debounce_delay=self.debounce_delay )
-            self.load_debounce_button.button_action = self.handle_load_runout
-            self.load_debounce_button.debounce_delay = 0 # Delay will be set once klipper is ready
-
+            if self.load is not None and (self.sensor_to_show is None or self.sensor_to_show == 'load'):
+                self.load_filament_switch_name = "filament_switch_sensor {}_load".format(self.name)
+                self.fila_load = add_filament_switch(self.load_filament_switch_name, self.load, self.printer )
         self.connect_done = False
         self.prep_active = False
         self.last_prep_time = 0
@@ -229,12 +224,6 @@ class AFCLane:
             if led is None:
                 raise error(error_string)
         self.espooler.handle_ready()
-
-        # Setting debounce delay after ready so that callback does not get triggered when initially loading
-        if hasattr(self, "prep_debounce_button"):
-            self.prep_debounce_button.debounce_delay = self.debounce_delay
-        if hasattr(self, "load_debounce_button"):
-            self.load_debounce_button.debounce_delay = self.debounce_delay
 
     def handle_moonraker_connect(self):
         """
@@ -342,14 +331,15 @@ class AFCLane:
 
         self.get_steppers()
 
-        if self.led_fault           is None: self.led_fault         = self.unit_obj.led_fault
-        if self.led_ready           is None: self.led_ready         = self.unit_obj.led_ready
-        if self.led_not_ready       is None: self.led_not_ready     = self.unit_obj.led_not_ready
-        if self.led_loading         is None: self.led_loading       = self.unit_obj.led_loading
-        if self.led_prep_loaded     is None: self.led_prep_loaded   = self.unit_obj.led_prep_loaded
-        if self.led_unloading       is None: self.led_unloading     = self.unit_obj.led_unloading
-        if self.led_tool_loaded     is None: self.led_tool_loaded   = self.unit_obj.led_tool_loaded
-        if self.led_spool_illum     is None: self.led_spool_illum   = self.unit_obj.led_spool_illum
+        if self.led_fault            is None: self.led_fault            = self.unit_obj.led_fault
+        if self.led_ready            is None: self.led_ready            = self.unit_obj.led_ready
+        if self.led_not_ready        is None: self.led_not_ready        = self.unit_obj.led_not_ready
+        if self.led_loading          is None: self.led_loading          = self.unit_obj.led_loading
+        if self.led_prep_loaded      is None: self.led_prep_loaded      = self.unit_obj.led_prep_loaded
+        if self.led_unloading        is None: self.led_unloading        = self.unit_obj.led_unloading
+        if self.led_tool_loaded      is None: self.led_tool_loaded      = self.unit_obj.led_tool_loaded
+        if self.led_tool_loaded_idle is None: self.led_tool_loaded_idle = self.unit_obj.led_tool_loaded_idle
+        if self.led_spool_illum      is None: self.led_spool_illum      = self.unit_obj.led_spool_illum
 
         if self.rev_long_moves_speed_factor is None: self.rev_long_moves_speed_factor  = self.unit_obj.rev_long_moves_speed_factor
         if self.long_moves_speed            is None: self.long_moves_speed  = self.unit_obj.long_moves_speed
@@ -433,6 +423,7 @@ class AFCLane:
         else:
             return self.dist_hub_move_speed, self.dist_hub_move_accel
 
+
     def move(self, distance, speed, accel, assist_active=False):
         """
         Move the specified lane a given distance with specified speed and acceleration.
@@ -450,7 +441,7 @@ class AFCLane:
 
     def move_advanced(self, distance, speed_mode: SpeedMode, assist_active: AssistActive = AssistActive.NO):
         """
-        Wrapper for move function and is used to compute several arguments
+        Wrapper for move function and isused to compute several arguments
         to move the lane accordingly.
         Parameters:
         distance (float): The distance to move.
@@ -487,6 +478,7 @@ class AFCLane:
         self.logger.info("Infinite Spool triggered for {}".format(self.name))
         empty_lane = self.afc.lanes[self.afc.current]
         change_lane = self.afc.lanes[self.runout_lane]
+        change_lane.status = AFCLaneState.INFINITE_RUNOUT
         # Pause printer with manual command
         self.afc.error.pause_resume.send_pause_command()
         # Saving position after printer is paused
@@ -532,33 +524,13 @@ class AFCLane:
         if self.printer.state_message == 'Printer is ready' and self.unit_obj.type == "HTLF":
             self.prep_state = state
 
-    def handle_load_runout(self, eventtime, load_state):
-        """
-        Callback function for load switch runout/loading for HTLF, this is different than `load_callback`
-        function as this function can be delayed and is called from filament_switch_sensor class when it detects a runout event.
-
-        Before exiting `min_event_systime` is updated as this mimics how its done in `_exec_gcode` function in RunoutHelper class
-        as AFC overrides `_runout_event_handler` function with this function callback. If `min_event_systime` does not get
-        updated then future switch changes will not be detected.
-
-        :param eventtime: Event time from the button press
-        """
-        # Call filament sensor callback so that state is registered
-        try:
-            self.load_debounce_button._old_note_filament_present(load_state)
-        except:
-            self.load_debounce_button._old_note_filament_present(eventtime, load_state)
-
-        if self.printer.state_message == 'Printer is ready' and self.unit_obj.type == "HTLF":
-            if load_state:
+            if self.load_state:
                 self.status = AFCLaneState.LOADED
                 self.unit_obj.lane_loaded(self)
-                self.afc.spool._set_values(self)
+                self.material = self.afc.default_material_type
+                self.weight = 1000 # Defaulting weight to 1000 upon load
             else:
-                # Don't run if user disabled sensor in gui
-                if not self.fila_load.runout_helper.sensor_enabled and self.afc.function.is_printing():
-                    self.logger.warning("Load runout has been detected, but pause and runout detection has been disabled")
-                elif self.unit_obj.check_runout(self):
+                if self.unit_obj.check_runout(self):
                     # Checking to make sure runout_lane is set
                     if self.runout_lane is not None:
                         self._perform_infinite_runout()
@@ -570,6 +542,7 @@ class AFCLane:
                     self.loaded_to_hub = False
                     self.afc.spool._clear_values(self)
                     self.afc.function.afc_led(self.afc.led_not_ready, self.led_index)
+
         self.afc.save_vars()
 
     def prep_callback(self, eventtime, state):
@@ -581,7 +554,7 @@ class AFCLane:
         if self.prep_active:
             return
 
-        if self.hub =='direct' and not self.afc.function.is_homed():
+        if self.printer.state_message == 'Printer is ready' and self.hub =='direct' and not self.afc.function.is_homed():
             self.afc.error.AFC_error("Please home printer before directly loading to toolhead", False)
             return False
 
@@ -636,48 +609,31 @@ class AFCLane:
                         self.status = AFCLaneState.LOADED
                         self.unit_obj.lane_loaded(self)
                         self.afc.spool._set_values(self)
+
+                elif self.prep_state == False and self.name == self.afc.current and self.afc.function.is_printing() and self.load_state and self.status != AFCLaneState.EJECTING:
+                    # Checking to make sure runout_lane is set
+                    if self.runout_lane is not None:
+                        self._perform_infinite_runout()
+                    else:
+                        self._perform_pause_runout()
+
                 elif self.prep_state == True and self.load_state == True and not self.afc.function.is_printing():
-                    message = 'Cannot load {} load sensor is triggered.'.format(self.name)
-                    message += '\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.'
-                    message += '\n    Once cleared try loading again'
-                    self.afc.error.AFC_error(message, pause=False)
-        self.prep_active = False
-        self.afc.save_vars()
-
-    def handle_prep_runout(self, eventtime, prep_state):
-        """
-        Callback function for prep switch runout, this is different than `prep_callback`
-        function as this function can be delayed and is called from filament_switch_sensor class when it detects a runout event.
-
-        Before exiting `min_event_systime` is updated as this mimics how its done in `_exec_gcode` function in RunoutHelper class
-        as AFC overrides `_runout_event_handler` function with this function callback. If `min_event_systime` does not get
-        updated then future switch changes will not be detected.
-
-        :param eventtime: Event time from the button press
-        """
-        # Call filament sensor callback so that state is registered
-        try:
-            self.prep_debounce_button._old_note_filament_present(prep_state)
-        except:
-            self.prep_debounce_button._old_note_filament_present(eventtime, prep_state)
-
-        if self.printer.state_message == 'Printer is ready' and True == self._afc_prep_done and self.status != AFCLaneState.TOOL_UNLOADING:
-            if prep_state == False and self.name == self.afc.current and self.afc.function.is_printing() and self.load_state and self.status != AFCLaneState.EJECTING:
-                # Don't run if user disabled sensor in gui
-                if not self.fila_prep.runout_helper.sensor_enabled:
-                    self.logger.warning("Prep runout has been detected, but pause and runout detection has been disabled")
-                # Checking to make sure runout_lane is set
-                elif self.runout_lane is not None:
-                    self._perform_infinite_runout()
+                    if self.unit_obj.type == "AMS":
+                        self.status = AFCLaneState.LOADED
+                        self.unit_obj.lane_loaded(self)
+                        self.afc.spool._set_values(self)
+                    else:
+                        message = 'Cannot load {} load sensor is triggered.'.format(self.name)
+                        message += '\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.'
+                        message += '\n    Once cleared try loading again'
+                        self.afc.error.AFC_error(message, pause=False)
                 else:
-                    self._perform_pause_runout()
-            elif not prep_state:
-                # Filament is unloaded
-                self.status = AFCLaneState.NONE
-                self.loaded_to_hub = False
-                self.afc.spool._clear_values(self)
-                self.unit_obj.lane_unloaded(self)
+                    self.status = AFCLaneState.NONE
+                    self.loaded_to_hub = False
+                    self.afc.spool._clear_values(self)
+                    self.unit_obj.lane_unloaded(self)
 
+        self.prep_active = False
         self.afc.save_vars()
 
     def do_enable(self, enable):
@@ -694,7 +650,8 @@ class AFCLane:
         :param update_current: Sets current to specified print current when True
         """
         if self.drive_stepper is not None:
-            self.drive_stepper.sync_to_extruder(update_current, extruder_name=self.extruder_name)
+            self.drive_stepper.sync_to_extruder(self.extruder_name)
+            if update_current: self.drive_stepper.set_print_current()
 
     def unsync_to_extruder(self, update_current=True):
         """
@@ -703,7 +660,8 @@ class AFCLane:
         :param update_current: Sets current to specified load current when True
         """
         if self.drive_stepper is not None:
-            self.drive_stepper.unsync_to_extruder(update_current)
+            self.drive_stepper.unsync_to_extruder(None)
+            if update_current: self.drive_stepper.set_load_current()
 
     def _set_current(self, current):
         return
@@ -835,7 +793,7 @@ class AFCLane:
         Helper function for setting multiple variables when lane is loaded
         """
         self.tool_loaded = True
-        self.afc.current = self.extruder_obj.lane_loaded = self.name
+        self.extruder_obj.lane_loaded = self.name
         self.afc.current_loading = None
         self.status = AFCLaneState.TOOLED
         self.afc.spool.set_active_spool(self.spool_id)
@@ -847,9 +805,8 @@ class AFCLane:
         Helper function for setting multiple variables when lane is unloaded
         """
         self.tool_loaded = False
-        self.extruder_obj.lane_loaded = ""
+        self.extruder_obj.lane_loaded = None
         self.status = AFCLaneState.NONE
-        self.afc.current = None
         self.afc.current_loading = None
         self.afc.spool.set_active_spool(None)
         self.unit_obj.lane_tool_unloaded(self)
@@ -903,6 +860,17 @@ class AFCLane:
         if self.buffer_obj is not None:
             return self.buffer_obj.trailing_state
         else: return None
+
+    def activate_toolhead_extruder(self):
+        if self.afc.toolhead.get_extruder() is self.extruder_obj.toolhead_extruder:
+            # self.afc.gcode.respond_info("Extruder already active") #TODO remove before pushing to dev/main
+            return
+        else:
+            # self.afc.gcode.respond_info("Activating extruder")
+            # Code below is pulled exactly from klippy/kinematics/extruder.py file without the prints
+            self.afc.toolhead.flush_step_generation()
+            self.afc.toolhead.set_extruder( self.extruder_obj.toolhead_extruder, 0.)
+            self.printer.send_event("extruder:activate_extruder")
 
 
     def _is_normal_printing_state(self):
@@ -1191,7 +1159,6 @@ class AFCLane:
         response['filament_status'] = filament_stat[0]
         response['filament_status_led'] = filament_stat[1]
         response['status'] = self.status
-        response['dist_hub'] = self.dist_hub
         return response
 
 
