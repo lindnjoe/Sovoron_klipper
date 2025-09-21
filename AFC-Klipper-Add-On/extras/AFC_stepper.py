@@ -36,9 +36,7 @@ class AFCExtruderStepper(AFCLane):
         # Current to use while printing, set to a lower current to reduce stepper heat when printing.
         # Defaults to global_print_current, if not specified current is not changed.
         self.tmc_print_current = config.getfloat("print_current", self.afc.global_print_current)
-        self.tmc_load_current = None
-        if self.tmc_print_current is not None:
-            self._get_tmc_values( config )
+        self._get_tmc_values( config )
 
         # Get and save base rotation dist
         self.base_rotation_dist = self.extruder_stepper.stepper.get_rotation_distance()[0]
@@ -50,9 +48,7 @@ class AFCExtruderStepper(AFCLane):
         try:
             self.tmc_driver = next(config.getsection(s) for s in config.fileconfig.sections() if 'tmc' in s and config.get_name() in s)
         except:
-            msg = f"Could not find TMC for stepper {self.name},"
-            msg += "\nplease add TMC section or disable 'print_current' from config files"
-            raise self.gcode.error(msg)
+            raise self.gcode.error("Count not find TMC for stepper {}".format(self.name))
 
         self.tmc_load_current = self.tmc_driver.getfloat('run_current')
 
@@ -141,16 +137,13 @@ class AFCExtruderStepper(AFCLane):
         else:
             self.next_cmd_time = print_time
 
-    def sync_to_extruder(self, update_current=True, extruder_name=None):
+    def sync_to_extruder(self, update_current=True):
         """
         Helper function to sync lane to extruder and set print current if specified.
 
         :param update_current: Sets current to specified print current when True
         """
-        if extruder_name is None:
-            extruder_name = self.extruder_name
-
-        self.extruder_stepper.sync_to_extruder(extruder_name)
+        self.extruder_stepper.sync_to_extruder(self.extruder_name)
         if update_current: self.set_print_current()
 
     def unsync_to_extruder(self, update_current=True):
@@ -168,7 +161,7 @@ class AFCExtruderStepper(AFCLane):
 
         :param current: Sets TMC current to specified value
         """
-        if self.tmc_print_current is not None and current is not None:
+        if self.tmc_print_current is not None:
             self.gcode.run_script_from_command("SET_TMC_CURRENT STEPPER='{}' CURRENT={}".format(self.name, current))
 
     def set_load_current(self):
@@ -187,7 +180,7 @@ class AFCExtruderStepper(AFCLane):
         """
         Helper function for updating steppers rotation distance
 
-        :param multiplier: Multiplier to set rotation distance. Rotation distance is updated by taking
+        :param multipler: Multipler to set rotation distance. Rotation distance is updated by taking
                           base rotation distance and dividing by multiplier.
         """
         self.extruder_stepper.stepper.set_rotation_distance( self.base_rotation_dist / multiplier )

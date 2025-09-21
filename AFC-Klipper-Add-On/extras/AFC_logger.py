@@ -33,7 +33,6 @@ class AFC_logger:
         self.afc     = afc_obj
         self.gcode   = printer.lookup_object('gcode')
         self.webhooks = printer.lookup_object('webhooks')
-        printer.register_event_handler( "gcode:request_restart", self._stop)
 
         log_path = printer.start_args['log_file']
         dirname = Path(log_path).parent
@@ -48,9 +47,6 @@ class AFC_logger:
         self.logger.addHandler(self.afc_queue_handler)
         self.logger.setLevel(logging.DEBUG)
         self.print_debug_console = False
-
-    def _stop(self, eventtime):
-        self.afc_ql.stop()
 
     def _add_monotonic(self, message):
         return "{:10.3f} {}".format(self.reactor.monotonic(), message)
@@ -104,8 +100,8 @@ class AFC_logger:
         :param message: Error message to print to console and log
         :param traceback: Trackback to log to AFC.log file
         """
-        stack_name = f"{stack_name}: " if stack_name else ""
         for line in message.lstrip().rstrip().split("\n"):
+            stack_name = f"{stack_name}: " if stack_name else ""
             self.logger.error( self._format(f"ERROR: {stack_name}{line}") )
         self.send_callback( "!! {}".format(message) )
 

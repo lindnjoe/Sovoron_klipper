@@ -57,7 +57,7 @@ class AFCprompt:
         if text is not None:
             self.p_text(text)
 
-        # Add group buttons
+        # Add group bottons
         if groups is not None:
             for group in groups:
                 self.p_button_group_start()
