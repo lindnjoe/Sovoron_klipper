@@ -61,7 +61,6 @@ class afc_hub:
 
         self.state = False
         buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
-
         self.fila, self.debounce_button = add_filament_switch( f"{self.name}_Hub", self.switch_pin, self.printer,
                                                                 self.enable_sensors_in_gui, self.handle_runout, self.enable_runout,
                                                                 self.debounce_delay)
