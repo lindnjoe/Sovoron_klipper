@@ -1,3 +1,4 @@
+
 # Armored Turtle Automated Filament Changer
 #
 # Copyright (C) 2024 Armored Turtle
@@ -29,7 +30,7 @@ class afc_hub:
 
         # HUB Cut variables
         # Next two variables are used in AFC
-        self.switch_pin             = config.get('switch_pin')                      # Pin hub sensor it connected to
+        self.switch_pin             = config.get('switch_pin', None)                # Pin hub sensor it connected to
         self.hub_clear_move_dis     = config.getfloat("hub_clear_move_dis", 25)     # How far to move filament so that it's not block the hub exit
         self.afc_bowden_length      = config.getfloat("afc_bowden_length", 900)     # Length of the Bowden tube from the hub to the toolhead sensor in mm.
         self.afc_unload_bowden_length= config.getfloat("afc_unload_bowden_length", self.afc_bowden_length) # Length to unload when retracting back from toolhead to hub in mm. Defaults to afc_bowden_length
@@ -54,13 +55,17 @@ class afc_hub:
         self.enable_runout          = config.getboolean("enable_hub_runout",        self.afc.enable_hub_runout)
 
         buttons = self.printer.load_object(config, "buttons")
-        if self.switch_pin is not None:
+
+        self.fila = None
+        self.debounce_button = None
+        if self.switch_pin:
             self.state = False
             buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
 
-        self.fila, self.debounce_button = add_filament_switch( f"{self.name}_Hub", self.switch_pin, self.printer,
-                                                                self.enable_sensors_in_gui, self.handle_runout, self.enable_runout,
-                                                                self.debounce_delay)
+            self.fila, self.debounce_button = add_filament_switch(
+                f"{self.name}_Hub", self.switch_pin, self.printer,
+                self.enable_sensors_in_gui, self.handle_runout, self.enable_runout,
+                self.debounce_delay)
 
         # Adding self to AFC hubs
         self.afc.hubs[self.name]=self
@@ -79,6 +84,8 @@ class afc_hub:
 
         :param eventtime: Event time from the button press
         """
+        if self.fila is None:
+            return
         # Only trigger runout for the currently loaded lane (in the toolhead) if it belongs to this hub
         current_lane_name = getattr(self.afc, 'current', None)
         if current_lane_name and current_lane_name in self.lanes:
@@ -156,4 +163,5 @@ class afc_hub:
         return self.response
 
 def load_config_prefix(config):
+
     return afc_hub(config)
