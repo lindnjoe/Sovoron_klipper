@@ -26,6 +26,11 @@ AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout trigge
 UNLOAD_RETRY_NUDGE_TIME = 0.5  # seconds to nudge filament forward before retry
 
 
+# Default retry behaviour for unload recovery
+UNLOAD_RETRY_ERROR_CODE = 3
+
+
+
 
 class OAMSRunoutState:
     """Enum for runout monitor states."""
@@ -313,6 +318,21 @@ class OAMSManager:
             0.0,
         )
 
+        # Automatic unload retry configuration
+        self.unload_retry_enabled: bool = config.getboolean(
+            "unload_retry_enabled",
+            True,
+        )
+        self.unload_retry_push_distance: float = config.getfloat(
+            "unload_retry_push_distance",
+            2.0,
+        )
+        self.unload_retry_push_speed: float = config.getfloat(
+            "unload_retry_push_speed",
+            25.0,
+            minval=0.1,
+        )
+
         # Cached mappings
         self.group_to_fps: Dict[str, str] = {}
         self._canonical_lane_by_group: Dict[str, str] = {}
@@ -484,18 +504,21 @@ class OAMSManager:
             self.cmd_CLEAR_ERRORS,
             desc=self.cmd_CLEAR_ERRORS_help,
         )
-    
-    cmd_CLEAR_ERRORS_help = "Clear the error state of the OAMS"
-    def cmd_CLEAR_ERRORS(self, gcmd):
-        if len(self.monitor_timers) > 0:
+
+    def _clear_all_errors(self) -> None:
+        """Clear error flags on all OAMS units and restart monitors."""
+        if self.monitor_timers:
             self.stop_monitors()
-        for (fps_name, fps_state) in self.current_state.fps_state.items():
+        for _, fps_state in self.current_state.fps_state.items():
             fps_state.encoder_samples.clear()
         for _, oam in self.oams.items():
             oam.clear_errors()
         self.determine_state()
         self.start_monitors()
-        
+
+    cmd_CLEAR_ERRORS_help = "Clear the error state of the OAMS"
+    def cmd_CLEAR_ERRORS(self, gcmd):
+        self._clear_all_errors()
         return
     
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
@@ -938,10 +961,12 @@ class OAMSManager:
         fps_state.encoder_samples.clear()
 
     def _nudge_filament_before_retry(self, oams, direction: int = 1,
+
                                      duration: Optional[float] = None) -> None:
         """Briefly move the filament to relieve tension before retrying."""
         if duration is None:
             duration = globals().get("UNLOAD_RETRY_NUDGE_TIME", 0.5)
+
 
         if duration <= 0 or not hasattr(oams, "set_oams_follower"):
             return
@@ -1051,16 +1076,20 @@ class OAMSManager:
         success, message = oams.unload_spool()
 
         if not success:
+
             retry_success, retry_message = self._recover_unload_failure(
+
                 fps_name,
                 fps_state,
                 oams,
                 message,
             )
             if retry_success:
+
                 success = True
                 message = retry_message
             elif retry_message is not None:
+
                 message = retry_message
 
         if success:
@@ -1075,6 +1104,74 @@ class OAMSManager:
 
         fps_state.state_name = FPSLoadState.LOADED
         return False, message
+
+    def _attempt_unload_retry(
+        self,
+        fps_name: str,
+        fps_state,
+        oams,
+        last_message: Optional[str],
+    ) -> Tuple[bool, Optional[str]]:
+        """Attempt an automatic unload retry after recovering from an error."""
+        if not self.unload_retry_enabled:
+            return False, last_message
+
+        if oams.action_status_code != UNLOAD_RETRY_ERROR_CODE:
+            return False, last_message
+
+        extruder_name = getattr(self.fpss[fps_name], "extruder_name", None)
+        if not extruder_name:
+            logging.error(
+                "OAMS: Unable to perform unload retry for %s, extruder not configured",
+                fps_name,
+            )
+            return False, last_message
+
+        logging.warning(
+            "OAMS: Unload on %s failed with code %s, attempting automatic recovery",
+            fps_name,
+            oams.action_status_code,
+        )
+
+        gcode = self.printer.lookup_object("gcode")
+        if self.unload_retry_push_distance != 0.0:
+            command = (
+                f"FORCE_MOVE STEPPER={extruder_name} "
+                f"DISTANCE={self.unload_retry_push_distance:.3f} "
+                f"VELOCITY={self.unload_retry_push_speed:.3f}"
+            )
+            try:
+                logging.info(
+                    "OAMS: Jogging extruder %s by %.3fmm before retry",
+                    extruder_name,
+                    self.unload_retry_push_distance,
+                )
+                gcode.run_script(command)
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to jog extruder %s prior to unload retry",
+                    extruder_name,
+                )
+
+        self._clear_all_errors()
+
+        fps_state.state_name = FPSLoadState.UNLOADING
+        fps_state.encoder = oams.encoder_clicks
+        fps_state.since = self.reactor.monotonic()
+        fps_state.current_oams = oams.name
+        fps_state.current_spool_idx = oams.current_spool
+
+        retry_success, retry_message = oams.unload_spool()
+        if retry_success:
+            logging.info("OAMS: Automatic unload retry succeeded on %s", fps_name)
+            return True, retry_message
+
+        logging.error(
+            "OAMS: Automatic unload retry failed on %s: %s",
+            fps_name,
+            retry_message,
+        )
+        return False, retry_message
 
     def _load_filament_for_group(self, group_name: str) -> Tuple[bool, str]:
         """Load filament for the provided filament group."""
