@@ -10,6 +10,8 @@ from functools import partial
 from collections import deque
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
+from .oams import OAMSOpCode
+
 # Configuration constants
 
 PAUSE_DISTANCE = 60  # mm to pause before coasting follower
@@ -20,6 +22,8 @@ MONITOR_ENCODER_LOADING_SPEED_AFTER = 2.0  # seconds
 MONITOR_ENCODER_PERIOD = 2.0 # seconds
 MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0  # seconds
 AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout triggers
+
+UNLOAD_RETRY_NUDGE_TIME = 0.5  # seconds to nudge filament forward before retry
 
 
 
@@ -922,6 +926,93 @@ class OAMSManager:
         )
         return True
 
+    def _clear_error_state_for_retry(self, fps_state, oams):
+        """Clear error state prior to an automatic unload retry."""
+        try:
+            oams.clear_errors()
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to clear errors on %s prior to unload retry",
+                getattr(oams, "name", "unknown"),
+            )
+        fps_state.encoder_samples.clear()
+
+    def _nudge_filament_before_retry(self, oams, direction: int = 1,
+                                     duration: float = UNLOAD_RETRY_NUDGE_TIME) -> None:
+        """Briefly move the filament to relieve tension before retrying."""
+        if duration <= 0 or not hasattr(oams, "set_oams_follower"):
+            return
+
+        enable_sent = False
+        try:
+            logging.info(
+                "OAMS: Nudging filament forward on %s for %.2f seconds before retry",
+                getattr(oams, "name", "unknown"),
+                duration,
+            )
+            oams.set_oams_follower(1, direction)
+            enable_sent = True
+            self.reactor.pause(self.reactor.monotonic() + duration)
+        except Exception:
+            logging.exception(
+                "OAMS: Failed while nudging filament on %s",
+                getattr(oams, "name", "unknown"),
+            )
+        finally:
+            if enable_sent:
+                try:
+                    oams.set_oams_follower(0, direction)
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to stop follower on %s after nudge",
+                        getattr(oams, "name", "unknown"),
+                    )
+
+    def _recover_unload_failure(
+        self,
+        fps_name: str,
+        fps_state,
+        oams,
+        failure_message: str,
+    ) -> Tuple[bool, str]:
+        """Attempt to recover from a failed unload caused by OAMS error code 3."""
+
+        action_code = getattr(oams, "action_status_code", None)
+        if action_code != OAMSOpCode.SPOOL_ALREADY_IN_BAY:
+            return False, failure_message
+
+        logging.warning(
+            "OAMS: Unload failed on %s for %s with code %s; attempting recovery",
+            fps_name,
+            getattr(oams, "name", "unknown"),
+            action_code,
+        )
+
+        self._clear_error_state_for_retry(fps_state, oams)
+        self._nudge_filament_before_retry(oams)
+
+        fps_state.encoder = oams.encoder_clicks
+        fps_state.since = self.reactor.monotonic()
+
+        retry_success, retry_message = oams.unload_spool()
+        if retry_success:
+            logging.info(
+                "OAMS: Automatic unload retry succeeded on %s for %s",
+                fps_name,
+                getattr(oams, "name", "unknown"),
+            )
+            return True, retry_message
+
+        combined_message = retry_message or failure_message
+        logging.warning(
+            "OAMS: Automatic unload retry failed on %s for %s with code %s: %s",
+            fps_name,
+            getattr(oams, "name", "unknown"),
+            getattr(oams, "action_status_code", None),
+            combined_message,
+        )
+        return False, combined_message
+
     def _unload_filament_for_fps(self, fps_name: str) -> Tuple[bool, str]:
         """Unload filament from the specified FPS and update state."""
         if fps_name not in self.fpss:
@@ -955,6 +1046,19 @@ class OAMSManager:
         fps_state.current_spool_idx = oams.current_spool
 
         success, message = oams.unload_spool()
+
+        if not success:
+            retry_success, retry_message = self._recover_unload_failure(
+                fps_name,
+                fps_state,
+                oams,
+                message,
+            )
+            if retry_success:
+                success = True
+                message = retry_message
+            elif retry_message is not None:
+                message = retry_message
 
         if success:
             fps_state.state_name = FPSLoadState.UNLOADED
