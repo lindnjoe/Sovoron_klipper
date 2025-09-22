@@ -23,6 +23,8 @@ MONITOR_ENCODER_PERIOD = 2.0 # seconds
 MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0  # seconds
 AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout triggers
 
+UNLOAD_RETRY_NUDGE_TIME = 0.5  # seconds to nudge filament forward before retry
+
 
 # Default retry behaviour for unload recovery
 UNLOAD_RETRY_ERROR_CODE = 3
@@ -959,8 +961,13 @@ class OAMSManager:
         fps_state.encoder_samples.clear()
 
     def _nudge_filament_before_retry(self, oams, direction: int = 1,
-                                     duration: float = UNLOAD_RETRY_NUDGE_TIME) -> None:
+
+                                     duration: Optional[float] = None) -> None:
         """Briefly move the filament to relieve tension before retrying."""
+        if duration is None:
+            duration = globals().get("UNLOAD_RETRY_NUDGE_TIME", 0.5)
+
+
         if duration <= 0 or not hasattr(oams, "set_oams_follower"):
             return
 
@@ -1070,7 +1077,7 @@ class OAMSManager:
 
         if not success:
 
-            retry_success, retry_message = self._attempt_unload_retry(
+            retry_success, retry_message = self._recover_unload_failure(
 
                 fps_name,
                 fps_state,
@@ -1079,8 +1086,9 @@ class OAMSManager:
             )
             if retry_success:
 
-                return True, retry_message
-            if retry_message:
+                success = True
+                message = retry_message
+            elif retry_message is not None:
 
                 message = retry_message
 
