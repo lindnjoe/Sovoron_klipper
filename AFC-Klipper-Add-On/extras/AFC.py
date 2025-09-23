@@ -1859,44 +1859,91 @@ class afc:
         """
         self._cmd_AFC_M109(gcmd, wait=False)
 
+    def _get_afc_extruder_for_tool(self, tool_extruder):
+        """Return the AFC extruder wrapper for a given toolhead extruder."""
+        if tool_extruder is None:
+            return None
+
+        for afc_extruder in self.tools.values():
+            if getattr(afc_extruder, "toolhead_extruder", None) is tool_extruder:
+                return afc_extruder
+
+        return None
+
     _cmd_AFC_M109_help = "Set extruder temperature and wait for it to reach the target"
     def _cmd_AFC_M109(self, gcmd, wait=True):
         """
         This function sets the temperature of the specified extruder and waits for it to reach the target temperature.
-        Supports T (tool), S (temp), and D (deadband).
+        Supports T (tool), S (temp), and D (deadband). If D is omitted the configured
+        deadband for the addressed AFC extruder is used.
         """
         toolnum  = gcmd.get_int('T', None, minval=0)
         temp     = gcmd.get_float('S', 0.0)
         deadband = gcmd.get_float('D', None)
 
+        afc_extruder = None
         if toolnum is not None:
             map = "T{}".format(toolnum)
             lane = self.function.get_lane_by_map(map)
-            if lane is not None:
-                extruder = lane.extruder_obj
-                self.logger.debug("Setting temperature for {} to {}".format(lane.extruder_obj, temp))
-                if extruder is None:
-                    self.logger.error("extruder not configured for T{}".format(toolnum))
-                    return
-            else:
+            if lane is None:
                 self.logger.error("extruder not configured for T{}".format(toolnum))
                 return
+
+            afc_extruder = lane.extruder_obj
+            if afc_extruder is None:
+                self.logger.error("extruder not configured for T{}".format(toolnum))
+                return
+
+            tool_extruder = afc_extruder.toolhead_extruder
+            if tool_extruder is None:
+                self.logger.error("toolhead extruder missing for T{}".format(toolnum))
+                return
+
+            self.logger.debug("Setting temperature for {} to {}".format(afc_extruder, temp))
         else:
-            extruder = self.toolhead.get_extruder()
+            tool_extruder = self.toolhead.get_extruder()
+            afc_extruder = self._get_afc_extruder_for_tool(tool_extruder)
 
-        pheaters = self.printer.lookup_object('heaters')
-        heater = extruder.get_heater()
-        pheaters.set_temperature(heater, temp, False)  # Always set temp, don't wait yet
-
-        # If deadband is specified, wait for temp within tolerance
-        if wait and deadband is not None and temp > 0:
-            self._wait_for_temp_within_tolerance(heater, temp, deadband)
+        if tool_extruder is None:
+            self.logger.error("Unable to resolve toolhead extruder for M109 command")
             return
 
-        # Default: wait if needed
-        current_temp = heater.get_temp(self.reactor.monotonic())[0]
-        should_wait = wait and abs(current_temp - temp) > self.temp_wait_tolerance
-        pheaters.set_temperature(heater, temp, should_wait)
+        pheaters = self.printer.lookup_object('heaters')
+        heater = tool_extruder.get_heater()
+
+        eventtime = self.reactor.monotonic()
+        current_temp = heater.get_temp(eventtime)[0]
+
+        # Decide how we should wait for temperature stability
+        wait_tolerance = None
+        if wait and temp > 0:
+            if deadband is not None:
+                wait_tolerance = deadband
+            elif afc_extruder is not None:
+                wait_tolerance = getattr(afc_extruder, "deadband", None)
+
+        use_tolerance_wait = (
+            wait
+            and temp > 0
+            and wait_tolerance is not None
+            and wait_tolerance > 0
+            and abs(current_temp - temp) > wait_tolerance
+        )
+
+        should_wait_default = False
+        if wait and not use_tolerance_wait:
+            if wait_tolerance is not None and wait_tolerance > 0:
+                should_wait_default = abs(current_temp - temp) > wait_tolerance
+            else:
+                default_tolerance = self.temp_wait_tolerance if self.temp_wait_tolerance is not None else 0.0
+                should_wait_default = abs(current_temp - temp) > default_tolerance
+
+        # Always set the requested temperature first
+        pheaters.set_temperature(heater, temp, should_wait_default)
+
+        # When a tolerance is provided, wait manually for the temperature window
+        if use_tolerance_wait:
+            self._wait_for_temp_within_tolerance(heater, temp, wait_tolerance)
 
     def _heat_next_extruder(self, wait=True):
         """
@@ -1934,14 +1981,12 @@ class afc:
         return next_heater, set_temp
 
     def _wait_for_temp_within_tolerance(self, heater, target_temp, tolerance=20):
-        """
-        Waits until the heater's temperature is within the specified tolerance.
-        """
-        if tolerance is None or target_temp <= 0:
+        """Wait until the heater temperature is within ``tolerance`` of ``target_temp``."""
+        if tolerance is None or tolerance <= 0 or target_temp <= 0:
             return
 
-        min_temp = target_temp - (tolerance / 2)
-        max_temp = target_temp + (tolerance / 2)
+        min_temp = target_temp - tolerance
+        max_temp = target_temp + tolerance
 
         reactor = self.printer.get_reactor()
         eventtime = reactor.monotonic()
