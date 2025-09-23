@@ -19,13 +19,30 @@ ENCODER_SAMPLES = 2  # Number of encoder samples to collect
 MIN_ENCODER_DIFF = 1  # Minimum encoder difference to consider movement
 FILAMENT_PATH_LENGTH_FACTOR = 1.14  # Factor for calculating filament path traversal
 MONITOR_ENCODER_LOADING_SPEED_AFTER = 2.0  # seconds
-MONITOR_ENCODER_PERIOD = 2.0 # seconds
+MONITOR_ENCODER_PERIOD = 2.0  # seconds
 MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0  # seconds
 AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout triggers
 
 UNLOAD_RETRY_NUDGE_TIME = 0.5  # seconds to nudge filament forward before retry
 UNLOAD_RETRY_EXTRUDER_DISTANCE_MM = 5.0  # mm to retract with the extruder during unload retries
 UNLOAD_RETRY_EXTRUDER_SPEED = 20.0  # mm/s for the unload retry extruder assist
+
+
+# Clog detection defaults
+CLOG_SENSITIVITY_DEFAULT = 5.0
+CLOG_SENSITIVITY_MIN = 0.0
+CLOG_SENSITIVITY_MAX = 10.0
+CLOG_MONITOR_PERIOD = 1.0  # seconds between clog samples while printing
+CLOG_WINDOW_MIN_MM = 12.0
+CLOG_WINDOW_MAX_MM = 48.0
+CLOG_ENCODER_DELTA_MIN = 3.0
+CLOG_ENCODER_DELTA_MAX = 15.0
+CLOG_PRESSURE_OFFSET_MIN = 0.10
+CLOG_PRESSURE_OFFSET_MAX = 0.30
+CLOG_DWELL_MIN = 4.0
+CLOG_DWELL_MAX = 14.0
+CLOG_RETRACTION_TOLERANCE_MM = 0.8
+
 
 
 # Default retry behaviour for unload recovery
@@ -250,6 +267,7 @@ class FPSState:
 
         # Motion monitoring
         self.encoder_samples = deque(maxlen=ENCODER_SAMPLES)  # Recent encoder readings
+        self.encoder: Optional[float] = None
 
         # Follower state
         self.following: bool = False  # Whether follower mode is active
@@ -260,11 +278,52 @@ class FPSState:
         self.afc_delegation_active: bool = False
         self.afc_delegation_until: float = 0.0
 
-        
+        # Clog detection tracker
+        self.clog_extruder_start: Optional[float] = None
+        self.clog_encoder_start: Optional[float] = None
+        self.clog_last_extruder: Optional[float] = None
+        self.clog_last_encoder: Optional[float] = None
+        self.clog_extruder_delta: float = 0.0
+        self.clog_encoder_delta: float = 0.0
+        self.clog_max_pressure: float = 0.0
+        self.clog_start_time: Optional[float] = None
+
+        self.reset_clog_tracker()
+
+
     def reset_runout_positions(self) -> None:
         """Clear runout position tracking."""
         self.runout_position = None
         self.runout_after_position = None
+        self.reset_clog_tracker()
+
+    def reset_clog_tracker(self) -> None:
+        """Reset clog detection accumulation state."""
+        self.clog_extruder_start = None
+        self.clog_encoder_start = None
+        self.clog_last_extruder = None
+        self.clog_last_encoder = None
+        self.clog_extruder_delta = 0.0
+        self.clog_encoder_delta = 0.0
+        self.clog_max_pressure = 0.0
+        self.clog_start_time = None
+
+    def prime_clog_tracker(
+        self,
+        extruder_position: float,
+        encoder_position: float,
+        timestamp: float,
+        pressure: float,
+    ) -> None:
+        """Initialize clog tracking with the current motion sample."""
+        self.clog_extruder_start = extruder_position
+        self.clog_encoder_start = encoder_position
+        self.clog_last_extruder = extruder_position
+        self.clog_last_encoder = encoder_position
+        self.clog_extruder_delta = 0.0
+        self.clog_encoder_delta = 0.0
+        self.clog_max_pressure = max(pressure, 0.0)
+        self.clog_start_time = timestamp
 
     def __repr__(self) -> str:
         return f"FPSState(state_name={self.state_name}, current_group={self.current_group}, current_oams={self.current_oams}, current_spool_idx={self.current_spool_idx})"
@@ -334,16 +393,90 @@ class OAMSManager:
             25.0,
             minval=0.1,
         )
-        globals()["UNLOAD_RETRY_EXTRUDER_DISTANCE_MM"] = config.getfloat(
+
+        self.unload_retry_extruder_distance_mm: float = config.getfloat(
+
             "unload_retry_extruder_distance_mm",
             UNLOAD_RETRY_EXTRUDER_DISTANCE_MM,
             minval=0.0,
         )
-        globals()["UNLOAD_RETRY_EXTRUDER_SPEED"] = config.getfloat(
+
+        self.unload_retry_extruder_speed: float = config.getfloat(
+
             "unload_retry_extruder_speed",
             UNLOAD_RETRY_EXTRUDER_SPEED,
             minval=0.0,
         )
+
+
+        raw_clog_sensitivity = config.getfloat(
+            "clog_sensitivity",
+            CLOG_SENSITIVITY_DEFAULT,
+        )
+        clamped_sensitivity = max(
+            CLOG_SENSITIVITY_MIN,
+            min(raw_clog_sensitivity, CLOG_SENSITIVITY_MAX),
+        )
+        if clamped_sensitivity != raw_clog_sensitivity:
+            logging.warning(
+                "OAMS: clog_sensitivity %.2f outside %.2f-%.2f, clamped to %.2f",
+                raw_clog_sensitivity,
+                CLOG_SENSITIVITY_MIN,
+                CLOG_SENSITIVITY_MAX,
+                clamped_sensitivity,
+            )
+
+        self.clog_sensitivity: float = clamped_sensitivity
+        self.clog_detection_enabled: bool = self.clog_sensitivity > CLOG_SENSITIVITY_MIN
+        self.clog_monitor_period: float = config.getfloat(
+            "clog_monitor_period",
+            CLOG_MONITOR_PERIOD,
+            minval=0.1,
+        )
+
+        if CLOG_SENSITIVITY_MAX > CLOG_SENSITIVITY_MIN:
+            sensitivity_scale = (
+                (self.clog_sensitivity - CLOG_SENSITIVITY_MIN)
+                / (CLOG_SENSITIVITY_MAX - CLOG_SENSITIVITY_MIN)
+            )
+        else:
+            sensitivity_scale = 0.0
+
+        window_span = max(CLOG_WINDOW_MAX_MM - CLOG_WINDOW_MIN_MM, 0.0)
+        encoder_span = max(CLOG_ENCODER_DELTA_MAX - CLOG_ENCODER_DELTA_MIN, 0.0)
+        pressure_span = max(CLOG_PRESSURE_OFFSET_MAX - CLOG_PRESSURE_OFFSET_MIN, 0.0)
+        dwell_span = max(CLOG_DWELL_MAX - CLOG_DWELL_MIN, 0.0)
+
+        self.clog_extruder_window_mm: float = max(
+            0.0,
+            CLOG_WINDOW_MAX_MM - sensitivity_scale * window_span,
+        )
+        self.clog_encoder_delta_limit: float = max(
+            0.0,
+            CLOG_ENCODER_DELTA_MAX - sensitivity_scale * encoder_span,
+        )
+        self.clog_pressure_offset: float = max(
+            0.0,
+            CLOG_PRESSURE_OFFSET_MAX - sensitivity_scale * pressure_span,
+        )
+        self.clog_dwell_time: float = max(
+            0.0,
+            CLOG_DWELL_MAX - sensitivity_scale * dwell_span,
+        )
+        self.clog_retraction_tolerance_mm: float = max(
+            0.0,
+            CLOG_RETRACTION_TOLERANCE_MM,
+        )
+
+        logging.debug(
+            "OAMS: clog detection sensitivity %.2f -> window %.1fmm, encoder slack %.1f, pressure offset %.2f, dwell %.1fs",
+            self.clog_sensitivity,
+            self.clog_extruder_window_mm,
+            self.clog_encoder_delta_limit,
+            self.clog_pressure_offset,
+            self.clog_dwell_time,
+        )
+
 
         # Cached mappings
         self.group_to_fps: Dict[str, str] = {}
@@ -523,6 +656,7 @@ class OAMSManager:
             self.stop_monitors()
         for _, fps_state in self.current_state.fps_state.items():
             fps_state.encoder_samples.clear()
+            fps_state.reset_clog_tracker()
         for _, oam in self.oams.items():
             oam.clear_errors()
         self.determine_state()
@@ -971,6 +1105,7 @@ class OAMSManager:
                 getattr(oams, "name", "unknown"),
             )
         fps_state.encoder_samples.clear()
+        fps_state.reset_clog_tracker()
 
     def _nudge_filament_before_retry(self, oams, direction: int = 1,
 
@@ -1008,14 +1143,22 @@ class OAMSManager:
                         getattr(oams, "name", "unknown"),
                     )
 
-    def _assist_retry_with_extruder(self, fps_name: str, oams) -> None:
-        """Retract filament with the extruder prior to an unload retry."""
 
-        distance = float(globals().get("UNLOAD_RETRY_EXTRUDER_DISTANCE_MM", 0.0) or 0.0)
-        speed = float(globals().get("UNLOAD_RETRY_EXTRUDER_SPEED", 0.0) or 0.0)
+    def _assist_retry_with_extruder(
+        self, fps_name: str, oams
+    ) -> Optional[Callable[[], None]]:
+        """Retract filament with the extruder prior to an unload retry.
+
+        Returns a callback that will wait for the queued move to finish, or
+        ``None`` if no assist move was scheduled.
+        """
+
+        distance = float(self.unload_retry_extruder_distance_mm or 0.0)
+        speed = float(self.unload_retry_extruder_speed or 0.0)
 
         if distance <= 0.0 or speed <= 0.0:
-            return
+            return None
+
 
         fps = self.fpss.get(fps_name)
         if fps is None:
@@ -1023,7 +1166,9 @@ class OAMSManager:
                 "OAMS: Skipping unload retry extruder assist; FPS %s not available",
                 fps_name,
             )
-            return
+
+            return None
+
 
         extruder = getattr(fps, "extruder", None)
         if extruder is None:
@@ -1031,7 +1176,9 @@ class OAMSManager:
                 "OAMS: Skipping unload retry extruder assist for %s; no extruder bound",
                 fps_name,
             )
-            return
+
+            return None
+
 
         heater = None
         get_heater = getattr(extruder, "get_heater", None)
@@ -1043,7 +1190,9 @@ class OAMSManager:
                     "OAMS: Unable to query heater for extruder assist on %s",
                     fps_name,
                 )
-                return
+
+                return None
+
         if heater is None:
             heater = getattr(extruder, "heater", None)
 
@@ -1052,7 +1201,9 @@ class OAMSManager:
                 "OAMS: Skipping unload retry extruder assist for %s; heater below minimum extrude temp",
                 fps_name,
             )
-            return
+
+            return None
+
 
         try:
             gcode_move = self.printer.lookup_object("gcode_move")
@@ -1062,13 +1213,17 @@ class OAMSManager:
                 "OAMS: Skipping unload retry extruder assist for %s; gcode_move/toolhead unavailable",
                 fps_name,
             )
-            return
+
+            return None
+
         if gcode_move is None or toolhead is None:
             logging.debug(
                 "OAMS: Skipping unload retry extruder assist for %s; gcode_move/toolhead unavailable",
                 fps_name,
             )
-            return
+
+            return None
+
 
         last_position = getattr(gcode_move, "last_position", None)
         if not isinstance(last_position, (list, tuple)) or len(last_position) < 4:
@@ -1076,13 +1231,17 @@ class OAMSManager:
                 "OAMS: Skipping unload retry extruder assist for %s; invalid gcode position",
                 fps_name,
             )
-            return
+
+            return None
 
         new_position = list(last_position)
-        new_position[3] -= distance
+        extrude_factor = getattr(gcode_move, "extrude_factor", 1.0) or 1.0
+        new_position[3] -= distance * extrude_factor
 
         follower_enabled = False
         move_queued = False
+        wait_callback: Optional[Callable[[], None]] = None
+
         extruder_name = getattr(extruder, "name", getattr(fps, "extruder_name", "extruder"))
         try:
             logging.info(
@@ -1097,15 +1256,24 @@ class OAMSManager:
             gcode_move.move_with_transform(new_position, speed)
             gcode_move.last_position = new_position
             move_queued = True
+
+            maybe_wait = getattr(toolhead, "wait_moves", None)
+            if callable(maybe_wait):
+                def wait_and_sync(maybe_wait=maybe_wait, gcode_move=gcode_move):
+                    try:
+                        maybe_wait()
+                    finally:
+                        try:
+                            gcode_move.reset_last_position()
+                        except Exception:
+                            logging.exception(
+                                "OAMS: Failed to reset last position after extruder assist on %s",
+                                fps_name,
+                            )
+
+                wait_callback = wait_and_sync
         finally:
-            if move_queued:
-                try:
-                    toolhead.wait_moves()
-                except Exception:
-                    logging.exception(
-                        "OAMS: Error while waiting for extruder assist moves to finish for %s",
-                        fps_name,
-                    )
+
             if follower_enabled:
                 try:
                     oams.set_oams_follower(0, 0)
@@ -1114,6 +1282,10 @@ class OAMSManager:
                         "OAMS: Failed to disable follower after extruder assist on %s",
                         getattr(oams, "name", "unknown"),
                     )
+
+
+        return wait_callback if move_queued else None
+
 
     def _recover_unload_failure(
         self,
@@ -1137,8 +1309,11 @@ class OAMSManager:
 
         self._clear_error_state_for_retry(fps_state, oams)
         self._nudge_filament_before_retry(oams)
+
+        wait_for_assist: Optional[Callable[[], None]] = None
         try:
-            self._assist_retry_with_extruder(fps_name, oams)
+            wait_for_assist = self._assist_retry_with_extruder(fps_name, oams)
+
         except Exception:
             logging.exception(
                 "OAMS: Extruder assist failed prior to unload retry for %s on %s",
@@ -1149,7 +1324,18 @@ class OAMSManager:
         fps_state.encoder = oams.encoder_clicks
         fps_state.since = self.reactor.monotonic()
 
-        retry_success, retry_message = oams.unload_spool()
+        try:
+            retry_success, retry_message = oams.unload_spool()
+        finally:
+            if wait_for_assist is not None:
+                try:
+                    wait_for_assist()
+                except Exception:
+                    logging.exception(
+                        "OAMS: Error while waiting for extruder assist moves to finish for %s",
+                        fps_name,
+                    )
+
         if retry_success:
             logging.info(
                 "OAMS: Automatic unload retry succeeded on %s for %s",
@@ -1192,6 +1378,7 @@ class OAMSManager:
             fps_state.current_spool_idx = None
             fps_state.since = self.reactor.monotonic()
             self.current_group = None
+            fps_state.reset_clog_tracker()
             return True, "Spool already unloaded"
 
         fps_state.state_name = FPSLoadState.UNLOADING
@@ -1227,6 +1414,7 @@ class OAMSManager:
             fps_state.current_group = None
             fps_state.current_spool_idx = None
             self.current_group = None
+            fps_state.reset_clog_tracker()
             return True, message
 
         fps_state.state_name = FPSLoadState.LOADED
@@ -1332,12 +1520,14 @@ class OAMSManager:
                 fps_state.following = False
                 fps_state.direction = 1
                 self.current_group = group_name
+                fps_state.reset_clog_tracker()
                 return True, message
 
             fps_state.state_name = FPSLoadState.UNLOADED
             fps_state.current_group = None
             fps_state.current_spool_idx = None
             fps_state.current_oams = None
+            fps_state.reset_clog_tracker()
             return False, message
 
         return False, f"No spool available for group {group_name}"
@@ -1435,15 +1625,176 @@ class OAMSManager:
                     return self.printer.get_reactor().NEVER
             return eventtime + MONITOR_ENCODER_PERIOD
         return partial(_monitor_load_speed, self)
-    
+
+
+    def _monitor_clog_for_fps(self, fps_name: str):
+        idle_timeout = self.printer.lookup_object("idle_timeout")
+
+        def _monitor_clog(self, eventtime):
+            if not self.clog_detection_enabled:
+                return self.printer.get_reactor().NEVER
+
+            fps_state = self.current_state.fps_state.get(fps_name)
+            fps = self.fpss.get(fps_name)
+            if fps_state is None or fps is None:
+                return eventtime + self.clog_monitor_period
+
+            status = idle_timeout.get_status(eventtime)
+            is_printing = status.get("state") == "Printing"
+            if not is_printing or fps_state.state_name != FPSLoadState.LOADED:
+                fps_state.reset_clog_tracker()
+                return eventtime + self.clog_monitor_period
+
+            if fps_state.current_oams is None:
+                fps_state.reset_clog_tracker()
+                return eventtime + self.clog_monitor_period
+
+            oams = self.oams.get(fps_state.current_oams)
+            if oams is None:
+                fps_state.reset_clog_tracker()
+                return eventtime + self.clog_monitor_period
+
+            extruder = getattr(fps, "extruder", None)
+            extruder_position = getattr(extruder, "last_position", None) if extruder else None
+            if extruder_position is None:
+                fps_state.reset_clog_tracker()
+                return eventtime + self.clog_monitor_period
+
+            encoder_position_raw = getattr(oams, "encoder_clicks", None)
+            if encoder_position_raw is None:
+                fps_state.reset_clog_tracker()
+                return eventtime + self.clog_monitor_period
+
+            encoder_position = float(encoder_position_raw)
+            now = self.reactor.monotonic()
+            pressure = float(
+                getattr(oams, "fps_value", getattr(fps, "fps_value", 0.0)) or 0.0
+            )
+
+            if fps_state.clog_extruder_start is None:
+                fps_state.prime_clog_tracker(
+                    float(extruder_position),
+                    encoder_position,
+                    now,
+                    pressure,
+                )
+                return eventtime + self.clog_monitor_period
+
+            last_extruder = fps_state.clog_last_extruder
+            if (
+                last_extruder is not None
+                and float(extruder_position)
+                < last_extruder - self.clog_retraction_tolerance_mm
+            ):
+                fps_state.reset_clog_tracker()
+                fps_state.prime_clog_tracker(
+                    float(extruder_position),
+                    encoder_position,
+                    now,
+                    pressure,
+                )
+                return eventtime + self.clog_monitor_period
+
+            extruder_delta = float(extruder_position) - float(fps_state.clog_extruder_start)
+            if extruder_delta < 0.0:
+                fps_state.reset_clog_tracker()
+                fps_state.prime_clog_tracker(
+                    float(extruder_position),
+                    encoder_position,
+                    now,
+                    pressure,
+                )
+                return eventtime + self.clog_monitor_period
+
+            encoder_delta = encoder_position - float(fps_state.clog_encoder_start)
+            if encoder_delta < -self.clog_encoder_delta_limit:
+                fps_state.reset_clog_tracker()
+                fps_state.prime_clog_tracker(
+                    float(extruder_position),
+                    encoder_position,
+                    now,
+                    pressure,
+                )
+                return eventtime + self.clog_monitor_period
+
+            fps_state.clog_extruder_delta = extruder_delta
+            fps_state.clog_encoder_delta = encoder_delta
+            fps_state.clog_max_pressure = max(fps_state.clog_max_pressure, pressure)
+            fps_state.clog_last_extruder = float(extruder_position)
+            fps_state.clog_last_encoder = encoder_position
+
+            if extruder_delta < self.clog_extruder_window_mm:
+                return eventtime + self.clog_monitor_period
+
+            start_time = fps_state.clog_start_time or now
+            if now - start_time < self.clog_dwell_time:
+                return eventtime + self.clog_monitor_period
+
+            target_pressure = getattr(oams, "fps_target", None)
+            if target_pressure is None:
+                target_pressure = getattr(fps, "fps_target", None)
+            if target_pressure is None:
+                target_pressure = getattr(fps, "_set_point", 0.5)
+            pressure_floor = max(0.0, min(1.0, float(target_pressure) + self.clog_pressure_offset))
+
+            if fps_state.clog_max_pressure < pressure_floor:
+                return eventtime + self.clog_monitor_period
+
+            if abs(encoder_delta) > self.clog_encoder_delta_limit:
+                return eventtime + self.clog_monitor_period
+
+            logging.error(
+                "OAMS: Clog suspected on %s after %.1fmm extruder advance (encoder %.1f, pressure %.2f)",
+                fps_name,
+                extruder_delta,
+                encoder_delta,
+                fps_state.clog_max_pressure,
+            )
+
+            if fps_state.current_spool_idx is not None:
+                try:
+                    oams.set_led_error(fps_state.current_spool_idx, 1)
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to set error LED for clog on %s spool %s",
+                        getattr(oams, "name", fps_state.current_oams),
+                        fps_state.current_spool_idx,
+                    )
+
+            self._pause_printer_message(
+                (
+                    "Clog suspected on %s: extruder advanced %.1fmm while encoder moved %.1f "
+                    "counts at %.2f pressure"
+                )
+                % (
+                    fps_name,
+                    extruder_delta,
+                    encoder_delta,
+                    fps_state.clog_max_pressure,
+                )
+            )
+            fps_state.reset_clog_tracker()
+            self.stop_monitors()
+            return self.printer.get_reactor().NEVER
+
+        return partial(_monitor_clog, self)
+
 
     def start_monitors(self):
         self.monitor_timers = []
         self.runout_monitors = {}
         reactor = self.printer.get_reactor()
         for (fps_name, fps_state) in self.current_state.fps_state.items():
+            fps_state.reset_clog_tracker()
             self.monitor_timers.append(reactor.register_timer(self._monitor_unload_speed_for_fps(fps_name), reactor.NOW))
             self.monitor_timers.append(reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), reactor.NOW))
+            if self.clog_detection_enabled:
+                self.monitor_timers.append(
+                    reactor.register_timer(
+                        self._monitor_clog_for_fps(fps_name),
+                        reactor.NOW,
+                    )
+                )
 
             def _reload_callback(fps_name=fps_name, fps_state=fps_state):
                 monitor = self.runout_monitors.get(fps_name)
