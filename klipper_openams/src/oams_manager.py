@@ -1242,6 +1242,19 @@ class OAMSManager:
         move_queued = False
         wait_callback: Optional[Callable[[], None]] = None
 
+        def disable_follower():
+            nonlocal follower_enabled
+            if follower_enabled:
+                try:
+                    oams.set_oams_follower(0, 0)
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to disable follower after extruder assist on %s",
+                        getattr(oams, "name", "unknown"),
+                    )
+                finally:
+                    follower_enabled = False
+
         extruder_name = getattr(extruder, "name", getattr(fps, "extruder_name", "extruder"))
         try:
             logging.info(
@@ -1258,30 +1271,28 @@ class OAMSManager:
             move_queued = True
 
             maybe_wait = getattr(toolhead, "wait_moves", None)
-            if callable(maybe_wait):
-                def wait_and_sync(maybe_wait=maybe_wait, gcode_move=gcode_move):
-                    try:
-                        maybe_wait()
-                    finally:
-                        try:
-                            gcode_move.reset_last_position()
-                        except Exception:
-                            logging.exception(
-                                "OAMS: Failed to reset last position after extruder assist on %s",
-                                fps_name,
-                            )
 
-                wait_callback = wait_and_sync
-        finally:
-
-            if follower_enabled:
+            def wait_and_sync(
+                maybe_wait=maybe_wait, gcode_move=gcode_move, fps_name=fps_name
+            ):
                 try:
-                    oams.set_oams_follower(0, 0)
-                except Exception:
-                    logging.exception(
-                        "OAMS: Failed to disable follower after extruder assist on %s",
-                        getattr(oams, "name", "unknown"),
-                    )
+                    if callable(maybe_wait):
+                        maybe_wait()
+                finally:
+                    try:
+                        gcode_move.reset_last_position()
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to reset last position after extruder assist on %s",
+                            fps_name,
+                        )
+                    finally:
+                        disable_follower()
+
+            wait_callback = wait_and_sync
+        finally:
+            if not move_queued:
+                disable_follower()
 
 
         return wait_callback if move_queued else None
