@@ -27,6 +27,7 @@ UNLOAD_RETRY_NUDGE_TIME = 0.5  # seconds to nudge filament forward before retry
 UNLOAD_RETRY_EXTRUDER_DISTANCE_MM = 5.0  # mm to retract with the extruder during unload retries
 UNLOAD_RETRY_EXTRUDER_SPEED = 20.0  # mm/s for the unload retry extruder assist
 
+
 # Clog detection defaults
 CLOG_SENSITIVITY_DEFAULT = 5.0
 CLOG_SENSITIVITY_MIN = 0.0
@@ -41,6 +42,7 @@ CLOG_PRESSURE_OFFSET_MAX = 0.30
 CLOG_DWELL_MIN = 4.0
 CLOG_DWELL_MAX = 14.0
 CLOG_RETRACTION_TOLERANCE_MM = 0.8
+
 
 
 # Default retry behaviour for unload recovery
@@ -391,16 +393,21 @@ class OAMSManager:
             25.0,
             minval=0.1,
         )
+
         self.unload_retry_extruder_distance_mm: float = config.getfloat(
+
             "unload_retry_extruder_distance_mm",
             UNLOAD_RETRY_EXTRUDER_DISTANCE_MM,
             minval=0.0,
         )
+
         self.unload_retry_extruder_speed: float = config.getfloat(
+
             "unload_retry_extruder_speed",
             UNLOAD_RETRY_EXTRUDER_SPEED,
             minval=0.0,
         )
+
 
         raw_clog_sensitivity = config.getfloat(
             "clog_sensitivity",
@@ -469,6 +476,7 @@ class OAMSManager:
             self.clog_pressure_offset,
             self.clog_dwell_time,
         )
+
 
         # Cached mappings
         self.group_to_fps: Dict[str, str] = {}
@@ -1135,6 +1143,7 @@ class OAMSManager:
                         getattr(oams, "name", "unknown"),
                     )
 
+
     def _assist_retry_with_extruder(
         self, fps_name: str, oams
     ) -> Optional[Callable[[], None]]:
@@ -1150,13 +1159,16 @@ class OAMSManager:
         if distance <= 0.0 or speed <= 0.0:
             return None
 
+
         fps = self.fpss.get(fps_name)
         if fps is None:
             logging.debug(
                 "OAMS: Skipping unload retry extruder assist; FPS %s not available",
                 fps_name,
             )
+
             return None
+
 
         extruder = getattr(fps, "extruder", None)
         if extruder is None:
@@ -1164,7 +1176,9 @@ class OAMSManager:
                 "OAMS: Skipping unload retry extruder assist for %s; no extruder bound",
                 fps_name,
             )
+
             return None
+
 
         heater = None
         get_heater = getattr(extruder, "get_heater", None)
@@ -1176,7 +1190,9 @@ class OAMSManager:
                     "OAMS: Unable to query heater for extruder assist on %s",
                     fps_name,
                 )
+
                 return None
+
         if heater is None:
             heater = getattr(extruder, "heater", None)
 
@@ -1185,7 +1201,9 @@ class OAMSManager:
                 "OAMS: Skipping unload retry extruder assist for %s; heater below minimum extrude temp",
                 fps_name,
             )
+
             return None
+
 
         try:
             gcode_move = self.printer.lookup_object("gcode_move")
@@ -1195,13 +1213,17 @@ class OAMSManager:
                 "OAMS: Skipping unload retry extruder assist for %s; gcode_move/toolhead unavailable",
                 fps_name,
             )
+
             return None
+
         if gcode_move is None or toolhead is None:
             logging.debug(
                 "OAMS: Skipping unload retry extruder assist for %s; gcode_move/toolhead unavailable",
                 fps_name,
             )
+
             return None
+
 
         last_position = getattr(gcode_move, "last_position", None)
         if not isinstance(last_position, (list, tuple)) or len(last_position) < 4:
@@ -1209,6 +1231,7 @@ class OAMSManager:
                 "OAMS: Skipping unload retry extruder assist for %s; invalid gcode position",
                 fps_name,
             )
+
             return None
 
         new_position = list(last_position)
@@ -1218,6 +1241,7 @@ class OAMSManager:
         follower_enabled = False
         move_queued = False
         wait_callback: Optional[Callable[[], None]] = None
+
         extruder_name = getattr(extruder, "name", getattr(fps, "extruder_name", "extruder"))
         try:
             logging.info(
@@ -1232,6 +1256,7 @@ class OAMSManager:
             gcode_move.move_with_transform(new_position, speed)
             gcode_move.last_position = new_position
             move_queued = True
+
             maybe_wait = getattr(toolhead, "wait_moves", None)
             if callable(maybe_wait):
                 def wait_and_sync(maybe_wait=maybe_wait, gcode_move=gcode_move):
@@ -1248,6 +1273,7 @@ class OAMSManager:
 
                 wait_callback = wait_and_sync
         finally:
+
             if follower_enabled:
                 try:
                     oams.set_oams_follower(0, 0)
@@ -1257,7 +1283,9 @@ class OAMSManager:
                         getattr(oams, "name", "unknown"),
                     )
 
+
         return wait_callback if move_queued else None
+
 
     def _recover_unload_failure(
         self,
@@ -1281,9 +1309,11 @@ class OAMSManager:
 
         self._clear_error_state_for_retry(fps_state, oams)
         self._nudge_filament_before_retry(oams)
+
         wait_for_assist: Optional[Callable[[], None]] = None
         try:
             wait_for_assist = self._assist_retry_with_extruder(fps_name, oams)
+
         except Exception:
             logging.exception(
                 "OAMS: Extruder assist failed prior to unload retry for %s on %s",
