@@ -24,6 +24,8 @@ MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0  # seconds
 AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout triggers
 
 UNLOAD_RETRY_NUDGE_TIME = 0.5  # seconds to nudge filament forward before retry
+UNLOAD_RETRY_EXTRUDER_DISTANCE_MM = 5.0  # mm to retract with the extruder during unload retries
+UNLOAD_RETRY_EXTRUDER_SPEED = 20.0  # mm/s for the unload retry extruder assist
 
 
 # Default retry behaviour for unload recovery
@@ -331,6 +333,16 @@ class OAMSManager:
             "unload_retry_push_speed",
             25.0,
             minval=0.1,
+        )
+        globals()["UNLOAD_RETRY_EXTRUDER_DISTANCE_MM"] = config.getfloat(
+            "unload_retry_extruder_distance_mm",
+            UNLOAD_RETRY_EXTRUDER_DISTANCE_MM,
+            minval=0.0,
+        )
+        globals()["UNLOAD_RETRY_EXTRUDER_SPEED"] = config.getfloat(
+            "unload_retry_extruder_speed",
+            UNLOAD_RETRY_EXTRUDER_SPEED,
+            minval=0.0,
         )
 
         # Cached mappings
@@ -996,6 +1008,113 @@ class OAMSManager:
                         getattr(oams, "name", "unknown"),
                     )
 
+    def _assist_retry_with_extruder(self, fps_name: str, oams) -> None:
+        """Retract filament with the extruder prior to an unload retry."""
+
+        distance = float(globals().get("UNLOAD_RETRY_EXTRUDER_DISTANCE_MM", 0.0) or 0.0)
+        speed = float(globals().get("UNLOAD_RETRY_EXTRUDER_SPEED", 0.0) or 0.0)
+
+        if distance <= 0.0 or speed <= 0.0:
+            return
+
+        fps = self.fpss.get(fps_name)
+        if fps is None:
+            logging.debug(
+                "OAMS: Skipping unload retry extruder assist; FPS %s not available",
+                fps_name,
+            )
+            return
+
+        extruder = getattr(fps, "extruder", None)
+        if extruder is None:
+            logging.debug(
+                "OAMS: Skipping unload retry extruder assist for %s; no extruder bound",
+                fps_name,
+            )
+            return
+
+        heater = None
+        get_heater = getattr(extruder, "get_heater", None)
+        if callable(get_heater):
+            try:
+                heater = get_heater()
+            except Exception:
+                logging.exception(
+                    "OAMS: Unable to query heater for extruder assist on %s",
+                    fps_name,
+                )
+                return
+        if heater is None:
+            heater = getattr(extruder, "heater", None)
+
+        if heater is not None and not getattr(heater, "can_extrude", True):
+            logging.info(
+                "OAMS: Skipping unload retry extruder assist for %s; heater below minimum extrude temp",
+                fps_name,
+            )
+            return
+
+        try:
+            gcode_move = self.printer.lookup_object("gcode_move")
+            toolhead = self.printer.lookup_object("toolhead")
+        except Exception:
+            logging.debug(
+                "OAMS: Skipping unload retry extruder assist for %s; gcode_move/toolhead unavailable",
+                fps_name,
+            )
+            return
+        if gcode_move is None or toolhead is None:
+            logging.debug(
+                "OAMS: Skipping unload retry extruder assist for %s; gcode_move/toolhead unavailable",
+                fps_name,
+            )
+            return
+
+        last_position = getattr(gcode_move, "last_position", None)
+        if not isinstance(last_position, (list, tuple)) or len(last_position) < 4:
+            logging.debug(
+                "OAMS: Skipping unload retry extruder assist for %s; invalid gcode position",
+                fps_name,
+            )
+            return
+
+        new_position = list(last_position)
+        new_position[3] -= distance
+
+        follower_enabled = False
+        move_queued = False
+        extruder_name = getattr(extruder, "name", getattr(fps, "extruder_name", "extruder"))
+        try:
+            logging.info(
+                "OAMS: Assisting unload retry for %s by retracting %.3fmm on %s at %.3f mm/s",
+                fps_name,
+                distance,
+                extruder_name,
+                speed,
+            )
+            oams.set_oams_follower(1, 0)
+            follower_enabled = True
+            gcode_move.move_with_transform(new_position, speed)
+            gcode_move.last_position = new_position
+            move_queued = True
+        finally:
+            if move_queued:
+                try:
+                    toolhead.wait_moves()
+                except Exception:
+                    logging.exception(
+                        "OAMS: Error while waiting for extruder assist moves to finish for %s",
+                        fps_name,
+                    )
+            if follower_enabled:
+                try:
+                    oams.set_oams_follower(0, 0)
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to disable follower after extruder assist on %s",
+                        getattr(oams, "name", "unknown"),
+                    )
+
     def _recover_unload_failure(
         self,
         fps_name: str,
@@ -1018,6 +1137,14 @@ class OAMSManager:
 
         self._clear_error_state_for_retry(fps_state, oams)
         self._nudge_filament_before_retry(oams)
+        try:
+            self._assist_retry_with_extruder(fps_name, oams)
+        except Exception:
+            logging.exception(
+                "OAMS: Extruder assist failed prior to unload retry for %s on %s",
+                fps_name,
+                getattr(oams, "name", "unknown"),
+            )
 
         fps_state.encoder = oams.encoder_clicks
         fps_state.since = self.reactor.monotonic()
