@@ -1679,11 +1679,17 @@ class OAMSManager:
 
         fps_state = self.current_state.fps_state[fps_name]
 
+        attempted_locations: List[str] = []
+        last_failure_message: Optional[str] = None
+
         for (oam, bay_index) in self.filament_groups[group_name].bays:
             if not oam.is_bay_ready(bay_index):
                 continue
 
+            attempted_locations.append(f"{getattr(oam, 'name', 'unknown')} bay {bay_index}")
+
             fps_state.state_name = FPSLoadState.LOADING
+            fps_state.encoder_samples.clear()
             fps_state.encoder = oam.encoder_clicks
             fps_state.since = self.reactor.monotonic()
             fps_state.current_oams = oam.name
@@ -1700,15 +1706,62 @@ class OAMSManager:
                 fps_state.following = False
                 fps_state.direction = 1
                 self.current_group = group_name
+                fps_state.encoder_samples.clear()
                 fps_state.reset_clog_tracker()
                 return True, message
+
+            failure_reason = message or "Unknown load failure"
+            logging.warning(
+                "OAMS: Failed to load group %s from %s bay %s: %s",
+                group_name,
+                getattr(oam, "name", "unknown"),
+                bay_index,
+                failure_reason,
+            )
+
+            retry_success, retry_message = self._attempt_unload_retry(
+                fps_name,
+                fps_state,
+                oam,
+                message,
+            )
+            if retry_success:
+                logging.info(
+                    "OAMS: Cleared stalled load on %s bay %s before trying next bay",
+                    getattr(oam, "name", "unknown"),
+                    bay_index,
+                )
+            elif retry_message:
+                logging.warning(
+                    "OAMS: Automatic unload retry failed for %s bay %s: %s",
+                    getattr(oam, "name", "unknown"),
+                    bay_index,
+                    retry_message,
+                )
 
             fps_state.state_name = FPSLoadState.UNLOADED
             fps_state.current_group = None
             fps_state.current_spool_idx = None
             fps_state.current_oams = None
+            fps_state.following = False
+            fps_state.direction = 0
+            fps_state.encoder = None
+            fps_state.encoder_samples.clear()
             fps_state.reset_clog_tracker()
-            return False, message
+            fps_state.since = self.reactor.monotonic()
+            self.current_group = None
+
+            last_failure_message = failure_reason
+
+        if attempted_locations:
+            attempts_summary = ", ".join(attempted_locations)
+            detail = last_failure_message or "No detailed error provided"
+            final_message = (
+                f"All ready bays failed to load for group {group_name} after automatic retries "
+                f"(attempted: {attempts_summary}). Last error: {detail}"
+            )
+            logging.error("OAMS: %s", final_message)
+            return False, final_message
 
         return False, f"No spool available for group {group_name}"
 
