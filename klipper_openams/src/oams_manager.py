@@ -1365,6 +1365,175 @@ class OAMSManager:
         )
         return False, combined_message
 
+    def _abort_stalled_load_and_retry(self, fps_name: str, fps_state, oams) -> bool:
+        """Abort a stalled load attempt and schedule a retry for the same group."""
+
+        if oams is None:
+            logging.error("OAMS: Cannot abort stalled load on %s; no OAMS available", fps_name)
+            return False
+
+        spool_idx = fps_state.current_spool_idx
+        if spool_idx is None:
+            logging.error(
+                "OAMS: Cannot abort stalled load on %s; spool index is undefined",
+                fps_name,
+            )
+            return False
+
+        group_name: Optional[str] = None
+        for candidate_group, group in self.filament_groups.items():
+            for candidate_oam, candidate_bay in getattr(group, "bays", []):
+                if candidate_oam is oams and candidate_bay == spool_idx:
+                    group_name = candidate_group
+                    break
+            if group_name:
+                break
+
+        if group_name is None:
+            logging.error(
+                "OAMS: Unable to determine filament group for stalled load on %s spool %s",
+                fps_name,
+                spool_idx,
+            )
+            return False
+
+        oams_name = getattr(oams, "name", fps_state.current_oams or "unknown")
+        logging.warning(
+            "OAMS: Load stalled on %s (%s spool %s); aborting before retry",
+            fps_name,
+            oams_name,
+            spool_idx,
+        )
+
+        try:
+            unload_success, unload_message = oams.unload_spool()
+        except Exception:
+            logging.exception(
+                "OAMS: Exception while aborting stalled load on %s spool %s",
+                oams_name,
+                spool_idx,
+            )
+            return False
+
+        if not unload_success:
+            logging.error(
+                "OAMS: Failed to abort stalled load on %s spool %s: %s",
+                oams_name,
+                spool_idx,
+                unload_message,
+            )
+            return False
+
+        if unload_message and unload_message != "Spool unloaded successfully":
+            logging.info(
+                "OAMS: Abort unload for stalled load on %s spool %s reported: %s",
+                oams_name,
+                spool_idx,
+                unload_message,
+            )
+
+        fps_state.state_name = FPSLoadState.UNLOADED
+        fps_state.current_group = None
+        fps_state.current_spool_idx = None
+        fps_state.current_oams = None
+        fps_state.following = False
+        fps_state.direction = 0
+        fps_state.encoder = oams.encoder_clicks
+        fps_state.encoder_samples.clear()
+        fps_state.reset_clog_tracker()
+        fps_state.since = self.reactor.monotonic()
+
+        if fps_state.monitor_load_next_spool_timer is not None:
+            try:
+                self.reactor.unregister_timer(fps_state.monitor_load_next_spool_timer)
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to cancel existing load retry timer for %s",
+                    fps_name,
+                )
+            finally:
+                fps_state.monitor_load_next_spool_timer = None
+
+        retry_delay = MONITOR_ENCODER_PERIOD
+
+        def _retry_load(
+            self,
+            eventtime,
+            fps_name=fps_name,
+            group_name=group_name,
+            spool_idx=spool_idx,
+            oams=oams,
+            fps_state=fps_state,
+        ):
+            fps_state.monitor_load_next_spool_timer = None
+            try:
+                success, message = self._load_filament_for_group(group_name)
+            except Exception:
+                logging.exception(
+                    "OAMS: Unexpected error while retrying load for group %s on %s",
+                    group_name,
+                    fps_name,
+                )
+                failure_message = (
+                    f"Unexpected error while retrying load for {group_name} on {fps_name}"
+                )
+                self._pause_printer_message(failure_message)
+                try:
+                    if hasattr(oams, "set_led_error"):
+                        oams.set_led_error(spool_idx, 1)
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to set error LED after retry exception on %s spool %s",
+                        getattr(oams, "name", "unknown"),
+                        spool_idx,
+                    )
+                self.stop_monitors()
+                return self.reactor.NEVER
+
+            if success:
+                logging.info(
+                    "OAMS: Retry load succeeded for group %s on %s",
+                    group_name,
+                    fps_name,
+                )
+                return self.reactor.NEVER
+
+            logging.error(
+                "OAMS: Retry load failed for group %s on %s: %s",
+                group_name,
+                fps_name,
+                message,
+            )
+            failure_message = (
+                message or f"Retry load failed for group {group_name} on {fps_name}"
+            )
+            self._pause_printer_message(failure_message)
+            try:
+                if hasattr(oams, "set_led_error"):
+                    oams.set_led_error(spool_idx, 1)
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to set error LED after retry failure on %s spool %s",
+                    getattr(oams, "name", "unknown"),
+                    spool_idx,
+                )
+            self.stop_monitors()
+            return self.reactor.NEVER
+
+        next_time = self.reactor.monotonic() + retry_delay
+        fps_state.monitor_load_next_spool_timer = self.reactor.register_timer(
+            partial(_retry_load, self),
+            next_time,
+        )
+
+        logging.info(
+            "OAMS: Scheduled load retry for group %s on %s in %.1f seconds",
+            group_name,
+            fps_name,
+            retry_delay,
+        )
+        return True
+
     def _unload_filament_for_fps(self, fps_name: str) -> Tuple[bool, str]:
         """Unload filament from the specified FPS and update state."""
         if fps_name not in self.fpss:
@@ -1630,10 +1799,30 @@ class OAMSManager:
                 encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
                 logging.info("OAMS[%d] Load Monitor: Encoder diff %d" % (oams.oams_idx, encoder_diff))
                 if encoder_diff < MIN_ENCODER_DIFF:
-                    oams.set_led_error(fps_state.current_spool_idx, 1)
-                    self._pause_printer_message("Printer paused because the loading speed of the moving filament was too low")
-                    self.stop_monitors()
-                    return self.printer.get_reactor().NEVER
+                    spool_idx = fps_state.current_spool_idx
+                    if oams is not None and spool_idx is not None:
+                        try:
+                            oams.set_led_error(spool_idx, 0)
+                        except Exception:
+                            logging.exception(
+                                "OAMS: Failed to clear error LED while aborting load retry on %s spool %s",
+                                getattr(oams, "name", fps_state.current_oams),
+                                spool_idx,
+                            )
+                    if not self._abort_stalled_load_and_retry(fps_name, fps_state, oams):
+                        if oams is not None and spool_idx is not None:
+                            try:
+                                oams.set_led_error(spool_idx, 1)
+                            except Exception:
+                                logging.exception(
+                                    "OAMS: Failed to assert error LED after stalled load on %s spool %s",
+                                    getattr(oams, "name", fps_state.current_oams),
+                                    spool_idx,
+                                )
+                        self._pause_printer_message("Printer paused because the loading speed of the moving filament was too low")
+                        self.stop_monitors()
+                        return self.printer.get_reactor().NEVER
+                    return eventtime + MONITOR_ENCODER_PERIOD
             return eventtime + MONITOR_ENCODER_PERIOD
         return partial(_monitor_load_speed, self)
 
@@ -1952,6 +2141,17 @@ class OAMSManager:
         for timer in self.monitor_timers:
             self.printer.get_reactor().unregister_timer(timer)
         self.monitor_timers = []
+        for fps_state in self.current_state.fps_state.values():
+            timer = getattr(fps_state, "monitor_load_next_spool_timer", None)
+            if timer is not None:
+                try:
+                    self.printer.get_reactor().unregister_timer(timer)
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to cancel pending load retry timer while stopping monitors",
+                    )
+                finally:
+                    fps_state.monitor_load_next_spool_timer = None
         for monitor in self.runout_monitors.values():
             monitor.reset()
         self.runout_monitors = {}
