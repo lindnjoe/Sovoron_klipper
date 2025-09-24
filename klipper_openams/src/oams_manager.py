@@ -618,12 +618,6 @@ class OAMSManager:
                     preferred_direction=direction,
                     force=True,
                 )
-                self._schedule_follower_assertion(
-                    fps_state,
-                    reason="startup follower keep-alive",
-                    preferred_direction=direction,
-                    delay=0.25,
-                )
             else:
                 fps_state.following = False
                 fps_state.last_follower_enable_time = 0.0
@@ -784,12 +778,6 @@ class OAMSManager:
         )
         if fps_state.following:
             fps_state.follower_recovery_start_time = None
-            self._schedule_follower_assertion(
-                fps_state,
-                reason="manual follower keep-alive",
-                preferred_direction=direction if direction in (0, 1) else None,
-                delay=0.25,
-            )
         else:
             self._cancel_pending_follower_assertion(fps_state)
         fps_state.encoder = hardware.encoder_clicks
@@ -1930,7 +1918,7 @@ class OAMSManager:
                 )
                 self._schedule_follower_assertion(
                     fps_state,
-                    reason=f"post-load follower keep-alive for {group_name}",
+                    reason=f"post-load follower follow-up for {group_name}",
                     preferred_direction=direction,
                     delay=0.25,
                 )
@@ -2257,7 +2245,7 @@ class OAMSManager:
             )
             self._schedule_follower_assertion(
                 fps_state,
-                reason="stuck spool recovery keep-alive",
+                reason="stuck spool recovery follow-up",
                 preferred_direction=direction,
                 delay=0.25,
             )
@@ -2462,7 +2450,7 @@ class OAMSManager:
                 )
                 self._schedule_follower_assertion(
                     fps_state,
-                    reason="automatic follower recovery keep-alive",
+                    reason="automatic follower recovery follow-up",
                     preferred_direction=preferred_direction,
                     delay=0.25,
                 )
