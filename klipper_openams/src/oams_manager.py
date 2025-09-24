@@ -1783,74 +1783,6 @@ class OAMSManager:
         fps_state.state_name = FPSLoadState.LOADED
         return False, message
 
-    def _attempt_unload_retry(
-        self,
-        fps_name: str,
-        fps_state,
-        oams,
-        last_message: Optional[str],
-    ) -> Tuple[bool, Optional[str]]:
-        """Attempt an automatic unload retry after recovering from an error."""
-        if not self.unload_retry_enabled:
-            return False, last_message
-
-        if oams.action_status_code != UNLOAD_RETRY_ERROR_CODE:
-            return False, last_message
-
-        extruder_name = getattr(self.fpss[fps_name], "extruder_name", None)
-        if not extruder_name:
-            logging.error(
-                "OAMS: Unable to perform unload retry for %s, extruder not configured",
-                fps_name,
-            )
-            return False, last_message
-
-        logging.warning(
-            "OAMS: Unload on %s failed with code %s, attempting automatic recovery",
-            fps_name,
-            oams.action_status_code,
-        )
-
-        gcode = self.printer.lookup_object("gcode")
-        if self.unload_retry_push_distance != 0.0:
-            command = (
-                f"FORCE_MOVE STEPPER={extruder_name} "
-                f"DISTANCE={self.unload_retry_push_distance:.3f} "
-                f"VELOCITY={self.unload_retry_push_speed:.3f}"
-            )
-            try:
-                logging.info(
-                    "OAMS: Jogging extruder %s by %.3fmm before retry",
-                    extruder_name,
-                    self.unload_retry_push_distance,
-                )
-                gcode.run_script(command)
-            except Exception:
-                logging.exception(
-                    "OAMS: Failed to jog extruder %s prior to unload retry",
-                    extruder_name,
-                )
-
-        self._clear_all_errors()
-
-        fps_state.state_name = FPSLoadState.UNLOADING
-        fps_state.encoder = oams.encoder_clicks
-        fps_state.since = self.reactor.monotonic()
-        fps_state.current_oams = oams.name
-        fps_state.current_spool_idx = oams.current_spool
-
-        retry_success, retry_message = oams.unload_spool()
-        if retry_success:
-            logging.info("OAMS: Automatic unload retry succeeded on %s", fps_name)
-            return True, retry_message
-
-        logging.error(
-            "OAMS: Automatic unload retry failed on %s: %s",
-            fps_name,
-            retry_message,
-        )
-        return False, retry_message
-
     def _reset_failed_load_state(self, fps_state: 'FPSState') -> None:
         """Return an FPS state to an unloaded baseline after a failed load."""
 
@@ -1881,8 +1813,6 @@ class OAMSManager:
         attempted_locations: List[str] = []
         last_failure_message: Optional[str] = None
 
-        max_attempts = 2
-
         self._cancel_pending_follower_assertion(fps_state)
 
         for (oam, bay_index) in self.filament_groups[group_name].bays:
@@ -1893,101 +1823,72 @@ class OAMSManager:
                 f"{getattr(oam, 'name', 'unknown')} bay {bay_index}"
             )
 
-            for attempt_index in range(max_attempts):
-                attempt_number = attempt_index + 1
-                fps_state.state_name = FPSLoadState.LOADING
-                fps_state.encoder_samples.clear()
-                fps_state.encoder = oam.encoder_clicks
-                fps_state.since = self.reactor.monotonic()
+            fps_state.state_name = FPSLoadState.LOADING
+            fps_state.encoder_samples.clear()
+            fps_state.encoder = oam.encoder_clicks
+            fps_state.since = self.reactor.monotonic()
+            fps_state.current_oams = oam.name
+            fps_state.current_spool_idx = bay_index
+
+            success, message = oam.load_spool(bay_index)
+            if success:
+                fps_state.current_group = group_name
                 fps_state.current_oams = oam.name
                 fps_state.current_spool_idx = bay_index
-
-                success, message = oam.load_spool(bay_index)
-                if success:
-                    fps_state.current_group = group_name
-                    fps_state.current_oams = oam.name
-                    fps_state.current_spool_idx = bay_index
-                    fps_state.state_name = FPSLoadState.LOADED
-                    fps_state.since = self.reactor.monotonic()
-                    self.current_group = group_name
-                    fps_state.encoder_samples.clear()
-                    fps_state.reset_clog_tracker()
-                    self._clear_stuck_spool_state(
-                        fps_state,
-                        restore_following=False,
-                    )
-                    direction = self._apply_cached_lane_direction(
-                        fps_state,
-                        oams_name=oam.name,
-                        spool_idx=bay_index,
-                    )
-                    fps_state.following = False
-                    fps_state.last_follower_enable_time = 0.0
-                    self._ensure_follower_active(
-                        fps_state,
-                        reason=f"spool load for group {group_name}",
-                        preferred_direction=direction,
-                        force=True,
-                    )
-                    return True, message
-
-                failure_reason = message or "Unknown load failure"
-                logging.warning(
-                    "OAMS: Failed load attempt %s for group %s from %s bay %s: %s",
-                    attempt_number,
-                    group_name,
-                    getattr(oam, "name", "unknown"),
-                    bay_index,
-                    failure_reason,
-                )
-
-                retry_success, retry_message = self._attempt_unload_retry(
-                    fps_name,
+                fps_state.state_name = FPSLoadState.LOADED
+                fps_state.since = self.reactor.monotonic()
+                self.current_group = group_name
+                fps_state.encoder_samples.clear()
+                fps_state.reset_clog_tracker()
+                self._clear_stuck_spool_state(
                     fps_state,
-                    oam,
-                    message,
+                    restore_following=False,
                 )
-                if retry_success:
-                    logging.info(
-                        "OAMS: Cleared stalled load on %s bay %s before retrying",
+                direction = self._apply_cached_lane_direction(
+                    fps_state,
+                    oams_name=oam.name,
+                    spool_idx=bay_index,
+                )
+                fps_state.following = False
+                fps_state.last_follower_enable_time = 0.0
+                self._ensure_follower_active(
+                    fps_state,
+                    reason=f"spool load for group {group_name}",
+                    preferred_direction=direction,
+                    force=True,
+                )
+                return True, message
+
+            failure_reason = message or "Unknown load failure"
+            logging.warning(
+                "OAMS: Failed load attempt for group %s from %s bay %s: %s",
+                group_name,
+                getattr(oam, "name", "unknown"),
+                bay_index,
+                failure_reason,
+            )
+
+            if hasattr(oam, "clear_errors"):
+                try:
+                    oam.clear_errors()
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to clear errors on %s after load failure",
                         getattr(oam, "name", "unknown"),
-                        bay_index,
-                    )
-                elif retry_message:
-                    logging.warning(
-                        "OAMS: Automatic unload retry failed for %s bay %s: %s",
-                        getattr(oam, "name", "unknown"),
-                        bay_index,
-                        retry_message,
                     )
 
-                if hasattr(oam, "clear_errors"):
-                    try:
-                        oam.clear_errors()
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to clear errors on %s before retry",
-                            getattr(oam, "name", "unknown"),
-                        )
+            self._clear_stuck_spool_state(fps_state, restore_following=False)
+            self._reset_failed_load_state(fps_state)
+            self.current_group = None
 
-                self._clear_stuck_spool_state(fps_state, restore_following=False)
-
-                self._reset_failed_load_state(fps_state)
-                self.current_group = None
-
-                last_failure_message = failure_reason
-
-                if attempt_index < max_attempts - 1:
-                    continue
-                break
+            last_failure_message = failure_reason
 
         if attempted_locations:
             attempts_summary = ", ".join(attempted_locations)
             detail = last_failure_message or "No detailed error provided"
             final_message = (
                 "All ready bays failed to load for group "
-                f"{group_name} after automatic retries "
-                f"(attempted: {attempts_summary}). Last error: {detail}"
+                f"{group_name} (attempted: {attempts_summary}). Last error: {detail}"
             )
             logging.error("OAMS: %s", final_message)
             return False, final_message
