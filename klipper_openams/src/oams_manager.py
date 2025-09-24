@@ -2298,6 +2298,7 @@ class OAMSManager:
         idle_timeout = self.printer.lookup_object("idle_timeout")
         pause_resume = self.pause_resume
         print_stats = self.print_stats
+        runout_monitors = self.runout_monitors
 
         def _monitor_stuck_spool(self, eventtime):
             fps_state = self.current_state.fps_state.get(fps_name)
@@ -2373,6 +2374,28 @@ class OAMSManager:
             if oams is None:
                 fps_state.stuck_spool_start_time = None
                 return eventtime + self.clog_monitor_period
+
+            monitor = runout_monitors.get(fps_name) if runout_monitors is not None else None
+            if monitor is not None and getattr(monitor, "state", None) != OAMSRunoutState.MONITORING:
+                fps_state.stuck_spool_start_time = None
+                return eventtime + self.clog_monitor_period
+
+            hub_values = getattr(oams, "hub_hes_value", None)
+            if (
+                hub_values is not None
+                and fps_state.current_spool_idx is not None
+                and 0 <= fps_state.current_spool_idx < len(hub_values)
+            ):
+                try:
+                    has_filament = bool(hub_values[fps_state.current_spool_idx])
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to query hub sensor state for stuck spool monitor"
+                    )
+                    has_filament = True
+                if not has_filament:
+                    fps_state.stuck_spool_start_time = None
+                    return eventtime + self.clog_monitor_period
 
             if not is_printing:
                 fps_state.stuck_spool_start_time = None
