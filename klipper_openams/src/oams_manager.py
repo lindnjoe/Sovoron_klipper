@@ -45,6 +45,8 @@ CLOG_PRESSURE_OFFSET_MAX = 0.30
 CLOG_DWELL_MIN = 4.0
 CLOG_DWELL_MAX = 14.0
 CLOG_RETRACTION_TOLERANCE_MM = 0.8
+# Grace period after (re)enabling a follower before clog monitoring resumes
+CLOG_FOLLOWER_SPINUP_GRACE = 2.0
 
 # Spool jam detection
 STUCK_SPOOL_PRESSURE_TRIGGER = 0.08  # Pressure level indicating the spool is likely stuck
@@ -306,6 +308,7 @@ class FPSState:
         self.clog_max_pressure: float = 0.0
         self.clog_min_pressure: float = 1.0
         self.clog_start_time: Optional[float] = None
+        self.clog_seen_encoder_motion: bool = False
 
         # Stuck spool detection tracker
         self.stuck_spool_start_time: Optional[float] = None
@@ -339,6 +342,7 @@ class FPSState:
         self.clog_min_pressure = 1.0
         self.clog_start_time = None
         self.stuck_spool_start_time = None
+        self.clog_seen_encoder_motion = False
 
     def reset_stuck_spool_state(self) -> None:
         """Clear stuck spool detection latches and history."""
@@ -368,6 +372,7 @@ class FPSState:
         self.clog_max_pressure = clamped_pressure
         self.clog_min_pressure = clamped_pressure
         self.clog_start_time = timestamp
+        self.clog_seen_encoder_motion = False
 
     def __repr__(self) -> str:
         return f"FPSState(state_name={self.state_name}, current_group={self.current_group}, current_oams={self.current_oams}, current_spool_idx={self.current_spool_idx})"
@@ -514,6 +519,11 @@ class OAMSManager:
         self.clog_retraction_tolerance_mm: float = max(
             0.0,
             CLOG_RETRACTION_TOLERANCE_MM,
+        )
+        self.clog_follower_spinup_time: float = config.getfloat(
+            "clog_follower_spinup_time",
+            CLOG_FOLLOWER_SPINUP_GRACE,
+            minval=0.0,
         )
 
         logging.debug(
@@ -2534,6 +2544,23 @@ class OAMSManager:
                 getattr(oams, "fps_value", getattr(fps, "fps_value", 0.0)) or 0.0
             )
 
+            if not fps_state.following:
+                self._ensure_follower_active(
+                    fps_state,
+                    reason="clog monitor follower inactive",
+                    force=True,
+                )
+                fps_state.reset_clog_tracker()
+                return eventtime + self.clog_monitor_period
+
+            last_enable = fps_state.last_follower_enable_time or 0.0
+            if (
+                last_enable > 0.0
+                and now - last_enable < self.clog_follower_spinup_time
+            ):
+                fps_state.reset_clog_tracker()
+                return eventtime + self.clog_monitor_period
+
             if fps_state.clog_extruder_start is None:
                 fps_state.prime_clog_tracker(
                     float(extruder_position),
@@ -2580,12 +2607,18 @@ class OAMSManager:
                 )
                 return eventtime + self.clog_monitor_period
 
+            if abs(encoder_delta) >= 1.0:
+                fps_state.clog_seen_encoder_motion = True
+
             fps_state.clog_extruder_delta = extruder_delta
             fps_state.clog_encoder_delta = encoder_delta
             fps_state.clog_max_pressure = max(fps_state.clog_max_pressure, pressure)
             fps_state.clog_min_pressure = min(fps_state.clog_min_pressure, pressure)
             fps_state.clog_last_extruder = float(extruder_position)
             fps_state.clog_last_encoder = encoder_position
+
+            if not fps_state.clog_seen_encoder_motion:
+                return eventtime + self.clog_monitor_period
 
             if extruder_delta < self.clog_extruder_window_mm:
                 return eventtime + self.clog_monitor_period
