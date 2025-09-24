@@ -151,6 +151,8 @@ class OAMSRunoutMonitor:
                 if traveled_distance >= PAUSE_DISTANCE:
                     logging.info("OAMS: Pause complete, coasting the follower.")
                     self.oams[fps_state.current_oams].set_oams_follower(0, 1)
+                    fps_state.following = False
+                    fps_state.direction = 1
                     self.bldc_clear_position = fps.extruder.last_position
                     self.runout_after_position = 0.0
                     self.state = OAMSRunoutState.COASTING
@@ -1171,9 +1173,13 @@ class OAMSManager:
         fps_state.encoder_samples.clear()
         fps_state.reset_clog_tracker()
 
-    def _nudge_filament_before_retry(self, oams, direction: int = 1,
-
-                                     duration: Optional[float] = None) -> None:
+    def _nudge_filament_before_retry(
+        self,
+        oams,
+        direction: int = 1,
+        duration: Optional[float] = None,
+        fps_state: Optional['FPSState'] = None,
+    ) -> None:
         """Briefly move the filament to relieve tension before retrying."""
         if duration is None:
             duration = globals().get("UNLOAD_RETRY_NUDGE_TIME", 0.5)
@@ -1190,6 +1196,9 @@ class OAMSManager:
                 duration,
             )
             oams.set_oams_follower(1, direction)
+            if fps_state is not None:
+                fps_state.following = True
+                fps_state.direction = direction
             enable_sent = True
             self.reactor.pause(self.reactor.monotonic() + duration)
         except Exception:
@@ -1206,10 +1215,15 @@ class OAMSManager:
                         "OAMS: Failed to stop follower on %s after nudge",
                         getattr(oams, "name", "unknown"),
                     )
+                if fps_state is not None:
+                    fps_state.following = False
 
 
     def _assist_retry_with_extruder(
-        self, fps_name: str, oams
+        self,
+        fps_name: str,
+        oams,
+        fps_state: Optional['FPSState'] = None,
     ) -> Optional[Callable[[], None]]:
         """Retract filament with the extruder prior to an unload retry.
 
@@ -1318,6 +1332,8 @@ class OAMSManager:
                     )
                 finally:
                     follower_enabled = False
+                    if fps_state is not None:
+                        fps_state.following = False
 
         extruder_name = getattr(extruder, "name", getattr(fps, "extruder_name", "extruder"))
         try:
@@ -1330,6 +1346,9 @@ class OAMSManager:
             )
             oams.set_oams_follower(1, 0)
             follower_enabled = True
+            if fps_state is not None:
+                fps_state.following = True
+                fps_state.direction = 0
             gcode_move.move_with_transform(new_position, speed)
             gcode_move.last_position = new_position
             move_queued = True
@@ -1383,11 +1402,15 @@ class OAMSManager:
         )
 
         self._clear_error_state_for_retry(fps_state, oams)
-        self._nudge_filament_before_retry(oams)
+        self._nudge_filament_before_retry(oams, fps_state=fps_state)
 
         wait_for_assist: Optional[Callable[[], None]] = None
         try:
-            wait_for_assist = self._assist_retry_with_extruder(fps_name, oams)
+            wait_for_assist = self._assist_retry_with_extruder(
+                fps_name,
+                oams,
+                fps_state=fps_state,
+            )
 
         except Exception:
             logging.exception(
