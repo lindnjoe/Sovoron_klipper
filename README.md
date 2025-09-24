@@ -1,6 +1,8 @@
+
 # Sovoron Klipper AFC & OpenAMS Integration Guide
 
 This repository packages the firmware modules, configuration, and macros required to run Sovoron printers with both the Automatic Filament Changer (AFC) and the OpenAMS multi-spool management system. It combines the upstream `klipper_openams` Python extension with a complete Klipper configuration tailored for dual OpenAMS units feeding an AFC-based toolchanger.
+
 
 ## Table of Contents
 1. [System Architecture](#system-architecture)
@@ -248,4 +250,6 @@ This repository packages the firmware modules, configuration, and macros require
 
 ---
 
+
 With these references, you can tune every aspect of the Sovoron AFC + OpenAMS integration, extend it to additional lanes or AMS units, and understand how the runtime code and macros cooperate to keep filament flowing reliably.
+
