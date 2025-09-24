@@ -602,7 +602,8 @@ class OAMSManager:
             if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
                 fps_state.state_name = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
-                if fps_state.direction not in (0, 1) or fps_state.direction == 0:
+
+                if fps_state.direction not in (0, 1):
                     fps_state.direction = 1
 
                 self._ensure_follower_active(
@@ -1769,7 +1770,8 @@ class OAMSManager:
                 fps_state.state_name = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
                 fps_state.following = False
-                fps_state.direction = 1
+                if fps_state.direction not in (0, 1):
+                    fps_state.direction = 1
                 self.current_group = group_name
                 fps_state.encoder_samples.clear()
                 fps_state.reset_clog_tracker()
@@ -1918,10 +1920,10 @@ class OAMSManager:
                 direction = fps_state.direction
             elif fps_state.stuck_spool_restore_direction in (0, 1):
                 direction = fps_state.stuck_spool_restore_direction
-            else:
-                direction = 1
 
-        if direction == 0:
+
+        if direction not in (0, 1):
+
             direction = 1
 
         fps_state.stuck_spool_restore_direction = direction
@@ -2215,8 +2217,7 @@ class OAMSManager:
                         if fps_state.direction in (0, 1)
                         else 1
                     )
-                    if direction == 0:
-                        direction = 1
+
 
                     fps_state.stuck_spool_restore_direction = direction
                     if hasattr(oams, "set_oams_follower"):
