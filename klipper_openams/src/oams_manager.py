@@ -1,4 +1,5 @@
 # OpenAMS Manager
+# OpenAMS Manager
 #
 # Copyright (C) 2025 JR Lomas <lomas.jr@gmail.com>
 #
@@ -2217,6 +2218,11 @@ class OAMSManager:
         return partial(_monitor_unload_speed, self)
     
     def _monitor_load_speed_for_fps(self, fps_name):
+        idle_timeout = self.printer.lookup_object("idle_timeout")
+        pause_resume = self.pause_resume
+        print_stats = self.print_stats
+        toolhead = self.toolhead
+
         def _monitor_load_speed(self, eventtime):
             #logging.info("OAMS: Monitoring loading speed state: %s" % self.current_state.name)
             fps_state = self.current_state.fps_state[fps_name]
@@ -2250,9 +2256,76 @@ class OAMSManager:
                                     getattr(oams, "name", fps_state.current_oams),
                                     spool_idx,
                                 )
-                        self._pause_printer_message("Printer paused because the loading speed of the moving filament was too low")
-                        self.stop_monitors()
-                        return self.printer.get_reactor().NEVER
+                        should_pause = False
+                        is_paused = False
+
+                        if pause_resume is not None:
+                            try:
+                                is_paused = bool(
+                                    pause_resume.get_status(eventtime).get("is_paused")
+                                )
+                            except Exception:
+                                logging.exception(
+                                    "OAMS: Failed to query pause state for load monitor"
+                                )
+
+                        if not is_paused and idle_timeout is not None:
+                            try:
+                                idle_status = idle_timeout.get_status(eventtime)
+                                should_pause = idle_status.get("state") == "Printing"
+                            except Exception:
+                                logging.exception(
+                                    "OAMS: Failed to query idle timeout state for load monitor"
+                                )
+                                should_pause = False
+
+                        if should_pause and print_stats is not None:
+                            try:
+                                stats_state = print_stats.get_status(eventtime).get("state")
+                                should_pause = stats_state == "printing"
+                            except Exception:
+                                logging.exception(
+                                    "OAMS: Failed to query print stats for load monitor"
+                                )
+                                should_pause = False
+
+                        if should_pause and toolhead is not None:
+                            try:
+                                homed_axes = toolhead.get_status(eventtime).get(
+                                    "homed_axes", ""
+                                )
+                            except Exception:
+                                logging.exception(
+                                    "OAMS: Failed to query homed axes for load monitor"
+                                )
+                                homed_axes = ""
+
+                            if isinstance(homed_axes, (list, tuple, set)):
+                                axes = "".join(homed_axes)
+                            else:
+                                axes = str(homed_axes)
+
+                            if not all(axis in axes for axis in "xyz"):
+                                should_pause = False
+
+                        message = (
+                            "Printer paused because the loading speed of the moving filament was too low"
+                        )
+
+                        if should_pause:
+                            self._pause_printer_message(message)
+                            self.stop_monitors()
+                            return self.printer.get_reactor().NEVER
+
+                        logging.error("OAMS: %s", message)
+                        try:
+                            gcode = self.printer.lookup_object("gcode")
+                            if gcode is not None:
+                                gcode.respond_info(f"OAMS: {message}")
+                        except Exception:
+                            logging.exception(
+                                "OAMS: Failed to report stalled load message to console"
+                            )
                     return eventtime + MONITOR_ENCODER_PERIOD
             return eventtime + MONITOR_ENCODER_PERIOD
         return partial(_monitor_load_speed, self)
