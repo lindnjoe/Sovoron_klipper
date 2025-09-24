@@ -2037,13 +2037,82 @@ class OAMSManager:
         return
 
         
-    def _pause_printer_message(self, message):
+    def _should_pause_printer(self) -> bool:
+        """Return True if it's safe and appropriate to issue a PAUSE command."""
+
+        eventtime = self.reactor.monotonic()
+
+        if self.pause_resume is not None:
+            try:
+                if bool(self.pause_resume.get_status(eventtime).get("is_paused")):
+                    return False
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to query pause state before issuing PAUSE"
+                )
+
+        idle_timeout = None
+        try:
+            idle_timeout = self.printer.lookup_object("idle_timeout")
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to query idle timeout before issuing PAUSE"
+            )
+
+        is_printing = False
+        if idle_timeout is not None:
+            try:
+                is_printing = idle_timeout.get_status(eventtime).get("state") == "Printing"
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to query idle timeout status before issuing PAUSE"
+                )
+
+        if is_printing and self.print_stats is not None:
+            try:
+                stats_state = self.print_stats.get_status(eventtime).get("state")
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to query print stats before issuing PAUSE"
+                )
+                stats_state = None
+            is_printing = stats_state == "printing"
+
+        if not is_printing:
+            return False
+
+        if self.toolhead is not None:
+            try:
+                homed_axes = self.toolhead.get_status(eventtime).get("homed_axes", "")
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to query homed axes before issuing PAUSE"
+                )
+                homed_axes = ""
+
+            if isinstance(homed_axes, (list, tuple, set)):
+                axes = "".join(homed_axes)
+            else:
+                axes = str(homed_axes)
+
+            if not all(axis in axes for axis in "xyz"):
+                return False
+
+        return True
+
+    def _pause_printer_message(self, message, force: bool = False):
         logging.info(f"OAMS: {message}")
         gcode = self.printer.lookup_object("gcode")
         message = f"Print has been paused: {message}"
         gcode.run_script(f"M118 {message}")
         gcode.run_script(f"M114 {message}")
-        gcode.run_script("PAUSE")
+
+        if force or self._should_pause_printer():
+            gcode.run_script("PAUSE")
+        else:
+            logging.info(
+                "OAMS: Skipping PAUSE command because printer is not actively printing"
+            )
 
     def _ensure_follower_active(
         self,
