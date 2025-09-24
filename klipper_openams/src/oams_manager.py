@@ -2414,7 +2414,7 @@ class OAMSManager:
                     stats_state = None
                 is_printing = stats_state == "printing"
 
-            if not is_printing or fps_state.state_name != FPSLoadState.LOADED:
+            if fps_state.state_name != FPSLoadState.LOADED:
                 fps_state.stuck_spool_start_time = None
                 fps_state.follower_recovery_start_time = None
                 return eventtime + self.clog_monitor_period
@@ -2466,6 +2466,14 @@ class OAMSManager:
                     preferred_direction=preferred_direction,
                     delay=0.25,
                 )
+                if not is_printing:
+                    fps_state.stuck_spool_start_time = None
+                    fps_state.follower_recovery_start_time = None
+                return eventtime + self.clog_monitor_period
+
+            if not is_printing:
+                fps_state.stuck_spool_start_time = None
+                fps_state.follower_recovery_start_time = None
                 return eventtime + self.clog_monitor_period
 
             if not needs_recovery:
