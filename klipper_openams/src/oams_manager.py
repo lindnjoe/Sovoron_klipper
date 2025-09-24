@@ -37,6 +37,9 @@ CLOG_WINDOW_MIN_MM = 12.0
 CLOG_WINDOW_MAX_MM = 48.0
 CLOG_ENCODER_DELTA_MIN = 3.0
 CLOG_ENCODER_DELTA_MAX = 15.0
+# Pressure tolerance (± window) around the target FPS value that still counts as
+# "on target" for clog detection. Hardware regulates around ~0.5, so we treat
+# sustained readings within this window as nominal load pressure.
 CLOG_PRESSURE_OFFSET_MIN = 0.10
 CLOG_PRESSURE_OFFSET_MAX = 0.30
 CLOG_DWELL_MIN = 4.0
@@ -289,6 +292,7 @@ class FPSState:
         self.clog_extruder_delta: float = 0.0
         self.clog_encoder_delta: float = 0.0
         self.clog_max_pressure: float = 0.0
+        self.clog_min_pressure: float = 1.0
         self.clog_start_time: Optional[float] = None
 
         # Stuck spool detection tracker
@@ -322,6 +326,7 @@ class FPSState:
         self.clog_extruder_delta = 0.0
         self.clog_encoder_delta = 0.0
         self.clog_max_pressure = 0.0
+        self.clog_min_pressure = 1.0
         self.clog_start_time = None
         self.stuck_spool_start_time = None
 
@@ -351,7 +356,9 @@ class FPSState:
         self.clog_last_encoder = encoder_position
         self.clog_extruder_delta = 0.0
         self.clog_encoder_delta = 0.0
-        self.clog_max_pressure = max(pressure, 0.0)
+        clamped_pressure = max(pressure, 0.0)
+        self.clog_max_pressure = clamped_pressure
+        self.clog_min_pressure = clamped_pressure
         self.clog_start_time = timestamp
 
     def __repr__(self) -> str:
@@ -504,7 +511,7 @@ class OAMSManager:
         )
 
         logging.debug(
-            "OAMS: clog detection sensitivity %.2f -> window %.1fmm, encoder slack %.1f, pressure offset %.2f, dwell %.1fs",
+            "OAMS: clog detection sensitivity %.2f -> window %.1fmm, encoder slack %.1f, pressure window ±%.2f, dwell %.1fs",
             self.clog_sensitivity,
             self.clog_extruder_window_mm,
             self.clog_encoder_delta_limit,
@@ -2329,6 +2336,7 @@ class OAMSManager:
             fps_state.clog_extruder_delta = extruder_delta
             fps_state.clog_encoder_delta = encoder_delta
             fps_state.clog_max_pressure = max(fps_state.clog_max_pressure, pressure)
+            fps_state.clog_min_pressure = min(fps_state.clog_min_pressure, pressure)
             fps_state.clog_last_extruder = float(extruder_position)
             fps_state.clog_last_encoder = encoder_position
 
@@ -2344,20 +2352,32 @@ class OAMSManager:
                 target_pressure = getattr(fps, "fps_target", None)
             if target_pressure is None:
                 target_pressure = getattr(fps, "_set_point", 0.5)
-            pressure_floor = max(0.0, min(1.0, float(target_pressure) + self.clog_pressure_offset))
+            clamped_target = max(0.0, min(1.0, float(target_pressure)))
+            pressure_window = max(0.0, self.clog_pressure_offset)
+            clamped_min_pressure = max(0.0, min(1.0, float(fps_state.clog_min_pressure)))
+            clamped_max_pressure = max(0.0, min(1.0, float(fps_state.clog_max_pressure)))
 
-            if fps_state.clog_max_pressure < pressure_floor:
+            max_deviation = max(
+                abs(clamped_max_pressure - clamped_target),
+                abs(clamped_min_pressure - clamped_target),
+            )
+
+            if pressure_window and max_deviation > pressure_window:
+                return eventtime + self.clog_monitor_period
+            if not pressure_window and max_deviation > 0.0:
                 return eventtime + self.clog_monitor_period
 
             if abs(encoder_delta) > self.clog_encoder_delta_limit:
                 return eventtime + self.clog_monitor_period
 
             logging.error(
-                "OAMS: Clog suspected on %s after %.1fmm extruder advance (encoder %.1f, pressure %.2f)",
+                "OAMS: Clog suspected on %s after %.1fmm extruder advance (encoder %.1f, fps window %.2f-%.2f around %.2f)",
                 fps_name,
                 extruder_delta,
                 encoder_delta,
-                fps_state.clog_max_pressure,
+                clamped_min_pressure,
+                clamped_max_pressure,
+                clamped_target,
             )
 
             if fps_state.current_spool_idx is not None:
@@ -2373,13 +2393,15 @@ class OAMSManager:
             self._pause_printer_message(
                 (
                     "Clog suspected on %s: extruder advanced %.1fmm while encoder moved %.1f "
-                    "counts at %.2f pressure"
+                    "counts with FPS %.2f-%.2f around %.2f"
                 )
                 % (
                     fps_name,
                     extruder_delta,
                     encoder_delta,
-                    fps_state.clog_max_pressure,
+                    clamped_min_pressure,
+                    clamped_max_pressure,
+                    clamped_target,
                 )
             )
             fps_state.reset_clog_tracker()
