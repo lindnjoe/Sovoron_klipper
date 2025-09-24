@@ -1851,6 +1851,22 @@ class OAMSManager:
         )
         return False, retry_message
 
+    def _reset_failed_load_state(self, fps_state: 'FPSState') -> None:
+        """Return an FPS state to an unloaded baseline after a failed load."""
+
+        fps_state.state_name = FPSLoadState.UNLOADED
+        fps_state.current_group = None
+        fps_state.current_spool_idx = None
+        fps_state.current_oams = None
+        fps_state.following = False
+        fps_state.last_follower_enable_time = 0.0
+        fps_state.direction = None
+        fps_state.encoder = None
+        fps_state.encoder_samples.clear()
+        fps_state.reset_clog_tracker()
+        fps_state.since = self.reactor.monotonic()
+        self._cancel_pending_follower_assertion(fps_state)
+
     def _load_filament_for_group(self, group_name: str) -> Tuple[bool, str]:
         """Load filament for the provided filament group."""
         if group_name not in self.filament_groups:
@@ -1865,6 +1881,8 @@ class OAMSManager:
         attempted_locations: List[str] = []
         last_failure_message: Optional[str] = None
 
+        max_attempts = 2
+
         self._cancel_pending_follower_assertion(fps_state)
 
         for (oam, bay_index) in self.filament_groups[group_name].bays:
@@ -1875,8 +1893,8 @@ class OAMSManager:
                 f"{getattr(oam, 'name', 'unknown')} bay {bay_index}"
             )
 
-            attempt_number = 1
-            while attempt_number <= 2:
+            for attempt_index in range(max_attempts):
+                attempt_number = attempt_index + 1
                 fps_state.state_name = FPSLoadState.LOADING
                 fps_state.encoder_samples.clear()
                 fps_state.encoder = oam.encoder_clicks
@@ -1943,26 +1961,23 @@ class OAMSManager:
                         retry_message,
                     )
 
+                if hasattr(oam, "clear_errors"):
+                    try:
+                        oam.clear_errors()
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to clear errors on %s before retry",
+                            getattr(oam, "name", "unknown"),
+                        )
+
                 self._clear_stuck_spool_state(fps_state, restore_following=False)
 
-                fps_state.state_name = FPSLoadState.UNLOADED
-                fps_state.current_group = None
-                fps_state.current_spool_idx = None
-                fps_state.current_oams = None
-                fps_state.following = False
-                fps_state.last_follower_enable_time = 0.0
-                fps_state.direction = None
-                fps_state.encoder = None
-                fps_state.encoder_samples.clear()
-                fps_state.reset_clog_tracker()
-                fps_state.since = self.reactor.monotonic()
+                self._reset_failed_load_state(fps_state)
                 self.current_group = None
-                self._cancel_pending_follower_assertion(fps_state)
 
                 last_failure_message = failure_reason
 
-                if attempt_number < 2:
-                    attempt_number += 1
+                if attempt_index < max_attempts - 1:
                     continue
                 break
 
