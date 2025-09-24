@@ -384,6 +384,10 @@ class OAMSManager:
         self.reactor = self.printer.get_reactor()
         self.pause_resume = self.printer.lookup_object("pause_resume")
 
+        self.print_stats = self.printer.lookup_object("print_stats", None)
+        self.toolhead = self.printer.lookup_object("toolhead", None)
+
+
 
         # Hardware object collections
         self.filament_groups: Dict[str, Any] = {}  # Group name -> FilamentGroup object
@@ -1982,6 +1986,9 @@ class OAMSManager:
         idle_timeout = self.printer.lookup_object("idle_timeout")
         pause_resume = self.pause_resume
 
+        print_stats = self.print_stats
+
+
         def _monitor_stuck_spool(self, eventtime):
             fps_state = self.current_state.fps_state.get(fps_name)
             fps = self.fpss.get(fps_name)
@@ -2012,6 +2019,41 @@ class OAMSManager:
 
             status = idle_timeout.get_status(eventtime)
             is_printing = status.get("state") == "Printing"
+
+
+            all_axes_homed = True
+            if self.toolhead is not None:
+                try:
+                    homed_axes = self.toolhead.get_status(eventtime).get(
+                        "homed_axes", ""
+                    )
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to query homed axes for stuck spool monitor"
+                    )
+                    homed_axes = ""
+
+                if isinstance(homed_axes, (list, tuple, set)):
+                    axes = "".join(homed_axes)
+                else:
+                    axes = str(homed_axes)
+
+                all_axes_homed = all(axis in axes for axis in "xyz")
+
+            if not all_axes_homed:
+                fps_state.stuck_spool_start_time = None
+                return eventtime + self.clog_monitor_period
+
+            if is_printing and print_stats is not None:
+                try:
+                    stats_state = print_stats.get_status(eventtime).get("state")
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to query print stats for stuck spool monitor"
+                    )
+                    stats_state = None
+                is_printing = stats_state == "printing"
+
 
             if not is_printing or fps_state.state_name != FPSLoadState.LOADED:
                 fps_state.stuck_spool_start_time = None
