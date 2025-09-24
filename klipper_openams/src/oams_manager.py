@@ -37,7 +37,9 @@ CLOG_WINDOW_MIN_MM = 12.0
 CLOG_WINDOW_MAX_MM = 48.0
 CLOG_ENCODER_DELTA_MIN = 3.0
 CLOG_ENCODER_DELTA_MAX = 15.0
-# Pressure tolerance (± window) around the target FPS value that still counts as
+
+# Pressure tolerance (+/- window) around the target FPS value that still counts as
+
 # "on target" for clog detection. Hardware regulates around ~0.5, so we treat
 # sustained readings within this window as nominal load pressure.
 CLOG_PRESSURE_OFFSET_MIN = 0.10
@@ -511,7 +513,9 @@ class OAMSManager:
         )
 
         logging.debug(
-            "OAMS: clog detection sensitivity %.2f -> window %.1fmm, encoder slack %.1f, pressure window ±%.2f, dwell %.1fs",
+
+            "OAMS: clog detection sensitivity %.2f -> window %.1fmm, encoder slack %.1f, pressure window +/-%.2f, dwell %.1fs",
+
             self.clog_sensitivity,
             self.clog_extruder_window_mm,
             self.clog_encoder_delta_limit,
