@@ -2181,6 +2181,9 @@ class OAMSManager:
 
     def _monitor_clog_for_fps(self, fps_name: str):
         idle_timeout = self.printer.lookup_object("idle_timeout")
+        pause_resume = self.pause_resume
+        print_stats = self.print_stats
+        toolhead = self.toolhead
 
         def _monitor_clog(self, eventtime):
             if not self.clog_detection_enabled:
@@ -2191,13 +2194,51 @@ class OAMSManager:
             if fps_state is None or fps is None:
                 return eventtime + self.clog_monitor_period
 
-            status = idle_timeout.get_status(eventtime)
-            is_printing = status.get("state") == "Printing"
-            if not is_printing or fps_state.state_name != FPSLoadState.LOADED:
+            is_paused = False
+            if pause_resume is not None:
+                try:
+                    is_paused = bool(pause_resume.get_status(eventtime).get("is_paused"))
+                except Exception:
+                    logging.exception("OAMS: Failed to query pause state for clog monitor")
+                    is_paused = False
+
+            if is_paused or fps_state.state_name != FPSLoadState.LOADED:
                 fps_state.reset_clog_tracker()
                 return eventtime + self.clog_monitor_period
 
-            if fps_state.current_oams is None:
+            status = idle_timeout.get_status(eventtime)
+            is_printing = status.get("state") == "Printing"
+
+            if is_printing and print_stats is not None:
+                try:
+                    stats_state = print_stats.get_status(eventtime).get("state")
+                except Exception:
+                    logging.exception("OAMS: Failed to query print stats for clog monitor")
+                    stats_state = None
+                is_printing = stats_state == "printing"
+
+            all_axes_homed = True
+            if toolhead is not None:
+                try:
+                    homed_axes = toolhead.get_status(eventtime).get("homed_axes", "")
+                except Exception:
+                    logging.exception("OAMS: Failed to query homed axes for clog monitor")
+                    homed_axes = ""
+
+                if isinstance(homed_axes, (list, tuple, set)):
+                    axes = "".join(homed_axes)
+                else:
+                    axes = str(homed_axes)
+
+                all_axes_homed = all(axis in axes for axis in "xyz")
+
+            if (
+                not is_printing
+                or not all_axes_homed
+                or fps_state.current_oams is None
+                or fps_state.current_spool_idx is None
+                or fps_state.stuck_spool_active
+            ):
                 fps_state.reset_clog_tracker()
                 return eventtime + self.clog_monitor_period
 
