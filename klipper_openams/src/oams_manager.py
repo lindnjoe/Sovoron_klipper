@@ -306,6 +306,7 @@ class FPSState:
         self.clog_max_pressure: float = 0.0
         self.clog_min_pressure: float = 1.0
         self.clog_start_time: Optional[float] = None
+        self.clog_encoder_activity: bool = False
 
         # Stuck spool detection tracker
         self.stuck_spool_start_time: Optional[float] = None
@@ -338,6 +339,7 @@ class FPSState:
         self.clog_max_pressure = 0.0
         self.clog_min_pressure = 1.0
         self.clog_start_time = None
+        self.clog_encoder_activity = False
         self.stuck_spool_start_time = None
 
     def reset_stuck_spool_state(self) -> None:
@@ -368,6 +370,7 @@ class FPSState:
         self.clog_max_pressure = clamped_pressure
         self.clog_min_pressure = clamped_pressure
         self.clog_start_time = timestamp
+        self.clog_encoder_activity = False
 
     def __repr__(self) -> str:
         return f"FPSState(state_name={self.state_name}, current_group={self.current_group}, current_oams={self.current_oams}, current_spool_idx={self.current_spool_idx})"
@@ -2187,6 +2190,8 @@ class OAMSManager:
                 or fps_state.stuck_spool_should_restore_follower
             ):
                 self._clear_stuck_spool_state(fps_state)
+        if not self.monitor_timers:
+            self.start_monitors()
         return self.reactor.NEVER
 
     def _monitor_unload_speed_for_fps(self, fps_name):
@@ -2578,6 +2583,14 @@ class OAMSManager:
                     now,
                     pressure,
                 )
+                return eventtime + self.clog_monitor_period
+
+            if encoder_delta >= max(1.0, float(MIN_ENCODER_DIFF)):
+                if not fps_state.clog_encoder_activity:
+                    fps_state.clog_encoder_activity = True
+                    fps_state.clog_start_time = now
+            elif not fps_state.clog_encoder_activity:
+                fps_state.clog_start_time = now
                 return eventtime + self.clog_monitor_period
 
             fps_state.clog_extruder_delta = extruder_delta
