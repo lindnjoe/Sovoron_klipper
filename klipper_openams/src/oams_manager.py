@@ -2334,6 +2334,63 @@ class OAMSManager:
         return partial(_monitor_load_speed, self)
 
 
+    def _monitor_follower_state_for_fps(self, fps_name: str):
+        def _monitor_follower_state(self, eventtime):
+            fps_state = self.current_state.fps_state.get(fps_name)
+            if fps_state is None:
+                return eventtime + FOLLOWER_RECOVERY_RETRY_INTERVAL
+
+            if fps_state.state_name != FPSLoadState.LOADED:
+                return eventtime + FOLLOWER_RECOVERY_RETRY_INTERVAL
+
+            if fps_state.current_oams is None or fps_state.current_spool_idx is None:
+                return eventtime + FOLLOWER_RECOVERY_RETRY_INTERVAL
+
+            if fps_state.stuck_spool_active or fps_state.stuck_spool_should_restore_follower:
+                return eventtime + FOLLOWER_RECOVERY_RETRY_INTERVAL
+
+            oams = self.oams.get(fps_state.current_oams)
+            if oams is None or not hasattr(oams, "set_oams_follower"):
+                return eventtime + FOLLOWER_RECOVERY_RETRY_INTERVAL
+
+            pressure = float(getattr(oams, "fps_value", 0.0) or 0.0)
+            needs_enable = not fps_state.following
+            needs_pressure_boost = pressure <= FOLLOWER_RECOVERY_PRESSURE
+
+            if not needs_enable and not needs_pressure_boost:
+                return eventtime + FOLLOWER_RECOVERY_RETRY_INTERVAL
+
+            now = self.reactor.monotonic()
+            last_enable = fps_state.last_follower_enable_time or 0.0
+            if now - last_enable < FOLLOWER_RECOVERY_RETRY_INTERVAL:
+                return eventtime + FOLLOWER_RECOVERY_RETRY_INTERVAL
+
+            direction = fps_state.direction if fps_state.direction in (0, 1) else None
+            if direction is None and fps_state.stuck_spool_restore_direction in (0, 1):
+                direction = fps_state.stuck_spool_restore_direction
+            if direction is None:
+                direction = self._apply_cached_lane_direction(fps_state)
+            if direction not in (0, 1):
+                direction = 1
+
+            self._ensure_follower_active(
+                fps_state,
+                reason="loaded lane follower keepalive",
+                preferred_direction=direction,
+                force=True,
+            )
+            self._schedule_follower_assertion(
+                fps_state,
+                reason="loaded lane follower keepalive follow-up",
+                preferred_direction=direction,
+                delay=0.25,
+            )
+
+            return eventtime + FOLLOWER_RECOVERY_RETRY_INTERVAL
+
+        return partial(_monitor_follower_state, self)
+
+
     def _monitor_stuck_spool_for_fps(self, fps_name: str):
         idle_timeout = self.printer.lookup_object("idle_timeout")
         pause_resume = self.pause_resume
@@ -2771,6 +2828,12 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             self.monitor_timers.append(reactor.register_timer(self._monitor_unload_speed_for_fps(fps_name), reactor.NOW))
             self.monitor_timers.append(reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), reactor.NOW))
+            self.monitor_timers.append(
+                reactor.register_timer(
+                    self._monitor_follower_state_for_fps(fps_name),
+                    reactor.NOW,
+                )
+            )
             self.monitor_timers.append(
                 reactor.register_timer(
                     self._monitor_stuck_spool_for_fps(fps_name),
