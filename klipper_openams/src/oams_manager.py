@@ -1,5 +1,4 @@
 # OpenAMS Manager
-# OpenAMS Manager
 #
 # Copyright (C) 2025 JR Lomas <lomas.jr@gmail.com>
 #
@@ -1876,88 +1875,96 @@ class OAMSManager:
                 f"{getattr(oam, 'name', 'unknown')} bay {bay_index}"
             )
 
-            fps_state.state_name = FPSLoadState.LOADING
-            fps_state.encoder_samples.clear()
-            fps_state.encoder = oam.encoder_clicks
-            fps_state.since = self.reactor.monotonic()
-            fps_state.current_oams = oam.name
-            fps_state.current_spool_idx = bay_index
-
-            success, message = oam.load_spool(bay_index)
-            if success:
-                fps_state.current_group = group_name
+            attempt_number = 1
+            while attempt_number <= 2:
+                fps_state.state_name = FPSLoadState.LOADING
+                fps_state.encoder_samples.clear()
+                fps_state.encoder = oam.encoder_clicks
+                fps_state.since = self.reactor.monotonic()
                 fps_state.current_oams = oam.name
                 fps_state.current_spool_idx = bay_index
-                fps_state.state_name = FPSLoadState.LOADED
-                fps_state.since = self.reactor.monotonic()
-                self.current_group = group_name
-                fps_state.encoder_samples.clear()
-                fps_state.reset_clog_tracker()
-                self._clear_stuck_spool_state(
-                    fps_state,
-                    restore_following=False,
+
+                success, message = oam.load_spool(bay_index)
+                if success:
+                    fps_state.current_group = group_name
+                    fps_state.current_oams = oam.name
+                    fps_state.current_spool_idx = bay_index
+                    fps_state.state_name = FPSLoadState.LOADED
+                    fps_state.since = self.reactor.monotonic()
+                    self.current_group = group_name
+                    fps_state.encoder_samples.clear()
+                    fps_state.reset_clog_tracker()
+                    self._clear_stuck_spool_state(
+                        fps_state,
+                        restore_following=False,
+                    )
+                    direction = self._apply_cached_lane_direction(
+                        fps_state,
+                        oams_name=oam.name,
+                        spool_idx=bay_index,
+                    )
+                    fps_state.following = False
+                    fps_state.last_follower_enable_time = 0.0
+                    self._ensure_follower_active(
+                        fps_state,
+                        reason=f"spool load for group {group_name}",
+                        preferred_direction=direction,
+                        force=True,
+                    )
+                    return True, message
+
+                failure_reason = message or "Unknown load failure"
+                logging.warning(
+                    "OAMS: Failed load attempt %s for group %s from %s bay %s: %s",
+                    attempt_number,
+                    group_name,
+                    getattr(oam, "name", "unknown"),
+                    bay_index,
+                    failure_reason,
                 )
-                direction = self._apply_cached_lane_direction(
+
+                retry_success, retry_message = self._attempt_unload_retry(
+                    fps_name,
                     fps_state,
-                    oams_name=oam.name,
-                    spool_idx=bay_index,
+                    oam,
+                    message,
                 )
+                if retry_success:
+                    logging.info(
+                        "OAMS: Cleared stalled load on %s bay %s before retrying",
+                        getattr(oam, "name", "unknown"),
+                        bay_index,
+                    )
+                elif retry_message:
+                    logging.warning(
+                        "OAMS: Automatic unload retry failed for %s bay %s: %s",
+                        getattr(oam, "name", "unknown"),
+                        bay_index,
+                        retry_message,
+                    )
+
+                self._clear_stuck_spool_state(fps_state, restore_following=False)
+
+                fps_state.state_name = FPSLoadState.UNLOADED
+                fps_state.current_group = None
+                fps_state.current_spool_idx = None
+                fps_state.current_oams = None
                 fps_state.following = False
                 fps_state.last_follower_enable_time = 0.0
-                self._ensure_follower_active(
-                    fps_state,
-                    reason=f"spool load for group {group_name}",
-                    preferred_direction=direction,
-                    force=True,
-                )
-                return True, message
+                fps_state.direction = None
+                fps_state.encoder = None
+                fps_state.encoder_samples.clear()
+                fps_state.reset_clog_tracker()
+                fps_state.since = self.reactor.monotonic()
+                self.current_group = None
+                self._cancel_pending_follower_assertion(fps_state)
 
-            failure_reason = message or "Unknown load failure"
-            logging.warning(
-                "OAMS: Failed to load group %s from %s bay %s: %s",
-                group_name,
-                getattr(oam, "name", "unknown"),
-                bay_index,
-                failure_reason,
-            )
+                last_failure_message = failure_reason
 
-            retry_success, retry_message = self._attempt_unload_retry(
-                fps_name,
-                fps_state,
-                oam,
-                message,
-            )
-            if retry_success:
-                logging.info(
-                    "OAMS: Cleared stalled load on %s bay %s before trying next bay",
-                    getattr(oam, "name", "unknown"),
-                    bay_index,
-                )
-            elif retry_message:
-                logging.warning(
-                    "OAMS: Automatic unload retry failed for %s bay %s: %s",
-                    getattr(oam, "name", "unknown"),
-                    bay_index,
-                    retry_message,
-                )
-
-            self._clear_stuck_spool_state(fps_state, restore_following=False)
-
-            fps_state.state_name = FPSLoadState.UNLOADED
-            fps_state.current_group = None
-            fps_state.current_spool_idx = None
-            fps_state.current_oams = None
-            fps_state.following = False
-            fps_state.last_follower_enable_time = 0.0
-            fps_state.direction = None
-            fps_state.encoder = None
-            fps_state.encoder_samples.clear()
-            fps_state.reset_clog_tracker()
-            fps_state.since = self.reactor.monotonic()
-            self.current_group = None
-            self._cancel_pending_follower_assertion(fps_state)
-
-            last_failure_message = failure_reason
+                if attempt_number < 2:
+                    attempt_number += 1
+                    continue
+                break
 
         if attempted_locations:
             attempts_summary = ", ".join(attempted_locations)
