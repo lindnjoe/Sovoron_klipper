@@ -298,6 +298,10 @@ class FPSState:
         self.stuck_spool_last_spool_idx: Optional[int] = None
         self.stuck_spool_led_asserted: bool = False
 
+        self.stuck_spool_should_restore_follower: bool = False
+        self.stuck_spool_restore_direction: int = 0
+
+
         self.reset_stuck_spool_state()
         self.reset_clog_tracker()
 
@@ -328,6 +332,10 @@ class FPSState:
         self.stuck_spool_last_oams = None
         self.stuck_spool_last_spool_idx = None
         self.stuck_spool_led_asserted = False
+
+        self.stuck_spool_should_restore_follower = False
+        self.stuck_spool_restore_direction = 0
+
 
     def prime_clog_tracker(
         self,
@@ -1839,21 +1847,71 @@ class OAMSManager:
         gcode.run_script(f"M114 {message}")
         gcode.run_script("PAUSE")
 
-    def _clear_stuck_spool_state(self, fps_state: 'FPSState') -> None:
+
+    def _clear_stuck_spool_state(
+        self,
+        fps_state: 'FPSState',
+        restore_following: bool = True,
+    ) -> None:
         """Clear any latched stuck-spool indicators for the provided FPS."""
+
         oams_name = fps_state.stuck_spool_last_oams
         spool_idx = fps_state.stuck_spool_last_spool_idx
-        if fps_state.stuck_spool_led_asserted and oams_name is not None and spool_idx is not None:
-            oams = self.oams.get(oams_name)
-            if oams is not None:
+        oams = self.oams.get(oams_name) if oams_name is not None else None
+
+        if fps_state.stuck_spool_led_asserted and oams is not None and spool_idx is not None:
+            try:
+                oams.set_led_error(spool_idx, 0)
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to clear stuck spool LED on %s spool %s",
+                    getattr(oams, "name", oams_name),
+                    spool_idx,
+                )
+
+        should_restore = (
+            restore_following
+            and fps_state.stuck_spool_should_restore_follower
+            and fps_state.state_name == FPSLoadState.LOADED
+        )
+
+        if should_restore:
+            active_oams_name = fps_state.current_oams or oams_name
+            active_oams = (
+                self.oams.get(active_oams_name)
+                if active_oams_name is not None
+                else oams
+            )
+
+            if active_oams is not None and hasattr(active_oams, "set_oams_follower"):
                 try:
-                    oams.set_led_error(spool_idx, 0)
+                    active_oams.clear_errors()
                 except Exception:
                     logging.exception(
-                        "OAMS: Failed to clear stuck spool LED on %s spool %s",
-                        getattr(oams, "name", oams_name),
-                        spool_idx,
+                        "OAMS: Failed to clear stuck spool error on %s",
+                        getattr(active_oams, "name", active_oams_name),
                     )
+
+                direction = fps_state.stuck_spool_restore_direction
+                if direction not in (0, 1):
+                    direction = 0
+
+                try:
+                    active_oams.set_oams_follower(1, direction)
+                    fps_state.following = True
+                    fps_state.direction = direction
+                    logging.info(
+                        "OAMS: Resumed follower on %s spool %s after stuck spool recovery",
+                        getattr(active_oams, "name", active_oams_name),
+                        fps_state.current_spool_idx,
+                    )
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to resume follower after stuck spool on %s",
+                        getattr(active_oams, "name", active_oams_name),
+                    )
+
+
         fps_state.reset_stuck_spool_state()
 
     def _monitor_unload_speed_for_fps(self, fps_name):
@@ -1944,7 +2002,9 @@ class OAMSManager:
                     or fps_state.current_spool_idx is None
                 )
                 if spool_changed:
-                    self._clear_stuck_spool_state(fps_state)
+
+                    self._clear_stuck_spool_state(fps_state, restore_following=False)
+
                     return eventtime + self.clog_monitor_period
                 if is_paused:
                     return eventtime + self.clog_monitor_period
@@ -1979,6 +2039,26 @@ class OAMSManager:
                     fps_state.stuck_spool_last_oams = fps_state.current_oams
                     fps_state.stuck_spool_last_spool_idx = fps_state.current_spool_idx
                     fps_state.stuck_spool_start_time = None
+
+                    fps_state.stuck_spool_should_restore_follower = True
+                    direction = fps_state.direction if fps_state.direction in (0, 1) else 0
+                    fps_state.stuck_spool_restore_direction = direction
+                    if hasattr(oams, "set_oams_follower"):
+                        try:
+                            oams.set_oams_follower(0, direction)
+                            fps_state.following = False
+                            logging.info(
+                                "OAMS: Disabled follower on %s spool %s due to stuck spool detection",
+                                getattr(oams, "name", fps_state.current_oams),
+                                fps_state.current_spool_idx,
+                            )
+                        except Exception:
+                            logging.exception(
+                                "OAMS: Failed to stop follower after stuck spool on %s spool %s",
+                                getattr(oams, "name", fps_state.current_oams),
+                                fps_state.current_spool_idx,
+                            )
+
                     if fps_state.current_spool_idx is not None:
                         try:
                             oams.set_led_error(fps_state.current_spool_idx, 1)
