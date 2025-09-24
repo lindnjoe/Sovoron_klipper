@@ -48,6 +48,9 @@ CLOG_RETRACTION_TOLERANCE_MM = 0.8
 
 # Spool jam detection
 STUCK_SPOOL_PRESSURE_TRIGGER = 0.08  # Pressure level indicating the spool is likely stuck
+# Automatic follower recovery
+FOLLOWER_RECOVERY_PRESSURE = 0.20  # Pressure level that suggests the follower fell behind
+FOLLOWER_RECOVERY_RETRY_INTERVAL = 1.5  # Seconds between automatic follower enable attempts
 
 
 
@@ -156,6 +159,7 @@ class OAMSRunoutMonitor:
                     self.oams[fps_state.current_oams].set_oams_follower(0, direction)
                     fps_state.following = False
                     fps_state.direction = direction
+                    fps_state.last_follower_enable_time = 0.0
                     self.bldc_clear_position = fps.extruder.last_position
                     self.runout_after_position = 0.0
                     self.state = OAMSRunoutState.COASTING
@@ -286,6 +290,7 @@ class FPSState:
         self.following: bool = False  # Whether follower mode is active
         self.direction: Optional[int] = None  # Preferred follower direction
         self.since: Optional[float] = None  # Timestamp when current state began
+        self.last_follower_enable_time: float = 0.0  # Last time we commanded the follower
 
         # AFC delegation state
         self.afc_delegation_active: bool = False
@@ -602,6 +607,7 @@ class OAMSManager:
                 fps_state.since = self.reactor.monotonic()
                 direction = self._apply_cached_lane_direction(fps_state)
                 fps_state.following = False
+                fps_state.last_follower_enable_time = 0.0
                 self._ensure_follower_active(
                     fps_state,
                     reason="detected loaded state during startup",
@@ -609,6 +615,7 @@ class OAMSManager:
                 )
             else:
                 fps_state.following = False
+                fps_state.last_follower_enable_time = 0.0
         
     def handle_ready(self) -> None:
         """
@@ -760,6 +767,9 @@ class OAMSManager:
         fps_state.following = bool(enable)
         if direction in (0, 1):
             fps_state.direction = direction
+        fps_state.last_follower_enable_time = (
+            self.reactor.monotonic() if fps_state.following else 0.0
+        )
         fps_state.encoder = hardware.encoder_clicks
         fps_state.current_spool_idx = hardware.current_spool
         if direction in (0, 1):
@@ -1263,6 +1273,7 @@ class OAMSManager:
             if fps_state is not None:
                 fps_state.following = True
                 fps_state.direction = direction
+                fps_state.last_follower_enable_time = self.reactor.monotonic()
             enable_sent = True
             self.reactor.pause(self.reactor.monotonic() + duration)
         except Exception:
@@ -1281,6 +1292,7 @@ class OAMSManager:
                     )
                 if fps_state is not None:
                     fps_state.following = False
+                    fps_state.last_follower_enable_time = 0.0
 
 
     def _assist_retry_with_extruder(
@@ -1399,6 +1411,7 @@ class OAMSManager:
                     follower_enabled = False
                     if fps_state is not None:
                         fps_state.following = False
+                        fps_state.last_follower_enable_time = 0.0
                         if previous_direction in (0, 1):
                             fps_state.direction = previous_direction
 
@@ -1415,6 +1428,7 @@ class OAMSManager:
             follower_enabled = True
             if fps_state is not None:
                 fps_state.following = True
+                fps_state.last_follower_enable_time = self.reactor.monotonic()
             gcode_move.move_with_transform(new_position, speed)
             gcode_move.last_position = new_position
             move_queued = True
@@ -1590,6 +1604,7 @@ class OAMSManager:
         fps_state.current_spool_idx = None
         fps_state.current_oams = None
         fps_state.following = False
+        fps_state.last_follower_enable_time = 0.0
         fps_state.direction = None
         fps_state.encoder = oams.encoder_clicks
         fps_state.encoder_samples.clear()
@@ -1706,6 +1721,7 @@ class OAMSManager:
         if oams.current_spool is None:
             fps_state.state_name = FPSLoadState.UNLOADED
             fps_state.following = False
+            fps_state.last_follower_enable_time = 0.0
             fps_state.direction = None
             fps_state.current_group = None
             fps_state.current_spool_idx = None
@@ -1745,6 +1761,7 @@ class OAMSManager:
 
             fps_state.state_name = FPSLoadState.UNLOADED
             fps_state.following = False
+            fps_state.last_follower_enable_time = 0.0
             fps_state.direction = None
             fps_state.since = self.reactor.monotonic()
             fps_state.current_group = None
@@ -1873,6 +1890,7 @@ class OAMSManager:
                     spool_idx=bay_index,
                 )
                 fps_state.following = False
+                fps_state.last_follower_enable_time = 0.0
                 self._ensure_follower_active(
                     fps_state,
                     reason=f"spool load for group {group_name}",
@@ -1916,6 +1934,7 @@ class OAMSManager:
             fps_state.current_spool_idx = None
             fps_state.current_oams = None
             fps_state.following = False
+            fps_state.last_follower_enable_time = 0.0
             fps_state.direction = None
             fps_state.encoder = None
             fps_state.encoder_samples.clear()
@@ -1994,6 +2013,7 @@ class OAMSManager:
         fps_state: 'FPSState',
         reason: Optional[str] = None,
         preferred_direction: Optional[int] = None,
+        force: bool = False,
     ) -> None:
         """Enable the follower for the provided FPS if it isn't already running."""
 
@@ -2004,6 +2024,8 @@ class OAMSManager:
         oams = self.oams.get(oams_name)
         if oams is None or not hasattr(oams, "set_oams_follower"):
             return
+
+        now = self.reactor.monotonic()
 
         spool_idx = (
             fps_state.current_spool_idx
@@ -2023,7 +2045,13 @@ class OAMSManager:
 
         fps_state.stuck_spool_restore_direction = direction
 
-        if fps_state.following and fps_state.direction == direction:
+        if (
+            not force
+            and fps_state.following
+            and fps_state.direction == direction
+            and now - (fps_state.last_follower_enable_time or 0.0)
+                < FOLLOWER_RECOVERY_RETRY_INTERVAL
+        ):
             self._remember_lane_direction(
                 fps_state,
                 direction,
@@ -2038,6 +2066,7 @@ class OAMSManager:
             oams.set_oams_follower(1, direction)
             fps_state.following = True
             fps_state.direction = direction
+            fps_state.last_follower_enable_time = now
             self._remember_lane_direction(
                 fps_state,
                 direction,
@@ -2306,6 +2335,26 @@ class OAMSManager:
             )
             now = self.reactor.monotonic()
 
+            preferred_direction = None
+            if fps_state.direction in (0, 1):
+                preferred_direction = fps_state.direction
+            elif fps_state.stuck_spool_restore_direction in (0, 1):
+                preferred_direction = fps_state.stuck_spool_restore_direction
+
+            needs_recovery = (
+                pressure <= FOLLOWER_RECOVERY_PRESSURE or not fps_state.following
+            )
+            last_enable = fps_state.last_follower_enable_time or 0.0
+            if needs_recovery and now - last_enable >= FOLLOWER_RECOVERY_RETRY_INTERVAL:
+                self._ensure_follower_active(
+                    fps_state,
+                    reason="automatic follower recovery",
+                    preferred_direction=preferred_direction,
+                    force=True,
+                )
+                fps_state.stuck_spool_start_time = now
+                return eventtime + self.clog_monitor_period
+
             if pressure <= STUCK_SPOOL_PRESSURE_TRIGGER:
                 if fps_state.stuck_spool_start_time is None:
                     fps_state.stuck_spool_start_time = now
@@ -2325,6 +2374,7 @@ class OAMSManager:
                         try:
                             oams.set_oams_follower(0, direction)
                             fps_state.following = False
+                            fps_state.last_follower_enable_time = 0.0
                             fps_state.direction = direction
                             logging.info(
                                 "OAMS: Disabled follower on %s spool %s due to stuck spool detection",
