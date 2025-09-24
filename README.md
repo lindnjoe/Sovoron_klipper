@@ -1,4 +1,4 @@
-# Klipper Klipper AFC & OpenAMS Integration Guide
+# Klipper StealthChanger AFC & OpenAMS Integration Guide
 
 This repository packages the firmware modules, configuration, and macros required to run Klipper printers with both the Automatic Filament Changer (AFC) and the OpenAMS multi-spool management system. It combines the upstream `klipper_openams` Python extension with a complete Klipper configuration tailored for dual OpenAMS units feeding an AFC-based toolchanger.
 
