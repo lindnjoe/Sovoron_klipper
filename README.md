@@ -252,4 +252,3 @@ This repository packages the firmware modules, configuration, and macros require
 
 
 With these references, you can tune every aspect of the Sovoron AFC + OpenAMS integration, extend it to additional lanes or AMS units, and understand how the runtime code and macros cooperate to keep filament flowing reliably.
-

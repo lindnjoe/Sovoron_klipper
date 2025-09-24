@@ -1754,7 +1754,11 @@ class OAMSManager:
             if not oam.is_bay_ready(bay_index):
                 continue
 
-            attempted_locations.append(f"{getattr(oam, 'name', 'unknown')} bay {bay_index}")
+
+            attempted_locations.append(
+                f"{getattr(oam, 'name', 'unknown')} bay {bay_index}"
+            )
+
 
             fps_state.state_name = FPSLoadState.LOADING
             fps_state.encoder_samples.clear()
@@ -1764,14 +1768,15 @@ class OAMSManager:
             fps_state.current_spool_idx = bay_index
 
             success, message = oam.load_spool(bay_index)
-
             if success:
                 fps_state.current_group = group_name
                 fps_state.current_oams = oam.name
                 fps_state.current_spool_idx = bay_index
                 fps_state.state_name = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
-   if fps_state.direction not in (0, 1):
+
+                if fps_state.direction not in (0, 1):
+
                     fps_state.direction = 1
                 self.current_group = group_name
                 fps_state.encoder_samples.clear()
@@ -1841,7 +1846,10 @@ class OAMSManager:
             attempts_summary = ", ".join(attempted_locations)
             detail = last_failure_message or "No detailed error provided"
             final_message = (
-                f"All ready bays failed to load for group {group_name} after automatic retries "
+
+                "All ready bays failed to load for group "
+                f"{group_name} after automatic retries "
+
                 f"(attempted: {attempts_summary}). Last error: {detail}"
             )
             logging.error("OAMS: %s", final_message)
