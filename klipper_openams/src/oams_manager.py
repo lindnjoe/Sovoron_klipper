@@ -582,15 +582,17 @@ class OAMSManager:
         """
         for fps_name, fps_state in self.current_state.fps_state.items():
             fps_state.current_group, current_oams, fps_state.current_spool_idx = self.determine_current_loaded_group(fps_name)
-            
+
             if current_oams is not None:
                 fps_state.current_oams = current_oams.name
             else:
                 fps_state.current_oams = None
-                
+
             if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
                 fps_state.state_name = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
+                if fps_state.direction not in (0, 1) or fps_state.direction == 0:
+                    fps_state.direction = 1
         
     def handle_ready(self) -> None:
         """
@@ -1922,7 +1924,11 @@ class OAMSManager:
         if should_restore:
             direction = fps_state.stuck_spool_restore_direction
             if direction not in (0, 1):
-                direction = 0
+
+                direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+            if direction == 0:
+                direction = 1
+
 
             try:
                 active_oams.set_oams_follower(1, direction)
@@ -2127,12 +2133,22 @@ class OAMSManager:
                     fps_state.stuck_spool_start_time = None
 
                     fps_state.stuck_spool_should_restore_follower = True
-                    direction = fps_state.direction if fps_state.direction in (0, 1) else 0
+                    direction = (
+                        fps_state.direction
+                        if fps_state.direction in (0, 1)
+                        else 1
+                    )
+                    if direction == 0:
+                        direction = 1
+
                     fps_state.stuck_spool_restore_direction = direction
                     if hasattr(oams, "set_oams_follower"):
                         try:
                             oams.set_oams_follower(0, direction)
                             fps_state.following = False
+
+                            fps_state.direction = direction
+
                             logging.info(
                                 "OAMS: Disabled follower on %s spool %s due to stuck spool detection",
                                 getattr(oams, "name", fps_state.current_oams),
