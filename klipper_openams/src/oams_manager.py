@@ -2038,12 +2038,85 @@ class OAMSManager:
 
         
     def _pause_printer_message(self, message):
+        """Report an error and pause the printer when it is safe to do so."""
+
         logging.info(f"OAMS: {message}")
+
         gcode = self.printer.lookup_object("gcode")
-        message = f"Print has been paused: {message}"
-        gcode.run_script(f"M118 {message}")
-        gcode.run_script(f"M114 {message}")
-        gcode.run_script("PAUSE")
+        formatted = f"Print has been paused: {message}"
+
+        try:
+            gcode.run_script(f"M118 {formatted}")
+        except Exception:
+            logging.exception("OAMS: Failed to send pause notification via M118")
+
+        eventtime = self.reactor.monotonic()
+        should_pause = True
+
+        pause_resume = self.pause_resume
+        if pause_resume is not None:
+            try:
+                is_paused = bool(
+                    pause_resume.get_status(eventtime).get("is_paused")
+                )
+                if is_paused:
+                    should_pause = False
+            except Exception:
+                logging.exception("OAMS: Failed to query pause state before pausing")
+                should_pause = False
+
+        idle_timeout = self.printer.lookup_object("idle_timeout", None)
+        if should_pause and idle_timeout is not None:
+            try:
+                idle_state = idle_timeout.get_status(eventtime).get("state")
+                should_pause = idle_state == "Printing"
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to query idle timeout state before pausing"
+                )
+                should_pause = False
+
+        if should_pause and self.print_stats is not None:
+            try:
+                stats_state = self.print_stats.get_status(eventtime).get("state")
+                should_pause = stats_state == "printing"
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to query print stats state before pausing"
+                )
+                should_pause = False
+
+        if should_pause and self.toolhead is not None:
+            try:
+                homed_axes = self.toolhead.get_status(eventtime).get(
+                    "homed_axes", ""
+                )
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to query homed axes before pausing"
+                )
+                homed_axes = ""
+
+            if isinstance(homed_axes, (list, tuple, set)):
+                axes = "".join(homed_axes)
+            else:
+                axes = str(homed_axes)
+
+            if not all(axis in axes for axis in "xyz"):
+                should_pause = False
+
+        if not should_pause:
+            return
+
+        try:
+            gcode.run_script(f"M114 {formatted}")
+        except Exception:
+            logging.exception("OAMS: Failed to report position before pausing")
+
+        try:
+            gcode.run_script("PAUSE")
+        except Exception:
+            logging.exception("OAMS: Failed to execute PAUSE command")
 
     def _ensure_follower_active(
         self,
