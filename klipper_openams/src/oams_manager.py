@@ -1652,6 +1652,8 @@ class OAMSManager:
                 message = retry_message
 
         if success:
+            self._clear_stuck_spool_state(fps_state, restore_following=False)
+
             fps_state.state_name = FPSLoadState.UNLOADED
             fps_state.following = False
             fps_state.direction = 0
@@ -1769,13 +1771,18 @@ class OAMSManager:
                 fps_state.current_spool_idx = bay_index
                 fps_state.state_name = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
-                fps_state.following = False
-                if fps_state.direction not in (0, 1):
+   if fps_state.direction not in (0, 1):
                     fps_state.direction = 1
                 self.current_group = group_name
                 fps_state.encoder_samples.clear()
                 fps_state.reset_clog_tracker()
-                fps_state.reset_stuck_spool_state()
+
+                self._clear_stuck_spool_state(
+                    fps_state,
+                    restore_following=False,
+                )
+                fps_state.following = False
+
                 self._ensure_follower_active(
                     fps_state,
                     reason=f"spool load for group {group_name}",
@@ -1811,6 +1818,10 @@ class OAMSManager:
                     retry_message,
                 )
 
+
+            self._clear_stuck_spool_state(fps_state, restore_following=False)
+
+
             fps_state.state_name = FPSLoadState.UNLOADED
             fps_state.current_group = None
             fps_state.current_spool_idx = None
@@ -1820,8 +1831,6 @@ class OAMSManager:
             fps_state.encoder = None
             fps_state.encoder_samples.clear()
             fps_state.reset_clog_tracker()
-
-            fps_state.reset_stuck_spool_state()
 
             fps_state.since = self.reactor.monotonic()
             self.current_group = None
@@ -1958,6 +1967,19 @@ class OAMSManager:
         restore_following: bool = True,
     ) -> None:
         """Clear any latched stuck-spool indicators for the provided FPS."""
+
+
+        had_latched_state = (
+            fps_state.stuck_spool_active
+            or fps_state.stuck_spool_led_asserted
+            or fps_state.stuck_spool_should_restore_follower
+            or fps_state.stuck_spool_last_oams is not None
+            or fps_state.stuck_spool_last_spool_idx is not None
+        )
+
+        if not had_latched_state:
+            fps_state.reset_stuck_spool_state()
+            return
 
         oams_name = fps_state.stuck_spool_last_oams
         spool_idx = fps_state.stuck_spool_last_spool_idx
@@ -2217,7 +2239,6 @@ class OAMSManager:
                         if fps_state.direction in (0, 1)
                         else 1
                     )
-
 
                     fps_state.stuck_spool_restore_direction = direction
                     if hasattr(oams, "set_oams_follower"):
