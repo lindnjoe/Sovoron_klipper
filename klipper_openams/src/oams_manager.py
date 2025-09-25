@@ -1433,10 +1433,22 @@ class OAMSManager:
             # initial load never latched the selection.
             oams.current_spool = spool_idx
 
+        try:
+            oams.clear_errors()
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to clear errors on %s before retrying unload",
+                oams.name,
+            )
+
+        # `clear_errors` queries hardware and may unset the cached selection.
+        if oams.current_spool != spool_idx:
+            oams.current_spool = spool_idx
+
         unload_attempts = 0
         unload_success = False
         unload_message: Optional[str] = None
-        while unload_attempts < 2 and not unload_success:
+        while unload_attempts < 3 and not unload_success:
             unload_attempts += 1
             unload_success, unload_message = oams.unload_spool()
             if unload_success:
@@ -1448,7 +1460,16 @@ class OAMSManager:
                     spool_idx,
                     unload_attempts,
                 )
-                self.reactor.pause(self.reactor.monotonic() + 0.2)
+                try:
+                    oams.clear_errors()
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to clear errors on %s while retrying unload",
+                        oams.name,
+                    )
+                if oams.current_spool != spool_idx:
+                    oams.current_spool = spool_idx
+                self.reactor.pause(self.reactor.monotonic() + 0.3)
                 continue
             break
 
