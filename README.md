@@ -1,3 +1,4 @@
+
 # Sovoron Klipper AFC + OpenAMS Reference
 
 This repository bundles the Klipper configuration, helper macros, and Python
@@ -175,3 +176,4 @@ purge routines without modifying the manager itself.
 With the pieces above you should have a clear map of how Sovoron’s AFC and
 OpenAMS integration works, what safeguards are active at runtime, and where to
 adjust parameters for your own hardware.
+
