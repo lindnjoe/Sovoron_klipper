@@ -1389,15 +1389,40 @@ class OAMSManager:
         )
 
         previous_state = fps_state.state_name
+        previous_current_spool = getattr(oams, "current_spool", None)
         fps_state.state_name = FPSLoadState.UNLOADING
 
-        unload_success, unload_message = oams.unload_spool()
+        if previous_current_spool != spool_idx:
+            # Ensure the hardware knows which bay to back out even if the
+            # initial load never latched the selection.
+            oams.current_spool = spool_idx
+
+        unload_attempts = 0
+        unload_success = False
+        unload_message: Optional[str] = None
+        while unload_attempts < 2 and not unload_success:
+            unload_attempts += 1
+            unload_success, unload_message = oams.unload_spool()
+            if unload_success:
+                break
+            if unload_message == "OAMS is busy":
+                logging.warning(
+                    "OAMS: %s still busy while backing out spool %d (attempt %d)",
+                    oams.name,
+                    spool_idx,
+                    unload_attempts,
+                )
+                self.reactor.pause(self.reactor.monotonic() + 0.2)
+                continue
+            break
+
         if not unload_success:
             message = (
                 f"Retry unload failed on {oams.name} spool {spool_idx}: {unload_message}"
             )
             logging.error("OAMS: %s", message)
             fps_state.state_name = previous_state
+            oams.current_spool = previous_current_spool
             return False, message
 
         try:
@@ -1422,10 +1447,14 @@ class OAMSManager:
             )
             fps_state.reset_load_retry_attempt()
             fps_state.state_name = previous_state
+            oams.current_spool = spool_idx
             return True, load_message
 
         message = f"Retry load failed on {oams.name} spool {spool_idx}: {load_message}"
         logging.error("OAMS: %s", message)
+
+        if oams.current_spool != spool_idx:
+            oams.current_spool = spool_idx
 
         second_unload_success, second_unload_message = oams.unload_spool()
         if not second_unload_success:
@@ -1442,6 +1471,7 @@ class OAMSManager:
                 oams.name,
             )
 
+        oams.current_spool = None
         fps_state.state_name = FPSLoadState.UNLOADED
         return False, message
 
