@@ -269,6 +269,7 @@ class FPSState:
 
         # Motion monitoring
         self.encoder_samples = deque(maxlen=ENCODER_SAMPLES)  # Recent encoder readings
+        self.load_retry_attempted: bool = False
 
         # Follower state
         self.following: bool = False  # Whether follower mode is active
@@ -298,6 +299,9 @@ class FPSState:
         """Clear runout position tracking."""
         self.runout_position = None
         self.runout_after_position = None
+
+    def reset_load_retry_attempt(self) -> None:
+        self.load_retry_attempted = False
 
     def reset_stuck_spool_state(self) -> None:
         """Clear any latched stuck spool indicators."""
@@ -1053,6 +1057,7 @@ class OAMSManager:
             self.current_group = None
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
+            fps_state.reset_load_retry_attempt()
             return True, message
 
         fps_state.state_name = FPSLoadState.LOADED
@@ -1074,6 +1079,7 @@ class OAMSManager:
                 continue
 
             fps_state.state_name = FPSLoadState.LOADING
+            fps_state.reset_load_retry_attempt()
             fps_state.encoder = oam.encoder_clicks
             fps_state.since = self.reactor.monotonic()
             fps_state.current_oams = oam.name
@@ -1094,6 +1100,7 @@ class OAMSManager:
                 self.current_group = group_name
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
+                fps_state.reset_load_retry_attempt()
                 return True, message
 
             fps_state.state_name = FPSLoadState.UNLOADED
@@ -1101,6 +1108,7 @@ class OAMSManager:
             fps_state.current_spool_idx = None
             fps_state.current_oams = None
             fps_state.reset_stuck_spool_state()
+            fps_state.reset_load_retry_attempt()
             return False, message
 
         return False, f"No spool available for group {group_name}"
@@ -1215,7 +1223,62 @@ class OAMSManager:
                     return self.printer.get_reactor().NEVER
             return eventtime + MONITOR_ENCODER_PERIOD
         return partial(_monitor_unload_speed, self)
-    
+
+    def _retry_loading_spool(self, fps_name: str, fps_state: 'FPSState', oams) -> bool:
+        """Attempt to unload and reload the currently loading spool once."""
+        if oams is None:
+            logging.error(
+                "OAMS: Cannot retry load on %s because no OAMS hardware is associated",
+                fps_name,
+            )
+            return False
+
+        spool_idx = fps_state.current_spool_idx
+        if spool_idx is None:
+            logging.error(
+                "OAMS: Cannot retry load on %s because no spool index is recorded",
+                fps_name,
+            )
+            return False
+
+        logging.warning(
+            "OAMS: Load speed too low on %s spool %d; retrying load once",
+            oams.name,
+            spool_idx,
+        )
+
+        unload_success, unload_message = oams.unload_spool()
+        if not unload_success:
+            logging.error(
+                "OAMS: Retry unload failed on %s spool %d: %s",
+                oams.name,
+                spool_idx,
+                unload_message,
+            )
+            return False
+
+        fps_state.encoder_samples.clear()
+        fps_state.encoder = oams.encoder_clicks
+        fps_state.since = self.reactor.monotonic()
+
+        load_success, load_message = oams.load_spool(spool_idx)
+        if load_success:
+            logging.info(
+                "OAMS: Retry load succeeded on %s spool %d",
+                oams.name,
+                spool_idx,
+            )
+            fps_state.reset_load_retry_attempt()
+            return True
+
+        logging.error(
+            "OAMS: Retry load failed on %s spool %d: %s",
+            oams.name,
+            spool_idx,
+            load_message,
+        )
+        return False
+
     def _monitor_load_speed_for_fps(self, fps_name):
         def _monitor_load_speed(self, eventtime):
             #logging.info("OAMS: Monitoring loading speed state: %s" % self.current_state.name)
@@ -1230,8 +1293,19 @@ class OAMSManager:
                 encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
                 logging.info("OAMS[%d] Load Monitor: Encoder diff %d" % (oams.oams_idx, encoder_diff))
                 if encoder_diff < MIN_ENCODER_DIFF:
+                    if not fps_state.load_retry_attempted:
+                        fps_state.load_retry_attempted = True
+                        if self._retry_loading_spool(fps_name, fps_state, oams):
+                            return eventtime + MONITOR_ENCODER_PERIOD
+                        logging.error(
+                            "OAMS: Unable to automatically retry load on %s spool %s",
+                            fps_name,
+                            fps_state.current_spool_idx,
+                        )
                     oams.set_led_error(fps_state.current_spool_idx, 1)
-                    self._pause_printer_message("Printer paused because the loading speed of the moving filament was too low")
+                    self._pause_printer_message(
+                        "Printer paused because the loading speed of the moving filament was too low after retry"
+                    )
                     self.stop_monitors()
                     return self.printer.get_reactor().NEVER
             return eventtime + MONITOR_ENCODER_PERIOD
