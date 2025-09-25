@@ -130,21 +130,33 @@ class OAMSRunoutMonitor:
                         return eventtime + MONITOR_ENCODER_PERIOD
                     fps_state.afc_delegation_active = False
                     fps_state.afc_delegation_until = 0.0
-                if is_printing and \
-                fps_state.state_name == "LOADED" and \
-                fps_state.current_group is not None and \
-                fps_state.current_spool_idx is not None and \
-                not bool(self.oams[fps_state.current_oams].hub_hes_value[fps_state.current_spool_idx]):
+                oams_obj = None
+                if fps_state.current_oams is not None:
+                    oams_obj = self.oams.get(fps_state.current_oams)
+                if (
+                    is_printing
+                    and fps_state.state_name == "LOADED"
+                    and fps_state.current_group is not None
+                    and fps_state.current_spool_idx is not None
+                    and oams_obj is not None
+                    and not bool(
+                        oams_obj.hub_hes_value[fps_state.current_spool_idx]
+                    )
+                ):
 
                     self.state = OAMSRunoutState.DETECTED
                     logging.info(f"OAMS: Runout detected on FPS {self.fps_name}, pausing for {PAUSE_DISTANCE} mm before coasting the follower.")
                     self.runout_position = fps.extruder.last_position
-            
+
             elif self.state == OAMSRunoutState.DETECTED:
                 traveled_distance = fps.extruder.last_position - self.runout_position
                 if traveled_distance >= PAUSE_DISTANCE:
                     logging.info("OAMS: Pause complete, coasting the follower.")
-                    self.oams[fps_state.current_oams].set_oams_follower(0, 1)
+                    oams_obj = None
+                    if fps_state.current_oams is not None:
+                        oams_obj = self.oams.get(fps_state.current_oams)
+                    if oams_obj is not None:
+                        oams_obj.set_oams_follower(0, 1)
                     self.bldc_clear_position = fps.extruder.last_position
                     self.runout_after_position = 0.0
                     self.state = OAMSRunoutState.COASTING
@@ -154,9 +166,11 @@ class OAMSRunoutMonitor:
                     fps.extruder.last_position - self.bldc_clear_position, 0.0
                 )
                 self.runout_after_position = traveled_distance_after_bldc_clear
-                path_length = getattr(
-                    self.oams[fps_state.current_oams], "filament_path_length", 0.0
-                )
+                path_length = 0.0
+                if fps_state.current_oams is not None:
+                    oams_obj = self.oams.get(fps_state.current_oams)
+                    if oams_obj is not None:
+                        path_length = getattr(oams_obj, "filament_path_length", 0.0)
                 effective_path_length = (
                     path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0
                 )
@@ -366,16 +380,10 @@ class OAMSManager:
         self.config = config
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
-        try:
-            self.toolhead = self.printer.lookup_object("toolhead")
-        except Exception:
-            logging.exception("OAMS: Failed to lookup toolhead during initialization")
-            self.toolhead = None
-        try:
-            self.print_stats = self.printer.lookup_object("print_stats")
-        except Exception:
-            logging.exception("OAMS: Failed to lookup print_stats during initialization")
-            self.print_stats = None
+
+        self.toolhead = None
+        self.print_stats = None
+
         
 
         # Hardware object collections
@@ -502,6 +510,15 @@ class OAMSManager:
             raise ValueError("No FPS found in system, this is required for OAMS to work")
 
         self._rebuild_group_fps_index()
+        self._refresh_runtime_objects()
+
+        # Clear any hardware fault indicators that may have been left from the
+        # previous session so startup begins from a clean slate.
+        for name, oam in self.oams.items():
+            try:
+                oam.clear_errors()
+            except Exception:
+                logging.exception("OAMS: Failed to clear errors on startup for %s", name)
 
         # Clear any hardware fault indicators that may have been left from the
         # previous session so startup begins from a clean slate.
@@ -528,6 +545,20 @@ class OAMSManager:
             name = name.split()[-1]  # Extract group name from full object name
             logging.info(f"OAMS: Adding group {name}")
             self.filament_groups[name] = group
+
+    def _refresh_runtime_objects(self) -> None:
+        """Resolve runtime printer objects that may not exist during __init__."""
+        try:
+            self.toolhead = self.printer.lookup_object("toolhead")
+        except Exception:
+            logging.debug("OAMS: toolhead object not yet available")
+            self.toolhead = None
+
+        try:
+            self.print_stats = self.printer.lookup_object("print_stats")
+        except Exception:
+            logging.debug("OAMS: print_stats object not yet available")
+            self.print_stats = None
     
     def determine_current_loaded_group(self, fps_name: str) -> Tuple[Optional[str], Optional[object], Optional[int]]:
         """
@@ -1198,6 +1229,7 @@ class OAMSManager:
 
         return False, f"No spool available for group {group_name}"
 
+
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
     def cmd_UNLOAD_FILAMENT(self, gcmd):
         fps_name = gcmd.get('FPS')
@@ -1223,6 +1255,7 @@ class OAMSManager:
         if not success or (message and message != "Spool unloaded successfully"):
             gcmd.respond_info(message)
         return
+
 
     cmd_LOAD_FILAMENT_help = "Load a spool from an specific group"
     def cmd_LOAD_FILAMENT(self, gcmd):
@@ -1372,8 +1405,20 @@ class OAMSManager:
             fps_state = self.current_state.fps_state[fps_name]
             oams = None
             if fps_state.current_oams is not None:
-                oams = self.oams[fps_state.current_oams]
-            if fps_state.state_name == "UNLOADING" and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_UNLOADING_SPEED_AFTER:
+
+                oams = self.oams.get(fps_state.current_oams)
+            if (
+                fps_state.state_name == "UNLOADING"
+                and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_UNLOADING_SPEED_AFTER
+            ):
+                if oams is None:
+                    logging.debug(
+                        "OAMS: Skipping unload speed monitor for %s because no active OAMS is associated",
+                        fps_name,
+                    )
+                    fps_state.encoder_samples.clear()
+                    return eventtime + MONITOR_ENCODER_PERIOD
+
                 fps_state.encoder_samples.append(oams.encoder_clicks)
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
                     return eventtime + MONITOR_ENCODER_PERIOD
@@ -1672,6 +1717,7 @@ class OAMSManager:
             load_message,
         )
 
+
         second_unload_success, second_unload_message = oams.unload_spool()
         if not second_unload_success:
             logging.warning(
@@ -1771,6 +1817,7 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state()
             return True
 
+
         logging.error(
             "OAMS: Fallback load to %s after stuck spool on %s failed: %s",
             group_to_load,
@@ -1790,8 +1837,18 @@ class OAMSManager:
             fps_state = self.current_state.fps_state[fps_name]
             oams = None
             if fps_state.current_oams is not None:
-                oams = self.oams[fps_state.current_oams]
-            if fps_state.state_name == "LOADING" and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_LOADING_SPEED_AFTER:
+                oams = self.oams.get(fps_state.current_oams)
+            if (
+                fps_state.state_name == "LOADING"
+                and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_LOADING_SPEED_AFTER
+            ):
+                if oams is None:
+                    logging.debug(
+                        "OAMS: Skipping load speed monitor for %s because no active OAMS is associated",
+                        fps_name,
+                    )
+                    fps_state.encoder_samples.clear()
+                    return eventtime + MONITOR_ENCODER_PERIOD
                 fps_state.encoder_samples.append(oams.encoder_clicks)
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
                     return eventtime + MONITOR_ENCODER_PERIOD
