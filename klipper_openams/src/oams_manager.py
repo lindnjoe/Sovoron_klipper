@@ -22,6 +22,7 @@ MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0  # seconds
 AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout triggers
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08  # Pressure indicating the spool is no longer feeding
 STUCK_SPOOL_DWELL = 6.0  # Seconds the pressure must remain below the threshold before pausing
+
 CLOG_PRESSURE_TARGET = 0.50
 CLOG_SENSITIVITY_LEVELS = {
     0: {
@@ -46,6 +47,7 @@ CLOG_SENSITIVITY_LEVELS = {
         "dwell": 5.0,
     },
 }
+
 
 
 
@@ -280,6 +282,7 @@ class FPSState:
         self.stuck_spool_active: bool = False
         self.stuck_spool_restore_follower: bool = False
 
+
         # Clog detection
         self.clog_tracking_active: bool = False
         self.clog_active: bool = False
@@ -293,6 +296,7 @@ class FPSState:
         self.clog_max_pressure: Optional[float] = None
 
 
+
     def reset_runout_positions(self) -> None:
         """Clear runout position tracking."""
         self.runout_position = None
@@ -303,6 +307,7 @@ class FPSState:
         self.stuck_spool_start_time = None
         self.stuck_spool_active = False
         self.stuck_spool_restore_follower = False
+
 
     def reset_clog_tracker(self) -> None:
         """Reset clog detection tracking for this FPS lane."""
@@ -316,6 +321,7 @@ class FPSState:
         self.clog_last_encoder = None
         self.clog_min_pressure = None
         self.clog_max_pressure = None
+
 
     def __repr__(self) -> str:
         return f"FPSState(state_name={self.state_name}, current_group={self.current_group}, current_oams={self.current_oams}, current_spool_idx={self.current_spool_idx})"
@@ -370,6 +376,7 @@ class OAMSManager:
             "reload_before_toolhead_distance",
             0.0,
         )
+
         raw_clog_sensitivity = config.get("clog_sensitivity", "medium")
         sensitivity_key = str(raw_clog_sensitivity).strip().lower()
         sensitivity_lookup = {
@@ -384,6 +391,7 @@ class OAMSManager:
         self.clog_settings = CLOG_SENSITIVITY_LEVELS.get(
             self.clog_sensitivity_level, CLOG_SENSITIVITY_LEVELS[1]
         )
+
 
         # Cached mappings
         self.group_to_fps: Dict[str, str] = {}
@@ -457,10 +465,12 @@ class OAMSManager:
             if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
                 fps_state.state_name = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
+
                 fps_state.reset_clog_tracker()
             else:
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
+
         
     def handle_ready(self) -> None:
         """
@@ -568,7 +578,9 @@ class OAMSManager:
         for (fps_name, fps_state) in self.current_state.fps_state.items():
             fps_state.encoder_samples.clear()
             fps_state.reset_stuck_spool_state()
+
             fps_state.reset_clog_tracker()
+
         for _, oam in self.oams.items():
             oam.clear_errors()
         self.determine_state()
@@ -1029,7 +1041,9 @@ class OAMSManager:
             fps_state.since = self.reactor.monotonic()
             self.current_group = None
             fps_state.reset_stuck_spool_state()
+
             fps_state.reset_clog_tracker()
+
             return True, "Spool already unloaded"
 
         fps_state.state_name = FPSLoadState.UNLOADING
@@ -1049,7 +1063,9 @@ class OAMSManager:
             fps_state.current_spool_idx = None
             self.current_group = None
             fps_state.reset_stuck_spool_state()
+
             fps_state.reset_clog_tracker()
+
             return True, message
 
         fps_state.state_name = FPSLoadState.LOADED
@@ -1077,7 +1093,9 @@ class OAMSManager:
             fps_state.current_oams = oam.name
             fps_state.current_spool_idx = bay_index
             fps_state.reset_stuck_spool_state()
+
             fps_state.reset_clog_tracker()
+
 
             success, message = oam.load_spool(bay_index)
 
@@ -1091,7 +1109,9 @@ class OAMSManager:
                 fps_state.direction = 1
                 self.current_group = group_name
                 fps_state.reset_stuck_spool_state()
+
                 fps_state.reset_clog_tracker()
+
                 return True, message
 
             fps_state.state_name = FPSLoadState.UNLOADED
@@ -1099,7 +1119,9 @@ class OAMSManager:
             fps_state.current_spool_idx = None
             fps_state.current_oams = None
             fps_state.reset_stuck_spool_state()
+
             fps_state.reset_clog_tracker()
+
             return False, message
 
         return False, f"No spool available for group {group_name}"
@@ -1236,7 +1258,9 @@ class OAMSManager:
             return eventtime + MONITOR_ENCODER_PERIOD
         return partial(_monitor_load_speed, self)
 
+
     def _monitor_clog_for_fps(self, fps_name):
+
         idle_timeout = self.printer.lookup_object("idle_timeout")
         settings = self.clog_settings
         pressure_window = settings["pressure_window"]
@@ -1244,12 +1268,15 @@ class OAMSManager:
         extrusion_window = settings["extrusion_window"]
         dwell = settings["dwell"]
 
+
         def _monitor_clog(self, eventtime):
+
             fps_state = self.current_state.fps_state[fps_name]
             fps = self.fpss[fps_name]
             oams = None
             if fps_state.current_oams is not None:
                 oams = self.oams.get(fps_state.current_oams)
+
 
             try:
                 idle_state = idle_timeout.get_status(eventtime)
@@ -1465,6 +1492,7 @@ class OAMSManager:
             fps_state.stuck_spool_start_time = None
             fps_state.stuck_spool_restore_follower = True
 
+
             if oams is not None and fps_state.current_spool_idx is not None:
                 try:
                     oams.set_led_error(fps_state.current_spool_idx, 1)
@@ -1508,7 +1536,9 @@ class OAMSManager:
         for (fps_name, fps_state) in self.current_state.fps_state.items():
             self.monitor_timers.append(reactor.register_timer(self._monitor_unload_speed_for_fps(fps_name), reactor.NOW))
             self.monitor_timers.append(reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), reactor.NOW))
+
             self.monitor_timers.append(reactor.register_timer(self._monitor_clog_for_fps(fps_name), reactor.NOW))
+
             self.monitor_timers.append(reactor.register_timer(self._monitor_stuck_spool_for_fps(fps_name), reactor.NOW))
 
             def _reload_callback(fps_name=fps_name, fps_state=fps_state):
