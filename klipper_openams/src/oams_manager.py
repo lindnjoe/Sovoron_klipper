@@ -136,11 +136,19 @@ class OAMSRunoutMonitor:
                         return eventtime + MONITOR_ENCODER_PERIOD
                     fps_state.afc_delegation_active = False
                     fps_state.afc_delegation_until = 0.0
-                if is_printing and \
-                fps_state.state_name == "LOADED" and \
-                fps_state.current_group is not None and \
-                fps_state.current_spool_idx is not None and \
-                not bool(self.oams[fps_state.current_oams].hub_hes_value[fps_state.current_spool_idx]):
+                oams = self._get_oams(fps_state.current_oams)
+                if (
+                    is_printing
+                    and fps_state.state_name == "LOADED"
+                    and fps_state.current_group is not None
+                    and fps_state.current_spool_idx is not None
+                    and oams is not None
+                    and not bool(
+                        getattr(oams, "hub_hes_value", [1, 1, 1, 1])[
+                            fps_state.current_spool_idx
+                        ]
+                    )
+                ):
 
                     self.state = OAMSRunoutState.DETECTED
                     logging.info(f"OAMS: Runout detected on FPS {self.fps_name}, pausing for {PAUSE_DISTANCE} mm before coasting the follower.")
@@ -155,7 +163,8 @@ class OAMSRunoutMonitor:
                         if fps_state.direction in (0, 1)
                         else 1
                     )
-                    self.oams[fps_state.current_oams].set_oams_follower(0, direction)
+                    if oams is not None and hasattr(oams, "set_oams_follower"):
+                        oams.set_oams_follower(0, direction)
                     fps_state.following = False
                     fps_state.direction = direction
                     fps_state.last_follower_enable_time = 0.0
@@ -168,9 +177,8 @@ class OAMSRunoutMonitor:
                     fps.extruder.last_position - self.bldc_clear_position, 0.0
                 )
                 self.runout_after_position = traveled_distance_after_bldc_clear
-                path_length = getattr(
-                    self.oams[fps_state.current_oams], "filament_path_length", 0.0
-                )
+                oams = self._get_oams(fps_state.current_oams)
+                path_length = getattr(oams, "filament_path_length", 0.0)
                 effective_path_length = (
                     path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0
                 )
@@ -407,7 +415,8 @@ class OAMSManager:
 
         # Hardware object collections
         self.filament_groups: Dict[str, Any] = {}  # Group name -> FilamentGroup object
-        self.oams: Dict[str, Any] = {}  # OAMS name -> OAMS object
+        self.oams: Dict[str, Any] = {}  # Canonical OAMS name -> OAMS object
+        self._oams_aliases: Dict[str, str] = {}  # Alias -> canonical OAMS name
         self.fpss: Dict[str, Any] = {}  # FPS name -> FPS object
 
         # State management
@@ -575,6 +584,9 @@ class OAMSManager:
             attributes["oams"][status_name] = oam_status
             if status_name != name:
                 attributes["oams"][name] = oam_status
+            for alias, canonical in self._oams_aliases.items():
+                if canonical == name and alias not in (status_name, name):
+                    attributes["oams"][alias] = oam_status
 
         for fps_name, fps_state in self.current_state.fps_state.items():
             attributes[fps_name] = {
@@ -601,7 +613,7 @@ class OAMSManager:
             fps_state.current_group, current_oams, fps_state.current_spool_idx = self.determine_current_loaded_group(fps_name)
 
             if current_oams is not None:
-                fps_state.current_oams = current_oams.name
+                fps_state.current_oams = self._resolve_oams_name(current_oams.name)
             else:
                 fps_state.current_oams = None
 
@@ -651,7 +663,13 @@ class OAMSManager:
     def _initialize_oams(self) -> None:
         """Discover and register all OAMS hardware units."""
         for name, oam in self.printer.lookup_objects(module="oams"):
-            self.oams[name] = oam
+            canonical = getattr(oam, "name", None)
+            if not canonical:
+                canonical = name.split()[-1]
+            self.oams[canonical] = oam
+            self._oams_aliases[canonical] = canonical
+            if name != canonical:
+                self._oams_aliases[name] = canonical
         
     def _initialize_filament_groups(self) -> None:
         """Discover and register all filament group configurations."""
@@ -767,7 +785,12 @@ class OAMSManager:
         if fps_state.state_name == "UNLOADING":
             gcmd.respond_info(f"FPS {fps_name} is currently unloading a spool")
             return
-        hardware = self.oams[fps_state.current_oams]
+        hardware = self._get_oams(fps_state.current_oams)
+        if hardware is None:
+            gcmd.respond_info(
+                f"OAMS {fps_state.current_oams or 'unknown'} not found for {fps_name}"
+            )
+            return
         hardware.set_oams_follower(enable, direction)
         fps_state.following = bool(enable)
         if direction in (0, 1):
@@ -818,8 +841,28 @@ class OAMSManager:
             if not group:
                 continue
             for oam, bay_index in group.bays:
-                mapping[(oam.name, bay_index)] = lane_name
+                resolved_name = self._resolve_oams_name(oam.name)
+                if resolved_name is not None:
+                    mapping[(resolved_name, bay_index)] = lane_name
         self._lane_by_location = mapping
+
+    def _resolve_oams_name(self, name: Optional[str]) -> Optional[str]:
+        """Return the canonical OAMS name for the provided identifier."""
+
+        if not name:
+            return None
+        key = name.strip() if isinstance(name, str) else str(name).strip()
+        if not key:
+            return None
+        return self._oams_aliases.get(key, key)
+
+    def _get_oams(self, name: Optional[str]):
+        """Lookup an OAMS object by any known identifier."""
+
+        canonical = self._resolve_oams_name(name)
+        if not canonical:
+            return None
+        return self.oams.get(canonical)
 
     def _lane_direction_key(
         self,
@@ -834,7 +877,7 @@ class OAMSManager:
             index = int(spool_idx)
         except (TypeError, ValueError):
             return None
-        return oams_name, index
+        return self._resolve_oams_name(oams_name), index
 
     def _remember_lane_direction(
         self,
@@ -903,8 +946,9 @@ class OAMSManager:
                     self._canonical_lane_by_group[canonical_group] = lane_name
                     updated = True
             unit_name = getattr(lane, "unit", None)
-            if unit_name and lane_name not in self._lane_unit_map:
-                self._lane_unit_map[lane_name] = unit_name
+            resolved_unit = self._resolve_oams_name(unit_name)
+            if resolved_unit and lane_name not in self._lane_unit_map:
+                self._lane_unit_map[lane_name] = resolved_unit
         if updated:
             self._rebuild_lane_location_index()
 
@@ -969,8 +1013,9 @@ class OAMSManager:
                         self._canonical_lane_by_group[canonical_candidate] = lane_name
                         updated = True
                 unit_name = getattr(lane, "unit", None)
-                if unit_name and lane_name not in self._lane_unit_map:
-                    self._lane_unit_map[lane_name] = unit_name
+                resolved_unit = self._resolve_oams_name(unit_name)
+                if resolved_unit and lane_name not in self._lane_unit_map:
+                    self._lane_unit_map[lane_name] = resolved_unit
                 if updated:
                     self._rebuild_lane_location_index()
 
@@ -1721,7 +1766,7 @@ class OAMSManager:
         if fps_state.current_oams is None:
             return False, f"FPS {fps_name} has no OAMS loaded"
 
-        oams = self.oams.get(fps_state.current_oams)
+        oams = self._get_oams(fps_state.current_oams)
         if oams is None:
             return False, f"OAMS {fps_state.current_oams} not found for FPS {fps_name}"
 
@@ -1742,7 +1787,7 @@ class OAMSManager:
         fps_state.state_name = FPSLoadState.UNLOADING
         fps_state.encoder = oams.encoder_clicks
         fps_state.since = self.reactor.monotonic()
-        fps_state.current_oams = oams.name
+        fps_state.current_oams = self._resolve_oams_name(oams.name)
         fps_state.current_spool_idx = oams.current_spool
         self._cancel_pending_follower_assertion(fps_state)
 
@@ -1783,74 +1828,6 @@ class OAMSManager:
         fps_state.state_name = FPSLoadState.LOADED
         return False, message
 
-    def _attempt_unload_retry(
-        self,
-        fps_name: str,
-        fps_state,
-        oams,
-        last_message: Optional[str],
-    ) -> Tuple[bool, Optional[str]]:
-        """Attempt an automatic unload retry after recovering from an error."""
-        if not self.unload_retry_enabled:
-            return False, last_message
-
-        if oams.action_status_code != UNLOAD_RETRY_ERROR_CODE:
-            return False, last_message
-
-        extruder_name = getattr(self.fpss[fps_name], "extruder_name", None)
-        if not extruder_name:
-            logging.error(
-                "OAMS: Unable to perform unload retry for %s, extruder not configured",
-                fps_name,
-            )
-            return False, last_message
-
-        logging.warning(
-            "OAMS: Unload on %s failed with code %s, attempting automatic recovery",
-            fps_name,
-            oams.action_status_code,
-        )
-
-        gcode = self.printer.lookup_object("gcode")
-        if self.unload_retry_push_distance != 0.0:
-            command = (
-                f"FORCE_MOVE STEPPER={extruder_name} "
-                f"DISTANCE={self.unload_retry_push_distance:.3f} "
-                f"VELOCITY={self.unload_retry_push_speed:.3f}"
-            )
-            try:
-                logging.info(
-                    "OAMS: Jogging extruder %s by %.3fmm before retry",
-                    extruder_name,
-                    self.unload_retry_push_distance,
-                )
-                gcode.run_script(command)
-            except Exception:
-                logging.exception(
-                    "OAMS: Failed to jog extruder %s prior to unload retry",
-                    extruder_name,
-                )
-
-        self._clear_all_errors()
-
-        fps_state.state_name = FPSLoadState.UNLOADING
-        fps_state.encoder = oams.encoder_clicks
-        fps_state.since = self.reactor.monotonic()
-        fps_state.current_oams = oams.name
-        fps_state.current_spool_idx = oams.current_spool
-
-        retry_success, retry_message = oams.unload_spool()
-        if retry_success:
-            logging.info("OAMS: Automatic unload retry succeeded on %s", fps_name)
-            return True, retry_message
-
-        logging.error(
-            "OAMS: Automatic unload retry failed on %s: %s",
-            fps_name,
-            retry_message,
-        )
-        return False, retry_message
-
     def _reset_failed_load_state(self, fps_state: 'FPSState') -> None:
         """Return an FPS state to an unloaded baseline after a failed load."""
 
@@ -1881,8 +1858,6 @@ class OAMSManager:
         attempted_locations: List[str] = []
         last_failure_message: Optional[str] = None
 
-        max_attempts = 2
-
         self._cancel_pending_follower_assertion(fps_state)
 
         for (oam, bay_index) in self.filament_groups[group_name].bays:
@@ -1893,101 +1868,72 @@ class OAMSManager:
                 f"{getattr(oam, 'name', 'unknown')} bay {bay_index}"
             )
 
-            for attempt_index in range(max_attempts):
-                attempt_number = attempt_index + 1
-                fps_state.state_name = FPSLoadState.LOADING
-                fps_state.encoder_samples.clear()
-                fps_state.encoder = oam.encoder_clicks
-                fps_state.since = self.reactor.monotonic()
-                fps_state.current_oams = oam.name
+            fps_state.state_name = FPSLoadState.LOADING
+            fps_state.encoder_samples.clear()
+            fps_state.encoder = oam.encoder_clicks
+            fps_state.since = self.reactor.monotonic()
+            fps_state.current_oams = self._resolve_oams_name(oam.name)
+            fps_state.current_spool_idx = bay_index
+
+            success, message = oam.load_spool(bay_index)
+            if success:
+                fps_state.current_group = group_name
+                fps_state.current_oams = self._resolve_oams_name(oam.name)
                 fps_state.current_spool_idx = bay_index
-
-                success, message = oam.load_spool(bay_index)
-                if success:
-                    fps_state.current_group = group_name
-                    fps_state.current_oams = oam.name
-                    fps_state.current_spool_idx = bay_index
-                    fps_state.state_name = FPSLoadState.LOADED
-                    fps_state.since = self.reactor.monotonic()
-                    self.current_group = group_name
-                    fps_state.encoder_samples.clear()
-                    fps_state.reset_clog_tracker()
-                    self._clear_stuck_spool_state(
-                        fps_state,
-                        restore_following=False,
-                    )
-                    direction = self._apply_cached_lane_direction(
-                        fps_state,
-                        oams_name=oam.name,
-                        spool_idx=bay_index,
-                    )
-                    fps_state.following = False
-                    fps_state.last_follower_enable_time = 0.0
-                    self._ensure_follower_active(
-                        fps_state,
-                        reason=f"spool load for group {group_name}",
-                        preferred_direction=direction,
-                        force=True,
-                    )
-                    return True, message
-
-                failure_reason = message or "Unknown load failure"
-                logging.warning(
-                    "OAMS: Failed load attempt %s for group %s from %s bay %s: %s",
-                    attempt_number,
-                    group_name,
-                    getattr(oam, "name", "unknown"),
-                    bay_index,
-                    failure_reason,
-                )
-
-                retry_success, retry_message = self._attempt_unload_retry(
-                    fps_name,
+                fps_state.state_name = FPSLoadState.LOADED
+                fps_state.since = self.reactor.monotonic()
+                self.current_group = group_name
+                fps_state.encoder_samples.clear()
+                fps_state.reset_clog_tracker()
+                self._clear_stuck_spool_state(
                     fps_state,
-                    oam,
-                    message,
+                    restore_following=False,
                 )
-                if retry_success:
-                    logging.info(
-                        "OAMS: Cleared stalled load on %s bay %s before retrying",
+                direction = self._apply_cached_lane_direction(
+                    fps_state,
+                    oams_name=self._resolve_oams_name(oam.name),
+                    spool_idx=bay_index,
+                )
+                fps_state.following = False
+                fps_state.last_follower_enable_time = 0.0
+                self._ensure_follower_active(
+                    fps_state,
+                    reason=f"spool load for group {group_name}",
+                    preferred_direction=direction,
+                    force=True,
+                )
+                return True, message
+
+            failure_reason = message or "Unknown load failure"
+            logging.warning(
+                "OAMS: Failed load attempt for group %s from %s bay %s: %s",
+                group_name,
+                getattr(oam, "name", "unknown"),
+                bay_index,
+                failure_reason,
+            )
+
+            if hasattr(oam, "clear_errors"):
+                try:
+                    oam.clear_errors()
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to clear errors on %s after load failure",
                         getattr(oam, "name", "unknown"),
-                        bay_index,
-                    )
-                elif retry_message:
-                    logging.warning(
-                        "OAMS: Automatic unload retry failed for %s bay %s: %s",
-                        getattr(oam, "name", "unknown"),
-                        bay_index,
-                        retry_message,
                     )
 
-                if hasattr(oam, "clear_errors"):
-                    try:
-                        oam.clear_errors()
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to clear errors on %s before retry",
-                            getattr(oam, "name", "unknown"),
-                        )
+            self._clear_stuck_spool_state(fps_state, restore_following=False)
+            self._reset_failed_load_state(fps_state)
+            self.current_group = None
 
-                self._clear_stuck_spool_state(fps_state, restore_following=False)
-
-                self._reset_failed_load_state(fps_state)
-                self.current_group = None
-
-                last_failure_message = failure_reason
-
-                if attempt_index < max_attempts - 1:
-                    continue
-                break
+            last_failure_message = failure_reason
 
         if attempted_locations:
             attempts_summary = ", ".join(attempted_locations)
             detail = last_failure_message or "No detailed error provided"
             final_message = (
                 "All ready bays failed to load for group "
-                f"{group_name} after automatic retries "
-                f"(attempted: {attempts_summary}). Last error: {detail}"
+                f"{group_name} (attempted: {attempts_summary}). Last error: {detail}"
             )
             logging.error("OAMS: %s", final_message)
             return False, final_message
@@ -2131,7 +2077,7 @@ class OAMSManager:
         if oams_name is None:
             return
 
-        oams = self.oams.get(oams_name)
+        oams = self._get_oams(oams_name)
         if oams is None or not hasattr(oams, "set_oams_follower"):
             return
 
@@ -2210,7 +2156,7 @@ class OAMSManager:
 
         oams_name = fps_state.stuck_spool_last_oams
         spool_idx = fps_state.stuck_spool_last_spool_idx
-        stored_oams = self.oams.get(oams_name) if oams_name is not None else None
+        stored_oams = self._get_oams(oams_name)
 
         if fps_state.stuck_spool_led_asserted and stored_oams is not None and spool_idx is not None:
             try:
@@ -2223,11 +2169,7 @@ class OAMSManager:
                 )
 
         active_oams_name = fps_state.current_oams or oams_name
-        active_oams = (
-            self.oams.get(active_oams_name)
-            if active_oams_name is not None
-            else stored_oams
-        )
+        active_oams = self._get_oams(active_oams_name) or stored_oams
 
         cleared_ids = set()
         for unit, unit_name in (
@@ -2294,9 +2236,9 @@ class OAMSManager:
         def _monitor_unload_speed(self, eventtime):
             #logging.info("OAMS: Monitoring unloading speed state: %s" % self.current_state.name)
             fps_state = self.current_state.fps_state[fps_name]
-            oams = None
-            if fps_state.current_oams is not None:
-                oams = self.oams[fps_state.current_oams]
+            oams = self._get_oams(fps_state.current_oams)
+            if oams is None:
+                return eventtime + MONITOR_ENCODER_PERIOD
             if fps_state.state_name == "UNLOADING" and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_UNLOADING_SPEED_AFTER:
                 fps_state.encoder_samples.append(oams.encoder_clicks)
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
@@ -2321,9 +2263,9 @@ class OAMSManager:
         def _monitor_load_speed(self, eventtime):
             #logging.info("OAMS: Monitoring loading speed state: %s" % self.current_state.name)
             fps_state = self.current_state.fps_state[fps_name]
-            oams = None
-            if fps_state.current_oams is not None:
-                oams = self.oams[fps_state.current_oams]
+            oams = self._get_oams(fps_state.current_oams)
+            if oams is None:
+                return eventtime + MONITOR_ENCODER_PERIOD
             if fps_state.state_name == "LOADING" and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_LOADING_SPEED_AFTER:
                 fps_state.encoder_samples.append(oams.encoder_clicks)
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
@@ -2538,7 +2480,7 @@ class OAMSManager:
                 fps_state.stuck_spool_start_time = None
                 return eventtime + self.clog_monitor_period
 
-            oams = self.oams.get(fps_state.current_oams)
+            oams = self._get_oams(fps_state.current_oams)
             if oams is None:
                 fps_state.stuck_spool_start_time = None
                 return eventtime + self.clog_monitor_period
@@ -2708,7 +2650,7 @@ class OAMSManager:
                 fps_state.reset_clog_tracker()
                 return eventtime + self.clog_monitor_period
 
-            oams = self.oams.get(fps_state.current_oams)
+            oams = self._get_oams(fps_state.current_oams)
             if oams is None:
                 fps_state.reset_clog_tracker()
                 return eventtime + self.clog_monitor_period
