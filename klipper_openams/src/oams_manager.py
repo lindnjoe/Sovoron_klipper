@@ -493,6 +493,14 @@ class OAMSManager:
 
         self._rebuild_group_fps_index()
 
+        # Clear any hardware fault indicators that may have been left from the
+        # previous session so startup begins from a clean slate.
+        for name, oam in self.oams.items():
+            try:
+                oam.clear_errors()
+            except Exception:
+                logging.exception("OAMS: Failed to clear errors on startup for %s", name)
+
         # Initialize system state and start monitoring
         self.determine_state()
         self.start_monitors()
