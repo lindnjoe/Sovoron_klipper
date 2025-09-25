@@ -1798,6 +1798,9 @@ class OAMSManager:
                 encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
                 logging.info("OAMS[%d] Load Monitor: Encoder diff %d" % (oams.oams_idx, encoder_diff))
                 if encoder_diff < MIN_ENCODER_DIFF:
+                    pause_reason = (
+                        "Printer paused because the loading speed of the moving filament was too low after retry"
+                    )
                     if not fps_state.load_retry_attempted:
                         fps_state.load_retry_attempted = True
                         retry_success, retry_message = self._retry_loading_spool(
@@ -1812,16 +1815,29 @@ class OAMSManager:
                                 fps_state.current_spool_idx,
                                 retry_message,
                             )
+                            pause_reason = (
+                                "Automatic load retry failed on %s spool %s: %s"
+                                % (
+                                    fps_name,
+                                    fps_state.current_spool_idx,
+                                    retry_message,
+                                )
+                            )
                         else:
                             logging.error(
                                 "OAMS: Unable to automatically retry load on %s spool %s",
                                 fps_name,
                                 fps_state.current_spool_idx,
                             )
+                            pause_reason = (
+                                "Automatic load retry failed on %s spool %s"
+                                % (
+                                    fps_name,
+                                    fps_state.current_spool_idx,
+                                )
+                            )
                     oams.set_led_error(fps_state.current_spool_idx, 1)
-                    self._pause_printer_message(
-                        "Printer paused because the loading speed of the moving filament was too low after retry"
-                    )
+                    self._pause_printer_message(pause_reason)
                     self.stop_monitors()
                     return self.printer.get_reactor().NEVER
             return eventtime + MONITOR_ENCODER_PERIOD
