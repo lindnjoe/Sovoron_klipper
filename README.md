@@ -94,7 +94,7 @@ This repository packages the firmware modules, configuration, and macros require
 #### Manager & Includes
 | Section | Settings | Description |
 | --- | --- | --- |
-| `[oams_manager]` | (commented) `UNLOAD_RETRY_NUDGE_TIME`, `reload_before_toolhead_distance` | Optional overrides for retry timing and follower safety margin. |
+| `[oams_manager]` | (commented) `UNLOAD_RETRY_NUDGE_TIME`, `reload_before_toolhead_distance`, `follower_reassert_delay` | Optional overrides for retry timing, follower safety margin, and how quickly the follower command is reasserted after loads. |
 | `[include oams_macros.cfg]` | — | Pulls in all macros that cooperate with the manager. |
 
 ### OpenAMS Macros (`printer_data/config/oams_macros.cfg`)

@@ -50,6 +50,7 @@ CLOG_RETRACTION_TOLERANCE_MM = 0.8
 STUCK_SPOOL_PRESSURE_TRIGGER = 0.08  # Pressure level indicating the spool is likely stuck
 # Follower keepalive cadence for loaded lanes
 FOLLOWER_RECOVERY_RETRY_INTERVAL = 1.5  # Seconds between follower keepalive assertions
+FOLLOWER_REASSERT_DELAY = 0.35  # Delay before reasserting follower after critical events
 
 
 
@@ -459,6 +460,13 @@ class OAMSManager:
         )
 
 
+        self.follower_reassert_delay: float = config.getfloat(
+            "follower_reassert_delay",
+            FOLLOWER_REASSERT_DELAY,
+            minval=0.0,
+        )
+
+
         raw_clog_sensitivity = config.getfloat(
             "clog_sensitivity",
             CLOG_SENSITIVITY_DEFAULT,
@@ -775,7 +783,13 @@ class OAMSManager:
         fps_state.last_follower_enable_time = (
             self.reactor.monotonic() if fps_state.following else 0.0
         )
-        if not fps_state.following:
+        if fps_state.following:
+            self._schedule_follower_reassertion(
+                fps_state,
+                preferred_direction=direction,
+                reason="manual follower enable",
+            )
+        else:
             self._cancel_pending_follower_assertion(fps_state)
         fps_state.encoder = hardware.encoder_clicks
         fps_state.current_spool_idx = hardware.current_spool
@@ -1781,6 +1795,13 @@ class OAMSManager:
             return True, message
 
         fps_state.state_name = FPSLoadState.LOADED
+        direction = self._apply_cached_lane_direction(fps_state)
+        self._ensure_follower_active(
+            fps_state,
+            reason="unload failure follower restore",
+            preferred_direction=direction,
+            force=True,
+        )
         return False, message
 
     def _reset_failed_load_state(self, fps_state: 'FPSState') -> None:
@@ -2075,6 +2096,12 @@ class OAMSManager:
                 spool_display,
                 suffix,
             )
+            if force:
+                self._schedule_follower_reassertion(
+                    fps_state,
+                    preferred_direction=direction,
+                    reason=reason,
+                )
         except Exception:
             logging.exception(
                 "OAMS: Failed to enable follower on %s spool %s%s",
@@ -2086,7 +2113,74 @@ class OAMSManager:
     def _cancel_pending_follower_assertion(self, fps_state: 'FPSState') -> None:
         """Clear any pending follower keepalive bookkeeping."""
 
-        fps_state.pending_follower_enable_timer = None
+        timer = getattr(fps_state, "pending_follower_enable_timer", None)
+        if timer is None:
+            fps_state.pending_follower_enable_timer = None
+            return
+
+        try:
+            self.reactor.unregister_timer(timer)
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to cancel pending follower assertion for %s",
+                getattr(fps_state, "current_oams", "unknown"),
+            )
+        finally:
+            fps_state.pending_follower_enable_timer = None
+
+    def _schedule_follower_reassertion(
+        self,
+        fps_state: 'FPSState',
+        *,
+        preferred_direction: Optional[int] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Reissue a follower enable shortly after a critical state change."""
+
+        delay = getattr(self, "follower_reassert_delay", FOLLOWER_REASSERT_DELAY)
+        if delay is None or delay <= 0:
+            return
+
+        direction = preferred_direction
+        if direction not in (0, 1):
+            direction = self._apply_cached_lane_direction(fps_state)
+        if direction not in (0, 1):
+            direction = 1
+
+        self._cancel_pending_follower_assertion(fps_state)
+
+        def _reenable_follower(
+            self,
+            eventtime,
+            fps_state=fps_state,
+            direction=direction,
+            reason=reason,
+        ):
+            fps_state.pending_follower_enable_timer = None
+            if fps_state.state_name != FPSLoadState.LOADED:
+                return self.reactor.NEVER
+            followup_reason = reason
+            if followup_reason:
+                followup_reason = f"{followup_reason} follow-up"
+            self._ensure_follower_active(
+                fps_state,
+                reason=followup_reason,
+                preferred_direction=direction,
+                force=False,
+            )
+            return self.reactor.NEVER
+
+        try:
+            fps_state.pending_follower_enable_timer = self.reactor.register_timer(
+                partial(_reenable_follower, self),
+                self.reactor.monotonic() + delay,
+            )
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to schedule follower reassertion for %s",
+                getattr(fps_state, "current_oams", "unknown"),
+            )
+            fps_state.pending_follower_enable_timer = None
 
     def _clear_stuck_spool_state(
         self,
@@ -2355,7 +2449,7 @@ class OAMSManager:
                 fps_state,
                 reason="loaded lane follower keepalive",
                 preferred_direction=direction,
-                force=True,
+                force=False,
             )
 
             return eventtime + FOLLOWER_RECOVERY_RETRY_INTERVAL
