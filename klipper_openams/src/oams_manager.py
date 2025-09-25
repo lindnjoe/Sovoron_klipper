@@ -128,7 +128,8 @@ class OAMSRunoutMonitor:
         def _monitor_runout(eventtime):
             idle_timeout = self.printer.lookup_object("idle_timeout")
             is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
-            
+            oams = self._resolve_oams(fps_state.current_oams)
+
             if self.state == OAMSRunoutState.STOPPED or self.state == OAMSRunoutState.PAUSED or self.state == OAMSRunoutState.RELOADING:
                 pass
 
@@ -140,7 +141,6 @@ class OAMSRunoutMonitor:
                         return eventtime + MONITOR_ENCODER_PERIOD
                     fps_state.afc_delegation_active = False
                     fps_state.afc_delegation_until = 0.0
-                oams = self._resolve_oams(fps_state.current_oams)
                 if (
                     is_printing
                     and fps_state.state_name == "LOADED"
