@@ -73,18 +73,39 @@ lanes.
   crosses FPS boundaries or another unit must take over, the manager delegates
   the swap back to AFC to avoid conflicting motion.
 
-### 2.3 Stuck-spool protection
+
+### 2.3 Clog detection
+- **Preconditions** – Monitoring only runs when the printer is actively
+  printing, the FPS is `LOADED`, all axes are homed, and no stuck-spool
+  recovery is pending.  The manager samples the extruder position, OpenAMS
+  encoder, and FPS pressure each cycle.【F:klipper_openams/src/oams_manager.py†L1326-L1370】
+- **Trigger logic** – Once the extruder advances beyond the configured
+  extrusion window (12–40 mm depending on sensitivity), the manager checks that
+  the encoder has not moved more than the slack allowance, the FPS pressure has
+  remained inside a tight band around 0.50, and the readings have persisted for
+  the dwell period (6–12 s).  Any retract or pressure swing outside the band
+  resets the tracker.【F:klipper_openams/src/oams_manager.py†L1386-L1450】
+- **Sensitivity control** – `clog_sensitivity` can be set to `low`, `medium`
+  (default), or `high` under `[oams_manager]`.  Lower sensitivity requires more
+  extrusion and tolerates larger encoder slack, while higher sensitivity reacts
+  sooner with tighter pressure bands.【F:klipper_openams/src/oams_manager.py†L24-L43】【F:klipper_openams/src/oams_manager.py†L366-L394】
+- **Response** – When a clog is confirmed the matching hub LED is latched, the
+  printer is paused, and the console logs the extruded distance, encoder delta,
+  and observed pressure window so the operator knows what was detected.【F:klipper_openams/src/oams_manager.py†L1447-L1474】
+
+### 2.4 Stuck-spool protection
 - **Detection** – While the printer is actively printing and the lane is
   `LOADED`, the stuck-spool monitor samples the FPS value.  If the pressure
   stays below `STUCK_SPOOL_PRESSURE_THRESHOLD` (default `0.08`) for longer than
-  `STUCK_SPOOL_DWELL` seconds, the spool is treated as jammed.
+  `STUCK_SPOOL_DWELL` seconds, the spool is treated as jammed.【F:klipper_openams/src/oams_manager.py†L119-L132】【F:klipper_openams/src/oams_manager.py†L1194-L1267】
 - **Response** – The affected hub LED is latched red, the follower is stopped,
-  and the printer is paused with a descriptive console message.
+  and the printer is paused with a descriptive console message.【F:klipper_openams/src/oams_manager.py†L1256-L1267】
 - **Recovery** – Clearing the jam and resuming the print runs the recovery
   helper: LEDs are cleared, the hub error state is reset, and the follower is
-  re-enabled in its stored direction before monitoring resumes.
+  re-enabled in its stored direction before monitoring resumes.【F:klipper_openams/src/oams_manager.py†L1194-L1247】【F:klipper_openams/src/oams_manager.py†L1505-L1514】
 
-### 2.4 Load/unload speed guards
+### 2.5 Load/unload speed guards
+
 Separate timers watch the encoder ticks during manual or automatic loads and
 unloads.  If the encoder fails to advance by at least `MIN_ENCODER_DIFF`
 counts within the `MONITOR_ENCODER_*_AFTER` window the printer is paused and
@@ -134,6 +155,11 @@ behaviour without touching the entire stack.
   overrides if needed.
 - **Manager include** – `[include oams_macros.cfg]` pulls in the macros that
   partner with the Python manager.
+
+- **Manager options** – `[oams_manager]` accepts overrides like
+  `reload_before_toolhead_distance` and `clog_sensitivity` to tune reload
+  timing and the clog detection thresholds for your installation.【F:printer_data/config/oamsc.cfg†L293-L298】【F:klipper_openams/src/oams_manager.py†L32-L43】【F:klipper_openams/src/oams_manager.py†L366-L394】
+
 
 ### 4.2 OpenAMS macros – `printer_data/config/oams_macros.cfg`
 Defines the sequence of operations around loading, unloading, filament sensor

@@ -23,30 +23,31 @@ AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout trigge
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08  # Pressure indicating the spool is no longer feeding
 STUCK_SPOOL_DWELL = 6.0  # Seconds the pressure must remain below the threshold before pausing
 
+
+# Clog monitoring defaults (pressure target is the steady-state follower pressure)
 CLOG_PRESSURE_TARGET = 0.50
+CLOG_PRESSURE_CENTER_TOLERANCE = 0.02
 CLOG_SENSITIVITY_LEVELS = {
-    0: {
-        "name": "low",
-        "extrusion_window": 35.0,
-        "encoder_slack": 6,
-        "pressure_window": 0.05,
-        "dwell": 7.0,
+    "low": {
+        "extrusion_window": 40.0,  # mm of commanded extrusion before checking
+        "encoder_slack": 12,       # encoder counts allowed before assuming movement
+        "pressure_band": 0.08,     # acceptable pressure swing while stuck (total span)
+        "dwell": 12.0,             # seconds the condition must persist
     },
-    1: {
-        "name": "medium",
-        "extrusion_window": 25.0,
+    "medium": {
+        "extrusion_window": 24.0,
+        "encoder_slack": 8,
+        "pressure_band": 0.06,
+        "dwell": 8.0,
+    },
+    "high": {
+        "extrusion_window": 12.0,
         "encoder_slack": 4,
-        "pressure_window": 0.04,
+        "pressure_band": 0.04,
         "dwell": 6.0,
     },
-    2: {
-        "name": "high",
-        "extrusion_window": 18.0,
-        "encoder_slack": 3,
-        "pressure_window": 0.03,
-        "dwell": 5.0,
-    },
 }
+CLOG_SENSITIVITY_DEFAULT = "medium"
 
 
 
@@ -283,17 +284,14 @@ class FPSState:
         self.stuck_spool_restore_follower: bool = False
 
 
-        # Clog detection
-        self.clog_tracking_active: bool = False
+        # Clog detection tracking
         self.clog_active: bool = False
-        self.clog_start_time: Optional[float] = None
         self.clog_start_extruder: Optional[float] = None
         self.clog_start_encoder: Optional[int] = None
-        self.clog_extrusion_progress: float = 0.0
-        self.clog_last_extruder: Optional[float] = None
-        self.clog_last_encoder: Optional[int] = None
+        self.clog_start_time: Optional[float] = None
         self.clog_min_pressure: Optional[float] = None
         self.clog_max_pressure: Optional[float] = None
+        self.clog_last_extruder: Optional[float] = None
 
 
 
@@ -310,17 +308,29 @@ class FPSState:
 
 
     def reset_clog_tracker(self) -> None:
-        """Reset clog detection tracking for this FPS lane."""
-        self.clog_tracking_active = False
+        """Clear clog tracking data so monitoring restarts fresh."""
         self.clog_active = False
-        self.clog_start_time = None
         self.clog_start_extruder = None
         self.clog_start_encoder = None
-        self.clog_extrusion_progress = 0.0
-        self.clog_last_extruder = None
-        self.clog_last_encoder = None
+        self.clog_start_time = None
         self.clog_min_pressure = None
         self.clog_max_pressure = None
+        self.clog_last_extruder = None
+
+    def prime_clog_tracker(
+        self,
+        extruder_pos: float,
+        encoder_clicks: int,
+        pressure: float,
+        timestamp: float,
+    ) -> None:
+        """Seed clog tracking values from the latest telemetry sample."""
+        self.clog_start_extruder = extruder_pos
+        self.clog_start_encoder = encoder_clicks
+        self.clog_start_time = timestamp
+        self.clog_min_pressure = pressure
+        self.clog_max_pressure = pressure
+        self.clog_last_extruder = extruder_pos
 
 
     def __repr__(self) -> str:
@@ -377,20 +387,12 @@ class OAMSManager:
             0.0,
         )
 
-        raw_clog_sensitivity = config.get("clog_sensitivity", "medium")
-        sensitivity_key = str(raw_clog_sensitivity).strip().lower()
-        sensitivity_lookup = {
-            "low": 0,
-            "medium": 1,
-            "high": 2,
-            "0": 0,
-            "1": 1,
-            "2": 2,
-        }
-        self.clog_sensitivity_level = sensitivity_lookup.get(sensitivity_key, 1)
-        self.clog_settings = CLOG_SENSITIVITY_LEVELS.get(
-            self.clog_sensitivity_level, CLOG_SENSITIVITY_LEVELS[1]
+        self.clog_sensitivity: str = config.getchoice(
+            "clog_sensitivity",
+            {name: name for name in CLOG_SENSITIVITY_LEVELS.keys()},
+            CLOG_SENSITIVITY_DEFAULT,
         )
+        self.clog_settings = CLOG_SENSITIVITY_LEVELS[self.clog_sensitivity]
 
 
         # Cached mappings
@@ -466,10 +468,8 @@ class OAMSManager:
                 fps_state.state_name = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
 
-                fps_state.reset_clog_tracker()
             else:
                 fps_state.reset_stuck_spool_state()
-                fps_state.reset_clog_tracker()
 
         
     def handle_ready(self) -> None:
@@ -1120,8 +1120,6 @@ class OAMSManager:
             fps_state.current_oams = None
             fps_state.reset_stuck_spool_state()
 
-            fps_state.reset_clog_tracker()
-
             return False, message
 
         return False, f"No spool available for group {group_name}"
@@ -1258,190 +1256,6 @@ class OAMSManager:
             return eventtime + MONITOR_ENCODER_PERIOD
         return partial(_monitor_load_speed, self)
 
-
-    def _monitor_clog_for_fps(self, fps_name):
-
-        idle_timeout = self.printer.lookup_object("idle_timeout")
-        settings = self.clog_settings
-        pressure_window = settings["pressure_window"]
-        encoder_slack = settings["encoder_slack"]
-        extrusion_window = settings["extrusion_window"]
-        dwell = settings["dwell"]
-
-
-        def _monitor_clog(self, eventtime):
-
-            fps_state = self.current_state.fps_state[fps_name]
-            fps = self.fpss[fps_name]
-            oams = None
-            if fps_state.current_oams is not None:
-                oams = self.oams.get(fps_state.current_oams)
-
-
-            try:
-                idle_state = idle_timeout.get_status(eventtime)
-                is_printing = idle_state.get("state") == "Printing"
-            except Exception:
-                logging.exception("OAMS: Failed to query idle timeout for clog monitor")
-                is_printing = False
-
-            pressure = float(getattr(fps, "fps_value", 0.0))
-            extruder = getattr(getattr(fps, "extruder", None), "last_position", None)
-            encoder = getattr(oams, "encoder_clicks", None) if oams is not None else None
-            now = self.reactor.monotonic()
-
-            if (
-                not is_printing
-                or fps_state.state_name != FPSLoadState.LOADED
-                or oams is None
-                or extruder is None
-                or encoder is None
-                or fps_state.stuck_spool_active
-            ):
-                fps_state.reset_clog_tracker()
-                fps_state.clog_last_extruder = extruder
-                fps_state.clog_last_encoder = encoder
-                fps_state.clog_min_pressure = pressure
-                fps_state.clog_max_pressure = pressure
-                return eventtime + MONITOR_ENCODER_PERIOD
-
-            if fps_state.clog_active:
-                fps_state.clog_last_extruder = extruder
-                fps_state.clog_last_encoder = encoder
-                fps_state.clog_min_pressure = pressure
-                fps_state.clog_max_pressure = pressure
-                return eventtime + MONITOR_ENCODER_PERIOD
-
-            if fps_state.clog_last_extruder is None or fps_state.clog_last_encoder is None:
-                fps_state.clog_last_extruder = extruder
-                fps_state.clog_last_encoder = encoder
-                fps_state.clog_min_pressure = pressure
-                fps_state.clog_max_pressure = pressure
-                return eventtime + MONITOR_ENCODER_PERIOD
-
-            delta_extruder = extruder - fps_state.clog_last_extruder
-            delta_encoder = encoder - fps_state.clog_last_encoder
-
-            fps_state.clog_last_extruder = extruder
-            fps_state.clog_last_encoder = encoder
-
-            if delta_extruder <= 0.0:
-                fps_state.reset_clog_tracker()
-                fps_state.clog_last_extruder = extruder
-                fps_state.clog_last_encoder = encoder
-                fps_state.clog_min_pressure = pressure
-                fps_state.clog_max_pressure = pressure
-                return eventtime + MONITOR_ENCODER_PERIOD
-
-            if abs(pressure - CLOG_PRESSURE_TARGET) > pressure_window:
-                fps_state.reset_clog_tracker()
-                fps_state.clog_last_extruder = extruder
-                fps_state.clog_last_encoder = encoder
-                fps_state.clog_min_pressure = pressure
-                fps_state.clog_max_pressure = pressure
-                return eventtime + MONITOR_ENCODER_PERIOD
-
-            if abs(delta_encoder) > encoder_slack:
-                fps_state.reset_clog_tracker()
-                fps_state.clog_last_extruder = extruder
-                fps_state.clog_last_encoder = encoder
-                fps_state.clog_min_pressure = pressure
-                fps_state.clog_max_pressure = pressure
-                return eventtime + MONITOR_ENCODER_PERIOD
-
-            if not fps_state.clog_tracking_active:
-                fps_state.clog_tracking_active = True
-                fps_state.clog_start_time = now
-                fps_state.clog_start_extruder = extruder - delta_extruder
-                fps_state.clog_start_encoder = encoder - delta_encoder
-                fps_state.clog_extrusion_progress = 0.0
-                fps_state.clog_min_pressure = pressure
-                fps_state.clog_max_pressure = pressure
-
-            fps_state.clog_extrusion_progress += delta_extruder
-            if fps_state.clog_min_pressure is None or pressure < fps_state.clog_min_pressure:
-                fps_state.clog_min_pressure = pressure
-            if fps_state.clog_max_pressure is None or pressure > fps_state.clog_max_pressure:
-                fps_state.clog_max_pressure = pressure
-
-            encoder_total = (
-                0
-                if fps_state.clog_start_encoder is None
-                else abs(encoder - fps_state.clog_start_encoder)
-            )
-            elapsed = 0.0 if fps_state.clog_start_time is None else now - fps_state.clog_start_time
-
-            pressure_span = 0.0
-            if (
-                fps_state.clog_min_pressure is not None
-                and fps_state.clog_max_pressure is not None
-            ):
-                pressure_span = fps_state.clog_max_pressure - fps_state.clog_min_pressure
-
-            if (
-                fps_state.clog_tracking_active
-                and fps_state.clog_start_time is not None
-                and fps_state.clog_extrusion_progress >= extrusion_window
-                and encoder_total <= encoder_slack
-                and elapsed >= dwell
-                and pressure_span <= pressure_window * 2.0
-            ):
-                pressure_low = (
-                    fps_state.clog_min_pressure
-                    if fps_state.clog_min_pressure is not None
-                    else pressure
-                )
-                pressure_high = (
-                    fps_state.clog_max_pressure
-                    if fps_state.clog_max_pressure is not None
-                    else pressure
-                )
-                group_label = fps_state.current_group or fps_name
-                spool_label = (
-                    str(fps_state.current_spool_idx)
-                    if fps_state.current_spool_idx is not None
-                    else "unknown"
-                )
-                if oams is not None and fps_state.current_spool_idx is not None:
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 1)
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to set clog LED on %s spool %s",
-                            fps_state.current_oams,
-                            fps_state.current_spool_idx,
-                        )
-
-                logging.error(
-                    "OAMS: Clog suspected on %s spool %s: extruder %.1f mm, encoder %d counts, FPS %.2f-%.2f",
-                    group_label,
-                    spool_label,
-                    fps_state.clog_extrusion_progress,
-                    int(encoder_total),
-                    pressure_low,
-                    pressure_high,
-                )
-                self._pause_printer_message(
-                    (
-                        f"Clog suspected on {group_label} spool {spool_label}: "
-                        f"extruder advanced {fps_state.clog_extrusion_progress:.1f}mm while encoder moved "
-                        f"{int(encoder_total)} counts (FPS {pressure_low:.2f}-{pressure_high:.2f})"
-                    )
-                )
-
-                fps_state.clog_active = True
-                fps_state.clog_tracking_active = False
-                fps_state.clog_start_time = None
-                fps_state.clog_extrusion_progress = 0.0
-                fps_state.clog_start_extruder = extruder
-                fps_state.clog_start_encoder = encoder
-                fps_state.clog_min_pressure = pressure
-                fps_state.clog_max_pressure = pressure
-
-            return eventtime + MONITOR_ENCODER_PERIOD
-
-        return partial(_monitor_clog, self)
-
     def _monitor_stuck_spool_for_fps(self, fps_name):
         idle_timeout = self.printer.lookup_object("idle_timeout")
 
@@ -1488,10 +1302,10 @@ class OAMSManager:
             if now - fps_state.stuck_spool_start_time < STUCK_SPOOL_DWELL:
                 return eventtime + MONITOR_ENCODER_PERIOD
 
+
             fps_state.stuck_spool_active = True
             fps_state.stuck_spool_start_time = None
             fps_state.stuck_spool_restore_follower = True
-
 
             if oams is not None and fps_state.current_spool_idx is not None:
                 try:
@@ -1527,6 +1341,184 @@ class OAMSManager:
             return eventtime + MONITOR_ENCODER_PERIOD
 
         return partial(_monitor_stuck_spool, self)
+
+
+    def _monitor_clog_for_fps(self, fps_name):
+
+        idle_timeout = self.printer.lookup_object("idle_timeout")
+        settings = self.clog_settings
+        pressure_window = settings["pressure_window"]
+        encoder_slack = settings["encoder_slack"]
+        extrusion_window = settings["extrusion_window"]
+        dwell = settings["dwell"]
+
+
+        def _monitor_clog(self, eventtime):
+
+            fps_state = self.current_state.fps_state[fps_name]
+            try:
+                idle_state = idle_timeout.get_status(eventtime)
+                is_printing = idle_state.get("state") == "Printing"
+            except Exception:
+                logging.exception("OAMS: Failed to query idle timeout for clog monitor")
+                is_printing = False
+
+            if fps_state.clog_active:
+                if not is_printing:
+                    fps_state.reset_clog_tracker()
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if fps_state.state_name != FPSLoadState.LOADED or not is_printing:
+                fps_state.reset_clog_tracker()
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if fps_state.stuck_spool_active:
+                fps_state.reset_clog_tracker()
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            fps = self.fpss[fps_name]
+            extruder = getattr(fps, "extruder", None)
+            if extruder is None:
+                fps_state.reset_clog_tracker()
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            extruder_pos = getattr(extruder, "last_position", None)
+            if extruder_pos is None:
+                fps_state.reset_clog_tracker()
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            oams = None
+            if fps_state.current_oams is not None:
+                oams = self.oams.get(fps_state.current_oams)
+            if oams is None:
+                fps_state.reset_clog_tracker()
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            encoder_raw = getattr(oams, "encoder_clicks", None)
+            if encoder_raw is None:
+                fps_state.reset_clog_tracker()
+                return eventtime + MONITOR_ENCODER_PERIOD
+            encoder_clicks = int(encoder_raw)
+
+            if (
+                fps_state.current_spool_idx is not None
+                and not oams.is_bay_loaded(fps_state.current_spool_idx)
+            ):
+                fps_state.reset_clog_tracker()
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            pressure = float(getattr(fps, "fps_value", 0.0))
+            now = self.reactor.monotonic()
+
+            if fps_state.clog_start_extruder is None:
+                fps_state.prime_clog_tracker(extruder_pos, encoder_clicks, pressure, now)
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if fps_state.clog_last_extruder is not None and extruder_pos < (
+                fps_state.clog_last_extruder - 0.5
+            ):
+                fps_state.reset_clog_tracker()
+                fps_state.prime_clog_tracker(extruder_pos, encoder_clicks, pressure, now)
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            fps_state.clog_min_pressure = (
+                pressure
+                if fps_state.clog_min_pressure is None
+                else min(fps_state.clog_min_pressure, pressure)
+            )
+            fps_state.clog_max_pressure = (
+                pressure
+                if fps_state.clog_max_pressure is None
+                else max(fps_state.clog_max_pressure, pressure)
+            )
+            fps_state.clog_last_extruder = extruder_pos
+
+            extruded = extruder_pos - fps_state.clog_start_extruder
+            if extruded <= 0.0:
+                fps_state.prime_clog_tracker(extruder_pos, encoder_clicks, pressure, now)
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            settings = self.clog_settings
+            if extruded < settings["extrusion_window"]:
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if fps_state.clog_start_encoder is None or fps_state.clog_start_time is None:
+                fps_state.prime_clog_tracker(extruder_pos, encoder_clicks, pressure, now)
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            encoder_delta = abs(encoder_clicks - fps_state.clog_start_encoder)
+            pressure_min = (
+                fps_state.clog_min_pressure
+                if fps_state.clog_min_pressure is not None
+                else pressure
+            )
+            pressure_max = (
+                fps_state.clog_max_pressure
+                if fps_state.clog_max_pressure is not None
+                else pressure
+            )
+            pressure_span = pressure_max - pressure_min
+            pressure_mid = (pressure_max + pressure_min) / 2.0
+
+            if encoder_delta > settings["encoder_slack"]:
+                fps_state.prime_clog_tracker(extruder_pos, encoder_clicks, pressure, now)
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if pressure_span > settings["pressure_band"]:
+                fps_state.prime_clog_tracker(extruder_pos, encoder_clicks, pressure, now)
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if abs(pressure_mid - CLOG_PRESSURE_TARGET) > CLOG_PRESSURE_CENTER_TOLERANCE:
+                fps_state.prime_clog_tracker(extruder_pos, encoder_clicks, pressure, now)
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if now - fps_state.clog_start_time < settings["dwell"]:
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            fps_state.clog_active = True
+
+
+            if now - fps_state.stuck_spool_start_time < STUCK_SPOOL_DWELL:
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            fps_state.stuck_spool_active = True
+            fps_state.stuck_spool_start_time = None
+            fps_state.stuck_spool_restore_follower = True
+
+
+            if oams is not None and fps_state.current_spool_idx is not None:
+                try:
+                    oams.set_led_error(fps_state.current_spool_idx, 1)
+                except Exception:
+                    logging.exception(
+
+                        "OAMS: Failed to set clog LED on %s spool %s",
+                        fps_state.current_oams,
+                        fps_state.current_spool_idx,
+                    )
+
+
+            group_label = fps_state.current_group or fps_name
+            spool_label = (
+                str(fps_state.current_spool_idx)
+                if fps_state.current_spool_idx is not None
+                else "unknown"
+            )
+            self._pause_printer_message(
+
+                (
+                    f"Clog suspected on {group_label} spool {spool_label}: "
+                    f"extruded {extruded:.1f}mm, encoder delta {encoder_delta}, "
+                    f"pressure {pressure_min:.2f}-{pressure_max:.2f}"
+                )
+            )
+
+            return eventtime + MONITOR_ENCODER_PERIOD
+
+
+            return eventtime + MONITOR_ENCODER_PERIOD
+
+        return partial(_monitor_stuck_spool, self)
     
 
     def start_monitors(self):
@@ -1537,9 +1529,9 @@ class OAMSManager:
             self.monitor_timers.append(reactor.register_timer(self._monitor_unload_speed_for_fps(fps_name), reactor.NOW))
             self.monitor_timers.append(reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), reactor.NOW))
 
+            self.monitor_timers.append(reactor.register_timer(self._monitor_stuck_spool_for_fps(fps_name), reactor.NOW))
             self.monitor_timers.append(reactor.register_timer(self._monitor_clog_for_fps(fps_name), reactor.NOW))
 
-            self.monitor_timers.append(reactor.register_timer(self._monitor_stuck_spool_for_fps(fps_name), reactor.NOW))
 
             def _reload_callback(fps_name=fps_name, fps_state=fps_state):
                 monitor = self.runout_monitors.get(fps_name)
