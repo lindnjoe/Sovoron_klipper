@@ -1194,6 +1194,12 @@ class OAMSManager:
             if retry_message:
                 last_failure_message = retry_message
 
+            self._ensure_spool_backed_out(
+                fps_state,
+                oam,
+                "load retry",
+            )
+
             fps_state.encoder_samples.clear()
             fps_state.state_name = FPSLoadState.UNLOADED
             fps_state.current_group = None
@@ -1611,6 +1617,78 @@ class OAMSManager:
 
         return False, message
 
+    def _ensure_spool_backed_out(
+        self,
+        fps_state: 'FPSState',
+        oams,
+        context: str,
+    ) -> None:
+        """Guarantee the current spool is unloaded after a failed load attempt."""
+
+        if oams is None:
+            return
+
+        spool_idx = fps_state.current_spool_idx
+        if spool_idx is None:
+            return
+
+        try:
+            oams.clear_errors()
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to clear errors on %s before backing out spool %s",
+                oams.name,
+                spool_idx,
+            )
+
+        if oams.current_spool != spool_idx:
+            oams.current_spool = spool_idx
+
+        attempts = 0
+        while attempts < 3:
+            attempts += 1
+            unload_success, unload_message = oams.unload_spool()
+            if unload_success:
+                logging.info(
+                    "OAMS: Backed out spool %d on %s after %s failure",
+                    spool_idx,
+                    oams.name,
+                    context,
+                )
+                break
+
+            if unload_message == "OAMS is busy":
+                logging.warning(
+                    "OAMS: %s busy backing out spool %d after %s failure (attempt %d)",
+                    oams.name,
+                    spool_idx,
+                    context,
+                    attempts,
+                )
+                self.reactor.pause(self.reactor.monotonic() + 0.3)
+                continue
+
+            logging.error(
+                "OAMS: Unable to back out spool %d on %s after %s failure: %s",
+                spool_idx,
+                oams.name,
+                context,
+                unload_message,
+            )
+            break
+
+        try:
+            oams.clear_errors()
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to clear errors on %s after backing out spool %s",
+                oams.name,
+                spool_idx,
+            )
+
+        if oams.current_spool == spool_idx:
+            oams.current_spool = None
+
     def _attempt_stuck_spool_recovery(
         self,
         fps_name: str,
@@ -1881,6 +1959,11 @@ class OAMSManager:
                                     fps_state.current_spool_idx,
                                 )
                             )
+                    self._ensure_spool_backed_out(
+                        fps_state,
+                        oams,
+                        "load speed",
+                    )
                     oams.set_led_error(fps_state.current_spool_idx, 1)
                     self._pause_printer_message(pause_reason)
                     self.stop_monitors()
