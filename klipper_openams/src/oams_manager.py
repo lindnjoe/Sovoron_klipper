@@ -1511,6 +1511,214 @@ class OAMSManager:
         fps_state.state_name = FPSLoadState.UNLOADED
         return False, message
 
+    def _attempt_stuck_spool_recovery(
+        self,
+        fps_name: str,
+        fps_state: 'FPSState',
+        oams,
+        stuck_spool_idx: Optional[int],
+    ) -> bool:
+        """Try to back out and reload the jammed spool before pausing."""
+
+        if oams is None or stuck_spool_idx is None:
+            return False
+
+        logging.warning(
+            "OAMS: Stuck spool detected on %s spool %d; attempting recovery",
+            oams.name,
+            stuck_spool_idx,
+        )
+
+        try:
+            oams.clear_errors()
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to clear errors on %s before stuck spool recovery",
+                oams.name,
+            )
+
+        unload_attempts = 0
+        unload_success = False
+        unload_message: Optional[str] = None
+        while unload_attempts < 2 and not unload_success:
+            unload_attempts += 1
+            unload_success, unload_message = oams.unload_spool()
+            if unload_success:
+                break
+            if unload_message == "OAMS is busy":
+                logging.warning(
+                    "OAMS: %s busy while backing out stuck spool %d (attempt %d)",
+                    oams.name,
+                    stuck_spool_idx,
+                    unload_attempts,
+                )
+                self.reactor.pause(self.reactor.monotonic() + 0.2)
+                continue
+            break
+
+        if not unload_success:
+            logging.error(
+                "OAMS: Unable to unload stuck spool %d on %s: %s",
+                stuck_spool_idx,
+                oams.name,
+                unload_message,
+            )
+            return self._attempt_stuck_spool_fallback(
+                fps_name,
+                fps_state,
+                stuck_spool_idx,
+                unload_message,
+            )
+
+        fps_state.state_name = FPSLoadState.LOADING
+        fps_state.current_oams = oams.name
+        fps_state.current_spool_idx = stuck_spool_idx
+        fps_state.encoder_samples.clear()
+        fps_state.encoder = oams.encoder_clicks
+        fps_state.since = self.reactor.monotonic()
+
+        load_success, load_message = oams.load_spool(stuck_spool_idx)
+        if load_success:
+            logging.info(
+                "OAMS: Stuck spool recovery succeeded on %s spool %d",
+                oams.name,
+                stuck_spool_idx,
+            )
+            fps_state.state_name = FPSLoadState.LOADED
+            fps_state.since = self.reactor.monotonic()
+            fps_state.reset_clog_tracker()
+            direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+            try:
+                oams.set_oams_follower(1, direction)
+                fps_state.following = True
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to restart follower after recovering stuck spool %d on %s",
+                    stuck_spool_idx,
+                    oams.name,
+                )
+            self._clear_stuck_spool_state(fps_state)
+            return True
+
+        logging.error(
+            "OAMS: Reload after stuck spool on %s spool %d failed: %s",
+            oams.name,
+            stuck_spool_idx,
+            load_message,
+        )
+
+        second_unload_success, second_unload_message = oams.unload_spool()
+        if not second_unload_success:
+            logging.warning(
+                "OAMS: Unable to clear spool %d on %s after failed stuck spool reload: %s",
+                stuck_spool_idx,
+                oams.name,
+                second_unload_message,
+            )
+
+        fps_state.state_name = FPSLoadState.UNLOADED
+        fps_state.following = False
+        fps_state.since = self.reactor.monotonic()
+        fps_state.reset_clog_tracker()
+
+        return self._attempt_stuck_spool_fallback(
+            fps_name,
+            fps_state,
+            stuck_spool_idx,
+            load_message,
+        )
+
+    def _attempt_stuck_spool_fallback(
+        self,
+        fps_name: str,
+        fps_state: 'FPSState',
+        failed_spool_idx: Optional[int],
+        failure_detail: Optional[str],
+    ) -> bool:
+        """Try infinite runout fallback after a failed stuck spool recovery."""
+
+        source_group = fps_state.current_group
+        target_group, target_lane, delegate_to_afc, source_lane = (
+            self._get_infinite_runout_target_group(
+                fps_name,
+                fps_state,
+            )
+        )
+
+        if delegate_to_afc:
+            delegated = self._delegate_runout_to_afc(
+                fps_name,
+                fps_state,
+                source_lane,
+                target_lane,
+            )
+            if delegated:
+                logging.info(
+                    "OAMS: Delegated infinite runout after stuck spool on %s",
+                    fps_name,
+                )
+                fps_state.reset_runout_positions()
+                fps_state.reset_stuck_spool_state()
+                return True
+            logging.error(
+                "OAMS: Failed to delegate infinite runout after stuck spool on %s",
+                fps_name,
+            )
+            return False
+
+        group_to_load = target_group or source_group
+
+        if target_group:
+            unload_success, unload_message = self._unload_filament_for_fps(fps_name)
+            if not unload_success:
+                logging.error(
+                    "OAMS: Unable to unload before fallback after stuck spool on %s: %s",
+                    fps_name,
+                    unload_message,
+                )
+                return False
+
+        if group_to_load is None:
+            logging.error(
+                "OAMS: No fallback filament available after stuck spool on %s",
+                fps_name,
+            )
+            return False
+
+        load_success, load_message = self._load_filament_for_group(group_to_load)
+        if load_success:
+            logging.info(
+                "OAMS: Loaded %s after stuck spool on %s spool %s",
+                group_to_load,
+                fps_name,
+                failed_spool_idx if failed_spool_idx is not None else "unknown",
+            )
+            if target_group and target_lane:
+                try:
+                    gcode = self.printer.lookup_object("gcode")
+                    gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to mark lane %s as loaded after stuck spool fallback",
+                        target_lane,
+                    )
+            fps_state.reset_runout_positions()
+            fps_state.reset_stuck_spool_state()
+            return True
+
+        logging.error(
+            "OAMS: Fallback load to %s after stuck spool on %s failed: %s",
+            group_to_load,
+            fps_name,
+            load_message,
+        )
+        if failure_detail:
+            logging.error(
+                "OAMS: Original stuck spool recovery failure detail: %s",
+                failure_detail,
+            )
+        return False
+
     def _monitor_load_speed_for_fps(self, fps_name):
         def _monitor_load_speed(self, eventtime):
             #logging.info("OAMS: Monitoring loading speed state: %s" % self.current_state.name)
@@ -1620,18 +1828,28 @@ class OAMSManager:
             if now - fps_state.stuck_spool_start_time < STUCK_SPOOL_DWELL:
                 return eventtime + MONITOR_ENCODER_PERIOD
 
+            stuck_spool_idx = fps_state.current_spool_idx
             fps_state.stuck_spool_active = True
             fps_state.stuck_spool_start_time = None
             fps_state.stuck_spool_restore_follower = True
 
-            if oams is not None and fps_state.current_spool_idx is not None:
+            recovered = self._attempt_stuck_spool_recovery(
+                fps_name,
+                fps_state,
+                oams,
+                stuck_spool_idx,
+            )
+            if recovered:
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if oams is not None and stuck_spool_idx is not None:
                 try:
-                    oams.set_led_error(fps_state.current_spool_idx, 1)
+                    oams.set_led_error(stuck_spool_idx, 1)
                 except Exception:
                     logging.exception(
                         "OAMS: Failed to set stuck spool LED on %s spool %s",
                         fps_state.current_oams,
-                        fps_state.current_spool_idx,
+                        stuck_spool_idx,
                     )
                 try:
                     direction = fps_state.direction if fps_state.direction in (0, 1) else 1
@@ -1640,15 +1858,15 @@ class OAMSManager:
                     logging.exception(
                         "OAMS: Failed to stop follower after stuck spool on %s spool %s",
                         fps_state.current_oams,
-                        fps_state.current_spool_idx,
+                        stuck_spool_idx,
                     )
                 else:
                     fps_state.following = False
 
             group_label = fps_state.current_group or fps_name
             spool_label = (
-                str(fps_state.current_spool_idx)
-                if fps_state.current_spool_idx is not None
+                str(stuck_spool_idx)
+                if stuck_spool_idx is not None
                 else "unknown"
             )
             self._pause_printer_message(
