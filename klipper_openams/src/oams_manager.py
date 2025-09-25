@@ -162,6 +162,7 @@ class OAMSRunoutMonitor:
                 traveled_distance = fps.extruder.last_position - self.runout_position
                 if traveled_distance >= PAUSE_DISTANCE:
                     logging.info("OAMS: Pause complete, coasting the follower.")
+                    oams = self._resolve_oams(fps_state.current_oams)
                     direction = (
                         fps_state.direction
                         if fps_state.direction in (0, 1)
