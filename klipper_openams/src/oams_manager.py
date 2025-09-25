@@ -1388,17 +1388,30 @@ class OAMSManager:
             spool_idx,
         )
 
+        previous_state = fps_state.state_name
+        fps_state.state_name = FPSLoadState.UNLOADING
+
         unload_success, unload_message = oams.unload_spool()
         if not unload_success:
             message = (
                 f"Retry unload failed on {oams.name} spool {spool_idx}: {unload_message}"
             )
             logging.error("OAMS: %s", message)
+            fps_state.state_name = previous_state
             return False, message
+
+        try:
+            oams.clear_errors()
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to clear errors on %s before retrying load",
+                oams.name,
+            )
 
         fps_state.encoder_samples.clear()
         fps_state.encoder = oams.encoder_clicks
         fps_state.since = self.reactor.monotonic()
+        fps_state.state_name = FPSLoadState.LOADING
 
         load_success, load_message = oams.load_spool(spool_idx)
         if load_success:
@@ -1408,10 +1421,28 @@ class OAMSManager:
                 spool_idx,
             )
             fps_state.reset_load_retry_attempt()
+            fps_state.state_name = previous_state
             return True, load_message
 
         message = f"Retry load failed on {oams.name} spool {spool_idx}: {load_message}"
         logging.error("OAMS: %s", message)
+
+        second_unload_success, second_unload_message = oams.unload_spool()
+        if not second_unload_success:
+            logging.error(
+                "OAMS: Unable to clear spool %d on %s after failed retry: %s",
+                spool_idx,
+                oams.name,
+                second_unload_message,
+            )
+        else:
+            logging.info(
+                "OAMS: Spool %d on %s backed out after failed retry",
+                spool_idx,
+                oams.name,
+            )
+
+        fps_state.state_name = FPSLoadState.UNLOADED
         return False, message
 
     def _monitor_load_speed_for_fps(self, fps_name):
