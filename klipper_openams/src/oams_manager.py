@@ -90,20 +90,24 @@ class OAMSRunoutMonitor:
       tuned per extruder lane.
     """
     
-    def __init__(self, 
-                 printer,
-                 fps_name: str,
-                 fps, 
-                 fps_state,
-                 oams: Dict[str, Any],
-                 reload_callback: Callable, 
-                 reload_before_toolhead_distance: float = 0.0):
+    def __init__(
+        self,
+        printer,
+        fps_name: str,
+        fps,
+        fps_state,
+        oams: Dict[str, Any],
+        reload_callback: Callable,
+        resolve_oams: Callable[[Optional[str]], Any],
+        reload_before_toolhead_distance: float = 0.0,
+    ):
         # Core references
         self.oams = oams
         self.printer = printer
         self.fps_name = fps_name
         self.fps_state = fps_state
         self.fps = fps
+        self._resolve_oams = resolve_oams
         
         # State tracking
         self.state = OAMSRunoutState.STOPPED
@@ -136,7 +140,7 @@ class OAMSRunoutMonitor:
                         return eventtime + MONITOR_ENCODER_PERIOD
                     fps_state.afc_delegation_active = False
                     fps_state.afc_delegation_until = 0.0
-                oams = self._get_oams(fps_state.current_oams)
+                oams = self._resolve_oams(fps_state.current_oams)
                 if (
                     is_printing
                     and fps_state.state_name == "LOADED"
@@ -177,7 +181,7 @@ class OAMSRunoutMonitor:
                     fps.extruder.last_position - self.bldc_clear_position, 0.0
                 )
                 self.runout_after_position = traveled_distance_after_bldc_clear
-                oams = self._get_oams(fps_state.current_oams)
+                oams = self._resolve_oams(fps_state.current_oams)
                 path_length = getattr(oams, "filament_path_length", 0.0)
                 effective_path_length = (
                     path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0
@@ -2966,6 +2970,7 @@ class OAMSManager:
                 fps_state,
                 self.oams,
                 _reload_callback,
+                self._get_oams,
                 reload_before_toolhead_distance=fps_reload_margin,
             )
             self.runout_monitors[fps_name] = monitor
