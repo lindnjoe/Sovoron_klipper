@@ -366,6 +366,16 @@ class OAMSManager:
         self.config = config
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
+        try:
+            self.toolhead = self.printer.lookup_object("toolhead")
+        except Exception:
+            logging.exception("OAMS: Failed to lookup toolhead during initialization")
+            self.toolhead = None
+        try:
+            self.print_stats = self.printer.lookup_object("print_stats")
+        except Exception:
+            logging.exception("OAMS: Failed to lookup print_stats during initialization")
+            self.print_stats = None
         
 
         # Hardware object collections
@@ -1237,7 +1247,33 @@ class OAMSManager:
         message = f"Print has been paused: {message}"
         gcode.run_script(f"M118 {message}")
         gcode.run_script(f"M114 {message}")
-        gcode.run_script("PAUSE")
+        now = self.reactor.monotonic()
+        if self.print_stats is not None:
+            try:
+                stats_state = self.print_stats.get_status(now)
+                if stats_state.get("state") != "printing":
+                    logging.info("OAMS: Skipping automatic PAUSE because printer state is %s", stats_state.get("state"))
+                    return
+            except Exception:
+                logging.exception("OAMS: Failed to query print stats before issuing PAUSE")
+                return
+
+        homed_axes = ""
+        if self.toolhead is not None:
+            try:
+                homed_axes = self.toolhead.get_status(now).get("homed_axes", "")
+            except Exception:
+                logging.exception("OAMS: Failed to query toolhead homed axes before issuing PAUSE")
+                return
+
+        if len(homed_axes) < 3:
+            logging.info("OAMS: Skipping automatic PAUSE because axes are not homed (%s)", homed_axes)
+            return
+
+        try:
+            gcode.run_script("PAUSE")
+        except Exception:
+            logging.exception("OAMS: Failed to execute automatic PAUSE command")
 
     def _clear_stuck_spool_state(self, fps_state: 'FPSState', restart_follower: bool = True) -> None:
         """Reset stuck spool indicators, LEDs, and follower state for the provided FPS."""
@@ -1535,13 +1571,33 @@ class OAMSManager:
                 logging.exception("OAMS: Failed to query idle timeout for stuck spool monitor")
                 is_printing = False
 
+            stats_printing = True
+            if self.print_stats is not None:
+                try:
+                    stats_state = self.print_stats.get_status(eventtime)
+                    stats_printing = stats_state.get("state") == "printing"
+                except Exception:
+                    logging.exception("OAMS: Failed to query print stats for stuck spool monitor")
+                    stats_printing = False
+
+            if not stats_printing:
+                is_printing = False
+
             if fps_state.state_name != FPSLoadState.LOADED or oams is None:
                 fps_state.stuck_spool_start_time = None
                 if fps_state.stuck_spool_active:
                     self._clear_stuck_spool_state(fps_state, restart_follower=False)
                 return eventtime + MONITOR_ENCODER_PERIOD
 
-            if not is_printing:
+            homed_axes = ""
+            if self.toolhead is not None:
+                try:
+                    homed_axes = self.toolhead.get_status(eventtime).get("homed_axes", "")
+                except Exception:
+                    logging.exception("OAMS: Failed to query toolhead homed axes for stuck spool monitor")
+                    homed_axes = ""
+
+            if not is_printing or len(homed_axes) < 3:
                 fps_state.stuck_spool_start_time = None
                 return eventtime + MONITOR_ENCODER_PERIOD
 
