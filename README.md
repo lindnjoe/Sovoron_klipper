@@ -11,7 +11,9 @@ This repository packages the firmware modules, configuration, and macros require
    3. [Filament Path & Monitoring](#filament-path--monitoring)
 2. [Integration Workflow](#integration-workflow)
    1. [Spool Loading & Switchover](#spool-loading--switchover)
-   2. [Runout, Clog, and Stuck Spool Handling](#runout-clog-and-stuck-spool-handling)
+
+   2. [Runout and Stuck Spool Handling](#runout-and-stuck-spool-handling)
+
    3. [Macros Bridging AFC and OpenAMS](#macros-bridging-afc-and-openams)
 3. [Configuration Reference](#configuration-reference)
    1. [OpenAMS Core (`printer_data/config/oamsc.cfg`)](#openams-core-printer_dataconfigoamsccfg)
@@ -33,7 +35,9 @@ This repository packages the firmware modules, configuration, and macros require
 ## System Architecture
 
 ### Software Components
-- **`klipper_openams` extension** – Implements the runtime logic that coordinates spool loading, runout recovery, clog detection, and stuck-spool monitoring across all filament pressure sensors (FPS) and AMS hubs. The `oams_manager.py` module provides configurable thresholds, timers, and LED control hooks that interact with the hardware macros defined in the Klipper configuration.
+
+- **`klipper_openams` extension** – Implements the runtime logic that coordinates spool loading, runout recovery, and stuck-spool monitoring across all filament pressure sensors (FPS) and AMS hubs. The `oams_manager.py` module provides configurable thresholds, timers, and LED control hooks that interact with the hardware macros defined in the Klipper configuration.
+
 - **Klipper configuration** – Located under `printer_data/config`, it declares all MCUs, stepper lanes, hubs, macros, and gcode variables that tie the OpenAMS hardware to the AFC system. The configuration is separated into logical files so each subsystem can be tuned independently.
 
 ### Hardware & MCU Topology
@@ -42,7 +46,9 @@ This repository packages the firmware modules, configuration, and macros require
 
 ### Filament Path & Monitoring
 - **Filament groups & FPS definitions** – `oamsc.cfg` maps toolchanger tools (`T4`–`T11`) into OpenAMS filament groups and binds each group to an FPS (`fps1`/`fps2`) and extruder. The `reload_before_toolhead_distance` value per FPS determines how early the manager coasts followers before a swap.
-- **Pressure and encoder tracking** – `klipper_openams/src/oams_manager.py` tracks encoder counts and FPS pressure, automatically retrying failed loads, pausing when loading speeds stall, and latching LEDs when a stuck spool is detected. Clog monitoring uses configurable dwell, travel, and pressure thresholds to decide when to stop a print.
+
+- **Pressure and encoder tracking** – `klipper_openams/src/oams_manager.py` tracks encoder counts and FPS pressure, automatically retrying failed loads, pausing when loading speeds stall, and latching LEDs when a stuck spool is detected. The current baseline no longer performs automatic clog detection inside the manager.
+
 
 ## Integration Workflow
 
@@ -51,10 +57,12 @@ This repository packages the firmware modules, configuration, and macros require
 2. **Load execution** – `OAMSM_LOAD_FILAMENT` gcode is emitted by the `_TX1`/`_TX2` macros. The OpenAMS manager advances the designated hub until the FPS reaches the configured midpoint between `fps_upper_threshold` and `fps_lower_threshold`.
 3. **Toolhead priming** – After a successful load, macros pull filament into the toolhead using the `_oams_macro_variables` lengths and optionally trigger purge, wipe, or brush cycles defined in AFC macro variables.
 
-### Runout, Clog, and Stuck Spool Handling
+
+### Runout and Stuck Spool Handling
 - **Runout** – When an FPS detects hub HES sensors dropping out, `OAMSRunoutMonitor` transitions through pause, coast, and reload states before pulling the next spool in the group.
-- **Clog detection** – Encoder deltas, extruder travel, and pressure offsets are sampled over the configurable window to determine whether extrusion has stalled. If a clog is confirmed, the print is paused and LEDs illuminate for the offending spool.
-- **Stuck spool detection** – While printing, the stuck spool monitor watches FPS pressure for sustained readings below `STUCK_SPOOL_PRESSURE_TRIGGER`. If the pressure stays low for at least the clog dwell time, the system pauses, asserts the spool LED, and waits for the user to resume after clearing the jam. Resuming or switching spools automatically clears the latch and LED.
+- **Stuck spool detection** – While printing, the stuck spool monitor watches FPS pressure for sustained readings below `STUCK_SPOOL_PRESSURE_THRESHOLD` for the configured dwell window. If the pressure stays low long enough, the system pauses, asserts the spool LED, and waits for the user to resume after clearing the jam. Resuming or switching spools automatically clears the latch, resets the follower, and turns the LED off.
+- **Clog detection** – The baseline manager no longer performs extruder/encoder-based clog checks. Any future clog monitoring should be implemented in macros or external modules without relying on the previous in-manager logic.
+
 
 ### Macros Bridging AFC and OpenAMS
 - **Safe unload routines** – `SAFE_UNLOAD_FILAMENT1/2` macros coordinate nozzle heating, cutter actuation, follower reversal, and hub unload commands for each AMS.
