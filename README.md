@@ -1,7 +1,7 @@
-# Sovoron Klipper AFC + OpenAMS Reference
+# Klipper AFC + OpenAMS Reference
 
 This repository bundles the Klipper configuration, helper macros, and Python
-extensions needed to run Sovoron printers with dual OpenAMS units feeding an
+extensions needed to run Klipper printers with dual OpenAMS units feeding an
 AFC-based toolchanger.  It tracks a customised copy of the upstream
 `klipper_openams` manager and the configuration layout that stitches the
 hardware together.
@@ -194,6 +194,6 @@ purge routines without modifying the manager itself.
 
 ---
 
-With the pieces above you should have a clear map of how Sovoron’s AFC and
+With the pieces above you should have a clear map of how Klipper’s AFC and
 OpenAMS integration works, what safeguards are active at runtime, and where to
 adjust parameters for your own hardware.
