@@ -380,8 +380,10 @@ class OAMSManager:
         self.config = config
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
+
         self.toolhead = None
         self.print_stats = None
+
         
 
         # Hardware object collections
@@ -509,6 +511,14 @@ class OAMSManager:
 
         self._rebuild_group_fps_index()
         self._refresh_runtime_objects()
+
+        # Clear any hardware fault indicators that may have been left from the
+        # previous session so startup begins from a clean slate.
+        for name, oam in self.oams.items():
+            try:
+                oam.clear_errors()
+            except Exception:
+                logging.exception("OAMS: Failed to clear errors on startup for %s", name)
 
         # Clear any hardware fault indicators that may have been left from the
         # previous session so startup begins from a clean slate.
@@ -1219,6 +1229,7 @@ class OAMSManager:
 
         return False, f"No spool available for group {group_name}"
 
+
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
     def cmd_UNLOAD_FILAMENT(self, gcmd):
         fps_name = gcmd.get('FPS')
@@ -1244,6 +1255,7 @@ class OAMSManager:
         if not success or (message and message != "Spool unloaded successfully"):
             gcmd.respond_info(message)
         return
+
 
     cmd_LOAD_FILAMENT_help = "Load a spool from an specific group"
     def cmd_LOAD_FILAMENT(self, gcmd):
@@ -1393,6 +1405,7 @@ class OAMSManager:
             fps_state = self.current_state.fps_state[fps_name]
             oams = None
             if fps_state.current_oams is not None:
+
                 oams = self.oams.get(fps_state.current_oams)
             if (
                 fps_state.state_name == "UNLOADING"
@@ -1405,6 +1418,7 @@ class OAMSManager:
                     )
                     fps_state.encoder_samples.clear()
                     return eventtime + MONITOR_ENCODER_PERIOD
+
                 fps_state.encoder_samples.append(oams.encoder_clicks)
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
                     return eventtime + MONITOR_ENCODER_PERIOD
@@ -1703,6 +1717,7 @@ class OAMSManager:
             load_message,
         )
 
+
         second_unload_success, second_unload_message = oams.unload_spool()
         if not second_unload_success:
             logging.warning(
@@ -1801,6 +1816,7 @@ class OAMSManager:
             fps_state.reset_runout_positions()
             fps_state.reset_stuck_spool_state()
             return True
+
 
         logging.error(
             "OAMS: Fallback load to %s after stuck spool on %s failed: %s",
