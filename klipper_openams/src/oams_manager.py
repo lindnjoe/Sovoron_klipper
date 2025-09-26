@@ -256,16 +256,24 @@ class FPSState:
         self.stuck_spool_start_time: Optional[float] = None
         self.stuck_spool_active: bool = False
 
+        self.stuck_spool_restore_follower: bool = False
+        self.stuck_spool_restore_direction: int = 1
+
 
     def reset_runout_positions(self) -> None:
         """Clear runout position tracking."""
         self.runout_position = None
         self.runout_after_position = None
 
-    def reset_stuck_spool_state(self) -> None:
+
+    def reset_stuck_spool_state(self, preserve_restore: bool = False) -> None:
         """Clear any latched stuck spool indicators."""
         self.stuck_spool_start_time = None
         self.stuck_spool_active = False
+        if not preserve_restore:
+            self.stuck_spool_restore_follower = False
+            self.stuck_spool_restore_direction = 1
+
 
     def __repr__(self) -> str:
         return f"FPSState(state_name={self.state_name}, current_group={self.current_group}, current_oams={self.current_oams}, current_spool_idx={self.current_spool_idx})"
@@ -335,6 +343,10 @@ class OAMSManager:
         
         # Register with printer and setup event handlers
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
+        self.printer.register_event_handler(
+            "idle_timeout:printing",
+            self._handle_printing_resumed,
+        )
         self.printer.add_object("oams_manager", self)
         self.register_commands()
         
@@ -1083,6 +1095,39 @@ class OAMSManager:
         gcode.run_script(f"M114 {message}")
         gcode.run_script("PAUSE")
 
+
+    def _handle_printing_resumed(self, _eventtime):
+        """Re-enable any followers that were paused due to a stuck spool."""
+        for fps_name, fps_state in self.current_state.fps_state.items():
+            if not fps_state.stuck_spool_restore_follower:
+                continue
+            if fps_state.current_oams is None:
+                fps_state.stuck_spool_restore_follower = False
+                continue
+            oams = self.oams.get(fps_state.current_oams)
+            if oams is None:
+                fps_state.stuck_spool_restore_follower = False
+                continue
+            direction = fps_state.stuck_spool_restore_direction
+            if direction not in (0, 1):
+                direction = 1
+            try:
+                oams.set_oams_follower(1, direction)
+                fps_state.following = True
+                fps_state.direction = direction
+                logging.info(
+                    "OAMS: Restarted follower for %s spool %s after stuck spool pause.",
+                    fps_name,
+                    fps_state.current_spool_idx,
+                )
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to restart follower for %s after stuck spool pause",
+                    fps_name,
+                )
+            fps_state.stuck_spool_restore_follower = False
+
+
     def _trigger_stuck_spool_pause(
         self,
         fps_name: str,
@@ -1107,6 +1152,21 @@ class OAMSManager:
                     fps_name,
                     spool_idx,
                 )
+
+            if fps_state.following:
+                direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+                fps_state.stuck_spool_restore_follower = True
+                fps_state.stuck_spool_restore_direction = direction
+                try:
+                    oams.set_oams_follower(0, direction)
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to stop follower for %s spool %s during stuck spool pause",
+                        fps_name,
+                        spool_idx,
+                    )
+                fps_state.following = False
+
 
         fps_state.stuck_spool_active = True
         fps_state.stuck_spool_start_time = None
@@ -1207,7 +1267,11 @@ class OAMSManager:
                             "OAMS: Failed to clear stuck spool LED while idle on %s",
                             fps_name,
                         )
-                fps_state.reset_stuck_spool_state()
+
+                fps_state.reset_stuck_spool_state(
+                    preserve_restore=fps_state.stuck_spool_restore_follower
+                )
+
                 return eventtime + MONITOR_ENCODER_PERIOD
 
             pressure = float(getattr(fps, "fps_value", 0.0))
