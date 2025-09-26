@@ -576,7 +576,8 @@ class OAMSManager:
             self.stop_monitors()
         for fps_name, fps_state in self.current_state.fps_state.items():
             fps_state.encoder_samples.clear()
-            fps_state.reset_stuck_spool_state()
+            restart = fps_state.state_name == FPSLoadState.LOADED
+            self._clear_stuck_spool_state(fps_name, fps_state, restart_follower=restart)
             fps_state.reset_clog_tracker()
         for _, oam in self.oams.items():
             oam.clear_errors()
@@ -1137,6 +1138,44 @@ class OAMSManager:
         gcode.run_script(f"M114 {message}")
         gcode.run_script("PAUSE")
 
+    def _clear_stuck_spool_state(
+        self,
+        fps_name: str,
+        fps_state: "FPSState",
+        restart_follower: bool = True,
+    ) -> None:
+        """Clear latched stuck-spool state, LEDs, and optionally restart follower."""
+
+        oams = None
+        if fps_state.current_oams is not None:
+            oams = self.oams.get(fps_state.current_oams)
+
+        spool_idx = fps_state.current_spool_idx
+
+        if oams is not None and spool_idx is not None:
+            try:
+                oams.set_led_error(spool_idx, 0)
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to clear stuck spool LED on %s spool %s",
+                    fps_name,
+                    spool_idx,
+                )
+
+            if restart_follower and fps_state.state_name == FPSLoadState.LOADED:
+                direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+                try:
+                    oams.set_oams_follower(1, direction)
+                    fps_state.following = True
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to restart follower after stuck spool on %s spool %s",
+                        fps_name,
+                        spool_idx,
+                    )
+
+        fps_state.reset_stuck_spool_state()
+
     def _trigger_stuck_spool_pause(
         self,
         fps_name: str,
@@ -1161,6 +1200,18 @@ class OAMSManager:
                     fps_name,
                     spool_idx,
                 )
+
+            direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+            try:
+                oams.set_oams_follower(0, direction)
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to stop follower after stuck spool on %s spool %s",
+                    fps_name,
+                    spool_idx,
+                )
+
+        fps_state.following = False
 
         fps_state.stuck_spool_active = True
         fps_state.stuck_spool_start_time = None
@@ -1269,15 +1320,6 @@ class OAMSManager:
                 is_printing = False
 
             if not is_printing:
-                if fps_state.stuck_spool_active:
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 0)
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to clear stuck spool LED while idle on %s",
-                            fps_name,
-                        )
-                fps_state.reset_stuck_spool_state()
                 return eventtime + MONITOR_ENCODER_PERIOD
 
             pressure = float(getattr(fps, "fps_value", 0.0))
@@ -1303,15 +1345,9 @@ class OAMSManager:
                     )
             else:
                 if fps_state.stuck_spool_active:
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 0)
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to clear stuck spool LED on %s spool %d",
-                            fps_name,
-                            fps_state.current_spool_idx,
-                        )
-                fps_state.reset_stuck_spool_state()
+                    self._clear_stuck_spool_state(fps_name, fps_state)
+                else:
+                    fps_state.stuck_spool_start_time = None
 
             return eventtime + MONITOR_ENCODER_PERIOD
 
@@ -1575,4 +1611,4 @@ class OAMSManager:
 
 
 def load_config(config):
-    return OAMSManager(config)    
+    return OAMSManager(config)
