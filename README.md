@@ -1,7 +1,9 @@
+
 # Klipper AFC + OpenAMS Reference
 
 This repository bundles the Klipper configuration, helper macros, and Python
 extensions needed to run Klipper printers with dual OpenAMS units feeding an
+
 AFC-based toolchanger.  It tracks a customised copy of the upstream
 `klipper_openams` manager and the configuration layout that stitches the
 hardware together.
@@ -72,6 +74,7 @@ lanes.
   crosses FPS boundaries or another unit must take over, the manager delegates
   the swap back to AFC to avoid conflicting motion.
 
+
 ### 2.3 Clog detection
 - **Preconditions** – Monitoring only runs when the printer is actively
   printing, the FPS is `LOADED`, all axes are homed, and no stuck-spool
@@ -103,6 +106,7 @@ lanes.
   re-enabled in its stored direction before monitoring resumes.【F:klipper_openams/src/oams_manager.py†L1194-L1247】【F:klipper_openams/src/oams_manager.py†L1505-L1514】
 
 ### 2.5 Load/unload speed guards
+
 Separate timers watch the encoder ticks during manual or automatic loads and
 unloads.  If the encoder fails to advance by at least `MIN_ENCODER_DIFF`
 counts within the `MONITOR_ENCODER_*_AFTER` window the printer is paused and
@@ -152,9 +156,11 @@ behaviour without touching the entire stack.
   overrides if needed.
 - **Manager include** – `[include oams_macros.cfg]` pulls in the macros that
   partner with the Python manager.
+
 - **Manager options** – `[oams_manager]` accepts overrides like
   `reload_before_toolhead_distance` and `clog_sensitivity` to tune reload
   timing and the clog detection thresholds for your installation.【F:printer_data/config/oamsc.cfg†L293-L298】【F:klipper_openams/src/oams_manager.py†L32-L43】【F:klipper_openams/src/oams_manager.py†L366-L394】
+
 
 ### 4.2 OpenAMS macros – `printer_data/config/oams_macros.cfg`
 Defines the sequence of operations around loading, unloading, filament sensor
@@ -194,6 +200,8 @@ purge routines without modifying the manager itself.
 
 ---
 
+
 With the pieces above you should have a clear map of how Klipper’s AFC and
 OpenAMS integration works, what safeguards are active at runtime, and where to
 adjust parameters for your own hardware.
+

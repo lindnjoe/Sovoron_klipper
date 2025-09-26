@@ -1123,7 +1123,9 @@ class OAMSManager:
 
         fps_state = self.current_state.fps_state[fps_name]
         attempted_locations: List[str] = []
+
         failure_details: List[str] = []
+
         last_failure_message: Optional[str] = None
 
         for (oam, bay_index) in self.filament_groups[group_name].bays:
@@ -1213,6 +1215,7 @@ class OAMSManager:
                     )
 
                 return True, final_message
+
 
             retry_detail: Optional[str] = None
             if retry_message:
@@ -1323,6 +1326,7 @@ class OAMSManager:
         if len(homed_axes) < 3:
             logging.info("OAMS: Skipping automatic PAUSE because axes are not homed (%s)", homed_axes)
             return
+
 
         try:
             gcode.run_script("PAUSE")
@@ -1629,6 +1633,7 @@ class OAMSManager:
                 spool_idx,
             )
 
+
         if oams.current_spool == spool_idx:
             oams.current_spool = None
 
@@ -1647,6 +1652,7 @@ class OAMSManager:
         fps_state.reset_clog_tracker()
         fps_state.reset_load_retry_attempt()
         fps_state.reset_unload_retry_attempt()
+
 
     def _attempt_stuck_spool_recovery(
         self,
