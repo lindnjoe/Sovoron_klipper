@@ -1586,6 +1586,15 @@ class OAMSManager:
                     spool_idx,
                     cleanup_attempts,
                 )
+                try:
+                    oams.clear_errors()
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to clear errors on %s while cleaning up retry failure",
+                        oams.name,
+                    )
+                if oams.current_spool != spool_idx:
+                    oams.current_spool = spool_idx
                 self.reactor.pause(self.reactor.monotonic() + 0.3)
                 continue
 
@@ -1665,6 +1674,16 @@ class OAMSManager:
                     context,
                     attempts,
                 )
+                try:
+                    oams.clear_errors()
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to clear errors on %s while retrying unload after %s failure",
+                        oams.name,
+                        context,
+                    )
+                if oams.current_spool != spool_idx:
+                    oams.current_spool = spool_idx
                 self.reactor.pause(self.reactor.monotonic() + 0.3)
                 continue
 
@@ -1730,6 +1749,15 @@ class OAMSManager:
                     stuck_spool_idx,
                     unload_attempts,
                 )
+                try:
+                    oams.clear_errors()
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to clear errors on %s while retrying stuck spool unload",
+                        oams.name,
+                    )
+                if oams.current_spool != stuck_spool_idx:
+                    oams.current_spool = stuck_spool_idx
                 self.reactor.pause(self.reactor.monotonic() + 0.2)
                 continue
             break
