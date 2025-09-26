@@ -1137,6 +1137,36 @@ class OAMSManager:
         gcode.run_script(f"M114 {message}")
         gcode.run_script("PAUSE")
 
+    def _trigger_stuck_spool_pause(
+        self,
+        fps_name: str,
+        fps_state: "FPSState",
+        oams: Optional[Any],
+        message: str,
+    ) -> None:
+        """Common stuck spool pause handler used by monitors and load checks."""
+        if fps_state.stuck_spool_active:
+            return
+
+        spool_idx = fps_state.current_spool_idx
+        if oams is None and fps_state.current_oams is not None:
+            oams = self.oams.get(fps_state.current_oams)
+
+        if oams is not None and spool_idx is not None:
+            try:
+                oams.set_led_error(spool_idx, 1)
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to set stuck spool LED on %s spool %s",
+                    fps_name,
+                    spool_idx,
+                )
+
+        fps_state.stuck_spool_active = True
+        fps_state.stuck_spool_start_time = None
+
+        self._pause_printer_message(message)
+
     def _monitor_unload_speed_for_fps(self, fps_name):
         def _monitor_unload_speed(self, eventtime):
             fps_state = self.current_state.fps_state[fps_name]
@@ -1176,6 +1206,8 @@ class OAMSManager:
             oams = None
             if fps_state.current_oams is not None:
                 oams = self.oams[fps_state.current_oams]
+            if fps_state.stuck_spool_active:
+                return eventtime + MONITOR_ENCODER_PERIOD
             if (
                 fps_state.state_name == "LOADING"
                 and self.reactor.monotonic() - fps_state.since
@@ -1193,12 +1225,24 @@ class OAMSManager:
                     encoder_diff,
                 )
                 if encoder_diff < MIN_ENCODER_DIFF:
-                    oams.set_led_error(fps_state.current_spool_idx, 1)
-                    self._pause_printer_message(
-                        "Printer paused because the loading speed of the moving filament was too low"
+                    group_label = fps_state.current_group or fps_name
+                    spool_label = (
+                        str(fps_state.current_spool_idx)
+                        if fps_state.current_spool_idx is not None
+                        else "unknown"
                     )
-                    self.stop_monitors()
-                    return self.printer.get_reactor().NEVER
+                    message = (
+                        "Spool appears stuck while loading"
+                        if fps_state.current_group is None
+                        else f"Spool appears stuck while loading {group_label} spool {spool_label}"
+                    )
+                    self._trigger_stuck_spool_pause(
+                        fps_name,
+                        fps_state,
+                        oams,
+                        message,
+                    )
+                    return eventtime + MONITOR_ENCODER_PERIOD
             return eventtime + MONITOR_ENCODER_PERIOD
 
         return partial(_monitor_load_speed, self)
@@ -1246,21 +1290,17 @@ class OAMSManager:
                     not fps_state.stuck_spool_active
                     and now - fps_state.stuck_spool_start_time >= STUCK_SPOOL_DWELL
                 ):
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 1)
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to set stuck spool LED on %s spool %d",
-                            fps_name,
-                            fps_state.current_spool_idx,
-                        )
-                    fps_state.stuck_spool_active = True
                     message = "Spool appears stuck"
                     if fps_state.current_group is not None:
                         message = (
                             f"Spool appears stuck on {fps_state.current_group} spool {fps_state.current_spool_idx}"
                         )
-                    self._pause_printer_message(message)
+                    self._trigger_stuck_spool_pause(
+                        fps_name,
+                        fps_state,
+                        oams,
+                        message,
+                    )
             else:
                 if fps_state.stuck_spool_active:
                     try:
