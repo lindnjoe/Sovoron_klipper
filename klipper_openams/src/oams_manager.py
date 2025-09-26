@@ -347,6 +347,12 @@ class OAMSManager:
             "idle_timeout:printing",
             self._handle_printing_resumed,
         )
+
+        self.printer.register_event_handler(
+            "pause:resume",
+            self._handle_printing_resumed,
+        )
+
         self.printer.add_object("oams_manager", self)
         self.register_commands()
         
@@ -1096,36 +1102,59 @@ class OAMSManager:
         gcode.run_script("PAUSE")
 
 
+    def _restore_follower_if_needed(
+        self,
+        fps_name: str,
+        fps_state: "FPSState",
+        oams: Optional[Any],
+        context: str,
+    ) -> None:
+        """Restore the follower if a stuck spool pause disabled it."""
+        if not fps_state.stuck_spool_restore_follower:
+            return
+
+        if fps_state.current_oams is None:
+            fps_state.stuck_spool_restore_follower = False
+            return
+
+        if oams is None:
+            oams = self.oams.get(fps_state.current_oams)
+        if oams is None:
+            return
+
+        direction = fps_state.stuck_spool_restore_direction
+        if direction not in (0, 1):
+            direction = 1
+
+        try:
+            oams.set_oams_follower(1, direction)
+            fps_state.following = True
+            fps_state.direction = direction
+            fps_state.stuck_spool_restore_follower = False
+            logging.info(
+                "OAMS: Restarted follower for %s spool %s after %s.",
+                fps_name,
+                fps_state.current_spool_idx,
+                context,
+            )
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to restart follower for %s after %s",
+                fps_name,
+                context,
+            )
+
+
     def _handle_printing_resumed(self, _eventtime):
         """Re-enable any followers that were paused due to a stuck spool."""
         for fps_name, fps_state in self.current_state.fps_state.items():
-            if not fps_state.stuck_spool_restore_follower:
-                continue
-            if fps_state.current_oams is None:
-                fps_state.stuck_spool_restore_follower = False
-                continue
-            oams = self.oams.get(fps_state.current_oams)
-            if oams is None:
-                fps_state.stuck_spool_restore_follower = False
-                continue
-            direction = fps_state.stuck_spool_restore_direction
-            if direction not in (0, 1):
-                direction = 1
-            try:
-                oams.set_oams_follower(1, direction)
-                fps_state.following = True
-                fps_state.direction = direction
-                logging.info(
-                    "OAMS: Restarted follower for %s spool %s after stuck spool pause.",
-                    fps_name,
-                    fps_state.current_spool_idx,
-                )
-            except Exception:
-                logging.exception(
-                    "OAMS: Failed to restart follower for %s after stuck spool pause",
-                    fps_name,
-                )
-            fps_state.stuck_spool_restore_follower = False
+
+            self._restore_follower_if_needed(
+                fps_name,
+                fps_state,
+                self.oams.get(fps_state.current_oams) if fps_state.current_oams else None,
+                "print resume",
+            )
 
 
     def _trigger_stuck_spool_pause(
@@ -1305,7 +1334,17 @@ class OAMSManager:
                             fps_name,
                             fps_state.current_spool_idx,
                         )
-                fps_state.reset_stuck_spool_state()
+
+                if fps_state.stuck_spool_restore_follower and is_printing:
+                    self._restore_follower_if_needed(
+                        fps_name,
+                        fps_state,
+                        oams,
+                        "stuck spool recovery",
+                    )
+                if not fps_state.stuck_spool_restore_follower:
+                    fps_state.reset_stuck_spool_state()
+
 
             return eventtime + MONITOR_ENCODER_PERIOD
 
