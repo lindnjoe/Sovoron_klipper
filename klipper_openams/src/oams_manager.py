@@ -1897,55 +1897,25 @@ class OAMSManager:
                     )
 
                     if original_group is not None:
-                        load_success, load_message = self._load_filament_for_group(
-                            original_group
-                        )
-                        if load_success:
-                            logging.info(
-                                "OAMS: Reloaded group %s after slow load on %s spool %s",
-                                original_group,
-                                fps_name,
-                                original_spool_idx
-                                if original_spool_idx is not None
-                                else "unknown",
-                            )
-                            if (
-                                original_spool_idx is not None
-                                and original_oams is not None
-                            ):
-                                restored_oams = self.oams.get(original_oams)
-                                if restored_oams is not None:
-                                    try:
-                                        restored_oams.set_led_error(
-                                            original_spool_idx, 0
-                                        )
-                                    except Exception:
-                                        logging.exception(
-                                            "OAMS: Failed to clear LED for %s spool %s after reload",
-                                            original_oams,
-                                            original_spool_idx,
-                                        )
-                            return eventtime + MONITOR_ENCODER_PERIOD
-
-                        error_detail = load_message or "Unknown reload failure"
-                        pause_reason = (
-                            "Automatic reload failed after slow load detection: "
-                            f"{error_detail}"
-                        )
                         logging.error(
-                            "OAMS: Reload attempt after slow load on %s spool %s failed: %s",
+                            "OAMS: Slow load on %s spool %s could not be recovered automatically",
                             fps_name,
-                            original_spool_idx
-                            if original_spool_idx is not None
-                            else "unknown",
-                            error_detail,
+                            original_spool_idx if original_spool_idx is not None else "unknown",
                         )
-                        self._pause_printer_message(pause_reason)
                     else:
                         logging.error(
-                            "OAMS: Unable to retry load on %s because no original group was recorded",
+                            "OAMS: Unable to determine original group for slow load recovery on %s",
                             fps_name,
                         )
+
+                    detail = retry_message or "Loading speed remained too low"
+                    pause_reason = (
+                        "Printer paused because the loading speed of the moving filament was too low "
+                        "after an automatic retry"
+                    )
+                    if detail:
+                        pause_reason = f"{pause_reason}: {detail}"
+                    self._pause_printer_message(pause_reason)
 
                     return eventtime + MONITOR_ENCODER_PERIOD
             return eventtime + MONITOR_ENCODER_PERIOD
