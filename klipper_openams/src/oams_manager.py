@@ -1575,4 +1575,4 @@ class OAMSManager:
 
 
 def load_config(config):
-    return OAMSManager(config)    return OAMSManager(config)
+    return OAMSManager(config)    
