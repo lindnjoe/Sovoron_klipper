@@ -1313,6 +1313,28 @@ class OAMSManager:
                 fps_state.reset_stuck_spool_state()
                 return eventtime + MONITOR_ENCODER_PERIOD
 
+            # Ignore stuck spool detection while the hub reports the lane is
+            # empty or the runout monitor is actively reloading another spool.
+            # This prevents the unloaded lane from being flagged as jammed
+            # during planned swaps or coasting.
+            try:
+                if bool(oams.hub_hes_value[fps_state.current_spool_idx]):
+                    fps_state.reset_stuck_spool_state()
+                    return eventtime + MONITOR_ENCODER_PERIOD
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to read hub sensor for %s spool %s",
+                    fps_name,
+                    fps_state.current_spool_idx,
+                )
+                fps_state.reset_stuck_spool_state()
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            monitor = self.runout_monitors.get(fps_name)
+            if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
+                fps_state.reset_stuck_spool_state()
+                return eventtime + MONITOR_ENCODER_PERIOD
+
             try:
                 idle_timeout = self.printer.lookup_object("idle_timeout")
                 is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
