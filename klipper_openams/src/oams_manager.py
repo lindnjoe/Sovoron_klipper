@@ -1151,13 +1151,24 @@ class OAMSManager:
                 fps_state.current_spool_idx = bay_index
                 fps_state.state_name = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
-                fps_state.following = False
-                fps_state.direction = 1
                 self.current_group = group_name
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
                 fps_state.reset_load_retry_attempt()
                 fps_state.reset_unload_retry_attempt()
+
+                direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+                try:
+                    oam.set_oams_follower(1, direction)
+                    fps_state.following = True
+                    fps_state.direction = direction
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to enable follower after loading %s bay %s",
+                        oam.name,
+                        bay_index,
+                    )
+
                 return True, message
 
             failure_reason = message or "Unknown load failure"
@@ -1182,13 +1193,24 @@ class OAMSManager:
                 fps_state.current_spool_idx = bay_index
                 fps_state.state_name = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
-                fps_state.following = False
-                fps_state.direction = 1
                 self.current_group = group_name
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
                 fps_state.reset_load_retry_attempt()
                 fps_state.reset_unload_retry_attempt()
+
+                direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+                try:
+                    oam.set_oams_follower(1, direction)
+                    fps_state.following = True
+                    fps_state.direction = direction
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to enable follower after retry loading %s bay %s",
+                        oam.name,
+                        bay_index,
+                    )
+
                 return True, final_message
 
             if retry_message:
@@ -1512,6 +1534,17 @@ class OAMSManager:
             fps_state.state_name = FPSLoadState.LOADED
             fps_state.since = self.reactor.monotonic()
             oams.current_spool = spool_idx
+            direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+            try:
+                oams.set_oams_follower(1, direction)
+                fps_state.following = True
+                fps_state.direction = direction
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to enable follower after retry load on %s spool %d",
+                    oams.name,
+                    spool_idx,
+                )
             return True, load_message
 
         message = f"Retry load failed on {oams.name} spool {spool_idx}: {load_message}"
