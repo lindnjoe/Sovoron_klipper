@@ -1123,6 +1123,7 @@ class OAMSManager:
 
         fps_state = self.current_state.fps_state[fps_name]
         attempted_locations: List[str] = []
+        failure_details: List[str] = []
         last_failure_message: Optional[str] = None
 
         for (oam, bay_index) in self.filament_groups[group_name].bays:
@@ -1213,8 +1214,10 @@ class OAMSManager:
 
                 return True, final_message
 
+            retry_detail: Optional[str] = None
             if retry_message:
                 last_failure_message = retry_message
+                retry_detail = retry_message
 
             self._ensure_spool_backed_out(
                 fps_state,
@@ -1222,22 +1225,18 @@ class OAMSManager:
                 "load retry",
             )
 
-            fps_state.encoder_samples.clear()
-            fps_state.state_name = FPSLoadState.UNLOADED
-            fps_state.current_group = None
-            fps_state.current_spool_idx = None
-            fps_state.current_oams = None
-            fps_state.following = False
-            fps_state.direction = 1
-            fps_state.since = self.reactor.monotonic()
-            fps_state.reset_stuck_spool_state()
-            fps_state.reset_clog_tracker()
-            fps_state.reset_load_retry_attempt()
-            fps_state.reset_unload_retry_attempt()
+            self._reset_failed_load_state(fps_state)
+
+            if retry_detail:
+                failure_details.append(f"{location_label}: {retry_detail}")
+            else:
+                failure_details.append(f"{location_label}: {failure_reason}")
 
         if attempted_locations:
             attempts_summary = ", ".join(attempted_locations)
-            detail = last_failure_message or "Unknown load failure"
+            detail = "; ".join(failure_details) if failure_details else (
+                last_failure_message or "Unknown load failure"
+            )
             final_message = (
                 "All ready spools failed after automatic retries "
                 f"(attempted {attempts_summary}): {detail}"
@@ -1632,6 +1631,22 @@ class OAMSManager:
 
         if oams.current_spool == spool_idx:
             oams.current_spool = None
+
+    def _reset_failed_load_state(self, fps_state: 'FPSState') -> None:
+        """Return FPS tracking to an unloaded baseline after a failed load."""
+
+        fps_state.encoder_samples.clear()
+        fps_state.state_name = FPSLoadState.UNLOADED
+        fps_state.current_group = None
+        fps_state.current_spool_idx = None
+        fps_state.current_oams = None
+        fps_state.following = False
+        fps_state.direction = 1
+        fps_state.since = self.reactor.monotonic()
+        fps_state.reset_stuck_spool_state()
+        fps_state.reset_clog_tracker()
+        fps_state.reset_load_retry_attempt()
+        fps_state.reset_unload_retry_attempt()
 
     def _attempt_stuck_spool_recovery(
         self,
