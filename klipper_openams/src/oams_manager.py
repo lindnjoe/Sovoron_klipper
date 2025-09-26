@@ -1439,7 +1439,7 @@ class OAMSManager:
     def _retry_loading_spool(
         self, fps_name: str, fps_state: 'FPSState', oams
     ) -> Tuple[bool, Optional[str]]:
-        """Attempt to unload and reload the currently loading spool once."""
+        """Attempt a simple unload/reload cycle after a slow load detection."""
         if oams is None:
             message = (
                 f"Cannot retry load on {fps_name} because no OAMS hardware is associated"
@@ -1456,19 +1456,10 @@ class OAMSManager:
             return False, message
 
         logging.warning(
-            "OAMS: Load speed too low on %s spool %d; retrying load once",
+            "OAMS: Load speed too low on %s spool %d; issuing manual unload/reload",
             oams.name,
             spool_idx,
         )
-
-        previous_state = fps_state.state_name
-        previous_current_spool = getattr(oams, "current_spool", None)
-        fps_state.state_name = FPSLoadState.UNLOADING
-
-        if previous_current_spool != spool_idx:
-            # Ensure the hardware knows which bay to back out even if the
-            # initial load never latched the selection.
-            oams.current_spool = spool_idx
 
         try:
             oams.clear_errors()
@@ -1478,45 +1469,15 @@ class OAMSManager:
                 oams.name,
             )
 
-        # `clear_errors` queries hardware and may unset the cached selection.
-        if oams.current_spool != spool_idx:
+        if getattr(oams, "current_spool", None) != spool_idx:
             oams.current_spool = spool_idx
 
-        unload_attempts = 0
-        unload_success = False
-        unload_message: Optional[str] = None
-        while unload_attempts < 3 and not unload_success:
-            unload_attempts += 1
-            unload_success, unload_message = oams.unload_spool()
-            if unload_success:
-                break
-            if unload_message == "OAMS is busy":
-                logging.warning(
-                    "OAMS: %s still busy while backing out spool %d (attempt %d)",
-                    oams.name,
-                    spool_idx,
-                    unload_attempts,
-                )
-                try:
-                    oams.clear_errors()
-                except Exception:
-                    logging.exception(
-                        "OAMS: Failed to clear errors on %s while retrying unload",
-                        oams.name,
-                    )
-                if oams.current_spool != spool_idx:
-                    oams.current_spool = spool_idx
-                self.reactor.pause(self.reactor.monotonic() + 0.3)
-                continue
-            break
-
+        unload_success, unload_message = oams.unload_spool()
         if not unload_success:
             message = (
                 f"Retry unload failed on {oams.name} spool {spool_idx}: {unload_message}"
             )
             logging.error("OAMS: %s", message)
-            fps_state.state_name = previous_state
-            oams.current_spool = previous_current_spool
             return False, message
 
         try:
@@ -1530,12 +1491,11 @@ class OAMSManager:
         fps_state.encoder_samples.clear()
         fps_state.encoder = oams.encoder_clicks
         fps_state.since = self.reactor.monotonic()
-        fps_state.state_name = FPSLoadState.LOADING
 
         load_success, load_message = oams.load_spool(spool_idx)
         if load_success:
             logging.info(
-                "OAMS: Retry load succeeded on %s spool %d",
+                "OAMS: Manual retry load succeeded on %s spool %d",
                 oams.name,
                 spool_idx,
             )
@@ -1550,80 +1510,6 @@ class OAMSManager:
 
         message = f"Retry load failed on {oams.name} spool {spool_idx}: {load_message}"
         logging.error("OAMS: %s", message)
-
-        cleanup_attempts = 0
-        last_cleanup_message: Optional[str] = None
-
-        while cleanup_attempts < 2:
-            cleanup_attempts += 1
-
-            try:
-                oams.clear_errors()
-            except Exception:
-                logging.exception(
-                    "OAMS: Failed to clear errors on %s while cleaning up retry failure",
-                    oams.name,
-                )
-
-            if oams.current_spool != spool_idx:
-                oams.current_spool = spool_idx
-
-            second_unload_success, second_unload_message = oams.unload_spool()
-            last_cleanup_message = second_unload_message
-
-            if second_unload_success:
-                logging.info(
-                    "OAMS: Spool %d on %s backed out after failed retry",
-                    spool_idx,
-                    oams.name,
-                )
-                break
-
-            if second_unload_message == "OAMS is busy":
-                logging.warning(
-                    "OAMS: %s busy while clearing failed retry on spool %d (attempt %d)",
-                    oams.name,
-                    spool_idx,
-                    cleanup_attempts,
-                )
-                try:
-                    oams.clear_errors()
-                except Exception:
-                    logging.exception(
-                        "OAMS: Failed to clear errors on %s while cleaning up retry failure",
-                        oams.name,
-                    )
-                if oams.current_spool != spool_idx:
-                    oams.current_spool = spool_idx
-                self.reactor.pause(self.reactor.monotonic() + 0.3)
-                continue
-
-            logging.error(
-                "OAMS: Unable to clear spool %d on %s after failed retry: %s",
-                spool_idx,
-                oams.name,
-                second_unload_message,
-            )
-            break
-
-        try:
-            oams.clear_errors()
-        except Exception:
-            logging.exception(
-                "OAMS: Failed to clear errors on %s after retry cleanup",
-                oams.name,
-            )
-
-        oams.current_spool = None
-        fps_state.state_name = FPSLoadState.UNLOADED
-
-        if cleanup_attempts and last_cleanup_message == "OAMS is busy":
-            logging.error(
-                "OAMS: %s remained busy after retry cleanup attempts on spool %d",
-                oams.name,
-                spool_idx,
-            )
-
         return False, message
 
     def _ensure_spool_backed_out(
