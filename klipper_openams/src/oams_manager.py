@@ -1921,53 +1921,53 @@ class OAMSManager:
                 encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
                 logging.info("OAMS[%d] Load Monitor: Encoder diff %d" % (oams.oams_idx, encoder_diff))
                 if encoder_diff < MIN_ENCODER_DIFF:
-                    pause_reason = (
-                        "Printer paused because the loading speed of the moving filament was too low after retry"
-                    )
                     if not fps_state.load_retry_attempted:
                         fps_state.load_retry_attempted = True
                         retry_success, retry_message = self._retry_loading_spool(
-                            fps_name, fps_state, oams
+                            fps_name,
+                            fps_state,
+                            oams,
                         )
                         if retry_success:
+                            logging.info(
+                                "OAMS: Automatic load retry succeeded for %s spool %s",
+                                fps_name,
+                                fps_state.current_spool_idx,
+                            )
                             return eventtime + MONITOR_ENCODER_PERIOD
                         if retry_message:
                             logging.error(
-                                "OAMS: Unable to automatically retry load on %s spool %s: %s",
+                                "OAMS: Automatic load retry failed on %s spool %s: %s",
                                 fps_name,
                                 fps_state.current_spool_idx,
                                 retry_message,
                             )
-                            pause_reason = (
-                                "Automatic load retry failed on %s spool %s: %s"
-                                % (
-                                    fps_name,
-                                    fps_state.current_spool_idx,
-                                    retry_message,
-                                )
-                            )
                         else:
                             logging.error(
-                                "OAMS: Unable to automatically retry load on %s spool %s",
+                                "OAMS: Automatic load retry failed on %s spool %s",
                                 fps_name,
                                 fps_state.current_spool_idx,
                             )
-                            pause_reason = (
-                                "Automatic load retry failed on %s spool %s"
-                                % (
-                                    fps_name,
-                                    fps_state.current_spool_idx,
-                                )
-                            )
+
                     self._ensure_spool_backed_out(
                         fps_state,
                         oams,
                         "load speed",
                     )
                     oams.set_led_error(fps_state.current_spool_idx, 1)
-                    self._pause_printer_message(pause_reason)
-                    self.stop_monitors()
-                    return self.printer.get_reactor().NEVER
+                    fps_state.encoder_samples.clear()
+                    fps_state.state_name = FPSLoadState.UNLOADED
+                    fps_state.current_group = None
+                    fps_state.current_spool_idx = None
+                    fps_state.current_oams = None
+                    fps_state.following = False
+                    fps_state.direction = 1
+                    fps_state.since = self.reactor.monotonic()
+                    logging.error(
+                        "OAMS: Load speed remained too low on %s; marked lane unloaded for manual intervention",
+                        fps_name,
+                    )
+                    return eventtime + MONITOR_ENCODER_PERIOD
             return eventtime + MONITOR_ENCODER_PERIOD
         return partial(_monitor_load_speed, self)
 
