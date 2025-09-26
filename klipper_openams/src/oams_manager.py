@@ -1272,8 +1272,14 @@ class OAMSManager:
         logging.info(f"OAMS: {message}")
         gcode = self.printer.lookup_object("gcode")
         message = f"Print has been paused: {message}"
-        gcode.run_script(f"M118 {message}")
-        gcode.run_script(f"M114 {message}")
+        try:
+            gcode.run_script(f"M118 {message}")
+        except Exception:
+            logging.exception("OAMS: Failed to emit pause notification via M118")
+        try:
+            gcode.respond_info(message)
+        except Exception:
+            logging.exception("OAMS: Failed to emit pause notification via respond_info")
         now = self.reactor.monotonic()
         if self.print_stats is not None:
             try:
