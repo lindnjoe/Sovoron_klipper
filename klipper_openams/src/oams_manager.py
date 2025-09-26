@@ -17,57 +17,57 @@ ENCODER_SAMPLES = 2  # Number of encoder samples to collect
 MIN_ENCODER_DIFF = 1  # Minimum encoder difference to consider movement
 FILAMENT_PATH_LENGTH_FACTOR = 1.14  # Factor for calculating filament path traversal
 MONITOR_ENCODER_LOADING_SPEED_AFTER = 2.0  # seconds
-MONITOR_ENCODER_PERIOD = 2.0  # seconds
+MONITOR_ENCODER_PERIOD = 2.0 # seconds
 MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0  # seconds
 AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout triggers
-
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08  # Pressure indicating the spool is no longer feeding
-STUCK_SPOOL_DWELL = 8.0  # Seconds the pressure must remain below the threshold before pausing
+STUCK_SPOOL_DWELL = 6.0  # Seconds the pressure must remain below the threshold before pausing
 
 CLOG_PRESSURE_TARGET = 0.50
 CLOG_SENSITIVITY_LEVELS = {
-    "low": {
-        "extrusion_window": 48.0,
-        "encoder_slack": 15,
-        "pressure_band": 0.08,
-        "dwell": 12.0,
+    0: {
+        "name": "low",
+        "extrusion_window": 35.0,
+        "encoder_slack": 6,
+        "pressure_window": 0.05,
+        "dwell": 7.0,
     },
-    "medium": {
-        "extrusion_window": 24.0,
-        "encoder_slack": 8,
-        "pressure_band": 0.06,
-        "dwell": 8.0,
-    },
-    "high": {
-        "extrusion_window": 12.0,
+    1: {
+        "name": "medium",
+        "extrusion_window": 25.0,
         "encoder_slack": 4,
-        "pressure_band": 0.04,
+        "pressure_window": 0.04,
         "dwell": 6.0,
     },
+    2: {
+        "name": "high",
+        "extrusion_window": 18.0,
+        "encoder_slack": 3,
+        "pressure_window": 0.03,
+        "dwell": 5.0,
+    },
 }
-CLOG_SENSITIVITY_DEFAULT = "medium"
+
+
 
 
 class OAMSRunoutState:
     """Enum for runout monitor states."""
-
-    STOPPED = "STOPPED"  # Monitor is disabled
-    MONITORING = "MONITORING"  # Actively watching for runout
-    DETECTED = "DETECTED"  # Runout detected, pausing before coast
-    COASTING = "COASTING"  # Follower coasting, preparing next spool
-    RELOADING = "RELOADING"  # Loading next spool in sequence
-    PAUSED = "PAUSED"  # Monitor paused due to error/manual intervention
+    STOPPED = "STOPPED"          # Monitor is disabled
+    MONITORING = "MONITORING"    # Actively watching for runout
+    DETECTED = "DETECTED"        # Runout detected, pausing before coast
+    COASTING = "COASTING"        # Follower coasting, preparing next spool
+    RELOADING = "RELOADING"      # Loading next spool in sequence
+    PAUSED = "PAUSED"           # Monitor paused due to error/manual intervention
 
 
 class FPSLoadState:
     """Enum for FPS loading states."""
-
-    UNLOADED = "UNLOADED"  # No filament loaded
-    LOADED = "LOADED"  # Filament loaded and ready
-    LOADING = "LOADING"  # Currently loading filament
+    UNLOADED = "UNLOADED"    # No filament loaded
+    LOADED = "LOADED"        # Filament loaded and ready
+    LOADING = "LOADING"      # Currently loading filament
     UNLOADING = "UNLOADING"  # Currently unloading filament
-
-
+    
 class OAMSRunoutMonitor:
     """
     Monitors filament runout for a specific FPS and handles automatic reload.
@@ -81,82 +81,68 @@ class OAMSRunoutMonitor:
       can optionally override the safety margin so coasting distance can be
       tuned per extruder lane.
     """
-
-    def __init__(
-        self,
-        printer,
-        fps_name: str,
-        fps,
-        fps_state,
-        oams: Dict[str, Any],
-        reload_callback: Callable,
-        reload_before_toolhead_distance: float = 0.0,
-    ):
+    
+    def __init__(self, 
+                 printer,
+                 fps_name: str,
+                 fps, 
+                 fps_state,
+                 oams: Dict[str, Any],
+                 reload_callback: Callable, 
+                 reload_before_toolhead_distance: float = 0.0):
         # Core references
         self.oams = oams
         self.printer = printer
         self.fps_name = fps_name
         self.fps_state = fps_state
         self.fps = fps
-
+        
         # State tracking
         self.state = OAMSRunoutState.STOPPED
         self.runout_position: Optional[float] = None
         self.bldc_clear_position: Optional[float] = None
         self.runout_after_position: Optional[float] = None
-
+        
         # Configuration
+        # Reload is triggered as soon as the follower has <= this much filament
+        # left in the tube after the BLDC clear phase, regardless of the OAMS
+        # unit's total PTFE length. This ensures AMS2-style lanes swap as soon
+        # as the configured safety margin is reached.
         self.reload_before_toolhead_distance = reload_before_toolhead_distance
         self.reload_callback = reload_callback
-
+        
         self.reactor = self.printer.get_reactor()
 
         def _monitor_runout(eventtime):
             idle_timeout = self.printer.lookup_object("idle_timeout")
             is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
-
-            if (
-                self.state == OAMSRunoutState.STOPPED
-                or self.state == OAMSRunoutState.PAUSED
-                or self.state == OAMSRunoutState.RELOADING
-            ):
+            
+            if self.state == OAMSRunoutState.STOPPED or self.state == OAMSRunoutState.PAUSED or self.state == OAMSRunoutState.RELOADING:
                 pass
 
             elif self.state == OAMSRunoutState.MONITORING:
+                #logging.info("OAMS: Monitoring runout, is_printing: %s, fps_state: %s, fps_state.current_group: %s, fps_state.current_spool_idx: %s, oams: %s" % (is_printing, fps_state.state_name, fps_state.current_group, fps_state.current_spool_idx, fps_state.current_oams))
                 if getattr(fps_state, "afc_delegation_active", False):
                     now = self.reactor.monotonic()
                     if now < getattr(fps_state, "afc_delegation_until", 0.0):
                         return eventtime + MONITOR_ENCODER_PERIOD
                     fps_state.afc_delegation_active = False
                     fps_state.afc_delegation_until = 0.0
-                oams_obj = None
-                if fps_state.current_oams is not None:
-                    oams_obj = self.oams.get(fps_state.current_oams)
-                if (
-                    is_printing
-                    and fps_state.state_name == "LOADED"
-                    and fps_state.current_group is not None
-                    and fps_state.current_spool_idx is not None
-                    and oams_obj is not None
-                    and not bool(oams_obj.hub_hes_value[fps_state.current_spool_idx])
-                ):
-                    self.state = OAMSRunoutState.DETECTED
-                    logging.info(
-                        "OAMS: Runout detected on FPS %s, pausing for %d mm before coasting the follower.",
-                        self.fps_name,
-                        PAUSE_DISTANCE,
-                    )
-                    self.runout_position = fps.extruder.last_position
+                if is_printing and \
+                fps_state.state_name == "LOADED" and \
+                fps_state.current_group is not None and \
+                fps_state.current_spool_idx is not None and \
+                not bool(self.oams[fps_state.current_oams].hub_hes_value[fps_state.current_spool_idx]):
 
+                    self.state = OAMSRunoutState.DETECTED
+                    logging.info(f"OAMS: Runout detected on FPS {self.fps_name}, pausing for {PAUSE_DISTANCE} mm before coasting the follower.")
+                    self.runout_position = fps.extruder.last_position
+            
             elif self.state == OAMSRunoutState.DETECTED:
                 traveled_distance = fps.extruder.last_position - self.runout_position
                 if traveled_distance >= PAUSE_DISTANCE:
                     logging.info("OAMS: Pause complete, coasting the follower.")
-                    oams_obj = None
-                    if fps_state.current_oams is not None:
-                        oams_obj = self.oams.get(fps_state.current_oams)
-                    if oams_obj is not None:
-                        oams_obj.set_oams_follower(0, 1)
+                    self.oams[fps_state.current_oams].set_oams_follower(0, 1)
                     self.bldc_clear_position = fps.extruder.last_position
                     self.runout_after_position = 0.0
                     self.state = OAMSRunoutState.COASTING
@@ -166,11 +152,9 @@ class OAMSRunoutMonitor:
                     fps.extruder.last_position - self.bldc_clear_position, 0.0
                 )
                 self.runout_after_position = traveled_distance_after_bldc_clear
-                path_length = 0.0
-                if fps_state.current_oams is not None:
-                    oams_obj = self.oams.get(fps_state.current_oams)
-                    if oams_obj is not None:
-                        path_length = getattr(oams_obj, "filament_path_length", 0.0)
+                path_length = getattr(
+                    self.oams[fps_state.current_oams], "filament_path_length", 0.0
+                )
                 effective_path_length = (
                     path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0
                 )
@@ -192,9 +176,9 @@ class OAMSRunoutMonitor:
             else:
                 raise ValueError(f"Invalid state: {self.state}")
             return eventtime + MONITOR_ENCODER_PERIOD
-
         self._timer_callback = _monitor_runout
         self.timer = self.reactor.register_timer(self._timer_callback, self.reactor.NOW)
+        
 
     def start(self) -> None:
         """Start monitoring for filament runout."""
@@ -202,20 +186,21 @@ class OAMSRunoutMonitor:
             self.timer = self.reactor.register_timer(self._timer_callback, self.reactor.NOW)
         self.state = OAMSRunoutState.MONITORING
 
+    
     def stop(self) -> None:
         """Stop monitoring for filament runout."""
         self.state = OAMSRunoutState.STOPPED
-
+        
     def reloading(self) -> None:
         """Set state to reloading and reset positions."""
         self.state = OAMSRunoutState.RELOADING
         self.runout_position = None
         self.runout_after_position = None
-
+        
     def paused(self) -> None:
         """Pause the monitor due to error or manual intervention."""
         self.state = OAMSRunoutState.PAUSED
-
+        
     def reset(self) -> None:
         """Reset monitor to stopped state and clean up."""
         self.state = OAMSRunoutState.STOPPED
@@ -224,99 +209,69 @@ class OAMSRunoutMonitor:
         if self.timer is not None:
             self.reactor.unregister_timer(self.timer)
             self.timer = None
-
-    def start(self) -> None:
-        """Start monitoring for filament runout."""
-        if self.timer is None:
-            self.timer = self.reactor.register_timer(self._timer_callback, self.reactor.NOW)
-        self.state = OAMSRunoutState.MONITORING
-
-    def stop(self) -> None:
-        """Stop monitoring for filament runout."""
-        self.state = OAMSRunoutState.STOPPED
-
-    def reloading(self) -> None:
-        """Set state to reloading and reset positions."""
-        self.state = OAMSRunoutState.RELOADING
-        self.runout_position = None
-        self.runout_after_position = None
-
-    def paused(self) -> None:
-        """Pause the monitor due to error or manual intervention."""
-        self.state = OAMSRunoutState.PAUSED
-
-    def reset(self) -> None:
-        """Reset monitor to stopped state and clean up."""
-        self.state = OAMSRunoutState.STOPPED
-        self.runout_position = None
-        self.runout_after_position = None
-        if self.timer is not None:
-            self.reactor.unregister_timer(self.timer)
-            self.timer = None
-
 
 class OAMSState:
     """
     Global state container for all FPS units in the system.
-
+    
     Attributes:
     - fps_state: Dictionary mapping FPS names to their FPSState objects
     """
-
+    
     def __init__(self):
-        self.fps_state: Dict[str, "FPSState"] = {}
-
+        self.fps_state: Dict[str, 'FPSState'] = {}
+        
     def add_fps_state(self, fps_name: str) -> None:
         """Add a new FPS state tracker."""
         self.fps_state[fps_name] = FPSState()
-
+        
 
 class FPSState:
     """
     Tracks the state of a single FPS (Filament Pressure Sensor).
-
+    
     Key State Variables:
     - state_name: Current loading state (LOADED, UNLOADED, LOADING, UNLOADING)
     - current_group: Filament group name (e.g., "T0", "T1") if loaded
     - current_oams: Name of the OAMS unit currently loaded
     - current_spool_idx: Index (0-3) of the spool bay currently loaded
-
+    
     Monitoring State:
     - encoder_samples: Recent encoder readings for motion detection
     - following: Whether follower mode is active
     - direction: Follower direction (0=forward, 1=reverse)
     - since: Timestamp when current state began
     """
-
-    def __init__(
-        self,
-        state_name: str = FPSLoadState.UNLOADED,
-        current_group: Optional[str] = None,
-        current_oams: Optional[str] = None,
-        current_spool_idx: Optional[int] = None,
-    ):
+    
+    def __init__(self, 
+                 state_name: str = FPSLoadState.UNLOADED, 
+                 current_group: Optional[str] = None, 
+                 current_oams: Optional[str] = None, 
+                 current_spool_idx: Optional[int] = None):
+        
         # Primary state tracking
-        self.state_name = state_name
-        self.current_group = current_group
-        self.current_oams = current_oams
-        self.current_spool_idx = current_spool_idx
-
+        self.state_name = state_name  # FPSLoadState: LOADED, UNLOADED, LOADING, UNLOADING
+        self.current_group = current_group  # Filament group name (T0, T1, etc.)
+        self.current_oams = current_oams  # OAMS unit name currently loaded
+        self.current_spool_idx = current_spool_idx  # Spool bay index (0-3)
+        
         # Runout tracking
         self.runout_position: Optional[float] = None
         self.runout_after_position: Optional[float] = None
-
+        
         # Timer references (for cleanup)
         self.monitor_spool_timer = None
         self.monitor_pause_timer = None
         self.monitor_load_next_spool_timer = None
+        
 
         # Motion monitoring
-        self.encoder_samples = deque(maxlen=ENCODER_SAMPLES)
+        self.encoder_samples = deque(maxlen=ENCODER_SAMPLES)  # Recent encoder readings
 
         # Follower state
-        self.following: bool = False
-        self.direction: int = 0
-        self.since: Optional[float] = None
+        self.following: bool = False  # Whether follower mode is active
+        self.direction: int = 0  # Follower direction (0=forward, 1=reverse)
+        self.since: Optional[float] = None  # Timestamp when current state began
 
         # AFC delegation state
         self.afc_delegation_active: bool = False
@@ -325,15 +280,22 @@ class FPSState:
         # Stuck spool detection
         self.stuck_spool_start_time: Optional[float] = None
         self.stuck_spool_active: bool = False
+        self.stuck_spool_restore_follower: bool = False
+
 
         # Clog detection
+        self.clog_tracking_active: bool = False
         self.clog_active: bool = False
+        self.clog_start_time: Optional[float] = None
         self.clog_start_extruder: Optional[float] = None
         self.clog_start_encoder: Optional[int] = None
-        self.clog_start_time: Optional[float] = None
+        self.clog_extrusion_progress: float = 0.0
+        self.clog_last_extruder: Optional[float] = None
+        self.clog_last_encoder: Optional[int] = None
         self.clog_min_pressure: Optional[float] = None
         self.clog_max_pressure: Optional[float] = None
-        self.clog_last_extruder: Optional[float] = None
+
+
 
     def reset_runout_positions(self) -> None:
         """Clear runout position tracking."""
@@ -344,83 +306,70 @@ class FPSState:
         """Clear any latched stuck spool indicators."""
         self.stuck_spool_start_time = None
         self.stuck_spool_active = False
+        self.stuck_spool_restore_follower = False
+
 
     def reset_clog_tracker(self) -> None:
-        """Reset clog monitoring values."""
+        """Reset clog detection tracking for this FPS lane."""
+        self.clog_tracking_active = False
         self.clog_active = False
+        self.clog_start_time = None
         self.clog_start_extruder = None
         self.clog_start_encoder = None
-        self.clog_start_time = None
+        self.clog_extrusion_progress = 0.0
+        self.clog_last_extruder = None
+        self.clog_last_encoder = None
         self.clog_min_pressure = None
         self.clog_max_pressure = None
-        self.clog_last_extruder = None
 
-    def prime_clog_tracker(
-        self,
-        extruder_pos: float,
-        encoder_clicks: int,
-        pressure: float,
-        timestamp: float,
-    ) -> None:
-        """Prime the clog tracker with the latest telemetry values."""
-        self.clog_start_extruder = extruder_pos
-        self.clog_last_extruder = extruder_pos
-        self.clog_start_encoder = encoder_clicks
-        self.clog_start_time = timestamp
-        self.clog_min_pressure = pressure
-        self.clog_max_pressure = pressure
 
     def __repr__(self) -> str:
-        return (
-            "FPSState(state_name=%s, current_group=%s, current_oams=%s, current_spool_idx=%s)"
-            % (self.state_name, self.current_group, self.current_oams, self.current_spool_idx)
-        )
+        return f"FPSState(state_name={self.state_name}, current_group={self.current_group}, current_oams={self.current_oams}, current_spool_idx={self.current_spool_idx})"
 
     def __str__(self) -> str:
-        return (
-            "State: %s, Group: %s, OAMS: %s, Spool Index: %s"
-            % (self.state_name, self.current_group, self.current_oams, self.current_spool_idx)
-        )
-
+        return f"State: {self.state_name}, Group: {self.current_group}, OAMS: {self.current_oams}, Spool Index: {self.current_spool_idx}"
 
 class OAMSManager:
     """
     Main coordinator for OpenAMS system with multiple FPS units.
-
+    
     Manages:
     - Multiple FPS (Filament Pressure Sensor) units
-    - OAMS (OpenAMS) hardware units
+    - OAMS (OpenAMS) hardware units  
     - Filament groups (T0, T1, etc.) mapping to FPS units
     - Automatic filament runout detection and switching
-
+    
     Key Attributes:
     - fpss: Dictionary of FPS objects {fps_name: fps_object}
-    - oams: Dictionary of OAMS objects {oams_name: oams_object}
+    - oams: Dictionary of OAMS objects {oams_name: oams_object}  
     - filament_groups: Dictionary of filament groups {group_name: group_object}
     - current_state: OAMSState tracking all FPS states
     """
-
+    
     def __init__(self, config):
         # Core configuration and printer interface
         self.config = config
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
+        
 
         # Hardware object collections
-        self.filament_groups: Dict[str, Any] = {}
-        self.oams: Dict[str, Any] = {}
-        self.fpss: Dict[str, Any] = {}
+        self.filament_groups: Dict[str, Any] = {}  # Group name -> FilamentGroup object
+        self.oams: Dict[str, Any] = {}  # OAMS name -> OAMS object
+        self.fpss: Dict[str, Any] = {}  # FPS name -> FPS object
 
         # State management
-        self.current_state = OAMSState()
-        self.current_group: Optional[str] = None
-        self.afc = None
-        self._afc_logged = False
+        self.current_state = OAMSState()  # Tracks state of all FPS units
+        self.current_group: Optional[str] = None  # Last group requested via load command
+        self.afc = None  # Optional reference to AFC for lane runout mappings
+        self._afc_logged = False  # Tracks whether AFC integration has been announced
+
+        
 
         # Monitoring and control
-        self.monitor_timers: List[Any] = []
+        self.monitor_timers: List[Any] = []  # Active monitoring timers
         self.runout_monitors: Dict[str, OAMSRunoutMonitor] = {}
-        self.ready: bool = False
+        self.ready: bool = False  # System initialization complete
 
         # Configuration parameters
         self.reload_before_toolhead_distance: float = config.getfloat(
@@ -428,16 +377,21 @@ class OAMSManager:
             0.0,
         )
 
-        sensitivity = config.get("clog_sensitivity", CLOG_SENSITIVITY_DEFAULT).lower()
-        if sensitivity not in CLOG_SENSITIVITY_LEVELS:
-            logging.warning(
-                "OAMS: Unknown clog_sensitivity '%s', falling back to %s",
-                sensitivity,
-                CLOG_SENSITIVITY_DEFAULT,
-            )
-            sensitivity = CLOG_SENSITIVITY_DEFAULT
-        self.clog_sensitivity = sensitivity
-        self.clog_settings = CLOG_SENSITIVITY_LEVELS[self.clog_sensitivity]
+        raw_clog_sensitivity = config.get("clog_sensitivity", "medium")
+        sensitivity_key = str(raw_clog_sensitivity).strip().lower()
+        sensitivity_lookup = {
+            "low": 0,
+            "medium": 1,
+            "high": 2,
+            "0": 0,
+            "1": 1,
+            "2": 2,
+        }
+        self.clog_sensitivity_level = sensitivity_lookup.get(sensitivity_key, 1)
+        self.clog_settings = CLOG_SENSITIVITY_LEVELS.get(
+            self.clog_sensitivity_level, CLOG_SENSITIVITY_LEVELS[1]
+        )
+
 
         # Cached mappings
         self.group_to_fps: Dict[str, str] = {}
@@ -446,17 +400,26 @@ class OAMSManager:
         self._lane_unit_map: Dict[str, str] = {}
         self._lane_by_location: Dict[Tuple[str, int], str] = {}
 
+        
         # Initialize hardware collections
         self._initialize_oams()
         self._initialize_filament_groups()
-
+        
         # Register with printer and setup event handlers
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
         self.printer.add_object("oams_manager", self)
         self.register_commands()
+        
 
     def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
-        """Return current status of all FPS units and OAMS hardware."""
+        """
+        Return current status of all FPS units and OAMS hardware for monitoring.
+
+        Returns:
+            Dictionary containing:
+            - "oams": Mapping of OAMS identifiers to their latest action status
+            - One entry per FPS with its current loading state information
+        """
         attributes: Dict[str, Dict[str, Any]] = {"oams": {}}
 
         for name, oam in self.oams.items():
@@ -481,13 +444,19 @@ class OAMSManager:
 
         return attributes
 
+    
     def determine_state(self) -> None:
-        """Analyze hardware state and update FPS state tracking."""
+        """
+        Analyze hardware state and update FPS state tracking.
+        
+        For each FPS:
+        1. Check which filament group is currently loaded
+        2. Identify the active OAMS unit and spool bay
+        3. Update state to LOADED if filament is present
+        """
         for fps_name, fps_state in self.current_state.fps_state.items():
-            fps_state.current_group, current_oams, fps_state.current_spool_idx = (
-                self.determine_current_loaded_group(fps_name)
-            )
-
+            fps_state.current_group, current_oams, fps_state.current_spool_idx = self.determine_current_loaded_group(fps_name)
+            
             if current_oams is not None:
                 fps_state.current_oams = current_oams.name
             else:
@@ -496,15 +465,24 @@ class OAMSManager:
             if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
                 fps_state.state_name = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
-                fps_state.reset_stuck_spool_state()
+
                 fps_state.reset_clog_tracker()
             else:
-                fps_state.state_name = FPSLoadState.UNLOADED
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
 
+        
     def handle_ready(self) -> None:
-        """Initialize system when printer is ready."""
+        """
+        Initialize system when printer is ready.
+        
+        1. Discover and register all FPS units
+        2. Create state tracking for each FPS
+        3. Determine current hardware state
+        4. Start monitoring timers
+        """
+        # Discover all FPS units in the system
+
         for fps_name, fps in self.printer.lookup_objects(module="fps"):
             self.fpss[fps_name] = fps
             self.current_state.add_fps_state(fps_name)
@@ -514,35 +492,53 @@ class OAMSManager:
 
         self._rebuild_group_fps_index()
 
+        # Initialize system state and start monitoring
         self.determine_state()
         self.start_monitors()
 
         self.ready = True
 
     def _initialize_oams(self) -> None:
+        """Discover and register all OAMS hardware units."""
         for name, oam in self.printer.lookup_objects(module="oams"):
             self.oams[name] = oam
-
+        
     def _initialize_filament_groups(self) -> None:
+        """Discover and register all filament group configurations."""
         for name, group in self.printer.lookup_objects(module="filament_group"):
-            name = name.split()[-1]
-            logging.info("OAMS: Adding group %s", name)
+            name = name.split()[-1]  # Extract group name from full object name
+            logging.info(f"OAMS: Adding group {name}")
             self.filament_groups[name] = group
-
-    def determine_current_loaded_group(
-        self, fps_name: str
-    ) -> Tuple[Optional[str], Optional[object], Optional[int]]:
+    
+    def determine_current_loaded_group(self, fps_name: str) -> Tuple[Optional[str], Optional[object], Optional[int]]:
+        """
+        Determine which filament group is currently loaded in the specified FPS.
+        
+        Args:
+            fps_name: Name of the FPS to check
+            
+        Returns:
+            Tuple of (group_name, oams_object, bay_index) or (None, None, None) if unloaded
+            
+        Process:
+        1. Get the FPS object
+        2. Check each filament group for loaded bays
+        3. Verify the OAMS is connected to this FPS
+        4. Return the first match found
+        """
         fps = self.fpss.get(fps_name)
         if fps is None:
             raise ValueError(f"FPS {fps_name} not found")
-
+            
+        # Check each filament group for loaded spools
         for group_name, group in self.filament_groups.items():
             for oam, bay_index in group.bays:
+                # Check if this bay has filament loaded and the OAMS is connected to this FPS
                 if oam.is_bay_loaded(bay_index) and oam in fps.oams:
                     return group_name, oam, bay_index
-
+                    
         return None, None, None
-
+        
     def register_commands(self):
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command(
@@ -550,51 +546,59 @@ class OAMSManager:
             self.cmd_UNLOAD_FILAMENT,
             desc=self.cmd_UNLOAD_FILAMENT_help,
         )
-
+        
         gcode.register_command(
             "OAMSM_LOAD_FILAMENT",
             self.cmd_LOAD_FILAMENT,
             desc=self.cmd_LOAD_FILAMENT_help,
         )
-
+        
         gcode.register_command(
             "OAMSM_FOLLOWER",
             self.cmd_FOLLOWER,
             desc=self.cmd_FOLLOWER_help,
         )
-
+        
+        # gcode.register_command(
+        #     "OAMSM_CURRENT_LOADED_GROUP",
+        #     self.cmd_CURRENT_LOADED_GROUP,
+        #     desc=self.cmd_CURRENT_LOADED_GROUP_help,
+        # )
+        
         gcode.register_command(
             "OAMSM_CLEAR_ERRORS",
             self.cmd_CLEAR_ERRORS,
             desc=self.cmd_CLEAR_ERRORS_help,
         )
-
+    
     cmd_CLEAR_ERRORS_help = "Clear the error state of the OAMS"
-
     def cmd_CLEAR_ERRORS(self, gcmd):
         if len(self.monitor_timers) > 0:
             self.stop_monitors()
-        for fps_name, fps_state in self.current_state.fps_state.items():
+        for (fps_name, fps_state) in self.current_state.fps_state.items():
             fps_state.encoder_samples.clear()
             fps_state.reset_stuck_spool_state()
+
             fps_state.reset_clog_tracker()
+
         for _, oam in self.oams.items():
             oam.clear_errors()
         self.determine_state()
         self.start_monitors()
 
+        return
+    
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
-
     def cmd_FOLLOWER(self, gcmd):
-        enable = gcmd.get_int("ENABLE")
+        enable = gcmd.get_int('ENABLE')
         if enable is None:
             gcmd.respond_info("Missing ENABLE parameter")
             return
-        direction = gcmd.get_int("DIRECTION")
+        direction = gcmd.get_int('DIRECTION')
         if direction is None:
             gcmd.respond_info("Missing DIRECTION parameter")
             return
-        fps_name = gcmd.get("FPS")
+        fps_name = gcmd.get('FPS')
         fps_name = "fps " + fps_name
         if fps_name is None:
             gcmd.respond_info("Missing FPS parameter")
@@ -617,8 +621,11 @@ class OAMSManager:
         fps_state.direction = direction
         fps_state.encoder = self.oams[fps_state.current_oams].encoder_clicks
         fps_state.current_spool_idx = self.oams[fps_state.current_oams].current_spool
+        return
+    
 
     def _rebuild_group_fps_index(self) -> None:
+        """Build a lookup table from filament groups to their owning FPS."""
         mapping: Dict[str, str] = {}
         for group_name, group in self.filament_groups.items():
             for fps_name, fps in self.fpss.items():
@@ -633,6 +640,7 @@ class OAMSManager:
         return self.group_to_fps.get(group_name)
 
     def _normalize_group_name(self, group: Optional[str]) -> Optional[str]:
+        """Return a trimmed filament group name or None if invalid."""
         if not group or not isinstance(group, str):
             return None
         group = group.strip()
@@ -643,6 +651,7 @@ class OAMSManager:
         return group
 
     def _rebuild_lane_location_index(self) -> None:
+        """Map each (OAMS name, bay index) tuple to its canonical AFC lane."""
         mapping: Dict[Tuple[str, int], str] = {}
         for group_name, lane_name in self._canonical_lane_by_group.items():
             group = self.filament_groups.get(group_name)
@@ -653,6 +662,7 @@ class OAMSManager:
         self._lane_by_location = mapping
 
     def _ensure_afc_lane_cache(self, afc) -> None:
+        """Capture the canonical AFC lane mapping when AFC is available."""
         lanes = getattr(afc, "lanes", {})
         updated = False
         for lane_name, lane in lanes.items():
@@ -674,13 +684,16 @@ class OAMSManager:
 
     def _resolve_lane_for_state(
         self,
-        fps_state: "FPSState",
+        fps_state: 'FPSState',
         group_name: Optional[str],
         afc,
     ) -> Tuple[Optional[str], Optional[str]]:
+        """Determine the canonical AFC lane and group for the provided FPS state."""
+
         normalized_group = self._normalize_group_name(group_name)
         lane_name: Optional[str] = None
 
+        # Prefer the physical OAMS location currently tracked by the FPS state.
         if fps_state.current_oams and fps_state.current_spool_idx is not None:
             lane_name = self._lane_by_location.get(
                 (fps_state.current_oams, fps_state.current_spool_idx)
@@ -690,11 +703,13 @@ class OAMSManager:
                 if lane_group:
                     normalized_group = lane_group
 
+        # Fall back to the canonical mapping captured from AFC at startup.
         if lane_name is None and normalized_group:
             lane_name = self._canonical_lane_by_group.get(normalized_group)
 
         lanes = getattr(afc, "lanes", {})
 
+        # As a last resort, inspect the lanes directly using their original map assignments.
         if lane_name is None and normalized_group:
             lane_name = next(
                 (
@@ -736,27 +751,33 @@ class OAMSManager:
         return lane_name, canonical_group
 
     def _get_afc(self):
+        """Lazily retrieve the AFC object if it is available."""
         if self.afc is not None:
             return self.afc
         try:
-            afc = self.printer.lookup_object("AFC")
+            afc = self.printer.lookup_object('AFC')
         except Exception:
             self.afc = None
             return None
         self.afc = afc
         self._ensure_afc_lane_cache(afc)
         if not self._afc_logged:
-            logging.info(
-                "OAMS: AFC integration detected; enabling same-FPS infinite runout support."
-            )
+            logging.info("OAMS: AFC integration detected; enabling same-FPS infinite runout support.")
             self._afc_logged = True
         return self.afc
 
     def _get_infinite_runout_target_group(
         self,
         fps_name: str,
-        fps_state: "FPSState",
+        fps_state: 'FPSState',
     ) -> Tuple[Optional[str], Optional[str], bool, Optional[str]]:
+        """
+        Return the target filament group and lane for infinite runout, if configured.
+
+        The third element of the tuple indicates whether the runout handling should be
+        delegated back to AFC (for example when the configured runout lane is not on
+        the same FPS and therefore cannot be handled by OAMS directly).
+        """
         current_group = fps_state.current_group
         normalized_group = self._normalize_group_name(current_group)
         if normalized_group is None:
@@ -909,10 +930,12 @@ class OAMSManager:
     def _delegate_runout_to_afc(
         self,
         fps_name: str,
-        fps_state: "FPSState",
+        fps_state: 'FPSState',
         source_lane_name: Optional[str],
         target_lane_name: Optional[str],
     ) -> bool:
+        """Ask AFC to perform the infinite runout swap for the provided lane."""
+
         afc = self._get_afc()
         if afc is None:
             logging.debug(
@@ -994,6 +1017,7 @@ class OAMSManager:
         return True
 
     def _unload_filament_for_fps(self, fps_name: str) -> Tuple[bool, str]:
+        """Unload filament from the specified FPS and update state."""
         if fps_name not in self.fpss:
             return False, f"FPS {fps_name} does not exist"
 
@@ -1017,7 +1041,9 @@ class OAMSManager:
             fps_state.since = self.reactor.monotonic()
             self.current_group = None
             fps_state.reset_stuck_spool_state()
+
             fps_state.reset_clog_tracker()
+
             return True, "Spool already unloaded"
 
         fps_state.state_name = FPSLoadState.UNLOADING
@@ -1037,13 +1063,17 @@ class OAMSManager:
             fps_state.current_spool_idx = None
             self.current_group = None
             fps_state.reset_stuck_spool_state()
+
             fps_state.reset_clog_tracker()
+
             return True, message
 
         fps_state.state_name = FPSLoadState.LOADED
+        fps_state.reset_clog_tracker()
         return False, message
 
     def _load_filament_for_group(self, group_name: str) -> Tuple[bool, str]:
+        """Load filament for the provided filament group."""
         if group_name not in self.filament_groups:
             return False, f"Group {group_name} does not exist"
 
@@ -1053,7 +1083,7 @@ class OAMSManager:
 
         fps_state = self.current_state.fps_state[fps_name]
 
-        for oam, bay_index in self.filament_groups[group_name].bays:
+        for (oam, bay_index) in self.filament_groups[group_name].bays:
             if not oam.is_bay_ready(bay_index):
                 continue
 
@@ -1062,6 +1092,10 @@ class OAMSManager:
             fps_state.since = self.reactor.monotonic()
             fps_state.current_oams = oam.name
             fps_state.current_spool_idx = bay_index
+            fps_state.reset_stuck_spool_state()
+
+            fps_state.reset_clog_tracker()
+
 
             success, message = oam.load_spool(bay_index)
 
@@ -1075,7 +1109,9 @@ class OAMSManager:
                 fps_state.direction = 1
                 self.current_group = group_name
                 fps_state.reset_stuck_spool_state()
+
                 fps_state.reset_clog_tracker()
+
                 return True, message
 
             fps_state.state_name = FPSLoadState.UNLOADED
@@ -1083,15 +1119,16 @@ class OAMSManager:
             fps_state.current_spool_idx = None
             fps_state.current_oams = None
             fps_state.reset_stuck_spool_state()
+
             fps_state.reset_clog_tracker()
+
             return False, message
 
         return False, f"No spool available for group {group_name}"
 
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
-
     def cmd_UNLOAD_FILAMENT(self, gcmd):
-        fps_name = gcmd.get("FPS")
+        fps_name = gcmd.get('FPS')
         if fps_name is None:
             gcmd.respond_info("Missing FPS parameter")
             return
@@ -1113,11 +1150,12 @@ class OAMSManager:
         success, message = self._unload_filament_for_fps(fps_name)
         if not success or (message and message != "Spool unloaded successfully"):
             gcmd.respond_info(message)
+        return
 
     cmd_LOAD_FILAMENT_help = "Load a spool from an specific group"
-
     def cmd_LOAD_FILAMENT(self, gcmd):
-        group_name = gcmd.get("GROUP")
+        # determine which fps this group is assigned to
+        group_name = gcmd.get('GROUP')
         if group_name not in self.filament_groups:
             gcmd.respond_info(f"Group {group_name} does not exist")
             return
@@ -1128,268 +1166,387 @@ class OAMSManager:
             return
         success, message = self._load_filament_for_group(group_name)
         gcmd.respond_info(message)
+        return
 
+        
     def _pause_printer_message(self, message):
-        logging.info("OAMS: %s", message)
+        logging.info(f"OAMS: {message}")
         gcode = self.printer.lookup_object("gcode")
         message = f"Print has been paused: {message}"
         gcode.run_script(f"M118 {message}")
         gcode.run_script(f"M114 {message}")
         gcode.run_script("PAUSE")
 
+    def _clear_stuck_spool_state(self, fps_state: 'FPSState', restart_follower: bool = True) -> None:
+        """Reset stuck spool indicators, LEDs, and follower state for the provided FPS."""
+        oams = None
+        if fps_state.current_oams is not None:
+            oams = self.oams.get(fps_state.current_oams)
+
+        spool_idx = fps_state.current_spool_idx
+
+        if oams is not None and spool_idx is not None:
+            try:
+                oams.set_led_error(spool_idx, 0)
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to clear stuck spool LED on %s spool %s",
+                    fps_state.current_oams,
+                    spool_idx,
+                )
+            try:
+                oams.clear_errors()
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to clear stuck spool error on %s",
+                    fps_state.current_oams,
+                )
+            if restart_follower and fps_state.stuck_spool_restore_follower:
+                direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+                try:
+                    oams.set_oams_follower(1, direction)
+                    fps_state.following = True
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to restart follower after stuck spool on %s spool %s",
+                        fps_state.current_oams,
+                        spool_idx,
+                    )
+
+        fps_state.reset_stuck_spool_state()
+        
     def _monitor_unload_speed_for_fps(self, fps_name):
         def _monitor_unload_speed(self, eventtime):
+            #logging.info("OAMS: Monitoring unloading speed state: %s" % self.current_state.name)
             fps_state = self.current_state.fps_state[fps_name]
             oams = None
             if fps_state.current_oams is not None:
                 oams = self.oams[fps_state.current_oams]
-            if (
-                fps_state.state_name == "UNLOADING"
-                and self.reactor.monotonic() - fps_state.since
-                > MONITOR_ENCODER_UNLOADING_SPEED_AFTER
-            ):
+            if fps_state.state_name == "UNLOADING" and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_UNLOADING_SPEED_AFTER:
                 fps_state.encoder_samples.append(oams.encoder_clicks)
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
                     return eventtime + MONITOR_ENCODER_PERIOD
-                encoder_diff = abs(
-                    fps_state.encoder_samples[-1] - fps_state.encoder_samples[0]
-                )
-                logging.info(
-                    "OAMS[%d] Unload Monitor: Encoder diff %d",
-                    oams.oams_idx,
-                    encoder_diff,
-                )
-                if encoder_diff < MIN_ENCODER_DIFF:
+                encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
+                logging.info("OAMS[%d] Unload Monitor: Encoder diff %d" %(oams.oams_idx, encoder_diff))
+                if encoder_diff < MIN_ENCODER_DIFF:              
                     oams.set_led_error(fps_state.current_spool_idx, 1)
-                    self._pause_printer_message(
-                        "Printer paused because the unloading speed of the moving filament was too low"
-                    )
+                    self._pause_printer_message("Printer paused because the unloading speed of the moving filament was too low")
+                    logging.info("after unload speed too low")
                     self.stop_monitors()
                     return self.printer.get_reactor().NEVER
             return eventtime + MONITOR_ENCODER_PERIOD
-
         return partial(_monitor_unload_speed, self)
-
+    
     def _monitor_load_speed_for_fps(self, fps_name):
         def _monitor_load_speed(self, eventtime):
+            #logging.info("OAMS: Monitoring loading speed state: %s" % self.current_state.name)
             fps_state = self.current_state.fps_state[fps_name]
             oams = None
             if fps_state.current_oams is not None:
                 oams = self.oams[fps_state.current_oams]
-            if (
-                fps_state.state_name == "LOADING"
-                and self.reactor.monotonic() - fps_state.since
-                > MONITOR_ENCODER_LOADING_SPEED_AFTER
-            ):
+            if fps_state.state_name == "LOADING" and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_LOADING_SPEED_AFTER:
                 fps_state.encoder_samples.append(oams.encoder_clicks)
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
                     return eventtime + MONITOR_ENCODER_PERIOD
-                encoder_diff = abs(
-                    fps_state.encoder_samples[-1] - fps_state.encoder_samples[0]
-                )
-                logging.info(
-                    "OAMS[%d] Load Monitor: Encoder diff %d",
-                    oams.oams_idx,
-                    encoder_diff,
-                )
+                encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
+                logging.info("OAMS[%d] Load Monitor: Encoder diff %d" % (oams.oams_idx, encoder_diff))
                 if encoder_diff < MIN_ENCODER_DIFF:
                     oams.set_led_error(fps_state.current_spool_idx, 1)
-                    self._pause_printer_message(
-                        "Printer paused because the loading speed of the moving filament was too low"
-                    )
+                    self._pause_printer_message("Printer paused because the loading speed of the moving filament was too low")
                     self.stop_monitors()
                     return self.printer.get_reactor().NEVER
             return eventtime + MONITOR_ENCODER_PERIOD
-
         return partial(_monitor_load_speed, self)
 
-    def _monitor_stuck_spool_for_fps(self, fps_name):
-        def _monitor_stuck_spool(self, eventtime):
-            fps_state = self.current_state.fps_state[fps_name]
-            fps = self.fpss.get(fps_name)
-            if fps_state.state_name != FPSLoadState.LOADED:
-                fps_state.reset_stuck_spool_state()
-                return eventtime + MONITOR_ENCODER_PERIOD
-
-            oams = None
-            if fps_state.current_oams is not None:
-                oams = self.oams.get(fps_state.current_oams)
-            if oams is None or fps_state.current_spool_idx is None:
-                fps_state.reset_stuck_spool_state()
-                return eventtime + MONITOR_ENCODER_PERIOD
-
-            try:
-                idle_timeout = self.printer.lookup_object("idle_timeout")
-                is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
-            except Exception:
-                is_printing = False
-
-            if not is_printing:
-                if fps_state.stuck_spool_active:
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 0)
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to clear stuck spool LED while idle on %s",
-                            fps_name,
-                        )
-                fps_state.reset_stuck_spool_state()
-                return eventtime + MONITOR_ENCODER_PERIOD
-
-            pressure = float(getattr(fps, "fps_value", 0.0))
-            now = self.reactor.monotonic()
-
-            if pressure <= STUCK_SPOOL_PRESSURE_THRESHOLD:
-                if fps_state.stuck_spool_start_time is None:
-                    fps_state.stuck_spool_start_time = now
-                elif (
-                    not fps_state.stuck_spool_active
-                    and now - fps_state.stuck_spool_start_time >= STUCK_SPOOL_DWELL
-                ):
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 1)
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to set stuck spool LED on %s spool %d",
-                            fps_name,
-                            fps_state.current_spool_idx,
-                        )
-                    fps_state.stuck_spool_active = True
-                    message = "Spool appears stuck"
-                    if fps_state.current_group is not None:
-                        message = (
-                            f"Spool appears stuck on {fps_state.current_group} spool {fps_state.current_spool_idx}"
-                        )
-                    self._pause_printer_message(message)
-            else:
-                if fps_state.stuck_spool_active:
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 0)
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to clear stuck spool LED on %s spool %d",
-                            fps_name,
-                            fps_state.current_spool_idx,
-                        )
-                fps_state.reset_stuck_spool_state()
-
-            return eventtime + MONITOR_ENCODER_PERIOD
-
-        return partial(_monitor_stuck_spool, self)
 
     def _monitor_clog_for_fps(self, fps_name):
-        def _monitor_clog(self, eventtime):
-            fps_state = self.current_state.fps_state[fps_name]
-            fps = self.fpss.get(fps_name)
-            if fps_state.state_name != FPSLoadState.LOADED:
-                fps_state.reset_clog_tracker()
-                return eventtime + MONITOR_ENCODER_PERIOD
 
+        idle_timeout = self.printer.lookup_object("idle_timeout")
+        settings = self.clog_settings
+        pressure_window = settings["pressure_window"]
+        encoder_slack = settings["encoder_slack"]
+        extrusion_window = settings["extrusion_window"]
+        dwell = settings["dwell"]
+
+
+        def _monitor_clog(self, eventtime):
+
+            fps_state = self.current_state.fps_state[fps_name]
+            fps = self.fpss[fps_name]
             oams = None
             if fps_state.current_oams is not None:
                 oams = self.oams.get(fps_state.current_oams)
-            if oams is None or fps_state.current_spool_idx is None:
-                fps_state.reset_clog_tracker()
-                return eventtime + MONITOR_ENCODER_PERIOD
 
-            if bool(oams.hub_hes_value[fps_state.current_spool_idx]):
-                fps_state.reset_clog_tracker()
-                return eventtime + MONITOR_ENCODER_PERIOD
 
             try:
-                idle_timeout = self.printer.lookup_object("idle_timeout")
-                is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
+                idle_state = idle_timeout.get_status(eventtime)
+                is_printing = idle_state.get("state") == "Printing"
             except Exception:
+                logging.exception("OAMS: Failed to query idle timeout for clog monitor")
                 is_printing = False
 
-            if not is_printing:
-                fps_state.reset_clog_tracker()
-                return eventtime + MONITOR_ENCODER_PERIOD
-
-            extruder_pos = float(getattr(fps.extruder, "last_position", 0.0))
-            encoder_clicks = int(getattr(oams, "encoder_clicks", 0))
             pressure = float(getattr(fps, "fps_value", 0.0))
+            extruder = getattr(getattr(fps, "extruder", None), "last_position", None)
+            encoder = getattr(oams, "encoder_clicks", None) if oams is not None else None
             now = self.reactor.monotonic()
 
-            if fps_state.clog_start_extruder is None:
-                fps_state.prime_clog_tracker(extruder_pos, encoder_clicks, pressure, now)
+            if (
+                not is_printing
+                or fps_state.state_name != FPSLoadState.LOADED
+                or oams is None
+                or extruder is None
+                or encoder is None
+                or fps_state.stuck_spool_active
+            ):
+                fps_state.reset_clog_tracker()
+                fps_state.clog_last_extruder = extruder
+                fps_state.clog_last_encoder = encoder
+                fps_state.clog_min_pressure = pressure
+                fps_state.clog_max_pressure = pressure
                 return eventtime + MONITOR_ENCODER_PERIOD
 
-            if extruder_pos < (fps_state.clog_last_extruder or extruder_pos):
-                fps_state.prime_clog_tracker(extruder_pos, encoder_clicks, pressure, now)
+            if fps_state.clog_active:
+                fps_state.clog_last_extruder = extruder
+                fps_state.clog_last_encoder = encoder
+                fps_state.clog_min_pressure = pressure
+                fps_state.clog_max_pressure = pressure
                 return eventtime + MONITOR_ENCODER_PERIOD
 
-            fps_state.clog_last_extruder = extruder_pos
+            if fps_state.clog_last_extruder is None or fps_state.clog_last_encoder is None:
+                fps_state.clog_last_extruder = extruder
+                fps_state.clog_last_encoder = encoder
+                fps_state.clog_min_pressure = pressure
+                fps_state.clog_max_pressure = pressure
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            delta_extruder = extruder - fps_state.clog_last_extruder
+            delta_encoder = encoder - fps_state.clog_last_encoder
+
+            fps_state.clog_last_extruder = extruder
+            fps_state.clog_last_encoder = encoder
+
+            if delta_extruder <= 0.0:
+                fps_state.reset_clog_tracker()
+                fps_state.clog_last_extruder = extruder
+                fps_state.clog_last_encoder = encoder
+                fps_state.clog_min_pressure = pressure
+                fps_state.clog_max_pressure = pressure
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if abs(pressure - CLOG_PRESSURE_TARGET) > pressure_window:
+                fps_state.reset_clog_tracker()
+                fps_state.clog_last_extruder = extruder
+                fps_state.clog_last_encoder = encoder
+                fps_state.clog_min_pressure = pressure
+                fps_state.clog_max_pressure = pressure
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if abs(delta_encoder) > encoder_slack:
+                fps_state.reset_clog_tracker()
+                fps_state.clog_last_extruder = extruder
+                fps_state.clog_last_encoder = encoder
+                fps_state.clog_min_pressure = pressure
+                fps_state.clog_max_pressure = pressure
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if not fps_state.clog_tracking_active:
+                fps_state.clog_tracking_active = True
+                fps_state.clog_start_time = now
+                fps_state.clog_start_extruder = extruder - delta_extruder
+                fps_state.clog_start_encoder = encoder - delta_encoder
+                fps_state.clog_extrusion_progress = 0.0
+                fps_state.clog_min_pressure = pressure
+                fps_state.clog_max_pressure = pressure
+
+            fps_state.clog_extrusion_progress += delta_extruder
             if fps_state.clog_min_pressure is None or pressure < fps_state.clog_min_pressure:
                 fps_state.clog_min_pressure = pressure
             if fps_state.clog_max_pressure is None or pressure > fps_state.clog_max_pressure:
                 fps_state.clog_max_pressure = pressure
 
-            extrusion_delta = extruder_pos - (fps_state.clog_start_extruder or extruder_pos)
-            encoder_delta = abs(encoder_clicks - (fps_state.clog_start_encoder or encoder_clicks))
-            pressure_span = (fps_state.clog_max_pressure or pressure) - (
-                fps_state.clog_min_pressure or pressure
+            encoder_total = (
+                0
+                if fps_state.clog_start_encoder is None
+                else abs(encoder - fps_state.clog_start_encoder)
             )
+            elapsed = 0.0 if fps_state.clog_start_time is None else now - fps_state.clog_start_time
 
-            settings = self.clog_settings
-            if extrusion_delta < settings["extrusion_window"]:
-                return eventtime + MONITOR_ENCODER_PERIOD
+            pressure_span = 0.0
+            if (
+                fps_state.clog_min_pressure is not None
+                and fps_state.clog_max_pressure is not None
+            ):
+                pressure_span = fps_state.clog_max_pressure - fps_state.clog_min_pressure
 
-            if encoder_delta > settings["encoder_slack"] or pressure_span > settings["pressure_band"]:
-                fps_state.prime_clog_tracker(extruder_pos, encoder_clicks, pressure, now)
-                return eventtime + MONITOR_ENCODER_PERIOD
-
-            if now - (fps_state.clog_start_time or now) < settings["dwell"]:
-                return eventtime + MONITOR_ENCODER_PERIOD
-
-            if not fps_state.clog_active:
-                try:
-                    oams.set_led_error(fps_state.current_spool_idx, 1)
-                except Exception:
-                    logging.exception(
-                        "OAMS: Failed to set clog LED on %s spool %d",
-                        fps_name,
-                        fps_state.current_spool_idx,
-                    )
-                pressure_mid = (fps_state.clog_min_pressure + fps_state.clog_max_pressure) / 2.0
-                message = (
-                    f"Clog suspected on {fps_state.current_group or fps_name}: "
-                    f"extruder advanced {extrusion_delta:.1f}mm while encoder moved {encoder_delta} counts "
-                    f"with FPS {pressure_mid:.2f} near {CLOG_PRESSURE_TARGET:.2f}"
+            if (
+                fps_state.clog_tracking_active
+                and fps_state.clog_start_time is not None
+                and fps_state.clog_extrusion_progress >= extrusion_window
+                and encoder_total <= encoder_slack
+                and elapsed >= dwell
+                and pressure_span <= pressure_window * 2.0
+            ):
+                pressure_low = (
+                    fps_state.clog_min_pressure
+                    if fps_state.clog_min_pressure is not None
+                    else pressure
                 )
+                pressure_high = (
+                    fps_state.clog_max_pressure
+                    if fps_state.clog_max_pressure is not None
+                    else pressure
+                )
+                group_label = fps_state.current_group or fps_name
+                spool_label = (
+                    str(fps_state.current_spool_idx)
+                    if fps_state.current_spool_idx is not None
+                    else "unknown"
+                )
+                if oams is not None and fps_state.current_spool_idx is not None:
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 1)
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to set clog LED on %s spool %s",
+                            fps_state.current_oams,
+                            fps_state.current_spool_idx,
+                        )
+
+                logging.error(
+                    "OAMS: Clog suspected on %s spool %s: extruder %.1f mm, encoder %d counts, FPS %.2f-%.2f",
+                    group_label,
+                    spool_label,
+                    fps_state.clog_extrusion_progress,
+                    int(encoder_total),
+                    pressure_low,
+                    pressure_high,
+                )
+                self._pause_printer_message(
+                    (
+                        f"Clog suspected on {group_label} spool {spool_label}: "
+                        f"extruder advanced {fps_state.clog_extrusion_progress:.1f}mm while encoder moved "
+                        f"{int(encoder_total)} counts (FPS {pressure_low:.2f}-{pressure_high:.2f})"
+                    )
+                )
+
                 fps_state.clog_active = True
-                self._pause_printer_message(message)
+                fps_state.clog_tracking_active = False
+                fps_state.clog_start_time = None
+                fps_state.clog_extrusion_progress = 0.0
+                fps_state.clog_start_extruder = extruder
+                fps_state.clog_start_encoder = encoder
+                fps_state.clog_min_pressure = pressure
+                fps_state.clog_max_pressure = pressure
 
             return eventtime + MONITOR_ENCODER_PERIOD
 
         return partial(_monitor_clog, self)
 
+    def _monitor_stuck_spool_for_fps(self, fps_name):
+        idle_timeout = self.printer.lookup_object("idle_timeout")
+
+        def _monitor_stuck_spool(self, eventtime):
+            fps_state = self.current_state.fps_state[fps_name]
+            fps = self.fpss[fps_name]
+            oams = None
+            if fps_state.current_oams is not None:
+                oams = self.oams.get(fps_state.current_oams)
+
+            try:
+                idle_state = idle_timeout.get_status(eventtime)
+                is_printing = idle_state.get("state") == "Printing"
+            except Exception:
+                logging.exception("OAMS: Failed to query idle timeout for stuck spool monitor")
+                is_printing = False
+
+            if fps_state.state_name != FPSLoadState.LOADED or oams is None:
+                fps_state.stuck_spool_start_time = None
+                if fps_state.stuck_spool_active:
+                    self._clear_stuck_spool_state(fps_state, restart_follower=False)
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if not is_printing:
+                fps_state.stuck_spool_start_time = None
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            pressure = float(getattr(fps, "fps_value", 0.0))
+
+            if fps_state.stuck_spool_active:
+                if pressure > STUCK_SPOOL_PRESSURE_THRESHOLD:
+                    self._clear_stuck_spool_state(fps_state)
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if pressure > STUCK_SPOOL_PRESSURE_THRESHOLD:
+                fps_state.stuck_spool_start_time = None
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            now = self.reactor.monotonic()
+            if fps_state.stuck_spool_start_time is None:
+                fps_state.stuck_spool_start_time = now
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if now - fps_state.stuck_spool_start_time < STUCK_SPOOL_DWELL:
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            fps_state.stuck_spool_active = True
+            fps_state.stuck_spool_start_time = None
+            fps_state.stuck_spool_restore_follower = True
+
+
+            if oams is not None and fps_state.current_spool_idx is not None:
+                try:
+                    oams.set_led_error(fps_state.current_spool_idx, 1)
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to set stuck spool LED on %s spool %s",
+                        fps_state.current_oams,
+                        fps_state.current_spool_idx,
+                    )
+                try:
+                    direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+                    oams.set_oams_follower(0, direction)
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to stop follower after stuck spool on %s spool %s",
+                        fps_state.current_oams,
+                        fps_state.current_spool_idx,
+                    )
+                else:
+                    fps_state.following = False
+
+            group_label = fps_state.current_group or fps_name
+            spool_label = (
+                str(fps_state.current_spool_idx)
+                if fps_state.current_spool_idx is not None
+                else "unknown"
+            )
+            self._pause_printer_message(
+                f"Spool appears stuck on {group_label} spool {spool_label} (pressure {pressure:.2f})"
+            )
+
+            return eventtime + MONITOR_ENCODER_PERIOD
+
+        return partial(_monitor_stuck_spool, self)
+    
+
     def start_monitors(self):
         self.monitor_timers = []
         self.runout_monitors = {}
         reactor = self.printer.get_reactor()
-        for fps_name, fps_state in self.current_state.fps_state.items():
-            self.monitor_timers.append(
-                reactor.register_timer(self._monitor_unload_speed_for_fps(fps_name), reactor.NOW)
-            )
-            self.monitor_timers.append(
-                reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), reactor.NOW)
-            )
-            self.monitor_timers.append(
-                reactor.register_timer(self._monitor_stuck_spool_for_fps(fps_name), reactor.NOW)
-            )
-            self.monitor_timers.append(
-                reactor.register_timer(self._monitor_clog_for_fps(fps_name), reactor.NOW)
-            )
+        for (fps_name, fps_state) in self.current_state.fps_state.items():
+            self.monitor_timers.append(reactor.register_timer(self._monitor_unload_speed_for_fps(fps_name), reactor.NOW))
+            self.monitor_timers.append(reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), reactor.NOW))
+
+            self.monitor_timers.append(reactor.register_timer(self._monitor_clog_for_fps(fps_name), reactor.NOW))
+
+            self.monitor_timers.append(reactor.register_timer(self._monitor_stuck_spool_for_fps(fps_name), reactor.NOW))
 
             def _reload_callback(fps_name=fps_name, fps_state=fps_state):
                 monitor = self.runout_monitors.get(fps_name)
                 source_group = fps_state.current_group
-                target_group, target_lane, delegate_to_afc, source_lane = (
-                    self._get_infinite_runout_target_group(
-                        fps_name,
-                        fps_state,
-                    )
+                target_group, target_lane, delegate_to_afc, source_lane = self._get_infinite_runout_target_group(
+                    fps_name,
+                    fps_state,
                 )
                 source_group = fps_state.current_group
 
@@ -1532,6 +1689,8 @@ class OAMSManager:
         for monitor in self.runout_monitors.values():
             monitor.reset()
         self.runout_monitors = {}
+        for fps_state in self.current_state.fps_state.values():
+            fps_state.reset_clog_tracker()
 
 
 def load_config(config):
