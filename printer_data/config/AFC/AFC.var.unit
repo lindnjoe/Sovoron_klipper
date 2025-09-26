@@ -102,7 +102,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Loaded"
+            "status": "Tool Unloading"
         }
     },
     "AMS_2": {
@@ -231,7 +231,7 @@
             "empty_spool_weight": 250.0,
             "spool_id": 24,
             "color": "#7700ff",
-            "weight": 532.740551198421,
+            "weight": 533.455989991829,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "In Tool",
@@ -283,7 +283,7 @@
             "empty_spool_weight": 154.0,
             "spool_id": 29,
             "color": "#9d85d1",
-            "weight": 712.6529852537259,
+            "weight": 712.6300115891455,
             "extruder_temp": 210,
             "runout_lane": null,
             "filament_status": "In Tool",
@@ -318,7 +318,7 @@
         }
     },
     "system": {
-        "current_load": "lane0",
+        "current_load": "lane8",
         "num_units": 3,
         "num_lanes": 12,
         "num_extruders": 6,
