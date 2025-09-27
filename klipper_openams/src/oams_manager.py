@@ -69,7 +69,16 @@ class StatusStreamHelper:
     ) -> None:
         self.printer = printer
         self.reactor = printer.get_reactor()
-        self.webhooks = printer.lookup_object("webhooks")
+
+        try:
+            self.webhooks = printer.lookup_object("webhooks")
+        except Exception as err:
+            logging.warning(
+                "StatusStreamHelper: WebHooks unavailable (%s); streaming disabled.",
+                err,
+            )
+            self.webhooks = None
+
         self.batch_callback = batch_callback
         self.batch_interval = batch_interval
 
@@ -133,6 +142,15 @@ class StatusStreamHelper:
     def add_mux_endpoint(
         self, path: str, key: str, value: str, header: Dict[str, Any]
     ) -> None:
+
+        if self.webhooks is None:
+            logging.debug(
+                "StatusStreamHelper: Skipping mux endpoint '%s' (no WebHooks)",
+                path,
+            )
+            return
+
+
         self._headers[path] = header
         self.webhooks.register_mux_endpoint(
             path, key, value, self._make_api_client(path)
@@ -540,29 +558,55 @@ class OAMSManager:
         self.printer.add_object("oams_manager", self)
         self.register_commands()
 
-        self.webhooks = self.printer.lookup_object("webhooks")
-        self.webhooks.register_endpoint("oams/status", self._handle_status_request)
-        self.webhooks.register_status("oams", self._webhooks_status)
+
+        self.webhooks = None
+        try:
+            self.webhooks = self.printer.lookup_object("webhooks")
+        except Exception as err:  # printer raises config_error/command_error
+            logging.warning(
+                "OAMS: WebHooks service unavailable (%s); status endpoints disabled.",
+                err,
+            )
 
         self._last_summary_payload: Optional[Dict[str, Any]] = None
+        self._status_stream: Optional[StatusStreamHelper] = None
+        if self.webhooks is not None:
+            self.webhooks.register_endpoint(
+                "oams/status", self._handle_status_request
+            )
+            self.webhooks.register_status("oams", self._webhooks_status)
 
-        self._status_stream = StatusStreamHelper(
-            self.printer,
-            self._stream_status_batch,
-            STATUS_STREAM_INTERVAL,
+            self._status_stream = StatusStreamHelper(
+                self.printer,
+                self._stream_status_batch,
+                STATUS_STREAM_INTERVAL,
+            )
+            self._status_stream.add_mux_endpoint(
+                "oams/stream_status",
+                "type",
+                "summary",
+                STATUS_STREAM_HEADER,
+            )
+        else:
+            logging.info(
+                "OAMS: WebHooks status endpoints not registered (service missing)."
+            )
 
-        )
-        self._status_stream.add_mux_endpoint(
-            "oams/stream_status",
-            "type",
-            "summary",
-            STATUS_STREAM_HEADER,
-        )
 
     def register_status_stream(self, path: str, key: str, value: str) -> None:
         """Expose the summary stream using an additional muxed endpoint."""
 
-        self._status_stream.add_mux_endpoint(path, key, value, STATUS_STREAM_HEADER)
+
+        if self._status_stream is not None:
+            self._status_stream.add_mux_endpoint(
+                path, key, value, STATUS_STREAM_HEADER
+            )
+        else:
+            logging.debug(
+                "OAMS: Skipping registration of status stream '%s' (no WebHooks).",
+                path,
+            )
+
 
     def _handle_status_request(self, web_request) -> None:
         """Serve the REST status endpoint."""
@@ -670,6 +714,7 @@ class OAMSManager:
                 "current_spool": oam_status.get("current_spool"),
                 "fps_value": oam_status.get("fps_value"),
                 "encoder_clicks": oam_status.get("encoder_clicks"),
+
             }
 
         groups_summary: Dict[str, Dict[str, Any]] = {}
@@ -680,6 +725,7 @@ class OAMSManager:
                 "has_available": group_status.get("has_available"),
                 "is_loaded": group_status.get("is_loaded"),
             }
+
 
         lanes_by_group: Dict[str, Optional[str]] = {}
         for group_name in snapshot.get("filament_groups", {}).keys():
