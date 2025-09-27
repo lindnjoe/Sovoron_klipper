@@ -4,11 +4,14 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
+import copy
 import logging
 import time
 from functools import partial
 from collections import deque
 from typing import Optional, Tuple, Dict, List, Any, Callable
+
+from klipper.klippy.extras.bulk_sensor import BatchBulkHelper
 
 # Configuration constants
 
@@ -20,6 +23,20 @@ MONITOR_ENCODER_LOADING_SPEED_AFTER = 2.0  # seconds
 MONITOR_ENCODER_PERIOD = 2.0  # seconds
 MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0  # seconds
 AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout triggers
+
+STATUS_STREAM_INTERVAL = 0.5
+STATUS_STREAM_HEADER = {
+    "header": (
+        "timestamp",
+        "followers",
+        "spools",
+        "pressure",
+        "faults",
+        "groups",
+        "lanes",
+        "lanes_by_group",
+    ),
+}
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08  # Pressure indicating the spool is no longer feeding
 STUCK_SPOOL_DWELL = 8.0  # Seconds the pressure must remain below the threshold before pausing
@@ -426,40 +443,215 @@ class OAMSManager:
 
         self.printer.add_object("oams_manager", self)
         self.register_commands()
-        
 
-    def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
-        """
-        Return current status of all FPS units and OAMS hardware for monitoring.
+        self.webhooks = self.printer.lookup_object("webhooks")
+        self.webhooks.register_endpoint("oams/status", self._handle_status_request)
+        self.webhooks.register_status("oams", self._webhooks_status)
 
-        Returns:
-            Dictionary containing:
-            - "oams": Mapping of OAMS identifiers to their latest action status
-            - One entry per FPS with its current loading state information
-        """
-        attributes: Dict[str, Dict[str, Any]] = {"oams": {}}
+        self._last_summary_payload: Optional[Dict[str, Any]] = None
+        self._status_stream = BatchBulkHelper(
+            self.printer,
+            self._stream_status_batch,
+            batch_interval=STATUS_STREAM_INTERVAL,
+        )
+        self._status_stream.add_mux_endpoint(
+            "oams/stream_status",
+            "type",
+            "summary",
+            STATUS_STREAM_HEADER,
+        )
+
+    def register_status_stream(self, path: str, key: str, value: str) -> None:
+        """Expose the summary stream using an additional muxed endpoint."""
+
+        self._status_stream.add_mux_endpoint(path, key, value, STATUS_STREAM_HEADER)
+
+    def _handle_status_request(self, web_request) -> None:
+        """Serve the REST status endpoint."""
+
+        eventtime = self.reactor.monotonic()
+        web_request.send(self.get_status(eventtime))
+
+    def _webhooks_status(self, eventtime: float) -> Dict[str, Any]:
+        """Return the trimmed status payload for WebHooks subscriptions."""
+
+        return self.get_summary(eventtime)
+
+    def _stream_status_batch(self, eventtime: float) -> Dict[str, Any]:
+        """Batch callback used to stream summary updates via WebHooks."""
+
+        summary = self.get_summary(eventtime)
+        if summary == self._last_summary_payload:
+            return {}
+        self._last_summary_payload = copy.deepcopy(summary)
+        return summary
+
+    def _collect_status_snapshot(self, eventtime: float) -> Dict[str, Any]:
+        """Gather a unified snapshot of OAMS hardware, FPS lanes, and groups."""
+
+        snapshot: Dict[str, Any] = {
+            "timestamp": eventtime,
+            "oams": {},
+            "fps": {},
+            "filament_groups": {},
+        }
 
         for name, oam in self.oams.items():
-            status_name = name.split()[-1]
             oam_status = {
+                "name": name,
                 "action_status": oam.action_status,
                 "action_status_code": oam.action_status_code,
                 "action_status_value": oam.action_status_value,
+                "current_spool": oam.current_spool,
+                "fps_value": oam.fps_value,
+                "hub_hes_value": list(oam.hub_hes_value),
+                "f1s_hes_value": list(oam.f1s_hes_value),
+                "encoder_clicks": oam.encoder_clicks,
             }
-            attributes["oams"][status_name] = oam_status
+            status_name = name.split()[-1]
+            snapshot["oams"][status_name] = oam_status
             if status_name != name:
-                attributes["oams"][name] = oam_status
+                snapshot["oams"][name] = oam_status
 
         for fps_name, fps_state in self.current_state.fps_state.items():
-            attributes[fps_name] = {
+            lane_name: Optional[str] = None
+            if fps_state.current_oams and fps_state.current_spool_idx is not None:
+                lane_name = self._lane_by_location.get(
+                    (fps_state.current_oams, fps_state.current_spool_idx)
+                )
+
+            fps_status: Dict[str, Any] = {
                 "current_group": fps_state.current_group,
                 "current_oams": fps_state.current_oams,
                 "current_spool_idx": fps_state.current_spool_idx,
                 "state_name": fps_state.state_name,
                 "since": fps_state.since,
+                "following": fps_state.following,
+                "direction": fps_state.direction,
+                "stuck_spool_active": fps_state.stuck_spool_active,
+                "clog_active": fps_state.clog_active,
+                "afc_delegation_active": fps_state.afc_delegation_active,
+                "lane": lane_name,
+            }
+            if hasattr(fps_state, "encoder"):
+                fps_status["encoder"] = getattr(fps_state, "encoder", None)
+            snapshot["fps"][fps_name] = fps_status
+
+        for group_name, group in self.filament_groups.items():
+            snapshot["filament_groups"][group_name] = group.get_status(eventtime)
+
+        snapshot["summary"] = self._build_summary(snapshot)
+        return snapshot
+
+    def _build_summary(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a trimmed summary suitable for WebHooks subscribers."""
+
+        followers: Dict[str, Dict[str, Any]] = {}
+        spools: Dict[str, Optional[int]] = {}
+        faults: Dict[str, Dict[str, Any]] = {}
+        lanes: Dict[str, Optional[str]] = {}
+
+        for fps_name, fps_status in snapshot.get("fps", {}).items():
+            followers[fps_name] = {
+                "following": fps_status.get("following", False),
+                "direction": fps_status.get("direction"),
+            }
+            spools[fps_name] = fps_status.get("current_spool_idx")
+            faults[fps_name] = {
+                "stuck_spool": fps_status.get("stuck_spool_active", False),
+                "clog": fps_status.get("clog_active", False),
+                "delegated": fps_status.get("afc_delegation_active", False),
+            }
+            lanes[fps_name] = fps_status.get("lane")
+
+        pressure: Dict[str, Dict[str, Any]] = {}
+        for oam_name, oam_status in snapshot.get("oams", {}).items():
+            pressure[oam_name] = {
+                "current_spool": oam_status.get("current_spool"),
+                "fps_value": oam_status.get("fps_value"),
+                "encoder_clicks": oam_status.get("encoder_clicks"),
             }
 
-        return attributes
+        groups_summary: Dict[str, Dict[str, Any]] = {}
+        for group_name, group_status in snapshot.get("filament_groups", {}).items():
+            groups_summary[group_name] = {
+                "loaded_spool": group_status.get("loaded_spool"),
+                "available_spools": group_status.get("available_spools"),
+                "has_available": group_status.get("has_available"),
+                "is_loaded": group_status.get("is_loaded"),
+            }
+
+        lanes_by_group: Dict[str, Optional[str]] = {}
+        for group_name in snapshot.get("filament_groups", {}).keys():
+            lanes_by_group[group_name] = self._canonical_lane_by_group.get(group_name)
+
+        return {
+            "timestamp": snapshot.get("timestamp"),
+            "followers": followers,
+            "spools": spools,
+            "faults": faults,
+            "pressure": pressure,
+            "groups": groups_summary,
+            "lanes": lanes,
+            "lanes_by_group": lanes_by_group,
+        }
+
+    def get_status(self, eventtime: Optional[float] = None) -> Dict[str, Any]:
+        """Return a snapshot of OAMS, FPS, and filament group status."""
+
+        if eventtime is None:
+            eventtime = self.reactor.monotonic()
+        return self._collect_status_snapshot(eventtime)
+
+    def get_summary(self, eventtime: Optional[float] = None) -> Dict[str, Any]:
+        """Return the trimmed status summary for the current system state."""
+
+        snapshot = self.get_status(eventtime)
+        return snapshot.get("summary", {})
+
+    def get_afc_status_payload(self, eventtime: Optional[float] = None) -> Dict[str, Any]:
+        """Build an AFC-style status payload derived from the OAMS snapshot."""
+
+        snapshot = self.get_status(eventtime)
+        lanes: Dict[str, Dict[str, Any]] = {}
+        for group_name, group_status in snapshot.get("filament_groups", {}).items():
+            fps_name = self.group_fps_name(group_name)
+            fps_status = snapshot.get("fps", {}).get(fps_name, {})
+            lane_payload = {
+                "group_name": group_name,
+                "fps": fps_name,
+                "lane": self._canonical_lane_by_group.get(group_name),
+                "loaded_spool": group_status.get("loaded_spool"),
+                "available_spools": group_status.get("available_spools"),
+                "has_available": group_status.get("has_available"),
+                "is_loaded": group_status.get("is_loaded"),
+                "current_spool_idx": fps_status.get("current_spool_idx"),
+                "following": fps_status.get("following"),
+                "direction": fps_status.get("direction"),
+                "stuck_spool_active": fps_status.get("stuck_spool_active"),
+                "clog_active": fps_status.get("clog_active"),
+            }
+            lanes[group_name] = lane_payload
+
+        system = {
+            "ready": self.ready,
+            "timestamp": snapshot.get("timestamp"),
+            "current_group": self.current_group,
+            "num_groups": len(snapshot.get("filament_groups", {})),
+            "num_fps": len(snapshot.get("fps", {})),
+            "num_oams": len(self.oams),
+            "delegated_runouts": sum(
+                1
+                for status in snapshot.get("fps", {}).values()
+                if status.get("afc_delegation_active")
+            ),
+        }
+
+        return {
+            "lanes": lanes,
+            "summary": snapshot.get("summary", {}),
+            "system": system,
+        }
 
     
     def determine_state(self) -> None:
