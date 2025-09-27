@@ -2164,6 +2164,7 @@ class OAMSManager:
                 fps_state.reset_clog_tracker()
                 return eventtime + MONITOR_ENCODER_PERIOD
 
+
             self._maintain_follower_state(
                 fps_name,
                 fps_state,
@@ -2171,6 +2172,7 @@ class OAMSManager:
                 context="clog monitor",
                 is_printing=is_printing,
             )
+
 
             monitor = self.runout_monitors.get(fps_name)
             if monitor and monitor.state in (
