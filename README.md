@@ -112,6 +112,65 @@ unloads.  If the encoder fails to advance by at least `MIN_ENCODER_DIFF`
 counts within the `MONITOR_ENCODER_*_AFTER` window the printer is paused and
 the offending lane is highlighted so the user can inspect the hardware.
 
+### 2.6 Moonraker callbacks
+
+When `_pause_printer_message()` fires the manager captures the full context of
+the pause, emits a unique `event_id`, and (when Moonraker's webhooks interface
+is available) notifies the `oams.pause_event` remote method so the UI can
+surface the warning without relying solely on `M118` messages.【F:klipper_openams/src/oams_manager.py†L1234-L1295】【F:klipper_openams/src/oams_manager.py†L1349-L1413】
+
+For guidance on wiring these webhooks into a Mainsail dialog (or a persistent
+panel with Continue/Cancel controls) see
+[`docs/mainsail_oams_ui.md`](docs/mainsail_oams_ui.md).【F:docs/mainsail_oams_ui.md†L1-L149】
+
+The JSON payload sent to Moonraker contains the following keys:
+
+```json
+{
+  "event_id": "<uuid>",
+  "timestamp": 1234.56,
+  "message": "Spool appears stuck on T4 spool 0",
+  "reason": "stuck_spool",
+  "requires_ack": true,
+  "fps": "fps 1",
+  "group": "T4",
+  "oams": "oams1",
+  "spool_index": 0,
+  "lane": "LANE_A1",
+  "state_name": "LOADED",
+  "follower_direction": 1,
+  "follower_enabled": false,
+  "details": {
+    "source_group": "T4",
+    "target_group": "T5",
+    "target_lane": "LANE_A2"
+  }
+}
+```
+
+Fields are omitted when the data is unknown.  The `reason` string matches the
+specific guard that triggered the pause (`stuck_spool`, `clog`,
+`unload_stall`, `runout_delegate_failed`, `runout_unload_failed`,
+`runout_no_group`, or `runout_load_failed`).  `requires_ack` is set when the
+UI should prompt the operator to confirm recovery before resuming follower
+motion.【F:klipper_openams/src/oams_manager.py†L1246-L1285】
+
+Moonraker should register handlers for two remote methods during connection:
+
+- **`oams.pause_ack`** – A generic acknowledgement hook.  Payloads must include
+  the `event_id` and may toggle `acknowledged`, `resume_follow`,
+  `follower_direction`, or `clear` (to discard stale events without waiting for
+  resume).  Setting `resume_follow` enables the follower as soon as Klipper
+  resumes printing.【F:klipper_openams/src/oams_manager.py†L1155-L1220】
+- **`oams.stuck_spool_resume`** – Convenience wrapper that implicitly sets
+  `acknowledged=true` and `resume_follow=true` so Moonraker can offer a single
+  “Resume” action when a jam is cleared.【F:klipper_openams/src/oams_manager.py†L1215-L1220】
+
+Acknowledged events are consumed in `_handle_printing_resumed()` which clears
+the stored payload and re-enables the follower using the recorded direction so
+lanes configured with “always follow” resume immediately without redundant
+warnings.【F:klipper_openams/src/oams_manager.py†L1297-L1344】
+
 ---
 
 ## 3. Commands and macros
