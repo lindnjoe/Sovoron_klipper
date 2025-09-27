@@ -143,4 +143,3 @@ def load_config(config):
 
 def load_config_prefix(config):
     return load_config(config)
-
