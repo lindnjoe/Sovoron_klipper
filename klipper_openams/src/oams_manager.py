@@ -835,10 +835,10 @@ class OAMSManager:
         if direction is None:
             gcmd.respond_info("Missing DIRECTION parameter")
             return
-        fps_name = gcmd.get('FPS')
-        fps_name = "fps " + fps_name
+        fps_param = gcmd.get('FPS')
+        fps_name = self._normalize_fps_name(fps_param)
         if fps_name is None:
-            gcmd.respond_info("Missing FPS parameter")
+            gcmd.respond_info("Missing or invalid FPS parameter")
             return
         if fps_name not in self.fpss:
             gcmd.respond_info(f"FPS {fps_name} does not exist")
@@ -906,6 +906,21 @@ class OAMSManager:
         if " " in group:
             group = group.split()[-1]
         return group
+
+    def _normalize_fps_name(self, fps: Optional[str]) -> Optional[str]:
+        """Normalize an FPS identifier provided via gcode parameters."""
+        if fps is None:
+            return None
+        name = str(fps).strip()
+        if not name:
+            return None
+        lowered = name.lower()
+        if lowered.startswith("fps"):
+            name = name[3:]
+        name = name.strip()
+        if not name:
+            return None
+        return f"fps {name}"
 
     def _rebuild_lane_location_index(self) -> None:
         """Map each (OAMS name, bay index) tuple to its canonical AFC lane."""
@@ -1386,11 +1401,11 @@ class OAMSManager:
 
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
     def cmd_UNLOAD_FILAMENT(self, gcmd):
-        fps_name = gcmd.get('FPS')
+        fps_param = gcmd.get('FPS')
+        fps_name = self._normalize_fps_name(fps_param)
         if fps_name is None:
-            gcmd.respond_info("Missing FPS parameter")
+            gcmd.respond_info("Missing or invalid FPS parameter")
             return
-        fps_name = "fps " + fps_name
         if fps_name not in self.fpss:
             gcmd.respond_info(f"FPS {fps_name} does not exist")
             return
@@ -1629,15 +1644,20 @@ class OAMSManager:
         oams: Optional[Any],
         direction: int,
         context: str,
-    ) -> None:
-        """Ensure the follower is running in the requested direction."""
+    ) -> bool:
+        """Ensure the follower is running in the requested direction.
+
+        Returns True if the follower command was issued successfully, otherwise
+        False. Callers may use the result to decide whether to retry or retain
+        restoration flags.
+        """
         if fps_state.current_spool_idx is None:
-            return
+            return False
 
         if oams is None and fps_state.current_oams is not None:
             oams = self.oams.get(fps_state.current_oams)
         if oams is None:
-            return
+            return False
 
         direction = direction if direction in (0, 1) else 1
 
@@ -1651,12 +1671,14 @@ class OAMSManager:
                 fps_state.current_spool_idx,
                 context,
             )
+            return True
         except Exception:
             logging.exception(
                 "OAMS: Failed to enable follower for %s after %s",
                 fps_name,
                 context,
             )
+        return False
 
 
     def _ensure_forward_follower(
@@ -1664,7 +1686,7 @@ class OAMSManager:
         fps_name: str,
         fps_state: "FPSState",
         context: str,
-    ) -> None:
+    ) -> bool:
         """Start the follower forward whenever a spool is loaded."""
         if (
             fps_state.current_oams is None
@@ -1672,17 +1694,17 @@ class OAMSManager:
             or fps_state.stuck_spool_active
             or fps_state.state_name != FPSLoadState.LOADED
         ):
-            return
+            return False
 
         if fps_state.following and fps_state.direction == 1:
-            return
+            return True
 
         oams = self.oams.get(fps_state.current_oams)
         if oams is None:
-            return
+            return False
 
         fps_state.direction = 1
-        self._enable_follower(
+        return self._enable_follower(
             fps_name,
             fps_state,
             oams,
@@ -1697,31 +1719,31 @@ class OAMSManager:
         fps_state: "FPSState",
         oams: Optional[Any],
         context: str,
-    ) -> None:
+    ) -> bool:
         """Restore the follower if a stuck spool pause disabled it."""
         if not fps_state.stuck_spool_restore_follower:
-            return
+            return False
 
         if fps_state.current_oams is None:
             fps_state.stuck_spool_restore_follower = False
-            return
+            return False
 
         if oams is None:
             oams = self.oams.get(fps_state.current_oams)
         if oams is None:
-            return
+            return False
 
         direction = fps_state.stuck_spool_restore_direction
 
 
-        self._enable_follower(
+        success = self._enable_follower(
             fps_name,
             fps_state,
             oams,
             direction,
             context,
         )
-        if fps_state.following:
+        if success and fps_state.following:
 
             fps_state.stuck_spool_restore_follower = False
             logging.info(
@@ -1730,6 +1752,61 @@ class OAMSManager:
                 fps_state.current_spool_idx,
                 context,
             )
+        return success
+
+
+    def _maintain_follower_state(
+        self,
+        fps_name: str,
+        fps_state: "FPSState",
+        *,
+        oams: Optional[Any] = None,
+        context: str,
+        is_printing: Optional[bool] = None,
+    ) -> bool:
+        """Ensure a loaded lane keeps its follower running.
+
+        Returns True when the follower is successfully (re)enabled. The helper
+        respects runout and stuck spool suppression so that callers can invoke
+        it freely from periodic monitors.
+        """
+
+        if fps_state.state_name != FPSLoadState.LOADED:
+            return False
+
+        if fps_state.current_oams is None or fps_state.current_spool_idx is None:
+            return False
+
+        monitor = self.runout_monitors.get(fps_name)
+        if monitor and monitor.state in (
+            OAMSRunoutState.DETECTED,
+            OAMSRunoutState.COASTING,
+            OAMSRunoutState.RELOADING,
+        ):
+            return False
+
+        if fps_state.stuck_spool_active and not fps_state.stuck_spool_restore_follower:
+            return False
+
+        if fps_state.stuck_spool_restore_follower:
+            return self._restore_follower_if_needed(
+                fps_name,
+                fps_state,
+                oams,
+                context,
+            )
+
+        if is_printing is not None and not is_printing:
+            return False
+
+        if fps_state.following and fps_state.direction == 1:
+            return False
+
+        return self._ensure_forward_follower(
+            fps_name,
+            fps_state,
+            context,
+        )
 
 
     def _handle_printing_resumed(self, _eventtime):
@@ -1742,38 +1819,26 @@ class OAMSManager:
             if fps_state.pending_pause_event_id:
                 event = self._remote_pause_events.get(fps_state.pending_pause_event_id)
                 event_acknowledged = bool(event and event.get("acknowledged"))
-            if fps_state.stuck_spool_restore_follower:
-                context = "print resume"
-                if event_acknowledged:
-                    context = "print resume (remote ack)"
-                self._restore_follower_if_needed(
-                    fps_name,
-                    fps_state,
-                    oams,
-                    context,
-                )
-                if event_acknowledged:
-                    logging.info(
-                        "OAMS: Remote acknowledgement received for %s on %s; follower restored.",
-                        event.get("reason", "pause") if event else "pause",
-                        fps_name,
-                    )
-                if event:
-                    self._clear_pause_event(fps_state)
-                continue
-            elif (
-                fps_state.current_oams is not None
-                and fps_state.current_spool_idx is not None
-                and not fps_state.following
+            context = "print resume"
+            if event_acknowledged:
+                context = "print resume (remote ack)"
 
-            ):
-                self._ensure_forward_follower(
+            restored = self._maintain_follower_state(
+                fps_name,
+                fps_state,
+                oams=oams,
+                context=context,
+            )
+
+            if restored and event_acknowledged:
+                logging.info(
+                    "OAMS: Remote acknowledgement received for %s on %s; follower restored.",
+                    event.get("reason", "pause") if event else "pause",
                     fps_name,
-                    fps_state,
-                    "print resume",
                 )
-                if event:
-                    self._clear_pause_event(fps_state)
+
+            if event and not fps_state.stuck_spool_restore_follower:
+                self._clear_pause_event(fps_state)
 
 
     def _trigger_stuck_spool_pause(
@@ -2020,20 +2085,13 @@ class OAMSManager:
                             fps_state.current_spool_idx,
                         )
 
-                if fps_state.stuck_spool_restore_follower and is_printing:
-                    self._restore_follower_if_needed(
+                if is_printing:
+                    self._maintain_follower_state(
                         fps_name,
                         fps_state,
-                        oams,
-                        "stuck spool recovery",
-                    )
-
-                elif is_printing and not fps_state.following:
-                    self._ensure_forward_follower(
-                        fps_name,
-                        fps_state,
-
-                        "stuck spool recovery",
+                        oams=oams,
+                        context="stuck spool recovery",
+                        is_printing=True,
                     )
                 if not fps_state.stuck_spool_restore_follower:
                     fps_state.reset_stuck_spool_state()
@@ -2105,6 +2163,16 @@ class OAMSManager:
                         )
                 fps_state.reset_clog_tracker()
                 return eventtime + MONITOR_ENCODER_PERIOD
+
+
+            self._maintain_follower_state(
+                fps_name,
+                fps_state,
+                oams=oams,
+                context="clog monitor",
+                is_printing=is_printing,
+            )
+
 
             monitor = self.runout_monitors.get(fps_name)
             if monitor and monitor.state in (
