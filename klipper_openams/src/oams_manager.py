@@ -1757,6 +1757,17 @@ class OAMSManager:
 
                 return eventtime + MONITOR_ENCODER_PERIOD
 
+            monitor = self.runout_monitors.get(fps_name)
+            if monitor and monitor.state in (
+                OAMSRunoutState.DETECTED,
+                OAMSRunoutState.COASTING,
+                OAMSRunoutState.RELOADING,
+            ):
+                fps_state.reset_stuck_spool_state(
+                    preserve_restore=fps_state.stuck_spool_restore_follower
+                )
+                return eventtime + MONITOR_ENCODER_PERIOD
+
             pressure = float(getattr(fps, "fps_value", 0.0))
             now = self.reactor.monotonic()
 
