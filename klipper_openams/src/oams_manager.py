@@ -1886,6 +1886,24 @@ class OAMSManager:
                 fps_state.reset_clog_tracker()
                 return eventtime + MONITOR_ENCODER_PERIOD
 
+            monitor = self.runout_monitors.get(fps_name)
+            if monitor and monitor.state in (
+                OAMSRunoutState.DETECTED,
+                OAMSRunoutState.COASTING,
+                OAMSRunoutState.RELOADING,
+            ):
+                if fps_state.clog_active:
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 0)
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to clear clog LED on %s spool %s during runout",
+                            fps_name,
+                            fps_state.current_spool_idx,
+                        )
+                fps_state.reset_clog_tracker()
+                return eventtime + MONITOR_ENCODER_PERIOD
+
             extruder_pos = float(getattr(fps.extruder, "last_position", 0.0))
             encoder_clicks = int(getattr(oams, "encoder_clicks", 0))
             pressure = float(getattr(fps, "fps_value", 0.0))
