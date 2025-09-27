@@ -1107,7 +1107,16 @@ class OAMSManager:
         message = f"Print has been paused: {message}"
         gcode.run_script(f"M118 {message}")
         gcode.run_script(f"M114 {message}")
-        gcode.run_script("PAUSE")
+
+        toolhead = self.printer.lookup_object("toolhead")
+        homed_axes = toolhead.get_status(self.reactor.monotonic()).get("homed_axes", "")
+        if all(axis in homed_axes for axis in ("x", "y", "z")):
+            gcode.run_script("PAUSE")
+        else:
+            logging.warning(
+                "OAMS: Skipping PAUSE command because axes are not homed (homed_axes=%s)",
+                homed_axes,
+            )
 
 
     def _enable_follower(
