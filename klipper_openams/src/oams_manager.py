@@ -1757,6 +1757,17 @@ class OAMSManager:
 
                 return eventtime + MONITOR_ENCODER_PERIOD
 
+            monitor = self.runout_monitors.get(fps_name)
+            if monitor and monitor.state in (
+                OAMSRunoutState.DETECTED,
+                OAMSRunoutState.COASTING,
+                OAMSRunoutState.RELOADING,
+            ):
+                fps_state.reset_stuck_spool_state(
+                    preserve_restore=fps_state.stuck_spool_restore_follower
+                )
+                return eventtime + MONITOR_ENCODER_PERIOD
+
             pressure = float(getattr(fps, "fps_value", 0.0))
             now = self.reactor.monotonic()
 
@@ -1869,6 +1880,24 @@ class OAMSManager:
                     except Exception:
                         logging.exception(
                             "OAMS: Failed to clear clog LED on %s spool %s while printer idle",
+                            fps_name,
+                            fps_state.current_spool_idx,
+                        )
+                fps_state.reset_clog_tracker()
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            monitor = self.runout_monitors.get(fps_name)
+            if monitor and monitor.state in (
+                OAMSRunoutState.DETECTED,
+                OAMSRunoutState.COASTING,
+                OAMSRunoutState.RELOADING,
+            ):
+                if fps_state.clog_active:
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 0)
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to clear clog LED on %s spool %s during runout",
                             fps_name,
                             fps_state.current_spool_idx,
                         )
