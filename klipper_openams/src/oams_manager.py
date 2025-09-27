@@ -255,6 +255,7 @@ class FPSState:
         # Stuck spool detection
         self.stuck_spool_start_time: Optional[float] = None
         self.stuck_spool_active: bool = False
+
         self.stuck_spool_restore_follower: bool = False
         self.stuck_spool_restore_direction: int = 1
 
@@ -264,6 +265,7 @@ class FPSState:
         self.runout_position = None
         self.runout_after_position = None
 
+
     def reset_stuck_spool_state(self, preserve_restore: bool = False) -> None:
         """Clear any latched stuck spool indicators."""
         self.stuck_spool_start_time = None
@@ -271,6 +273,7 @@ class FPSState:
         if not preserve_restore:
             self.stuck_spool_restore_follower = False
             self.stuck_spool_restore_direction = 1
+
 
     def __repr__(self) -> str:
         return f"FPSState(state_name={self.state_name}, current_group={self.current_group}, current_oams={self.current_oams}, current_spool_idx={self.current_spool_idx})"
@@ -344,10 +347,12 @@ class OAMSManager:
             "idle_timeout:printing",
             self._handle_printing_resumed,
         )
+
         self.printer.register_event_handler(
             "pause:resume",
             self._handle_printing_resumed,
         )
+
         self.printer.add_object("oams_manager", self)
         self.register_commands()
         
@@ -407,11 +412,13 @@ class OAMSManager:
                 fps_state.state_name = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
                 fps_state.reset_stuck_spool_state()
+
                 self._ensure_forward_follower(
                     fps_name,
                     fps_state,
                     "state detection",
                 )
+
             else:
                 fps_state.state_name = FPSLoadState.UNLOADED
                 fps_state.reset_stuck_spool_state()
@@ -1038,11 +1045,13 @@ class OAMSManager:
                 fps_state.direction = 1
                 self.current_group = group_name
                 fps_state.reset_stuck_spool_state()
+
                 self._ensure_forward_follower(
                     fps_name,
                     fps_state,
                     "load filament",
                 )
+
                 return True, message
 
             fps_state.state_name = FPSLoadState.UNLOADED
@@ -1103,6 +1112,7 @@ class OAMSManager:
         message = f"Print has been paused: {message}"
         gcode.run_script(f"M118 {message}")
         gcode.run_script(f"M114 {message}")
+
         toolhead = self.printer.lookup_object("toolhead")
         homed_axes = toolhead.get_status(self.reactor.monotonic()).get("homed_axes", "")
         if all(axis in homed_axes for axis in ("x", "y", "z")):
@@ -1112,6 +1122,7 @@ class OAMSManager:
                 "OAMS: Skipping PAUSE command because axes are not homed (homed_axes=%s)",
                 homed_axes,
             )
+
 
     def _enable_follower(
         self,
@@ -1149,6 +1160,7 @@ class OAMSManager:
                 context,
             )
 
+
     def _ensure_forward_follower(
         self,
         fps_name: str,
@@ -1180,6 +1192,7 @@ class OAMSManager:
             context,
         )
 
+
     def _restore_follower_if_needed(
         self,
         fps_name: str,
@@ -1202,6 +1215,7 @@ class OAMSManager:
 
         direction = fps_state.stuck_spool_restore_direction
 
+
         self._enable_follower(
             fps_name,
             fps_state,
@@ -1210,6 +1224,7 @@ class OAMSManager:
             context,
         )
         if fps_state.following:
+
             fps_state.stuck_spool_restore_follower = False
             logging.info(
                 "OAMS: Restarted follower for %s spool %s after %s.",
@@ -1218,9 +1233,11 @@ class OAMSManager:
                 context,
             )
 
+
     def _handle_printing_resumed(self, _eventtime):
         """Re-enable any followers that were paused due to a stuck spool."""
         for fps_name, fps_state in self.current_state.fps_state.items():
+
             oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
             if fps_state.stuck_spool_restore_follower:
                 self._restore_follower_if_needed(
@@ -1233,12 +1250,14 @@ class OAMSManager:
                 fps_state.current_oams is not None
                 and fps_state.current_spool_idx is not None
                 and not fps_state.following
+
             ):
                 self._ensure_forward_follower(
                     fps_name,
                     fps_state,
                     "print resume",
                 )
+
 
     def _trigger_stuck_spool_pause(
         self,
@@ -1264,11 +1283,13 @@ class OAMSManager:
                     fps_name,
                     spool_idx,
                 )
+
             direction = fps_state.direction if fps_state.direction in (0, 1) else 1
             fps_state.direction = direction
             fps_state.stuck_spool_restore_follower = True
             fps_state.stuck_spool_restore_direction = direction
             if fps_state.following:
+
                 try:
                     oams.set_oams_follower(0, direction)
                 except Exception:
@@ -1277,7 +1298,7 @@ class OAMSManager:
                         fps_name,
                         spool_idx,
                     )
-            fps_state.following = False
+
 
         fps_state.stuck_spool_active = True
         fps_state.stuck_spool_start_time = None
@@ -1378,9 +1399,11 @@ class OAMSManager:
                             "OAMS: Failed to clear stuck spool LED while idle on %s",
                             fps_name,
                         )
+
                 fps_state.reset_stuck_spool_state(
                     preserve_restore=fps_state.stuck_spool_restore_follower
                 )
+
                 return eventtime + MONITOR_ENCODER_PERIOD
 
             pressure = float(getattr(fps, "fps_value", 0.0))
@@ -1414,6 +1437,7 @@ class OAMSManager:
                             fps_name,
                             fps_state.current_spool_idx,
                         )
+
                 if fps_state.stuck_spool_restore_follower and is_printing:
                     self._restore_follower_if_needed(
                         fps_name,
@@ -1421,14 +1445,17 @@ class OAMSManager:
                         oams,
                         "stuck spool recovery",
                     )
+
                 elif is_printing and not fps_state.following:
                     self._ensure_forward_follower(
                         fps_name,
                         fps_state,
+
                         "stuck spool recovery",
                     )
                 if not fps_state.stuck_spool_restore_follower:
                     fps_state.reset_stuck_spool_state()
+
 
             return eventtime + MONITOR_ENCODER_PERIOD
 
