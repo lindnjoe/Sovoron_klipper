@@ -504,6 +504,7 @@ class OAMSManager:
         self.reactor = self.printer.get_reactor()
         self.webhooks = None
         self._remote_notify: Optional[Callable[..., Any]] = None
+        self._webhook_dispatch: Optional[Callable[..., Any]] = None
         self._remote_pause_events: Dict[str, Dict[str, Any]] = {}
         self._initialize_webhooks()
         
@@ -610,6 +611,12 @@ class OAMSManager:
                 self._remote_notify = _call_remote
             else:
                 self._remote_notify = None
+
+        webhook_dispatch = getattr(self.webhooks, "notify_webhook", None)
+        if callable(webhook_dispatch):
+            self._webhook_dispatch = webhook_dispatch
+        else:
+            self._webhook_dispatch = None
 
         register = getattr(self.webhooks, "register_remote_method", None)
         if callable(register):
@@ -1504,12 +1511,19 @@ class OAMSManager:
             extra,
         )
 
+        remote_payload = {k: v for k, v in pause_payload.items() if v is not None}
+
         if self._remote_notify:
-            remote_payload = {k: v for k, v in pause_payload.items() if v is not None}
             try:
                 self._remote_notify("oams.pause_event", **remote_payload)
             except Exception:
                 logging.exception("OAMS: Failed to dispatch pause event to Moonraker.")
+
+        if self._webhook_dispatch:
+            try:
+                self._webhook_dispatch("oams.pause_event", remote_payload)
+            except Exception:
+                logging.exception("OAMS: Failed to publish pause event webhook.")
 
         try:
             gcode = self.printer.lookup_object("gcode")
