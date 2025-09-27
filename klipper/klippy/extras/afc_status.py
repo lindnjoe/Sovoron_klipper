@@ -10,13 +10,23 @@ class OpenAMSAFCStatus:
     def __init__(self, config) -> None:
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
-        self.webhooks = self.printer.lookup_object("webhooks")
+        self.webhooks = None
+        try:
+            self.webhooks = self.printer.lookup_object("webhooks")
+        except Exception as err:
+            logging.warning(
+                "AFC status proxy: WebHooks unavailable (%s); endpoints disabled.",
+                err,
+            )
 
         self._manager: Optional[Any] = None
         self._stream_registered = False
 
-        self.webhooks.register_endpoint("afc/status", self._handle_status_request)
-        self.webhooks.register_status("afc", self._webhooks_status)
+        if self.webhooks is not None:
+            self.webhooks.register_endpoint(
+                "afc/status", self._handle_status_request
+            )
+            self.webhooks.register_status("afc", self._webhooks_status)
 
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
@@ -143,3 +153,4 @@ def load_config(config):
 
 def load_config_prefix(config):
     return load_config(config)
+
