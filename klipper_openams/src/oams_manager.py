@@ -11,6 +11,8 @@ from functools import partial
 from collections import deque
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
+from klipper.klippy.extras.bulk_sensor import BatchBulkHelper
+
 # Configuration constants
 
 PAUSE_DISTANCE = 60  # mm to pause before coasting follower
@@ -543,10 +545,12 @@ class OAMSManager:
         self.webhooks.register_status("oams", self._webhooks_status)
 
         self._last_summary_payload: Optional[Dict[str, Any]] = None
+
         self._status_stream = StatusStreamHelper(
             self.printer,
             self._stream_status_batch,
             STATUS_STREAM_INTERVAL,
+
         )
         self._status_stream.add_mux_endpoint(
             "oams/stream_status",
@@ -640,10 +644,12 @@ class OAMSManager:
     def _build_summary(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """Create a trimmed summary suitable for WebHooks subscribers."""
 
+
         followers: Dict[str, Dict[str, Any]] = {}
         spools: Dict[str, Optional[int]] = {}
         faults: Dict[str, Dict[str, Any]] = {}
         lanes: Dict[str, Optional[str]] = {}
+
 
         for fps_name, fps_status in snapshot.get("fps", {}).items():
             followers[fps_name] = {

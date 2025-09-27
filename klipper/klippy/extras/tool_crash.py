@@ -46,7 +46,7 @@ class ToolCrash:
 
         self.enabled = False
         self.expected_tool = None
-        self.crash_mintime = config.getfloat('crash_mintime', 0.5, above=0.)
+        self.crash_mintime = config.getfloat('crash_mintime', 1.5, above=0.)
         self._watchdog_interval=config.getfloat('watchdog_interval',0.500, above=0.)
         self._watchdog_error_count=0
         self._watchdog_error_threshold=config.getint('watchdog_threshold',2);
