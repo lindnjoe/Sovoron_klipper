@@ -320,6 +320,7 @@ class OAMSRunoutMonitor:
                 return
         self.state = OAMSRunoutState.MONITORING
 
+
     
     def stop(self) -> None:
         """Stop monitoring for filament runout."""
@@ -350,6 +351,7 @@ class OAMSRunoutMonitor:
                     self.fps_name,
                 )
             self.timer = None
+
 
 
 class OAMSState:
@@ -1526,6 +1528,21 @@ class OAMSManager:
         return payload
 
 
+    def _safe_run_script(self, gcode, script: str, context: str) -> bool:
+        """Execute a gcode script while swallowing recoverable errors."""
+
+        try:
+            gcode.run_script(script)
+        except BaseException as exc:
+            if isinstance(exc, (SystemExit, KeyboardInterrupt)):
+                raise
+            logging.exception(
+                "OAMS: Failed to execute %s script '%s'", context, script
+            )
+            return False
+        return True
+
+
     def _pause_printer_message(
         self,
         message: str,
@@ -1544,20 +1561,14 @@ class OAMSManager:
             extra,
         )
 
-        remote_payload = {k: v for k, v in pause_payload.items() if v is not None}
 
         if self._remote_notify:
+            remote_payload = {k: v for k, v in pause_payload.items() if v is not None}
             try:
                 self._remote_notify("oams.pause_event", **remote_payload)
             except Exception:
                 logging.exception("OAMS: Failed to dispatch pause event to Moonraker.")
 
-        if self._webhook_dispatch:
-            try:
-                self._webhook_dispatch("oams.pause_event", remote_payload)
-            except Exception:
-                logging.exception("OAMS: Failed to publish pause event webhook.")
-
         try:
             gcode = self.printer.lookup_object("gcode")
         except Exception:
@@ -1566,24 +1577,7 @@ class OAMSManager:
 
         formatted_message = f"Print has been paused: {message}"
         for macro in (f"M118 {formatted_message}", f"M114 {formatted_message}"):
-            try:
-                gcode.run_script(macro)
-            except Exception:
-                logging.exception("OAMS: Failed to run pause notification script '%s'", macro)
-
-
-        try:
-            gcode = self.printer.lookup_object("gcode")
-        except Exception:
-            logging.exception("OAMS: Unable to lookup gcode object while pausing")
-            return
-
-        formatted_message = f"Print has been paused: {message}"
-        for macro in (f"M118 {formatted_message}", f"M114 {formatted_message}"):
-            try:
-                gcode.run_script(macro)
-            except Exception:
-                logging.exception("OAMS: Failed to run pause notification script '%s'", macro)
+            self._safe_run_script(gcode, macro, "pause notification")
 
         try:
             toolhead = self.printer.lookup_object("toolhead")
@@ -1593,15 +1587,13 @@ class OAMSManager:
             homed_axes = ""
 
         if all(axis in homed_axes for axis in ("x", "y", "z")):
-            try:
-                gcode.run_script("PAUSE")
-            except Exception:
-                logging.exception("OAMS: Failed to execute PAUSE command")
+            self._safe_run_script(gcode, "PAUSE", "pause command")
         else:
             logging.warning(
                 "OAMS: Skipping PAUSE command because axes are not homed (homed_axes=%s)",
                 homed_axes,
             )
+
 
 
     def _normalize_remote_params(self, *args, **kwargs) -> Dict[str, Any]:
@@ -2163,6 +2155,7 @@ class OAMSManager:
             return eventtime + MONITOR_ENCODER_PERIOD
 
 
+
         return partial(_monitor_stuck_spool, self)
 
     def _monitor_clog_for_fps(self, fps_name):
@@ -2259,6 +2252,7 @@ class OAMSManager:
             encoder_clicks = int(getattr(oams, "encoder_clicks", 0))
             pressure = float(getattr(fps, "fps_value", 0.0))
             now = self.reactor.monotonic()
+
 
 
             if fps_state.clog_start_extruder is None:
@@ -2458,7 +2452,11 @@ class OAMSManager:
                         if target_lane:
                             try:
                                 gcode = self.printer.lookup_object("gcode")
-                                gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
+                                self._safe_run_script(
+                                    gcode,
+                                    f"SET_LANE_LOADED LANE={target_lane}",
+                                    "lane load notification",
+                                )
                                 logging.debug(
                                     "OAMS: Marked lane %s as loaded after infinite runout on %s",
                                     target_lane,
@@ -2560,6 +2558,7 @@ class OAMSManager:
             except Exception:
                 logging.exception("OAMS: Failed to reset runout monitor for %s", getattr(monitor, "fps_name", "unknown"))
         self.runout_monitors = {}
+
 
 
 
