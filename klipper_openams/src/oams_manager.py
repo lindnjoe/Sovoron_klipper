@@ -42,6 +42,102 @@ STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08  # Pressure indicating the spool is no lon
 STUCK_SPOOL_DWELL = 8.0  # Seconds the pressure must remain below the threshold before pausing
 
 
+class _StatusStreamWebhooksClient:
+    """Wrap a webhooks connection so we can push streaming updates."""
+
+    def __init__(self, web_request):
+        self._connection = web_request.get_client_connection()
+        self._template = web_request.get_dict("response_template", {})
+
+    def handle_batch(self, payload: Dict[str, Any]) -> bool:
+        if self._connection.is_closed():
+            return False
+        message = dict(self._template)
+        message["params"] = payload
+        self._connection.send(message)
+        return True
+
+
+class StatusStreamHelper:
+    """Minimal helper to stream periodic status updates via WebHooks."""
+
+    def __init__(
+        self,
+        printer,
+        batch_callback: Callable[[float], Dict[str, Any]],
+        batch_interval: float,
+    ) -> None:
+        self.printer = printer
+        self.reactor = printer.get_reactor()
+        self.webhooks = printer.lookup_object("webhooks")
+        self.batch_callback = batch_callback
+        self.batch_interval = batch_interval
+
+        self._timer = None
+        self._active = False
+        self._clients: List[Callable[[Dict[str, Any]], bool]] = []
+        self._headers: Dict[str, Dict[str, Any]] = {}
+
+    def _schedule_timer(self) -> None:
+        waketime = self.reactor.monotonic() + self.batch_interval
+        self._timer = self.reactor.register_timer(self._process_batch, waketime)
+
+    def _process_batch(self, eventtime: float):
+        try:
+            payload = self.batch_callback(eventtime)
+        except self.printer.command_error:
+            logging.exception("StatusStreamHelper batch callback error")
+            self.stop()
+            return self.reactor.NEVER
+
+        if not payload:
+            return eventtime + self.batch_interval
+
+        for client in list(self._clients):
+            if not client(payload):
+                self._clients.remove(client)
+
+        if not self._clients:
+            self.stop()
+            return self.reactor.NEVER
+
+        return eventtime + self.batch_interval
+
+    def start(self) -> None:
+        if self._active:
+            return
+        self._active = True
+        self._schedule_timer()
+
+    def stop(self) -> None:
+        if self._timer is not None:
+            self.reactor.unregister_timer(self._timer)
+            self._timer = None
+        self._active = False
+        self._clients.clear()
+
+    def add_client(self, callback: Callable[[Dict[str, Any]], bool]) -> None:
+        self._clients.append(callback)
+        if not self._active:
+            self.start()
+
+    def _make_api_client(self, path: str):
+        def _register(web_request):
+            client = _StatusStreamWebhooksClient(web_request)
+            self.add_client(client.handle_batch)
+            header = self._headers.get(path, {})
+            web_request.send(header)
+
+        return _register
+
+    def add_mux_endpoint(
+        self, path: str, key: str, value: str, header: Dict[str, Any]
+    ) -> None:
+        self._headers[path] = header
+        self.webhooks.register_mux_endpoint(
+            path, key, value, self._make_api_client(path)
+        )
+
 CLOG_PRESSURE_TARGET = 0.50
 CLOG_SENSITIVITY_LEVELS = {
     "low": {
@@ -449,10 +545,12 @@ class OAMSManager:
         self.webhooks.register_status("oams", self._webhooks_status)
 
         self._last_summary_payload: Optional[Dict[str, Any]] = None
-        self._status_stream = BatchBulkHelper(
+
+        self._status_stream = StatusStreamHelper(
             self.printer,
             self._stream_status_batch,
-            batch_interval=STATUS_STREAM_INTERVAL,
+            STATUS_STREAM_INTERVAL,
+
         )
         self._status_stream.add_mux_endpoint(
             "oams/stream_status",
@@ -546,10 +644,12 @@ class OAMSManager:
     def _build_summary(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """Create a trimmed summary suitable for WebHooks subscribers."""
 
+
         followers: Dict[str, Dict[str, Any]] = {}
         spools: Dict[str, Optional[int]] = {}
         faults: Dict[str, Dict[str, Any]] = {}
         lanes: Dict[str, Optional[str]] = {}
+
 
         for fps_name, fps_status in snapshot.get("fps", {}).items():
             followers[fps_name] = {
