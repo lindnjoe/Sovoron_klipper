@@ -412,6 +412,13 @@ class OAMSManager:
                 fps_state.state_name = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
                 fps_state.reset_stuck_spool_state()
+
+                self._ensure_forward_follower(
+                    fps_name,
+                    fps_state,
+                    "state detection",
+                )
+
             else:
                 fps_state.state_name = FPSLoadState.UNLOADED
                 fps_state.reset_stuck_spool_state()
@@ -1039,11 +1046,9 @@ class OAMSManager:
                 self.current_group = group_name
                 fps_state.reset_stuck_spool_state()
 
-                self._enable_follower(
+                self._ensure_forward_follower(
                     fps_name,
                     fps_state,
-                    oam,
-                    1,
                     "load filament",
                 )
 
@@ -1156,6 +1161,38 @@ class OAMSManager:
             )
 
 
+    def _ensure_forward_follower(
+        self,
+        fps_name: str,
+        fps_state: "FPSState",
+        context: str,
+    ) -> None:
+        """Start the follower forward whenever a spool is loaded."""
+        if (
+            fps_state.current_oams is None
+            or fps_state.current_spool_idx is None
+            or fps_state.stuck_spool_active
+            or fps_state.state_name != FPSLoadState.LOADED
+        ):
+            return
+
+        if fps_state.following and fps_state.direction == 1:
+            return
+
+        oams = self.oams.get(fps_state.current_oams)
+        if oams is None:
+            return
+
+        fps_state.direction = 1
+        self._enable_follower(
+            fps_name,
+            fps_state,
+            oams,
+            1,
+            context,
+        )
+
+
     def _restore_follower_if_needed(
         self,
         fps_name: str,
@@ -1213,13 +1250,11 @@ class OAMSManager:
                 fps_state.current_oams is not None
                 and fps_state.current_spool_idx is not None
                 and not fps_state.following
-                and not fps_state.stuck_spool_active
+
             ):
-                self._enable_follower(
+                self._ensure_forward_follower(
                     fps_name,
                     fps_state,
-                    oams,
-                    fps_state.direction,
                     "print resume",
                 )
 
@@ -1249,10 +1284,12 @@ class OAMSManager:
                     spool_idx,
                 )
 
+            direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+            fps_state.direction = direction
+            fps_state.stuck_spool_restore_follower = True
+            fps_state.stuck_spool_restore_direction = direction
             if fps_state.following:
-                direction = fps_state.direction if fps_state.direction in (0, 1) else 1
-                fps_state.stuck_spool_restore_follower = True
-                fps_state.stuck_spool_restore_direction = direction
+
                 try:
                     oams.set_oams_follower(0, direction)
                 except Exception:
@@ -1261,7 +1298,6 @@ class OAMSManager:
                         fps_name,
                         spool_idx,
                     )
-                fps_state.following = False
 
 
         fps_state.stuck_spool_active = True
@@ -1411,11 +1447,10 @@ class OAMSManager:
                     )
 
                 elif is_printing and not fps_state.following:
-                    self._enable_follower(
+                    self._ensure_forward_follower(
                         fps_name,
                         fps_state,
-                        oams,
-                        fps_state.direction,
+
                         "stuck spool recovery",
                     )
                 if not fps_state.stuck_spool_restore_follower:
