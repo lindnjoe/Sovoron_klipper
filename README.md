@@ -79,31 +79,31 @@ lanes.
 - **Preconditions** – Monitoring only runs when the printer is actively
   printing, the FPS is `LOADED`, all axes are homed, and no stuck-spool
   recovery is pending.  The manager samples the extruder position, OpenAMS
-  encoder, and FPS pressure each cycle.【F:klipper_openams/src/oams_manager.py†L1326-L1370】
+  encoder, and FPS pressure each cycle.【F:klipper_openams/src/oams_manager.py†L1816-L1876】
 - **Trigger logic** – Once the extruder advances beyond the configured
   extrusion window (12–40 mm depending on sensitivity), the manager checks that
   the encoder has not moved more than the slack allowance, the FPS pressure has
   remained inside a tight band around 0.50, and the readings have persisted for
   the dwell period (6–12 s).  Any retract or pressure swing outside the band
-  resets the tracker.【F:klipper_openams/src/oams_manager.py†L1386-L1450】
+  resets the tracker.【F:klipper_openams/src/oams_manager.py†L1878-L1915】
 - **Sensitivity control** – `clog_sensitivity` can be set to `low`, `medium`
   (default), or `high` under `[oams_manager]`.  Lower sensitivity requires more
   extrusion and tolerates larger encoder slack, while higher sensitivity reacts
   sooner with tighter pressure bands.【F:klipper_openams/src/oams_manager.py†L24-L43】【F:klipper_openams/src/oams_manager.py†L366-L394】
 - **Response** – When a clog is confirmed the matching hub LED is latched, the
   printer is paused, and the console logs the extruded distance, encoder delta,
-  and observed pressure window so the operator knows what was detected.【F:klipper_openams/src/oams_manager.py†L1447-L1474】
+  and observed pressure window so the operator knows what was detected.【F:klipper_openams/src/oams_manager.py†L1917-L1943】
 
 ### 2.4 Stuck-spool protection
 - **Detection** – While the printer is actively printing and the lane is
   `LOADED`, the stuck-spool monitor samples the FPS value.  If the pressure
   stays below `STUCK_SPOOL_PRESSURE_THRESHOLD` (default `0.08`) for longer than
-  `STUCK_SPOOL_DWELL` seconds, the spool is treated as jammed.【F:klipper_openams/src/oams_manager.py†L119-L132】【F:klipper_openams/src/oams_manager.py†L1194-L1267】
+  `STUCK_SPOOL_DWELL` seconds, the spool is treated as jammed.【F:klipper_openams/src/oams_manager.py†L119-L132】【F:klipper_openams/src/oams_manager.py†L1721-L1780】
 - **Response** – The affected hub LED is latched red, the follower is stopped,
-  and the printer is paused with a descriptive console message.【F:klipper_openams/src/oams_manager.py†L1256-L1267】
+  and the printer is paused with a descriptive console message.【F:klipper_openams/src/oams_manager.py†L1601-L1652】
 - **Recovery** – Clearing the jam and resuming the print runs the recovery
   helper: LEDs are cleared, the hub error state is reset, and the follower is
-  re-enabled in its stored direction before monitoring resumes.【F:klipper_openams/src/oams_manager.py†L1194-L1247】【F:klipper_openams/src/oams_manager.py†L1505-L1514】
+  re-enabled in its stored direction before monitoring resumes.【F:klipper_openams/src/oams_manager.py†L1721-L1808】【F:klipper_openams/src/oams_manager.py†L1540-L1554】
 
 ### 2.5 Load/unload speed guards
 
@@ -111,6 +111,82 @@ Separate timers watch the encoder ticks during manual or automatic loads and
 unloads.  If the encoder fails to advance by at least `MIN_ENCODER_DIFF`
 counts within the `MONITOR_ENCODER_*_AFTER` window the printer is paused and
 the offending lane is highlighted so the user can inspect the hardware.
+
+### 2.6 Moonraker callbacks
+
+When `_pause_printer_message()` fires the manager captures the full context of
+the pause, emits a unique `event_id`, and (when Moonraker's webhooks interface
+is available) notifies the `oams.pause_event` remote method so the UI can
+surface the warning without relying solely on `M118` messages.【F:klipper_openams/src/oams_manager.py†L1268-L1345】【F:klipper_openams/src/oams_manager.py†L1327-L1350】
+
+For guidance on wiring these webhooks into a Mainsail dialog (or a persistent
+panel with Continue/Cancel controls) see
+[`docs/mainsail_oams_ui.md`](docs/mainsail_oams_ui.md).【F:docs/mainsail_oams_ui.md†L1-L149】
+
+The JSON payload sent to Moonraker contains the following keys:
+
+```json
+{
+  "event_id": "<uuid>",
+  "timestamp": 1234.56,
+  "message": "Spool appears stuck on T4 spool 0",
+  "reason": "stuck_spool",
+  "requires_ack": true,
+  "fps": "fps 1",
+  "group": "T4",
+  "oams": "oams1",
+  "spool_index": 0,
+  "lane": "LANE_A1",
+  "state_name": "LOADED",
+  "follower_direction": 1,
+  "follower_enabled": false,
+  "details": {
+    "source_group": "T4",
+    "target_group": "T5",
+    "target_lane": "LANE_A2"
+  }
+}
+```
+
+Fields are omitted when the data is unknown.  The `reason` string matches the
+specific guard that triggered the pause (`stuck_spool`, `clog`,
+`unload_stall`, `runout_delegate_failed`, `runout_unload_failed`,
+`runout_no_group`, or `runout_load_failed`).  `requires_ack` is set when the
+UI should prompt the operator to confirm recovery before resuming follower
+motion.【F:klipper_openams/src/oams_manager.py†L1268-L1321】
+
+Moonraker should register handlers for two remote methods during connection:
+
+- **`oams.pause_ack`** – A generic acknowledgement hook.  Payloads must include
+  the `event_id` and may toggle `acknowledged`, `resume_follow`,
+  `follower_direction`, or `clear` (to discard stale events without waiting for
+  resume).  Setting `resume_follow` enables the follower as soon as Klipper
+  resumes printing.【F:klipper_openams/src/oams_manager.py†L1385-L1434】
+- **`oams.stuck_spool_resume`** – Convenience wrapper that implicitly sets
+  `acknowledged=true` and `resume_follow=true` so Moonraker can offer a single
+  “Resume” action when a jam is cleared.【F:klipper_openams/src/oams_manager.py†L1427-L1434】
+
+An acknowledgement body looks like the following:
+
+```json
+{
+  "event_id": "2f9ad1...",
+  "acknowledged": true,
+  "resume_follow": true,
+  "follower_direction": 1,
+  "clear": true
+}
+```
+
+When `clear` is supplied, the manager drops the stored payload immediately so
+subsequent resumes do not replay stale warnings.  If `resume_follow` is true the
+follower is re-enabled with the requested direction the moment Klipper signals
+that printing has resumed.【F:klipper_openams/src/oams_manager.py†L1385-L1434】【F:klipper_openams/src/oams_manager.py†L1557-L1598】
+
+Acknowledged events are consumed in `_handle_printing_resumed()` which clears
+the stored payload and re-enables the follower using the recorded direction so
+lanes configured with “always follow” resume immediately without redundant
+warnings.【F:klipper_openams/src/oams_manager.py†L1557-L1598】
 
 ---
 
