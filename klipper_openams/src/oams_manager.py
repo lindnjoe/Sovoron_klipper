@@ -11,6 +11,8 @@ from functools import partial
 from collections import deque
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
+from klipper.klippy.extras.bulk_sensor import BatchBulkHelper
+
 # Configuration constants
 
 PAUSE_DISTANCE = 60  # mm to pause before coasting follower
@@ -67,6 +69,7 @@ class StatusStreamHelper:
     ) -> None:
         self.printer = printer
         self.reactor = printer.get_reactor()
+
         try:
             self.webhooks = printer.lookup_object("webhooks")
         except Exception as err:
@@ -75,6 +78,7 @@ class StatusStreamHelper:
                 err,
             )
             self.webhooks = None
+
         self.batch_callback = batch_callback
         self.batch_interval = batch_interval
 
@@ -138,12 +142,14 @@ class StatusStreamHelper:
     def add_mux_endpoint(
         self, path: str, key: str, value: str, header: Dict[str, Any]
     ) -> None:
+
         if self.webhooks is None:
             logging.debug(
                 "StatusStreamHelper: Skipping mux endpoint '%s' (no WebHooks)",
                 path,
             )
             return
+
 
         self._headers[path] = header
         self.webhooks.register_mux_endpoint(
@@ -552,6 +558,7 @@ class OAMSManager:
         self.printer.add_object("oams_manager", self)
         self.register_commands()
 
+
         self.webhooks = None
         try:
             self.webhooks = self.printer.lookup_object("webhooks")
@@ -585,8 +592,10 @@ class OAMSManager:
                 "OAMS: WebHooks status endpoints not registered (service missing)."
             )
 
+
     def register_status_stream(self, path: str, key: str, value: str) -> None:
         """Expose the summary stream using an additional muxed endpoint."""
+
 
         if self._status_stream is not None:
             self._status_stream.add_mux_endpoint(
@@ -597,6 +606,7 @@ class OAMSManager:
                 "OAMS: Skipping registration of status stream '%s' (no WebHooks).",
                 path,
             )
+
 
     def _handle_status_request(self, web_request) -> None:
         """Serve the REST status endpoint."""
@@ -678,10 +688,12 @@ class OAMSManager:
     def _build_summary(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """Create a trimmed summary suitable for WebHooks subscribers."""
 
+
         followers: Dict[str, Dict[str, Any]] = {}
         spools: Dict[str, Optional[int]] = {}
         faults: Dict[str, Dict[str, Any]] = {}
         lanes: Dict[str, Optional[str]] = {}
+
 
         for fps_name, fps_status in snapshot.get("fps", {}).items():
             followers[fps_name] = {
@@ -702,6 +714,7 @@ class OAMSManager:
                 "current_spool": oam_status.get("current_spool"),
                 "fps_value": oam_status.get("fps_value"),
                 "encoder_clicks": oam_status.get("encoder_clicks"),
+
             }
 
         groups_summary: Dict[str, Dict[str, Any]] = {}
@@ -712,6 +725,7 @@ class OAMSManager:
                 "has_available": group_status.get("has_available"),
                 "is_loaded": group_status.get("is_loaded"),
             }
+
 
         lanes_by_group: Dict[str, Optional[str]] = {}
         for group_name in snapshot.get("filament_groups", {}).keys():
