@@ -1,3 +1,4 @@
+
 # OpenAMS Manager
 #
 # Copyright (C) 2025 JR Lomas <lomas.jr@gmail.com>
@@ -605,11 +606,16 @@ class OAMSManager:
             fps_state.encoder_samples.clear()
             fps_state.reset_stuck_spool_state()
 
-        for _, oam in self.oams.items():
-            oam.clear_errors()
+        for oams_name, oam in self.oams.items():
+            try:
+                oam.clear_errors()
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to clear errors on %s", oams_name
+                )
         self.determine_state()
         self.start_monitors()
-        
+
         return
     
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
@@ -1854,4 +1860,5 @@ class OAMSManager:
 
 
 def load_config(config):
+
     return OAMSManager(config)
