@@ -470,7 +470,11 @@ class OAMSManager:
             }
 
         if self._status_cache:
-            attributes["statuses"] = list(self._status_cache.values())
+
+            status_list = list(self._status_cache.values())
+            attributes["statuses"] = status_list
+            attributes["feeder_status"] = status_list
+
         if self._active_pause_events:
             attributes["pause_events"] = [
                 {
@@ -703,12 +707,9 @@ class OAMSManager:
                 for key, value in cache_entry.items()
                 if key != "updated_at"
             }
-            try:
-                self.webhooks.call_remote_method("oams.status_update", **payload)
-            except Exception:
-                logging.debug(
-                    "OAMS: Failed to replay cached status update", exc_info=True
-                )
+
+            self._emit_remote_event("oams.status_update", **payload)
+
 
         for event in self._active_pause_events.values():
             payload = {
@@ -726,20 +727,39 @@ class OAMSManager:
                     "lane",
                 }
             }
-            try:
-                self.webhooks.call_remote_method("oams.pause_event", **payload)
-            except Exception:
-                logging.debug(
-                    "OAMS: Failed to replay cached pause event", exc_info=True
-                )
+
+            self._emit_remote_event("oams.pause_event", **payload)
 
     def _send_remote_method(self, method: str, **params) -> None:
         if not self._ensure_webhooks():
             return
+        if not self._emit_remote_event(method, **params):
+            try:
+                self.webhooks.call_remote_method(method, **params)
+            except Exception:
+                logging.debug(
+                    "OAMS: Failed to call remote method %s", method, exc_info=True
+                )
+
+    def _emit_remote_event(self, method: str, **params) -> bool:
+        """Attempt to broadcast a notify_remote_method event via Moonraker."""
+
+        if not self.webhooks:
+            return False
+
         try:
-            self.webhooks.call_remote_method(method, **params)
+            self.webhooks.call_remote_method(
+                "server.inject_remote_method",
+                method=method,
+                params=params,
+            )
+            return True
         except Exception:
-            logging.debug("OAMS: Failed to call remote method %s", method, exc_info=True)
+            logging.debug(
+                "OAMS: Failed to inject remote method %s", method, exc_info=True
+            )
+            return False
+
 
 
     def _resolve_status_metadata(
