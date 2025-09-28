@@ -365,10 +365,9 @@ class OAMSManager:
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
 
-        try:
-            self.webhooks = self.printer.lookup_object("webhooks")
-        except Exception:
-            self.webhooks = None
+
+        self.webhooks = None
+
 
 
         # Hardware object collections
@@ -489,8 +488,68 @@ class OAMSManager:
         return f"{int(self.reactor.monotonic() * 1000)}-{next(self._event_seq)}"
 
 
-    def _send_remote_method(self, method: str, **params) -> None:
+
+    def _ensure_webhooks(self) -> bool:
+        """Ensure the webhooks interface is available before emitting events."""
+
+        if self.webhooks is not None:
+            return True
+
+        try:
+            self.webhooks = self.printer.lookup_object("webhooks")
+        except Exception:
+            self.webhooks = None
+            return False
+
+        # Publish any cached state so late subscribers receive the latest data.
+        self._republish_runtime_state()
+        return True
+
+    def _republish_runtime_state(self) -> None:
+        """Replay cached status and pause events to downstream listeners."""
+
         if not self.webhooks:
+            return
+
+        for cache_entry in self._status_cache.values():
+            payload = {
+                key: value
+                for key, value in cache_entry.items()
+                if key != "updated_at"
+            }
+            try:
+                self.webhooks.call_remote_method("oams.status_update", **payload)
+            except Exception:
+                logging.debug(
+                    "OAMS: Failed to replay cached status update", exc_info=True
+                )
+
+        for event in self._active_pause_events.values():
+            payload = {
+                key: value
+                for key, value in event.items()
+                if key
+                in {
+                    "event_id",
+                    "message",
+                    "reason",
+                    "details",
+                    "requires_ack",
+                    "timestamp",
+                    "fps",
+                    "lane",
+                }
+            }
+            try:
+                self.webhooks.call_remote_method("oams.pause_event", **payload)
+            except Exception:
+                logging.debug(
+                    "OAMS: Failed to replay cached pause event", exc_info=True
+                )
+
+    def _send_remote_method(self, method: str, **params) -> None:
+        if not self._ensure_webhooks():
+
             return
         try:
             self.webhooks.call_remote_method(method, **params)
