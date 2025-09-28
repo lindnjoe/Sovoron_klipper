@@ -151,16 +151,19 @@ specific guard that triggered the pause (`stuck_spool`, `clog`,
 UI should prompt the operator to confirm recovery before resuming follower
 motion.【F:klipper_openams/src/oams_manager.py†L1246-L1285】
 
-Moonraker should register handlers for two remote methods during connection:
+Moonraker should register handlers for two remote methods during connection.
+The manager exposes matching webhook endpoints so `printer.remote_method`
+requests from Mainsail land directly on Klipper without additional bridge
+code:
 
 - **`oams.pause_ack`** – A generic acknowledgement hook.  Payloads must include
   the `event_id` and may toggle `acknowledged`, `resume_follow`,
   `follower_direction`, or `clear` (to discard stale events without waiting for
   resume).  Setting `resume_follow` enables the follower as soon as Klipper
-  resumes printing.【F:klipper_openams/src/oams_manager.py†L1155-L1220】
+  resumes printing.【F:klipper_openams/src/oams_manager.py†L582-L675】
 - **`oams.stuck_spool_resume`** – Convenience wrapper that implicitly sets
   `acknowledged=true` and `resume_follow=true` so Moonraker can offer a single
-  “Resume” action when a jam is cleared.【F:klipper_openams/src/oams_manager.py†L1215-L1220】
+  “Resume” action when a jam is cleared.【F:klipper_openams/src/oams_manager.py†L642-L675】
 
 Acknowledged events are consumed in `_handle_printing_resumed()` which clears
 the stored payload and re-enables the follower using the recorded direction so

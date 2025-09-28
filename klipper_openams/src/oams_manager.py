@@ -8,6 +8,7 @@ import logging
 import time
 from functools import partial
 from collections import deque
+from itertools import count
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 # Configuration constants
@@ -363,7 +364,10 @@ class OAMSManager:
         self.config = config
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
-        
+
+        self.webhooks = None
+        self._webhook_endpoints_registered = False
+
 
         # Hardware object collections
         self.filament_groups: Dict[str, Any] = {}  # Group name -> FilamentGroup object
@@ -388,6 +392,11 @@ class OAMSManager:
             "reload_before_toolhead_distance",
             0.0,
         )
+
+        # Runtime caches for GUI integrations
+        self._status_cache: Dict[str, Dict[str, Any]] = {}
+        self._active_pause_events: Dict[str, Dict[str, Any]] = {}
+        self._event_seq = count(1)
 
         sensitivity = config.get("clog_sensitivity", CLOG_SENSITIVITY_DEFAULT).lower()
         if sensitivity not in CLOG_SENSITIVITY_LEVELS:
@@ -426,7 +435,7 @@ class OAMSManager:
 
         self.printer.add_object("oams_manager", self)
         self.register_commands()
-        
+
 
     def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
         """
@@ -459,7 +468,434 @@ class OAMSManager:
                 "since": fps_state.since,
             }
 
+        if self._status_cache:
+            status_list = list(self._status_cache.values())
+            attributes["statuses"] = status_list
+            attributes["feeder_status"] = status_list
+        if self._active_pause_events:
+            attributes["pause_events"] = [
+                {
+                    key: value
+                    for key, value in event.items()
+                    if key not in ("fps_name", "status_id")
+                }
+                for event in self._active_pause_events.values()
+            ]
+
         return attributes
+
+
+    def _next_event_id(self) -> str:
+        return f"{int(self.reactor.monotonic() * 1000)}-{next(self._event_seq)}"
+
+
+    def _ensure_webhooks(self) -> bool:
+        """Ensure the webhooks interface is available before emitting events."""
+
+        if self.webhooks is not None:
+            return True
+
+        try:
+            self.webhooks = self.printer.lookup_object("webhooks")
+        except Exception:
+            self.webhooks = None
+            return False
+
+        self._register_webhook_endpoints()
+        # Publish any cached state so late subscribers receive the latest data.
+        self._republish_runtime_state()
+        return True
+
+    def _register_webhook_endpoints(self) -> None:
+        """Expose remote methods that the UI can call via Moonraker."""
+
+        if not self.webhooks or self._webhook_endpoints_registered:
+            return
+
+        registered = False
+        for name, handler in (
+            ("oams.pause_ack", self._handle_remote_pause_ack),
+            ("oams.stuck_spool_resume", self._handle_remote_stuck_spool_resume),
+            ("open_ams.pause_ack", self._handle_remote_pause_ack),
+            (
+                "open_ams.stuck_spool_resume",
+                self._handle_remote_stuck_spool_resume,
+            ),
+        ):
+            try:
+                self.webhooks.register_endpoint(name, handler)
+                registered = True
+            except Exception:
+                logging.debug("OAMS: webhook endpoint %s already registered", name)
+
+        if registered:
+            self._webhook_endpoints_registered = True
+
+    @staticmethod
+    def _coerce_bool(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "y"}:
+                return True
+            if normalized in {"0", "false", "no", "off", "n"}:
+                return False
+        return default
+
+    @staticmethod
+    def _coerce_direction(value: Any, default: Optional[int] = None) -> Optional[int]:
+        if value is None:
+            return default
+        try:
+            direction = int(value)
+        except (TypeError, ValueError):
+            return default
+        if direction in (0, 1):
+            return direction
+        return default
+
+    def _process_pause_ack(
+        self,
+        event_id: str,
+        *,
+        acknowledged: bool,
+        resume_follow: bool,
+        follower_direction: Optional[int],
+        clear_only: bool,
+    ) -> Dict[str, Any]:
+        event = self._active_pause_events.get(event_id)
+        if not event:
+            return {
+                "event_id": event_id,
+                "cleared": False,
+                "status": "not_found",
+            }
+
+        fps_name = event.get("fps_name")
+        fps_state = (
+            self.current_state.fps_state.get(fps_name)
+            if fps_name
+            else None
+        )
+
+        details = event.get("details") or {}
+        if follower_direction is None:
+            follower_direction = self._coerce_direction(
+                details.get("follower_direction"),
+                default=1,
+            )
+
+        cleared = False
+
+        if acknowledged:
+            cleared = True
+        elif clear_only:
+            cleared = True
+
+        if resume_follow and fps_state is not None:
+            if follower_direction is None:
+                follower_direction = 1
+            fps_state.stuck_spool_restore_direction = follower_direction
+            fps_state.stuck_spool_restore_follower = True
+            logging.info(
+                "OAMS: Resume follower requested for %s (event %s, direction %s).",
+                fps_name,
+                event_id,
+                follower_direction,
+            )
+
+            # Attempt an immediate follower restore if the printer is already
+            # running again to minimise the window without filament drive.
+            try:
+                idle_timeout = self.printer.lookup_object("idle_timeout")
+                is_printing = (
+                    idle_timeout.get_status(self.reactor.monotonic())["state"]
+                    == "Printing"
+                )
+            except Exception:
+                is_printing = False
+
+            if is_printing:
+                oams = (
+                    self.oams.get(fps_state.current_oams)
+                    if fps_state.current_oams
+                    else None
+                )
+                self._restore_follower_if_needed(
+                    fps_name,
+                    fps_state,
+                    oams,
+                    "remote acknowledgement",
+                )
+
+        if cleared:
+            self._clear_pause_event(event_id)
+            if acknowledged and fps_state is not None:
+                fps_state.stuck_spool_active = False
+                fps_state.stuck_spool_start_time = None
+
+        return {
+            "event_id": event_id,
+            "acknowledged": acknowledged,
+            "resume_follow": resume_follow,
+            "cleared": cleared,
+            "follower_direction": follower_direction,
+            "fps": fps_name,
+            "status": "ok",
+        }
+
+    def _handle_remote_pause_ack(self, web_request):
+        params = getattr(web_request, "params", {}) or {}
+        event_id = str(params.get("event_id", "")).strip()
+        if not event_id:
+            web_request.set_error(web_request.error("Missing event_id"))
+            return
+
+        acknowledged = self._coerce_bool(params.get("acknowledged"), True)
+        resume_follow = self._coerce_bool(params.get("resume_follow"), False)
+        clear_only = self._coerce_bool(params.get("clear"), False)
+        follower_direction = self._coerce_direction(
+            params.get("follower_direction"), None
+        )
+
+        response = self._process_pause_ack(
+            event_id,
+            acknowledged=acknowledged,
+            resume_follow=resume_follow,
+            follower_direction=follower_direction,
+            clear_only=clear_only,
+        )
+        web_request.send(response)
+
+    def _handle_remote_stuck_spool_resume(self, web_request):
+        params = getattr(web_request, "params", {}) or {}
+        event_id = str(params.get("event_id", "")).strip()
+        if not event_id:
+            web_request.set_error(web_request.error("Missing event_id"))
+            return
+
+        follower_direction = self._coerce_direction(
+            params.get("follower_direction"), None
+        )
+
+        response = self._process_pause_ack(
+            event_id,
+            acknowledged=True,
+            resume_follow=True,
+            follower_direction=follower_direction,
+            clear_only=False,
+        )
+        web_request.send(response)
+
+    def _republish_runtime_state(self) -> None:
+        """Replay cached status and pause events to downstream listeners."""
+
+        if not self.webhooks:
+            return
+
+        for cache_entry in self._status_cache.values():
+            payload = {
+                key: value
+                for key, value in cache_entry.items()
+                if key != "updated_at"
+            }
+            self._emit_remote_event("oams.status_update", **payload)
+
+        for event in self._active_pause_events.values():
+            payload = {
+                key: value
+                for key, value in event.items()
+                if key
+                in {
+                    "event_id",
+                    "message",
+                    "reason",
+                    "details",
+                    "requires_ack",
+                    "timestamp",
+                    "fps",
+                    "lane",
+                }
+            }
+            self._emit_remote_event("oams.pause_event", **payload)
+
+    def _send_remote_method(self, method: str, **params) -> None:
+        if not self._ensure_webhooks():
+            return
+        if not self._emit_remote_event(method, **params):
+            try:
+                self.webhooks.call_remote_method(method, **params)
+            except Exception:
+                logging.debug(
+                    "OAMS: Failed to call remote method %s", method, exc_info=True
+                )
+
+    def _emit_remote_event(self, method: str, **params) -> bool:
+        """Attempt to broadcast a notify_remote_method event via Moonraker."""
+
+        if not self.webhooks:
+            return False
+
+        try:
+            self.webhooks.call_remote_method(
+                "server.inject_remote_method",
+                method=method,
+                params=params,
+            )
+            return True
+        except Exception:
+            logging.debug(
+                "OAMS: Failed to inject remote method %s", method, exc_info=True
+            )
+            return False
+
+
+    def _resolve_status_metadata(
+        self, fps_name: str, fps_state: "FPSState"
+    ) -> Tuple[str, str, Optional[str]]:
+        lane_name: Optional[str] = None
+        fps_label = fps_name
+        afc = self._get_afc()
+        if afc is not None:
+            lane_name, canonical_group = self._resolve_lane_for_state(
+                fps_state, fps_state.current_group, afc
+            )
+            if canonical_group:
+                fps_label = canonical_group
+        elif fps_state.current_group:
+            fps_label = fps_state.current_group
+        status_id = lane_name or fps_label or fps_name
+        return status_id, fps_label, lane_name
+
+
+    def _update_status(
+        self,
+        fps_name: str,
+        *,
+        status: Optional[str] = None,
+        message: Optional[str] = None,
+        reason: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        is_error: Optional[bool] = None,
+        event_id: Optional[str] = None,
+    ) -> None:
+        fps_state = self.current_state.fps_state.get(fps_name)
+        if fps_state is None:
+            return
+
+        status_id, fps_label, lane_name = self._resolve_status_metadata(
+            fps_name, fps_state
+        )
+
+        normalized_status = status or (
+            fps_state.state_name.lower() if fps_state.state_name else None
+        )
+
+        payload: Dict[str, Any] = {
+            "id": status_id,
+            "fps": fps_label,
+            "lane": lane_name,
+            "status": normalized_status,
+        }
+
+        if message is not None:
+            payload["message"] = message
+        if reason is not None:
+            payload["reason"] = reason
+        if details is not None:
+            payload["details"] = dict(details)
+        if is_error is not None:
+            payload["is_error"] = is_error
+        if event_id is not None:
+            payload["event_id"] = event_id
+
+        cache_entry = {
+            **payload,
+            "updated_at": time.time(),
+        }
+        self._status_cache[status_id] = cache_entry
+
+        self._send_remote_method("oams.status_update", **payload)
+
+
+    def _publish_pause_event(
+        self,
+        message: str,
+        *,
+        fps_name: Optional[str] = None,
+        fps_state: Optional["FPSState"] = None,
+        reason: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        requires_ack: bool = True,
+    ) -> str:
+        if fps_state is None and fps_name:
+            fps_state = self.current_state.fps_state.get(fps_name)
+
+        event_id = self._next_event_id()
+        timestamp = time.time()
+        status_id: Optional[str] = None
+        fps_label: Optional[str] = None
+        lane_name: Optional[str] = None
+
+        if fps_name and fps_state is not None:
+            status_id, fps_label, lane_name = self._resolve_status_metadata(
+                fps_name, fps_state
+            )
+            self._update_status(
+                fps_name,
+                status="paused",
+                message=message,
+                reason=reason,
+                details=details,
+                is_error=True,
+                event_id=event_id,
+            )
+
+        payload: Dict[str, Any] = {
+            "event_id": event_id,
+            "message": message,
+            "reason": reason,
+            "details": dict(details) if details else None,
+            "requires_ack": requires_ack,
+            "timestamp": timestamp,
+        }
+
+        if fps_label:
+            payload["fps"] = fps_label
+        if lane_name:
+            payload["lane"] = lane_name
+
+        event_record = {
+            "event_id": event_id,
+            "message": message,
+            "reason": reason,
+            "details": dict(details) if details else None,
+            "requires_ack": requires_ack,
+            "timestamp": timestamp,
+            "fps": fps_label,
+            "lane": lane_name,
+            "fps_name": fps_name,
+            "status_id": status_id,
+        }
+        self._active_pause_events[event_id] = event_record
+
+        self._send_remote_method("oams.pause_event", **payload)
+        return event_id
+
+
+    def _clear_pause_event(self, event_id: str) -> None:
+        event = self._active_pause_events.pop(event_id, None)
+        if not event:
+            return
+        fps_name = event.get("fps_name")
+        if fps_name:
+            self._update_status(fps_name, is_error=False, event_id=None)
+
 
     
     def determine_state(self) -> None:
@@ -492,10 +928,31 @@ class OAMSManager:
                     "state detection",
                 )
 
+                message = None
+                if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
+                    message = (
+                        f"Loaded spool {fps_state.current_spool_idx} on {fps_state.current_oams}"
+                    )
+                self._update_status(
+                    fps_name,
+                    status="loaded",
+                    message=message,
+                    is_error=False,
+                    event_id=None,
+                )
+
             else:
                 fps_state.state_name = FPSLoadState.UNLOADED
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
+
+                self._update_status(
+                    fps_name,
+                    status="unloaded",
+                    message="Follower idle",
+                    is_error=False,
+                    event_id=None,
+                )
 
         
     def handle_ready(self) -> None:
@@ -597,19 +1054,25 @@ class OAMSManager:
             desc=self.cmd_CLEAR_ERRORS_help,
         )
     
-    cmd_CLEAR_ERRORS_help = "Clear the error state of the OAMS"
-    def cmd_CLEAR_ERRORS(self, gcmd):
-        if len(self.monitor_timers) > 0:
+    def clear_all_errors(self) -> None:
+        if self.monitor_timers:
             self.stop_monitors()
-        for (fps_name, fps_state) in self.current_state.fps_state.items():
+
+        for fps_state in self.current_state.fps_state.values():
             fps_state.encoder_samples.clear()
             fps_state.reset_stuck_spool_state()
+            fps_state.reset_clog_tracker()
 
-        for _, oam in self.oams.items():
+        for oam in self.oams.values():
             oam.clear_errors()
+
+        self._active_pause_events.clear()
         self.determine_state()
         self.start_monitors()
-        
+
+    cmd_CLEAR_ERRORS_help = "Clear the error state of the OAMS"
+    def cmd_CLEAR_ERRORS(self, gcmd):
+        self.clear_all_errors()
         return
     
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
@@ -1076,6 +1539,15 @@ class OAMSManager:
         fps_state.current_oams = oams.name
         fps_state.current_spool_idx = oams.current_spool
 
+        self._update_status(
+            fps_name,
+            status="unloading",
+            message=(
+                f"Unloading spool {fps_state.current_spool_idx} from {fps_state.current_oams}"
+            ),
+            is_error=False,
+        )
+
         success, message = oams.unload_spool()
 
         if success:
@@ -1090,9 +1562,23 @@ class OAMSManager:
 
             fps_state.reset_clog_tracker()
 
+            self._update_status(
+                fps_name,
+                status="unloaded",
+                message=message or "Spool unloaded",
+                is_error=False,
+                event_id=None,
+            )
+
             return True, message
 
         fps_state.state_name = FPSLoadState.LOADED
+        self._update_status(
+            fps_name,
+            status="loaded",
+            message=message or "Unload failed",
+            is_error=True,
+        )
         return False, message
 
     def _load_filament_for_group(self, group_name: str) -> Tuple[bool, str]:
@@ -1116,6 +1602,15 @@ class OAMSManager:
             fps_state.current_oams = oam.name
             fps_state.current_spool_idx = bay_index
 
+            self._update_status(
+                fps_name,
+                status="loading",
+                message=(
+                    f"Loading {group_name} spool {bay_index} from {oam.name}"
+                ),
+                is_error=False,
+            )
+
             success, message = oam.load_spool(bay_index)
 
             if success:
@@ -1136,6 +1631,14 @@ class OAMSManager:
                     "load filament",
                 )
 
+                self._update_status(
+                    fps_name,
+                    status="loaded",
+                    message=message or f"Loaded {group_name}",
+                    is_error=False,
+                    event_id=None,
+                )
+
                 return True, message
 
             fps_state.state_name = FPSLoadState.UNLOADED
@@ -1146,6 +1649,13 @@ class OAMSManager:
             fps_state.following = False
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
+
+            self._update_status(
+                fps_name,
+                status="unloaded",
+                message=message or "Load failed",
+                is_error=True,
+            )
 
             return False, message
 
@@ -1194,8 +1704,18 @@ class OAMSManager:
         return
 
         
-    def _pause_printer_message(self, message):
+    def _pause_printer_message(
+        self,
+        message: str,
+        fps_name: Optional[str] = None,
+        fps_state: Optional["FPSState"] = None,
+        *,
+        reason: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        requires_ack: bool = True,
+    ) -> None:
         logging.info(f"OAMS: {message}")
+        original_message = message
         gcode = self.printer.lookup_object("gcode")
         message = f"Print has been paused: {message}"
         gcode.run_script(f"M118 {message}")
@@ -1210,6 +1730,15 @@ class OAMSManager:
                 "OAMS: Skipping PAUSE command because axes are not homed (homed_axes=%s)",
                 homed_axes,
             )
+
+        self._publish_pause_event(
+            original_message,
+            fps_name=fps_name,
+            fps_state=fps_state,
+            reason=reason,
+            details=details,
+            requires_ack=requires_ack,
+        )
 
 
     def _enable_follower(
@@ -1393,7 +1922,18 @@ class OAMSManager:
         fps_state.stuck_spool_active = True
         fps_state.stuck_spool_start_time = None
 
-        self._pause_printer_message(message)
+        details = {
+            "spool_index": spool_idx,
+            "oams": getattr(oams, "name", fps_state.current_oams),
+            "follower_direction": fps_state.direction,
+        }
+        self._pause_printer_message(
+            message,
+            fps_name=fps_name,
+            fps_state=fps_state,
+            reason="stuck_spool",
+            details=details,
+        )
 
     def _monitor_unload_speed_for_fps(self, fps_name):
         def _monitor_unload_speed(self, eventtime):
@@ -1408,9 +1948,15 @@ class OAMSManager:
                     return eventtime + MONITOR_ENCODER_PERIOD
                 encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
                 logging.info("OAMS[%d] Unload Monitor: Encoder diff %d" %(oams.oams_idx, encoder_diff))
-                if encoder_diff < MIN_ENCODER_DIFF:              
+                if encoder_diff < MIN_ENCODER_DIFF:
                     oams.set_led_error(fps_state.current_spool_idx, 1)
-                    self._pause_printer_message("Printer paused because the unloading speed of the moving filament was too low")
+                    self._pause_printer_message(
+                        "Printer paused because the unloading speed of the moving filament was too low",
+                        fps_name=fps_name,
+                        fps_state=fps_state,
+                        reason="unload_speed_low",
+                        details={"encoder_delta": encoder_diff},
+                    )
                     logging.info("after unload speed too low")
                     self.stop_monitors()
                     return self.printer.get_reactor().NEVER
@@ -1669,7 +2215,17 @@ class OAMSManager:
                     f"with FPS {pressure_mid:.2f} near {CLOG_PRESSURE_TARGET:.2f}"
                 )
                 fps_state.clog_active = True
-                self._pause_printer_message(message)
+                self._pause_printer_message(
+                    message,
+                    fps_name=fps_name,
+                    fps_state=fps_state,
+                    reason="clog_detected",
+                    details={
+                        "extrusion_delta": extrusion_delta,
+                        "encoder_delta": encoder_delta,
+                        "pressure_mid": round(pressure_mid, 3),
+                    },
+                )
 
             return eventtime + MONITOR_ENCODER_PERIOD
 
@@ -1719,7 +2275,15 @@ class OAMSManager:
                     )
                     fps_state.reset_runout_positions()
                     self._pause_printer_message(
-                        f"Unable to delegate infinite runout for {source_group or fps_name}"
+                        f"Unable to delegate infinite runout for {source_group or fps_name}",
+                        fps_name=fps_name,
+                        fps_state=fps_state,
+                        reason="runout_delegate_failed",
+                        details={
+                            "source_group": source_group,
+                            "source_lane": source_lane,
+                            "target_lane": target_lane,
+                        },
                     )
                     if monitor:
                         monitor.paused()
@@ -1742,14 +2306,29 @@ class OAMSManager:
                             unload_message,
                         )
                         failure_message = unload_message or f"Failed to unload current spool on {fps_name}"
-                        self._pause_printer_message(failure_message)
+                        self._pause_printer_message(
+                            failure_message,
+                            fps_name=fps_name,
+                            fps_state=fps_state,
+                            reason="runout_unload_failed",
+                            details={
+                                "source_group": source_group,
+                                "target_group": target_group,
+                            },
+                        )
                         if monitor:
                             monitor.paused()
                         return
 
                 if group_to_load is None:
                     logging.error("OAMS: No filament group available to reload on %s", fps_name)
-                    self._pause_printer_message(f"No filament group available to reload on {fps_name}")
+                    self._pause_printer_message(
+                        f"No filament group available to reload on {fps_name}",
+                        fps_name=fps_name,
+                        fps_state=fps_state,
+                        reason="runout_no_group",
+                        details={"source_group": source_group},
+                    )
                     if monitor:
                         monitor.paused()
                     return
@@ -1797,7 +2376,17 @@ class OAMSManager:
                     load_message,
                 )
                 failure_message = load_message or f"No spool available for group {group_to_load}"
-                self._pause_printer_message(failure_message)
+                self._pause_printer_message(
+                    failure_message,
+                    fps_name=fps_name,
+                    fps_state=fps_state,
+                    reason="runout_load_failed",
+                    details={
+                        "group_to_load": group_to_load,
+                        "target_group": target_group,
+                        "target_lane": target_lane,
+                    },
+                )
                 if monitor:
                     monitor.paused()
                 return
