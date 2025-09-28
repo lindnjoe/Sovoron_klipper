@@ -605,11 +605,16 @@ class OAMSManager:
             fps_state.encoder_samples.clear()
             fps_state.reset_stuck_spool_state()
 
-        for _, oam in self.oams.items():
-            oam.clear_errors()
+        for oams_name, oam in self.oams.items():
+            try:
+                oam.clear_errors()
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to clear errors on %s", oams_name
+                )
         self.determine_state()
         self.start_monitors()
-        
+
         return
     
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
@@ -1600,6 +1605,20 @@ class OAMSManager:
                 is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
             except Exception:
                 is_printing = False
+
+            monitor = self.runout_monitors.get(fps_name)
+            if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
+                if fps_state.clog_active:
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 0)
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to clear clog LED on %s spool %s while runout monitor inactive",
+                            fps_name,
+                            fps_state.current_spool_idx,
+                        )
+                fps_state.reset_clog_tracker()
+                return eventtime + MONITOR_ENCODER_PERIOD
 
             if not is_printing:
                 if fps_state.clog_active:

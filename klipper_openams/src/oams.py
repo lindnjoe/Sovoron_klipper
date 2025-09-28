@@ -217,9 +217,29 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             
     def clear_errors(self):
         for i in range(4):
-            self.set_led_error(i, 0)
-        self.current_spool = self.determine_current_spool()
-        self.determine_current_spool()
+            try:
+                self.set_led_error(i, 0)
+            except Exception:
+                logging.exception(
+                    "OAMS[%s]: Failed to clear error LED %d", self.name, i
+                )
+
+        try:
+            self.current_spool = self.determine_current_spool()
+        except Exception:
+            logging.exception(
+                "OAMS[%s]: Failed to refresh current spool while clearing errors",
+                self.name,
+            )
+            return
+
+        try:
+            self.determine_current_spool()
+        except Exception:
+            logging.exception(
+                "OAMS[%s]: Failed to synchronize current spool after clearing errors",
+                self.name,
+            )
             
     def set_led_error(self, idx, value):
         logging.info("Setting LED %d to %d", idx, value)
