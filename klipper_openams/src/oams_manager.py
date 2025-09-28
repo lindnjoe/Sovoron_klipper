@@ -1467,9 +1467,37 @@ class OAMSManager:
             fps_state = self.current_state.fps_state[fps_name]
             fps = self.fpss.get(fps_name)
             if fps is None:
+                if fps_state.stuck_spool_active and fps_state.current_oams is not None:
+                    oams_obj = self.oams.get(fps_state.current_oams)
+                    if (
+                        oams_obj is not None
+                        and fps_state.current_spool_idx is not None
+                    ):
+                        try:
+                            oams_obj.set_led_error(fps_state.current_spool_idx, 0)
+                        except Exception:
+                            logging.exception(
+                                "OAMS: Failed to clear stuck spool LED on %s while fps missing",
+                                fps_name,
+                            )
                 fps_state.reset_stuck_spool_state()
                 return eventtime + MONITOR_ENCODER_PERIOD
+
             if fps_state.state_name != FPSLoadState.LOADED:
+                if (
+                    fps_state.stuck_spool_active
+                    and fps_state.current_oams is not None
+                    and fps_state.current_spool_idx is not None
+                ):
+                    oams_obj = self.oams.get(fps_state.current_oams)
+                    if oams_obj is not None:
+                        try:
+                            oams_obj.set_led_error(fps_state.current_spool_idx, 0)
+                        except Exception:
+                            logging.exception(
+                                "OAMS: Failed to clear stuck spool LED on %s while not loaded",
+                                fps_name,
+                            )
                 fps_state.reset_stuck_spool_state()
                 return eventtime + MONITOR_ENCODER_PERIOD
 
@@ -1477,6 +1505,18 @@ class OAMSManager:
             if fps_state.current_oams is not None:
                 oams = self.oams.get(fps_state.current_oams)
             if oams is None or fps_state.current_spool_idx is None:
+                if (
+                    fps_state.stuck_spool_active
+                    and oams is not None
+                    and fps_state.current_spool_idx is not None
+                ):
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 0)
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to clear stuck spool LED on %s without active spool",
+                            fps_name,
+                        )
                 fps_state.reset_stuck_spool_state()
                 return eventtime + MONITOR_ENCODER_PERIOD
 
@@ -1485,6 +1525,23 @@ class OAMSManager:
                 is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
             except Exception:
                 is_printing = False
+
+            monitor = self.runout_monitors.get(fps_name)
+            if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
+                if fps_state.stuck_spool_active:
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 0)
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to clear stuck spool LED while runout monitor inactive on %s",
+                            fps_name,
+                        )
+
+                fps_state.reset_stuck_spool_state(
+                    preserve_restore=fps_state.stuck_spool_restore_follower
+                )
+
+                return eventtime + MONITOR_ENCODER_PERIOD
 
             if not is_printing:
                 if fps_state.stuck_spool_active:
