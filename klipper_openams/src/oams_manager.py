@@ -6,7 +6,6 @@
 
 import logging
 import time
-import uuid
 from functools import partial
 from collections import deque
 from typing import Optional, Tuple, Dict, List, Any, Callable
@@ -114,21 +113,11 @@ class OAMSRunoutMonitor:
         self.reactor = self.printer.get_reactor()
 
         def _monitor_runout(eventtime):
-
-            try:
-                idle_timeout = self.printer.lookup_object("idle_timeout")
-                is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
-            except Exception:
-                logging.exception(
-                    "OAMS: Failed to query idle_timeout during runout monitoring for %s",
-                    self.fps_name,
-                )
-                return eventtime + MONITOR_ENCODER_PERIOD
-
+            idle_timeout = self.printer.lookup_object("idle_timeout")
+            is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
             
             if self.state == OAMSRunoutState.STOPPED or self.state == OAMSRunoutState.PAUSED or self.state == OAMSRunoutState.RELOADING:
                 pass
-
 
             elif self.state == OAMSRunoutState.MONITORING:
                 #logging.info("OAMS: Monitoring runout, is_printing: %s, fps_state: %s, fps_state.current_group: %s, fps_state.current_spool_idx: %s, oams: %s" % (is_printing, fps_state.state_name, fps_state.current_group, fps_state.current_spool_idx, fps_state.current_oams))
@@ -138,136 +127,41 @@ class OAMSRunoutMonitor:
                         return eventtime + MONITOR_ENCODER_PERIOD
                     fps_state.afc_delegation_active = False
                     fps_state.afc_delegation_until = 0.0
-                if (
-                    is_printing
-                    and fps_state.state_name == "LOADED"
-                    and fps_state.current_group is not None
-                    and fps_state.current_spool_idx is not None
-                ):
-                    oams = self.oams.get(fps_state.current_oams)
-                    if oams is None:
-                        logging.warning(
-                            "OAMS: Runout monitor missing OAMS %s for %s; skipping sample.",
-                            fps_state.current_oams,
-                            self.fps_name,
-                        )
-                        return eventtime + MONITOR_ENCODER_PERIOD
-                    try:
-                        hes_value = oams.hub_hes_value[fps_state.current_spool_idx]
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to read hub sensor state for %s spool %s during runout monitor.",
-                            self.fps_name,
-                            fps_state.current_spool_idx,
-                        )
-                        return eventtime + MONITOR_ENCODER_PERIOD
-                    if bool(hes_value):
-                        return eventtime + MONITOR_ENCODER_PERIOD
-
-                    try:
-                        runout_position = fps.extruder.last_position
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to read extruder position for %s during runout detection.",
-                            self.fps_name,
-                        )
-                        return eventtime + MONITOR_ENCODER_PERIOD
+                if is_printing and \
+                fps_state.state_name == "LOADED" and \
+                fps_state.current_group is not None and \
+                fps_state.current_spool_idx is not None and \
+                not bool(self.oams[fps_state.current_oams].hub_hes_value[fps_state.current_spool_idx]):
 
                     self.state = OAMSRunoutState.DETECTED
-                    logging.info(
-                        "OAMS: Runout detected on FPS %s, pausing for %s mm before coasting the follower.",
-                        self.fps_name,
-                        PAUSE_DISTANCE,
-                    )
-                    self.runout_position = runout_position
+                    logging.info(f"OAMS: Runout detected on FPS {self.fps_name}, pausing for {PAUSE_DISTANCE} mm before coasting the follower.")
+                    self.runout_position = fps.extruder.last_position
             
             elif self.state == OAMSRunoutState.DETECTED:
-                if self.runout_position is None:
-                    logging.warning(
-                        "OAMS: Runout position missing while detected for %s; resetting monitor.",
-                        self.fps_name,
-                    )
-                    self.state = OAMSRunoutState.MONITORING
-                    return eventtime + MONITOR_ENCODER_PERIOD
-                try:
-                    current_position = fps.extruder.last_position
-                except Exception:
-                    logging.exception(
-                        "OAMS: Failed to read extruder position for %s during runout pause.",
-                        self.fps_name,
-                    )
-                    self.state = OAMSRunoutState.MONITORING
-                    return eventtime + MONITOR_ENCODER_PERIOD
-
-                traveled_distance = current_position - self.runout_position
+                traveled_distance = fps.extruder.last_position - self.runout_position
                 if traveled_distance >= PAUSE_DISTANCE:
                     logging.info("OAMS: Pause complete, coasting the follower.")
-                    oams = self.oams.get(fps_state.current_oams)
-                    if oams is None:
-                        logging.warning(
-                            "OAMS: Unable to coast follower for %s; OAMS %s missing.",
-                            self.fps_name,
-                            fps_state.current_oams,
-                        )
-                        self.state = OAMSRunoutState.MONITORING
-                        return eventtime + MONITOR_ENCODER_PERIOD
-                    try:
-                        oams.set_oams_follower(0, 1)
-                        self.fps_state.following = False
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to stop follower for %s during runout coast.",
-                            self.fps_name,
-                        )
-                        self.state = OAMSRunoutState.MONITORING
-                        return eventtime + MONITOR_ENCODER_PERIOD
-                    try:
-                        self.bldc_clear_position = fps.extruder.last_position
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to store BLDC clear position for %s.",
-                            self.fps_name,
-                        )
-                        self.state = OAMSRunoutState.MONITORING
-                        return eventtime + MONITOR_ENCODER_PERIOD
+                    self.oams[fps_state.current_oams].set_oams_follower(0, 1)
+                    self.bldc_clear_position = fps.extruder.last_position
                     self.runout_after_position = 0.0
                     self.state = OAMSRunoutState.COASTING
 
             elif self.state == OAMSRunoutState.COASTING:
-                if self.bldc_clear_position is None:
-                    logging.warning(
-                        "OAMS: BLDC clear position missing while coasting for %s; resetting monitor.",
-                        self.fps_name,
-                    )
-                    self.state = OAMSRunoutState.MONITORING
-                    return eventtime + MONITOR_ENCODER_PERIOD
-
-                try:
-                    current_position = fps.extruder.last_position
-                except Exception:
-                    logging.exception(
-                        "OAMS: Failed to read extruder position for %s during runout coasting.",
-                        self.fps_name,
-                    )
-                    self.state = OAMSRunoutState.MONITORING
-                    return eventtime + MONITOR_ENCODER_PERIOD
-
                 traveled_distance_after_bldc_clear = max(
-                    current_position - self.bldc_clear_position, 0.0
+                    fps.extruder.last_position - self.bldc_clear_position, 0.0
                 )
                 self.runout_after_position = traveled_distance_after_bldc_clear
-                oams = self.oams.get(fps_state.current_oams)
-                path_length = getattr(oams, "filament_path_length", 0.0) if oams else 0.0
+                path_length = getattr(
+                    self.oams[fps_state.current_oams], "filament_path_length", 0.0
+                )
                 effective_path_length = (
                     path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0
                 )
                 consumed_with_margin = (
                     self.runout_after_position
-
                     + PAUSE_DISTANCE
                     + self.reload_before_toolhead_distance
                 )
-
 
                 if consumed_with_margin >= effective_path_length:
                     logging.info(
@@ -277,49 +171,19 @@ class OAMSRunoutMonitor:
                         effective_path_length,
                     )
                     self.state = OAMSRunoutState.RELOADING
-                    try:
-                        self.reload_callback()
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Reload callback failed for %s during runout handling.",
-                            self.fps_name,
-                        )
-                        self.state = OAMSRunoutState.MONITORING
-                        return eventtime + MONITOR_ENCODER_PERIOD
+                    self.reload_callback()
             else:
-                logging.error(
-                    "OAMS: Runout monitor for %s encountered invalid state %s; resetting.",
-                    self.fps_name,
-                    self.state,
-                )
-                self.state = OAMSRunoutState.MONITORING
+                raise ValueError(f"Invalid state: {self.state}")
             return eventtime + MONITOR_ENCODER_PERIOD
         self._timer_callback = _monitor_runout
-        try:
-            self.timer = self.reactor.register_timer(self._timer_callback, self.reactor.NOW)
-        except Exception:
-            logging.exception(
-                "OAMS: Failed to register initial runout monitor timer for %s",
-                self.fps_name,
-            )
-            self.timer = None
-
+        self.timer = self.reactor.register_timer(self._timer_callback, self.reactor.NOW)
         
 
     def start(self) -> None:
         """Start monitoring for filament runout."""
-
         if self.timer is None:
-            try:
-                self.timer = self.reactor.register_timer(self._timer_callback, self.reactor.NOW)
-            except Exception:
-                logging.exception(
-                    "OAMS: Failed to register runout monitor timer for %s",
-                    self.fps_name,
-                )
-                return
+            self.timer = self.reactor.register_timer(self._timer_callback, self.reactor.NOW)
         self.state = OAMSRunoutState.MONITORING
-
 
     
     def stop(self) -> None:
@@ -341,18 +205,9 @@ class OAMSRunoutMonitor:
         self.state = OAMSRunoutState.STOPPED
         self.runout_position = None
         self.runout_after_position = None
-
         if self.timer is not None:
-            try:
-                self.reactor.unregister_timer(self.timer)
-            except Exception:
-                logging.exception(
-                    "OAMS: Failed to unregister runout monitor timer for %s",
-                    self.fps_name,
-                )
+            self.reactor.unregister_timer(self.timer)
             self.timer = None
-
-
 
 class OAMSState:
     """
@@ -438,12 +293,6 @@ class FPSState:
         self.clog_last_extruder: Optional[float] = None
 
 
-        # Remote pause tracking
-        self.pending_pause_event_id: Optional[str] = None
-        self.pause_acknowledged: bool = False
-        self.pause_ack_reason: Optional[str] = None
-
-
 
     def reset_runout_positions(self) -> None:
         """Clear runout position tracking."""
@@ -514,11 +363,6 @@ class OAMSManager:
         self.config = config
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
-        self.webhooks = None
-        self._remote_notify: Optional[Callable[..., Any]] = None
-        self._webhook_dispatch: Optional[Callable[..., Any]] = None
-        self._remote_pause_events: Dict[str, Dict[str, Any]] = {}
-        self._initialize_webhooks()
         
 
         # Hardware object collections
@@ -582,73 +426,7 @@ class OAMSManager:
 
         self.printer.add_object("oams_manager", self)
         self.register_commands()
-
-
-    def _initialize_webhooks(self) -> None:
-        """Prepare remote method helpers exposed through Moonraker."""
-
-        try:
-            self.webhooks = self.printer.lookup_object("webhooks")
-        except Exception:
-            self.webhooks = None
-            logging.debug(
-                "OAMS: Webhooks interface unavailable; remote pause callbacks disabled.",
-            )
-            return
-
-        notify = getattr(self.webhooks, "notify_remote_method", None)
-        if callable(notify):
-            self._remote_notify = notify
-        else:
-            call_remote = getattr(self.webhooks, "call_remote_method", None)
-
-            if callable(call_remote):
-
-                def _call_remote(method: str, **payload: Any) -> bool:
-                    try:
-                        call_remote(method, **payload)
-                        return True
-                    except self.printer.command_error:
-                        logging.debug(
-                            "OAMS: Remote method '%s' is not currently registered.",
-                            method,
-                        )
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to notify remote method '%s'.",
-                            method,
-                        )
-                    return False
-
-                self._remote_notify = _call_remote
-            else:
-                self._remote_notify = None
-
-        webhook_dispatch = getattr(self.webhooks, "notify_webhook", None)
-        if callable(webhook_dispatch):
-            self._webhook_dispatch = webhook_dispatch
-        else:
-            self._webhook_dispatch = None
-
-        register = getattr(self.webhooks, "register_remote_method", None)
-        if callable(register):
-            for method, handler in (
-                ("oams.pause_ack", self._remote_pause_ack),
-                ("oams.stuck_spool_resume", self._remote_stuck_spool_resume),
-            ):
-                try:
-                    register(method, handler)
-                except Exception:
-                    logging.exception(
-                        "OAMS: Failed to register remote method '%s'.",
-                        method,
-                    )
-        else:
-            logging.debug(
-                "OAMS: Webhooks object does not expose register_remote_method;"
-                " remote acknowledgements will be ignored.",
-            )
-
+        
 
     def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
         """
@@ -820,29 +598,18 @@ class OAMSManager:
         )
     
     cmd_CLEAR_ERRORS_help = "Clear the error state of the OAMS"
-
     def cmd_CLEAR_ERRORS(self, gcmd):
         if len(self.monitor_timers) > 0:
             self.stop_monitors()
         for (fps_name, fps_state) in self.current_state.fps_state.items():
             fps_state.encoder_samples.clear()
             fps_state.reset_stuck_spool_state()
-            fps_state.reset_clog_tracker()
 
         for _, oam in self.oams.items():
-            try:
-                oam.clear_errors()
-            except Exception:
-                logging.exception("OAMS: Failed to clear errors on %s", getattr(oam, "name", oam))
-        try:
-            self.determine_state()
-        except Exception:
-            logging.exception("OAMS: Failed to recompute state during CLEAR_ERRORS")
-        try:
-            self.start_monitors()
-        except Exception:
-            logging.exception("OAMS: Failed to restart monitors during CLEAR_ERRORS")
-
+            oam.clear_errors()
+        self.determine_state()
+        self.start_monitors()
+        
         return
     
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
@@ -855,17 +622,16 @@ class OAMSManager:
         if direction is None:
             gcmd.respond_info("Missing DIRECTION parameter")
             return
-        fps_param = gcmd.get('FPS')
-        fps_name = self._normalize_fps_name(fps_param)
+        fps_name = gcmd.get('FPS')
+        fps_name = "fps " + fps_name
         if fps_name is None:
-            gcmd.respond_info("Missing or invalid FPS parameter")
+            gcmd.respond_info("Missing FPS parameter")
             return
         if fps_name not in self.fpss:
             gcmd.respond_info(f"FPS {fps_name} does not exist")
             return
         fps_state = self.current_state.fps_state[fps_name]
         if fps_state.state_name == "UNLOADED":
-
             gcmd.respond_info(f"FPS {fps_name} is already unloaded")
             return
         if fps_state.state_name == "LOADING":
@@ -874,34 +640,12 @@ class OAMSManager:
         if fps_state.state_name == "UNLOADING":
             gcmd.respond_info(f"FPS {fps_name} is currently unloading a spool")
             return
-
-        oams = self.oams.get(fps_state.current_oams)
-        if oams is None:
-            gcmd.respond_info(f"OAMS {fps_state.current_oams} is unavailable")
-            return
-
-        try:
-            oams.set_oams_follower(enable, direction)
-        except Exception:
-            logging.exception(
-                "OAMS: Failed to set follower for %s via manual command.",
-                fps_name,
-            )
-            gcmd.respond_info("Failed to update follower; check logs for details")
-            return
-
+        self.oams[fps_state.current_oams].set_oams_follower(enable, direction)
         fps_state.following = enable
         fps_state.direction = direction
-        try:
-            fps_state.encoder = oams.encoder_clicks
-            fps_state.current_spool_idx = oams.current_spool
-        except Exception:
-            logging.exception(
-                "OAMS: Failed to capture follower telemetry for %s after manual command.",
-                fps_name,
-            )
+        fps_state.encoder = self.oams[fps_state.current_oams].encoder_clicks
+        fps_state.current_spool_idx = self.oams[fps_state.current_oams].current_spool
         return
-
     
 
     def _rebuild_group_fps_index(self) -> None:
@@ -919,7 +663,6 @@ class OAMSManager:
             self._rebuild_group_fps_index()
         return self.group_to_fps.get(group_name)
 
-
     def _normalize_group_name(self, group: Optional[str]) -> Optional[str]:
         """Return a trimmed filament group name or None if invalid."""
         if not group or not isinstance(group, str):
@@ -931,23 +674,7 @@ class OAMSManager:
             group = group.split()[-1]
         return group
 
-    def _normalize_fps_name(self, fps: Optional[str]) -> Optional[str]:
-        """Normalize an FPS identifier provided via gcode parameters."""
-        if fps is None:
-            return None
-        name = str(fps).strip()
-        if not name:
-            return None
-        lowered = name.lower()
-        if lowered.startswith("fps"):
-            name = name[3:]
-        name = name.strip()
-        if not name:
-            return None
-        return f"fps {name}"
-
     def _rebuild_lane_location_index(self) -> None:
-
         """Map each (OAMS name, bay index) tuple to its canonical AFC lane."""
         mapping: Dict[Tuple[str, int], str] = {}
         for group_name, lane_name in self._canonical_lane_by_group.items():
@@ -1424,18 +1151,16 @@ class OAMSManager:
 
         return False, f"No spool available for group {group_name}"
 
-
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
     def cmd_UNLOAD_FILAMENT(self, gcmd):
-        fps_param = gcmd.get('FPS')
-        fps_name = self._normalize_fps_name(fps_param)
+        fps_name = gcmd.get('FPS')
         if fps_name is None:
-            gcmd.respond_info("Missing or invalid FPS parameter")
+            gcmd.respond_info("Missing FPS parameter")
             return
+        fps_name = "fps " + fps_name
         if fps_name not in self.fpss:
             gcmd.respond_info(f"FPS {fps_name} does not exist")
             return
-
         fps_state = self.current_state.fps_state[fps_name]
         if fps_state.state_name == "UNLOADED":
             gcmd.respond_info(f"FPS {fps_name} is already unloaded")
@@ -1469,211 +1194,22 @@ class OAMSManager:
         return
 
         
-    def _record_pause_event(
-        self,
-        message: str,
-        reason: str,
-        fps_name: Optional[str],
-        fps_state: Optional["FPSState"],
-        extra: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """Capture pause context for Moonraker integrations."""
-
-        event_id = uuid.uuid4().hex
-        eventtime = self.reactor.monotonic()
-        payload: Dict[str, Any] = {
-            "event_id": event_id,
-            "timestamp": eventtime,
-            "message": message,
-            "reason": reason,
-            "requires_ack": reason in {"stuck_spool"},
-        }
-
-        if fps_name:
-            payload["fps"] = fps_name
-
-        if fps_state is not None:
-            payload.update(
-                {
-                    "group": fps_state.current_group,
-                    "oams": fps_state.current_oams,
-                    "spool_index": fps_state.current_spool_idx,
-                    "follower_direction": (
-                        fps_state.direction
-                        if fps_state.direction in (0, 1)
-                        else None
-                    ),
-                    "follower_enabled": fps_state.following,
-                    "state_name": fps_state.state_name,
-                }
-            )
-            if (
-                fps_state.current_oams is not None
-                and fps_state.current_spool_idx is not None
-            ):
-                lane_name = self._lane_by_location.get(
-                    (fps_state.current_oams, fps_state.current_spool_idx)
-                )
-                if lane_name:
-                    payload["lane"] = lane_name
-
-            fps_state.pending_pause_event_id = event_id
-            fps_state.pause_acknowledged = False
-            fps_state.pause_ack_reason = reason
-
-        if extra:
-            payload["details"] = extra
-
-        self._remote_pause_events[event_id] = payload
-        return payload
-
-
-    def _safe_run_script(self, gcode, script: str, context: str) -> bool:
-        """Execute a gcode script while swallowing recoverable errors."""
-
-        try:
-            gcode.run_script(script)
-        except BaseException as exc:
-            if isinstance(exc, (SystemExit, KeyboardInterrupt)):
-                raise
-            logging.exception(
-                "OAMS: Failed to execute %s script '%s'", context, script
-            )
-            return False
-        return True
-
-
-    def _pause_printer_message(
-        self,
-        message: str,
-        *,
-        reason: str = "generic",
-        fps_name: Optional[str] = None,
-        fps_state: Optional["FPSState"] = None,
-        extra: Optional[Dict[str, Any]] = None,
-    ) -> None:
+    def _pause_printer_message(self, message):
         logging.info(f"OAMS: {message}")
-        pause_payload = self._record_pause_event(
-            message,
-            reason,
-            fps_name,
-            fps_state,
-            extra,
-        )
+        gcode = self.printer.lookup_object("gcode")
+        message = f"Print has been paused: {message}"
+        gcode.run_script(f"M118 {message}")
+        gcode.run_script(f"M114 {message}")
 
-
-        if self._remote_notify:
-            remote_payload = {k: v for k, v in pause_payload.items() if v is not None}
-            try:
-                self._remote_notify("oams.pause_event", **remote_payload)
-            except Exception:
-                logging.exception("OAMS: Failed to dispatch pause event to Moonraker.")
-
-        try:
-            gcode = self.printer.lookup_object("gcode")
-        except Exception:
-            logging.exception("OAMS: Unable to lookup gcode object while pausing")
-            return
-
-        formatted_message = f"Print has been paused: {message}"
-        for macro in (f"M118 {formatted_message}", f"M114 {formatted_message}"):
-            self._safe_run_script(gcode, macro, "pause notification")
-
-        try:
-            toolhead = self.printer.lookup_object("toolhead")
-            homed_axes = toolhead.get_status(self.reactor.monotonic()).get("homed_axes", "")
-        except Exception:
-            logging.exception("OAMS: Unable to query toolhead homed axes during pause")
-            homed_axes = ""
-
+        toolhead = self.printer.lookup_object("toolhead")
+        homed_axes = toolhead.get_status(self.reactor.monotonic()).get("homed_axes", "")
         if all(axis in homed_axes for axis in ("x", "y", "z")):
-            self._safe_run_script(gcode, "PAUSE", "pause command")
+            gcode.run_script("PAUSE")
         else:
             logging.warning(
                 "OAMS: Skipping PAUSE command because axes are not homed (homed_axes=%s)",
                 homed_axes,
             )
-
-
-
-    def _normalize_remote_params(self, *args, **kwargs) -> Dict[str, Any]:
-        """Extract a payload dictionary from webhooks callbacks."""
-
-        if args:
-            candidate = args[0]
-            get_dict = getattr(candidate, "get_dict", None)
-            if callable(get_dict):
-                try:
-                    return get_dict("params", {})
-                except Exception:
-                    try:
-                        return get_dict("payload", {})
-                    except Exception:
-                        return {}
-            if isinstance(candidate, dict):
-                return candidate
-        return kwargs
-
-    def _process_remote_ack(self, params: Dict[str, Any], resume_follow: bool) -> Dict[str, Any]:
-        """Update pause tracking in response to a remote acknowledgement."""
-
-        event_id = params.get("event_id")
-        if not event_id:
-            logging.warning("OAMS: Remote acknowledgement missing event_id: %s", params)
-            return {"status": "error", "reason": "missing_event"}
-
-        event = self._remote_pause_events.get(event_id)
-        if event is None:
-            logging.warning("OAMS: Remote acknowledgement for unknown event %s", event_id)
-            return {"status": "error", "reason": "unknown_event", "event_id": event_id}
-
-        acknowledged = bool(params.get("acknowledged", True))
-        event["acknowledged"] = acknowledged
-        event["ack_payload"] = params
-        event["ack_time"] = self.reactor.monotonic()
-
-        direction = params.get("follower_direction")
-        fps_name = event.get("fps")
-        if fps_name:
-            fps_state = self.current_state.fps_state.get(fps_name)
-            if fps_state and fps_state.pending_pause_event_id == event_id:
-                fps_state.pause_acknowledged = acknowledged
-                fps_state.pause_ack_reason = event.get("reason")
-                if direction in (0, 1):
-                    fps_state.stuck_spool_restore_direction = direction
-                if resume_follow and acknowledged:
-                    fps_state.stuck_spool_restore_follower = True
-
-        if params.get("clear"):
-            self._remote_pause_events.pop(event_id, None)
-
-        return {"status": "ok", "event_id": event_id}
-
-    def _remote_pause_ack(self, *args, **kwargs) -> Dict[str, Any]:
-        """Handle generic pause acknowledgements from Moonraker."""
-
-        params = self._normalize_remote_params(*args, **kwargs)
-        resume_follow = bool(params.get("resume_follow", False))
-        return self._process_remote_ack(params, resume_follow=resume_follow)
-
-    def _remote_stuck_spool_resume(self, *args, **kwargs) -> Dict[str, Any]:
-        """Latch acknowledgements for stuck spool recovery prompts."""
-
-        params = self._normalize_remote_params(*args, **kwargs)
-        params.setdefault("resume_follow", True)
-        params.setdefault("acknowledged", True)
-        params.setdefault("reason", "stuck_spool")
-        return self._process_remote_ack(params, resume_follow=True)
-
-    def _clear_pause_event(self, fps_state: "FPSState") -> None:
-        """Discard any stored remote pause metadata for the provided FPS."""
-
-        event_id = fps_state.pending_pause_event_id
-        if event_id:
-            self._remote_pause_events.pop(event_id, None)
-        fps_state.pending_pause_event_id = None
-        fps_state.pause_acknowledged = False
-        fps_state.pause_ack_reason = None
 
 
     def _enable_follower(
@@ -1683,20 +1219,15 @@ class OAMSManager:
         oams: Optional[Any],
         direction: int,
         context: str,
-    ) -> bool:
-        """Ensure the follower is running in the requested direction.
-
-        Returns True if the follower command was issued successfully, otherwise
-        False. Callers may use the result to decide whether to retry or retain
-        restoration flags.
-        """
+    ) -> None:
+        """Ensure the follower is running in the requested direction."""
         if fps_state.current_spool_idx is None:
-            return False
+            return
 
         if oams is None and fps_state.current_oams is not None:
             oams = self.oams.get(fps_state.current_oams)
         if oams is None:
-            return False
+            return
 
         direction = direction if direction in (0, 1) else 1
 
@@ -1710,14 +1241,12 @@ class OAMSManager:
                 fps_state.current_spool_idx,
                 context,
             )
-            return True
         except Exception:
             logging.exception(
                 "OAMS: Failed to enable follower for %s after %s",
                 fps_name,
                 context,
             )
-        return False
 
 
     def _ensure_forward_follower(
@@ -1725,7 +1254,7 @@ class OAMSManager:
         fps_name: str,
         fps_state: "FPSState",
         context: str,
-    ) -> bool:
+    ) -> None:
         """Start the follower forward whenever a spool is loaded."""
         if (
             fps_state.current_oams is None
@@ -1733,17 +1262,17 @@ class OAMSManager:
             or fps_state.stuck_spool_active
             or fps_state.state_name != FPSLoadState.LOADED
         ):
-            return False
+            return
 
         if fps_state.following and fps_state.direction == 1:
-            return True
+            return
 
         oams = self.oams.get(fps_state.current_oams)
         if oams is None:
-            return False
+            return
 
         fps_state.direction = 1
-        return self._enable_follower(
+        self._enable_follower(
             fps_name,
             fps_state,
             oams,
@@ -1754,36 +1283,35 @@ class OAMSManager:
 
     def _restore_follower_if_needed(
         self,
-
         fps_name: str,
         fps_state: "FPSState",
         oams: Optional[Any],
         context: str,
-    ) -> bool:
+    ) -> None:
         """Restore the follower if a stuck spool pause disabled it."""
         if not fps_state.stuck_spool_restore_follower:
-            return False
+            return
 
         if fps_state.current_oams is None:
             fps_state.stuck_spool_restore_follower = False
-            return False
+            return
 
         if oams is None:
             oams = self.oams.get(fps_state.current_oams)
         if oams is None:
-            return False
+            return
 
         direction = fps_state.stuck_spool_restore_direction
 
 
-        success = self._enable_follower(
+        self._enable_follower(
             fps_name,
             fps_state,
             oams,
             direction,
             context,
         )
-        if success and fps_state.following:
+        if fps_state.following:
 
             fps_state.stuck_spool_restore_follower = False
             logging.info(
@@ -1792,106 +1320,36 @@ class OAMSManager:
                 fps_state.current_spool_idx,
                 context,
             )
-        return success
-
-
-    def _maintain_follower_state(
-        self,
-        fps_name: str,
-        fps_state: "FPSState",
-        *,
-        oams: Optional[Any] = None,
-        context: str,
-        is_printing: Optional[bool] = None,
-    ) -> bool:
-        """Ensure a loaded lane keeps its follower running.
-
-        Returns True when the follower is successfully (re)enabled or already
-        running. The helper respects runout and stuck spool suppression so that
-        callers can invoke it freely from periodic monitors.
-        """
-
-        if fps_state.state_name != FPSLoadState.LOADED:
-            return False
-
-        if fps_state.current_oams is None or fps_state.current_spool_idx is None:
-            return False
-
-        monitor = self.runout_monitors.get(fps_name)
-        if monitor and monitor.state in (
-            OAMSRunoutState.DETECTED,
-            OAMSRunoutState.COASTING,
-            OAMSRunoutState.RELOADING,
-        ):
-            if fps_state.stuck_spool_restore_follower:
-                return self._restore_follower_if_needed(
-                    fps_name,
-                    fps_state,
-                    oams,
-                    context,
-                )
-            return False
-
-        if fps_state.stuck_spool_active and not fps_state.stuck_spool_restore_follower:
-            return False
-
-        if fps_state.stuck_spool_restore_follower:
-            return self._restore_follower_if_needed(
-                fps_name,
-                fps_state,
-                oams,
-                context,
-            )
-
-        if fps_state.following and fps_state.direction == 1:
-            return True
-
-        return self._ensure_forward_follower(
-            fps_name,
-            fps_state,
-            context,
-        )
-
 
 
     def _handle_printing_resumed(self, _eventtime):
         """Re-enable any followers that were paused due to a stuck spool."""
-
         for fps_name, fps_state in self.current_state.fps_state.items():
 
             oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
-            event = None
-            event_acknowledged = False
-            if fps_state.pending_pause_event_id:
-                event = self._remote_pause_events.get(fps_state.pending_pause_event_id)
-                event_acknowledged = bool(event and event.get("acknowledged"))
-            context = "print resume"
-            if event_acknowledged:
-                context = "print resume (remote ack)"
-
-            was_following = fps_state.following and fps_state.direction == 1
-            restored = self._maintain_follower_state(
-                fps_name,
-                fps_state,
-                oams=oams,
-                context=context,
-            )
-
-            if restored and event_acknowledged and not was_following:
-                logging.info(
-                    "OAMS: Remote acknowledgement received for %s on %s; follower restored.",
-                    event.get("reason", "pause") if event else "pause",
+            if fps_state.stuck_spool_restore_follower:
+                self._restore_follower_if_needed(
                     fps_name,
+                    fps_state,
+                    oams,
+                    "print resume",
                 )
+            elif (
+                fps_state.current_oams is not None
+                and fps_state.current_spool_idx is not None
+                and not fps_state.following
 
-            if event and not fps_state.stuck_spool_restore_follower:
-                self._clear_pause_event(fps_state)
+            ):
+                self._ensure_forward_follower(
+                    fps_name,
+                    fps_state,
+                    "print resume",
+                )
 
 
     def _trigger_stuck_spool_pause(
         self,
         fps_name: str,
-
         fps_state: "FPSState",
         oams: Optional[Any],
         message: str,
@@ -1935,61 +1393,24 @@ class OAMSManager:
         fps_state.stuck_spool_active = True
         fps_state.stuck_spool_start_time = None
 
-        self._pause_printer_message(
-            message,
-            reason="stuck_spool",
-            fps_name=fps_name,
-            fps_state=fps_state,
-        )
+        self._pause_printer_message(message)
 
     def _monitor_unload_speed_for_fps(self, fps_name):
-
         def _monitor_unload_speed(self, eventtime):
             #logging.info("OAMS: Monitoring unloading speed state: %s" % self.current_state.name)
             fps_state = self.current_state.fps_state[fps_name]
             oams = None
             if fps_state.current_oams is not None:
-                oams = self.oams.get(fps_state.current_oams)
-            if (
-                fps_state.state_name == "UNLOADING"
-                and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_UNLOADING_SPEED_AFTER
-            ):
-                if oams is None:
-                    logging.warning(
-                        "OAMS: Missing OAMS %s while monitoring unload speed for %s.",
-                        fps_state.current_oams,
-                        fps_name,
-                    )
-                    return eventtime + MONITOR_ENCODER_PERIOD
-                fps_state.encoder_samples.append(getattr(oams, "encoder_clicks", 0))
+                oams = self.oams[fps_state.current_oams]
+            if fps_state.state_name == "UNLOADING" and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_UNLOADING_SPEED_AFTER:
+                fps_state.encoder_samples.append(oams.encoder_clicks)
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
                     return eventtime + MONITOR_ENCODER_PERIOD
                 encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
-                try:
-                    logging.info(
-                        "OAMS[%d] Unload Monitor: Encoder diff %d",
-                        oams.oams_idx,
-                        encoder_diff,
-                    )
-                except Exception:
-                    logging.debug("OAMS: Unload monitor encoder diff %d", encoder_diff)
-                if encoder_diff < MIN_ENCODER_DIFF:
-                    if fps_state.current_spool_idx is not None:
-                        try:
-                            oams.set_led_error(fps_state.current_spool_idx, 1)
-                        except Exception:
-                            logging.exception(
-                                "OAMS: Failed to set unload stall LED for %s spool %s.",
-                                fps_name,
-                                fps_state.current_spool_idx,
-                            )
-                    self._pause_printer_message(
-                        "Printer paused because the unloading speed of the moving filament was too low",
-                        reason="unload_stall",
-                        fps_name=fps_name,
-                        fps_state=fps_state,
-
-                    )
+                logging.info("OAMS[%d] Unload Monitor: Encoder diff %d" %(oams.oams_idx, encoder_diff))
+                if encoder_diff < MIN_ENCODER_DIFF:              
+                    oams.set_led_error(fps_state.current_spool_idx, 1)
+                    self._pause_printer_message("Printer paused because the unloading speed of the moving filament was too low")
                     logging.info("after unload speed too low")
                     self.stop_monitors()
                     return self.printer.get_reactor().NEVER
@@ -1997,45 +1418,26 @@ class OAMSManager:
         return partial(_monitor_unload_speed, self)
     
     def _monitor_load_speed_for_fps(self, fps_name):
-
         def _monitor_load_speed(self, eventtime):
             #logging.info("OAMS: Monitoring loading speed state: %s" % self.current_state.name)
             fps_state = self.current_state.fps_state[fps_name]
             oams = None
             if fps_state.current_oams is not None:
-                oams = self.oams.get(fps_state.current_oams)
+                oams = self.oams[fps_state.current_oams]
             if fps_state.stuck_spool_active:
                 return eventtime + MONITOR_ENCODER_PERIOD
-            if (
-                fps_state.state_name == "LOADING"
-                and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_LOADING_SPEED_AFTER
-            ):
-                if oams is None:
-                    logging.warning(
-                        "OAMS: Missing OAMS %s while monitoring load speed for %s.",
-                        fps_state.current_oams,
-                        fps_name,
-                    )
-                    return eventtime + MONITOR_ENCODER_PERIOD
-                fps_state.encoder_samples.append(getattr(oams, "encoder_clicks", 0))
+            if fps_state.state_name == "LOADING" and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_LOADING_SPEED_AFTER:
+                fps_state.encoder_samples.append(oams.encoder_clicks)
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
                     return eventtime + MONITOR_ENCODER_PERIOD
                 encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
-                try:
-                    logging.info(
-                        "OAMS[%d] Load Monitor: Encoder diff %d",
-                        oams.oams_idx,
-                        encoder_diff,
-                    )
-                except Exception:
-                    logging.debug("OAMS: Load monitor encoder diff %d", encoder_diff)
+                logging.info("OAMS[%d] Load Monitor: Encoder diff %d" % (oams.oams_idx, encoder_diff))
                 if encoder_diff < MIN_ENCODER_DIFF:
                     group_label = fps_state.current_group or fps_name
                     spool_label = (
                         str(fps_state.current_spool_idx)
                         if fps_state.current_spool_idx is not None
                         else "unknown"
-
                     )
                     message = (
                         "Spool appears stuck while loading"
@@ -2094,23 +1496,10 @@ class OAMSManager:
 
                 return eventtime + MONITOR_ENCODER_PERIOD
 
-
-            monitor = self.runout_monitors.get(fps_name)
-            if monitor and monitor.state in (
-                OAMSRunoutState.DETECTED,
-                OAMSRunoutState.COASTING,
-                OAMSRunoutState.RELOADING,
-            ):
-                fps_state.reset_stuck_spool_state(
-                    preserve_restore=fps_state.stuck_spool_restore_follower
-                )
-                return eventtime + MONITOR_ENCODER_PERIOD
-
             pressure = float(getattr(fps, "fps_value", 0.0))
             now = self.reactor.monotonic()
 
             if pressure <= STUCK_SPOOL_PRESSURE_THRESHOLD:
-
                 if fps_state.stuck_spool_start_time is None:
                     fps_state.stuck_spool_start_time = now
                 elif (
@@ -2139,22 +1528,26 @@ class OAMSManager:
                             fps_state.current_spool_idx,
                         )
 
-
-                if is_printing:
-                    self._maintain_follower_state(
+                if fps_state.stuck_spool_restore_follower and is_printing:
+                    self._restore_follower_if_needed(
                         fps_name,
                         fps_state,
-                        oams=oams,
-                        context="stuck spool recovery",
-                        is_printing=True,
+                        oams,
+                        "stuck spool recovery",
+                    )
+
+                elif is_printing and not fps_state.following:
+                    self._ensure_forward_follower(
+                        fps_name,
+                        fps_state,
+
+                        "stuck spool recovery",
                     )
                 if not fps_state.stuck_spool_restore_follower:
                     fps_state.reset_stuck_spool_state()
 
 
             return eventtime + MONITOR_ENCODER_PERIOD
-
-
 
         return partial(_monitor_stuck_spool, self)
 
@@ -2208,7 +1601,6 @@ class OAMSManager:
             except Exception:
                 is_printing = False
 
-
             if not is_printing:
                 if fps_state.clog_active:
                     try:
@@ -2222,38 +1614,10 @@ class OAMSManager:
                 fps_state.reset_clog_tracker()
                 return eventtime + MONITOR_ENCODER_PERIOD
 
-            self._maintain_follower_state(
-                fps_name,
-                fps_state,
-                oams=oams,
-                context="clog monitor",
-                is_printing=is_printing,
-            )
-
-            monitor = self.runout_monitors.get(fps_name)
-            if monitor and monitor.state in (
-                OAMSRunoutState.DETECTED,
-                OAMSRunoutState.COASTING,
-                OAMSRunoutState.RELOADING,
-            ):
-                if fps_state.clog_active:
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 0)
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to clear clog LED on %s spool %s during runout",
-                            fps_name,
-                            fps_state.current_spool_idx,
-                        )
-                fps_state.reset_clog_tracker()
-                return eventtime + MONITOR_ENCODER_PERIOD
-
             extruder_pos = float(getattr(fps.extruder, "last_position", 0.0))
             encoder_clicks = int(getattr(oams, "encoder_clicks", 0))
             pressure = float(getattr(fps, "fps_value", 0.0))
             now = self.reactor.monotonic()
-
-
 
             if fps_state.clog_start_extruder is None:
                 fps_state.prime_clog_tracker(extruder_pos, encoder_clicks, pressure, now)
@@ -2305,22 +1669,11 @@ class OAMSManager:
                     f"with FPS {pressure_mid:.2f} near {CLOG_PRESSURE_TARGET:.2f}"
                 )
                 fps_state.clog_active = True
-                self._pause_printer_message(
-                    message,
-                    reason="clog",
-                    fps_name=fps_name,
-                    fps_state=fps_state,
-                    extra={
-                        "extrusion_delta": round(extrusion_delta, 4),
-                        "encoder_delta": encoder_delta,
-                        "pressure_mid": round(pressure_mid, 4),
-                    },
-                )
+                self._pause_printer_message(message)
 
             return eventtime + MONITOR_ENCODER_PERIOD
 
         return partial(_monitor_clog, self)
-
 
 
 
@@ -2329,22 +1682,11 @@ class OAMSManager:
         self.runout_monitors = {}
         reactor = self.printer.get_reactor()
         for (fps_name, fps_state) in self.current_state.fps_state.items():
-            for factory in (
-                self._monitor_unload_speed_for_fps,
-                self._monitor_load_speed_for_fps,
-                self._monitor_stuck_spool_for_fps,
-                self._monitor_clog_for_fps,
-            ):
-                try:
-                    timer = reactor.register_timer(factory(fps_name), reactor.NOW)
-                    self.monitor_timers.append(timer)
-                except Exception:
-                    logging.exception(
-                        "OAMS: Failed to register %s monitor for %s",
-                        factory.__name__,
-                        fps_name,
-                    )
+            self.monitor_timers.append(reactor.register_timer(self._monitor_unload_speed_for_fps(fps_name), reactor.NOW))
+            self.monitor_timers.append(reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), reactor.NOW))
+            self.monitor_timers.append(reactor.register_timer(self._monitor_stuck_spool_for_fps(fps_name), reactor.NOW))
 
+            self.monitor_timers.append(reactor.register_timer(self._monitor_clog_for_fps(fps_name), reactor.NOW))
 
 
             def _reload_callback(fps_name=fps_name, fps_state=fps_state):
@@ -2377,15 +1719,7 @@ class OAMSManager:
                     )
                     fps_state.reset_runout_positions()
                     self._pause_printer_message(
-                        f"Unable to delegate infinite runout for {source_group or fps_name}",
-                        reason="runout_delegate_failed",
-                        fps_name=fps_name,
-                        fps_state=fps_state,
-                        extra={
-                            "source_group": source_group,
-                            "target_group": target_group,
-                            "target_lane": target_lane,
-                        },
+                        f"Unable to delegate infinite runout for {source_group or fps_name}"
                     )
                     if monitor:
                         monitor.paused()
@@ -2408,34 +1742,14 @@ class OAMSManager:
                             unload_message,
                         )
                         failure_message = unload_message or f"Failed to unload current spool on {fps_name}"
-                        self._pause_printer_message(
-                            failure_message,
-                            reason="runout_unload_failed",
-                            fps_name=fps_name,
-                            fps_state=fps_state,
-                            extra={
-                                "source_group": source_group,
-                                "target_group": target_group,
-                                "target_lane": target_lane,
-                            },
-                        )
+                        self._pause_printer_message(failure_message)
                         if monitor:
                             monitor.paused()
                         return
 
                 if group_to_load is None:
                     logging.error("OAMS: No filament group available to reload on %s", fps_name)
-                    self._pause_printer_message(
-                        f"No filament group available to reload on {fps_name}",
-                        reason="runout_no_group",
-                        fps_name=fps_name,
-                        fps_state=fps_state,
-                        extra={
-                            "source_group": source_group,
-                            "target_group": target_group,
-                            "target_lane": target_lane,
-                        },
-                    )
+                    self._pause_printer_message(f"No filament group available to reload on {fps_name}")
                     if monitor:
                         monitor.paused()
                     return
@@ -2452,11 +1766,7 @@ class OAMSManager:
                         if target_lane:
                             try:
                                 gcode = self.printer.lookup_object("gcode")
-                                self._safe_run_script(
-                                    gcode,
-                                    f"SET_LANE_LOADED LANE={target_lane}",
-                                    "lane load notification",
-                                )
+                                gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
                                 logging.debug(
                                     "OAMS: Marked lane %s as loaded after infinite runout on %s",
                                     target_lane,
@@ -2487,17 +1797,7 @@ class OAMSManager:
                     load_message,
                 )
                 failure_message = load_message or f"No spool available for group {group_to_load}"
-                self._pause_printer_message(
-                    failure_message,
-                    reason="runout_load_failed",
-                    fps_name=fps_name,
-                    fps_state=fps_state,
-                    extra={
-                        "source_group": source_group,
-                        "target_group": target_group,
-                        "target_lane": target_lane,
-                    },
-                )
+                self._pause_printer_message(failure_message)
                 if monitor:
                     monitor.paused()
                 return
@@ -2516,50 +1816,27 @@ class OAMSManager:
                     fps_name,
                 )
 
-
-            try:
-                monitor = OAMSRunoutMonitor(
-                    self.printer,
-                    fps_name,
-                    self.fpss[fps_name],
-                    fps_state,
-                    self.oams,
-                    _reload_callback,
-                    reload_before_toolhead_distance=fps_reload_margin,
-                )
-            except Exception:
-                logging.exception(
-                    "OAMS: Failed to initialize runout monitor for %s",
-                    fps_name,
-                )
-                continue
-
+            monitor = OAMSRunoutMonitor(
+                self.printer,
+                fps_name,
+                self.fpss[fps_name],
+                fps_state,
+                self.oams,
+                _reload_callback,
+                reload_before_toolhead_distance=fps_reload_margin,
+            )
             self.runout_monitors[fps_name] = monitor
-            try:
-                monitor.start()
-            except Exception:
-                logging.exception(
-                    "OAMS: Failed to start runout monitor for %s",
-                    fps_name,
-                )
+            monitor.start()
 
         logging.info("OAMS: All monitors started")
 
     def stop_monitors(self):
         for timer in self.monitor_timers:
-            try:
-                self.printer.get_reactor().unregister_timer(timer)
-            except Exception:
-                logging.exception("OAMS: Failed to unregister monitor timer")
+            self.printer.get_reactor().unregister_timer(timer)
         self.monitor_timers = []
         for monitor in self.runout_monitors.values():
-            try:
-                monitor.reset()
-            except Exception:
-                logging.exception("OAMS: Failed to reset runout monitor for %s", getattr(monitor, "fps_name", "unknown"))
+            monitor.reset()
         self.runout_monitors = {}
-
-
 
 
 def load_config(config):
