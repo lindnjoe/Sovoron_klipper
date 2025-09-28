@@ -1,3 +1,4 @@
+
 # OpenAMS Manager
 #
 # Copyright (C) 2025 JR Lomas <lomas.jr@gmail.com>
@@ -469,9 +470,11 @@ class OAMSManager:
             }
 
         if self._status_cache:
+
             status_list = list(self._status_cache.values())
             attributes["statuses"] = status_list
             attributes["feeder_status"] = status_list
+
         if self._active_pause_events:
             attributes["pause_events"] = [
                 {
@@ -704,7 +707,9 @@ class OAMSManager:
                 for key, value in cache_entry.items()
                 if key != "updated_at"
             }
+
             self._emit_remote_event("oams.status_update", **payload)
+
 
         for event in self._active_pause_events.values():
             payload = {
@@ -722,6 +727,7 @@ class OAMSManager:
                     "lane",
                 }
             }
+
             self._emit_remote_event("oams.pause_event", **payload)
 
     def _send_remote_method(self, method: str, **params) -> None:
@@ -753,6 +759,7 @@ class OAMSManager:
                 "OAMS: Failed to inject remote method %s", method, exc_info=True
             )
             return False
+
 
 
     def _resolve_status_metadata(
@@ -2429,4 +2436,5 @@ class OAMSManager:
 
 
 def load_config(config):
+
     return OAMSManager(config)
