@@ -1,3 +1,4 @@
+
 # OpenAMS Manager
 #
 # Copyright (C) 2025 JR Lomas <lomas.jr@gmail.com>
@@ -365,9 +366,8 @@ class OAMSManager:
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
 
-
         self.webhooks = None
-
+        self._webhook_endpoints_registered = False
 
 
         # Hardware object collections
@@ -488,7 +488,6 @@ class OAMSManager:
         return f"{int(self.reactor.monotonic() * 1000)}-{next(self._event_seq)}"
 
 
-
     def _ensure_webhooks(self) -> bool:
         """Ensure the webhooks interface is available before emitting events."""
 
@@ -501,9 +500,196 @@ class OAMSManager:
             self.webhooks = None
             return False
 
+        self._register_webhook_endpoints()
         # Publish any cached state so late subscribers receive the latest data.
         self._republish_runtime_state()
         return True
+
+    def _register_webhook_endpoints(self) -> None:
+        """Expose remote methods that the UI can call via Moonraker."""
+
+        if not self.webhooks or self._webhook_endpoints_registered:
+            return
+
+        registered = False
+        for name, handler in (
+            ("oams.pause_ack", self._handle_remote_pause_ack),
+            ("oams.stuck_spool_resume", self._handle_remote_stuck_spool_resume),
+            ("open_ams.pause_ack", self._handle_remote_pause_ack),
+            (
+                "open_ams.stuck_spool_resume",
+                self._handle_remote_stuck_spool_resume,
+            ),
+        ):
+            try:
+                self.webhooks.register_endpoint(name, handler)
+                registered = True
+            except Exception:
+                logging.debug("OAMS: webhook endpoint %s already registered", name)
+
+        if registered:
+            self._webhook_endpoints_registered = True
+
+    @staticmethod
+    def _coerce_bool(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "y"}:
+                return True
+            if normalized in {"0", "false", "no", "off", "n"}:
+                return False
+        return default
+
+    @staticmethod
+    def _coerce_direction(value: Any, default: Optional[int] = None) -> Optional[int]:
+        if value is None:
+            return default
+        try:
+            direction = int(value)
+        except (TypeError, ValueError):
+            return default
+        if direction in (0, 1):
+            return direction
+        return default
+
+    def _process_pause_ack(
+        self,
+        event_id: str,
+        *,
+        acknowledged: bool,
+        resume_follow: bool,
+        follower_direction: Optional[int],
+        clear_only: bool,
+    ) -> Dict[str, Any]:
+        event = self._active_pause_events.get(event_id)
+        if not event:
+            return {
+                "event_id": event_id,
+                "cleared": False,
+                "status": "not_found",
+            }
+
+        fps_name = event.get("fps_name")
+        fps_state = (
+            self.current_state.fps_state.get(fps_name)
+            if fps_name
+            else None
+        )
+
+        details = event.get("details") or {}
+        if follower_direction is None:
+            follower_direction = self._coerce_direction(
+                details.get("follower_direction"),
+                default=1,
+            )
+
+        cleared = False
+
+        if acknowledged:
+            cleared = True
+        elif clear_only:
+            cleared = True
+
+        if resume_follow and fps_state is not None:
+            if follower_direction is None:
+                follower_direction = 1
+            fps_state.stuck_spool_restore_direction = follower_direction
+            fps_state.stuck_spool_restore_follower = True
+            logging.info(
+                "OAMS: Resume follower requested for %s (event %s, direction %s).",
+                fps_name,
+                event_id,
+                follower_direction,
+            )
+
+            # Attempt an immediate follower restore if the printer is already
+            # running again to minimise the window without filament drive.
+            try:
+                idle_timeout = self.printer.lookup_object("idle_timeout")
+                is_printing = (
+                    idle_timeout.get_status(self.reactor.monotonic())["state"]
+                    == "Printing"
+                )
+            except Exception:
+                is_printing = False
+
+            if is_printing:
+                oams = (
+                    self.oams.get(fps_state.current_oams)
+                    if fps_state.current_oams
+                    else None
+                )
+                self._restore_follower_if_needed(
+                    fps_name,
+                    fps_state,
+                    oams,
+                    "remote acknowledgement",
+                )
+
+        if cleared:
+            self._clear_pause_event(event_id)
+            if acknowledged and fps_state is not None:
+                fps_state.stuck_spool_active = False
+                fps_state.stuck_spool_start_time = None
+
+        return {
+            "event_id": event_id,
+            "acknowledged": acknowledged,
+            "resume_follow": resume_follow,
+            "cleared": cleared,
+            "follower_direction": follower_direction,
+            "fps": fps_name,
+            "status": "ok",
+        }
+
+    def _handle_remote_pause_ack(self, web_request):
+        params = getattr(web_request, "params", {}) or {}
+        event_id = str(params.get("event_id", "")).strip()
+        if not event_id:
+            web_request.set_error(web_request.error("Missing event_id"))
+            return
+
+        acknowledged = self._coerce_bool(params.get("acknowledged"), True)
+        resume_follow = self._coerce_bool(params.get("resume_follow"), False)
+        clear_only = self._coerce_bool(params.get("clear"), False)
+        follower_direction = self._coerce_direction(
+            params.get("follower_direction"), None
+        )
+
+        response = self._process_pause_ack(
+            event_id,
+            acknowledged=acknowledged,
+            resume_follow=resume_follow,
+            follower_direction=follower_direction,
+            clear_only=clear_only,
+        )
+        web_request.send(response)
+
+    def _handle_remote_stuck_spool_resume(self, web_request):
+        params = getattr(web_request, "params", {}) or {}
+        event_id = str(params.get("event_id", "")).strip()
+        if not event_id:
+            web_request.set_error(web_request.error("Missing event_id"))
+            return
+
+        follower_direction = self._coerce_direction(
+            params.get("follower_direction"), None
+        )
+
+        response = self._process_pause_ack(
+            event_id,
+            acknowledged=True,
+            resume_follow=True,
+            follower_direction=follower_direction,
+            clear_only=False,
+        )
+        web_request.send(response)
 
     def _republish_runtime_state(self) -> None:
         """Replay cached status and pause events to downstream listeners."""
@@ -549,7 +735,6 @@ class OAMSManager:
 
     def _send_remote_method(self, method: str, **params) -> None:
         if not self._ensure_webhooks():
-
             return
         try:
             self.webhooks.call_remote_method(method, **params)
@@ -2231,4 +2416,5 @@ class OAMSManager:
 
 
 def load_config(config):
+
     return OAMSManager(config)
