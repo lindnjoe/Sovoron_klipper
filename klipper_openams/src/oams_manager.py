@@ -365,7 +365,9 @@ class OAMSManager:
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
 
+
         self.webhooks = None
+
 
 
         # Hardware object collections
@@ -486,6 +488,7 @@ class OAMSManager:
         return f"{int(self.reactor.monotonic() * 1000)}-{next(self._event_seq)}"
 
 
+
     def _ensure_webhooks(self) -> bool:
         """Ensure the webhooks interface is available before emitting events."""
 
@@ -546,6 +549,7 @@ class OAMSManager:
 
     def _send_remote_method(self, method: str, **params) -> None:
         if not self._ensure_webhooks():
+
             return
         try:
             self.webhooks.call_remote_method(method, **params)
