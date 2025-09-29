@@ -122,20 +122,48 @@ class OAMSRunoutMonitor:
                         return eventtime + MONITOR_ENCODER_PERIOD
                     fps_state.afc_delegation_active = False
                     fps_state.afc_delegation_until = 0.0
-                if is_printing and \
-                fps_state.state_name == "LOADED" and \
-                fps_state.current_group is not None and \
-                fps_state.current_spool_idx is not None and \
-                not bool(self.oams[fps_state.current_oams].hub_hes_value[fps_state.current_spool_idx]):
+                oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+                if oams_obj is None:
+                    return eventtime + MONITOR_ENCODER_PERIOD
+
+                try:
+                    hes_values = oams_obj.hub_hes_value
+                    spool_empty = not bool(
+                        hes_values[fps_state.current_spool_idx]
+                    )
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to read HES values for runout detection on %s",
+                        self.fps_name,
+                    )
+                    return eventtime + MONITOR_ENCODER_PERIOD
+
+                if (
+                    is_printing
+                    and fps_state.state_name == "LOADED"
+                    and fps_state.current_group is not None
+                    and fps_state.current_spool_idx is not None
+                    and spool_empty
+                ):
                     self.state = OAMSRunoutState.DETECTED
-                    logging.info(f"OAMS: Runout detected on FPS {self.fps_name}, pausing for {PAUSE_DISTANCE} mm before coasting the follower.")
+                    logging.info(
+                        "OAMS: Runout detected on FPS %s, pausing for %d mm before coasting the follower.",
+                        self.fps_name,
+                        PAUSE_DISTANCE,
+                    )
                     self.runout_position = fps.extruder.last_position
 
             elif self.state == OAMSRunoutState.DETECTED:
                 traveled_distance = fps.extruder.last_position - self.runout_position
                 if traveled_distance >= PAUSE_DISTANCE:
                     logging.info("OAMS: Pause complete, coasting the follower.")
-                    self.oams[fps_state.current_oams].set_oams_follower(0, 1)
+                    try:
+                        self.oams[fps_state.current_oams].set_oams_follower(0, 1)
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to stop follower while coasting on %s",
+                            self.fps_name,
+                        )
                     self.bldc_clear_position = fps.extruder.last_position
                     self.runout_after_position = 0.0
                     self.state = OAMSRunoutState.COASTING
@@ -145,9 +173,16 @@ class OAMSRunoutMonitor:
                     fps.extruder.last_position - self.bldc_clear_position, 0.0
                 )
                 self.runout_after_position = traveled_distance_after_bldc_clear
-                path_length = getattr(
-                    self.oams[fps_state.current_oams], "filament_path_length", 0.0
-                )
+                try:
+                    path_length = getattr(
+                        self.oams[fps_state.current_oams], "filament_path_length", 0.0
+                    )
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to read filament path length while coasting on %s",
+                        self.fps_name,
+                    )
+                    return eventtime + MONITOR_ENCODER_PERIOD
                 effective_path_length = (
                     path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0
                 )
@@ -418,11 +453,21 @@ class OAMSManager:
 
         for name, oam in self.oams.items():
             status_name = name.split()[-1]
-            oam_status = {
-                "action_status": oam.action_status,
-                "action_status_code": oam.action_status_code,
-                "action_status_value": oam.action_status_value,
-            }
+            try:
+                oam_status = {
+                    "action_status": oam.action_status,
+                    "action_status_code": oam.action_status_code,
+                    "action_status_value": oam.action_status_value,
+                }
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to fetch status from %s", name
+                )
+                oam_status = {
+                    "action_status": "error",
+                    "action_status_code": None,
+                    "action_status_value": None,
+                }
             attributes["oams"][status_name] = oam_status
             if status_name != name:
                 attributes["oams"][name] = oam_status
@@ -537,8 +582,18 @@ class OAMSManager:
         # Check each filament group for loaded spools
         for group_name, group in self.filament_groups.items():
             for oam, bay_index in group.bays:
+                try:
+                    is_loaded = oam.is_bay_loaded(bay_index)
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to query bay %s on %s while determining loaded group",
+                        bay_index,
+                        getattr(oam, "name", "<unknown>"),
+                    )
+                    continue
+
                 # Check if this bay has filament loaded and the OAMS is connected to this FPS
-                if oam.is_bay_loaded(bay_index) and oam in fps.oams:
+                if is_loaded and oam in fps.oams:
                     return group_name, oam, bay_index
                     
         return None, None, None
@@ -624,11 +679,33 @@ class OAMSManager:
         if fps_state.state_name == "UNLOADING":
             gcmd.respond_info(f"FPS {fps_name} is currently unloading a spool")
             return
-        self.oams[fps_state.current_oams].set_oams_follower(enable, direction)
-        fps_state.following = enable
+        oams_obj = self.oams.get(fps_state.current_oams)
+        if oams_obj is None:
+            gcmd.respond_info(
+                f"OAMS {fps_state.current_oams} is not available for follower control"
+            )
+            return
+
+        try:
+            oams_obj.set_oams_follower(enable, direction)
+            encoder_clicks = oams_obj.encoder_clicks
+            current_spool = oams_obj.current_spool
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to set follower %s direction %s on %s",
+                enable,
+                direction,
+                fps_state.current_oams,
+            )
+            gcmd.respond_info(
+                f"Failed to set follower on {fps_state.current_oams}. Check logs for details."
+            )
+            return
+
+        fps_state.following = bool(enable)
         fps_state.direction = direction
-        fps_state.encoder = self.oams[fps_state.current_oams].encoder_clicks
-        fps_state.current_spool_idx = self.oams[fps_state.current_oams].current_spool
+        fps_state.encoder = encoder_clicks
+        fps_state.current_spool_idx = current_spool
         return
     
 
@@ -1056,13 +1133,25 @@ class OAMSManager:
 
             return True, "Spool already unloaded"
 
-        fps_state.state_name = FPSLoadState.UNLOADING
-        fps_state.encoder = oams.encoder_clicks
-        fps_state.since = self.reactor.monotonic()
-        fps_state.current_oams = oams.name
-        fps_state.current_spool_idx = oams.current_spool
+        try:
+            fps_state.state_name = FPSLoadState.UNLOADING
+            fps_state.encoder = oams.encoder_clicks
+            fps_state.since = self.reactor.monotonic()
+            fps_state.current_oams = oams.name
+            fps_state.current_spool_idx = oams.current_spool
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to capture unload state for %s", fps_name
+            )
+            return False, f"Failed to prepare unload on {fps_name}"
 
-        success, message = oams.unload_spool()
+        try:
+            success, message = oams.unload_spool()
+        except Exception:
+            logging.exception(
+                "OAMS: Exception while unloading filament on %s", fps_name
+            )
+            return False, f"Exception unloading filament on {fps_name}"
 
         if success:
             fps_state.state_name = FPSLoadState.UNLOADED
@@ -1097,16 +1186,46 @@ class OAMSManager:
         self._cancel_post_load_pressure_check(fps_state)
 
         for (oam, bay_index) in self.filament_groups[group_name].bays:
-            if not oam.is_bay_ready(bay_index):
+            try:
+                is_ready = oam.is_bay_ready(bay_index)
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to query readiness of bay %s on %s",
+                    bay_index,
+                    getattr(oam, "name", "<unknown>"),
+                )
                 continue
 
-            fps_state.state_name = FPSLoadState.LOADING
-            fps_state.encoder = oam.encoder_clicks
-            fps_state.since = self.reactor.monotonic()
-            fps_state.current_oams = oam.name
-            fps_state.current_spool_idx = bay_index
+            if not is_ready:
+                continue
 
-            success, message = oam.load_spool(bay_index)
+            try:
+                fps_state.state_name = FPSLoadState.LOADING
+                fps_state.encoder = oam.encoder_clicks
+                fps_state.since = self.reactor.monotonic()
+                fps_state.current_oams = oam.name
+                fps_state.current_spool_idx = bay_index
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to capture load state for group %s bay %s",
+                    group_name,
+                    bay_index,
+                )
+                fps_state.state_name = FPSLoadState.UNLOADED
+                fps_state.current_group = None
+                fps_state.current_spool_idx = None
+                fps_state.current_oams = None
+                continue
+
+            try:
+                success, message = oam.load_spool(bay_index)
+            except Exception:
+                logging.exception(
+                    "OAMS: Exception while loading group %s bay %s",
+                    group_name,
+                    bay_index,
+                )
+                success, message = False, f"Exception loading spool {bay_index} on {group_name}"
 
             if success:
                 fps_state.current_group = group_name
@@ -1475,16 +1594,46 @@ class OAMSManager:
             fps_state = self.current_state.fps_state[fps_name]
             oams = None
             if fps_state.current_oams is not None:
-                oams = self.oams[fps_state.current_oams]
-            if fps_state.state_name == "UNLOADING" and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_UNLOADING_SPEED_AFTER:
-                fps_state.encoder_samples.append(oams.encoder_clicks)
+                oams = self.oams.get(fps_state.current_oams)
+            if (
+                fps_state.state_name == "UNLOADING"
+                and self.reactor.monotonic() - fps_state.since
+                > MONITOR_ENCODER_UNLOADING_SPEED_AFTER
+            ):
+                if oams is None:
+                    return eventtime + MONITOR_ENCODER_PERIOD
+                try:
+                    encoder_value = oams.encoder_clicks
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to read encoder while monitoring unload on %s",
+                        fps_name,
+                    )
+                    return eventtime + MONITOR_ENCODER_PERIOD
+
+                fps_state.encoder_samples.append(encoder_value)
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
                     return eventtime + MONITOR_ENCODER_PERIOD
-                encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
-                logging.info("OAMS[%d] Unload Monitor: Encoder diff %d" %(oams.oams_idx, encoder_diff))
-                if encoder_diff < MIN_ENCODER_DIFF:              
-                    oams.set_led_error(fps_state.current_spool_idx, 1)
-                    self._pause_printer_message("Printer paused because the unloading speed of the moving filament was too low")
+                encoder_diff = abs(
+                    fps_state.encoder_samples[-1]
+                    - fps_state.encoder_samples[0]
+                )
+                logging.info(
+                    "OAMS[%d] Unload Monitor: Encoder diff %d",
+                    getattr(oams, "oams_idx", -1),
+                    encoder_diff,
+                )
+                if encoder_diff < MIN_ENCODER_DIFF:
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 1)
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to set unload LED on %s",
+                            fps_name,
+                        )
+                    self._pause_printer_message(
+                        "Printer paused because the unloading speed of the moving filament was too low"
+                    )
                     logging.info("after unload speed too low")
                     self.stop_monitors()
                     return self.printer.get_reactor().NEVER
@@ -1497,15 +1646,34 @@ class OAMSManager:
             fps_state = self.current_state.fps_state[fps_name]
             oams = None
             if fps_state.current_oams is not None:
-                oams = self.oams[fps_state.current_oams]
+                oams = self.oams.get(fps_state.current_oams)
             if fps_state.stuck_spool_active:
                 return eventtime + MONITOR_ENCODER_PERIOD
-            if fps_state.state_name == "LOADING" and self.reactor.monotonic() - fps_state.since > MONITOR_ENCODER_LOADING_SPEED_AFTER:
-                fps_state.encoder_samples.append(oams.encoder_clicks)
+            if (
+                fps_state.state_name == "LOADING"
+                and self.reactor.monotonic() - fps_state.since
+                > MONITOR_ENCODER_LOADING_SPEED_AFTER
+            ):
+                if oams is None:
+                    return eventtime + MONITOR_ENCODER_PERIOD
+                try:
+                    encoder_value = oams.encoder_clicks
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to read encoder while monitoring load on %s",
+                        fps_name,
+                    )
+                    return eventtime + MONITOR_ENCODER_PERIOD
+
+                fps_state.encoder_samples.append(encoder_value)
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
                     return eventtime + MONITOR_ENCODER_PERIOD
                 encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
-                logging.info("OAMS[%d] Load Monitor: Encoder diff %d" % (oams.oams_idx, encoder_diff))
+                logging.info(
+                    "OAMS[%d] Load Monitor: Encoder diff %d",
+                    getattr(oams, "oams_idx", -1),
+                    encoder_diff,
+                )
                 if encoder_diff < MIN_ENCODER_DIFF:
                     group_label = fps_state.current_group or fps_name
                     spool_label = (
@@ -1713,7 +1881,19 @@ class OAMSManager:
                 fps_state.reset_clog_tracker()
                 return eventtime + MONITOR_ENCODER_PERIOD
 
-            if bool(oams.hub_hes_value[fps_state.current_spool_idx]):
+            try:
+                hes_values = oams.hub_hes_value
+                spool_available = bool(
+                    hes_values[fps_state.current_spool_idx]
+                )
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to read HES values while monitoring clogs on %s",
+                    fps_name,
+                )
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if spool_available:
                 if fps_state.clog_active:
                     try:
                         oams.set_led_error(fps_state.current_spool_idx, 0)
@@ -1759,9 +1939,32 @@ class OAMSManager:
                 fps_state.reset_clog_tracker()
                 return eventtime + MONITOR_ENCODER_PERIOD
 
-            extruder_pos = float(getattr(fps.extruder, "last_position", 0.0))
-            encoder_clicks = int(getattr(oams, "encoder_clicks", 0))
-            pressure = float(getattr(fps, "fps_value", 0.0))
+            try:
+                extruder_pos = float(getattr(fps.extruder, "last_position", 0.0))
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to read extruder position while monitoring clogs on %s",
+                    fps_name,
+                )
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            try:
+                encoder_clicks = int(getattr(oams, "encoder_clicks", 0))
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to read encoder clicks while monitoring clogs on %s",
+                    fps_name,
+                )
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            try:
+                pressure = float(getattr(fps, "fps_value", 0.0))
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to read FPS pressure while monitoring clogs on %s",
+                    fps_name,
+                )
+                return eventtime + MONITOR_ENCODER_PERIOD
             now = self.reactor.monotonic()
 
             if fps_state.clog_start_extruder is None:
