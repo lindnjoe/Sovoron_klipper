@@ -1,3 +1,4 @@
+
 # OpenAMS Manager
 #
 # Copyright (C) 2025 JR Lomas <lomas.jr@gmail.com>
@@ -2204,4 +2205,5 @@ class OAMSManager:
 
 
 def load_config(config):
+
     return OAMSManager(config)
