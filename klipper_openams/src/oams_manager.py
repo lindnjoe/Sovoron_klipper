@@ -1309,15 +1309,32 @@ class OAMSManager:
         
     def _pause_printer_message(self, message):
         logging.info(f"OAMS: {message}")
-        gcode = self.printer.lookup_object("gcode")
-        message = f"Print has been paused: {message}"
-        gcode.run_script(f"M118 {message}")
-        gcode.run_script(f"M114 {message}")
 
-        toolhead = self.printer.lookup_object("toolhead")
-        homed_axes = toolhead.get_status(self.reactor.monotonic()).get("homed_axes", "")
+        try:
+            gcode = self.printer.lookup_object("gcode")
+        except Exception:
+            logging.exception("OAMS: Failed to look up gcode object for pause message")
+            return
+
+        pause_message = f"Print has been paused: {message}"
+        try:
+            gcode.run_script(f"M118 {pause_message}")
+            gcode.run_script(f"M114 {pause_message}")
+        except Exception:
+            logging.exception("OAMS: Failed to send pause notification gcode")
+
+        try:
+            toolhead = self.printer.lookup_object("toolhead")
+            homed_axes = toolhead.get_status(self.reactor.monotonic()).get("homed_axes", "")
+        except Exception:
+            logging.exception("OAMS: Failed to query toolhead state during pause handling")
+            return
+
         if all(axis in homed_axes for axis in ("x", "y", "z")):
-            gcode.run_script("PAUSE")
+            try:
+                gcode.run_script("PAUSE")
+            except Exception:
+                logging.exception("OAMS: Failed to run PAUSE script for clog handling")
         else:
             logging.warning(
                 "OAMS: Skipping PAUSE command because axes are not homed (homed_axes=%s)",
