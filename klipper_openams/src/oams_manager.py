@@ -49,6 +49,11 @@ CLOG_SENSITIVITY_LEVELS = {
 CLOG_SENSITIVITY_DEFAULT = "medium"
 
 
+POST_LOAD_PRESSURE_THRESHOLD = 0.52  # FPS value indicating a possible clog after loading
+POST_LOAD_PRESSURE_DWELL = 5.0  # Seconds pressure must remain above the threshold
+POST_LOAD_PRESSURE_CHECK_PERIOD = 0.5  # Interval between post-load pressure checks
+
+
 class OAMSRunoutState:
     """Enum for runout monitor states."""
     STOPPED = "STOPPED"          # Monitor is disabled
@@ -277,6 +282,10 @@ class FPSState:
         self.clog_max_pressure: Optional[float] = None
         self.clog_last_extruder: Optional[float] = None
 
+        # Post-load pressure validation
+        self.post_load_pressure_timer = None
+        self.post_load_pressure_start: Optional[float] = None
+
 
     def reset_runout_positions(self) -> None:
         """Clear runout position tracking."""
@@ -467,6 +476,7 @@ class OAMSManager:
                 fps_state.state_name = FPSLoadState.UNLOADED
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
+                self._cancel_post_load_pressure_check(fps_state)
         
     def handle_ready(self) -> None:
         """
@@ -572,6 +582,7 @@ class OAMSManager:
         for (fps_name, fps_state) in self.current_state.fps_state.items():
             fps_state.encoder_samples.clear()
             fps_state.reset_stuck_spool_state()
+            self._cancel_post_load_pressure_check(fps_state)
 
         for oams_name, oam in self.oams.items():
             try:
@@ -1041,6 +1052,8 @@ class OAMSManager:
 
             fps_state.reset_clog_tracker()
 
+            self._cancel_post_load_pressure_check(fps_state)
+
             return True, "Spool already unloaded"
 
         fps_state.state_name = FPSLoadState.UNLOADING
@@ -1063,6 +1076,8 @@ class OAMSManager:
 
             fps_state.reset_clog_tracker()
 
+            self._cancel_post_load_pressure_check(fps_state)
+
             return True, message
 
         fps_state.state_name = FPSLoadState.LOADED
@@ -1078,6 +1093,8 @@ class OAMSManager:
             return False, f"No FPS associated with group {group_name}"
 
         fps_state = self.current_state.fps_state[fps_name]
+
+        self._cancel_post_load_pressure_check(fps_state)
 
         for (oam, bay_index) in self.filament_groups[group_name].bays:
             if not oam.is_bay_ready(bay_index):
@@ -1109,6 +1126,8 @@ class OAMSManager:
                     "load filament",
                 )
 
+                self._schedule_post_load_pressure_check(fps_name, fps_state)
+
                 return True, message
 
             fps_state.state_name = FPSLoadState.UNLOADED
@@ -1119,6 +1138,8 @@ class OAMSManager:
             fps_state.following = False
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
+
+            self._cancel_post_load_pressure_check(fps_state)
 
             return False, message
 
@@ -1183,6 +1204,86 @@ class OAMSManager:
                 "OAMS: Skipping PAUSE command because axes are not homed (homed_axes=%s)",
                 homed_axes,
             )
+
+
+    def _cancel_post_load_pressure_check(self, fps_state: "FPSState") -> None:
+        """Stop any pending post-load pressure validation timer."""
+        timer = getattr(fps_state, "post_load_pressure_timer", None)
+        if timer is not None:
+            try:
+                self.reactor.unregister_timer(timer)
+            except Exception:
+                logging.exception("OAMS: Failed to cancel post-load pressure timer")
+        fps_state.post_load_pressure_timer = None
+        fps_state.post_load_pressure_start = None
+
+    def _schedule_post_load_pressure_check(
+        self,
+        fps_name: str,
+        fps_state: "FPSState",
+    ) -> None:
+        """Verify the FPS pressure settles after a successful load."""
+
+        self._cancel_post_load_pressure_check(fps_state)
+
+        def _monitor_pressure(self, eventtime):
+            tracked_state = self.current_state.fps_state.get(fps_name)
+            fps = self.fpss.get(fps_name)
+
+            if tracked_state is None or fps is None:
+                if tracked_state is not None:
+                    self._cancel_post_load_pressure_check(tracked_state)
+                return self.reactor.NEVER
+
+            if tracked_state.state_name != FPSLoadState.LOADED:
+                self._cancel_post_load_pressure_check(tracked_state)
+                return self.reactor.NEVER
+
+            pressure = float(getattr(fps, "fps_value", 0.0))
+            if pressure <= POST_LOAD_PRESSURE_THRESHOLD:
+                self._cancel_post_load_pressure_check(tracked_state)
+                return self.reactor.NEVER
+
+            now = self.reactor.monotonic()
+            if tracked_state.post_load_pressure_start is None:
+                tracked_state.post_load_pressure_start = now
+                return eventtime + POST_LOAD_PRESSURE_CHECK_PERIOD
+
+            if now - tracked_state.post_load_pressure_start < POST_LOAD_PRESSURE_DWELL:
+                return eventtime + POST_LOAD_PRESSURE_CHECK_PERIOD
+
+            oams_obj = None
+            if tracked_state.current_oams is not None:
+                oams_obj = self.oams.get(tracked_state.current_oams)
+            if (
+                oams_obj is not None
+                and tracked_state.current_spool_idx is not None
+            ):
+                try:
+                    oams_obj.set_led_error(tracked_state.current_spool_idx, 1)
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to set clog LED on %s spool %s after loading",
+                        fps_name,
+                        tracked_state.current_spool_idx,
+                    )
+
+            tracked_state.clog_active = True
+
+            message = (
+                f"Possible clog detected after loading {tracked_state.current_group or fps_name}: "
+                f"FPS pressure {pressure:.2f} remained above {POST_LOAD_PRESSURE_THRESHOLD:.2f}"
+            )
+            self._pause_printer_message(message)
+            self._cancel_post_load_pressure_check(tracked_state)
+            return self.reactor.NEVER
+
+        timer = self.reactor.register_timer(
+            partial(_monitor_pressure, self),
+            self.reactor.NOW,
+        )
+        fps_state.post_load_pressure_timer = timer
+        fps_state.post_load_pressure_start = None
 
 
     def _enable_follower(
