@@ -1603,13 +1603,9 @@ class OAMSManager:
         forward_direction = fps_state.direction if fps_state.direction in (0, 1) else 1
         reverse_direction = 0 if forward_direction == 1 else 1
 
-        fps_state.stuck_spool_retry_attempted = True
-        fps_state.stuck_spool_retry_active = True
-        fps_state.stuck_spool_retry_forward_direction = forward_direction
-        fps_state.stuck_spool_retry_start_time = None
-        fps_state.encoder_samples.clear()
-
         spool_idx = fps_state.current_spool_idx
+
+        fps_state.encoder_samples.clear()
 
         try:
             oams.set_oams_follower(0, forward_direction)
@@ -1622,34 +1618,6 @@ class OAMSManager:
 
         try:
             oams.set_oams_follower(1, reverse_direction)
-            fps_state.following = True
-            fps_state.direction = reverse_direction
-            now = self.reactor.monotonic()
-            fps_state.stuck_spool_retry_start_time = now
-            try:
-                timer = self.reactor.register_timer(
-                    partial(
-                        self._stuck_spool_recovery_timer_cb,
-                        fps_name,
-                        fps_state,
-                    ),
-                    now + STUCK_SPOOL_RECOVERY_REVERSE_TIME,
-                )
-                fps_state.stuck_spool_retry_timer = timer
-            except Exception:
-                fps_state.stuck_spool_retry_timer = None
-                logging.exception(
-                    "OAMS: Failed to schedule stuck spool recovery completion for %s spool %s",
-                    fps_name,
-                    spool_idx,
-                )
-            logging.info(
-                "OAMS: Reversing follower for %s spool %s to clear suspected stuck spool for %.1fs.",
-                fps_name,
-                spool_idx,
-                STUCK_SPOOL_RECOVERY_REVERSE_TIME,
-            )
-            return True
         except Exception:
             logging.exception(
                 "OAMS: Failed to reverse follower for stuck spool recovery on %s spool %s",
@@ -1658,10 +1626,53 @@ class OAMSManager:
             )
             fps_state.following = False
             fps_state.direction = forward_direction
-            fps_state.stuck_spool_retry_active = False
             fps_state.stuck_spool_retry_start_time = None
             self._cancel_stuck_spool_retry_timer(fps_state)
+            # Allow a future recovery attempt since the reverse command failed.
+            fps_state.stuck_spool_retry_attempted = False
+            self._enable_follower(
+                fps_name,
+                fps_state,
+                oams,
+                forward_direction,
+                "stuck spool recovery fallback",
+            )
             return False
+
+        now = self.reactor.monotonic()
+
+        fps_state.stuck_spool_retry_attempted = True
+        fps_state.stuck_spool_retry_active = True
+        fps_state.stuck_spool_retry_forward_direction = forward_direction
+        fps_state.stuck_spool_retry_start_time = now
+        fps_state.following = True
+        fps_state.direction = reverse_direction
+
+        try:
+            timer = self.reactor.register_timer(
+                partial(
+                    self._stuck_spool_recovery_timer_cb,
+                    fps_name,
+                    fps_state,
+                ),
+                now + STUCK_SPOOL_RECOVERY_REVERSE_TIME,
+            )
+            fps_state.stuck_spool_retry_timer = timer
+        except Exception:
+            fps_state.stuck_spool_retry_timer = None
+            logging.exception(
+                "OAMS: Failed to schedule stuck spool recovery completion for %s spool %s",
+                fps_name,
+                spool_idx,
+            )
+
+        logging.info(
+            "OAMS: Reversing follower for %s spool %s to clear suspected stuck spool for %.1fs.",
+            fps_name,
+            spool_idx,
+            STUCK_SPOOL_RECOVERY_REVERSE_TIME,
+        )
+        return True
 
     def _stuck_spool_recovery_timer_cb(
         self,
