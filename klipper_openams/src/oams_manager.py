@@ -1,4 +1,5 @@
 
+
 # OpenAMS Manager
 #
 # Copyright (C) 2025 JR Lomas <lomas.jr@gmail.com>
@@ -295,6 +296,7 @@ class FPSState:
         # Motion monitoring
         self.encoder_samples = deque(maxlen=ENCODER_SAMPLES)  # Recent encoder readings
 
+
         # Follower state
         self.following: bool = False  # Whether follower mode is active
         self.direction: int = 0  # Follower direction (0=forward, 1=reverse)
@@ -313,6 +315,7 @@ class FPSState:
         self.stuck_spool_retry_active: bool = False
         self.stuck_spool_retry_start_time: Optional[float] = None
         self.stuck_spool_retry_forward_direction: int = 1
+
 
         # Clog detection
         self.clog_active: bool = False
@@ -333,6 +336,7 @@ class FPSState:
         self.runout_position = None
         self.runout_after_position = None
 
+
     def reset_stuck_spool_state(self, preserve_restore: bool = False) -> None:
         """Clear any latched stuck spool indicators."""
         self.stuck_spool_start_time = None
@@ -341,6 +345,7 @@ class FPSState:
             self.stuck_spool_restore_follower = False
             self.stuck_spool_restore_direction = 1
         self.reset_stuck_spool_retry()
+
 
     def reset_stuck_spool_retry(self) -> None:
         """Reset automatic stuck spool recovery tracking."""
@@ -1510,6 +1515,7 @@ class OAMSManager:
         )
 
 
+
     def _restore_follower_if_needed(
         self,
         fps_name: str,
@@ -1520,6 +1526,7 @@ class OAMSManager:
         """Restore the follower if a stuck spool pause disabled it."""
         if not fps_state.stuck_spool_restore_follower:
             return
+
 
         if fps_state.current_oams is None:
             fps_state.stuck_spool_restore_follower = False
@@ -1543,6 +1550,7 @@ class OAMSManager:
         if fps_state.following:
 
             fps_state.stuck_spool_restore_follower = False
+
             logging.info(
                 "OAMS: Restarted follower for %s spool %s after %s.",
                 fps_name,
@@ -1657,6 +1665,7 @@ class OAMSManager:
         fps_state.stuck_spool_retry_start_time = None
         fps_state.encoder_samples.clear()
 
+
     def _handle_printing_resumed(self, _eventtime):
         """Re-enable any followers that were paused due to a stuck spool."""
         for fps_name, fps_state in self.current_state.fps_state.items():
@@ -1682,6 +1691,7 @@ class OAMSManager:
                 )
 
 
+
     def _trigger_stuck_spool_pause(
         self,
         fps_name: str,
@@ -1700,6 +1710,7 @@ class OAMSManager:
 
         if oams is not None and spool_idx is not None:
             try:
+
                 oams.set_led_error(spool_idx, 1)
             except Exception:
                 logging.exception(
@@ -1731,6 +1742,7 @@ class OAMSManager:
 
         self._pause_printer_message(message)
 
+
     def _monitor_unload_speed_for_fps(self, fps_name):
         def _monitor_unload_speed(self, eventtime):
             #logging.info("OAMS: Monitoring unloading speed state: %s" % self.current_state.name)
@@ -1761,6 +1773,7 @@ class OAMSManager:
                 try:
                     encoder_value = oams.encoder_clicks
                 except Exception:
+
                     logging.exception(
                         "OAMS: Failed to read encoder while monitoring unload on %s",
                         fps_name,
@@ -1776,6 +1789,7 @@ class OAMSManager:
                 )
                 logging.info(
                     "OAMS[%d] Unload Monitor: Encoder diff %d",
+
                     getattr(oams, "oams_idx", -1),
                     encoder_diff,
                 )
@@ -1804,8 +1818,10 @@ class OAMSManager:
                         return self.printer.get_reactor().NEVER
             return eventtime + MONITOR_ENCODER_PERIOD
         return partial(_monitor_unload_speed, self)
+
     
     def _monitor_load_speed_for_fps(self, fps_name):
+n
         def _monitor_load_speed(self, eventtime):
             #logging.info("OAMS: Monitoring loading speed state: %s" % self.current_state.name)
             fps_state = self.current_state.fps_state[fps_name]
@@ -1837,6 +1853,7 @@ class OAMSManager:
                 try:
                     encoder_value = oams.encoder_clicks
                 except Exception:
+
                     logging.exception(
                         "OAMS: Failed to read encoder while monitoring load on %s",
                         fps_name,
@@ -1847,6 +1864,7 @@ class OAMSManager:
                 if len(fps_state.encoder_samples) < ENCODER_SAMPLES:
                     return eventtime + MONITOR_ENCODER_PERIOD
                 encoder_diff = abs(fps_state.encoder_samples[-1] - fps_state.encoder_samples[0])
+
                 logging.info(
                     "OAMS[%d] Load Monitor: Encoder diff %d",
                     getattr(oams, "oams_idx", -1),
@@ -1884,6 +1902,7 @@ class OAMSManager:
                         return self.printer.get_reactor().NEVER
             return eventtime + MONITOR_ENCODER_PERIOD
         return partial(_monitor_load_speed, self)
+
 
 
     def _monitor_stuck_spool_for_fps(self, fps_name):
@@ -2376,5 +2395,6 @@ class OAMSManager:
 
 
 def load_config(config):
+
 
     return OAMSManager(config)
