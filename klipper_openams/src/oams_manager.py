@@ -313,6 +313,7 @@ class FPSState:
         self.stuck_spool_retry_active: bool = False
         self.stuck_spool_retry_start_time: Optional[float] = None
         self.stuck_spool_retry_forward_direction: int = 1
+        self.stuck_spool_retry_timer: Optional[Any] = None
 
         # Clog detection
         self.clog_active: bool = False
@@ -348,6 +349,7 @@ class FPSState:
         self.stuck_spool_retry_active = False
         self.stuck_spool_retry_start_time = None
         self.stuck_spool_retry_forward_direction = 1
+        self.stuck_spool_retry_timer = None
         self.encoder_samples.clear()
 
     def reset_clog_tracker(self) -> None:
@@ -525,7 +527,7 @@ class OAMSManager:
             ):
                 fps_state.state_name = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
-                fps_state.reset_stuck_spool_state()
+                self._reset_fps_stuck_spool_state(fps_state)
                 fps_state.reset_clog_tracker()
                 self._ensure_forward_follower(
                     fps_name,
@@ -534,7 +536,7 @@ class OAMSManager:
                 )
             else:
                 fps_state.state_name = FPSLoadState.UNLOADED
-                fps_state.reset_stuck_spool_state()
+                self._reset_fps_stuck_spool_state(fps_state)
                 fps_state.reset_clog_tracker()
                 self._cancel_post_load_pressure_check(fps_state)
         
@@ -651,7 +653,7 @@ class OAMSManager:
             self.stop_monitors()
         for (fps_name, fps_state) in self.current_state.fps_state.items():
             fps_state.encoder_samples.clear()
-            fps_state.reset_stuck_spool_state()
+            self._reset_fps_stuck_spool_state(fps_state)
             self._cancel_post_load_pressure_check(fps_state)
 
         for oams_name, oam in self.oams.items():
@@ -1140,7 +1142,7 @@ class OAMSManager:
             fps_state.current_spool_idx = None
             fps_state.since = self.reactor.monotonic()
             self.current_group = None
-            fps_state.reset_stuck_spool_state()
+            self._reset_fps_stuck_spool_state(fps_state)
 
             fps_state.reset_clog_tracker()
 
@@ -1155,7 +1157,7 @@ class OAMSManager:
             fps_state.current_oams = oams.name
             fps_state.current_spool_idx = oams.current_spool
             fps_state.direction = 0
-            fps_state.reset_stuck_spool_retry()
+            self._reset_fps_stuck_spool_retry(fps_state)
         except Exception:
             logging.exception(
                 "OAMS: Failed to capture unload state for %s", fps_name
@@ -1178,7 +1180,7 @@ class OAMSManager:
             fps_state.current_group = None
             fps_state.current_spool_idx = None
             self.current_group = None
-            fps_state.reset_stuck_spool_state()
+            self._reset_fps_stuck_spool_state(fps_state)
 
             fps_state.reset_clog_tracker()
 
@@ -1217,7 +1219,7 @@ class OAMSManager:
                 continue
 
             try:
-                fps_state.reset_stuck_spool_retry()
+                self._reset_fps_stuck_spool_retry(fps_state)
                 fps_state.state_name = FPSLoadState.LOADING
                 fps_state.encoder = oam.encoder_clicks
                 fps_state.since = self.reactor.monotonic()
@@ -1254,7 +1256,7 @@ class OAMSManager:
                 fps_state.since = self.reactor.monotonic()
                 fps_state.direction = 1
                 self.current_group = group_name
-                fps_state.reset_stuck_spool_state()
+                self._reset_fps_stuck_spool_state(fps_state)
 
                 fps_state.reset_clog_tracker()
 
@@ -1274,7 +1276,7 @@ class OAMSManager:
             fps_state.current_oams = None
 
             fps_state.following = False
-            fps_state.reset_stuck_spool_state()
+            self._reset_fps_stuck_spool_state(fps_state)
             fps_state.reset_clog_tracker()
 
             self._cancel_post_load_pressure_check(fps_state)
@@ -1371,6 +1373,32 @@ class OAMSManager:
                 logging.exception("OAMS: Failed to cancel post-load pressure timer")
         fps_state.post_load_pressure_timer = None
         fps_state.post_load_pressure_start = None
+
+    def _cancel_stuck_spool_retry_timer(self, fps_state: "FPSState") -> None:
+        """Stop the pending stuck spool recovery completion timer, if any."""
+        timer = getattr(fps_state, "stuck_spool_retry_timer", None)
+        if timer is None:
+            return
+        try:
+            self.reactor.unregister_timer(timer)
+        except Exception:
+            logging.exception("OAMS: Failed to cancel stuck spool recovery timer")
+        fps_state.stuck_spool_retry_timer = None
+
+    def _reset_fps_stuck_spool_retry(self, fps_state: "FPSState") -> None:
+        """Clear retry metadata and cancel any pending recovery timer."""
+        self._cancel_stuck_spool_retry_timer(fps_state)
+        fps_state.reset_stuck_spool_retry()
+
+    def _reset_fps_stuck_spool_state(
+        self,
+        fps_state: "FPSState",
+        *,
+        preserve_restore: bool = False,
+    ) -> None:
+        """Clear latched stuck spool state and any scheduled recovery timer."""
+        self._cancel_stuck_spool_retry_timer(fps_state)
+        fps_state.reset_stuck_spool_state(preserve_restore=preserve_restore)
 
     def _schedule_post_load_pressure_check(
         self,
@@ -1569,13 +1597,15 @@ class OAMSManager:
         if fps_state.stuck_spool_retry_attempted or fps_state.stuck_spool_retry_active:
             return False
 
+        self._cancel_stuck_spool_retry_timer(fps_state)
+
         forward_direction = fps_state.direction if fps_state.direction in (0, 1) else 1
         reverse_direction = 0 if forward_direction == 1 else 1
 
         fps_state.stuck_spool_retry_attempted = True
         fps_state.stuck_spool_retry_active = True
         fps_state.stuck_spool_retry_forward_direction = forward_direction
-        fps_state.stuck_spool_retry_start_time = self.reactor.monotonic()
+        fps_state.stuck_spool_retry_start_time = None
         fps_state.encoder_samples.clear()
 
         spool_idx = fps_state.current_spool_idx
@@ -1593,6 +1623,25 @@ class OAMSManager:
             oams.set_oams_follower(1, reverse_direction)
             fps_state.following = True
             fps_state.direction = reverse_direction
+            now = self.reactor.monotonic()
+            fps_state.stuck_spool_retry_start_time = now
+            try:
+                timer = self.reactor.register_timer(
+                    partial(
+                        self._stuck_spool_recovery_timer_cb,
+                        fps_name,
+                        fps_state,
+                    ),
+                    now + STUCK_SPOOL_RECOVERY_REVERSE_TIME,
+                )
+                fps_state.stuck_spool_retry_timer = timer
+            except Exception:
+                fps_state.stuck_spool_retry_timer = None
+                logging.exception(
+                    "OAMS: Failed to schedule stuck spool recovery completion for %s spool %s",
+                    fps_name,
+                    spool_idx,
+                )
             logging.info(
                 "OAMS: Reversing follower for %s spool %s to clear suspected stuck spool for %.1fs.",
                 fps_name,
@@ -1610,7 +1659,20 @@ class OAMSManager:
             fps_state.direction = forward_direction
             fps_state.stuck_spool_retry_active = False
             fps_state.stuck_spool_retry_start_time = None
+            self._cancel_stuck_spool_retry_timer(fps_state)
             return False
+
+    def _stuck_spool_recovery_timer_cb(
+        self,
+        fps_name: str,
+        fps_state: "FPSState",
+        eventtime: float,
+    ) -> float:
+        """Timer callback to restore forward motion after reversing."""
+        fps_state.stuck_spool_retry_timer = None
+        oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+        self._complete_stuck_spool_recovery(fps_name, fps_state, oams)
+        return self.reactor.NEVER
 
     def _complete_stuck_spool_recovery(
         self,
@@ -1619,6 +1681,7 @@ class OAMSManager:
         oams: Optional[Any],
     ) -> None:
         """Restore normal follower direction after a recovery attempt."""
+        self._cancel_stuck_spool_retry_timer(fps_state)
         if not fps_state.stuck_spool_retry_active:
             return
 
@@ -1626,7 +1689,7 @@ class OAMSManager:
             oams = self.oams.get(fps_state.current_oams)
 
         if oams is None or fps_state.current_spool_idx is None:
-            fps_state.reset_stuck_spool_retry()
+            self._reset_fps_stuck_spool_retry(fps_state)
             return
 
         forward_direction = fps_state.stuck_spool_retry_forward_direction
@@ -1694,7 +1757,7 @@ class OAMSManager:
             return
 
         spool_idx = fps_state.current_spool_idx
-        fps_state.reset_stuck_spool_retry()
+        self._reset_fps_stuck_spool_retry(fps_state)
         if oams is None and fps_state.current_oams is not None:
             oams = self.oams.get(fps_state.current_oams)
 
@@ -1904,7 +1967,7 @@ class OAMSManager:
                                 "OAMS: Failed to clear stuck spool LED on %s while fps missing",
                                 fps_name,
                             )
-                fps_state.reset_stuck_spool_state()
+                self._reset_fps_stuck_spool_state(fps_state)
                 return eventtime + MONITOR_ENCODER_PERIOD
 
             if fps_state.state_name != FPSLoadState.LOADED:
@@ -1922,7 +1985,7 @@ class OAMSManager:
                                 "OAMS: Failed to clear stuck spool LED on %s while not loaded",
                                 fps_name,
                             )
-                fps_state.reset_stuck_spool_state()
+                self._reset_fps_stuck_spool_state(fps_state)
                 return eventtime + MONITOR_ENCODER_PERIOD
 
             oams = None
@@ -1941,7 +2004,7 @@ class OAMSManager:
                             "OAMS: Failed to clear stuck spool LED on %s without active spool",
                             fps_name,
                         )
-                fps_state.reset_stuck_spool_state()
+                self._reset_fps_stuck_spool_state(fps_state)
                 return eventtime + MONITOR_ENCODER_PERIOD
 
             try:
@@ -1961,8 +2024,9 @@ class OAMSManager:
                             fps_name,
                         )
 
-                fps_state.reset_stuck_spool_state(
-                    preserve_restore=fps_state.stuck_spool_restore_follower
+                self._reset_fps_stuck_spool_state(
+                    fps_state,
+                    preserve_restore=fps_state.stuck_spool_restore_follower,
                 )
 
                 return eventtime + MONITOR_ENCODER_PERIOD
@@ -1977,8 +2041,9 @@ class OAMSManager:
                             fps_name,
                         )
 
-                fps_state.reset_stuck_spool_state(
-                    preserve_restore=fps_state.stuck_spool_restore_follower
+                self._reset_fps_stuck_spool_state(
+                    fps_state,
+                    preserve_restore=fps_state.stuck_spool_restore_follower,
                 )
 
                 return eventtime + MONITOR_ENCODER_PERIOD
@@ -2031,7 +2096,7 @@ class OAMSManager:
                         "stuck spool recovery",
                     )
                 if not fps_state.stuck_spool_restore_follower:
-                    fps_state.reset_stuck_spool_state()
+                    self._reset_fps_stuck_spool_state(fps_state)
 
 
             return eventtime + MONITOR_ENCODER_PERIOD
