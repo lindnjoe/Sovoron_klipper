@@ -1,4 +1,5 @@
 
+
 # OpenAMS Manager
 #
 # Copyright (C) 2025 JR Lomas <lomas.jr@gmail.com>
@@ -295,6 +296,7 @@ class FPSState:
         # Motion monitoring
         self.encoder_samples = deque(maxlen=ENCODER_SAMPLES)  # Recent encoder readings
 
+
         # Follower state
         self.following: bool = False  # Whether follower mode is active
         self.direction: int = 0  # Follower direction (0=forward, 1=reverse)
@@ -313,6 +315,7 @@ class FPSState:
         self.stuck_spool_retry_active: bool = False
         self.stuck_spool_retry_start_time: Optional[float] = None
         self.stuck_spool_retry_forward_direction: int = 1
+
         self.stuck_spool_retry_timer: Optional[Any] = None
 
         # Clog detection
@@ -333,6 +336,7 @@ class FPSState:
         """Clear runout position tracking."""
         self.runout_position = None
         self.runout_after_position = None
+
 
     def reset_stuck_spool_state(self, preserve_restore: bool = False) -> None:
         """Clear any latched stuck spool indicators."""
