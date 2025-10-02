@@ -1153,6 +1153,7 @@ class OAMSManager:
             fps_state.since = self.reactor.monotonic()
             fps_state.current_oams = oams.name
             fps_state.current_spool_idx = oams.current_spool
+            fps_state.reset_stuck_spool_retry()
         except Exception:
             logging.exception(
                 "OAMS: Failed to capture unload state for %s", fps_name
@@ -1739,6 +1740,19 @@ class OAMSManager:
                 and self.reactor.monotonic() - fps_state.since
                 > MONITOR_ENCODER_UNLOADING_SPEED_AFTER
             ):
+                if fps_state.stuck_spool_retry_active:
+                    now = self.reactor.monotonic()
+                    if (
+                        fps_state.stuck_spool_retry_start_time is None
+                        or now - fps_state.stuck_spool_retry_start_time
+                        >= STUCK_SPOOL_RECOVERY_REVERSE_TIME
+                    ):
+                        self._complete_stuck_spool_recovery(
+                            fps_name,
+                            fps_state,
+                            oams,
+                        )
+                    return eventtime + MONITOR_ENCODER_PERIOD
                 if oams is None:
                     return eventtime + MONITOR_ENCODER_PERIOD
                 try:
@@ -1763,19 +1777,28 @@ class OAMSManager:
                     encoder_diff,
                 )
                 if encoder_diff < MIN_ENCODER_DIFF:
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 1)
-                    except Exception:
-                        logging.exception(
-                            "OAMS: Failed to set unload LED on %s",
+                    if not fps_state.stuck_spool_retry_attempted:
+                        if self._attempt_stuck_spool_recovery(
                             fps_name,
+                            fps_state,
+                            oams,
+                        ):
+                            return eventtime + MONITOR_ENCODER_PERIOD
+                    if fps_state.stuck_spool_retry_active:
+                        return eventtime + MONITOR_ENCODER_PERIOD
+                    if fps_state.stuck_spool_retry_attempted:
+                        message = (
+                            "Printer paused because the unloading speed of the moving filament was too low"
                         )
-                    self._pause_printer_message(
-                        "Printer paused because the unloading speed of the moving filament was too low"
-                    )
-                    logging.info("after unload speed too low")
-                    self.stop_monitors()
-                    return self.printer.get_reactor().NEVER
+                        self._trigger_stuck_spool_pause(
+                            fps_name,
+                            fps_state,
+                            oams,
+                            message,
+                        )
+                        logging.info("after unload speed too low")
+                        self.stop_monitors()
+                        return self.printer.get_reactor().NEVER
             return eventtime + MONITOR_ENCODER_PERIOD
         return partial(_monitor_unload_speed, self)
     
