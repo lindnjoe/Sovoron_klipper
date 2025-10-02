@@ -296,7 +296,6 @@ class FPSState:
         # Motion monitoring
         self.encoder_samples = deque(maxlen=ENCODER_SAMPLES)  # Recent encoder readings
 
-
         # Follower state
         self.following: bool = False  # Whether follower mode is active
         self.direction: int = 0  # Follower direction (0=forward, 1=reverse)
@@ -315,7 +314,6 @@ class FPSState:
         self.stuck_spool_retry_active: bool = False
         self.stuck_spool_retry_start_time: Optional[float] = None
         self.stuck_spool_retry_forward_direction: int = 1
-
         self.stuck_spool_retry_timer: Optional[Any] = None
 
         # Clog detection
@@ -336,7 +334,6 @@ class FPSState:
         """Clear runout position tracking."""
         self.runout_position = None
         self.runout_after_position = None
-
 
     def reset_stuck_spool_state(self, preserve_restore: bool = False) -> None:
         """Clear any latched stuck spool indicators."""
@@ -1975,6 +1972,14 @@ class OAMSManager:
                 return eventtime + MONITOR_ENCODER_PERIOD
 
             if fps_state.state_name != FPSLoadState.LOADED:
+                if fps_state.state_name in (
+                    FPSLoadState.LOADING,
+                    FPSLoadState.UNLOADING,
+                ):
+                    # Allow the load/unload monitors to manage the stuck spool retry
+                    # lifecycle so the automatic recovery attempt can complete.
+                    return eventtime + MONITOR_ENCODER_PERIOD
+
                 if (
                     fps_state.stuck_spool_active
                     and fps_state.current_oams is not None
