@@ -25,6 +25,7 @@ AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout trigge
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08  # Pressure indicating the spool is no longer feeding
 STUCK_SPOOL_DWELL = 8.0  # Seconds the pressure must remain below the threshold before pausing
 STUCK_SPOOL_RECOVERY_REVERSE_TIME = 2.0  # Interval to reverse follow direction for recovery
+STUCK_SPOOL_RECOVERY_SETTLE_TIME = 0.1  # Delay between stopping and reversing follower
 
 
 CLOG_PRESSURE_TARGET = 0.50
@@ -315,6 +316,8 @@ class FPSState:
         self.stuck_spool_retry_start_time: Optional[float] = None
         self.stuck_spool_retry_forward_direction: int = 1
         self.stuck_spool_retry_timer: Optional[Any] = None
+        self.stuck_spool_retry_encoder_start: Optional[int] = None
+        self.stuck_spool_retry_forced: bool = False
 
         # Clog detection
         self.clog_active: bool = False
@@ -351,6 +354,8 @@ class FPSState:
         self.stuck_spool_retry_start_time = None
         self.stuck_spool_retry_forward_direction = 1
         self.stuck_spool_retry_timer = None
+        self.stuck_spool_retry_encoder_start = None
+        self.stuck_spool_retry_forced = False
         self.encoder_samples.clear()
 
     def reset_clog_tracker(self) -> None:
@@ -1615,6 +1620,30 @@ class OAMSManager:
                 fps_name,
                 spool_idx,
             )
+        fps_state.following = False
+        fps_state.direction = forward_direction
+
+        if STUCK_SPOOL_RECOVERY_SETTLE_TIME > 0:
+            try:
+                self.reactor.pause(
+                    self.reactor.monotonic() + STUCK_SPOOL_RECOVERY_SETTLE_TIME
+                )
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to pause before reversing follower on %s spool %s",
+                    fps_name,
+                    spool_idx,
+                )
+
+        encoder_start = None
+        try:
+            encoder_start = oams.encoder_clicks
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to sample encoder before stuck spool recovery on %s spool %s",
+                fps_name,
+                spool_idx,
+            )
 
         try:
             oams.set_oams_follower(1, reverse_direction)
@@ -1630,6 +1659,8 @@ class OAMSManager:
             self._cancel_stuck_spool_retry_timer(fps_state)
             # Allow a future recovery attempt since the reverse command failed.
             fps_state.stuck_spool_retry_attempted = False
+            fps_state.stuck_spool_retry_encoder_start = None
+            fps_state.stuck_spool_retry_forced = False
             self._enable_follower(
                 fps_name,
                 fps_state,
@@ -1647,6 +1678,7 @@ class OAMSManager:
         fps_state.stuck_spool_retry_start_time = now
         fps_state.following = True
         fps_state.direction = reverse_direction
+        fps_state.stuck_spool_retry_encoder_start = encoder_start
 
         try:
             timer = self.reactor.register_timer(
@@ -1717,6 +1749,17 @@ class OAMSManager:
                 spool_idx,
             )
 
+        encoder_start = fps_state.stuck_spool_retry_encoder_start
+        encoder_end = None
+        try:
+            encoder_end = oams.encoder_clicks
+        except Exception:
+            logging.exception(
+                "OAMS: Failed to sample encoder after stuck spool recovery on %s spool %s",
+                fps_name,
+                spool_idx,
+            )
+
         fps_state.following = False
         fps_state.direction = forward_direction
 
@@ -1728,6 +1771,36 @@ class OAMSManager:
             "stuck spool recovery",
         )
 
+        movement = None
+        if encoder_start is not None and encoder_end is not None:
+            movement = abs(encoder_end - encoder_start)
+            logging.info(
+                "OAMS: Stuck spool recovery for %s spool %s moved encoder by %d clicks.",
+                fps_name,
+                spool_idx,
+                movement,
+            )
+            if movement < MIN_ENCODER_DIFF:
+                if not fps_state.stuck_spool_retry_forced:
+                    logging.warning(
+                        "OAMS: Reverse follower on %s spool %s reported < %d encoder clicks; allowing one more retry.",
+                        fps_name,
+                        spool_idx,
+                        MIN_ENCODER_DIFF,
+                    )
+                    fps_state.stuck_spool_retry_attempted = False
+                    fps_state.stuck_spool_retry_forced = True
+                else:
+                    logging.warning(
+                        "OAMS: Reverse follower on %s spool %s still reported < %d encoder clicks after retry.",
+                        fps_name,
+                        spool_idx,
+                        MIN_ENCODER_DIFF,
+                    )
+            else:
+                fps_state.stuck_spool_retry_forced = False
+
+        fps_state.stuck_spool_retry_encoder_start = None
         fps_state.stuck_spool_retry_active = False
         fps_state.stuck_spool_retry_start_time = None
         fps_state.encoder_samples.clear()
