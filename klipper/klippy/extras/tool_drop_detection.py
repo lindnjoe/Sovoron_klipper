@@ -343,11 +343,6 @@ class ToolDropDetection:
             
     def _reset(self):
         _ = None
-        #for n in self._targets(None):
-            #p = self.pollers.pop(n, None)
-            #if p:
-                #p.stop();
-    # -----------------------------------------------------------------------------
 
     cmd_TDD_START_help = 'optional [ACCEL=…] [LIMIT_G=<g-force>] [LIMIT_ANGLE=<deg>] [LIMIT_PITCH=<deg>] [LIMIT_ROLL=<deg>] Start crash detection with optional limits'
     def _cmd_start_crash_detect(self, gcmd):  
