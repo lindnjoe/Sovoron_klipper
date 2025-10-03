@@ -61,12 +61,6 @@ def _average_samples(samples: Sequence[Tuple[float, float, float]], amount: int 
     return (_STATISTIC_FN(xs), _STATISTIC_FN(ys), _STATISTIC_FN(zs))
 
 def _parse_default_line(raw: str) -> Dict[str, _Number]:
-    """
-    Parse a user-supplied default line such as one of the following:
-        "[g:1.0, p:0.0°, r:-93.24°, vec:(0,0,1)]"
-        "g=1    p:-1.5   r:90   v:(0,0,1)"
-        "g 1  pitch -2  roll 45  vector 0,0,1"
-    """
     if not raw:
         return {}
     tokens = re.split(r'\s*,\s*|\s{2,}', raw.strip().lstrip('[').rstrip(']'))
