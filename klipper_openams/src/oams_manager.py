@@ -21,7 +21,7 @@ MONITOR_ENCODER_UNLOADING_SPEED_AFTER = 2.0  # seconds
 AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout triggers
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08  # Pressure indicating the spool is no longer feeding
-STUCK_SPOOL_DWELL = 4.5  # Seconds the pressure must remain below the threshold before pausing
+STUCK_SPOOL_DWELL = 3.5  # Seconds the pressure must remain below the threshold before pausing
 
 
 CLOG_PRESSURE_TARGET = 0.50
