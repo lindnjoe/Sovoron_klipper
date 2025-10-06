@@ -8,13 +8,13 @@ from . import adxl345
 
 _Number = Union[float, Tuple[float, float, float]]
 
-# ----------------------------- constants ------------------------------
+# ───────────────────────────── constants ──────────────────────────────
 MAX_POLL_FREQ = 20.0                        # Hz - upper ceiling we will clamp to
 FREEFALL_MS2   = 9.80665 * 1000.0           # 1 g in mm/s^2
 _DWELL_GRAB    = 0.1                        # dwell for one-shot queries
 _RATE_CHOICES  = adxl345.QUERY_RATES        # supported BW_RATE values
 _STATISTIC_FN  = statistics.median
-# ----------------------------- helpers --------------------------------
+# ───────────────────────────── helpers ────────────────────────────────
 
 def _vector_to_angles(vector, defaults = {}):
     (ax, ay, az) = vector
@@ -63,7 +63,7 @@ def _average_samples(samples: Sequence[Tuple[float, float, float]], amount: int 
 def _parse_default_line(raw: str) -> Dict[str, _Number]:
     """
     Parse a user-supplied default line such as one of the following:
-        "[g:1.0, p:0.0�, r:-93.24�, vec:(0,0,1)]"
+        "[g:1.0, p:0.0°, r:-93.24°, vec:(0,0,1)]"
         "g=1    p:-1.5   r:90   v:(0,0,1)"
         "g 1  pitch -2  roll 45  vector 0,0,1"
     """
@@ -95,11 +95,11 @@ def _parse_default_line(raw: str) -> Dict[str, _Number]:
 
     return out
 
-# ----------------------------- main object ----------------------------
+# ───────────────────────────── main object ────────────────────────────
 class ToolDropDetection:
     def __init__(self, cfg):
         self.printer = cfg.get_printer()
-        # -- event handlers -----------------------------------------------------------
+        # ── event handlers ───────────────────────────────────────────────────────────
         self.printer.register_event_handler("klippy:connect",           self._klippy_connect)
         self.printer.register_event_handler("klippy:ready",             self._klippy_ready)
         self.printer.register_event_handler("klippy:firmware_restart",  self._reset)
@@ -113,13 +113,13 @@ class ToolDropDetection:
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode_macro = gcode_macro = self.printer.load_object(cfg, 'gcode_macro')
 
-        # -------------------------------------------------[ config ]-------------------------------------------------
-        # ----| primary
+        # ─────────────────────────────────────────────────[ config ]─────────────────────────────────────────────────
+        # ────| primary
         raw_accelerometers          = cfg.getlist ('accelerometer',         '') # Parse ALL accelerometer entries (multi-line or comma-separated)
         self.def_freq               = cfg.getfloat('polling_freq',          1.00,   minval=0.01,    maxval=MAX_POLL_FREQ)
         req_rate                    = cfg.getint  ('polling_rate',          10) # checked/adjusted later
 
-        # ----| crash detection stuff (disabled if not set)
+        # ────| crash detection stuff (disabled if not set)
         self.peak_g_thr             = cfg.getfloat('peak_g_threshold',      None,   minval=0.01)
         self.rot_threshold          = cfg.getfloat('rotation_threshold',    None,   minval=0.0,     maxval=180.0)
         self.pitch_threshold        = cfg.getfloat('pitch_threshold',       None,   minval=0.0,     maxval=180.0)
@@ -128,12 +128,12 @@ class ToolDropDetection:
         self.drop_mintime           = cfg.getfloat('drop_mintime',          1.0,    minval=0.0)
         self.drop_template          = gcode_macro.load_template(cfg, 'crash_gcode', '')
 
-        # ----| angle checking stuff
+        # ────| angle checking stuff
         self.hysteresis             = cfg.getfloat('angle_hysteresis',      5.0,    minval=0.1,     maxval=180.0)
         self.angle_exceed_template = self.gcode_macro.load_template(cfg, 'angle_exceed_gcode', '')
         self.angle_return_template = self.gcode_macro.load_template(cfg, 'angle_return_gcode', '')
 
-        # ----| secondary
+        # ────| secondary
         self.decimals               = cfg.getint('decimals', 3, minval=0, maxval=10)
 
         self.session_time           = cfg.getfloat('session_time',          1.00,    minval=0.01,    maxval=60)
@@ -142,7 +142,7 @@ class ToolDropDetection:
         statistics_mode = {'median': statistics.median,'mean'  : statistics.mean,}
         global _STATISTIC_FN 
         _STATISTIC_FN = cfg.getchoice('samples_result', statistics_mode, 'median')
-        # ----| ensure valid if not errored before.
+        # ────| ensure valid if not errored before.
         self.def_rate = min(_RATE_CHOICES, key=lambda x: abs(x - req_rate))
         if self.def_rate != req_rate:
             self.startup_report += f"[tool_drop_detection] polling_rate {req_rate} Hz is not " f"supported; using closest {self.def_rate} Hz instead."
@@ -152,10 +152,10 @@ class ToolDropDetection:
             raise cfg.error("tool_drop_detection: the 'accelerometer' option must list at least one "
                             "ADXL345 section/alias (e.g. 'T1,T2' or multiple lines).")
 
-        # -- build two-way name maps -----------------------------------------------
+        # ── build two-way name maps ───────────────────────────────────────────────
         self._build_name_mappings(raw_acc)
 
-        # -- prepare per-axis defaults --------------------------
+        # ── prepare per-axis defaults ──────────────────────────
         self.config_defaults = {}
         self.defaults = {}
 
@@ -175,9 +175,9 @@ class ToolDropDetection:
             short: _Reader(self.printer, full)
             for full, short in self.full_to_short.items()
         }
-        self.pollers: Dict[str, _Poller] = {}  # -- created on TDD_POLLING_START
+        self.pollers: Dict[str, _Poller] = {}  # ── created on TDD_POLLING_START
 
-        # -- shared UI data store, keyed by SHORT alias -----------------------------
+        # ── shared UI data store, keyed by SHORT alias ─────────────────────────────
         self._data = {
             short: {
                 'current':  {            # set by _cmd_query  / poller
@@ -203,7 +203,7 @@ class ToolDropDetection:
         }
         #self.printer.add_object('tool_drop_detection', self) # dunno
 
-        # -- register gcode commands -----------------------------------------------------------
+        # ── register gcode commands ───────────────────────────────────────────────────────────
         self.gcode.register_command('TDD_POLLING_START',    self._cmd_polling_start,        desc=self.cmd_TDD_POLLING_START_help)
         self.gcode.register_command('TDD_POLLING_STOP',     self._cmd_polling_stop,         desc=self.cmd_TDD_POLLING_STOP_help)
         self.gcode.register_command('TDD_POLLING_RESET',    self._cmd_polling_reset,        desc=self.cmd_TDD_POLLING_RESET_help)
@@ -237,12 +237,12 @@ class ToolDropDetection:
             self.gcode.respond_info(self.startup_report)
             self.startup_report = ""
 
-    # --- homing handlers --------------------------------------------
+    # ─── homing handlers ────────────────────────────────────────────
     def _on_home_begin(self, *_):
         self._homing = True
         r = self.printer.get_reactor()
         for p in self.pollers.values():
-            now = p.chip.mcu.estimated_print_time(r.monotonic())  # ADXL�s MCU
+            now = p.chip.mcu.estimated_print_time(r.monotonic())  # ADXL’s MCU
             p.helper.request_start_time = now
             p.helper.request_end_time   = now   # keep window sane immediately
 
@@ -251,11 +251,11 @@ class ToolDropDetection:
         r = self.printer.get_reactor()
         for p in self.pollers.values():
             p.reset()  # zero session + clear deque
-            now = p.chip.mcu.estimated_print_time(r.monotonic())  # ADXL�s MCU
+            now = p.chip.mcu.estimated_print_time(r.monotonic())  # ADXL’s MCU
             p.helper.request_start_time = now
             p.helper.request_end_time   = now
 
-    # --- COMMON CONVERSION ----------------------------------------------------
+    # ─── COMMON CONVERSION ────────────────────────────────────────────────────
     def _build_context(self, accel_name, pitch, roll, angle, mag, peak):
         """Return the dict passed to templates"""
         rnd = self.decimals
@@ -303,7 +303,7 @@ class ToolDropDetection:
             gcmd.respond_info(f"RATE {rate_req} not supported, using {rate}")
         return rate
 
-    # --- POLLING COMMANDS --------------------------------------------------------------------------
+    # ─── POLLING COMMANDS ──────────────────────────────────────────────────────────────────────────
     cmd_TDD_POLLING_START_help = """[ACCEL] [FREQ] [RATE] - Start polling accelerometer(s) \
     optional frequency and data rate to overwrite config defined."""
     def _cmd_polling_start(self, gcmd):
@@ -353,9 +353,9 @@ class ToolDropDetection:
             #p = self.pollers.pop(n, None)
             #if p:
                 #p.stop();
-    # -----------------------------------------------------------------------------
+    # ─────────────────────────────────────────────────────────────────────────────
 
-    cmd_TDD_START_help = 'optional [ACCEL=�] [LIMIT_G=<g-force>] [LIMIT_ANGLE=<deg>] [LIMIT_PITCH=<deg>] [LIMIT_ROLL=<deg>] Start crash detection with optional limits'
+    cmd_TDD_START_help = 'optional [ACCEL=…] [LIMIT_G=<g-force>] [LIMIT_ANGLE=<deg>] [LIMIT_PITCH=<deg>] [LIMIT_ROLL=<deg>] Start crash detection with optional limits'
     def _cmd_start_crash_detect(self, gcmd):  
         targets = self._targets(gcmd)
 
@@ -364,7 +364,7 @@ class ToolDropDetection:
         lim_roll  = gcmd.get_float('LIMIT_ROLL',  None)
         lim_g     = gcmd.get_float('LIMIT_G',     None)
 
-        # -- 3  Derive effective thresholds with clear precedence -----------------
+        # ── 3  Derive effective thresholds with clear precedence ─────────────────
         g_limit = lim_g if lim_g is not None else self.peak_g_thr
 
         if lim_angle is not None:
@@ -388,7 +388,7 @@ class ToolDropDetection:
         if g_limit is None and angle_limit is None and pitch_limit is None and roll_limit is None:
             raise gcmd.error("No crash-detection limits supplied and nothing configured")
 
-        # -- 4  Program each poller & echo armed thresholds -----------------------
+        # ── 4  Program each poller & echo armed thresholds ───────────────────────
         for name in targets:
             poller = self.pollers.get(name)
             if poller is None:
@@ -406,14 +406,14 @@ class ToolDropDetection:
             # build a concise per-accel confirmation message
             msg = [f"armed {name}"]
             if g_limit is not None:
-                msg.append(f"�{g_limit} g")
+                msg.append(f"±{g_limit} g")
             if angle_limit is not None:
-                msg.append(f"vector �{angle_limit}�")
+                msg.append(f"vector ±{angle_limit}°")
             else:
                 if pitch_limit is not None:
-                    msg.append(f"pitch �{pitch_limit}�")
+                    msg.append(f"pitch ±{pitch_limit}°")
                 if roll_limit is not None:
-                    msg.append(f"roll �{roll_limit}�")
+                    msg.append(f"roll ±{roll_limit}°")
             gcmd.respond_info(" | ".join(msg))
 
 
@@ -475,7 +475,7 @@ class ToolDropDetection:
             bv  = d.get('base_vector', (0.0,0.0,0.0))
             vx,vy,vz = (round(bv[i], 3) for i in range(3))
 
-            gcmd.respond_info(f"default_{short}: [g:{bg}  p:{bp}�  r:{br}�  vec:({vx},{vy},{vz})]")
+            gcmd.respond_info(f"default_{short}: [g:{bg}  p:{bp}°  r:{br}°  vec:({vx},{vy},{vz})]")
 
     cmd_TDD_QUERY_help = '[ACCEL] - Query current accelerometer orientation data, prints to console and updates objects current'
     def _cmd_query(self: ToolDropDetection, gcmd):
@@ -502,15 +502,15 @@ class ToolDropDetection:
             rot = cur['rotation']
             gcmd.respond_info(
                 f"[{short}] mag={cur['magnitude']}g  "
-                f"pitch={rot['pitch']}� roll={rot['roll']}� "
-                f"angle={rot['vector']}�"
+                f"pitch={rot['pitch']}° roll={rot['roll']}° "
+                f"angle={rot['vector']}°"
             )
 
 
 def load_config(cfg):
     return ToolDropDetection(cfg)
 
-# ----------------------------- one-shot / window reader --------------
+# ───────────────────────────── one-shot / window reader ──────────────
 class _Reader:
     def __init__(self, printer, name):
         self.printer, self.name = printer, name
@@ -525,7 +525,7 @@ class _Reader:
         return self._chip
 
     def _capture(self, dwell_s):
-        """Low-level helper: open client ? dwell ? close ? return raw list."""
+        """Low-level helper: open client → dwell → close → return raw list."""
         chip = self._chip_obj()
         if chip is None:
             return []
@@ -543,11 +543,11 @@ class _Reader:
             sam[-1].accel_x, sam[-1].accel_y, sam[-1].accel_z)
 
     def window(self, duration_s: float = 1.0):# -> list[tuple[Any, Any, Any]]:
-        """Return **list**[tuple(x,y,z)] gathered over �duration_s�."""
+        """Return **list**[tuple(x,y,z)] gathered over ‘duration_s’."""
         raw = self._capture(duration_s)
         return [(s.accel_x, s.accel_y, s.accel_z) for s in raw]
 
-# ----------------------------- continuous poller ----------------------
+# ───────────────────────────── continuous poller ──────────────────────
 class _Poller:
     def __init__(self, parent, name: str, freq: float, rate: int):
         self.parent = parent
@@ -567,7 +567,7 @@ class _Poller:
         self.drop_timer   = None       # used for hit-and-run logic
 
         self.defaults  = parent.defaults[name]
-        # --- WINDOW FOR AVREAGING---------------------------------------------------------
+        # ─── WINDOW FOR AVREAGING─────────────────────────────────────────────────────────
         self.xyz_history: Deque[Tuple[float,float,float]] = collections.deque(maxlen=max(1, int(parent.session_time * freq)))
 
         # ensure correct BW_RATE
@@ -582,7 +582,7 @@ class _Poller:
         self.reactor = parent.printer.get_reactor()
         self.timer = self.reactor.register_timer(self._tick, self.reactor.monotonic())
         
-        # --- PRIME WINDOW ---------------------------------------------------------
+        # ─── PRIME WINDOW ─────────────────────────────────────────────────────────
     def _update_reference(self, xyz_samples):
         if not xyz_samples:
             return
@@ -617,7 +617,7 @@ class _Poller:
         current['vector'] = {'x': round(gx, self.dec), 'y': round(gy, self.dec), 'z': round(gz, self.dec)}
         current['rotation'] = {'pitch':round(pitch, self.dec), 'roll':round(roll, self.dec), 'vector':round(angle , self.dec)}
 
-        # --- UPDATE STATE ---------------------------------------
+        # ─── UPDATE STATE ───────────────────────────────────────
     def _update_session(self, xyz_samples):
         session = self.parent._data[self.short]['session']
         self.xyz_history.append(_average_samples(xyz_samples)) # add to rolling history
@@ -642,13 +642,13 @@ class _Poller:
         tr        = self.parent.roll_threshold
         tv        = self.parent.rot_threshold     # vector-angle threshold (deg)
 
-        use_pr = (tp is not None) or (tr is not None)   # �pitch or roll?�
-        use_tv = (not use_pr) and (tv is not None)      # �vector only�
+        use_pr = (tp is not None) or (tr is not None)   # “pitch or roll?”
+        use_tv = (not use_pr) and (tv is not None)      # “vector only”
 
-        # --- evaluate thresholds ------------------------------------------
+        # ─── evaluate thresholds ------------------------------------------
         # initialise so they are always defined
         pitch_over = roll_over = angle_over = False
-        pitch_back = roll_back = True        # True so they don�t veto `back`
+        pitch_back = roll_back = True        # True so they don’t veto `back`
         angle_back = True
 
         if use_pr:
@@ -670,7 +670,7 @@ class _Poller:
         else:
             return
 
-        # --- state machine & templating -----------------------------------
+        # ─── state machine & templating -----------------------------------
         over = pitch_over or roll_over or angle_over
         back = pitch_back and roll_back and angle_back
 
@@ -685,7 +685,7 @@ class _Poller:
                 self.parent.run_gcode(self.parent.angle_return_template, ctx)
 
     def _check_drop(self, angle, pitch, roll, peak, context):
-        # --- PEAK-G drop detection (instant) ---------------------------
+        # ─── PEAK-G drop detection (instant) ───────────────────────────
         if not self.parent.drop_template:
             return
         
@@ -693,7 +693,7 @@ class _Poller:
             self.drop_enabled = False # disable after triggering.
             self.parent.run_gcode(self.parent.drop_template, context)
 
-        # --- crash gcode threshold drop detection ------------------------
+        # ─── crash gcode threshold drop detection ────────────────────────
         if self.drop_enabled:
             if self.angle_limit is not None:
                 over_ang = angle is not None and angle >= self.angle_limit
@@ -713,12 +713,12 @@ class _Poller:
                     self.parent.run_gcode(self.parent.drop_template, context)
             else:
                 self.drop_timer = None
-    # --- POLLER TICK ---------------------------------------------------
+    # ─── POLLER TICK ───────────────────────────────────────────────────
     def _tick(self, ev):
-        # -------------------- dont bug MCUs while homing
+        # ──────────────────── dont bug MCUs while homing
         if self.parent._homing:
             return ev + self.period
-        # -------------------- timing stuffs --------------------
+        # ──────────────────── timing stuffs ────────────────────
         cur_pt = self.chip.mcu.estimated_print_time(self.reactor.monotonic()) # USE ADXLS MCU TIME
         self.helper.request_end_time = cur_pt
 
@@ -736,7 +736,7 @@ class _Poller:
         if not samples:
             return ev + self.period
         
-        # -------------------- actual values get gotten, set last time etc... --------------------
+        # ──────────────────── actual values get gotten, set last time etc... ────────────────────
         sample_ts = samples[-1].time
         self.helper.request_start_time = sample_ts # tell it to void anything before "samples[-1].time" (we got that now, dont need it again)
         while self.helper.msgs and self.helper.msgs[0]['data'][-1][0] < sample_ts: #todo check if this actually needed? cant hurt i think. (prob very needed)
@@ -746,14 +746,14 @@ class _Poller:
         
         current_average = _average_samples(xyz_samples, -self.parent.current_samples)
     
-        # --------------------
+        # ────────────────────
         cur_vector          = _raw_to_vector(current_average, self.defaults)
         cur_pitch, cur_roll = _vector_to_angles(cur_vector, self.defaults)
         cur_mag             = _vector_to_magnitude(cur_vector)
         cur_vector_angle    = _vector_angle(cur_vector, self.defaults)
 
-        self._update_session(xyz_samples)       #--[ session always rolling with time.       
-        self._update_current(current_average)   #--[ current ones, always fairly up to date.
+        self._update_session(xyz_samples)       #──[ session always rolling with time.       
+        self._update_current(current_average)   #──[ current ones, always fairly up to date.
 
         cur_peak = max(_vector_to_magnitude(_raw_to_vector(v, self.defaults)) for v in xyz_samples)
         template_context = self.parent._build_context(self.name, cur_pitch, cur_roll, cur_vector_angle, cur_mag, cur_peak)
