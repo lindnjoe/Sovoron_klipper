@@ -31,7 +31,7 @@ The `AFC/` folder defines lane speeds, LED behaviour, macro sequencing (load, po
 
 ## Updating for your machine
 
-- Regenerate or edit the CAN UUIDs for every MCU (`printer.cfg`, `oamsc.cfg`, and each `tool-EBBT*.cfg`) after flashing new hardware.
+- Edit the CAN UUIDs for every MCU (`printer.cfg`, `oamsc.cfg`, and each `tool-EBBT*.cfg`) after flashing new hardware.
 - Adjust the tool dock coordinates (`params_park_*`) and offsets in each tool file whenever a dock is shimmed or a new nozzle is fitted.
 - Calibrate the OpenAMS `ptfe_length`, `hub_hes_on`, and FPS thresholds in `oamsc.cfg` after any tubing or hub maintenance so the manager loads and unloads reliably.
 - Tune AFC speeds, LED colours, and macro toggles in `AFC.cfg` to match your filament handling preferences before running long jobs.
