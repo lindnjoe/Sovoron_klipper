@@ -316,3 +316,47 @@ class AFC_moonraker:
         else:
             self.logger.info(f"SpoolID: {id} not found")
         return resp
+
+    def list_spools(self):
+        """
+        Fetch a list of spools from spoolman via moonraker.
+
+        :return: Returns a list of spool dictionaries or an empty list when no spools are returned
+        """
+        request_payload = {
+            "request_method": "GET",
+            "path": "/v1/spool"
+        }
+        spool_url = urljoin(self.host, 'server/spoolman/proxy')
+        req = Request(spool_url, urlencode(request_payload).encode())
+
+        resp = self._get_results(req)
+        if resp is None:
+            return []
+
+        # Spoolman may return either a dictionary keyed by id or a list of spools depending on the
+        # version. Normalise the response to a list so the callers can iterate over the items.
+        if isinstance(resp, dict):
+            if 'items' in resp and isinstance(resp['items'], list):
+                return resp['items']
+            return list(resp.values())
+        if isinstance(resp, list):
+            return resp
+        return []
+
+    def update_spool_extra(self, spool_id:int, extra:dict):
+        """
+        Update the extra data for a spool in spoolman.
+
+        :param spool_id: Spool identifier to update
+        :param extra: Dictionary of extra values to send to spoolman
+        """
+        request_payload = {
+            "request_method": "PATCH",
+            "path": f"/v1/spool/{spool_id}",
+            "body": json.dumps({"extra": extra})
+        }
+        spool_url = urljoin(self.host, 'server/spoolman/proxy')
+        req = Request(spool_url, urlencode(request_payload).encode())
+
+        return self._get_results(req)
