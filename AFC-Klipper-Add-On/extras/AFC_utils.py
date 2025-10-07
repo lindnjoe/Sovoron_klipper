@@ -307,12 +307,29 @@ class AFC_moonraker:
             "request_method": "GET",
             "path": f"/v1/spool/{id}"
         }
-        spool_url = urljoin(self.host, 'server/spoolman/proxy')
-        req = Request( spool_url, urlencode(request_payload).encode() )
-
-        resp = self._get_results(req)
-        if resp is not None:
-            resp = resp
-        else:
+        resp = self._spoolman_proxy(request_payload)
+        if resp is None:
             self.logger.info(f"SpoolID: {id} not found")
         return resp
+
+    def list_spools(self):
+        """Return all spools available in Spoolman."""
+        request_payload = {
+            "request_method": "GET",
+            "path": "/v1/spool"
+        }
+        return self._spoolman_proxy(request_payload)
+
+    def update_spool(self, spool_id: int, data: dict):
+        """Patch a spool entry in Spoolman with the provided payload."""
+        request_payload = {
+            "request_method": "PATCH",
+            "path": f"/v1/spool/{spool_id}",
+            "body": json.dumps(data)
+        }
+        return self._spoolman_proxy(request_payload)
+
+    def _spoolman_proxy(self, request_payload: dict):
+        spool_url = urljoin(self.host, 'server/spoolman/proxy')
+        req = Request(spool_url, urlencode(request_payload).encode())
+        return self._get_results(req)
