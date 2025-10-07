@@ -325,11 +325,16 @@ class AFC_moonraker:
         request_payload = {
             "request_method": "PATCH",
             "path": f"/v1/spool/{spool_id}",
-            "body": json.dumps(data)
+            "body": data
         }
         return self._spoolman_proxy(request_payload)
 
     def _spoolman_proxy(self, request_payload: dict):
         spool_url = urljoin(self.host, 'server/spoolman/proxy')
-        req = Request(spool_url, urlencode(request_payload).encode())
+        data = json.dumps(request_payload).encode()
+        req = Request(
+            spool_url,
+            data=data,
+            headers={'Content-Type': 'application/json'}
+        )
         return self._get_results(req)
