@@ -268,88 +268,11 @@ class AFCSpool:
         """
         Helper function for clearing out lane spool values
         """
-        previous_spool_id = cur_lane.spool_id
         cur_lane.spool_id = ''
         cur_lane.material = ''
         cur_lane.color = ''
         cur_lane.weight = 0
         cur_lane.extruder_temp = None
-        if self.afc.spoolman is not None and previous_spool_id:
-            self._clear_loaded_lane_extra(previous_spool_id)
-
-    def _get_lane_identifier(self, cur_lane):
-        lane_name = getattr(cur_lane, 'name', '')
-        digits = ''.join(ch for ch in lane_name if ch.isdigit())
-        return digits if digits else lane_name
-
-    def _normalize_spool_id(self, spool_id):
-        if spool_id in (None, '', 0):
-            return None
-        try:
-            return int(spool_id)
-        except (TypeError, ValueError):
-            self.logger.debug(f"Unable to convert spool id '{spool_id}' to int for loaded lane extra update")
-            return None
-
-    def _write_loaded_lane_extra(self, spool_id, lane_identifier, spool_data=None):
-        try:
-            if spool_data is None:
-                spool_data = self.afc.moonraker.get_spool(spool_id)
-            if spool_data is None:
-                return False
-            extras = dict(spool_data.get('extra') or {})
-            changed = False
-            if lane_identifier is None:
-                if extras.pop('loaded_lane', None) is not None:
-                    changed = True
-            else:
-                lane_identifier = str(lane_identifier)
-                if extras.get('loaded_lane') != lane_identifier:
-                    extras['loaded_lane'] = lane_identifier
-                    changed = True
-            if changed:
-                self.afc.moonraker.update_spool(spool_id, {'extra': extras})
-            return changed
-        except Exception as e:
-            self.logger.error(f"Failed to update loaded_lane extra for spool {spool_id}: {e}")
-            return False
-
-    def _clear_duplicate_loaded_lanes(self, active_spool_id, lane_identifier):
-        try:
-            spools = self.afc.moonraker.list_spools()
-        except Exception as e:
-            self.logger.error(f"Failed to list spools when clearing duplicate loaded_lane assignments: {e}")
-            return
-        if not spools:
-            return
-        for spool in spools:
-            other_id = self._normalize_spool_id(spool.get('id')) if isinstance(spool, dict) else None
-            if other_id is None or other_id == active_spool_id:
-                continue
-            extras = spool.get('extra') or {}
-            if extras.get('loaded_lane') == str(lane_identifier):
-                new_extras = dict(extras)
-                new_extras.pop('loaded_lane', None)
-                try:
-                    self.afc.moonraker.update_spool(other_id, {'extra': new_extras})
-                except Exception as e:
-                    self.logger.error(f"Failed to clear duplicate loaded_lane for spool {other_id}: {e}")
-
-    def _set_loaded_lane_extra(self, cur_lane, spool_id, spool_data=None):
-        lane_identifier = self._get_lane_identifier(cur_lane)
-        normalized_id = self._normalize_spool_id(spool_id)
-        if normalized_id is None or not lane_identifier:
-            return
-        if self._write_loaded_lane_extra(normalized_id, lane_identifier, spool_data):
-            self.logger.info(f"Spool {normalized_id} set to loaded lane {lane_identifier}")
-        self._clear_duplicate_loaded_lanes(normalized_id, lane_identifier)
-
-    def _clear_loaded_lane_extra(self, spool_id):
-        normalized_id = self._normalize_spool_id(spool_id)
-        if normalized_id is None:
-            return
-        if self._write_loaded_lane_extra(normalized_id, None):
-            self.logger.info(f"Cleared loaded lane extra for spool {normalized_id}")
 
     def set_spoolID(self, cur_lane, SpoolID, save_vars=True):
         if self.afc.spoolman is not None:
@@ -370,8 +293,6 @@ class AFCSpool:
                         cur_lane.color = '#{}'.format(self._get_filament_values(result['filament'], 'multi_color_hexes').split(",")[0])
                     else:
                         cur_lane.color = '#{}'.format(self._get_filament_values(result['filament'], 'color_hex'))
-
-                    self._set_loaded_lane_extra(cur_lane, SpoolID, result)
 
                 except Exception as e:
                     self.afc.error.AFC_error("Error when trying to get Spoolman data for ID:{}, Error: {}".format(SpoolID, e), False)
