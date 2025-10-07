@@ -6,6 +6,10 @@
 import json
 import re
 import traceback
+import types
+from urllib.error import HTTPError
+from urllib.parse import urljoin
+from urllib.request import Request, urlopen
 from configfile import error
 from typing import Any
 
@@ -54,6 +58,7 @@ class afc:
         self.logger  = AFC_logger(self.printer, self)
 
         self.spool      = self.printer.load_object(config, 'AFC_spool')
+        self._wrap_spool_set_spool_id()
         self.error      = self.printer.load_object(config, 'AFC_error')
         self.function   = self.printer.load_object(config, 'AFC_functions')
         self.function.afc = self
@@ -295,6 +300,166 @@ class afc:
         self.gcode.register_mux_command('LANE_UNLOAD',  "LANE", lane_obj.name, self.cmd_LANE_UNLOAD,    desc=self.cmd_LANE_UNLOAD_help)
         self.gcode.register_mux_command('HUB_LOAD',     "LANE", lane_obj.name, self.cmd_HUB_LOAD,       desc=self.cmd_HUB_LOAD_help)
         self.gcode.register_mux_command('TOOL_LOAD',    "LANE", lane_obj.name, self.cmd_TOOL_LOAD,      desc=self.cmd_TOOL_LOAD_help)
+
+    def _wrap_spool_set_spool_id(self):
+        if getattr(self, "_spool_set_spoolid_wrapped", False):
+            return
+        if not hasattr(self.spool, "set_spoolID"):
+            return
+
+        original_method = self.spool.set_spoolID
+        afc_self = self
+
+        def set_spool_id_with_loaded_lane(spool_self, cur_lane, SpoolID, save_vars=True):
+            previous_id = getattr(cur_lane, 'spool_id', '')
+            result = original_method(cur_lane, SpoolID, save_vars=save_vars)
+            try:
+                afc_self._handle_loaded_lane_extra(cur_lane, previous_id, getattr(cur_lane, 'spool_id', ''))
+            except Exception:
+                afc_self.logger.error(
+                    "Failed to update loaded_lane extra for spool {}".format(SpoolID),
+                    traceback=traceback.format_exc()
+                )
+            return result
+
+        self.spool.set_spoolID = types.MethodType(set_spool_id_with_loaded_lane, self.spool)
+        self._spool_set_spoolid_wrapped = True
+
+    def _handle_loaded_lane_extra(self, cur_lane, previous_spool_id, current_spool_id):
+        if self.spoolman is None or self.moonraker is None:
+            return
+
+        lane_name = getattr(cur_lane, 'name', None)
+        new_id = self._normalize_spool_id(current_spool_id)
+        prev_id = self._normalize_spool_id(previous_spool_id)
+
+        if new_id == prev_id:
+            return
+
+        if new_id is not None and lane_name:
+            self._clear_duplicate_loaded_lane_entries(lane_name, exclude_id=new_id)
+            self._set_spool_loaded_lane(new_id, lane_name)
+        elif prev_id is not None:
+            self._set_spool_loaded_lane(prev_id, None)
+
+    def _normalize_spool_id(self, spool_id):
+        if spool_id in (None, '', 0, '0'):
+            return None
+        try:
+            value = int(spool_id)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _set_spool_loaded_lane(self, spool_id, lane_name):
+        if self.spoolman is None or self.moonraker is None:
+            return
+
+        lane_value = '' if lane_name is None else str(lane_name)
+        payload = {
+            'extra': {
+                'loaded_lane': json.dumps(lane_value)
+            }
+        }
+
+        response = self._spoolman_proxy_request('PATCH', f'/v1/spool/{spool_id}', body=payload)
+        if response is None:
+            return
+
+        if lane_name is None:
+            self.logger.info(f"Cleared loaded lane extra for spool {spool_id}")
+        else:
+            self.logger.info(f"Spool {spool_id} set to loaded lane {lane_value}")
+
+    def _clear_duplicate_loaded_lane_entries(self, lane_name, exclude_id):
+        if not lane_name:
+            return
+
+        spools = self._spoolman_list_spools()
+        if not spools:
+            return
+
+        for spool in spools:
+            spool_id = self._normalize_spool_id(spool.get('id'))
+            if spool_id is None or spool_id == exclude_id:
+                continue
+
+            extra = spool.get('extra', {}) or {}
+            loaded_lane = self._parse_loaded_lane_extra(extra.get('loaded_lane'))
+            if loaded_lane == lane_name:
+                self._set_spool_loaded_lane(spool_id, None)
+
+    def _spoolman_list_spools(self):
+        response = self._spoolman_proxy_request('GET', '/v1/spool?per_page=250')
+        if isinstance(response, dict):
+            items = response.get('items')
+            if isinstance(items, list):
+                return items
+        elif isinstance(response, list):
+            return response
+        return []
+
+    def _parse_loaded_lane_extra(self, value):
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, str):
+                    return parsed
+            except json.JSONDecodeError:
+                return value
+        return None
+
+    def _spoolman_proxy_request(self, request_method, path, body=None):
+        if self.moonraker is None:
+            return None
+
+        proxy_url = urljoin(self.moonraker.host, 'server/spoolman/proxy')
+        payload = {
+            'request_method': request_method,
+            'path': path,
+            'use_v2_response': True
+        }
+        if body is not None:
+            payload['body'] = json.dumps(body)
+
+        data = json.dumps(payload).encode()
+        request = Request(proxy_url, data=data, headers={'Content-Type': 'application/json'})
+
+        try:
+            with urlopen(request) as resp:
+                if 200 <= resp.status < 300:
+                    try:
+                        response_payload = json.load(resp)
+                    except json.JSONDecodeError:
+                        return None
+
+                    if isinstance(response_payload, dict):
+                        if 'response' in response_payload:
+                            return response_payload['response']
+                        if 'result' in response_payload:
+                            return response_payload['result']
+                        return response_payload
+                    return response_payload
+
+                self.logger.error(
+                    f"Error {resp.status} when communicating with Moonraker spoolman proxy: {resp.reason}"
+                )
+        except HTTPError as exc:
+            try:
+                error_body = exc.read().decode('utf-8', errors='replace') if exc.fp else exc.reason
+            except Exception:
+                error_body = exc.reason
+            self.logger.error(
+                f"Moonraker spoolman proxy returned HTTP {exc.code}: {error_body}",
+                traceback=traceback.format_exc()
+            )
+        except Exception:
+            self.logger.error(
+                "Unexpected error while communicating with Moonraker spoolman proxy",
+                traceback=traceback.format_exc()
+            )
+
+        return None
 
     def handle_moonraker_connect(self):
         """
