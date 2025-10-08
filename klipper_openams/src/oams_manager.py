@@ -1835,6 +1835,23 @@ class OAMSManager:
                 fps_state.stuck_spool_start_time = None
                 return eventtime + MONITOR_ENCODER_PERIOD
 
+            if not fps_state.following or fps_state.direction != 1:
+                fps_state.stuck_spool_start_time = None
+
+                if (
+                    fps_state.stuck_spool_restore_follower
+                    and is_printing
+                    and oams is not None
+                ):
+                    self._restore_follower_if_needed(
+                        fps_name,
+                        fps_state,
+                        oams,
+                        "stuck spool recovery",
+                    )
+
+                return eventtime + MONITOR_ENCODER_PERIOD
+
             if pressure <= STUCK_SPOOL_PRESSURE_THRESHOLD:
                 if fps_state.stuck_spool_start_time is None:
                     fps_state.stuck_spool_start_time = now
