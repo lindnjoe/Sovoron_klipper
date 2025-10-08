@@ -22,6 +22,7 @@ AFC_DELEGATION_TIMEOUT = 30.0  # seconds to suppress duplicate AFC runout trigge
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08  # Pressure indicating the spool is no longer feeding
 STUCK_SPOOL_DWELL = 3.5  # Seconds the pressure must remain below the threshold before pausing
+STUCK_SPOOL_LOAD_GRACE = 8.0  # Grace period after a swap/load before stuck detection arms
 
 
 CLOG_PRESSURE_TARGET = 0.50
@@ -1811,8 +1812,45 @@ class OAMSManager:
 
                 return eventtime + MONITOR_ENCODER_PERIOD
 
+            if fps_state.state_name != FPSLoadState.LOADED or fps_state.current_spool_idx is None:
+                if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 0)
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to clear stuck spool LED while %s not loaded",
+                            fps_name,
+                        )
+
+                fps_state.reset_stuck_spool_state(
+                    preserve_restore=fps_state.stuck_spool_restore_follower
+                )
+
+                return eventtime + MONITOR_ENCODER_PERIOD
+
             pressure = float(getattr(fps, "fps_value", 0.0))
             now = self.reactor.monotonic()
+
+            if fps_state.since is not None and now - fps_state.since < STUCK_SPOOL_LOAD_GRACE:
+                fps_state.stuck_spool_start_time = None
+                return eventtime + MONITOR_ENCODER_PERIOD
+
+            if not fps_state.following or fps_state.direction != 1:
+                fps_state.stuck_spool_start_time = None
+
+                if (
+                    fps_state.stuck_spool_restore_follower
+                    and is_printing
+                    and oams is not None
+                ):
+                    self._restore_follower_if_needed(
+                        fps_name,
+                        fps_state,
+                        oams,
+                        "stuck spool recovery",
+                    )
+
+                return eventtime + MONITOR_ENCODER_PERIOD
 
             if pressure <= STUCK_SPOOL_PRESSURE_THRESHOLD:
                 if fps_state.stuck_spool_start_time is None:
