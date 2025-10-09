@@ -1600,6 +1600,16 @@ class OAMSManager:
             fps_state.following = False
 
 
+        if oams is not None:
+            try:
+                oams.abort_current_action()
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to abort active action for %s during stuck spool pause",
+                    fps_name,
+                )
+
+
         fps_state.stuck_spool_active = True
         fps_state.stuck_spool_start_time = None
 
