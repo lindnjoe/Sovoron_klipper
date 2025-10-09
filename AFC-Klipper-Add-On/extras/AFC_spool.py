@@ -280,60 +280,8 @@ class AFCSpool:
         return value
 
     def _update_spoolman_loaded_lane(self, lane_name, new_spool_id=None, previous_spool_id=None):
-        if self.afc.spoolman is None:
-            return
-
-        lane_value = '' if not lane_name else str(lane_name)
-
-        def _normalize_spool_id(spool_id):
-            if spool_id in (None, ''):
-                return None
-            try:
-                return int(spool_id)
-            except (TypeError, ValueError):
-                self.logger.debug(f"Invalid spool id '{spool_id}' while updating loaded lane extra")
-                return None
-
-        new_spool_int = _normalize_spool_id(new_spool_id)
-        previous_spool_int = _normalize_spool_id(previous_spool_id)
-
-        try:
-            # Clear the previous spool assignment if we are changing spools
-            if previous_spool_int is not None and previous_spool_int != new_spool_int:
-                self.afc.moonraker.update_spool_extra(
-                    previous_spool_int,
-                    {self.SPOOLMAN_LOADED_LANE_FIELD: json.dumps('')}
-                )
-
-            if new_spool_int is not None:
-                self.afc.moonraker.update_spool_extra(
-                    new_spool_int,
-                    {self.SPOOLMAN_LOADED_LANE_FIELD: json.dumps(lane_value)}
-                )
-
-                # Clear any duplicate assignments of this lane on other spools
-                if lane_value:
-                    spools = self.afc.moonraker.list_spools()
-                    for spool in spools:
-                        try:
-                            spool_id = spool.get('id')
-                            if spool_id is None or int(spool_id) == new_spool_int:
-                                continue
-                            extra = spool.get('extra') or {}
-                            loaded_lane = self._parse_loaded_lane_extra(
-                                extra.get(self.SPOOLMAN_LOADED_LANE_FIELD)
-                            )
-                            if loaded_lane == lane_value:
-                                self.afc.moonraker.update_spool_extra(
-                                    int(spool_id),
-                                    {self.SPOOLMAN_LOADED_LANE_FIELD: json.dumps('')}
-                                )
-                        except Exception as exc:
-                            self.logger.debug(
-                                f"Error clearing duplicate loaded lane for spool {spool.get('id')}: {exc}"
-                            )
-        except Exception as exc:
-            self.logger.debug(f"Error updating spoolman loaded lane extras: {exc}")
+        """Stubbed to avoid making Spoolman PATCH calls for loaded lane extras."""
+        return
 
     def _clear_values(self, cur_lane):
         """
