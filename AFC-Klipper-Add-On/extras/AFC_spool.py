@@ -4,9 +4,6 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
-import json
-
-
 class AFCSpool:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -253,8 +250,6 @@ class AFCSpool:
             value = filament[field]
         return value
 
-    SPOOLMAN_LOADED_LANE_FIELD = "loaded_lane"
-
     def _set_values(self, cur_lane):
         """
         Helper function for setting lane spool values
@@ -268,21 +263,6 @@ class AFCSpool:
             self.next_spool_id = ''
             self.set_spoolID(cur_lane, spool_id)
 
-    def _parse_loaded_lane_extra(self, value):
-        if not isinstance(value, str):
-            return None
-        try:
-            parsed = json.loads(value)
-            if isinstance(parsed, str):
-                return parsed
-        except Exception:
-            pass
-        return value
-
-    def _update_spoolman_loaded_lane(self, lane_name, new_spool_id=None, previous_spool_id=None):
-        """Stubbed to avoid making Spoolman PATCH calls for loaded lane extras."""
-        return
-
     def _clear_values(self, cur_lane):
         """
         Helper function for clearing out lane spool values
@@ -294,7 +274,6 @@ class AFCSpool:
         cur_lane.extruder_temp = None
 
     def set_spoolID(self, cur_lane, SpoolID, save_vars=True):
-        previous_spool_id = getattr(cur_lane, 'spool_id', '')
         if self.afc.spoolman is not None:
             if SpoolID !='':
                 try:
@@ -314,21 +293,10 @@ class AFCSpool:
                     else:
                         cur_lane.color = '#{}'.format(self._get_filament_values(result['filament'], 'color_hex'))
 
-                    self._update_spoolman_loaded_lane(
-                        getattr(cur_lane, 'name', ''),
-                        SpoolID,
-                        previous_spool_id
-                    )
-
                 except Exception as e:
                     self.afc.error.AFC_error("Error when trying to get Spoolman data for ID:{}, Error: {}".format(SpoolID, e), False)
             else:
                 self._clear_values(cur_lane)
-                self._update_spoolman_loaded_lane(
-                    getattr(cur_lane, 'name', ''),
-                    None,
-                    previous_spool_id
-                )
         else:
             # Clears out values if users are not using spoolman, this is to cover this function being called from LANE UNLOAD and clearing out
             # Manually entered information
