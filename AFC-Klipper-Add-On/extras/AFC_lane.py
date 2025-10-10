@@ -634,8 +634,14 @@ class AFCLane:
                     #   This is only really a issue when using direct and still using load sensor
                     if self.hub == 'direct' and self.prep_state:
                         self.afc.afcDeltaTime.set_start_time()
-                        self.afc.TOOL_LOAD(self)
-                        self.material = self.afc.default_material_type
+                        # Populate spool defaults (or assign the next Spoolman ID)
+                        # before loading so the lane metadata is ready once the
+                        # filament reaches the toolhead.
+                        self.afc.spool._set_values(self)
+                        if not self.afc.TOOL_LOAD(self):
+                            # Loading failed, revert the lane metadata so it
+                            # reflects the actual hardware state.
+                            self.afc.spool._clear_values(self)
                         break
 
                     # Checking if loaded to hub(it should not be since filament was just inserted), if false load to hub. Does a fast load if hub distance is over 200mm
