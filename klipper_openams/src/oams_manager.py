@@ -164,6 +164,12 @@ class OAMSRunoutMonitor:
                             "OAMS: Failed to stop follower while coasting on %s",
                             self.fps_name,
                         )
+                    finally:
+                        # Ensure internal follower state matches the hardware when we
+                        # intentionally stop it for coasting. Otherwise subsequent
+                        # calls to _ensure_forward_follower() think the follower is
+                        # still running and will not re-enable it.
+                        fps_state.following = False
                     self.bldc_clear_position = fps.extruder.last_position
                     self.runout_after_position = 0.0
                     self.state = OAMSRunoutState.COASTING
