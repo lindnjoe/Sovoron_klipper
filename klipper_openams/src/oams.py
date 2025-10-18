@@ -147,7 +147,7 @@ class OAMS:
         return (
             False,
             """
-OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1s_hes_value_2=%d f1s_hes_value_3=%d hub_hes_value_0=%d hub_hes_value_1=%d hub_hes_value_2=%d hub_hes_value_3=%d kp=%d ki=%d kd=%d encoder_clicks=%d i_value=%.2f
+OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1s_hes_value_2=%d f1s_hes_value_3=%d hub_hes_value_0=%d hub_hes_value_1=%d hub_hes_value_2=%d hub_hes_value_3=%d kp=[...]
 """
             % ( self.oams_idx,
                 self.current_spool,
@@ -209,6 +209,26 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             
             self.clear_errors()
             
+            # Register this OAMS instance with the printer under both the module-prefixed
+            # name and the short unit name so callers can find it via either lookup.
+            try:
+                full_name = self.name  # e.g. "oams oams1" when config section uses that form
+                short_name = self.name.split()[-1]  # e.g. "oams1"
+                # Register both names; add_object may raise if already registered, so catch exceptions.
+                try:
+                    self.printer.add_object(full_name, self)
+                except Exception:
+                    # log and continue; some environments register objects automatically
+                    logging.debug("OAMS: printer.add_object('%s') failed or already registered", full_name)
+                try:
+                    self.printer.add_object(short_name, self)
+                except Exception:
+                    logging.debug("OAMS: printer.add_object('%s') failed or already registered", short_name)
+
+                logging.info("OAMS: Registered object names '%s' and '%s' for unit", full_name, short_name)
+            except Exception:
+                logging.exception("OAMS: Failed to register OAMS object names for %s", getattr(self, "name", "<unknown>"))
+
         except Exception as e:
             logging.error("Failed to initialize OAMS commands: %s", e)
 
