@@ -47,6 +47,10 @@ CLOG_SENSITIVITY_LEVELS = {
 }
 CLOG_SENSITIVITY_DEFAULT = "medium"
 
+POST_LOAD_PRESSURE_THRESHOLD = 0.52  # FPS value indicating a possible clog
+POST_LOAD_PRESSURE_DWELL = 5.0  # Seconds pressure must remain above threshold
+POST_LOAD_PRESSURE_CHECK_PERIOD = 1.0
+
 
 class OAMSRunoutState:
     """Enum for runout monitor states."""
@@ -438,6 +442,38 @@ class OAMSManager:
             group = group.split()[-1]
         return group
 
+    # --- Compatibility helpers for bay API ---------------------------------------
+    # These provide robust access to bay "ready" / "loaded" state whether the
+    # target object exposes is_bay_ready/is_bay_loaded helpers or only low-level
+    # arrays (f1s_hes_value, hub_hes_value).
+    def _is_bay_ready(self, oam: Any, bay_index: int) -> bool:
+        try:
+            if hasattr(oam, "is_bay_ready"):
+                return bool(oam.is_bay_ready(bay_index))
+            f1s = getattr(oam, "f1s_hes_value", None)
+            if f1s is not None and len(f1s) > bay_index:
+                return bool(f1s[bay_index])
+            alt = getattr(oam, "f1s_value", None)
+            if alt is not None and len(alt) > bay_index:
+                return bool(alt[bay_index])
+        except Exception:
+            logging.exception("OAMS Manager: error querying is_bay_ready for %s-%d", getattr(oam, "name", "<unknown>"), bay_index)
+        return False
+
+    def _is_bay_loaded(self, oam: Any, bay_index: int) -> bool:
+        try:
+            if hasattr(oam, "is_bay_loaded"):
+                return bool(oam.is_bay_loaded(bay_index))
+            hub = getattr(oam, "hub_hes_value", None)
+            if hub is not None and len(hub) > bay_index:
+                return bool(hub[bay_index])
+            alt = getattr(oam, "hub_value", None)
+            if alt is not None and len(alt) > bay_index:
+                return bool(alt[bay_index])
+        except Exception:
+            logging.exception("OAMS Manager: error querying is_bay_loaded for %s-%d", getattr(oam, "name", "<unknown>"), bay_index)
+        return False
+
     # --- AFC integration / lane mapping -------------------------------------------
 
     def _rebuild_lane_location_index(self) -> None:
@@ -687,7 +723,8 @@ class OAMSManager:
         for group_name, group in self.filament_groups.items():
             for oam, bay_index in group.bays:
                 try:
-                    is_loaded = oam.is_bay_loaded(bay_index)
+                    # Use compatibility wrapper instead of direct method call
+                    is_loaded = self._is_bay_loaded(oam, bay_index)
                 except Exception:
                     logging.exception("OAMS: Failed to query bay %s on %s while determining loaded group", bay_index, getattr(oam, "name", "<unknown>"))
                     continue
@@ -1521,10 +1558,16 @@ class OAMSManager:
 
         for (oam, bay_index) in self.filament_groups[group_name].bays:
             try:
-                is_ready = oam.is_bay_ready(bay_index)
+                # Use compatibility wrapper
+                is_ready = self._is_bay_ready(oam, bay_index)
             except Exception:
-                logging.exception("OAMS: Failed to query readiness of bay %s on %s", bay_index, getattr(oam, "name", "<unknown>"))
+                logging.exception(
+                    "OAMS: Failed to query readiness of bay %s on %s",
+                    bay_index,
+                    getattr(oam, "name", "<unknown>"),
+                )
                 continue
+
             if not is_ready:
                 continue
 
@@ -1535,7 +1578,11 @@ class OAMSManager:
                 fps_state.current_oams = oam.name
                 fps_state.current_spool_idx = bay_index
             except Exception:
-                logging.exception("OAMS: Failed to capture load state for group %s bay %s", group_name, bay_index)
+                logging.exception(
+                    "OAMS: Failed to capture load state for group %s bay %s",
+                    group_name,
+                    bay_index,
+                )
                 fps_state.state_name = FPSLoadState.UNLOADED
                 fps_state.current_group = None
                 fps_state.current_spool_idx = None
@@ -1545,7 +1592,11 @@ class OAMSManager:
             try:
                 success, message = oam.load_spool(bay_index)
             except Exception:
-                logging.exception("OAMS: Exception while loading group %s bay %s", group_name, bay_index)
+                logging.exception(
+                    "OAMS: Exception while loading group %s bay %s",
+                    group_name,
+                    bay_index,
+                )
                 success, message = False, f"Exception loading spool {bay_index} on {group_name}"
 
             if success:
