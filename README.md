@@ -1,4 +1,4 @@
-# Sovoron Klipper configuration
+# Klipper configuration
 
 This repository captures the complete Klipper setup that drives a CoreXY toolchanger equipped with six toolheads, two OpenAMS units attached to individual toolheads, a four lane boxturtle used as a lane loader for four individual toolheads, and Armored Turtle's Automated Filament Control (AFC) stack. The tree bundles the live `printer_data` configuration, the Python extensions that power AFC/OpenAMS coordination, and upstream reference material so the machine definition can be rebuilt or adapted without hunting through multiple sources.
 
