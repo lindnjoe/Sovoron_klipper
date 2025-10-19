@@ -162,7 +162,14 @@ class AFCLane:
 
         if self.load is not None:
             buttons.register_buttons([self.load], self.load_callback)
-        else: self.load_state = True
+        else:
+            # AMS lanes mirror their prep and load switches (or omit a
+            # dedicated load switch entirely). Treat the missing load
+            # sensor as a shared signal so the prep callback does not
+            # flag a false "load sensor triggered" fault when the prep
+            # switch activates.
+            self.load_state = True
+            self.shared_prep_and_load = True
 
         if self.prep is not None and self.load is not None:
             # AMS lanes mirror their prep and load switches which means both
