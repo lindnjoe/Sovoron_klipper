@@ -29,7 +29,7 @@ class afc_hub:
 
         # HUB Cut variables
         # Next two variables are used in AFC
-        self.switch_pin             = config.get('switch_pin')                      # Pin hub sensor it connected to
+        self.switch_pin             = config.get('switch_pin', None)                # Pin hub sensor it connected to
         self.hub_clear_move_dis     = config.getfloat("hub_clear_move_dis", 25)     # How far to move filament so that it's not block the hub exit
         self.afc_bowden_length      = config.getfloat("afc_bowden_length", 900)     # Length of the Bowden tube from the hub to the toolhead sensor in mm.
         self.td1_bowden_length      = config.getfloat("td1_bowden_length", self.afc_bowden_length-50)     # Length of the Bowden tube from the hub to a TD-1 device in mm.
@@ -59,9 +59,12 @@ class afc_hub:
             self.state = False
             buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
 
-        self.fila, self.debounce_button = add_filament_switch( f"{self.name}_Hub", self.switch_pin, self.printer,
-                                                                self.enable_sensors_in_gui, self.handle_runout, self.enable_runout,
-                                                                self.debounce_delay)
+            self.fila, self.debounce_button = add_filament_switch( f"{self.name}_Hub", self.switch_pin, self.printer,
+                                                                    self.enable_sensors_in_gui, self.handle_runout, self.enable_runout,
+                                                                    self.debounce_delay)
+        else:
+            self.fila = None
+            self.debounce_button = None
 
         # Adding self to AFC hubs
         self.afc.hubs[self.name]=self
@@ -81,6 +84,9 @@ class afc_hub:
         :param eventtime: Event time from the button press
         """
         # Only trigger runout for the currently loaded lane (in the toolhead) if it belongs to this hub
+        if self.fila is None:
+            return
+
         current_lane_name = getattr(self.afc, 'current', None)
         if current_lane_name and current_lane_name in self.lanes:
             lane = self.lanes[current_lane_name]
