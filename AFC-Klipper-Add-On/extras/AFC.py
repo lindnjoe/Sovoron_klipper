@@ -1380,12 +1380,20 @@ class afc:
             next_lane       = None
         # TODO: need to check if its just a tool swap, or tool swap with a lane unload
 
+        # Lookup the current extruder and lane objects. If the tool swap condition below is
+        # triggered, these references will be refreshed afterwards to ensure they remain
+        # accurate.
+        cur_extruder = self.function.get_current_extruder_obj()
+        if cur_extruder and cur_extruder.lane_loaded is not None:
+            cur_lane = self.function.get_current_lane_obj()
+        else:
+            cur_lane = None
+
         # If the next extruder is specified and it is not the current extruder, perform a tool swap.
         if next_extruder is not None and self.function.get_current_extruder() != next_extruder:
-            self.tool_swap( next_lane )
+            self.tool_swap(next_lane)
 
-            # Lookup the current extruder and lane objects based on the next lane to load.
-            # This is necessary to ensure the correct extruder and lane are used for unloading.
+            # Refresh the current extruder and lane after the swap to keep references valid.
             cur_extruder = self.function.get_current_extruder_obj()
             if cur_extruder and cur_extruder.lane_loaded is not None:
                 cur_lane = self.function.get_current_lane_obj()
@@ -1396,10 +1404,17 @@ class afc:
 
         # Default to true
         unload_toolhead = True
+        cur_extruder_lanes = getattr(cur_extruder, "lanes", None)
         if self.next_lane_load is not None:
-            unload_toolhead = True if self.next_lane_load in cur_extruder.lanes else False
+            if cur_extruder_lanes is not None:
+                unload_toolhead = self.next_lane_load in cur_extruder_lanes
+            else:
+                unload_toolhead = False
 
-        self.logger.debug(f"Next lane load:{self.next_lane_load}, conditional:{self.next_lane_load in cur_extruder.lanes},\nlanes:{cur_extruder.lanes}, unload_toolhead:{unload_toolhead}")
+        self.logger.debug(
+            f"Next lane load:{self.next_lane_load}, conditional:{self.next_lane_load in cur_extruder_lanes if cur_extruder_lanes is not None else None},\n"
+            f"lanes:{cur_extruder_lanes}, unload_toolhead:{unload_toolhead}"
+        )
 
         if self.current is not None and unload_toolhead:
             self.current_state  = State.UNLOADING
