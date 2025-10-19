@@ -158,9 +158,17 @@ class AFCLane:
 
         self.load = config.get('load', None)                                    # MCU pin load trigger
         self.load_state = False
+        self.shared_prep_and_load = False
+
         if self.load is not None:
             buttons.register_buttons([self.load], self.load_callback)
         else: self.load_state = True
+
+        if self.prep is not None and self.load is not None:
+            # AMS lanes mirror their prep and load switches which means both
+            # sensors toggle together. Track that relationship so the prep
+            # logic can treat the shared signal as a single sensor.
+            self.shared_prep_and_load = self.prep == self.load
 
         self.espooler = AFC_assist.Espooler(self.name, config)
         self.lane_load_count = None
@@ -675,7 +683,7 @@ class AFCLane:
             #  before exiting function
             if self.printer.state_message == 'Printer is ready' and True == self._afc_prep_done and self.status != AFCLaneState.TOOL_UNLOADING:
                 # Only try to load when load state trigger is false
-                if self.prep_state == True and self.load_state == False:
+                if self.prep_state == True and (self.load_state == False or self.shared_prep_and_load):
                     self.logger.debug(f"Prep: callback triggered {self.name}")
                     x = 0
                     # Checking to make sure last time prep switch was activated was less than 1 second, returning to keep is printing message from spamming
@@ -688,17 +696,18 @@ class AFCLane:
                         self.afc.error.AFC_error("Cannot load spools while printer is actively moving or homing", False)
                         break
 
-                    while self.load_state == False and self.prep_state == True and self.load is not None:
-                        x += 1
-                        self.do_enable(True)
-                        self.move(10,500,400)
-                        self.reactor.pause(self.reactor.monotonic() + 0.1)
-                        if x> 40:
-                            msg = ' FAILED TO LOAD, CHECK FILAMENT AT TRIGGER\n||==>--||----||------||\nTRG   LOAD   HUB    TOOL'
-                            self.afc.error.AFC_error(msg, False)
-                            self.afc.function.afc_led(self.afc.led_fault, self.led_index)
-                            self.status = AFCLaneState.NONE
-                            break
+                    if not self.shared_prep_and_load:
+                        while self.load_state == False and self.prep_state == True and self.load is not None:
+                            x += 1
+                            self.do_enable(True)
+                            self.move(10,500,400)
+                            self.reactor.pause(self.reactor.monotonic() + 0.1)
+                            if x> 40:
+                                msg = ' FAILED TO LOAD, CHECK FILAMENT AT TRIGGER\n||==>--||----||------||\nTRG   LOAD   HUB    TOOL'
+                                self.afc.error.AFC_error(msg, False)
+                                self.afc.function.afc_led(self.afc.led_fault, self.led_index)
+                                self.status = AFCLaneState.NONE
+                                break
                     self.status = AFCLaneState.NONE
                     self.logger.debug(f"Prep: Load Done-{self.name}")
 
@@ -727,7 +736,8 @@ class AFCLane:
                         # different extruder/hub
                         self._prep_capture_td1()
 
-                elif self.prep_state == True and self.load_state == True and not self.afc.function.is_printing():
+                elif (self.prep_state == True and self.load_state == True and
+                      not self.afc.function.is_printing() and not self.shared_prep_and_load):
                     message = 'Cannot load {} load sensor is triggered.'.format(self.name)
                     message += '\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.'
                     message += '\n    Once cleared try loading again'
