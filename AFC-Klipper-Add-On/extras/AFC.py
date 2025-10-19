@@ -1405,14 +1405,16 @@ class afc:
         # Default to true
         unload_toolhead = True
         cur_extruder_lanes = getattr(cur_extruder, "lanes", None)
+        conditional = None
         if self.next_lane_load is not None:
             if cur_extruder_lanes is not None:
-                unload_toolhead = self.next_lane_load in cur_extruder_lanes
+                conditional = self.next_lane_load in cur_extruder_lanes
+                unload_toolhead = conditional
             else:
                 unload_toolhead = False
 
         self.logger.debug(
-            f"Next lane load:{self.next_lane_load}, conditional:{self.next_lane_load in cur_extruder_lanes if cur_extruder_lanes is not None else None},\n"
+            f"Next lane load:{self.next_lane_load}, conditional:{conditional}\n"
             f"lanes:{cur_extruder_lanes}, unload_toolhead:{unload_toolhead}"
         )
 
