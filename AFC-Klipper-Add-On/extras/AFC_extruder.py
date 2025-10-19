@@ -31,7 +31,7 @@ class AFCExtruder:
         self.tool_end                   = config.get('pin_tool_end', None)                                              # Pin for sensor after(post) extruder gears (optional)
         self.tool_stn                   = config.getfloat("tool_stn", 72)                                               # Distance in mm from the toolhead sensor to the tip of the nozzle in mm, if `tool_end` is defined then distance is from this sensor
         self.tool_stn_unload            = config.getfloat("tool_stn_unload", 100)                                       # Distance to move in mm while unloading toolhead
-        self.tool_sensor_after_extruder = config.getfloat("tool_sensor_after_extruder", 0)                              # Extra distance to move in mm once pre/post sensors are clear. Useful for when only using post sensor, so this distance can be the amout to move to clear extruder gears
+        self.tool_sensor_after_extruder = config.getfloat("tool_sensor_after_extruder", 0)                              # Extra distance to move in mm once the pre- / post-sensors are clear. Useful for when only using post sensor, so this distance can be the amount to move to clear extruder gears
         self.tool_unload_speed          = config.getfloat("tool_unload_speed", 25)                                      # Unload speed in mm/s when unloading toolhead. Default is 25mm/s.
         self.tool_load_speed            = config.getfloat("tool_load_speed", 25)                                        # Load speed in mm/s when loading toolhead. Default is 25mm/s.
         self.buffer_name                = config.get('buffer', None)                                                    # Buffer to use for extruder, this variable can be overridden per lane
@@ -39,6 +39,8 @@ class AFCExtruder:
         self.enable_runout              = config.getboolean("enable_tool_runout",       self.afc.enable_tool_runout)
         self.debounce_delay             = config.getfloat("debounce_delay",             self.afc.debounce_delay)
         self.deadband                   = config.getfloat("deadband", 2)                                                # Deadband for extruder heater, default is 2 degrees Celsius
+        self.tool                       = config.get('tool', None)
+        self.tool_obj                   = None
 
         self.lane_loaded                = None
         self.lanes                      = {}
@@ -52,7 +54,7 @@ class AFCExtruder:
                 self.logger.info("Setting up as buffer")
             else:
                 buttons.register_buttons([self.tool_start], self.tool_start_callback)
-                self.fila_tool_start, self.debounce_button_start = add_filament_switch("tool_start", self.tool_start, self.printer,
+                self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
                                                                                         self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
                                                                                         self.debounce_delay )
 
@@ -62,7 +64,7 @@ class AFCExtruder:
                 raise error(f"Unknown is not valid for pin_tool_end in [{self.fullname}] config.")
 
             buttons.register_buttons([self.tool_end], self.tool_end_callback)
-            self.fila_tool_end, self.debounce_button_end = add_filament_switch("tool_end", self.tool_end, self.printer,
+            self.fila_tool_end, self.debounce_button_end = add_filament_switch(f"{self.name}_tool_end", self.tool_end, self.printer,
                                                                                 self.enable_sensors_in_gui, self.handle_end_runout, self.enable_runout,
                                                                                 self.debounce_delay )
 
@@ -94,6 +96,12 @@ class AFCExtruder:
             self.toolhead_extruder = self.printer.lookup_object(self.name)
         except:
             raise error("[{}] not found in config file".format(self.name))
+        
+        try:
+            if self.tool:
+                self.tool_obj = self.printer.lookup_object(self.tool)
+        except:
+            raise error(f'[{self.tool}] not found in config file for {self.name}')
 
     def _handle_toolhead_sensor_runout(self, state, sensor_name):
         """
@@ -151,10 +159,11 @@ class AFCExtruder:
     def tool_end_callback(self, eventtime, state):
         """
         Callback for the tool_end (post-extruder) filament sensor.
-        Updates the sensor state when the button changes state.
+        Updates the sensor state and triggers runout handling if filament is missing.
         :param eventtime: Event time from the button press
         :param state: Boolean indicating sensor state (True = filament present, False = runout)
         """
+        self.tool_end_state = state
         self.tool_end_state = state
 
     def get_heater(self):
@@ -180,13 +189,13 @@ class AFCExtruder:
 
         :param length: Length to set to tool_stn_unload parameter
         """
-        if length > 0:
+        if length >= 0:
             msg = "tool_stn_unload updated old: {}, new: {}".format(self.tool_stn_unload, length)
             msg += self.common_save_msg
             self.tool_stn_unload = length
             self.logger.info(msg)
         else:
-            self.logger.error("tool_stn_unload length should be greater than zero")
+            self.logger.error("tool_stn_unload length should be greater than or equal to zero")
 
     def _update_tool_after_extr(self, length):
         """
@@ -218,7 +227,8 @@ class AFCExtruder:
         `tool_stn length` is the length from the sensor before extruder gears (tool_start) to nozzle. If sensor after extruder gears(tool_end)
         is set then the value if from tool_end sensor.
 
-        `tool_stn_unload` length is the length to unload so that filament is not in extruder gears anymore.
+        `tool_stn_unload` length is the length to unload so that filament is not in extruder gears anymore. Set this value to `0` if you
+        have a cutter above the extruder gears.
 
         `tool_sensor_after_extruder` length is mainly used for those that have a filament sensor after extruder gears, target this
         length to retract filament enough so that it's not in the extruder gears anymore.  <nl>
