@@ -29,7 +29,7 @@ class afc_hub:
 
         # HUB Cut variables
         # Next two variables are used in AFC
-        raw_switch_pin              = config.get('switch_pin', None)                # Pin hub sensor it connected to
+        self.switch_pin             = config.get('switch_pin')                      # Pin hub sensor it connected to
         self.hub_clear_move_dis     = config.getfloat("hub_clear_move_dis", 25)     # How far to move filament so that it's not block the hub exit
         self.afc_bowden_length      = config.getfloat("afc_bowden_length", 900)     # Length of the Bowden tube from the hub to the toolhead sensor in mm.
         self.td1_bowden_length      = config.getfloat("td1_bowden_length", self.afc_bowden_length-50)     # Length of the Bowden tube from the hub to a TD-1 device in mm.
@@ -54,38 +54,18 @@ class afc_hub:
         self.debounce_delay         = config.getfloat("debounce_delay",             self.afc.debounce_delay)
         self.enable_runout          = config.getboolean("enable_hub_runout",        self.afc.enable_hub_runout)
 
-        self.has_physical_switch = raw_switch_pin not in (None, "None", "")
-        self.switch_pin = raw_switch_pin if self.has_physical_switch else f"afc_virtual_bypass:hub_{self.name}"
-
-        if not self.has_physical_switch:
-            # Without a physical switch we default hub runout handling to disabled while still
-            # exposing the virtual sensor so status queries and UI elements continue to work.
-            self.enable_runout = False
-
         buttons = self.printer.load_object(config, "buttons")
+        if self.switch_pin in (None, "None", ""):
+            # Create a virtual pin so the hub can be referenced without
+            # requiring a physical switch pin in the config.
+            self.switch_pin = f"afc_virtual_bypass:hub_{self.name}"
+
         self.state = False
         buttons.register_buttons([self.switch_pin], self.switch_pin_callback)
 
-        switch_obj = add_filament_switch(
-            f"{self.name}_Hub",
-            self.switch_pin,
-            self.printer,
-            self.enable_sensors_in_gui,
-            self.handle_runout if self.enable_runout else None,
-            self.enable_runout,
-            self.debounce_delay,
-        )
-
-        if self.enable_runout:
-            self.fila, self.debounce_button = switch_obj
-        else:
-            self.fila = switch_obj
-            self.debounce_button = None
-
-        if not self.has_physical_switch:
-            # Treat virtual hubs as always available so routines waiting on the
-            # hub sensor do not stall.
-            self.state = True
+        self.fila, self.debounce_button = add_filament_switch( f"{self.name}_Hub", self.switch_pin, self.printer,
+                                                                self.enable_sensors_in_gui, self.handle_runout, self.enable_runout,
+                                                                self.debounce_delay)
 
         # Adding self to AFC hubs
         self.afc.hubs[self.name]=self
@@ -105,9 +85,6 @@ class afc_hub:
         :param eventtime: Event time from the button press
         """
         # Only trigger runout for the currently loaded lane (in the toolhead) if it belongs to this hub
-        if self.fila is None or not self.enable_runout:
-            return
-
         current_lane_name = getattr(self.afc, 'current', None)
         if current_lane_name and current_lane_name in self.lanes:
             lane = self.lanes[current_lane_name]
