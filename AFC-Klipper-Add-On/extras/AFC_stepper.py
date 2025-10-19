@@ -32,7 +32,11 @@ class AFCExtruderStepper(AFCLane):
             self.motion_queuing = None
 
         self.next_cmd_time = 0.
+
         ffi_main, ffi_lib = chelper.get_ffi()
+        self.stepper_kinematics = ffi_main.gc(
+            ffi_lib.cartesian_stepper_alloc(b'x'), ffi_lib.free)
+
         if self.motion_queuing is not None:
             self.trapq          = self.motion_queuing.allocate_trapq()
             self.trapq_append   = self.motion_queuing.lookup_trapq_append()
@@ -40,14 +44,15 @@ class AFCExtruderStepper(AFCLane):
             self.trapq                  = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
             self.trapq_append           = ffi_lib.trapq_append
             self.trapq_finalize_moves   = ffi_lib.trapq_finalize_moves
-        self.stepper_kinematics = ffi_main.gc(
-            ffi_lib.cartesian_stepper_alloc(b'x'), ffi_lib.free)
+
         self.assist_activate=False
 
         # Current to use while printing, set to a lower current to reduce stepper heat when printing.
         # Defaults to global_print_current, if not specified current is not changed.
         self.tmc_print_current = config.getfloat("print_current", self.afc.global_print_current)
-        self._get_tmc_values( config )
+        self.tmc_load_current = None
+        if self.tmc_print_current is not None:
+            self._get_tmc_values( config )
 
         # Get and save base rotation dist
         self.base_rotation_dist = self.extruder_stepper.stepper.get_rotation_distance()[0]
@@ -59,7 +64,9 @@ class AFCExtruderStepper(AFCLane):
         try:
             self.tmc_driver = next(config.getsection(s) for s in config.fileconfig.sections() if 'tmc' in s and config.get_name() in s)
         except:
-            raise self.gcode.error("Count not find TMC for stepper {}".format(self.name))
+            msg = f"Could not find TMC for stepper {self.name},"
+            msg += "\nplease add TMC section or disable 'print_current' from config files"
+            raise self.gcode.error(msg)
 
         self.tmc_load_current = self.tmc_driver.getfloat('run_current')
 
@@ -87,6 +94,7 @@ class AFCExtruderStepper(AFCLane):
             self.trapq_append(self.trapq, print_time, accel_t, cruise_t, accel_t,
                               0., 0., 0., axis_r, 0., 0., 0., cruise_v, accel)
             print_time = print_time + accel_t + cruise_t + accel_t
+
             if self.motion_queuing is None:
                 self.extruder_stepper.stepper.generate_steps(print_time)
                 self.trapq_finalize_moves(self.trapq, print_time + LARGE_TIME_OFFSET,
@@ -94,6 +102,7 @@ class AFCExtruderStepper(AFCLane):
                 toolhead.note_mcu_movequeue_activity(print_time)
             else:
                 self.motion_queuing.note_mcu_movequeue_activity(print_time)
+
             toolhead.dwell(accel_t + cruise_t + accel_t)
             toolhead.flush_step_generation()
             self.extruder_stepper.stepper.set_trapq(prev_trapq)
@@ -154,13 +163,16 @@ class AFCExtruderStepper(AFCLane):
         else:
             self.next_cmd_time = print_time
 
-    def sync_to_extruder(self, update_current=True):
+    def sync_to_extruder(self, update_current=True, extruder_name=None):
         """
         Helper function to sync lane to extruder and set print current if specified.
 
         :param update_current: Sets current to specified print current when True
         """
-        self.extruder_stepper.sync_to_extruder(self.extruder_name)
+        if extruder_name is None:
+            extruder_name = self.extruder_name
+
+        self.extruder_stepper.sync_to_extruder(extruder_name)
         if update_current: self.set_print_current()
 
     def unsync_to_extruder(self, update_current=True):
@@ -178,7 +190,7 @@ class AFCExtruderStepper(AFCLane):
 
         :param current: Sets TMC current to specified value
         """
-        if self.tmc_print_current is not None:
+        if self.tmc_print_current is not None and current is not None:
             self.gcode.run_script_from_command("SET_TMC_CURRENT STEPPER='{}' CURRENT={}".format(self.name, current))
 
     def set_load_current(self):
@@ -197,7 +209,7 @@ class AFCExtruderStepper(AFCLane):
         """
         Helper function for updating steppers rotation distance
 
-        :param multipler: Multipler to set rotation distance. Rotation distance is updated by taking
+        :param multiplier: Multiplier to set rotation distance. Rotation distance is updated by taking
                           base rotation distance and dividing by multiplier.
         """
         self.extruder_stepper.stepper.set_rotation_distance( self.base_rotation_dist / multiplier )
