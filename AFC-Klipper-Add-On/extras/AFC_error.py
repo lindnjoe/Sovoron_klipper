@@ -84,7 +84,7 @@ class afcError:
 
                 cur_lane.tool_load = False
                 cur_lane.loaded_to_hub = False
-                cur_lane.extruder_obj.lane_loaded = ''
+                cur_lane.extruder_obj.lane_loaded = None
                 self.afc.save_vars()
                 self.pause = False
                 return True
@@ -230,7 +230,7 @@ class afcError:
             # Verify that printer is in absolute mode
             self.afc.function.check_absolute_mode("AFC_PAUSE")
             move_z_pos = self.afc.last_gcode_position[2] + self.afc.z_hop
-            # Check to see if current position is less than saved postion plus z-hop
+            # Check to see if current position is less than saved position plus z-hop
             if self.afc.gcode_move.last_position[2] <= move_z_pos:
                 # Move Z up by z-hop value
                 self.afc.move_z_pos(move_z_pos, "AFC_PAUSE")
