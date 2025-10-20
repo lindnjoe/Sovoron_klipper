@@ -974,7 +974,7 @@ class AFCLane:
         Helper function for setting multiple variables when lane is unloaded
         """
         self.tool_loaded = False
-        self.extruder_obj.lane_loaded = ""
+        self.extruder_obj.lane_loaded = "None"
         self.afc.current = None
         self.status = AFCLaneState.NONE
         self.afc.current_loading = None
