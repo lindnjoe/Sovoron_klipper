@@ -272,22 +272,13 @@ class AFCSpool:
         Helper function for setting lane spool values
         """
         # set defaults if there's no spool id, or the spoolman lookup fails
-        if self.afc.spoolman is not None:
-            if self.next_spool_id != '':
-                spool_id = self.next_spool_id
-                self.next_spool_id = ''
-                self.set_spoolID(cur_lane, spool_id)
-                return
-
-            if cur_lane.spool_id:
-                # Refresh the lane metadata from Spoolman when a spool ID
-                # is already assigned so that sensor callbacks (e.g. PREP)
-                # don't overwrite Spoolman-provided details with defaults.
-                self.set_spoolID(cur_lane, cur_lane.spool_id, save_vars=False)
-                return
-
         cur_lane.material = self.afc.default_material_type
         cur_lane.weight = 1000 # Defaulting weight to 1000 upon load
+
+        if self.afc.spoolman is not None and self.next_spool_id != '':
+            spool_id = self.next_spool_id
+            self.next_spool_id = ''
+            self.set_spoolID(cur_lane, spool_id)
 
     def clear_values(self, cur_lane):
         """
