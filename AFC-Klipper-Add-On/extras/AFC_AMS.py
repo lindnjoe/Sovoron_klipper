@@ -1,18 +1,24 @@
-# Armored Turtle Automated Filament Control - AMS integration
+# Armored Turtle Automated Filament Changer
+#
+# Copyright (C) 2025 Armored Turtle
+#
+# This file may be distributed under the terms of the GNU GPLv3 license.
 
+"""AFC unit that synchronizes lane and hub state with OpenAMS."""
 
 import traceback
-
 from configparser import Error as error
 
 try:
     from extras.AFC_unit import afcUnit
 except Exception:
     raise error("Error when trying to import AFC_unit\n{trace}".format(trace=traceback.format_exc()))
+
 try:
     from extras.AFC_lane import AFCLaneState
 except Exception:
     raise error("Error when trying to import AFC_lane\n{trace}".format(trace=traceback.format_exc()))
+
 
 SYNC_INTERVAL = 2.0
 
@@ -38,13 +44,13 @@ class afcAMS(afcUnit):
         """Ensure base AFC connectivity and set up logos."""
         super().handle_connect()
 
-        firstLeg = '<span class=warning--text>|</span><span class=error--text>_</span>'
-        secondLeg = firstLeg + '<span class=warning--text>|</span>'
+        first_leg = '<span class=warning--text>|</span><span class=error--text>_</span>'
+        second_leg = first_leg + '<span class=warning--text>|</span>'
         self.logo = '<span class=success--text>R  _____     ____\n'
         self.logo += 'E /      \\  |  </span><span class=info--text>o</span><span class=success--text> | \n'
         self.logo += 'A |       |/ ___/ \n'
         self.logo += 'D |_________/     \n'
-        self.logo += 'Y {first}{second} {first}{second}\n'.format(first=firstLeg, second=secondLeg)
+        self.logo += 'Y {first}{second} {first}{second}\n'.format(first=first_leg, second=second_leg)
         self.logo += '  ' + self.name + '\n'
 
         self.logo_error = '<span class=error--text>E  _ _   _ _\n'
