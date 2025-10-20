@@ -67,6 +67,7 @@ class afc:
         # Registering webhooks endpoint for <ip_address>/printer/afc/status
         self.webhooks.register_endpoint("afc/status", self._webhooks_status)
 
+        self.current            = None
         self.current_loading    = None
         self.next_lane_load     = None
         self.error_state        = False
@@ -259,10 +260,6 @@ class afc:
                                         self.cmd_AFC_TOGGLE_MACRO_help, self.cmd_AFC_TOGGLE_MACRO_options)
         self.function.register_commands(self.show_macros, 'UNSET_LANE_LOADED', self.cmd_UNSET_LANE_LOADED,
                                         self.cmd_UNSET_LANE_LOADED_help)
-
-    @property
-    def current(self):
-        return self.function.get_current_lane()
 
     def _remove_after_last(self, string, char):
         last_index = string.rfind(char)
