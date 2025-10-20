@@ -366,6 +366,14 @@ class afcFunction:
             current_extruder = self.get_current_extruder()
             if current_extruder is not None:
                 return self.afc.tools[current_extruder].lane_loaded
+
+        # Fall back to the controller's bookkeeping when the printer is
+        # actively printing or otherwise not in the "ready" state. This allows
+        # manual interventions such as SET_LANE_LOADED to keep the active lane
+        # synchronized even while mid-print.
+        if self.afc.current in self.afc.lanes:
+            return self.afc.current
+
         return None
 
     def get_current_lane_obj(self):
