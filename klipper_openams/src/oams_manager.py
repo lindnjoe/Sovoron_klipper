@@ -49,8 +49,8 @@ CLOG_SENSITIVITY_LEVELS = {
 CLOG_SENSITIVITY_DEFAULT = "medium"
 
 
-POST_LOAD_PRESSURE_THRESHOLD = 0.52  # FPS value indicating a possible clog after loading
-POST_LOAD_PRESSURE_DWELL = 5.0  # Seconds pressure must remain above the threshold
+POST_LOAD_PRESSURE_THRESHOLD = 0.56  # FPS value indicating a possible clog after loading
+POST_LOAD_PRESSURE_DWELL = 10.0  # Seconds pressure must remain above the threshold
 POST_LOAD_PRESSURE_CHECK_PERIOD = 0.5  # Interval between post-load pressure checks
 
 
