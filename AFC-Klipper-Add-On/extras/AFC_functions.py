@@ -479,6 +479,7 @@ class afcFunction:
         """
 
         cur_lane_loaded = self.get_current_lane_obj()
+        self.afc.current = cur_lane_loaded.name if cur_lane_loaded is not None else None
         self.logger.debug("Activating extruder lane: {}".format(cur_lane_loaded.name if cur_lane_loaded else "None"))
 
         # Disable extruder steppers for non active lanes
