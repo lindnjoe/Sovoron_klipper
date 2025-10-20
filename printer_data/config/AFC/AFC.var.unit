@@ -234,7 +234,7 @@
             "hub": "direct_load",
             "extruder": "extruder",
             "buffer": "TN",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 1,
             "map": "T0",
             "load": true,
@@ -252,7 +252,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 1970.0,
             "td1_data": {}
         },
@@ -267,7 +267,7 @@
             "map": "T1",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
+            "tool_loaded": false,
             "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.24,
@@ -278,9 +278,9 @@
             "weight": 636.1696159351538,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 2130.0,
             "td1_data": {}
         },
@@ -295,7 +295,7 @@
             "map": "T2",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
+            "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
@@ -306,9 +306,9 @@
             "weight": 438.42347226288723,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 1990.0,
             "td1_data": {}
         },
@@ -323,8 +323,8 @@
             "map": "T3",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
-            "loaded_to_hub": false,
+            "tool_loaded": false,
+            "loaded_to_hub": true,
             "material": "PLA+",
             "density": 1.24,
             "diameter": 1.75,
@@ -334,9 +334,9 @@
             "weight": 285.7159619061167,
             "extruder_temp": 210,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 2225.0,
             "td1_data": {}
         }
@@ -351,13 +351,13 @@
                 "lane_loaded": "lane0"
             },
             "extruder1": {
-                "lane_loaded": "lane1"
+                "lane_loaded": null
             },
             "extruder2": {
-                "lane_loaded": "lane2"
+                "lane_loaded": null
             },
             "extruder3": {
-                "lane_loaded": "lane3"
+                "lane_loaded": null
             },
             "extruder4": {
                 "lane_loaded": null

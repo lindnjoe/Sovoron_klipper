@@ -973,6 +973,14 @@ class AFCLane:
         """
         Helper function for setting multiple variables when lane is unloaded
         """
+        if self.is_direct_hub():
+            if self.afc.current == self.name:
+                self.afc.current = None
+            self.afc.current_loading = None
+            # Keep lane/tool state so direct-drive tools remain flagged as loaded
+            self.status = AFCLaneState.TOOLED
+            return
+
         self.tool_loaded = False
         if self.afc.current == self.name:
             self.afc.current = None
