@@ -362,20 +362,10 @@ class afcFunction:
 
         :return string: Current lane name that is loaded, None if nothing is loaded
         """
-        state_message = getattr(self.printer, "state_message", "")
-        if (state_message in {'Printer is ready', 'Printer is printing'} or
-                self.in_print() or
-                self.is_printing(check_movement=True)):
+        if self.printer.state_message == 'Printer is ready' or self.in_print():
             current_extruder = self.get_current_extruder()
-            if current_extruder is None:
-                return None
-
-            tool = self.afc.tools.get(current_extruder)
-            if tool is None:
-                return None
-
-            return tool.lane_loaded
-
+            if current_extruder is not None:
+                return self.afc.tools[current_extruder].lane_loaded
         return None
 
     def get_current_lane_obj(self):
@@ -411,7 +401,9 @@ class afcFunction:
         if current_extruder in self.afc.tools:
             tool_obj = self.afc.tools[current_extruder].tool_obj
             detected_state = tool_obj.detect_state if hasattr(tool_obj, "detect_state") else 1
-            return current_extruder if detected_state else None
+            if detected_state or self.in_print():
+                return current_extruder
+            return None
         else:
             return None
 
