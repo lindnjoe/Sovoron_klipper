@@ -1,19 +1,10 @@
 [Unit]
 Description=USB QR Scanner Service
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
-Environment=SCANNER_DEVICE=/dev/input/by-id/usb-MINJCODE_MINJCODE_MJ2818A_00000000011C-event-kbd
-Environment=MOONRAKER_HOST=localhost
-Environment=MOONRAKER_PORT=7125
-Environment=SPOOLMAN_PREFIX=web+spoolman:s-
-ExecStart=/usr/bin/python3 %h/afc-spool-scan/usb_qr_scanner_daemon.py
-Restart=always
-RestartSec=2
-StandardOutput=journal
-StandardError=journal
+ExecStart=%h/afc-spool-scan/usb-qr-scanner-read.sh
+Restart=on-failure
 
 [Install]
 WantedBy=default.target
