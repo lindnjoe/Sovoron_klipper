@@ -29,69 +29,17 @@ except Exception as exc:  # pragma: no cover - defensive guard
 
 try:  # pragma: no cover - defensive guard for runtime import errors
     from extras.AFC_utils import add_filament_switch
-except Exception as exc:  # pragma: no cover - defensive guard
-    raise ConfigError(
-        "Error when trying to import AFC_utils\n{trace}".format(
-            trace=traceback.format_exc()
-        )
-    ) from exc
+except Exception:  # pragma: no cover - defensive guard
+    add_filament_switch = None
 
 
 SYNC_INTERVAL = 2.0
-
-
-def _normalize_ams_tool_pin(config) -> str | None:
-    """Ensure the assigned extruder uses the virtual bypass chip."""
-
-    try:
-        extruder_name = config.get("extruder", None, note_valid=False)
-    except Exception:
-        extruder_name = None
-
-    if not extruder_name:
-        return None
-
-    parser = getattr(config, "fileconfig", None)
-    if parser is None:
-        return None
-
-    section = f"AFC_extruder {extruder_name}"
-    if not parser.has_section(section):
-        return None
-
-    try:
-        raw_value = parser.get(section, "pin_tool_start")
-    except Exception:
-        return None
-
-    if raw_value is None:
-        return None
-
-    pin_value = raw_value.strip()
-    if not pin_value or pin_value.lower() == "none":
-        return None
-
-    if pin_value.startswith("afc_virtual_bypass:"):
-        base_pin = pin_value.split(":", 1)[1].strip()
-        if base_pin.startswith("AMS_"):
-            return base_pin
-        return None
-
-    if not pin_value.startswith("AMS_"):
-        return None
-
-    parser.set(section, "pin_tool_start", f"afc_virtual_bypass:{pin_value}")
-    return pin_value
 
 
 class afcAMS(afcUnit):
     """AFC unit subclass that synchronises state with OpenAMS."""
 
     def __init__(self, config):
-        initial_virtual_tool_pin = getattr(
-            config, "_afc_ams_virtual_tool_pin", None
-        )
-
         super().__init__(config)
         self.type = "AMS"
 
@@ -168,66 +116,16 @@ class afcAMS(afcUnit):
     def _ensure_virtual_tool_sensor(self):
         """Create a virtual AMS tool sensor when configured for this unit."""
 
-        if self._virtual_tool_switch_created:
+        if self._virtual_tool_switch is not None:
             return
-
-        base_pin = self._get_virtual_tool_pin()
-        if base_pin is None:
-            return
-
-        try:
-            self.printer.lookup_object(f"filament_switch_sensor {base_pin}")
-        except Exception:
-            sensor_exists = False
-        else:
-            sensor_exists = True
-
-        if sensor_exists:
-            self._virtual_tool_switch_created = True
-            return
-
-        cfg_path = None
-        for filename in (
-            "AFC-hardware.cfg",
-            "AFC_Hardware.cfg",
-            "AFC-Hardware.cfg",
-            "AFC_hardware.cfg",
-        ):
-            test_path = Path(cfg_dir) / filename
-            if test_path.exists():
-                cfg_path = test_path
-                break
-
-        if cfg_path is None:
-            try:
-                cfg_path = next(
-                    path
-                    for path in Path(cfg_dir).glob("AFC*hardware*.cfg")
-                    if path.is_file()
-                )
-            except StopIteration:
-                return
-
-        self._virtual_tool_switch_created = True
-        self.logger.info(
-            f"Registered virtual AMS filament sensor '{base_pin}' using pin {virtual_pin}"
-        )
-
-    def _get_virtual_tool_pin(self) -> str | None:
-        """Return the AMS pin name tied to this unit's extruder, if any."""
-
-        if self._cached_virtual_tool_pin is not None:
-            return self._cached_virtual_tool_pin
 
         extruder_name = getattr(self, "extruder", None)
         if not extruder_name:
-            self._cached_virtual_tool_pin = None
-            return None
+            return
 
         cfg_dir = getattr(self.afc, "cfgloc", None)
         if not cfg_dir:
-            self._cached_virtual_tool_pin = None
-            return None
+            return
 
         cfg_path = None
         for filename in (
@@ -258,175 +156,65 @@ class afcAMS(afcUnit):
             with cfg_path.open("r", encoding="utf-8") as cfg_file:
                 parser.read_file(cfg_file)
         except Exception:
-            self._cached_virtual_tool_pin = None
-            return None
+            return
 
         section = f"AFC_extruder {extruder_name}"
         if not parser.has_section(section):
-            self._cached_virtual_tool_pin = None
-            return None
+            return
 
         tool_pin = parser.get(section, "pin_tool_start", fallback=None)
         if tool_pin is None:
-            self._cached_virtual_tool_pin = None
-            return None
+            return
 
         tool_pin = tool_pin.strip()
         if not tool_pin or tool_pin.lower() == "none":
-            self._cached_virtual_tool_pin = None
-            return None
-
-        if tool_pin.startswith("afc_virtual_bypass:"):
-            tool_pin = tool_pin.split(":", 1)[1].strip()
-
-        if not tool_pin.startswith("AMS_"):
-            self._cached_virtual_tool_pin = None
-            return None
-
-        self._cached_virtual_tool_pin = tool_pin
-        return tool_pin
-
-    def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
-        """Validate AMS lane state without attempting any motion."""
-
-        msg = ""
-        succeeded = True
-
-        cur_lane.unsync_to_extruder(False)
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.7)
-
-        if not cur_lane.prep_state:
-            if not cur_lane.load_state:
-                self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
-                msg += '<span class=success--text>EMPTY READY FOR SPOOL</span>'
-            else:
-                self.afc.function.afc_led(cur_lane.led_fault, cur_lane.led_index)
-                msg += '<span class=error--text> NOT READY</span>'
-                cur_lane.do_enable(False)
-                msg = '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
-                succeeded = False
-        else:
-            self.afc.function.afc_led(cur_lane.led_ready, cur_lane.led_index)
-            msg += '<span class=success--text>LOCKED</span>'
-            if not cur_lane.load_state:
-                msg += '<span class=error--text> NOT LOADED</span>'
-                self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
-                succeeded = False
-            else:
-                cur_lane.status = AFCLaneState.LOADED
-                msg += '<span class=success--text> AND LOADED</span>'
-                self.afc.function.afc_led(cur_lane.led_spool_illum, cur_lane.led_spool_index)
-
-                if cur_lane.tool_loaded:
-                    tool_ready = (
-                        cur_lane.get_toolhead_pre_sensor_state()
-                        or cur_lane.extruder_obj.tool_start == "buffer"
-                        or cur_lane.extruder_obj.tool_end_state
-                    )
-                    if tool_ready and cur_lane.extruder_obj.lane_loaded == cur_lane.name:
-                        cur_lane.sync_to_extruder()
-                        msg += '<span class=primary--text> in ToolHead</span>'
-                        if cur_lane.extruder_obj.tool_start == "buffer":
-                            msg += (
-                                '<span class=warning--text>'
-                                ' Ram sensor enabled, confirm tool is loaded</span>'
-                            )
-                        if self.afc.function.get_current_lane() == cur_lane.name:
-                            self.afc.spool.set_active_spool(cur_lane.spool_id)
-                            cur_lane.unit_obj.lane_tool_loaded(cur_lane)
-                            cur_lane.status = AFCLaneState.TOOLED
-                        cur_lane.enable_buffer()
-                    elif tool_ready:
-                        msg += (
-                            '<span class=error--text> error in ToolHead. '
-                            'Lane identified as loaded '
-                            'but not identified as loaded in extruder</span>'
-                        )
-                        succeeded = False
-
-        if assignTcmd:
-            self.afc.function.TcmdAssign(cur_lane)
-        cur_lane.do_enable(False)
-        self.logger.info(
-            '{lane_name} tool cmd: {tcmd:3} {msg}'.format(
-                lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg
-            )
-        )
-        cur_lane.set_afc_prep_done()
-        return succeeded
-
-    def handle_ready(self):
-        """Resolve the OpenAMS object once Klippy is ready."""
-
-        self.oams = self.printer.lookup_object("oams " + self.oams_name, None)
-        self.reactor.update_timer(self.timer, self.reactor.NOW)
-
-    cmd_SYNC_TOOL_SENSOR_help = (
-        "Update the virtual AMS tool-start filament sensor to match the FPS state"
-    )
-
-    def cmd_SYNC_TOOL_SENSOR(self, gcmd):
-        """Toggle the virtual AMS tool sensor based on the FPS load state."""
-
-        virtual_tool = self._virtual_tool_switch
-        if not virtual_tool:
             return
 
-        fps_name = gcmd.get("FPS")
-        if not fps_name:
-            gcmd.respond_info("AFC_AMS_SYNC_TOOL_SENSOR missing FPS parameter")
+        normalized_pin = tool_pin
+        if not normalized_pin.upper().startswith("AMS_"):
             return
 
-        if self.printer.lookup_object(f"filament_switch_sensor {tool_pin}", None):
-            self._virtual_tool_switch = tool_pin
+        if self.printer.lookup_object(
+            f"filament_switch_sensor {normalized_pin}", None
+        ):
+            self._virtual_tool_switch = normalized_pin
             self._virtual_tool_switch_created = True
             self._invalidate_virtual_tool_cache()
             return
 
-        key = fps_name if fps_name.startswith("fps ") else f"fps {fps_name}"
-        fps_state = manager.current_state.fps_state.get(key)
-        if fps_state is None:
-            fps_state = manager.current_state.fps_state.get(fps_name)
-        if fps_state is None:
+        pins = self.printer.lookup_object("pins")
+        if not getattr(self.afc, "_virtual_ams_chip_registered", False):
+            try:
+                pins.register_chip("afc_virtual_ams", self.afc)
+            except Exception:
+                pass
+            else:
+                self.afc._virtual_ams_chip_registered = True
+
+        if add_filament_switch is None:
+            self.logger.info(
+                "AFC_utils.add_filament_switch unavailable, skipping virtual AMS sensor"
+            )
             return
 
-        if fps_state.state_name not in ("LOADED", "UNLOADED"):
+        try:
+            add_filament_switch(
+                normalized_pin,
+                f"afc_virtual_ams:{normalized_pin}",
+                self.printer,
+                show_sensor=self.afc.enable_sensors_in_gui,
+            )
+        except Exception:
             return
 
-        self._virtual_tool_switch = tool_pin
+        self._virtual_tool_switch = normalized_pin
         self._virtual_tool_switch_created = True
         self._invalidate_virtual_tool_cache()
         self.logger.info(
             "Registered virtual AMS filament sensor '%s' for unit %s",
-            tool_pin,
+            normalized_pin,
             self.name,
         )
-        if sensor is None:
-            return
-
-        filament_present = fps_state.state_name == "LOADED"
-        eventtime = self.reactor.monotonic()
-
-        try:
-            sensor.runout_helper.note_filament_present(eventtime, filament_present)
-        except TypeError:
-            sensor.runout_helper.note_filament_present(
-                is_filament_present=filament_present
-            )
-
-        sensor.filament_present = filament_present
-
-    def _invalidate_virtual_tool_cache(self):
-        """Clear any cached references to the virtual tool sensor."""
-
-        self._cached_virtual_tool_pin = None
-        self._cached_virtual_tool_sensor = None
-
-    def _invalidate_virtual_tool_cache(self):
-        """Clear any cached references to the virtual tool sensor."""
-
-        self._cached_virtual_tool_pin = None
-        self._cached_virtual_tool_sensor = None
 
     def _invalidate_virtual_tool_cache(self):
         """Clear any cached references to the virtual tool sensor."""
@@ -672,61 +460,6 @@ class afcAMS(afcUnit):
         self._set_virtual_tool_sensor_state(filament_present)
 
 
-    cmd_SYNC_TOOL_SENSOR_help = (
-        "Update the virtual AMS tool-start filament sensor to match the FPS state"
-    )
-
-    def cmd_SYNC_TOOL_SENSOR(self, gcmd):
-        """Toggle the virtual AMS tool sensor based on the FPS load state."""
-
-        virtual_tool = self._virtual_tool_switch
-        if not virtual_tool:
-            return
-
-        fps_name = gcmd.get("FPS")
-        if not fps_name:
-            gcmd.respond_info("AFC_AMS_SYNC_TOOL_SENSOR missing FPS parameter")
-            return
-
-        manager = self.printer.lookup_object("oams_manager", None)
-        if manager is None:
-            return
-
-        key = fps_name if fps_name.startswith("fps ") else f"fps {fps_name}"
-        fps_state = manager.current_state.fps_state.get(key)
-        if fps_state is None:
-            fps_state = manager.current_state.fps_state.get(fps_name)
-        if fps_state is None:
-            return
-
-        if fps_state.state_name not in ("LOADED", "UNLOADED"):
-            return
-
-        sensor = self._cached_virtual_tool_sensor
-        if self._cached_virtual_tool_pin != virtual_tool or sensor is None:
-            sensor = self.printer.lookup_object(
-                f"filament_switch_sensor {virtual_tool}", None
-            )
-            if sensor is None:
-                self._invalidate_virtual_tool_cache()
-                return
-
-            self._cached_virtual_tool_pin = virtual_tool
-            self._cached_virtual_tool_sensor = sensor
-
-        filament_present = fps_state.state_name == "LOADED"
-        eventtime = self.reactor.monotonic()
-
-        try:
-            sensor.runout_helper.note_filament_present(eventtime, filament_present)
-        except TypeError:
-            sensor.runout_helper.note_filament_present(
-                is_filament_present=filament_present
-            )
-
-        sensor.filament_present = filament_present
-
-
     def _update_shared_lane(self, lane, lane_val, eventtime):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
 
@@ -811,7 +544,4 @@ class afcAMS(afcUnit):
 
 
 def load_config_prefix(config):
-    base_pin = _normalize_ams_tool_pin(config)
-    if base_pin is not None:
-        setattr(config, "_afc_ams_virtual_tool_pin", base_pin)
     return afcAMS(config)
