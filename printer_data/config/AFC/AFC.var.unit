@@ -24,7 +24,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "Loaded",
+            "status": "Error",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -318,7 +318,7 @@
             "hub": "direct_load",
             "extruder": "extruder3",
             "buffer": "TN3",
-            "buffer_status": "Trailing",
+            "buffer_status": "Unknown",
             "lane": 4,
             "map": "T3",
             "load": true,
@@ -367,7 +367,7 @@
             }
         },
         "bypass": {
-            "enabled": false
+            "enabled": 0
         }
     }
 }
