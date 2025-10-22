@@ -7,6 +7,7 @@ MOONRAKER_HOST="localhost"
 MOONRAKER_PORT="7125"
 SPOOLMAN_PREFIX="web+spoolman:s-"
 RETRY_DELAY=2
+EVTEST_GRAB_SUPPORTED=""
 
 log() {
     printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
@@ -132,11 +133,41 @@ main_loop() {
                 fi
             fi
         fi
-    done < <(evtest --grab "$EVENT_DEV" 2>/dev/null)
+    done < <(start_evtest_stream)
 }
 
 require_command evtest
 require_command curl
+
+evtest_supports_grab() {
+    if [[ -n "$EVTEST_GRAB_SUPPORTED" ]]; then
+        [[ "$EVTEST_GRAB_SUPPORTED" == "yes" ]]
+        return
+    fi
+
+    if evtest --help 2>&1 | grep -q -- '--grab'; then
+        EVTEST_GRAB_SUPPORTED="yes"
+        log "evtest supports --grab; running in exclusive mode"
+        return 0
+    fi
+
+    EVTEST_GRAB_SUPPORTED="no"
+    log "evtest does not support --grab; continuing without exclusive mode"
+    return 1
+}
+
+start_evtest_stream() {
+    local -a cmd=(evtest)
+
+    if evtest_supports_grab; then
+        cmd+=(--grab)
+    fi
+
+    cmd+=("$EVENT_DEV")
+
+    log "Starting ${cmd[*]}"
+    "${cmd[@]}"
+}
 
 while true; do
     if [[ ! -e "$EVENT_DEV" ]]; then
