@@ -1,13 +1,10 @@
 [Unit]
 Description=USB QR Scanner Service
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=simple
 ExecStart=%h/afc-spool-scan/usb-qr-scanner-read.sh
-Restart=always
-RestartSec=5
+Restart=on-failure
 
 [Install]
 WantedBy=default.target
