@@ -1,103 +1,149 @@
 #!/bin/bash
 
-# Set the HID device path (update if needed)
 EVENT_DEV="/dev/input/by-id/usb-MINJCODE_MINJCODE_MJ2818A_00000000011C-event-kbd"
 MOONRAKER_HOST="localhost"
 MOONRAKER_PORT="7125"
 SPOOLMAN_PREFIX="web+spoolman:s-"
+RETRY_DELAY=2
 
-# Check if evtest is installed
 if ! command -v evtest >/dev/null 2>&1; then
     echo "Error: evtest is not installed or not in PATH."
     exit 1
 fi
 
-# Check device exists
-if [ ! -e "$EVENT_DEV" ]; then
-    echo "Device $EVENT_DEV not found."
+if ! command -v curl >/dev/null 2>&1; then
+    echo "Error: curl is not installed or not in PATH."
     exit 1
 fi
 
 post_next_spool_id() {
-    local SPOOL_ID="$1"
+    local spool_id="$1"
     curl -X POST "http://${MOONRAKER_HOST}:${MOONRAKER_PORT}/printer/gcode/script" \
         -H "Content-Type: application/json" \
-        -d "{\"script\": \"SET_NEXT_SPOOL_ID SPOOL_ID=${SPOOL_ID}\"}"
+        -d "{\"script\": \"SET_NEXT_SPOOL_ID SPOOL_ID=${spool_id}\"}" \
+        || echo "Failed to post spool id '${spool_id}'"
 }
 
 process_line() {
     local line="$1"
+
+    if [[ -z "$line" ]]; then
+        return
+    fi
+
+    line="${line//$'\r'/}"
+
     if [[ "$line" == "$SPOOLMAN_PREFIX"* ]]; then
         echo "Magic code Scanned"
-        SPOOL_ID="${line#$SPOOLMAN_PREFIX}"
-        post_next_spool_id "${SPOOL_ID}"
-    elif [[ "$line" == "http"* ]]; then
+        local spool_id="${line#$SPOOLMAN_PREFIX}"
+        post_next_spool_id "$spool_id"
+    elif [[ "$line" == http* ]]; then
         echo "URL Scanned"
-        SPOOL_ID=`echo $line | cut -d'/' -f6`
-        post_next_spool_id "${SPOOL_ID}"
+        local spool_id
+        spool_id=$(echo "$line" | cut -d'/' -f6)
+        [[ -n "$spool_id" ]] && post_next_spool_id "$spool_id"
+    else
+        echo "Unhandled scan payload: $line"
     fi
 }
 
-echo "Reading from $EVENT_DEV (Ctrl+C to stop)..."
+translate_shifted() {
+    local key="$1"
+    case "$key" in
+        [a-z]) printf '%s' "${key^^}"; return 0 ;;
+        1) printf '!'; return 0 ;;
+        2) printf '@'; return 0 ;;
+        3) printf '#'; return 0 ;;
+        4) printf '$'; return 0 ;;
+        5) printf '%%'; return 0 ;;
+        6) printf '^'; return 0 ;;
+        7) printf '&'; return 0 ;;
+        8) printf '*'; return 0 ;;
+        9) printf '('; return 0 ;;
+        0) printf ')'; return 0 ;;
+        -) printf '_'; return 0 ;;
+        =) printf '+'; return 0 ;;
+        '[') printf '{'; return 0 ;;
+        ']') printf '}'; return 0 ;;
+        "\\") printf '|'; return 0 ;;
+        ";") printf ':'; return 0 ;;
+        "'") printf '%s' "\""; return 0 ;;
+        ,) printf '<'; return 0 ;;
+        .) printf '>'; return 0 ;;
+        /) printf '?'; return 0 ;;
+        '`') printf '~'; return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
-# Keycode to character mapping (partial, add more as needed)
-KEYS=( "" "ESC" "1" "2" "3" "4" "5" "6" "7" "8" "9" "0" "-" "=" "BACKSPACE" "TAB"
-    "q" "w" "e" "r" "t" "y" "u" "i" "o" "p" "[" "]" "ENTER" "CTRL"
-    "a" "s" "d" "f" "g" "h" "j" "k" "l" ";" "'" "\`" "LSHIFT" "\\" "z" "x"
-    "c" "v" "b" "n" "m" "," "." "/" "RSHIFT" "*" "ALT" "SPACE" )
+run_event_loop() {
+    local keys=( "" "ESC" "1" "2" "3" "4" "5" "6" "7" "8" "9" "0" "-" "=" "BACKSPACE" "TAB" \
+        "q" "w" "e" "r" "t" "y" "u" "i" "o" "p" "[" "]" "ENTER" "CTRL" \
+        "a" "s" "d" "f" "g" "h" "j" "k" "l" ";" "'" "\`" "LSHIFT" "\\" "z" "x" \
+        "c" "v" "b" "n" "m" "," "." "/" "RSHIFT" "*" "ALT" "SPACE" )
 
-buffer=""
+    local buffer=""
+    local shift_active=0
 
-evtest "$EVENT_DEV" 2>/dev/null | \
-while read -r line; do
-    # Only process key press events
-    if [[ "$line" =~ "EV_KEY" ]] && [[ "$line" =~ "value 1" ]]; then
-        # Extract keycode number
+    local evtest_cmd=(evtest "$EVENT_DEV")
+    if command -v stdbuf >/dev/null 2>&1; then
+        evtest_cmd=(stdbuf -oL -eL "${evtest_cmd[@]}")
+    fi
+
+    "${evtest_cmd[@]}" 2>/dev/null | while read -r line; do
+        [[ "$line" == *"EV_KEY"* ]] || continue
+
+        local keycode
         keycode=$(echo "$line" | sed -n 's/.*code \([0-9]\+\) (.*/\1/p')
+        [[ -z "$keycode" ]] && continue
 
-        # Map keycode to index in KEYS array if possible
-        if [[ "$keycode" =~ ^[0-9]+$ ]]; then
-            keyname="${KEYS[$keycode]}"
+        local keyname="${keys[$keycode]}"
+        [[ -z "$keyname" ]] && continue
 
-            # Track shift state
-            if [[ "$keyname" == "LSHIFT" || "$keyname" == "RSHIFT" ]]; then
-                shift_active=1
-            elif [[ "$keyname" == "ENTER" ]]; then
-                echo "Scanned code: $buffer"
-                process_line "$buffer"
-                buffer=""
-            elif [[ -n "$keyname" ]]; then
-                # Handle shift for letters and some symbols
-                if [[ "$shift_active" == "1" ]]; then
-                    # Uppercase letters
-                    if [[ "$keyname" =~ ^[a-z]$ ]]; then keyname=$(echo "$keyname" | tr '[:lower:]' '[:upper:]')
-                    # Shifted numbers/symbols
-                    elif [[ "$keyname" == "1" ]]; then keyname="!"
-                    elif [[ "$keyname" == "2" ]]; then keyname="@"
-                    elif [[ "$keyname" == "3" ]]; then keyname="#"
-                    elif [[ "$keyname" == "4" ]]; then keyname="$"
-                    elif [[ "$keyname" == "5" ]]; then keyname="%"
-                    elif [[ "$keyname" == "6" ]]; then keyname="^"
-                    elif [[ "$keyname" == "7" ]]; then keyname="&"
-                    elif [[ "$keyname" == "8" ]]; then keyname="*"
-                    elif [[ "$keyname" == "9" ]]; then keyname="("
-                    elif [[ "$keyname" == "0" ]]; then keyname=")"
-                    elif [[ "$keyname" == "-" ]]; then keyname="_"
-                    elif [[ "$keyname" == "=" ]]; then keyname="+"
-                    elif [[ "$keyname" == "[" ]]; then keyname="{"
-                    elif [[ "$keyname" == "]" ]]; then keyname="}"
-                    elif [[ "$keyname" == "\\" ]]; then keyname="|"
-                    elif [[ "$keyname" == ";" ]]; then keyname=":"
-                    elif [[ "$keyname" == "'" ]]; then keyname="\""
-                    elif [[ "$keyname" == "," ]]; then keyname="<"
-                    elif [[ "$keyname" == "." ]]; then keyname=">"
-                    elif [[ "$keyname" == "/" ]]; then keyname="?"
-                    fi
+        if [[ "$line" == *"value 1"* ]]; then
+            case "$keyname" in
+                LSHIFT|RSHIFT)
+                    shift_active=1
+                    ;;
+                ENTER)
+                    echo "Scanned code: $buffer"
+                    process_line "$buffer"
+                    buffer=""
                     shift_active=0
-                fi
-                echo "Key pressed: $keyname"
-                buffer+="$keyname"
+                    ;;
+                BACKSPACE)
+                    buffer=${buffer%?}
+                    ;;
+                TAB|CTRL|ALT|"*")
+                    ;;
+                *)
+                    if [[ $shift_active -eq 1 ]]; then
+                        local shifted
+                        if shifted=$(translate_shifted "$keyname"); then
+                            keyname="$shifted"
+                        fi
+                        shift_active=0
+                    fi
+                    buffer+="$keyname"
+                    ;;
+            esac
+        elif [[ "$line" == *"value 0"* ]]; then
+            if [[ "$keyname" == "LSHIFT" || "$keyname" == "RSHIFT" ]]; then
+                shift_active=0
             fi
         fi
+    done
+}
+
+while true; do
+    if [[ ! -e "$EVENT_DEV" ]]; then
+        echo "Device $EVENT_DEV not found. Waiting..."
+        sleep "$RETRY_DELAY"
+        continue
     fi
+
+    echo "Reading from $EVENT_DEV (Ctrl+C to stop)..."
+    run_event_loop
+    echo "Event loop exited unexpectedly. Restarting in ${RETRY_DELAY}s..."
+    sleep "$RETRY_DELAY"
 done
