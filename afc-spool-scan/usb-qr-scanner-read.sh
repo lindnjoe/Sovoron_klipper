@@ -1,103 +1,153 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# Set the HID device path (update if needed)
+set -euo pipefail
+
 EVENT_DEV="/dev/input/by-id/usb-MINJCODE_MINJCODE_MJ2818A_00000000011C-event-kbd"
 MOONRAKER_HOST="localhost"
 MOONRAKER_PORT="7125"
 SPOOLMAN_PREFIX="web+spoolman:s-"
+RETRY_DELAY=2
 
-# Check if evtest is installed
-if ! command -v evtest >/dev/null 2>&1; then
-    echo "Error: evtest is not installed or not in PATH."
-    exit 1
-fi
+log() {
+    printf '[%s] %s\n' "$(date --iso-8601=seconds)" "$*"
+}
 
-# Check device exists
-if [ ! -e "$EVENT_DEV" ]; then
-    echo "Device $EVENT_DEV not found."
-    exit 1
-fi
+require_command() {
+    local cmd="$1"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        log "Error: required command '$cmd' not found in PATH"
+        exit 1
+    fi
+}
 
 post_next_spool_id() {
-    local SPOOL_ID="$1"
-    curl -X POST "http://${MOONRAKER_HOST}:${MOONRAKER_PORT}/printer/gcode/script" \
+    local spool_id="$1"
+    local payload
+    payload=$(printf '{"script": "SET_NEXT_SPOOL_ID SPOOL_ID=%s"}' "$spool_id")
+
+    if ! curl --silent --show-error --fail \
+        -X POST "http://${MOONRAKER_HOST}:${MOONRAKER_PORT}/printer/gcode/script" \
         -H "Content-Type: application/json" \
-        -d "{\"script\": \"SET_NEXT_SPOOL_ID SPOOL_ID=${SPOOL_ID}\"}"
+        -d "$payload" >/dev/null; then
+        log "Failed to post spool id '${spool_id}' to Moonraker"
+    fi
 }
 
 process_line() {
     local line="$1"
+
+    if [[ -z "$line" ]]; then
+        return
+    fi
+
     if [[ "$line" == "$SPOOLMAN_PREFIX"* ]]; then
-        echo "Magic code Scanned"
-        SPOOL_ID="${line#$SPOOLMAN_PREFIX}"
-        post_next_spool_id "${SPOOL_ID}"
-    elif [[ "$line" == "http"* ]]; then
-        echo "URL Scanned"
-        SPOOL_ID=`echo $line | cut -d'/' -f6`
-        post_next_spool_id "${SPOOL_ID}"
+        log "Spoolman code scanned"
+        post_next_spool_id "${line#$SPOOLMAN_PREFIX}"
+    elif [[ "$line" == http* ]]; then
+        log "URL scanned"
+        local spool_id
+        spool_id=$(printf '%s' "$line" | awk -F'/' 'NF >= 1 {print $NF}')
+        if [[ -n "$spool_id" ]]; then
+            post_next_spool_id "$spool_id"
+        fi
+    else
+        log "Unhandled scan payload: $line"
     fi
 }
 
-echo "Reading from $EVENT_DEV (Ctrl+C to stop)..."
+main_loop() {
+    local -a keys=( "" "ESC" "1" "2" "3" "4" "5" "6" "7" "8" "9" "0" "-" "=" "BACKSPACE" "TAB"
+        "q" "w" "e" "r" "t" "y" "u" "i" "o" "p" "[" "]" "ENTER" "CTRL"
+        "a" "s" "d" "f" "g" "h" "j" "k" "l" ";" $'\x27' $'\x60' "LSHIFT" "\\" "z" "x"
+        "c" "v" "b" "n" "m" "," "." "/" "RSHIFT" "*" "ALT" "SPACE" )
 
-# Keycode to character mapping (partial, add more as needed)
-KEYS=( "" "ESC" "1" "2" "3" "4" "5" "6" "7" "8" "9" "0" "-" "=" "BACKSPACE" "TAB"
-    "q" "w" "e" "r" "t" "y" "u" "i" "o" "p" "[" "]" "ENTER" "CTRL"
-    "a" "s" "d" "f" "g" "h" "j" "k" "l" ";" "'" "\`" "LSHIFT" "\\" "z" "x"
-    "c" "v" "b" "n" "m" "," "." "/" "RSHIFT" "*" "ALT" "SPACE" )
+    declare -A shift_map
+    shift_map["1"]="!"
+    shift_map["2"]="@"
+    shift_map["3"]="#"
+    shift_map["4"]="$"
+    shift_map["5"]="%"
+    shift_map["6"]="^"
+    shift_map["7"]="&"
+    shift_map["8"]="*"
+    shift_map["9"]="("
+    shift_map["0"]=")"
+    shift_map["-"]="_"
+    shift_map["="]="+"
+    shift_map["["]="{"
+    shift_map["]"]="}"
+    shift_map["\\"]="|"
+    shift_map[";"]=":"
+    shift_map["'"]="\""
+    shift_map[","]="<"
+    shift_map["."]=">"
+    shift_map["/"]="?"
 
-buffer=""
+    local buffer=""
+    local shift_active=0
 
-evtest "$EVENT_DEV" 2>/dev/null | \
-while read -r line; do
-    # Only process key press events
-    if [[ "$line" =~ "EV_KEY" ]] && [[ "$line" =~ "value 1" ]]; then
-        # Extract keycode number
-        keycode=$(echo "$line" | sed -n 's/.*code \([0-9]\+\) (.*/\1/p')
+    log "Waiting for events from $EVENT_DEV"
 
-        # Map keycode to index in KEYS array if possible
-        if [[ "$keycode" =~ ^[0-9]+$ ]]; then
-            keyname="${KEYS[$keycode]}"
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
 
-            # Track shift state
-            if [[ "$keyname" == "LSHIFT" || "$keyname" == "RSHIFT" ]]; then
-                shift_active=1
-            elif [[ "$keyname" == "ENTER" ]]; then
-                echo "Scanned code: $buffer"
-                process_line "$buffer"
-                buffer=""
-            elif [[ -n "$keyname" ]]; then
-                # Handle shift for letters and some symbols
-                if [[ "$shift_active" == "1" ]]; then
-                    # Uppercase letters
-                    if [[ "$keyname" =~ ^[a-z]$ ]]; then keyname=$(echo "$keyname" | tr '[:lower:]' '[:upper:]')
-                    # Shifted numbers/symbols
-                    elif [[ "$keyname" == "1" ]]; then keyname="!"
-                    elif [[ "$keyname" == "2" ]]; then keyname="@"
-                    elif [[ "$keyname" == "3" ]]; then keyname="#"
-                    elif [[ "$keyname" == "4" ]]; then keyname="$"
-                    elif [[ "$keyname" == "5" ]]; then keyname="%"
-                    elif [[ "$keyname" == "6" ]]; then keyname="^"
-                    elif [[ "$keyname" == "7" ]]; then keyname="&"
-                    elif [[ "$keyname" == "8" ]]; then keyname="*"
-                    elif [[ "$keyname" == "9" ]]; then keyname="("
-                    elif [[ "$keyname" == "0" ]]; then keyname=")"
-                    elif [[ "$keyname" == "-" ]]; then keyname="_"
-                    elif [[ "$keyname" == "=" ]]; then keyname="+"
-                    elif [[ "$keyname" == "[" ]]; then keyname="{"
-                    elif [[ "$keyname" == "]" ]]; then keyname="}"
-                    elif [[ "$keyname" == "\\" ]]; then keyname="|"
-                    elif [[ "$keyname" == ";" ]]; then keyname=":"
-                    elif [[ "$keyname" == "'" ]]; then keyname="\""
-                    elif [[ "$keyname" == "," ]]; then keyname="<"
-                    elif [[ "$keyname" == "." ]]; then keyname=">"
-                    elif [[ "$keyname" == "/" ]]; then keyname="?"
-                    fi
+        if [[ "$line" =~ EV_KEY ]]; then
+            local keycode
+            keycode=$(sed -n 's/.*code \([0-9]\+\) (.*/\1/p' <<<"$line")
+            [[ -z "$keycode" ]] && continue
+
+            local keyname="${keys[$keycode]:-}"
+            [[ -z "$keyname" ]] && continue
+
+            if [[ "$line" =~ "value 1" ]]; then
+                case "$keyname" in
+                    LSHIFT|RSHIFT)
+                        shift_active=1
+                        ;;
+                    ENTER)
+                        log "Scanned code: $buffer"
+                        process_line "$buffer"
+                        buffer=""
+                        ;;
+                    BACKSPACE)
+                        buffer=${buffer%?}
+                        ;;
+                    TAB|CTRL|ALT|RSHIFT|LSHIFT|"*")
+                        # Non printable keys already handled
+                        ;;
+                    *)
+                        if (( shift_active )); then
+                            if [[ "$keyname" =~ ^[a-z]$ ]]; then
+                                keyname=${keyname^^}
+                            elif [[ -n "${shift_map[$keyname]:-}" ]]; then
+                                keyname=${shift_map[$keyname]}
+                            fi
+                        fi
+                        buffer+="$keyname"
+                        ;;
+                esac
+            elif [[ "$line" =~ "value 0" ]]; then
+                if [[ "$keyname" == "LSHIFT" || "$keyname" == "RSHIFT" ]]; then
                     shift_active=0
                 fi
-                echo "Key pressed: $keyname"
-                buffer+="$keyname"
             fi
         fi
+    done < <(evtest --grab "$EVENT_DEV" 2>/dev/null)
+}
+
+require_command evtest
+require_command curl
+
+while true; do
+    if [[ ! -e "$EVENT_DEV" ]]; then
+        log "Device $EVENT_DEV not found. Waiting..."
+        sleep "$RETRY_DELAY"
+        continue
     fi
+
+    if ! main_loop; then
+        log "Event loop exited unexpectedly, retrying in ${RETRY_DELAY}s"
+        sleep "$RETRY_DELAY"
+    fi
+
 done
