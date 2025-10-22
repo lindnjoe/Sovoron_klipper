@@ -217,10 +217,27 @@ class afcAMS(afcUnit):
             self._cached_virtual_tool_pin = None
             return None
 
-        cfg_path = Path(cfg_dir) / "AFC-hardware.cfg"
-        if not cfg_path.exists():
-            self._cached_virtual_tool_pin = None
-            return None
+        cfg_path = None
+        for filename in (
+            "AFC-hardware.cfg",
+            "AFC_Hardware.cfg",
+            "AFC-Hardware.cfg",
+            "AFC_hardware.cfg",
+        ):
+            test_path = Path(cfg_dir) / filename
+            if test_path.exists():
+                cfg_path = test_path
+                break
+
+        if cfg_path is None:
+            try:
+                cfg_path = next(
+                    path
+                    for path in Path(cfg_dir).glob("AFC*hardware*.cfg")
+                    if path.is_file()
+                )
+            except StopIteration:
+                return
 
         parser = ConfigParser()
         parser.optionxform = str
@@ -386,6 +403,12 @@ class afcAMS(afcUnit):
             )
 
         sensor.filament_present = filament_present
+
+    def _invalidate_virtual_tool_cache(self):
+        """Clear any cached references to the virtual tool sensor."""
+
+        self._cached_virtual_tool_pin = None
+        self._cached_virtual_tool_sensor = None
 
     def _invalidate_virtual_tool_cache(self):
         """Clear any cached references to the virtual tool sensor."""
