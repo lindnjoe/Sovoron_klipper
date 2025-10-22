@@ -59,7 +59,18 @@ class afcAMS(afcUnit):
         self._last_lane_states: Dict[str, bool] = {}
         self._last_hub_states: Dict[str, bool] = {}
         self._virtual_tool_switch: Optional[str] = None
+        self._virtual_tool_switch_created = False
+        self._cached_virtual_tool_pin: Optional[str] = None
+        self._cached_virtual_tool_sensor = None
         self.oams = None
+
+        self.gcode.register_mux_command(
+            "AFC_AMS_SYNC_TOOL_SENSOR",
+            "UNIT",
+            self.name,
+            self.cmd_SYNC_TOOL_SENSOR,
+            desc=self.cmd_SYNC_TOOL_SENSOR_help,
+        )
 
     def handle_connect(self):
         """Initialise the AMS unit and configure custom logos."""
@@ -118,9 +129,27 @@ class afcAMS(afcUnit):
         if not cfg_dir:
             return
 
-        cfg_path = Path(cfg_dir) / "AFC-hardware.cfg"
-        if not cfg_path.exists():
-            return
+        cfg_path = None
+        for filename in (
+            "AFC-hardware.cfg",
+            "AFC_Hardware.cfg",
+            "AFC-Hardware.cfg",
+            "AFC_hardware.cfg",
+        ):
+            test_path = Path(cfg_dir) / filename
+            if test_path.exists():
+                cfg_path = test_path
+                break
+
+        if cfg_path is None:
+            try:
+                cfg_path = next(
+                    path
+                    for path in Path(cfg_dir).glob("AFC*hardware*.cfg")
+                    if path.is_file()
+                )
+            except StopIteration:
+                return
 
         parser = ConfigParser()
         parser.optionxform = str
@@ -148,6 +177,8 @@ class afcAMS(afcUnit):
 
         if self.printer.lookup_object(f"filament_switch_sensor {tool_pin}", None):
             self._virtual_tool_switch = tool_pin
+            self._virtual_tool_switch_created = True
+            self._invalidate_virtual_tool_cache()
             return
 
         pins = self.printer.lookup_object("pins")
@@ -170,11 +201,19 @@ class afcAMS(afcUnit):
             return
 
         self._virtual_tool_switch = tool_pin
+        self._virtual_tool_switch_created = True
+        self._invalidate_virtual_tool_cache()
         self.logger.info(
             "Registered virtual AMS filament sensor '%s' for unit %s",
             tool_pin,
             self.name,
         )
+
+    def _invalidate_virtual_tool_cache(self):
+        """Clear any cached references to the virtual tool sensor."""
+
+        self._cached_virtual_tool_pin = None
+        self._cached_virtual_tool_sensor = None
 
     def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
         """Validate AMS lane state without attempting any motion."""
@@ -250,6 +289,61 @@ class afcAMS(afcUnit):
 
         self.oams = self.printer.lookup_object("oams " + self.oams_name, None)
         self.reactor.update_timer(self.timer, self.reactor.NOW)
+
+    cmd_SYNC_TOOL_SENSOR_help = (
+        "Update the virtual AMS tool-start filament sensor to match the FPS state"
+    )
+
+    def cmd_SYNC_TOOL_SENSOR(self, gcmd):
+        """Toggle the virtual AMS tool sensor based on the FPS load state."""
+
+        virtual_tool = self._virtual_tool_switch
+        if not virtual_tool:
+            return
+
+        fps_name = gcmd.get("FPS")
+        if not fps_name:
+            gcmd.respond_info("AFC_AMS_SYNC_TOOL_SENSOR missing FPS parameter")
+            return
+
+        manager = self.printer.lookup_object("oams_manager", None)
+        if manager is None:
+            return
+
+        key = fps_name if fps_name.startswith("fps ") else f"fps {fps_name}"
+        fps_state = manager.current_state.fps_state.get(key)
+        if fps_state is None:
+            fps_state = manager.current_state.fps_state.get(fps_name)
+        if fps_state is None:
+            return
+
+        if fps_state.state_name not in ("LOADED", "UNLOADED"):
+            return
+
+        sensor = self._cached_virtual_tool_sensor
+        if self._cached_virtual_tool_pin != virtual_tool or sensor is None:
+            sensor = self.printer.lookup_object(
+                f"filament_switch_sensor {virtual_tool}", None
+            )
+            if sensor is None:
+                self._invalidate_virtual_tool_cache()
+                return
+
+            self._cached_virtual_tool_pin = virtual_tool
+            self._cached_virtual_tool_sensor = sensor
+
+        filament_present = fps_state.state_name == "LOADED"
+        eventtime = self.reactor.monotonic()
+
+        try:
+            sensor.runout_helper.note_filament_present(eventtime, filament_present)
+        except TypeError:
+            sensor.runout_helper.note_filament_present(
+                is_filament_present=filament_present
+            )
+
+        sensor.filament_present = filament_present
+
 
     def _update_shared_lane(self, lane, lane_val, eventtime):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
