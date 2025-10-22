@@ -108,6 +108,8 @@ class afcAMS(afcUnit):
         self._last_hub_states: Dict[str, bool] = {}
         self._virtual_tool_switch: Optional[str] = None
         self._virtual_tool_switch_created = False
+        self._cached_virtual_tool_pin: Optional[str] = None
+        self._cached_virtual_tool_sensor = None
         self.oams = None
 
         self.gcode.register_mux_command(
@@ -349,6 +351,7 @@ class afcAMS(afcUnit):
         if self.printer.lookup_object(f"filament_switch_sensor {tool_pin}", None):
             self._virtual_tool_switch = tool_pin
             self._virtual_tool_switch_created = True
+            self._invalidate_virtual_tool_cache()
             return
 
         key = fps_name if fps_name.startswith("fps ") else f"fps {fps_name}"
@@ -363,6 +366,7 @@ class afcAMS(afcUnit):
 
         self._virtual_tool_switch = tool_pin
         self._virtual_tool_switch_created = True
+        self._invalidate_virtual_tool_cache()
         self.logger.info(
             "Registered virtual AMS filament sensor '%s' for unit %s",
             tool_pin,
@@ -382,6 +386,12 @@ class afcAMS(afcUnit):
             )
 
         sensor.filament_present = filament_present
+
+    def _invalidate_virtual_tool_cache(self):
+        """Clear any cached references to the virtual tool sensor."""
+
+        self._cached_virtual_tool_pin = None
+        self._cached_virtual_tool_sensor = None
 
     def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
         """Validate AMS lane state without attempting any motion."""
@@ -488,11 +498,17 @@ class afcAMS(afcUnit):
         if fps_state.state_name not in ("LOADED", "UNLOADED"):
             return
 
-        sensor = self.printer.lookup_object(
-            f"filament_switch_sensor {virtual_tool}", None
-        )
-        if sensor is None:
-            return
+        sensor = self._cached_virtual_tool_sensor
+        if self._cached_virtual_tool_pin != virtual_tool or sensor is None:
+            sensor = self.printer.lookup_object(
+                f"filament_switch_sensor {virtual_tool}", None
+            )
+            if sensor is None:
+                self._invalidate_virtual_tool_cache()
+                return
+
+            self._cached_virtual_tool_pin = virtual_tool
+            self._cached_virtual_tool_sensor = sensor
 
         filament_present = fps_state.state_name == "LOADED"
         eventtime = self.reactor.monotonic()
