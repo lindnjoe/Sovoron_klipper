@@ -27,40 +27,6 @@ from urllib.error import (
 
 ERROR_STR = "Error trying to import {import_lib}, please rerun install-afc.sh script in your AFC-Klipper-Add-On directory then restart klipper\n\n{trace}"
 
-VIRTUAL_AMS_PREFIX = "AMS_"
-VIRTUAL_AMS_CHIP = "afc_virtual_ams"
-
-
-def ensure_virtual_ams_pin(printer, switch_pin):
-    """Return a pins-compatible string for virtual AMS sensors."""
-
-    if not switch_pin:
-        return switch_pin
-
-    pin = switch_pin.strip()
-    if not pin:
-        return switch_pin
-
-    prefix = ""
-    while pin and pin[0] in "!^":
-        prefix += pin[0]
-        pin = pin[1:]
-
-    if not pin.upper().startswith(VIRTUAL_AMS_PREFIX):
-        return switch_pin
-
-    pins = printer.lookup_object("pins")
-    afc = printer.lookup_object("AFC", None)
-    if afc is not None and not getattr(afc, "_virtual_ams_chip_registered", False):
-        try:
-            pins.register_chip(VIRTUAL_AMS_CHIP, afc)
-        except Exception:
-            pass
-        else:
-            afc._virtual_ams_chip_registered = True
-
-    return prefix + f"{VIRTUAL_AMS_CHIP}:{pin}"
-
 def add_filament_switch( switch_name, switch_pin, printer, show_sensor=True, runout_callback = None, enable_runout=False, debounce_delay=0. ):
     """
     Helper function to register pins as filament switch sensor so it will show up in web guis
@@ -75,7 +41,6 @@ def add_filament_switch( switch_name, switch_pin, printer, show_sensor=True, run
     import configfile
     new_switch_name = f"filament_switch_sensor {switch_name}"
     ppins = printer.lookup_object('pins')
-    switch_pin = ensure_virtual_ams_pin(printer, switch_pin)
     ppins.allow_multi_use_pin(switch_pin.strip("!^"))
     filament_switch_config = configparser.RawConfigParser()
     filament_switch_config.add_section( new_switch_name )
