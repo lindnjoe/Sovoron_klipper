@@ -400,6 +400,28 @@ class afcAMS(afcUnit):
 
         self._last_virtual_tool_state = filament_present
 
+    def lane_tool_loaded(self, lane):
+        """Update the virtual tool sensor when a lane loads into the tool."""
+
+        super().lane_tool_loaded(lane)
+
+        if not self._lane_matches_extruder(lane):
+            return
+
+        eventtime = self.reactor.monotonic()
+        self._set_virtual_tool_sensor_state(True, eventtime)
+
+    def lane_tool_unloaded(self, lane):
+        """Update the virtual tool sensor when a lane unloads from the tool."""
+
+        super().lane_tool_unloaded(lane)
+
+        if not self._lane_matches_extruder(lane):
+            return
+
+        eventtime = self.reactor.monotonic()
+        self._set_virtual_tool_sensor_state(False, eventtime)
+
     def _mirror_lane_to_virtual_sensor(self, lane, eventtime: float) -> None:
         """Mirror a lane's load state into the AMS virtual tool sensor."""
 
