@@ -552,7 +552,6 @@ class afcAMS(afcUnit):
                         fila.runout_helper.note_filament_present(eventtime, hub_val)
                     self._last_hub_states[hub.name] = hub_val
             self._sync_virtual_tool_sensor(eventtime)
-
         except Exception:
             # Avoid stopping the reactor loop if OpenAMS query fails.
             pass
