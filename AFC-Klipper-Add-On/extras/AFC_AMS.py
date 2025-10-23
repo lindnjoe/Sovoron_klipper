@@ -123,7 +123,7 @@ except Exception as exc:  # pragma: no cover - defensive guard
     ) from exc
 
 try:  # pragma: no cover - defensive guard for runtime import errors
-    from extras.AFC_lane import AFCLaneState
+    from extras.AFC_lane import AFCLane, AFCLaneState
     from extras.AFC_utils import add_filament_switch
     import extras.AFC_extruder as _afc_extruder_mod
 except Exception as exc:  # pragma: no cover - defensive guard
@@ -132,6 +132,9 @@ except Exception as exc:  # pragma: no cover - defensive guard
             trace=traceback.format_exc()
         )
     ) from exc
+
+
+_ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 
 
 SYNC_INTERVAL = 2.0
@@ -763,3 +766,64 @@ class afcAMS(afcUnit):
 
 def load_config_prefix(config):
     return afcAMS(config)
+
+
+def _patch_lane_pre_sensor_for_ams() -> None:
+    """Patch AFCLane.get_toolhead_pre_sensor_state for AMS virtual sensors."""
+
+    if _ORIGINAL_LANE_PRE_SENSOR is None:
+        return
+
+    if getattr(AFCLane, "_ams_pre_sensor_patched", False):
+        return
+
+    def _ams_get_toolhead_pre_sensor_state(self, *args, **kwargs):
+        unit = getattr(self, "unit_obj", None)
+        if not isinstance(unit, afcAMS):
+            return _ORIGINAL_LANE_PRE_SENSOR(self, *args, **kwargs)
+
+        reactor = getattr(unit, "reactor", None)
+        eventtime = None
+        if reactor is not None:
+            try:
+                eventtime = reactor.monotonic()
+            except Exception:
+                eventtime = None
+
+        if eventtime is not None:
+            try:
+                unit._sync_event(eventtime)
+            except Exception:
+                pass
+        else:
+            eventtime = 0.0
+
+        try:
+            unit._sync_virtual_tool_sensor(eventtime, self.name)
+        except Exception:
+            pass
+
+        result = _ORIGINAL_LANE_PRE_SENSOR(self, *args, **kwargs)
+
+        if result:
+            return bool(result)
+
+        desired_state = getattr(self, "tool_loaded", None)
+        if desired_state is None:
+            desired_state = getattr(self, "load_state", False)
+        desired_state = bool(desired_state)
+
+        if desired_state:
+            try:
+                unit._set_virtual_tool_sensor_state(desired_state, eventtime)
+            except Exception:
+                pass
+            return True
+
+        return bool(result)
+
+    AFCLane.get_toolhead_pre_sensor_state = _ams_get_toolhead_pre_sensor_state
+    AFCLane._ams_pre_sensor_patched = True
+
+
+_patch_lane_pre_sensor_for_ams()
