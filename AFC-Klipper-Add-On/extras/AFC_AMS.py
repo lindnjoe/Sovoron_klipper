@@ -273,8 +273,62 @@ class afcAMS(afcUnit):
         "Synchronise the AMS virtual tool-start sensor with the assigned lane."
     )
 
+    def _unit_matches(self, unit_value: Optional[str]) -> bool:
+        """Return True when a mux UNIT value targets this AMS instance."""
+
+        if not unit_value:
+            return True
+
+        normalized = unit_value.strip().strip('"').strip("'")
+        if not normalized:
+            return True
+
+        if normalized == self.name:
+            return True
+
+        lowered = normalized.lower()
+        if lowered == self.name.lower():
+            return True
+
+        # Accept config-style names that include the unit type prefix.
+        parts = normalized.replace("_", " ").replace("-", " ").split()
+        return any(part.lower() == self.name.lower() for part in parts)
+
+    def _resolve_lane_alias(self, identifier: Optional[str]) -> Optional[str]:
+        """Map common aliases (fps names, case variants) to lane objects."""
+
+        if not identifier:
+            return None
+
+        lookup = identifier.strip()
+        if not lookup:
+            return None
+
+        lane = self.lanes.get(lookup)
+        if lane is not None:
+            return lane.name
+
+        lowered = lookup.lower()
+        for lane in self.lanes.values():
+            if lane.name.lower() == lowered:
+                return lane.name
+
+            lane_map = getattr(lane, "map", None)
+            if isinstance(lane_map, str) and lane_map.lower() == lowered:
+                return lane.name
+
+        return None
+
     def cmd_SYNC_TOOL_SENSOR(self, gcmd):
+        unit_value = gcmd.get("UNIT", None)
+        if not self._unit_matches(unit_value):
+            return
+
         lane_name = gcmd.get("LANE", None)
+        if lane_name is None:
+            lane_name = gcmd.get("FPS", None)
+
+        lane_name = self._resolve_lane_alias(lane_name)
         eventtime = self.reactor.monotonic()
         self._sync_virtual_tool_sensor(eventtime, lane_name)
 
