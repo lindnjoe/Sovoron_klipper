@@ -126,11 +126,24 @@ class OAMSRunoutMonitor:
                 if oams_obj is None:
                     return eventtime + MONITOR_ENCODER_PERIOD
 
+                spool_idx = fps_state.current_spool_idx
+                if spool_idx is None:
+                    logging.debug(
+                        "OAMS: Skipping runout monitor for %s - no active spool index",
+                        self.fps_name,
+                    )
+                    return eventtime + MONITOR_ENCODER_PERIOD
+
                 try:
                     hes_values = oams_obj.hub_hes_value
-                    spool_empty = not bool(
-                        hes_values[fps_state.current_spool_idx]
-                    )
+                    if spool_idx < 0 or spool_idx >= len(hes_values):
+                        logging.debug(
+                            "OAMS: Skipping runout monitor for %s - spool index %s out of range",
+                            self.fps_name,
+                            spool_idx,
+                        )
+                        return eventtime + MONITOR_ENCODER_PERIOD
+                    spool_empty = not bool(hes_values[spool_idx])
                 except Exception:
                     logging.exception(
                         "OAMS: Failed to read HES values for runout detection on %s",
