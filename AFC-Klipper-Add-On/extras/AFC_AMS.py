@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import traceback
 from textwrap import dedent
 from typing import Dict, Optional
@@ -34,6 +35,9 @@ SYNC_INTERVAL = 2.0
 class afcAMS(afcUnit):
     """AFC unit subclass that synchronises state with OpenAMS."""
 
+    _sync_command_registered = False
+    _sync_instances: Dict[str, "afcAMS"] = {}
+
     def __init__(self, config):
         super().__init__(config)
         self.type = "AMS"
@@ -53,13 +57,7 @@ class afcAMS(afcUnit):
         self._last_virtual_tool_state: Optional[bool] = None
         self.oams = None
 
-        self.gcode.register_mux_command(
-            "AFC_AMS_SYNC_TOOL_SENSOR",
-            "UNIT",
-            self.name,
-            self.cmd_SYNC_TOOL_SENSOR,
-            desc=self.cmd_SYNC_TOOL_SENSOR_help,
-        )
+        self._register_sync_dispatcher()
 
     def handle_connect(self):
         """Initialise the AMS unit and configure custom logos."""
@@ -320,10 +318,6 @@ class afcAMS(afcUnit):
         return None
 
     def cmd_SYNC_TOOL_SENSOR(self, gcmd):
-        unit_value = gcmd.get("UNIT", None)
-        if not self._unit_matches(unit_value):
-            return
-
         lane_name = gcmd.get("LANE", None)
         if lane_name is None:
             lane_name = gcmd.get("FPS", None)
@@ -331,6 +325,77 @@ class afcAMS(afcUnit):
         lane_name = self._resolve_lane_alias(lane_name)
         eventtime = self.reactor.monotonic()
         self._sync_virtual_tool_sensor(eventtime, lane_name)
+
+    # ------------------------------------------------------------------
+    # Global sync command dispatching
+    # ------------------------------------------------------------------
+
+    def _register_sync_dispatcher(self) -> None:
+        """Ensure the shared sync command is available for all AMS units."""
+
+        cls = self.__class__
+        if not cls._sync_command_registered:
+            self.gcode.register_command(
+                "AFC_AMS_SYNC_TOOL_SENSOR",
+                cls._dispatch_sync_tool_sensor,
+                desc=self.cmd_SYNC_TOOL_SENSOR_help,
+            )
+            cls._sync_command_registered = True
+
+        cls._sync_instances[self.name] = self
+
+    @classmethod
+    def _extract_raw_param(cls, commandline: str, key: str) -> Optional[str]:
+        """Recover multi-word parameter values from the raw command line."""
+
+        if not commandline:
+            return None
+
+        key_upper = key.upper() + "="
+        command_upper = commandline.upper()
+        start = command_upper.find(key_upper)
+        if start == -1:
+            return None
+
+        start += len(key_upper)
+        remainder = commandline[start:]
+        match = re.search(r"\s[A-Z0-9_]+=|;", remainder)
+        end = start + match.start() if match else len(commandline)
+
+        value = commandline[start:end].strip()
+        if not value:
+            return None
+
+        if value[0] in "'\"" and value[-1] == value[0]:
+            value = value[1:-1]
+
+        return value
+
+    @classmethod
+    def _dispatch_sync_tool_sensor(cls, gcmd):
+        """Route sync requests to the correct AMS instance, tolerating spaces."""
+
+        unit_value = gcmd.get("UNIT", None)
+        if not unit_value:
+            unit_value = cls._extract_raw_param(gcmd.get_commandline(), "UNIT")
+
+        lane_name = gcmd.get("LANE", None)
+        if lane_name is None:
+            lane_name = gcmd.get("FPS", None)
+
+        if lane_name is None:
+            commandline = gcmd.get_commandline()
+            lane_name = cls._extract_raw_param(commandline, "LANE")
+            if lane_name is None:
+                lane_name = cls._extract_raw_param(commandline, "FPS")
+
+        for instance in cls._sync_instances.values():
+            if not instance._unit_matches(unit_value):
+                continue
+
+            resolved_lane = instance._resolve_lane_alias(lane_name)
+            eventtime = instance.reactor.monotonic()
+            instance._sync_virtual_tool_sensor(eventtime, resolved_lane)
 
     def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
         """Validate AMS lane state without attempting any motion."""
