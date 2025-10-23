@@ -532,13 +532,26 @@ class afcAMS(afcUnit):
                     desired_lane = getattr(lane, "name", None)
 
         if desired_state is None:
+            pending_false = None
             for lane in self.lanes.values():
-                if self._lane_matches_extruder(lane):
-                    result = self._lane_reports_tool_filament(lane)
-                    if result is not None:
-                        desired_state = result
-                        desired_lane = getattr(lane, "name", None)
-                        break
+                if not self._lane_matches_extruder(lane):
+                    continue
+
+                result = self._lane_reports_tool_filament(lane)
+                if result is None:
+                    continue
+
+                lane_id = getattr(lane, "name", None)
+                if result:
+                    desired_state = True
+                    desired_lane = lane_id
+                    break
+
+                if pending_false is None:
+                    pending_false = (False, lane_id)
+
+            if desired_state is None and pending_false is not None:
+                desired_state, desired_lane = pending_false
 
         if desired_state is None or desired_state == self._last_virtual_tool_state:
             return
