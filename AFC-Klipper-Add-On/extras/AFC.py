@@ -96,6 +96,7 @@ class afc:
         self.monitoring = False
         self.number_of_toolchanges  = 0
         self.current_toolchange     = 0
+        self._virtual_ams_chip_registered = False
 
         # tool position when tool change was requested
         self.change_tool_pos = None
