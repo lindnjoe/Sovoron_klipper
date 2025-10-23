@@ -10,7 +10,7 @@ from configparser import Error as error
 try: from extras.AFC_utils import ERROR_STR
 except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
 
-try: from extras.AFC_utils import add_filament_switch
+try: from extras.AFC_utils import add_filament_switch, ensure_virtual_ams_pin
 except: raise error(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
 
 class AFCExtruder:
@@ -46,6 +46,7 @@ class AFCExtruder:
         self.lanes                      = {}
 
         self.tool_start_state = False
+        self._tool_start_switch_pin = None
         if self.tool_start is not None:
             if "unknown" == self.tool_start.lower():
                 raise error(f"Unknown is not valid for pin_tool_start in [{self.fullname}] config.")
@@ -53,10 +54,18 @@ class AFCExtruder:
             if self.tool_start == "buffer":
                 self.logger.info("Setting up as buffer")
             else:
-                buttons.register_buttons([self.tool_start], self.tool_start_callback)
-                self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
-                                                                                        self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
-                                                                                        self.debounce_delay )
+                resolved_tool_start = ensure_virtual_ams_pin(self.printer, self.tool_start)
+                self._tool_start_switch_pin = resolved_tool_start
+                buttons.register_buttons([resolved_tool_start], self.tool_start_callback)
+                self.fila_tool_start, self.debounce_button_start = add_filament_switch(
+                    f"{self.name}_tool_start",
+                    resolved_tool_start,
+                    self.printer,
+                    self.enable_sensors_in_gui,
+                    self.handle_start_runout,
+                    self.enable_runout,
+                    self.debounce_delay,
+                )
 
         self.tool_end_state = False
         if self.tool_end is not None:
