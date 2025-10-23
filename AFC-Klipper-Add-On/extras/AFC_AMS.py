@@ -398,6 +398,23 @@ class afcAMS(afcUnit):
             if extruder is not None and lane_name and getattr(extruder, "lane_loaded", None) == lane_name:
                 state = True
 
+        if not state:
+            oams = getattr(self, "oams", None)
+            lane_index = getattr(lane, "index", None)
+            current_spool = getattr(oams, "current_spool", None)
+            if (
+                oams is not None
+                and lane_index is not None
+                and current_spool is not None
+                and isinstance(current_spool, int)
+            ):
+                try:
+                    lane_offset = int(lane_index) - 1
+                except Exception:
+                    lane_offset = None
+                if lane_offset is not None and lane_offset == current_spool:
+                    state = True
+
         if state is None:
             lane_name = getattr(lane, "name", None)
             if lane_name is not None and lane_name in self._last_lane_states:
