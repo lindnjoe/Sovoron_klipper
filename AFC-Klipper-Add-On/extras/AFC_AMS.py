@@ -26,6 +26,11 @@ except Exception as exc:  # pragma: no cover - defensive guard
         )
     ) from exc
 
+try:  # pragma: no cover - defensive guard for runtime import errors
+    from extras.AFC_utils import add_filament_switch
+except Exception:  # pragma: no cover - defensive guard
+    add_filament_switch = None
+
 
 SYNC_INTERVAL = 2.0
 
@@ -145,6 +150,76 @@ class afcAMS(afcUnit):
 
     def _lane_matches_extruder(self, lane) -> bool:
         """Return True if the lane is mapped to this AMS unit's extruder."""
+
+        normalized_pin = tool_pin.strip()
+        if not normalized_pin:
+            return
+
+        prefix = ""
+        pin_body = normalized_pin
+        while pin_body and pin_body[0] in "!^":
+            prefix += pin_body[0]
+            pin_body = pin_body[1:]
+
+        if not pin_body.upper().startswith("AMS_"):
+            return
+
+        sensor_name = pin_body
+
+        sensor = self.printer.lookup_object(
+            f"filament_switch_sensor {sensor_name}", None
+        )
+
+        if sensor is None:
+            if add_filament_switch is None:
+                self.logger.info(
+                    "Virtual AMS tool sensor helpers unavailable, skipping registration"
+                )
+                return
+
+            pins = self.printer.lookup_object("pins")
+            afc = getattr(self, "afc", None)
+            if pins is None or afc is None:
+                return
+
+            if not getattr(afc, "_virtual_ams_chip_registered", False):
+                try:
+                    pins.register_chip("afc_virtual_ams", afc)
+                except Exception:
+                    return
+                afc._virtual_ams_chip_registered = True
+
+            resolved_pin = prefix + f"afc_virtual_ams:{pin_body}"
+
+            try:
+                add_filament_switch(
+                    sensor_name,
+                    resolved_pin,
+                    self.printer,
+                    show_sensor=getattr(self.afc, "enable_sensors_in_gui", True),
+                )
+            except Exception:
+                return
+
+            sensor = self.printer.lookup_object(
+                f"filament_switch_sensor {sensor_name}", None
+            )
+
+            if sensor is None:
+                return
+
+            self.logger.info(
+                "Registered virtual AMS filament sensor '%s' for unit %s",
+                sensor_name,
+                self.name,
+            )
+
+        self._virtual_tool_sensor_name = sensor_name
+        self._virtual_tool_sensor = sensor
+        self._last_virtual_tool_state = None
+
+    def _lookup_virtual_tool_pin(self) -> Optional[str]:
+        """Determine the configured virtual pin for this AMS extruder."""
 
         extruder_name = getattr(self, "extruder", None)
         if not extruder_name:
