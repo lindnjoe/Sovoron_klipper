@@ -492,6 +492,25 @@ class afcAMS(afcUnit):
         lane_name = getattr(lane, "name", None)
         self._set_virtual_tool_sensor_state(True, eventtime, lane_name)
 
+        try:
+            manager = self.printer.lookup_object("oams_manager", None)
+        except Exception:
+            manager = None
+
+        if manager is not None:
+            try:
+                manager.notify_lane_tool_loaded(
+                    lane_name,
+                    context=f"lane {lane_name} tool load",
+                )
+            except AttributeError:
+                try:
+                    manager.determine_state()
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
     def lane_tool_unloaded(self, lane):
         """Update the virtual tool sensor when a lane unloads from the tool."""
 
