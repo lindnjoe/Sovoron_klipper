@@ -436,9 +436,10 @@ class afcAMS(afcUnit):
 
         if lane_name:
             latched = self._lane_tool_latches.get(lane_name)
-            if latched and extruder_lane == lane_name:
-                return True
-            if latched is False and (not extruder_lane or extruder_lane != lane_name):
+            if latched:
+                if not extruder_lane or extruder_lane == lane_name:
+                    return True
+            if latched is False:
                 return False
 
         if lane_name and lane_name in self._last_lane_states:
