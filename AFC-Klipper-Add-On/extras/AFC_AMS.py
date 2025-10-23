@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import traceback
 from textwrap import dedent
-from typing import Dict
+from typing import Dict, Optional
 
 from configparser import Error as ConfigError
 
@@ -19,6 +19,7 @@ except Exception as exc:  # pragma: no cover - defensive guard
 
 try:  # pragma: no cover - defensive guard for runtime import errors
     from extras.AFC_lane import AFCLaneState
+    from extras.AFC_utils import add_filament_switch
 except Exception as exc:  # pragma: no cover - defensive guard
     raise ConfigError(
         "Error when trying to import AFC_lane\n{trace}".format(
@@ -48,11 +49,23 @@ class afcAMS(afcUnit):
         # Track previous sensor state to only forward changes
         self._last_lane_states: Dict[str, bool] = {}
         self._last_hub_states: Dict[str, bool] = {}
+        self._virtual_tool_sensor = None
+        self._last_virtual_tool_state: Optional[bool] = None
         self.oams = None
+
+        self.gcode.register_mux_command(
+            "AFC_AMS_SYNC_TOOL_SENSOR",
+            "UNIT",
+            self.name,
+            self.cmd_SYNC_TOOL_SENSOR,
+            desc=self.cmd_SYNC_TOOL_SENSOR_help,
+        )
 
     def handle_connect(self):
         """Initialise the AMS unit and configure custom logos."""
         super().handle_connect()
+
+        self._ensure_virtual_tool_sensor()
 
         # AMS lanes report their state via OpenAMS so default them until the
         # first poll comes back.
@@ -91,6 +104,179 @@ class afcAMS(afcUnit):
             </span>
             """
         ).format(name=self.name)
+
+    def _ensure_virtual_tool_sensor(self) -> bool:
+        """Resolve or create the virtual tool-start sensor for AMS extruders."""
+
+        if self._virtual_tool_sensor is not None:
+            return True
+
+        extruder = getattr(self, "extruder_obj", None)
+        if extruder is None:
+            return False
+
+        tool_pin = getattr(extruder, "tool_start", None)
+        if not isinstance(tool_pin, str):
+            return False
+
+        normalized = tool_pin.strip()
+        if not normalized or normalized.lower() in {"buffer", "none", "unknown"}:
+            return False
+
+        original_pin = tool_pin
+        while normalized and normalized[0] in "!^":
+            normalized = normalized[1:]
+
+        if not normalized.upper().startswith("AMS_"):
+            return False
+
+        sensor = getattr(extruder, "fila_tool_start", None)
+        if sensor is None:
+            sensor = self.printer.lookup_object(
+                f"filament_switch_sensor {normalized}", None
+            )
+
+        if sensor is None:
+            pins = self.printer.lookup_object("pins")
+            if not getattr(self.afc, "_virtual_ams_chip_registered", False):
+                try:
+                    pins.register_chip("afc_virtual_ams", self.afc)
+                except Exception:
+                    return False
+                else:
+                    self.afc._virtual_ams_chip_registered = True
+
+            enable_gui = getattr(extruder, "enable_sensors_in_gui", True)
+            runout_cb = getattr(extruder, "handle_start_runout", None)
+            enable_runout = getattr(extruder, "enable_runout", False)
+            debounce = getattr(extruder, "debounce_delay", 0.0)
+
+            try:
+                created = add_filament_switch(
+                    normalized,
+                    f"afc_virtual_ams:{normalized}",
+                    self.printer,
+                    enable_gui,
+                    runout_cb,
+                    enable_runout,
+                    debounce,
+                )
+            except TypeError:
+                try:
+                    created = add_filament_switch(
+                        normalized,
+                        f"afc_virtual_ams:{normalized}",
+                        self.printer,
+                        enable_gui,
+                    )
+                except Exception:
+                    return False
+            except Exception:
+                return False
+
+            sensor = created[0] if isinstance(created, tuple) else created
+
+        helper = getattr(sensor, "runout_helper", None)
+        if helper is None:
+            return False
+
+        filament_present = getattr(helper, "filament_present", None)
+        if filament_present is not None:
+            self._last_virtual_tool_state = bool(filament_present)
+
+        if getattr(extruder, "fila_tool_start", None) is None:
+            extruder.fila_tool_start = sensor
+
+        extruder.tool_start = original_pin
+        self._virtual_tool_sensor = sensor
+        return True
+
+    def _lane_matches_extruder(self, lane) -> bool:
+        """Return True if the lane is mapped to this AMS unit's extruder."""
+
+        extruder_name = getattr(self, "extruder", None)
+        if not extruder_name:
+            return False
+
+        lane_extruder = getattr(lane, "extruder_name", None)
+        if lane_extruder is None:
+            extruder_obj = getattr(lane, "extruder_obj", None)
+            lane_extruder = getattr(extruder_obj, "name", None)
+
+        return lane_extruder == extruder_name
+
+    def _set_virtual_tool_sensor_state(
+        self, filament_present: bool, eventtime: float
+    ) -> None:
+        """Update the cached virtual sensor and extruder state."""
+
+        if not self._ensure_virtual_tool_sensor():
+            return
+
+        sensor = self._virtual_tool_sensor
+        helper = getattr(sensor, "runout_helper", None)
+        if helper is None:
+            return
+
+        try:
+            helper.note_filament_present(eventtime, filament_present)
+        except TypeError:
+            helper.note_filament_present(is_filament_present=filament_present)
+
+        setattr(sensor, "filament_present", filament_present)
+
+        extruder = getattr(self, "extruder_obj", None)
+        if extruder is not None:
+            extruder.tool_start_state = filament_present
+
+        self._last_virtual_tool_state = filament_present
+
+    def _mirror_lane_to_virtual_sensor(self, lane, eventtime: float) -> None:
+        """Mirror a lane's load state into the AMS virtual tool sensor."""
+
+        if not self._lane_matches_extruder(lane):
+            return
+
+        desired_state = bool(getattr(lane, "load_state", False))
+        if desired_state == self._last_virtual_tool_state:
+            return
+
+        self._set_virtual_tool_sensor_state(desired_state, eventtime)
+
+    def _sync_virtual_tool_sensor(
+        self, eventtime: float, lane_name: Optional[str] = None
+    ) -> None:
+        """Align the AMS virtual tool sensor with the mapped lane state."""
+
+        if not self._ensure_virtual_tool_sensor():
+            return
+
+        desired_state: Optional[bool] = None
+
+        if lane_name:
+            lane = self.lanes.get(lane_name)
+            if lane is not None and self._lane_matches_extruder(lane):
+                desired_state = bool(getattr(lane, "load_state", False))
+
+        if desired_state is None:
+            for lane in self.lanes.values():
+                if self._lane_matches_extruder(lane):
+                    desired_state = bool(getattr(lane, "load_state", False))
+                    break
+
+        if desired_state is None or desired_state == self._last_virtual_tool_state:
+            return
+
+        self._set_virtual_tool_sensor_state(desired_state, eventtime)
+
+    cmd_SYNC_TOOL_SENSOR_help = (
+        "Synchronise the AMS virtual tool-start sensor with the assigned lane."
+    )
+
+    def cmd_SYNC_TOOL_SENSOR(self, gcmd):
+        lane_name = gcmd.get("LANE", None)
+        eventtime = self.reactor.monotonic()
+        self._sync_virtual_tool_sensor(eventtime, lane_name)
 
     def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
         """Validate AMS lane state without attempting any motion."""
@@ -180,6 +366,8 @@ class afcAMS(afcUnit):
             finally:
                 lane.load_callback(eventtime, True)
 
+            self._mirror_lane_to_virtual_sensor(lane, eventtime)
+
             if (
                 lane.prep_state
                 and lane.load_state
@@ -193,6 +381,8 @@ class afcAMS(afcUnit):
         else:
             lane.load_callback(eventtime, False)
             lane.prep_callback(eventtime, False)
+
+            self._mirror_lane_to_virtual_sensor(lane, eventtime)
 
             lane.tool_loaded = False
             lane.loaded_to_hub = False
@@ -228,6 +418,7 @@ class afcAMS(afcUnit):
                 elif lane_val != self._last_lane_states.get(lane.name):
                     lane.load_callback(eventtime, lane_val)
                     lane.prep_callback(eventtime, lane_val)
+                    self._mirror_lane_to_virtual_sensor(lane, eventtime)
                     self._last_lane_states[lane.name] = lane_val
 
                 hub = getattr(lane, "hub_obj", None)
@@ -241,6 +432,8 @@ class afcAMS(afcUnit):
                     if fila is not None:
                         fila.runout_helper.note_filament_present(eventtime, hub_val)
                     self._last_hub_states[hub.name] = hub_val
+            self._sync_virtual_tool_sensor(eventtime)
+
         except Exception:
             # Avoid stopping the reactor loop if OpenAMS query fails.
             pass
