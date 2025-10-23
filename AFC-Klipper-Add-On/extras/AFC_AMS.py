@@ -398,7 +398,7 @@ class afcAMS(afcUnit):
         if extruder is not None:
             extruder.tool_start_state = filament_present
 
-        self._last_virtual_tool_state = filament_present
+        self._last_virtual_tool_state = bool(filament_present)
 
     def lane_tool_loaded(self, lane):
         """Update the virtual tool sensor when a lane loads into the tool."""
@@ -428,7 +428,10 @@ class afcAMS(afcUnit):
         if not self._lane_matches_extruder(lane):
             return
 
-        desired_state = bool(getattr(lane, "load_state", False))
+        desired_state = getattr(lane, "tool_loaded", None)
+        if desired_state is None:
+            desired_state = getattr(lane, "load_state", False)
+        desired_state = bool(desired_state)
         if desired_state == self._last_virtual_tool_state:
             return
 
@@ -447,12 +450,18 @@ class afcAMS(afcUnit):
         if lane_name:
             lane = self.lanes.get(lane_name)
             if lane is not None and self._lane_matches_extruder(lane):
-                desired_state = bool(getattr(lane, "load_state", False))
+                desired_state = getattr(lane, "tool_loaded", None)
+                if desired_state is None:
+                    desired_state = getattr(lane, "load_state", False)
+                desired_state = bool(desired_state)
 
         if desired_state is None:
             for lane in self.lanes.values():
                 if self._lane_matches_extruder(lane):
-                    desired_state = bool(getattr(lane, "load_state", False))
+                    desired_state = getattr(lane, "tool_loaded", None)
+                    if desired_state is None:
+                        desired_state = getattr(lane, "load_state", False)
+                    desired_state = bool(desired_state)
                     break
 
         if desired_state is None or desired_state == self._last_virtual_tool_state:
