@@ -388,36 +388,22 @@ class afcAMS(afcUnit):
         status = getattr(lane, "status", None)
         extruder = getattr(lane, "extruder_obj", None)
         extruder_lane = getattr(extruder, "lane_loaded", None)
-
-        positive_states = {
-            AFCLaneState.TOOLED,
-            AFCLaneState.TOOL_LOADED,
-            AFCLaneState.TOOL_LOADING,
-        }
+        latched = self._lane_tool_latches.get(lane_name) if lane_name else None
 
         if getattr(lane, "tool_loaded", False):
             return True
 
+        positive_states = {
+            AFCLaneState.TOOLED,
+            AFCLaneState.TOOL_LOADED,
+        }
+
         if status in positive_states:
             return True
 
-        if extruder_lane and extruder_lane == lane_name:
-            return True
-
-        if getattr(lane, "loaded_to_hub", False) and status == AFCLaneState.LOADED:
-            return True
-
-        oams = getattr(self, "oams", None)
-        lane_index = getattr(lane, "index", None)
-        current_spool = getattr(oams, "current_spool", None)
-        if (
-            oams is not None
-            and isinstance(lane_index, int)
-            and lane_index > 0
-            and isinstance(current_spool, int)
-            and (lane_index - 1) == current_spool
-        ):
-            return True
+        if latched:
+            if not extruder_lane or extruder_lane == lane_name:
+                return True
 
         negative_states = {
             AFCLaneState.NONE,
@@ -426,26 +412,17 @@ class afcAMS(afcUnit):
             AFCLaneState.EJECTING,
             AFCLaneState.CALIBRATING,
             AFCLaneState.INFINITE_RUNOUT,
+            AFCLaneState.TOOL_UNLOADING,
         }
 
         if status in negative_states:
             return False
 
-        if extruder_lane and extruder_lane != lane_name:
+        if extruder_lane and lane_name and extruder_lane != lane_name:
             return False
 
-        if lane_name:
-            latched = self._lane_tool_latches.get(lane_name)
-            if latched:
-                if not extruder_lane or extruder_lane == lane_name:
-                    return True
-            if latched is False:
-                return False
-
-        if lane_name and lane_name in self._last_lane_states:
-            last_lane_state = self._last_lane_states[lane_name]
-            if last_lane_state is False:
-                return False
+        if latched is False:
+            return False
 
         return None
 
