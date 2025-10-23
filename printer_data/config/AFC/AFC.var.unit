@@ -108,7 +108,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "Error",
+            "status": "None",
             "dist_hub": 60,
             "td1_data": {}
         }
@@ -252,7 +252,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tool Loaded",
+            "status": "Tooled",
             "dist_hub": 1970.0,
             "td1_data": {}
         },
