@@ -490,7 +490,7 @@ class afc:
             pheaters.set_temperature(extruder.get_heater(), target_temp)
 
         if wait:
-            self._wait_for_temp_within_tolerance(self.heater, target_temp, self.temp_wait_tolerance)
+            self._wait_for_temp_within_tolerance(self.heater, target_temp, self.temp_wait_tolerance*2)
 
         return wait
 
@@ -1944,8 +1944,6 @@ class afc:
         temp     = gcmd.get_float('S', 0.0)
         deadband = gcmd.get_float('D', None)
 
-        extruder = None
-
         if toolnum is not None:
             map = "T{}".format(toolnum)
             lane = self.function.get_lane_by_map(map)
@@ -1959,15 +1957,9 @@ class afc:
                 self.logger.error("extruder not configured for T{}".format(toolnum))
                 return
         else:
-            extruder = self.function.get_current_extruder_obj()
-            if extruder is None:
-                extruder = self.toolhead.get_extruder()
+            extruder = self.toolhead.get_extruder()
 
-        if extruder is None:
-            self.logger.error("No extruder available for AFC_M109")
-            return
-
-        if deadband is None:
+        if deadband is None and extruder is not None:
             extruder_deadband = getattr(extruder, "deadband", None)
             if extruder_deadband is not None and extruder_deadband > 0:
                 deadband = extruder_deadband
@@ -2025,15 +2017,12 @@ class afc:
     def _wait_for_temp_within_tolerance(self, heater, target_temp, tolerance=20):
         """
         Waits until the heater's temperature is within the specified tolerance.
-
-        The ``tolerance`` value represents the allowed +/- deviation from
-        ``target_temp``.
         """
         if tolerance is None or target_temp <= 0:
             return
 
-        min_temp = target_temp - tolerance
-        max_temp = target_temp + tolerance
+        min_temp = target_temp - (tolerance / 2)
+        max_temp = target_temp + (tolerance / 2)
 
         reactor = self.printer.get_reactor()
         eventtime = reactor.monotonic()
