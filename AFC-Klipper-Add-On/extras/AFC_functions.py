@@ -1743,7 +1743,7 @@ class afcDeltaTime:
             curr_time = datetime.now()
             delta_time = (curr_time - self.last_time ).total_seconds()
             total_time = (curr_time - self.start_time).total_seconds()
-            msg = "{} (Δt:{:.3f}s, t:{:.3f})".format( msg, delta_time, total_time )
+            msg = "{} (?t:{:.3f}s, t:{:.3f})".format( msg, delta_time, total_time )
             if debug:
                 self.logger.debug( msg )
             else:
