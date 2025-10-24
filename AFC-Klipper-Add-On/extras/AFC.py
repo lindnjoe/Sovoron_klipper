@@ -1967,7 +1967,7 @@ class afc:
             self.logger.error("No extruder available for AFC_M109")
             return
 
-        if deadband is None:
+        if deadband is None and extruder is not None:
             extruder_deadband = getattr(extruder, "deadband", None)
             if extruder_deadband is not None and extruder_deadband > 0:
                 deadband = extruder_deadband

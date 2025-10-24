@@ -419,10 +419,6 @@ class afcFunction:
         if detected_state:
             return current_extruder
 
-        # Some toolchangers briefly report detect_state as False while a new tool is
-        # engaging during a print. During that window the extruder event has already
-        # fired and the lane is marked as loaded, so fall back to that information to
-        # keep the AFC lane in sync until the hardware detection catches up.
         return current_extruder if extruder_obj.lane_loaded else None
 
     def verify_led_object(self, led_name):
