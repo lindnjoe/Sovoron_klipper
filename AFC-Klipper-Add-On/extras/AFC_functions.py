@@ -362,10 +362,9 @@ class afcFunction:
 
         :return string: Current lane name that is loaded, None if nothing is loaded
         """
-        if self.printer.state_message == 'Printer is ready':
-            current_extruder = self.get_current_extruder()
-            if current_extruder is not None:
-                return self.afc.tools[current_extruder].lane_loaded
+        current_extruder = self.get_current_extruder()
+        if current_extruder is not None:
+            return self.afc.tools[current_extruder].lane_loaded
         return None
 
     def get_current_lane_obj(self):
@@ -397,13 +396,34 @@ class afcFunction:
 
         :return string: Name of current extruder/tool, None if no extruder/tool
         """
-        current_extruder = self.afc.toolhead.get_extruder().name
-        if current_extruder in self.afc.tools:
-            tool_obj = self.afc.tools[current_extruder].tool_obj
-            detected_state = tool_obj.detect_state if hasattr(tool_obj, "detect_state") else 1
-            return current_extruder if detected_state else None
-        else:
+        toolhead_extruder = None
+        try:
+            toolhead_extruder = self.afc.toolhead.get_extruder()
+        except Exception:
             return None
+
+        if toolhead_extruder is None:
+            return None
+
+        current_extruder = toolhead_extruder.name
+        if current_extruder not in self.afc.tools:
+            return None
+
+        extruder_obj = self.afc.tools[current_extruder]
+        tool_obj = extruder_obj.tool_obj
+
+        if tool_obj is None:
+            return current_extruder
+
+        detected_state = getattr(tool_obj, "detect_state", True)
+        if detected_state:
+            return current_extruder
+
+        # Some toolchangers briefly report detect_state as False while a new tool is
+        # engaging during a print. During that window the extruder event has already
+        # fired and the lane is marked as loaded, so fall back to that information to
+        # keep the AFC lane in sync until the hardware detection catches up.
+        return current_extruder if extruder_obj.lane_loaded else None
 
     def verify_led_object(self, led_name):
         """
