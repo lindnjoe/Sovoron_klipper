@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 # This file includes code modified from the Shaketune Project. https://github.com/Frix-x/klippain-shaketune
-# Originally authored by Félix Boisselier and licensed under the GNU General Public License v3.0.
+# Originally authored by FÃ©lix Boisselier and licensed under the GNU General Public License v3.0.
 #
 # Full license text available at: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -406,12 +406,24 @@ class afcFunction:
             return None
 
         current_extruder = toolhead_extruder.name
-        if current_extruder in self.afc.tools:
-            tool_obj = self.afc.tools[current_extruder].tool_obj
-            detected_state = tool_obj.detect_state if hasattr(tool_obj, "detect_state") else 1
-            return current_extruder if detected_state else None
-        else:
+        if current_extruder not in self.afc.tools:
             return None
+
+        extruder_obj = self.afc.tools[current_extruder]
+        tool_obj = extruder_obj.tool_obj
+
+        if tool_obj is None:
+            return current_extruder
+
+        detected_state = getattr(tool_obj, "detect_state", True)
+        if detected_state:
+            return current_extruder
+
+        # Some toolchangers briefly report detect_state as False while a new tool is
+        # engaging during a print. During that window the extruder event has already
+        # fired and the lane is marked as loaded, so fall back to that information to
+        # keep the AFC lane in sync until the hardware detection catches up.
+        return current_extruder if extruder_obj.lane_loaded else None
 
     def verify_led_object(self, led_name):
         """
