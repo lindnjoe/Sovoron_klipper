@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 # This file includes code modified from the Shaketune Project. https://github.com/Frix-x/klippain-shaketune
-# Originally authored by Félix Boisselier and licensed under the GNU General Public License v3.0.
+# Originally authored by FÃ©lix Boisselier and licensed under the GNU General Public License v3.0.
 #
 # Full license text available at: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -362,18 +362,15 @@ class afcFunction:
 
         :return string: Current lane name that is loaded, None if nothing is loaded
         """
-        state_message = getattr(self.printer, "state_message", "") or ""
-        if state_message == 'Printer is ready' or 'print' in state_message.lower():
-            current_extruder = self.get_current_extruder()
-            if current_extruder is None:
-                return None
+        current_extruder = self.get_current_extruder()
+        if current_extruder is None:
+            return None
 
-            tool = self.afc.tools.get(current_extruder)
-            if tool is None:
-                return None
+        tool = self.afc.tools.get(current_extruder)
+        if tool is None:
+            return None
 
-            return tool.lane_loaded
-        return None
+        return tool.lane_loaded
 
     def get_current_lane_obj(self):
         """
