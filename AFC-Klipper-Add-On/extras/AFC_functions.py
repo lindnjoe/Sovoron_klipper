@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 # This file includes code modified from the Shaketune Project. https://github.com/Frix-x/klippain-shaketune
-# Originally authored by Félix Boisselier and licensed under the GNU General Public License v3.0.
+# Originally authored by FÃ©lix Boisselier and licensed under the GNU General Public License v3.0.
 #
 # Full license text available at: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -362,26 +362,23 @@ class afcFunction:
 
         :return string: Current lane name that is loaded, None if nothing is loaded
         """
-        state_message = getattr(self.printer, "state_message", "") or ""
-        is_ready = state_message == 'Printer is ready'
-        is_printing = False
+        current_extruder = self.get_current_extruder()
+        if current_extruder is None:
+            return None
 
-        if not is_ready and self.afc is not None:
-            try:
-                is_printing = self.in_print()
-            except Exception:
-                is_printing = False
+        tool = self.afc.tools.get(current_extruder)
+        if tool is None:
+            return None
 
-        if is_ready or is_printing:
-            current_extruder = self.get_current_extruder()
-            if current_extruder is None:
-                return None
-
-            tool = self.afc.tools.get(current_extruder)
-            if tool is None:
-                return None
-
+        if tool.lane_loaded:
             return tool.lane_loaded
+
+        lane_loading = getattr(self.afc, "current_loading", None)
+        if lane_loading and lane_loading in self.afc.lanes:
+            lane_obj = self.afc.lanes[lane_loading]
+            if lane_obj.extruder_obj.name == current_extruder:
+                return lane_loading
+
         return None
 
     def get_current_lane_obj(self):
