@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 # This file includes code modified from the Shaketune Project. https://github.com/Frix-x/klippain-shaketune
-# Originally authored by F�lix Boisselier and licensed under the GNU General Public License v3.0.
+# Originally authored by Félix Boisselier and licensed under the GNU General Public License v3.0.
 #
 # Full license text available at: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -362,9 +362,10 @@ class afcFunction:
 
         :return string: Current lane name that is loaded, None if nothing is loaded
         """
-        current_extruder = self.get_current_extruder()
-        if current_extruder is not None:
-            return self.afc.tools[current_extruder].lane_loaded
+        if self.printer.state_message == 'Printer is ready':
+            current_extruder = self.get_current_extruder()
+            if current_extruder is not None:
+                return self.afc.tools[current_extruder].lane_loaded
         return None
 
     def get_current_lane_obj(self):
@@ -396,30 +397,13 @@ class afcFunction:
 
         :return string: Name of current extruder/tool, None if no extruder/tool
         """
-        toolhead_extruder = None
-        try:
-            toolhead_extruder = self.afc.toolhead.get_extruder()
-        except Exception:
+        current_extruder = self.afc.toolhead.get_extruder().name
+        if current_extruder in self.afc.tools:
+            tool_obj = self.afc.tools[current_extruder].tool_obj
+            detected_state = tool_obj.detect_state if hasattr(tool_obj, "detect_state") else 1
+            return current_extruder if detected_state else None
+        else:
             return None
-
-        if toolhead_extruder is None:
-            return None
-
-        current_extruder = toolhead_extruder.name
-        if current_extruder not in self.afc.tools:
-            return None
-
-        extruder_obj = self.afc.tools[current_extruder]
-        tool_obj = extruder_obj.tool_obj
-
-        if tool_obj is None:
-            return current_extruder
-
-        detected_state = getattr(tool_obj, "detect_state", True)
-        if detected_state:
-            return current_extruder
-
-        return current_extruder if extruder_obj.lane_loaded else None
 
     def verify_led_object(self, led_name):
         """
@@ -1743,7 +1727,7 @@ class afcDeltaTime:
             curr_time = datetime.now()
             delta_time = (curr_time - self.last_time ).total_seconds()
             total_time = (curr_time - self.start_time).total_seconds()
-            msg = "{} (?t:{:.3f}s, t:{:.3f})".format( msg, delta_time, total_time )
+            msg = "{} (Δt:{:.3f}s, t:{:.3f})".format( msg, delta_time, total_time )
             if debug:
                 self.logger.debug( msg )
             else:
