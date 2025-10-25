@@ -134,6 +134,13 @@ except Exception as exc:  # pragma: no cover - defensive guard
     ) from exc
 
 
+try:  # pragma: no cover - optional at config parse time
+    from extras.ams_integration import AMSHardwareService, AMSRunoutCoordinator
+except Exception:  # pragma: no cover - integration may be absent during import
+    AMSHardwareService = None
+    AMSRunoutCoordinator = None
+
+
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 
 
@@ -236,6 +243,14 @@ class afcAMS(afcUnit):
         self._lane_feed_activity: Dict[str, bool] = {}
         self._last_encoder_clicks: Optional[int] = None
         self.oams = None
+        self.hardware_service = None
+
+        if AMSRunoutCoordinator is not None:
+            self.hardware_service = AMSRunoutCoordinator.register_afc_unit(self)
+        elif AMSHardwareService is not None:
+            self.hardware_service = AMSHardwareService.for_printer(
+                self.printer, self.oams_name, self.logger
+            )
 
         self._register_sync_dispatcher()
 
@@ -768,7 +783,20 @@ class afcAMS(afcUnit):
     def handle_ready(self):
         """Resolve the OpenAMS object once Klippy is ready."""
 
-        self.oams = self.printer.lookup_object("oams " + self.oams_name, None)
+        if self.hardware_service is not None:
+            self.oams = self.hardware_service.resolve_controller()
+        else:
+            self.oams = self.printer.lookup_object("oams " + self.oams_name, None)
+            if AMSHardwareService is not None and self.oams is not None:
+                try:
+                    self.hardware_service = AMSHardwareService.for_printer(
+                        self.printer, self.oams_name, self.logger
+                    )
+                    self.hardware_service.attach_controller(self.oams)
+                except Exception:
+                    self.logger.exception(
+                        "Failed to attach AMSHardwareService for %s", self.oams_name
+                    )
         self.reactor.update_timer(self.timer, self.reactor.NOW)
 
     def _update_shared_lane(self, lane, lane_val, eventtime):
@@ -816,17 +844,29 @@ class afcAMS(afcUnit):
         """Poll OpenAMS for state updates and propagate to lanes/hubs."""
 
         try:
-            if self.oams is None:
+            status = None
+            if self.hardware_service is not None:
+                status = self.hardware_service.poll_status()
+                if status is None:
+                    self.oams = self.hardware_service.resolve_controller()
+            elif self.oams is not None:
+                status = {
+                    "encoder_clicks": getattr(self.oams, "encoder_clicks", None),
+                    "f1s_hes_value": getattr(self.oams, "f1s_hes_value", None),
+                    "hub_hes_value": getattr(self.oams, "hub_hes_value", None),
+                }
+
+            if not status:
                 return eventtime + self.interval
 
-            encoder_clicks = getattr(self.oams, "encoder_clicks", None)
+            encoder_clicks = status.get("encoder_clicks")
             try:
                 encoder_clicks = int(encoder_clicks)
             except Exception:
                 encoder_clicks = None
 
-            lane_values = getattr(self.oams, "f1s_hes_value", None)
-            hub_values = getattr(self.oams, "hub_hes_value", None)
+            lane_values = status.get("f1s_hes_value")
+            hub_values = status.get("hub_hes_value")
 
             active_lane_name = None
             if encoder_clicks is not None:
@@ -865,6 +905,18 @@ class afcAMS(afcUnit):
                     self._mirror_lane_to_virtual_sensor(lane, eventtime)
                     self._last_lane_states[lane.name] = lane_val
 
+                if self.hardware_service is not None:
+                    hub_state = None
+                    if hub_values is not None and idx < len(hub_values):
+                        hub_state = bool(hub_values[idx])
+                    self.hardware_service.update_lane_snapshot(
+                        self.name,
+                        lane.name,
+                        lane_val,
+                        hub_state,
+                        eventtime,
+                    )
+
                 hub = getattr(lane, "hub_obj", None)
                 if hub is None or hub_values is None or idx >= len(hub_values):
                     continue
@@ -882,6 +934,46 @@ class afcAMS(afcUnit):
             pass
 
         return eventtime + self.interval
+
+    def _lane_for_spool_index(self, spool_index: Optional[int]):
+        if spool_index is None:
+            return None
+        for lane in self.lanes.values():
+            try:
+                idx = int(getattr(lane, "index", 0)) - 1
+            except Exception:
+                idx = -1
+            if idx == spool_index:
+                return lane
+        return None
+
+    def handle_runout_detected(self, spool_index: Optional[int], monitor=None) -> None:
+        """Handle runout notifications coming from OpenAMS monitors."""
+
+        lane = self._lane_for_spool_index(spool_index)
+        if lane is None:
+            return
+
+        eventtime = self.reactor.monotonic()
+        try:
+            lane.handle_load_runout(eventtime, False)
+        except TypeError:
+            lane.handle_load_runout(eventtime, load_state=False)
+        except AttributeError:
+            self.logger.warning(
+                "Lane %s is missing load runout handler for AMS integration", lane
+            )
+
+    def check_runout(self, lane=None):
+        if lane is None:
+            return False
+        if getattr(lane, "unit_obj", None) is not self:
+            return False
+        try:
+            is_printing = self.afc.function.is_printing()
+        except Exception:
+            is_printing = False
+        return bool(is_printing)
 
 
 def load_config_prefix(config):
