@@ -1949,6 +1949,8 @@ class afc:
         temp     = gcmd.get_float('S', 0.0)
         deadband = gcmd.get_float('D', None)
 
+        extruder_cfg_deadband = None
+
         if toolnum is not None:
             map = "T{}".format(toolnum)
             lane = self.function.get_lane_by_map(map)
@@ -1958,19 +1960,22 @@ class afc:
                 if extruder is None:
                     self.logger.error("extruder not configured for T{}".format(toolnum))
                     return
+                extruder_cfg_deadband = getattr(extruder, "deadband", None)
             else:
                 self.logger.error("extruder not configured for T{}".format(toolnum))
                 return
         else:
             extruder = self.toolhead.get_extruder()
+            extruder_cfg_deadband = self._get_extruder_deadband(extruder)
 
         pheaters = self.printer.lookup_object('heaters')
         heater = extruder.get_heater()
         pheaters.set_temperature(heater, temp, False)  # Always set temp, don't wait yet
 
         # If deadband is specified, wait for temp within tolerance
-        if wait and deadband is not None and temp > 0:
-            self._wait_for_temp_within_tolerance(heater, temp, deadband)
+        wait_deadband = deadband if deadband is not None else extruder_cfg_deadband
+        if wait and wait_deadband is not None and temp > 0:
+            self._wait_for_temp_within_tolerance(heater, temp, wait_deadband)
             return
 
         # Default: wait if needed
@@ -1978,6 +1983,17 @@ class afc:
         should_wait = wait and abs(current_temp - temp) > self.temp_wait_tolerance
         pheaters.set_temperature(heater, temp, should_wait)
         self.logger.debug("Done setting temp")
+
+    def _get_extruder_deadband(self, extruder):
+        """Return the configured deadband for the provided extruder, if available."""
+        if hasattr(extruder, "deadband"):
+            return extruder.deadband
+
+        extruder_name = getattr(extruder, "name", None)
+        if extruder_name and extruder_name in self.tools:
+            return getattr(self.tools[extruder_name], "deadband", None)
+
+        return None
 
     def _heat_next_extruder(self, wait=True):
         """
