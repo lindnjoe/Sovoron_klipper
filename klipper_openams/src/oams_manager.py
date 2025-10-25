@@ -10,6 +10,11 @@ from functools import partial
 from collections import deque
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
+try:  # pragma: no cover - integration optional during testing
+    from extras.ams_integration import AMSRunoutCoordinator
+except Exception:  # pragma: no cover - AFC not present
+    AMSRunoutCoordinator = None
+
 # Configuration constants
 PAUSE_DISTANCE = 60  # mm to pause before coasting follower
 ENCODER_SAMPLES = 2  # Number of encoder samples to collect
@@ -81,13 +86,13 @@ class OAMSRunoutMonitor:
     - Coordinates with OAMS hardware for filament loading
     """
     
-    def __init__(self, 
+    def __init__(self,
                  printer,
                  fps_name: str,
-                 fps, 
+                 fps,
                  fps_state,
                  oams: Dict[str, Any],
-                 reload_callback: Callable, 
+                 reload_callback: Callable,
                  reload_before_toolhead_distance: float = 0.0):
         # Core references
         self.oams = oams
@@ -107,6 +112,15 @@ class OAMSRunoutMonitor:
         self.reload_callback = reload_callback
 
         self.reactor = self.printer.get_reactor()
+
+        self.hardware_service = None
+        if AMSRunoutCoordinator is not None:
+            try:
+                self.hardware_service = AMSRunoutCoordinator.register_runout_monitor(self)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to register OpenAMS monitor with AMSRunoutCoordinator"
+                )
         
         def _monitor_runout(eventtime):
             idle_timeout = self.printer.lookup_object("idle_timeout")
@@ -165,6 +179,15 @@ class OAMSRunoutMonitor:
                         PAUSE_DISTANCE,
                     )
                     self.runout_position = fps.extruder.last_position
+                    if AMSRunoutCoordinator is not None:
+                        try:
+                            AMSRunoutCoordinator.notify_runout_detected(
+                                self, spool_idx
+                            )
+                        except Exception:
+                            logging.getLogger(__name__).exception(
+                                "Failed to notify AFC about OpenAMS runout"
+                            )
 
             elif self.state == OAMSRunoutState.DETECTED:
                 traveled_distance = fps.extruder.last_position - self.runout_position
