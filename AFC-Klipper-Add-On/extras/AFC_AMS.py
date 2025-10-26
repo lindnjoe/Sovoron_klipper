@@ -698,6 +698,23 @@ class afcAMS(afcUnit):
         parts = normalized.replace("_", " ").replace("-", " ").split()
         return any(part.lower() == self.name.lower() for part in parts)
 
+    def _normalize_group_name(self, group: Optional[str]) -> Optional[str]:
+        """Return a trimmed filament group token for alias comparison."""
+
+        if not group or not isinstance(group, str):
+            return None
+
+        normalized = group.strip()
+        if not normalized:
+            return None
+
+        # Filament group identifiers are often prefixed (e.g. "Group T4"), so
+        # prefer the final token which corresponds to the configured AFC map.
+        if " " in normalized:
+            normalized = normalized.split()[-1]
+
+        return normalized
+
     def _resolve_lane_alias(self, identifier: Optional[str]) -> Optional[str]:
         """Map common aliases (fps names, case variants) to lane objects."""
 
@@ -713,12 +730,21 @@ class afcAMS(afcUnit):
             return lane.name
 
         lowered = lookup.lower()
+        normalized_lookup = self._normalize_group_name(lookup)
         for lane in self.lanes.values():
             if lane.name.lower() == lowered:
                 return lane.name
 
             lane_map = getattr(lane, "map", None)
             if isinstance(lane_map, str) and lane_map.lower() == lowered:
+                return lane.name
+
+            canonical_map = self._normalize_group_name(lane_map)
+            if (
+                canonical_map is not None
+                and normalized_lookup is not None
+                and canonical_map.lower() == normalized_lookup.lower()
+            ):
                 return lane.name
 
         return None
@@ -1151,16 +1177,26 @@ class afcAMS(afcUnit):
         return None
 
     def _resolve_lane_reference(self, lane_name: Optional[str]):
-        """Return a lane object by name, performing case-insensitive lookups."""
+        """Return a lane object by name (or alias), case-insensitively."""
 
         if not lane_name:
             return None
 
-        lane = self.lanes.get(lane_name)
+        # Allow callers to pass aliases such as FPS names or filament group
+        # identifiers by normalising them back to the canonical lane name.
+        resolved_name = self._resolve_lane_alias(lane_name)
+        if resolved_name:
+            lane = self.lanes.get(resolved_name)
+            if lane is not None:
+                return lane
+        else:
+            resolved_name = lane_name
+
+        lane = self.lanes.get(resolved_name)
         if lane is not None:
             return lane
 
-        lowered = lane_name.lower()
+        lowered = resolved_name.lower()
         for candidate_name, candidate in self.lanes.items():
             if candidate_name.lower() == lowered:
                 return candidate
@@ -1356,16 +1392,24 @@ class afcAMS(afcUnit):
         return None
 
     def _resolve_lane_reference(self, lane_name: Optional[str]):
-        """Return a lane object by name, performing case-insensitive lookups."""
+        """Return a lane object by name (or alias), case-insensitively."""
 
         if not lane_name:
             return None
 
-        lane = self.lanes.get(lane_name)
+        resolved_name = self._resolve_lane_alias(lane_name)
+        if resolved_name:
+            lane = self.lanes.get(resolved_name)
+            if lane is not None:
+                return lane
+        else:
+            resolved_name = lane_name
+
+        lane = self.lanes.get(resolved_name)
         if lane is not None:
             return lane
 
-        lowered = lane_name.lower()
+        lowered = resolved_name.lower()
         for candidate_name, candidate in self.lanes.items():
             if candidate_name.lower() == lowered:
                 return candidate
@@ -1561,16 +1605,24 @@ class afcAMS(afcUnit):
         return None
 
     def _resolve_lane_reference(self, lane_name: Optional[str]):
-        """Return a lane object by name, performing case-insensitive lookups."""
+        """Return a lane object by name (or alias), case-insensitively."""
 
         if not lane_name:
             return None
 
-        lane = self.lanes.get(lane_name)
+        resolved_name = self._resolve_lane_alias(lane_name)
+        if resolved_name:
+            lane = self.lanes.get(resolved_name)
+            if lane is not None:
+                return lane
+        else:
+            resolved_name = lane_name
+
+        lane = self.lanes.get(resolved_name)
         if lane is not None:
             return lane
 
-        lowered = lane_name.lower()
+        lowered = resolved_name.lower()
         for candidate_name, candidate in self.lanes.items():
             if candidate_name.lower() == lowered:
                 return candidate
