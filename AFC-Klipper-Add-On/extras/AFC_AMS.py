@@ -534,6 +534,9 @@ class afcAMS(afcUnit):
         if load_state is not None:
             return bool(load_state)
 
+        if load_state is not None:
+            return bool(load_state)
+
         if getattr(lane, "tool_loaded", False):
             return True
 
