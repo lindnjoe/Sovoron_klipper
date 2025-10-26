@@ -534,6 +534,30 @@ class afcAMS(afcUnit):
         if not self._ensure_virtual_tool_sensor():
             return
 
+        canonical_lane = self._canonical_lane_name(lane_name)
+        lane_latch = None
+        if lane_obj is not None:
+            lane_latch = self._lane_tool_latches_by_lane.get(lane_obj)
+        if canonical_lane:
+            if lane_latch is None:
+                lane_latch = self._lane_tool_latches.get(canonical_lane)
+
+        active_feed = None
+        if lane_obj is not None:
+            active_feed = self._lane_feed_activity_by_lane.get(lane_obj)
+        if active_feed is None and canonical_lane:
+            active_feed = self._lane_feed_activity.get(canonical_lane)
+
+        should_block = (
+            filament_present and not force and lane_latch is False and not active_feed
+        )
+        if should_block:
+            if canonical_lane:
+                self._lane_feed_activity[canonical_lane] = False
+            if lane_obj is not None:
+                self._lane_feed_activity_by_lane[lane_obj] = False
+            return
+
         sensor = self._virtual_tool_sensor
         helper = getattr(sensor, "runout_helper", None)
         if helper is None:
