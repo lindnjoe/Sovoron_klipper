@@ -257,6 +257,40 @@ class AMSRunoutCoordinator:
                 )
 
     @classmethod
+    def notify_afc_error(
+        cls,
+        printer,
+        name: str,
+        message: str,
+        *,
+        pause: bool = False,
+    ) -> None:
+        """Deliver an OpenAMS pause/error message to any registered AFC units."""
+
+        key = cls._key(printer, name)
+        with cls._lock:
+            units = list(cls._units.get(key, ()))
+
+        for unit in units:
+            afc = getattr(unit, "afc", None)
+            if afc is None:
+                continue
+
+            error_obj = getattr(afc, "error", None)
+            if error_obj is None:
+                continue
+
+            try:
+                error_obj.AFC_error(message, pause=pause, level=3)
+            except Exception:
+                logger = getattr(unit, "logger", None)
+                if logger is None:
+                    logger = logging.getLogger(__name__)
+                logger.exception(
+                    "Failed to deliver OpenAMS error '%s' to AFC unit %s", message, unit
+                )
+
+    @classmethod
     def active_units(cls, printer, name: str) -> Iterable[Any]:
         key = cls._key(printer, name)
         with cls._lock:

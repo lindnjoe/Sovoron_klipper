@@ -1349,8 +1349,18 @@ class OAMSManager:
         return
 
         
-    def _pause_printer_message(self, message):
+    def _pause_printer_message(self, message, oams_name: Optional[str] = None):
         logging.info(f"OAMS: {message}")
+
+        if AMSRunoutCoordinator is not None and oams_name:
+            try:
+                AMSRunoutCoordinator.notify_afc_error(
+                    self.printer, oams_name, message, pause=False
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to forward OAMS pause message to AFC"
+                )
 
         try:
             gcode = self.printer.lookup_object("gcode")
@@ -1452,7 +1462,7 @@ class OAMSManager:
                 f"Possible clog detected after loading {tracked_state.current_group or fps_name}: "
                 f"FPS pressure {pressure:.2f} remained above {POST_LOAD_PRESSURE_THRESHOLD:.2f}"
             )
-            self._pause_printer_message(message)
+            self._pause_printer_message(message, tracked_state.current_oams)
             self._cancel_post_load_pressure_check(tracked_state)
             return self.reactor.NEVER
 
@@ -1655,7 +1665,7 @@ class OAMSManager:
         fps_state.stuck_spool_active = True
         fps_state.stuck_spool_start_time = None
 
-        self._pause_printer_message(message)
+        self._pause_printer_message(message, fps_state.current_oams)
 
     def _monitor_unload_speed_for_fps(self, fps_name):
         def _monitor_unload_speed(self, eventtime):
@@ -1701,7 +1711,8 @@ class OAMSManager:
                             fps_name,
                         )
                     self._pause_printer_message(
-                        "Printer paused because the unloading speed of the moving filament was too low"
+                        "Printer paused because the unloading speed of the moving filament was too low",
+                        fps_state.current_oams,
                     )
                     logging.info("after unload speed too low")
                     self.stop_monitors()
@@ -2123,7 +2134,7 @@ class OAMSManager:
                     f"with FPS {pressure_mid:.2f} near {CLOG_PRESSURE_TARGET:.2f}"
                 )
                 fps_state.clog_active = True
-                self._pause_printer_message(message)
+                self._pause_printer_message(message, fps_state.current_oams)
 
             return eventtime + MONITOR_ENCODER_PERIOD
 
@@ -2146,6 +2157,7 @@ class OAMSManager:
             def _reload_callback(fps_name=fps_name, fps_state=fps_state):
                 monitor = self.runout_monitors.get(fps_name)
                 source_group = fps_state.current_group
+                active_oams = fps_state.current_oams
                 target_group, target_lane, delegate_to_afc, source_lane = self._get_infinite_runout_target_group(
                     fps_name,
                     fps_state,
@@ -2173,7 +2185,8 @@ class OAMSManager:
                     )
                     fps_state.reset_runout_positions()
                     self._pause_printer_message(
-                        f"Unable to delegate infinite runout for {source_group or fps_name}"
+                        f"Unable to delegate infinite runout for {source_group or fps_name}",
+                        fps_state.current_oams or active_oams,
                     )
                     if monitor:
                         monitor.paused()
@@ -2196,14 +2209,20 @@ class OAMSManager:
                             unload_message,
                         )
                         failure_message = unload_message or f"Failed to unload current spool on {fps_name}"
-                        self._pause_printer_message(failure_message)
+                        self._pause_printer_message(
+                            failure_message,
+                            fps_state.current_oams or active_oams,
+                        )
                         if monitor:
                             monitor.paused()
                         return
 
                 if group_to_load is None:
                     logging.error("OAMS: No filament group available to reload on %s", fps_name)
-                    self._pause_printer_message(f"No filament group available to reload on {fps_name}")
+                    self._pause_printer_message(
+                        f"No filament group available to reload on {fps_name}",
+                        fps_state.current_oams or active_oams,
+                    )
                     if monitor:
                         monitor.paused()
                     return
@@ -2251,7 +2270,10 @@ class OAMSManager:
                     load_message,
                 )
                 failure_message = load_message or f"No spool available for group {group_to_load}"
-                self._pause_printer_message(failure_message)
+                self._pause_printer_message(
+                    failure_message,
+                    fps_state.current_oams or active_oams,
+                )
                 if monitor:
                     monitor.paused()
                 return
