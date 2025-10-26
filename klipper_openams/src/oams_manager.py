@@ -114,6 +114,7 @@ class OAMSRunoutMonitor:
         self.reactor = self.printer.get_reactor()
 
         self.hardware_service = None
+        self.latest_lane_name: Optional[str] = None
         if AMSRunoutCoordinator is not None:
             try:
                 self.hardware_service = AMSRunoutCoordinator.register_runout_monitor(self)
@@ -142,28 +143,56 @@ class OAMSRunoutMonitor:
 
                 spool_idx = fps_state.current_spool_idx
                 if spool_idx is None:
+                    self.latest_lane_name = None
                     logging.debug(
                         "OAMS: Skipping runout monitor for %s - no active spool index",
                         self.fps_name,
                     )
                     return eventtime + MONITOR_ENCODER_PERIOD
 
-                try:
-                    hes_values = oams_obj.hub_hes_value
-                    if spool_idx < 0 or spool_idx >= len(hes_values):
-                        logging.debug(
-                            "OAMS: Skipping runout monitor for %s - spool index %s out of range",
-                            self.fps_name,
-                            spool_idx,
+                lane_name = None
+                spool_empty = None
+                unit_name = getattr(fps_state, "current_oams", None) or self.fps_name
+
+                if self.hardware_service is not None:
+                    try:
+                        lane_name = self.hardware_service.resolve_lane_for_spool(
+                            unit_name, spool_idx
                         )
+                        snapshot = self.hardware_service.latest_lane_snapshot_for_spool(
+                            unit_name, spool_idx
+                        )
+                    except Exception:
+                        snapshot = None
+                    if snapshot:
+                        hub_state = snapshot.get("hub_state")
+                        lane_state = snapshot.get("lane_state")
+                        if hub_state is not None:
+                            spool_empty = not bool(hub_state)
+                        elif lane_state is not None:
+                            spool_empty = not bool(lane_state)
+
+                if spool_empty is None:
+                    try:
+                        hes_values = oams_obj.hub_hes_value
+                        if spool_idx < 0 or spool_idx >= len(hes_values):
+                            logging.debug(
+                                "OAMS: Skipping runout monitor for %s - spool index %s out of range",
+                                self.fps_name,
+                                spool_idx,
+                            )
+                            self.latest_lane_name = lane_name
+                            return eventtime + MONITOR_ENCODER_PERIOD
+                        spool_empty = not bool(hes_values[spool_idx])
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to read HES values for runout detection on %s",
+                            self.fps_name,
+                        )
+                        self.latest_lane_name = lane_name
                         return eventtime + MONITOR_ENCODER_PERIOD
-                    spool_empty = not bool(hes_values[spool_idx])
-                except Exception:
-                    logging.exception(
-                        "OAMS: Failed to read HES values for runout detection on %s",
-                        self.fps_name,
-                    )
-                    return eventtime + MONITOR_ENCODER_PERIOD
+
+                self.latest_lane_name = lane_name
 
                 if (
                     is_printing
@@ -182,7 +211,7 @@ class OAMSRunoutMonitor:
                     if AMSRunoutCoordinator is not None:
                         try:
                             AMSRunoutCoordinator.notify_runout_detected(
-                                self, spool_idx
+                                self, spool_idx, lane_name=lane_name
                             )
                         except Exception:
                             logging.getLogger(__name__).exception(
@@ -1175,6 +1204,23 @@ class OAMSManager:
 
             return True, "Spool already unloaded"
 
+        lane_name: Optional[str] = None
+        spool_index = fps_state.current_spool_idx
+        if AMSRunoutCoordinator is not None:
+            try:
+                afc = self._get_afc()
+                if afc is not None:
+                    lane_name, _ = self._resolve_lane_for_state(
+                        fps_state,
+                        fps_state.current_group,
+                        afc,
+                    )
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to resolve AFC lane for unload on %s", fps_name
+                )
+                lane_name = None
+
         try:
             fps_state.state_name = FPSLoadState.UNLOADING
             fps_state.encoder = oams.encoder_clicks
@@ -1200,6 +1246,22 @@ class OAMSManager:
             fps_state.following = False
             fps_state.direction = 0
             fps_state.since = self.reactor.monotonic()
+            if lane_name:
+                try:
+                    AMSRunoutCoordinator.notify_lane_tool_state(
+                        self.printer,
+                        fps_state.current_oams or oams.name,
+                        lane_name,
+                        loaded=False,
+                        spool_index=spool_index,
+                        eventtime=fps_state.since,
+                    )
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to notify AFC that lane %s unloaded on %s",
+                        lane_name,
+                        fps_name,
+                    )
             fps_state.current_group = None
             fps_state.current_spool_idx = None
             self.current_group = None
@@ -1289,6 +1351,41 @@ class OAMSManager:
 
                 self._schedule_post_load_pressure_check(fps_name, fps_state)
 
+                if AMSRunoutCoordinator is not None:
+                    lane_name: Optional[str] = None
+                    try:
+                        afc = self._get_afc()
+                        if afc is not None:
+                            lane_name, _ = self._resolve_lane_for_state(
+                                fps_state,
+                                group_name,
+                                afc,
+                            )
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to resolve AFC lane for group %s on %s",
+                            group_name,
+                            fps_name,
+                        )
+                        lane_name = None
+
+                    if lane_name:
+                        try:
+                            AMSRunoutCoordinator.notify_lane_tool_state(
+                                self.printer,
+                                fps_state.current_oams or oam.name,
+                                lane_name,
+                                loaded=True,
+                                spool_index=fps_state.current_spool_idx,
+                                eventtime=fps_state.since,
+                            )
+                        except Exception:
+                            logging.exception(
+                                "OAMS: Failed to notify AFC that lane %s loaded for %s",
+                                lane_name,
+                                group_name,
+                            )
+
                 return True, message
 
             fps_state.state_name = FPSLoadState.UNLOADED
@@ -1349,8 +1446,18 @@ class OAMSManager:
         return
 
         
-    def _pause_printer_message(self, message):
+    def _pause_printer_message(self, message, oams_name: Optional[str] = None):
         logging.info(f"OAMS: {message}")
+
+        if AMSRunoutCoordinator is not None and oams_name:
+            try:
+                AMSRunoutCoordinator.notify_afc_error(
+                    self.printer, oams_name, message, pause=False
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to forward OAMS pause message to AFC"
+                )
 
         try:
             gcode = self.printer.lookup_object("gcode")
@@ -1452,7 +1559,7 @@ class OAMSManager:
                 f"Possible clog detected after loading {tracked_state.current_group or fps_name}: "
                 f"FPS pressure {pressure:.2f} remained above {POST_LOAD_PRESSURE_THRESHOLD:.2f}"
             )
-            self._pause_printer_message(message)
+            self._pause_printer_message(message, tracked_state.current_oams)
             self._cancel_post_load_pressure_check(tracked_state)
             return self.reactor.NEVER
 
@@ -1655,7 +1762,7 @@ class OAMSManager:
         fps_state.stuck_spool_active = True
         fps_state.stuck_spool_start_time = None
 
-        self._pause_printer_message(message)
+        self._pause_printer_message(message, fps_state.current_oams)
 
     def _monitor_unload_speed_for_fps(self, fps_name):
         def _monitor_unload_speed(self, eventtime):
@@ -1701,7 +1808,8 @@ class OAMSManager:
                             fps_name,
                         )
                     self._pause_printer_message(
-                        "Printer paused because the unloading speed of the moving filament was too low"
+                        "Printer paused because the unloading speed of the moving filament was too low",
+                        fps_state.current_oams,
                     )
                     logging.info("after unload speed too low")
                     self.stop_monitors()
@@ -2123,7 +2231,7 @@ class OAMSManager:
                     f"with FPS {pressure_mid:.2f} near {CLOG_PRESSURE_TARGET:.2f}"
                 )
                 fps_state.clog_active = True
-                self._pause_printer_message(message)
+                self._pause_printer_message(message, fps_state.current_oams)
 
             return eventtime + MONITOR_ENCODER_PERIOD
 
@@ -2146,6 +2254,7 @@ class OAMSManager:
             def _reload_callback(fps_name=fps_name, fps_state=fps_state):
                 monitor = self.runout_monitors.get(fps_name)
                 source_group = fps_state.current_group
+                active_oams = fps_state.current_oams
                 target_group, target_lane, delegate_to_afc, source_lane = self._get_infinite_runout_target_group(
                     fps_name,
                     fps_state,
@@ -2173,7 +2282,8 @@ class OAMSManager:
                     )
                     fps_state.reset_runout_positions()
                     self._pause_printer_message(
-                        f"Unable to delegate infinite runout for {source_group or fps_name}"
+                        f"Unable to delegate infinite runout for {source_group or fps_name}",
+                        fps_state.current_oams or active_oams,
                     )
                     if monitor:
                         monitor.paused()
@@ -2196,14 +2306,20 @@ class OAMSManager:
                             unload_message,
                         )
                         failure_message = unload_message or f"Failed to unload current spool on {fps_name}"
-                        self._pause_printer_message(failure_message)
+                        self._pause_printer_message(
+                            failure_message,
+                            fps_state.current_oams or active_oams,
+                        )
                         if monitor:
                             monitor.paused()
                         return
 
                 if group_to_load is None:
                     logging.error("OAMS: No filament group available to reload on %s", fps_name)
-                    self._pause_printer_message(f"No filament group available to reload on {fps_name}")
+                    self._pause_printer_message(
+                        f"No filament group available to reload on {fps_name}",
+                        fps_state.current_oams or active_oams,
+                    )
                     if monitor:
                         monitor.paused()
                     return
@@ -2218,20 +2334,39 @@ class OAMSManager:
                     )
                     if target_group:
                         if target_lane:
-                            try:
-                                gcode = self.printer.lookup_object("gcode")
-                                gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
-                                logging.debug(
-                                    "OAMS: Marked lane %s as loaded after infinite runout on %s",
-                                    target_lane,
-                                    fps_name,
-                                )
-                            except Exception:
-                                logging.exception(
-                                    "OAMS: Failed to mark lane %s as loaded after infinite runout on %s",
-                                    target_lane,
-                                    fps_name,
-                                )
+                            handled = False
+                            if AMSRunoutCoordinator is not None:
+                                try:
+                                    handled = AMSRunoutCoordinator.notify_lane_tool_state(
+                                        self.printer,
+                                        fps_state.current_oams or active_oams,
+                                        target_lane,
+                                        loaded=True,
+                                        spool_index=fps_state.current_spool_idx,
+                                        eventtime=fps_state.since,
+                                    )
+                                except Exception:
+                                    logging.exception(
+                                        "OAMS: Failed to notify AFC lane %s after infinite runout on %s",
+                                        target_lane,
+                                        fps_name,
+                                    )
+                                    handled = False
+                            if not handled:
+                                try:
+                                    gcode = self.printer.lookup_object("gcode")
+                                    gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
+                                    logging.debug(
+                                        "OAMS: Marked lane %s as loaded after infinite runout on %s",
+                                        target_lane,
+                                        fps_name,
+                                    )
+                                except Exception:
+                                    logging.exception(
+                                        "OAMS: Failed to mark lane %s as loaded after infinite runout on %s",
+                                        target_lane,
+                                        fps_name,
+                                    )
                         else:
                             logging.warning(
                                 "OAMS: No runout lane recorded for %s on %s when marking lane loaded",
@@ -2251,7 +2386,10 @@ class OAMSManager:
                     load_message,
                 )
                 failure_message = load_message or f"No spool available for group {group_to_load}"
-                self._pause_printer_message(failure_message)
+                self._pause_printer_message(
+                    failure_message,
+                    fps_state.current_oams or active_oams,
+                )
                 if monitor:
                     monitor.paused()
                 return
