@@ -144,28 +144,21 @@ except Exception:  # pragma: no cover - integration may be absent during import
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 
 
-def _normalize_ams_pin_value(pin_value) -> Optional[str]:
-    """Return the cleaned AMS_* token stripped of comments and modifiers."""
+def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
+    """Return a case-insensitive token for comparing extruder aliases."""
 
-    if not isinstance(pin_value, str):
+    if not name or not isinstance(name, str):
         return None
 
-    cleaned = pin_value.strip()
-    if not cleaned:
+    normalized = name.strip()
+    if not normalized:
         return None
 
-    # Remove any inline comments commonly used to preserve original pins.
-    for comment_char in ("#", ";"):
-        idx = cleaned.find(comment_char)
-        if idx != -1:
-            cleaned = cleaned[:idx].strip()
-    if not cleaned:
-        return None
+    lowered = normalized.lower()
+    if lowered.startswith("ams_"):
+        lowered = lowered[4:]
 
-    while cleaned and cleaned[0] in "!^":
-        cleaned = cleaned[1:]
-
-    return cleaned or None
+    return lowered or None
 
 
 def _normalize_ams_pin_value(pin_value) -> Optional[str]:
@@ -485,15 +478,30 @@ class afcAMS(afcUnit):
         """Return True if the lane is mapped to this AMS unit's extruder."""
 
         extruder_name = getattr(self, "extruder", None)
+        unit_extruder_obj = getattr(self, "extruder_obj", None)
         if not extruder_name:
             return False
 
         lane_extruder = getattr(lane, "extruder_name", None)
         if lane_extruder is None:
-            extruder_obj = getattr(lane, "extruder_obj", None)
-            lane_extruder = getattr(extruder_obj, "name", None)
+            lane_extruder_obj = getattr(lane, "extruder_obj", None)
+            lane_extruder = getattr(lane_extruder_obj, "name", None)
+        else:
+            lane_extruder_obj = getattr(lane, "extruder_obj", None)
 
-        return lane_extruder == extruder_name
+        if unit_extruder_obj is not None and lane_extruder_obj is unit_extruder_obj:
+            return True
+
+        if lane_extruder == extruder_name:
+            return True
+
+        normalized_lane = _normalize_extruder_name(lane_extruder)
+        normalized_unit = _normalize_extruder_name(extruder_name)
+
+        if normalized_lane and normalized_unit and normalized_lane == normalized_unit:
+            return True
+
+        return False
 
     def _lane_reports_tool_filament(self, lane) -> Optional[bool]:
         """Return the best-known tool filament state for a lane."""
