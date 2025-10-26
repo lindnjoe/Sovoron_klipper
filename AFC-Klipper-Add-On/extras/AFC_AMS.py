@@ -698,6 +698,23 @@ class afcAMS(afcUnit):
         parts = normalized.replace("_", " ").replace("-", " ").split()
         return any(part.lower() == self.name.lower() for part in parts)
 
+    def _normalize_group_name(self, group: Optional[str]) -> Optional[str]:
+        """Return a trimmed filament group token for alias comparison."""
+
+        if not group or not isinstance(group, str):
+            return None
+
+        normalized = group.strip()
+        if not normalized:
+            return None
+
+        # Filament group identifiers are often prefixed (e.g. "Group T4"), so
+        # prefer the final token which corresponds to the configured AFC map.
+        if " " in normalized:
+            normalized = normalized.split()[-1]
+
+        return normalized
+
     def _resolve_lane_alias(self, identifier: Optional[str]) -> Optional[str]:
         """Map common aliases (fps names, case variants) to lane objects."""
 
