@@ -1204,6 +1204,23 @@ class OAMSManager:
 
             return True, "Spool already unloaded"
 
+        lane_name: Optional[str] = None
+        spool_index = fps_state.current_spool_idx
+        if AMSRunoutCoordinator is not None:
+            try:
+                afc = self._get_afc()
+                if afc is not None:
+                    lane_name, _ = self._resolve_lane_for_state(
+                        fps_state,
+                        fps_state.current_group,
+                        afc,
+                    )
+            except Exception:
+                logging.exception(
+                    "OAMS: Failed to resolve AFC lane for unload on %s", fps_name
+                )
+                lane_name = None
+
         try:
             fps_state.state_name = FPSLoadState.UNLOADING
             fps_state.encoder = oams.encoder_clicks
@@ -1229,6 +1246,22 @@ class OAMSManager:
             fps_state.following = False
             fps_state.direction = 0
             fps_state.since = self.reactor.monotonic()
+            if lane_name:
+                try:
+                    AMSRunoutCoordinator.notify_lane_tool_state(
+                        self.printer,
+                        fps_state.current_oams or oams.name,
+                        lane_name,
+                        loaded=False,
+                        spool_index=spool_index,
+                        eventtime=fps_state.since,
+                    )
+                except Exception:
+                    logging.exception(
+                        "OAMS: Failed to notify AFC that lane %s unloaded on %s",
+                        lane_name,
+                        fps_name,
+                    )
             fps_state.current_group = None
             fps_state.current_spool_idx = None
             self.current_group = None
@@ -1317,6 +1350,41 @@ class OAMSManager:
                 )
 
                 self._schedule_post_load_pressure_check(fps_name, fps_state)
+
+                if AMSRunoutCoordinator is not None:
+                    lane_name: Optional[str] = None
+                    try:
+                        afc = self._get_afc()
+                        if afc is not None:
+                            lane_name, _ = self._resolve_lane_for_state(
+                                fps_state,
+                                group_name,
+                                afc,
+                            )
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to resolve AFC lane for group %s on %s",
+                            group_name,
+                            fps_name,
+                        )
+                        lane_name = None
+
+                    if lane_name:
+                        try:
+                            AMSRunoutCoordinator.notify_lane_tool_state(
+                                self.printer,
+                                fps_state.current_oams or oam.name,
+                                lane_name,
+                                loaded=True,
+                                spool_index=fps_state.current_spool_idx,
+                                eventtime=fps_state.since,
+                            )
+                        except Exception:
+                            logging.exception(
+                                "OAMS: Failed to notify AFC that lane %s loaded for %s",
+                                lane_name,
+                                group_name,
+                            )
 
                 return True, message
 
@@ -2266,20 +2334,39 @@ class OAMSManager:
                     )
                     if target_group:
                         if target_lane:
-                            try:
-                                gcode = self.printer.lookup_object("gcode")
-                                gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
-                                logging.debug(
-                                    "OAMS: Marked lane %s as loaded after infinite runout on %s",
-                                    target_lane,
-                                    fps_name,
-                                )
-                            except Exception:
-                                logging.exception(
-                                    "OAMS: Failed to mark lane %s as loaded after infinite runout on %s",
-                                    target_lane,
-                                    fps_name,
-                                )
+                            handled = False
+                            if AMSRunoutCoordinator is not None:
+                                try:
+                                    handled = AMSRunoutCoordinator.notify_lane_tool_state(
+                                        self.printer,
+                                        fps_state.current_oams or active_oams,
+                                        target_lane,
+                                        loaded=True,
+                                        spool_index=fps_state.current_spool_idx,
+                                        eventtime=fps_state.since,
+                                    )
+                                except Exception:
+                                    logging.exception(
+                                        "OAMS: Failed to notify AFC lane %s after infinite runout on %s",
+                                        target_lane,
+                                        fps_name,
+                                    )
+                                    handled = False
+                            if not handled:
+                                try:
+                                    gcode = self.printer.lookup_object("gcode")
+                                    gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
+                                    logging.debug(
+                                        "OAMS: Marked lane %s as loaded after infinite runout on %s",
+                                        target_lane,
+                                        fps_name,
+                                    )
+                                except Exception:
+                                    logging.exception(
+                                        "OAMS: Failed to mark lane %s as loaded after infinite runout on %s",
+                                        target_lane,
+                                        fps_name,
+                                    )
                         else:
                             logging.warning(
                                 "OAMS: No runout lane recorded for %s on %s when marking lane loaded",

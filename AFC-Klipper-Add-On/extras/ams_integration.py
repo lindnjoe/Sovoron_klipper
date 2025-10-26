@@ -335,6 +335,48 @@ class AMSRunoutCoordinator:
                 )
 
     @classmethod
+    def notify_lane_tool_state(
+        cls,
+        printer,
+        name: str,
+        lane_name: str,
+        *,
+        loaded: bool,
+        spool_index: Optional[int] = None,
+        eventtime: Optional[float] = None,
+    ) -> bool:
+        """Propagate lane tool state changes from OpenAMS into AFC."""
+
+        key = cls._key(printer, name)
+        with cls._lock:
+            units = list(cls._units.get(key, ()))
+
+        if not units:
+            return False
+
+        if eventtime is None:
+            try:
+                eventtime = printer.get_reactor().monotonic()
+            except Exception:
+                eventtime = None
+
+        handled = False
+        for unit in units:
+            try:
+                if unit.handle_openams_lane_tool_state(
+                    lane_name,
+                    loaded,
+                    spool_index=spool_index,
+                    eventtime=eventtime,
+                ):
+                    handled = True
+            except Exception:
+                unit.logger.exception(
+                    "Failed to update AFC lane %s from OpenAMS tool state", lane_name
+                )
+        return handled
+
+    @classmethod
     def active_units(cls, printer, name: str) -> Iterable[Any]:
         key = cls._key(printer, name)
         with cls._lock:
