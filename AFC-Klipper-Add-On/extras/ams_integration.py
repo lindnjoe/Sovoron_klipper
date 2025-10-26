@@ -27,6 +27,7 @@ class AMSHardwareService:
         self._status: Dict[str, Any] = {}
         self._lane_snapshots: Dict[str, Dict[str, Any]] = {}
         self._status_callbacks: List[Callable[[Dict[str, Any]], None]] = []
+        self._lanes_by_spool: Dict[Tuple[str, int], str] = {}
 
     # ------------------------------------------------------------------
     # Factory helpers
@@ -154,6 +155,9 @@ class AMSHardwareService:
         lane_state: bool,
         hub_state: Optional[bool],
         eventtime: float,
+        *,
+        spool_index: Optional[int] = None,
+        tool_state: Optional[bool] = None,
     ) -> None:
         key = f"{unit_name}:{lane_name}"
         with self._lock:
@@ -164,12 +168,43 @@ class AMSHardwareService:
                 "hub_state": None if hub_state is None else bool(hub_state),
                 "timestamp": eventtime,
             }
+            if spool_index is not None:
+                try:
+                    normalized_index = int(spool_index)
+                except (TypeError, ValueError):
+                    normalized_index = None
+                else:
+                    self._lane_snapshots[key]["spool_index"] = normalized_index
+                    self._lanes_by_spool[(unit_name, normalized_index)] = lane_name
+            if tool_state is not None:
+                self._lane_snapshots[key]["tool_state"] = bool(tool_state)
 
     def latest_lane_snapshot(self, unit_name: str, lane_name: str) -> Optional[Dict[str, Any]]:
         key = f"{unit_name}:{lane_name}"
         with self._lock:
             snapshot = self._lane_snapshots.get(key)
         return dict(snapshot) if snapshot else None
+
+    def resolve_lane_for_spool(
+        self, unit_name: str, spool_index: Optional[int]
+    ) -> Optional[str]:
+        if spool_index is None:
+            return None
+        try:
+            normalized = int(spool_index)
+        except (TypeError, ValueError):
+            return None
+        key = (unit_name, normalized)
+        with self._lock:
+            return self._lanes_by_spool.get(key)
+
+    def latest_lane_snapshot_for_spool(
+        self, unit_name: str, spool_index: Optional[int]
+    ) -> Optional[Dict[str, Any]]:
+        lane_name = self.resolve_lane_for_spool(unit_name, spool_index)
+        if lane_name is None:
+            return None
+        return self.latest_lane_snapshot(unit_name, lane_name)
 
     # ------------------------------------------------------------------
     # High level hardware helpers used by AFC
@@ -237,7 +272,13 @@ class AMSRunoutCoordinator:
         return AMSHardwareService.for_printer(printer, oams_name)
 
     @classmethod
-    def notify_runout_detected(cls, monitor, spool_index: Optional[int]) -> None:
+    def notify_runout_detected(
+        cls,
+        monitor,
+        spool_index: Optional[int],
+        *,
+        lane_name: Optional[str] = None,
+    ) -> None:
         """Forward runout detection from OpenAMS to any registered AFC units."""
 
         printer = getattr(monitor, "printer", None)
@@ -248,9 +289,12 @@ class AMSRunoutCoordinator:
         key = cls._key(printer, oams_name)
         with cls._lock:
             units = list(cls._units.get(key, ()))
+        lane_hint = lane_name or getattr(monitor, "latest_lane_name", None)
         for unit in units:
             try:
-                unit.handle_runout_detected(spool_index, monitor)
+                unit.handle_runout_detected(
+                    spool_index, monitor, lane_name=lane_hint
+                )
             except Exception:
                 unit.logger.exception(
                     "Failed to propagate OpenAMS runout to AFC unit %s", unit.name

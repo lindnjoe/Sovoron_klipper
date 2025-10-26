@@ -909,12 +909,15 @@ class afcAMS(afcUnit):
                     hub_state = None
                     if hub_values is not None and idx < len(hub_values):
                         hub_state = bool(hub_values[idx])
+                    tool_state = self._lane_reports_tool_filament(lane)
                     self.hardware_service.update_lane_snapshot(
-                        self.name,
+                        self.oams_name,
                         lane.name,
                         lane_val,
                         hub_state,
                         eventtime,
+                        spool_index=idx,
+                        tool_state=tool_state,
                     )
 
                 hub = getattr(lane, "hub_obj", None)
@@ -947,10 +950,30 @@ class afcAMS(afcUnit):
                 return lane
         return None
 
-    def handle_runout_detected(self, spool_index: Optional[int], monitor=None) -> None:
+    def handle_runout_detected(
+        self,
+        spool_index: Optional[int],
+        monitor=None,
+        *,
+        lane_name: Optional[str] = None,
+    ) -> None:
         """Handle runout notifications coming from OpenAMS monitors."""
 
-        lane = self._lane_for_spool_index(spool_index)
+        lane = None
+        if lane_name:
+            lane = self.lanes.get(lane_name)
+            if lane is None:
+                lowered = lane_name.lower()
+                lane = next(
+                    (
+                        candidate
+                        for name, candidate in self.lanes.items()
+                        if name.lower() == lowered
+                    ),
+                    None,
+                )
+        if lane is None:
+            lane = self._lane_for_spool_index(spool_index)
         if lane is None:
             return
 

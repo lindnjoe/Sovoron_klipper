@@ -114,6 +114,7 @@ class OAMSRunoutMonitor:
         self.reactor = self.printer.get_reactor()
 
         self.hardware_service = None
+        self.latest_lane_name: Optional[str] = None
         if AMSRunoutCoordinator is not None:
             try:
                 self.hardware_service = AMSRunoutCoordinator.register_runout_monitor(self)
@@ -142,28 +143,56 @@ class OAMSRunoutMonitor:
 
                 spool_idx = fps_state.current_spool_idx
                 if spool_idx is None:
+                    self.latest_lane_name = None
                     logging.debug(
                         "OAMS: Skipping runout monitor for %s - no active spool index",
                         self.fps_name,
                     )
                     return eventtime + MONITOR_ENCODER_PERIOD
 
-                try:
-                    hes_values = oams_obj.hub_hes_value
-                    if spool_idx < 0 or spool_idx >= len(hes_values):
-                        logging.debug(
-                            "OAMS: Skipping runout monitor for %s - spool index %s out of range",
-                            self.fps_name,
-                            spool_idx,
+                lane_name = None
+                spool_empty = None
+                unit_name = getattr(fps_state, "current_oams", None) or self.fps_name
+
+                if self.hardware_service is not None:
+                    try:
+                        lane_name = self.hardware_service.resolve_lane_for_spool(
+                            unit_name, spool_idx
                         )
+                        snapshot = self.hardware_service.latest_lane_snapshot_for_spool(
+                            unit_name, spool_idx
+                        )
+                    except Exception:
+                        snapshot = None
+                    if snapshot:
+                        hub_state = snapshot.get("hub_state")
+                        lane_state = snapshot.get("lane_state")
+                        if hub_state is not None:
+                            spool_empty = not bool(hub_state)
+                        elif lane_state is not None:
+                            spool_empty = not bool(lane_state)
+
+                if spool_empty is None:
+                    try:
+                        hes_values = oams_obj.hub_hes_value
+                        if spool_idx < 0 or spool_idx >= len(hes_values):
+                            logging.debug(
+                                "OAMS: Skipping runout monitor for %s - spool index %s out of range",
+                                self.fps_name,
+                                spool_idx,
+                            )
+                            self.latest_lane_name = lane_name
+                            return eventtime + MONITOR_ENCODER_PERIOD
+                        spool_empty = not bool(hes_values[spool_idx])
+                    except Exception:
+                        logging.exception(
+                            "OAMS: Failed to read HES values for runout detection on %s",
+                            self.fps_name,
+                        )
+                        self.latest_lane_name = lane_name
                         return eventtime + MONITOR_ENCODER_PERIOD
-                    spool_empty = not bool(hes_values[spool_idx])
-                except Exception:
-                    logging.exception(
-                        "OAMS: Failed to read HES values for runout detection on %s",
-                        self.fps_name,
-                    )
-                    return eventtime + MONITOR_ENCODER_PERIOD
+
+                self.latest_lane_name = lane_name
 
                 if (
                     is_printing
@@ -182,7 +211,7 @@ class OAMSRunoutMonitor:
                     if AMSRunoutCoordinator is not None:
                         try:
                             AMSRunoutCoordinator.notify_runout_detected(
-                                self, spool_idx
+                                self, spool_idx, lane_name=lane_name
                             )
                         except Exception:
                             logging.getLogger(__name__).exception(
