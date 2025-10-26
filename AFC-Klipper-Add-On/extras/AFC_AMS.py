@@ -509,7 +509,7 @@ class afcAMS(afcUnit):
         if lane is None:
             return None
 
-        lane_name = getattr(lane, "name", None)
+        lane_name = self._canonical_lane_name(getattr(lane, "name", None))
         latched = self._lane_tool_latches.get(lane_name) if lane_name else None
 
         if latched is False:
@@ -555,11 +555,15 @@ class afcAMS(afcUnit):
 
         if status in negative_states:
             if lane_name:
-                self._lane_feed_activity[lane_name] = False
+                canonical_lane = self._canonical_lane_name(lane_name)
+                if canonical_lane:
+                    self._lane_feed_activity[canonical_lane] = False
             return False
 
         if extruder_lane and lane_name and extruder_lane != lane_name:
-            self._lane_feed_activity[lane_name] = False
+            canonical_lane = self._canonical_lane_name(lane_name)
+            if canonical_lane:
+                self._lane_feed_activity[canonical_lane] = False
             return False
 
         if feed_active and status == AFCLaneState.LOADED:
@@ -580,16 +584,19 @@ class afcAMS(afcUnit):
         if not self._ensure_virtual_tool_sensor():
             return
 
-        active_feed = self._lane_feed_activity.get(lane_name) if lane_name else None
+        canonical_lane = self._canonical_lane_name(lane_name)
+        active_feed = (
+            self._lane_feed_activity.get(canonical_lane) if canonical_lane else None
+        )
 
         if (
-            lane_name
+            canonical_lane
             and filament_present
             and not force
-            and self._lane_tool_latches.get(lane_name) is False
+            and self._lane_tool_latches.get(canonical_lane) is False
             and not active_feed
         ):
-            self._lane_feed_activity[lane_name] = False
+            self._lane_feed_activity[canonical_lane] = False
             return
 
         sensor = self._virtual_tool_sensor
@@ -610,12 +617,12 @@ class afcAMS(afcUnit):
 
         self._last_virtual_tool_state = bool(filament_present)
 
-        if lane_name:
-            self._lane_tool_latches[lane_name] = bool(filament_present)
+        if canonical_lane:
+            self._lane_tool_latches[canonical_lane] = bool(filament_present)
             if filament_present:
-                self._lane_feed_activity[lane_name] = True
+                self._lane_feed_activity[canonical_lane] = True
             else:
-                self._lane_feed_activity[lane_name] = False
+                self._lane_feed_activity[canonical_lane] = False
 
     def lane_tool_loaded(self, lane):
         """Update the virtual tool sensor when a lane loads into the tool."""
@@ -778,6 +785,22 @@ class afcAMS(afcUnit):
                 return lane.name
 
         return None
+
+    def _canonical_lane_name(self, lane_name: Optional[str]) -> Optional[str]:
+        """Return a consistent lane identifier for latch/feed tracking."""
+
+        if lane_name is None:
+            return None
+
+        lookup = lane_name.strip() if isinstance(lane_name, str) else str(lane_name).strip()
+        if not lookup:
+            return None
+
+        resolved = self._resolve_lane_alias(lookup)
+        if resolved:
+            return resolved
+
+        return lookup
 
     def cmd_SYNC_TOOL_SENSOR(self, gcmd):
         lane_name = gcmd.get("LANE", None)
@@ -1139,7 +1162,9 @@ class afcAMS(afcUnit):
                                 active_lane_name = getattr(lane, "name", None)
                                 break
                     if active_lane_name:
-                        self._lane_feed_activity[active_lane_name] = True
+                        canonical_lane = self._canonical_lane_name(active_lane_name)
+                        if canonical_lane:
+                            self._lane_feed_activity[canonical_lane] = True
                 self._last_encoder_clicks = encoder_clicks
             elif encoder_clicks is None:
                 self._last_encoder_clicks = None
@@ -1362,9 +1387,12 @@ class afcAMS(afcUnit):
                 )
             if self._lane_matches_extruder(lane):
                 try:
-                    force_update = (
-                        self._lane_tool_latches.get(lane.name) is not False
-                    )
+                    canonical_lane = self._canonical_lane_name(lane.name)
+                    force_update = True
+                    if canonical_lane:
+                        force_update = (
+                            self._lane_tool_latches.get(canonical_lane) is not False
+                        )
                     self._set_virtual_tool_sensor_state(
                         True, eventtime, lane.name, force=force_update
                     )
