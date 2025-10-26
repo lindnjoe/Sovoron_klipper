@@ -1330,6 +1330,14 @@ class afcAMS(afcUnit):
                 self.logger.debug(
                     "Unable to select lane %s during OpenAMS load", lane.name
                 )
+            if self._lane_matches_extruder(lane):
+                try:
+                    self._set_virtual_tool_sensor_state(True, eventtime, lane.name)
+                except Exception:
+                    self.logger.exception(
+                        "Failed to mirror tool sensor state for loaded lane %s",
+                        lane.name,
+                    )
             return True
 
         current_lane = None
@@ -1364,6 +1372,14 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.exception(
                     "Failed to persist AFC state after unloading lane %s",
+                    lane.name,
+                )
+        if self._lane_matches_extruder(lane):
+            try:
+                self._set_virtual_tool_sensor_state(False, eventtime, lane.name)
+            except Exception:
+                self.logger.exception(
+                    "Failed to mirror tool sensor state for unloaded lane %s",
                     lane.name,
                 )
         return True
