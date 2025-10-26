@@ -534,29 +534,17 @@ class afcAMS(afcUnit):
         if not self._ensure_virtual_tool_sensor():
             return
 
+        new_state = bool(filament_present)
+
         canonical_lane = self._canonical_lane_name(lane_name)
-        lane_latch = None
-        if lane_obj is not None:
-            lane_latch = self._lane_tool_latches_by_lane.get(lane_obj)
-        if canonical_lane:
-            if lane_latch is None:
-                lane_latch = self._lane_tool_latches.get(canonical_lane)
+        if canonical_lane is None and lane_obj is not None:
+            canonical_lane = self._canonical_lane_name(getattr(lane_obj, "name", None))
 
-        active_feed = None
-        if lane_obj is not None:
-            active_feed = self._lane_feed_activity_by_lane.get(lane_obj)
-        if active_feed is None and canonical_lane:
-            active_feed = self._lane_feed_activity.get(canonical_lane)
-
-        should_block = (
-            filament_present and not force and lane_latch is False and not active_feed
-        )
-        if should_block:
-            if canonical_lane:
-                self._lane_feed_activity[canonical_lane] = False
-            if lane_obj is not None:
-                self._lane_feed_activity_by_lane[lane_obj] = False
-            return
+        if new_state and not force:
+            if canonical_lane and self._lane_tool_latches.get(canonical_lane) is False:
+                return
+            if lane_obj is not None and self._lane_tool_latches_by_lane.get(lane_obj) is False:
+                return
 
         sensor = self._virtual_tool_sensor
         helper = getattr(sensor, "runout_helper", None)
@@ -574,16 +562,15 @@ class afcAMS(afcUnit):
         if extruder is not None:
             extruder.tool_start_state = filament_present
 
-        self._last_virtual_tool_state = bool(filament_present)
+        self._last_virtual_tool_state = new_state
 
-        canonical_lane = self._canonical_lane_name(lane_name)
         if canonical_lane:
-            self._lane_tool_latches[canonical_lane] = bool(filament_present)
-            self._lane_feed_activity[canonical_lane] = bool(filament_present)
+            self._lane_tool_latches[canonical_lane] = new_state
+            self._lane_feed_activity[canonical_lane] = new_state
 
         if lane_obj is not None:
-            self._lane_tool_latches_by_lane[lane_obj] = bool(filament_present)
-            self._lane_feed_activity_by_lane[lane_obj] = bool(filament_present)
+            self._lane_tool_latches_by_lane[lane_obj] = new_state
+            self._lane_feed_activity_by_lane[lane_obj] = new_state
 
     def lane_tool_loaded(self, lane):
         """Update the virtual tool sensor when a lane loads into the tool."""
