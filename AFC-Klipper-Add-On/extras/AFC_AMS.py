@@ -510,18 +510,19 @@ class afcAMS(afcUnit):
             return None
 
         lane_name = getattr(lane, "name", None)
+        latched = self._lane_tool_latches.get(lane_name) if lane_name else None
+
+        if latched is False:
+            return False
+
         load_state = getattr(lane, "load_state", None)
         status = getattr(lane, "status", None)
         extruder = getattr(lane, "extruder_obj", None)
         extruder_lane = getattr(extruder, "lane_loaded", None)
-        latched = self._lane_tool_latches.get(lane_name) if lane_name else None
         feed_active = self._lane_feed_activity.get(lane_name) if lane_name else None
 
         if load_state is not None:
             return bool(load_state)
-
-        if latched is False:
-            return False
 
         if getattr(lane, "tool_loaded", False):
             return True
