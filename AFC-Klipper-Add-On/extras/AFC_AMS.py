@@ -520,6 +520,9 @@ class afcAMS(afcUnit):
         if load_state is not None:
             return bool(load_state)
 
+        if latched is False:
+            return False
+
         if getattr(lane, "tool_loaded", False):
             return True
 
@@ -556,9 +559,6 @@ class afcAMS(afcUnit):
 
         if extruder_lane and lane_name and extruder_lane != lane_name:
             self._lane_feed_activity[lane_name] = False
-            return False
-
-        if latched is False:
             return False
 
         if feed_active and status == AFCLaneState.LOADED:
