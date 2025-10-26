@@ -1183,6 +1183,15 @@ class afc:
         if cur_lane.custom_load_cmd:
             self.logger.info("Running custom load command for lane {}".format(cur_lane.name))
             self.gcode.run_script_from_command(cur_lane.custom_load_cmd)
+            unit_obj = getattr(cur_lane, "unit_obj", None)
+            ensure_sync = getattr(unit_obj, "ensure_tool_sensor_after_custom_load", None)
+            if callable(ensure_sync):
+                try:
+                    ensure_sync(cur_lane)
+                except Exception:
+                    self.logger.exception(
+                        "Failed to resync AMS tool sensor after custom load"
+                    )
             if cur_lane.get_toolhead_pre_sensor_state():
                 cur_lane.status = AFCLaneState.TOOL_LOADED
                 self.save_vars()
