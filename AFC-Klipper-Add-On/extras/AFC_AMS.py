@@ -141,6 +141,13 @@ except Exception:  # pragma: no cover - integration may be absent during import
     AMSRunoutCoordinator = None
 
 
+try:  # pragma: no cover - optional at config parse time
+    from extras.ams_integration import AMSHardwareService, AMSRunoutCoordinator
+except Exception:  # pragma: no cover - integration may be absent during import
+    AMSHardwareService = None
+    AMSRunoutCoordinator = None
+
+
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 
 
@@ -1167,6 +1174,66 @@ class afcAMS(afcUnit):
                     lane.name,
                 )
         return True
+
+    def check_runout(self, lane=None):
+        if lane is None:
+            return False
+        if getattr(lane, "unit_obj", None) is not self:
+            return False
+        try:
+            is_printing = self.afc.function.is_printing()
+        except Exception:
+            is_printing = False
+        return bool(is_printing)
+
+    def _lane_for_spool_index(self, spool_index: Optional[int]):
+        if spool_index is None:
+            return None
+        for lane in self.lanes.values():
+            try:
+                idx = int(getattr(lane, "index", 0)) - 1
+            except Exception:
+                idx = -1
+            if idx == spool_index:
+                return lane
+        return None
+
+    def handle_runout_detected(
+        self,
+        spool_index: Optional[int],
+        monitor=None,
+        *,
+        lane_name: Optional[str] = None,
+    ) -> None:
+        """Handle runout notifications coming from OpenAMS monitors."""
+
+        lane = None
+        if lane_name:
+            lane = self.lanes.get(lane_name)
+            if lane is None:
+                lowered = lane_name.lower()
+                lane = next(
+                    (
+                        candidate
+                        for name, candidate in self.lanes.items()
+                        if name.lower() == lowered
+                    ),
+                    None,
+                )
+        if lane is None:
+            lane = self._lane_for_spool_index(spool_index)
+        if lane is None:
+            return
+
+        eventtime = self.reactor.monotonic()
+        try:
+            lane.handle_load_runout(eventtime, False)
+        except TypeError:
+            lane.handle_load_runout(eventtime, load_state=False)
+        except AttributeError:
+            self.logger.warning(
+                "Lane %s is missing load runout handler for AMS integration", lane
+            )
 
     def check_runout(self, lane=None):
         if lane is None:
