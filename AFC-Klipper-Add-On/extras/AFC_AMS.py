@@ -568,11 +568,25 @@ class afcAMS(afcUnit):
         return None
 
     def _set_virtual_tool_sensor_state(
-        self, filament_present: bool, eventtime: float, lane_name: Optional[str] = None
+        self,
+        filament_present: bool,
+        eventtime: float,
+        lane_name: Optional[str] = None,
+        *,
+        force: bool = False,
     ) -> None:
         """Update the cached virtual sensor and extruder state."""
 
         if not self._ensure_virtual_tool_sensor():
+            return
+
+        if (
+            lane_name
+            and filament_present
+            and not force
+            and self._lane_tool_latches.get(lane_name) is False
+        ):
+            self._lane_feed_activity[lane_name] = False
             return
 
         sensor = self._virtual_tool_sensor
@@ -610,7 +624,7 @@ class afcAMS(afcUnit):
 
         eventtime = self.reactor.monotonic()
         lane_name = getattr(lane, "name", None)
-        self._set_virtual_tool_sensor_state(True, eventtime, lane_name)
+        self._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True)
 
     def lane_tool_unloaded(self, lane):
         """Update the virtual tool sensor when a lane unloads from the tool."""
@@ -1345,7 +1359,9 @@ class afcAMS(afcUnit):
                 )
             if self._lane_matches_extruder(lane):
                 try:
-                    self._set_virtual_tool_sensor_state(True, eventtime, lane.name)
+                    self._set_virtual_tool_sensor_state(
+                        True, eventtime, lane.name, force=True
+                    )
                 except Exception:
                     self.logger.exception(
                         "Failed to mirror tool sensor state for loaded lane %s",
@@ -1945,7 +1961,9 @@ def _patch_lane_pre_sensor_for_ams() -> None:
 
         if desired_state:
             try:
-                unit._set_virtual_tool_sensor_state(desired_state, eventtime)
+                unit._set_virtual_tool_sensor_state(
+                    desired_state, eventtime, getattr(self, "name", None)
+                )
             except Exception:
                 pass
             return True
