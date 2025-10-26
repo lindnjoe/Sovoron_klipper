@@ -511,79 +511,11 @@ class afcAMS(afcUnit):
         if lane is None:
             return None
 
-        lane_name = self._canonical_lane_name(getattr(lane, "name", None))
-        latched = None
-        if lane is not None:
-            latched = self._lane_tool_latches_by_lane.get(lane)
-        if latched is None and lane_name:
-            latched = self._lane_tool_latches.get(lane_name)
-
-        if latched is False:
-            return False
-
         load_state = getattr(lane, "load_state", None)
-        status = getattr(lane, "status", None)
-        extruder = getattr(lane, "extruder_obj", None)
-        extruder_lane = getattr(extruder, "lane_loaded", None)
-        feed_active = None
-        if lane is not None:
-            feed_active = self._lane_feed_activity_by_lane.get(lane)
-        if feed_active is None and lane_name:
-            feed_active = self._lane_feed_activity.get(lane_name)
-
-        if load_state is not None:
-            return bool(load_state)
-
         if load_state is not None:
             return bool(load_state)
 
         if getattr(lane, "tool_loaded", False):
-            return True
-
-        positive_states = {
-            AFCLaneState.TOOLED,
-            AFCLaneState.TOOL_LOADED,
-        }
-
-        if status in positive_states:
-            return True
-
-        if feed_active and status == AFCLaneState.TOOL_LOADING:
-            if getattr(lane, "load_state", False):
-                return True
-
-        if latched:
-            if not extruder_lane or extruder_lane == lane_name:
-                return True
-
-        negative_states = {
-            AFCLaneState.NONE,
-            AFCLaneState.ERROR,
-            AFCLaneState.HUB_LOADING,
-            AFCLaneState.EJECTING,
-            AFCLaneState.CALIBRATING,
-            AFCLaneState.INFINITE_RUNOUT,
-            AFCLaneState.TOOL_UNLOADING,
-        }
-
-        if status in negative_states:
-            if lane_name:
-                canonical_lane = self._canonical_lane_name(lane_name)
-                if canonical_lane:
-                    self._lane_feed_activity[canonical_lane] = False
-            if lane is not None:
-                self._lane_feed_activity_by_lane[lane] = False
-            return False
-
-        if extruder_lane and lane_name and extruder_lane != lane_name:
-            canonical_lane = self._canonical_lane_name(lane_name)
-            if canonical_lane:
-                self._lane_feed_activity[canonical_lane] = False
-            if lane is not None:
-                self._lane_feed_activity_by_lane[lane] = False
-            return False
-
-        if feed_active and status == AFCLaneState.LOADED:
             return True
 
         return None
@@ -644,19 +576,14 @@ class afcAMS(afcUnit):
 
         self._last_virtual_tool_state = bool(filament_present)
 
+        canonical_lane = self._canonical_lane_name(lane_name)
         if canonical_lane:
             self._lane_tool_latches[canonical_lane] = bool(filament_present)
-            if filament_present:
-                self._lane_feed_activity[canonical_lane] = True
-            else:
-                self._lane_feed_activity[canonical_lane] = False
+            self._lane_feed_activity[canonical_lane] = bool(filament_present)
 
         if lane_obj is not None:
             self._lane_tool_latches_by_lane[lane_obj] = bool(filament_present)
-            if filament_present:
-                self._lane_feed_activity_by_lane[lane_obj] = True
-            else:
-                self._lane_feed_activity_by_lane[lane_obj] = False
+            self._lane_feed_activity_by_lane[lane_obj] = bool(filament_present)
 
     def lane_tool_loaded(self, lane):
         """Update the virtual tool sensor when a lane loads into the tool."""
