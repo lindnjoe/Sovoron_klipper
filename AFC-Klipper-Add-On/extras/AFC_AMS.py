@@ -580,11 +580,14 @@ class afcAMS(afcUnit):
         if not self._ensure_virtual_tool_sensor():
             return
 
+        active_feed = self._lane_feed_activity.get(lane_name) if lane_name else None
+
         if (
             lane_name
             and filament_present
             and not force
             and self._lane_tool_latches.get(lane_name) is False
+            and not active_feed
         ):
             self._lane_feed_activity[lane_name] = False
             return
@@ -1359,8 +1362,11 @@ class afcAMS(afcUnit):
                 )
             if self._lane_matches_extruder(lane):
                 try:
+                    force_update = (
+                        self._lane_tool_latches.get(lane.name) is not False
+                    )
                     self._set_virtual_tool_sensor_state(
-                        True, eventtime, lane.name, force=True
+                        True, eventtime, lane.name, force=force_update
                     )
                 except Exception:
                     self.logger.exception(
