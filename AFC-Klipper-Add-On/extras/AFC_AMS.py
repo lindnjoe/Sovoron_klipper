@@ -281,7 +281,9 @@ class afcAMS(afcUnit):
         self._virtual_tool_sensor = None
         self._last_virtual_tool_state: Optional[bool] = None
         self._lane_tool_latches: Dict[str, bool] = {}
+        self._lane_tool_latches_by_lane: Dict[object, bool] = {}
         self._lane_feed_activity: Dict[str, bool] = {}
+        self._lane_feed_activity_by_lane: Dict[object, bool] = {}
         self._last_encoder_clicks: Optional[int] = None
         self.oams = None
         self.hardware_service = None
@@ -510,7 +512,11 @@ class afcAMS(afcUnit):
             return None
 
         lane_name = self._canonical_lane_name(getattr(lane, "name", None))
-        latched = self._lane_tool_latches.get(lane_name) if lane_name else None
+        latched = None
+        if lane is not None:
+            latched = self._lane_tool_latches_by_lane.get(lane)
+        if latched is None and lane_name:
+            latched = self._lane_tool_latches.get(lane_name)
 
         if latched is False:
             return False
@@ -519,7 +525,14 @@ class afcAMS(afcUnit):
         status = getattr(lane, "status", None)
         extruder = getattr(lane, "extruder_obj", None)
         extruder_lane = getattr(extruder, "lane_loaded", None)
-        feed_active = self._lane_feed_activity.get(lane_name) if lane_name else None
+        feed_active = None
+        if lane is not None:
+            feed_active = self._lane_feed_activity_by_lane.get(lane)
+        if feed_active is None and lane_name:
+            feed_active = self._lane_feed_activity.get(lane_name)
+
+        if load_state is not None:
+            return bool(load_state)
 
         if load_state is not None:
             return bool(load_state)
@@ -558,12 +571,16 @@ class afcAMS(afcUnit):
                 canonical_lane = self._canonical_lane_name(lane_name)
                 if canonical_lane:
                     self._lane_feed_activity[canonical_lane] = False
+            if lane is not None:
+                self._lane_feed_activity_by_lane[lane] = False
             return False
 
         if extruder_lane and lane_name and extruder_lane != lane_name:
             canonical_lane = self._canonical_lane_name(lane_name)
             if canonical_lane:
                 self._lane_feed_activity[canonical_lane] = False
+            if lane is not None:
+                self._lane_feed_activity_by_lane[lane] = False
             return False
 
         if feed_active and status == AFCLaneState.LOADED:
@@ -578,6 +595,7 @@ class afcAMS(afcUnit):
         lane_name: Optional[str] = None,
         *,
         force: bool = False,
+        lane_obj=None,
     ) -> None:
         """Update the cached virtual sensor and extruder state."""
 
@@ -585,18 +603,27 @@ class afcAMS(afcUnit):
             return
 
         canonical_lane = self._canonical_lane_name(lane_name)
-        active_feed = (
-            self._lane_feed_activity.get(canonical_lane) if canonical_lane else None
-        )
+        lane_latch = None
+        if lane_obj is not None:
+            lane_latch = self._lane_tool_latches_by_lane.get(lane_obj)
+        if canonical_lane:
+            if lane_latch is None:
+                lane_latch = self._lane_tool_latches.get(canonical_lane)
 
-        if (
-            canonical_lane
-            and filament_present
-            and not force
-            and self._lane_tool_latches.get(canonical_lane) is False
-            and not active_feed
-        ):
-            self._lane_feed_activity[canonical_lane] = False
+        active_feed = None
+        if lane_obj is not None:
+            active_feed = self._lane_feed_activity_by_lane.get(lane_obj)
+        if active_feed is None and canonical_lane:
+            active_feed = self._lane_feed_activity.get(canonical_lane)
+
+        should_block = (
+            filament_present and not force and lane_latch is False and not active_feed
+        )
+        if should_block:
+            if canonical_lane:
+                self._lane_feed_activity[canonical_lane] = False
+            if lane_obj is not None:
+                self._lane_feed_activity_by_lane[lane_obj] = False
             return
 
         sensor = self._virtual_tool_sensor
@@ -624,6 +651,13 @@ class afcAMS(afcUnit):
             else:
                 self._lane_feed_activity[canonical_lane] = False
 
+        if lane_obj is not None:
+            self._lane_tool_latches_by_lane[lane_obj] = bool(filament_present)
+            if filament_present:
+                self._lane_feed_activity_by_lane[lane_obj] = True
+            else:
+                self._lane_feed_activity_by_lane[lane_obj] = False
+
     def lane_tool_loaded(self, lane):
         """Update the virtual tool sensor when a lane loads into the tool."""
 
@@ -634,7 +668,9 @@ class afcAMS(afcUnit):
 
         eventtime = self.reactor.monotonic()
         lane_name = getattr(lane, "name", None)
-        self._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True)
+        self._set_virtual_tool_sensor_state(
+            True, eventtime, lane_name, force=True, lane_obj=lane
+        )
 
     def lane_tool_unloaded(self, lane):
         """Update the virtual tool sensor when a lane unloads from the tool."""
@@ -646,7 +682,9 @@ class afcAMS(afcUnit):
 
         eventtime = self.reactor.monotonic()
         lane_name = getattr(lane, "name", None)
-        self._set_virtual_tool_sensor_state(False, eventtime, lane_name)
+        self._set_virtual_tool_sensor_state(
+            False, eventtime, lane_name, lane_obj=lane
+        )
 
     def _mirror_lane_to_virtual_sensor(self, lane, eventtime: float) -> None:
         """Mirror a lane's load state into the AMS virtual tool sensor."""
@@ -662,7 +700,9 @@ class afcAMS(afcUnit):
             return
 
         lane_name = getattr(lane, "name", None)
-        self._set_virtual_tool_sensor_state(desired_state, eventtime, lane_name)
+        self._set_virtual_tool_sensor_state(
+            desired_state, eventtime, lane_name, lane_obj=lane
+        )
 
     def _sync_virtual_tool_sensor(
         self, eventtime: float, lane_name: Optional[str] = None
@@ -674,6 +714,7 @@ class afcAMS(afcUnit):
 
         desired_state: Optional[bool] = None
         desired_lane: Optional[str] = None
+        desired_lane_obj = None
 
         if lane_name:
             lane = self.lanes.get(lane_name)
@@ -682,6 +723,7 @@ class afcAMS(afcUnit):
                 if result is not None:
                     desired_state = result
                     desired_lane = getattr(lane, "name", None)
+                    desired_lane_obj = lane
 
         if desired_state is None:
             pending_false = None
@@ -697,18 +739,21 @@ class afcAMS(afcUnit):
                 if result:
                     desired_state = True
                     desired_lane = lane_id
+                    desired_lane_obj = lane
                     break
 
                 if pending_false is None:
-                    pending_false = (False, lane_id)
+                    pending_false = (False, lane_id, lane)
 
             if desired_state is None and pending_false is not None:
-                desired_state, desired_lane = pending_false
+                desired_state, desired_lane, desired_lane_obj = pending_false
 
         if desired_state is None or desired_state == self._last_virtual_tool_state:
             return
 
-        self._set_virtual_tool_sensor_state(desired_state, eventtime, desired_lane)
+        self._set_virtual_tool_sensor_state(
+            desired_state, eventtime, desired_lane, lane_obj=desired_lane_obj
+        )
 
     cmd_SYNC_TOOL_SENSOR_help = (
         "Synchronise the AMS virtual tool-start sensor with the assigned lane."
@@ -1148,6 +1193,7 @@ class afcAMS(afcUnit):
             hub_values = status.get("hub_hes_value")
 
             active_lane_name = None
+            active_lane_obj = None
             if encoder_clicks is not None:
                 last_clicks = self._last_encoder_clicks
                 if last_clicks is not None and encoder_clicks != last_clicks:
@@ -1156,15 +1202,19 @@ class afcAMS(afcUnit):
                         lane = self.lanes.get(current_loading)
                         if lane is not None and self._lane_matches_extruder(lane):
                             active_lane_name = getattr(lane, "name", None)
+                            active_lane_obj = lane
                     if active_lane_name is None:
                         for lane in self.lanes.values():
                             if self._lane_matches_extruder(lane) and getattr(lane, "status", None) == AFCLaneState.TOOL_LOADING:
                                 active_lane_name = getattr(lane, "name", None)
+                                active_lane_obj = lane
                                 break
                     if active_lane_name:
                         canonical_lane = self._canonical_lane_name(active_lane_name)
                         if canonical_lane:
                             self._lane_feed_activity[canonical_lane] = True
+                        if active_lane_obj is not None:
+                            self._lane_feed_activity_by_lane[active_lane_obj] = True
                 self._last_encoder_clicks = encoder_clicks
             elif encoder_clicks is None:
                 self._last_encoder_clicks = None
@@ -1393,8 +1443,16 @@ class afcAMS(afcUnit):
                         force_update = (
                             self._lane_tool_latches.get(canonical_lane) is not False
                         )
+                    if force_update and lane in self._lane_tool_latches_by_lane:
+                        force_update = (
+                            self._lane_tool_latches_by_lane.get(lane) is not False
+                        )
                     self._set_virtual_tool_sensor_state(
-                        True, eventtime, lane.name, force=force_update
+                        True,
+                        eventtime,
+                        lane.name,
+                        force=force_update,
+                        lane_obj=lane,
                     )
                 except Exception:
                     self.logger.exception(
@@ -1439,7 +1497,9 @@ class afcAMS(afcUnit):
                 )
         if self._lane_matches_extruder(lane):
             try:
-                self._set_virtual_tool_sensor_state(False, eventtime, lane.name)
+                self._set_virtual_tool_sensor_state(
+                    False, eventtime, lane.name, lane_obj=lane
+                )
             except Exception:
                 self.logger.exception(
                     "Failed to mirror tool sensor state for unloaded lane %s",
@@ -1996,7 +2056,10 @@ def _patch_lane_pre_sensor_for_ams() -> None:
         if desired_state:
             try:
                 unit._set_virtual_tool_sensor_state(
-                    desired_state, eventtime, getattr(self, "name", None)
+                    desired_state,
+                    eventtime,
+                    getattr(self, "name", None),
+                    lane_obj=self,
                 )
             except Exception:
                 pass
