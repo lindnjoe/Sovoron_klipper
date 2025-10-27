@@ -281,7 +281,9 @@ class afcAMS(afcUnit):
         self._virtual_tool_sensor = None
         self._last_virtual_tool_state: Optional[bool] = None
         self._lane_tool_latches: Dict[str, bool] = {}
+        self._lane_tool_latches_by_lane: Dict[object, bool] = {}
         self._lane_feed_activity: Dict[str, bool] = {}
+        self._lane_feed_activity_by_lane: Dict[object, bool] = {}
         self._last_encoder_clicks: Optional[int] = None
         self.oams = None
         self.hardware_service = None
@@ -1099,6 +1101,7 @@ class afcAMS(afcUnit):
             hub_values = status.get("hub_hes_value")
 
             active_lane_name = None
+            active_lane_obj = None
             if encoder_clicks is not None:
                 last_clicks = self._last_encoder_clicks
                 if last_clicks is not None and encoder_clicks != last_clicks:
@@ -1107,10 +1110,12 @@ class afcAMS(afcUnit):
                         lane = self.lanes.get(current_loading)
                         if lane is not None and self._lane_matches_extruder(lane):
                             active_lane_name = getattr(lane, "name", None)
+                            active_lane_obj = lane
                     if active_lane_name is None:
                         for lane in self.lanes.values():
                             if self._lane_matches_extruder(lane) and getattr(lane, "status", None) == AFCLaneState.TOOL_LOADING:
                                 active_lane_name = getattr(lane, "name", None)
+                                active_lane_obj = lane
                                 break
                     if active_lane_name:
                         canonical_lane = self._canonical_lane_name(active_lane_name)
