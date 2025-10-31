@@ -14,27 +14,18 @@ from textwrap import dedent
 from typing import Dict, Optional
 
 from configparser import Error as ConfigError
+try: from extras.AFC_utils import ERROR_STR
+except: raise ConfigError("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
 
-try:  # pragma: no cover - defensive guard for runtime import errors
-    from extras.AFC_unit import afcUnit
-except Exception as exc:  # pragma: no cover - defensive guard
-    raise ConfigError(
-        "Error when trying to import AFC_unit\n{trace}".format(
-            trace=traceback.format_exc()
-        )
-    ) from exc
+try: from extras.AFC_unit import afcUnit
+except: raise ConfigError(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
 
-try:  # pragma: no cover - defensive guard for runtime import errors
-    from extras.AFC_lane import AFCLane, AFCLaneState
-    from extras.AFC_utils import add_filament_switch
-    import extras.AFC_extruder as _afc_extruder_mod
-except Exception as exc:  # pragma: no cover - defensive guard
-    raise ConfigError(
-        "Error when trying to import AFC_lane\n{trace}".format(
-            trace=traceback.format_exc()
-        )
-    ) from exc
-
+try: from extras.AFC_lane import AFCLane, AFCLaneState
+except: raise ConfigError(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
+try: from extras.AFC_utils import add_filament_switch
+except: raise ConfigError(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
+try: import extras.AFC_extruder as _afc_extruder_mod
+except: raise ConfigError(ERROR_STR.format(import_lib="AFC_extruder", trace=traceback.format_exc()))
 
 try:  # pragma: no cover - optional at config parse time
     from extras.openams_integration import AMSHardwareService, AMSRunoutCoordinator
@@ -147,7 +138,6 @@ class _VirtualFilamentSensor:
     def cmd_SET_FILAMENT_SENSOR(self, gcmd):
         self.runout_helper.sensor_enabled = bool(gcmd.get_int("ENABLE", 1))
 
-
 def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
     """Return a case-insensitive token for comparing extruder aliases."""
 
@@ -163,7 +153,6 @@ def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
         lowered = lowered[4:]
 
     return lowered or None
-
 
 def _normalize_ams_pin_value(pin_value) -> Optional[str]:
     """Return the cleaned AMS_* token stripped of comments and modifiers."""
@@ -261,7 +250,7 @@ class afcAMS(afcUnit):
 
     def __init__(self, config):
         super().__init__(config)
-        self.type = "AMS"
+        self.type = "OpenAMS"
 
         # OpenAMS specific options
         self.oams_name = config.get("oams", "oams1")
@@ -659,10 +648,6 @@ class afcAMS(afcUnit):
             desired_state, eventtime, desired_lane, lane_obj=desired_lane_obj
         )
 
-    cmd_SYNC_TOOL_SENSOR_help = (
-        "Synchronise the AMS virtual tool-start sensor with the assigned lane."
-    )
-
     def _unit_matches(self, unit_value: Optional[str]) -> bool:
         """Return True when a mux UNIT value targets this AMS instance."""
 
@@ -751,6 +736,9 @@ class afcAMS(afcUnit):
 
         return lookup
 
+    cmd_SYNC_TOOL_SENSOR_help = (
+        "Synchronise the AMS virtual tool-start sensor with the assigned lane."
+    )
     def cmd_SYNC_TOOL_SENSOR(self, gcmd):
         lane_name = gcmd.get("LANE", None)
         if lane_name is None:
@@ -1340,90 +1328,6 @@ class afcAMS(afcUnit):
         except Exception:
             is_printing = False
         return bool(is_printing)
-
-    def _lane_for_spool_index(self, spool_index: Optional[int]):
-        if spool_index is None:
-            return None
-        for lane in self.lanes.values():
-            try:
-                idx = int(getattr(lane, "index", 0)) - 1
-            except Exception:
-                idx = -1
-            if idx == spool_index:
-                return lane
-        return None
-
-    def _resolve_lane_reference(self, lane_name: Optional[str]):
-        """Return a lane object by name (or alias), case-insensitively."""
-
-        if not lane_name:
-            return None
-
-        resolved_name = self._resolve_lane_alias(lane_name)
-        if resolved_name:
-            lane = self.lanes.get(resolved_name)
-            if lane is not None:
-                return lane
-        else:
-            resolved_name = lane_name
-
-        lane = self.lanes.get(resolved_name)
-        if lane is not None:
-            return lane
-
-        lowered = resolved_name.lower()
-        for candidate_name, candidate in self.lanes.items():
-            if candidate_name.lower() == lowered:
-                return candidate
-        return None
-
-    def _lane_for_spool_index(self, spool_index: Optional[int]):
-        if spool_index is None:
-            return None
-        for lane in self.lanes.values():
-            try:
-                idx = int(getattr(lane, "index", 0)) - 1
-            except Exception:
-                idx = -1
-            if idx == spool_index:
-                return lane
-        return None
-
-    def _resolve_lane_reference(self, lane_name: Optional[str]):
-        """Return a lane object by name (or alias), case-insensitively."""
-
-        if not lane_name:
-            return None
-
-        resolved_name = self._resolve_lane_alias(lane_name)
-        if resolved_name:
-            lane = self.lanes.get(resolved_name)
-            if lane is not None:
-                return lane
-        else:
-            resolved_name = lane_name
-
-        lane = self.lanes.get(resolved_name)
-        if lane is not None:
-            return lane
-
-        lowered = resolved_name.lower()
-        for candidate_name, candidate in self.lanes.items():
-            if candidate_name.lower() == lowered:
-                return candidate
-        return None
-
-    def _lane_for_spool_index(self, spool_index: Optional[int]):
-        if spool_index is None:
-            return None
-        for lane in self.lanes.values():
-            try:
-                idx = int(getattr(lane, "index", 0)) - 1
-            except Exception:
-                idx = -1
-            if idx == spool_index:
-                return lane
-        return None
 
 def _patch_lane_pre_sensor_for_ams() -> None:
     """Patch AFCLane.get_toolhead_pre_sensor_state for AMS virtual sensors."""
