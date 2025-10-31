@@ -1,3 +1,9 @@
+# Armored Turtle Automated Filament Changer
+#
+# Copyright (C) 2024 Armored Turtle
+#
+# This file may be distributed under the terms of the GNU GPLv3 license.
+
 """Shared OpenAMS integration helpers used by AFC and OpenAMS."""
 
 from __future__ import annotations
