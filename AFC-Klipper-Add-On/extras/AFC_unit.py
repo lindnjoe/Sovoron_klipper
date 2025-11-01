@@ -364,7 +364,7 @@ class afcUnit:
                 if button_command is None:
                     continue
             else:
-                button_command = "CALIBRATE_AFC BOWDEN={}".format(lane)
+                button_command = "CALIBRATE OAMS PTFE LENGTH={}".format(lane)
 
             # Create a button for each lane
             button_label = "{}".format(lane)
