@@ -14,6 +14,7 @@ import traceback
 from textwrap import dedent
 from types import MethodType
 from typing import Dict, Optional, List
+from collections.abc import Mapping
 
 from configparser import Error as ConfigError
 try: from extras.AFC_utils import ERROR_STR
@@ -321,7 +322,12 @@ class afcAMS(afcUnit):
             "Command: OAMS_CALIBRATE_HUB_HES"
         ).format(self.name)
 
-        for lane in self.lanes.values():
+        lane_container = getattr(self, "lanes", None)
+        lane_values = []
+        if isinstance(lane_container, Mapping):
+            lane_values = list(lane_container.values())
+
+        for lane in lane_values:
             if not lane.load_state:
                 continue
 
@@ -375,7 +381,12 @@ class afcAMS(afcUnit):
             "Command: OAMS_CALIBRATE_PTFE_LENGTH"
         ).format(self.name)
 
-        for lane in self.lanes.values():
+        lane_container = getattr(self, "lanes", None)
+        lane_values = []
+        if isinstance(lane_container, Mapping):
+            lane_values = list(lane_container.values())
+
+        for lane in lane_values:
             if not lane.load_state:
                 continue
 
