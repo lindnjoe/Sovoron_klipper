@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import traceback
 from textwrap import dedent
@@ -651,6 +652,32 @@ class afcAMS(afcUnit):
 
         return extracted or None
 
+    def _extract_hub_hes_calibration_result(
+        self, messages: List[str]
+    ) -> Optional[Tuple[int, float]]:
+        if not messages:
+            return None
+
+        pattern = re.compile(
+            r"calibrated\s+hes\s+(\d+)\s+to\s+(-?[0-9]+(?:\.[0-9]+)?)",
+            re.IGNORECASE,
+        )
+
+        for message in reversed(messages):
+            if not isinstance(message, str):
+                continue
+            match = pattern.search(message)
+            if match is None:
+                continue
+            try:
+                index = int(match.group(1))
+                value = float(match.group(2))
+            except (TypeError, ValueError):
+                continue
+            return index, value
+
+        return None
+
     def _normalize_numeric_sequence(self, values) -> Optional[List[float]]:
         if values is None:
             return None
@@ -753,16 +780,54 @@ class afcAMS(afcUnit):
             )
         return False
 
-    def _save_lane_value(self, lane, key: str, value) -> Optional[str]:
-        if lane is None or value is None:
+    def _read_config_value(self, section: Optional[str], key: str) -> Optional[str]:
+        if not section or not key:
             return None
-        section = getattr(lane, "fullname", None)
-        formatted = self._format_numeric_values((value,))
-        if not formatted:
-            formatted = str(value)
-        msg = f"\n{lane} {key}: Saved {formatted}"
-        if self._config_rewrite(section, key, formatted, msg):
-            return formatted
+
+        config_dir = getattr(self.afc, "cfgloc", None)
+        if not config_dir:
+            return None
+
+        try:
+            filenames = os.listdir(config_dir)
+        except Exception:
+            return None
+
+        section_pattern = re.compile(r"^\[\s*{}\s*\]".format(re.escape(section)))
+        key_pattern = re.compile(r"^{}\s*:\s*(.*)$".format(re.escape(key)), re.IGNORECASE)
+
+        for filename in filenames:
+            if not filename.endswith(".cfg"):
+                continue
+
+            path = os.path.join(config_dir, filename)
+            try:
+                with open(path, "r") as handle:
+                    in_section = False
+                    for line in handle:
+                        if line.startswith("["):
+                            in_section = bool(section_pattern.match(line))
+                            continue
+
+                        if not in_section:
+                            continue
+
+                        stripped = line.strip()
+                        if not stripped or stripped.startswith("#"):
+                            continue
+
+                        match = key_pattern.match(stripped)
+                        if match is None:
+                            continue
+
+                        value = match.group(1)
+                        comment_index = value.find("#")
+                        if comment_index != -1:
+                            value = value[:comment_index]
+                        return value.strip()
+            except Exception:
+                continue
+
         return None
 
     def _unit_config_sections(self) -> List[str]:
@@ -787,6 +852,16 @@ class afcAMS(afcUnit):
             sections.append(config_section)
 
         return [section for section in sections if section]
+
+    def _read_unit_numeric_values(self, key: str) -> Optional[List[float]]:
+        for section in self._unit_config_sections():
+            raw_value = self._read_config_value(section, key)
+            if raw_value is None:
+                continue
+            normalized = self._normalize_numeric_sequence(raw_value)
+            if normalized:
+                return normalized
+        return None
 
     def _save_unit_value(self, key: str, values) -> Optional[str]:
         formatted = self._format_numeric_values(values)
@@ -1399,12 +1474,39 @@ class afcAMS(afcUnit):
             )
             return
 
-        captured_values = self._extract_hub_hes_from_messages(captured_messages)
-        values_to_store = self._fetch_unit_numeric_values(
-            "hub_hes_value", "hub_hes_value"
-        )
+        calibration_result = self._extract_hub_hes_calibration_result(captured_messages)
+        if calibration_result is None:
+            captured_values = self._extract_hub_hes_from_messages(captured_messages)
+        else:
+            captured_values = None
 
-        if values_to_store is None:
+        values_to_store = None
+        if calibration_result is not None:
+            reported_index, measured_value = calibration_result
+            target_index = spool_index
+            if reported_index is not None:
+                target_index = reported_index
+
+            lane_count = self._expected_lane_count(target_index + 1)
+            current_values = self._read_unit_numeric_values("hub_hes_on")
+            if current_values is None:
+                current_values = self._fetch_unit_numeric_values(
+                    "hub_hes_value", "hub_hes_value"
+                )
+            if current_values is None:
+                current_values = [0.0] * lane_count
+
+            if not isinstance(current_values, list):
+                current_values = list(current_values)
+
+            if len(current_values) < lane_count:
+                filler = current_values[-1] if current_values else measured_value
+                current_values.extend([filler] * (lane_count - len(current_values)))
+
+            if 0 <= target_index < len(current_values):
+                current_values[target_index] = measured_value
+            values_to_store = current_values
+        elif captured_values:
             values_to_store = captured_values
 
         if values_to_store:
@@ -1437,23 +1539,31 @@ class afcAMS(afcUnit):
         captured_messages = self._run_command_with_capture(raw_command)
         captured_values = self._extract_ptfe_length_from_messages(captured_messages)
         lane_length_value = None
-        if lane is not None and captured_values:
+        if captured_values:
             if 0 <= spool_index < len(captured_values):
                 lane_length_value = captured_values[spool_index]
             elif len(captured_values) == 1:
                 lane_length_value = captured_values[0]
 
-        lane_value_str = None
-        if lane is not None and lane_length_value is not None:
-            lane_value_str = self._save_lane_value(lane, "ptfe_length", lane_length_value)
+        if lane_length_value is not None:
+            lane_count = self._expected_lane_count(spool_index + 1)
+            current_values = self._read_unit_numeric_values("ptfe_length")
+            if current_values is None:
+                current_values = []
 
-        if captured_values:
-            saved_unit_value = self._save_unit_value("ptfe_length", captured_values)
+            if not isinstance(current_values, list):
+                current_values = list(current_values)
+
+            if len(current_values) < lane_count:
+                filler = current_values[-1] if current_values else lane_length_value
+                current_values.extend([filler] * (lane_count - len(current_values)))
+
+            current_values[spool_index] = lane_length_value
+            saved_unit_value = self._save_unit_value("ptfe_length", current_values)
             if saved_unit_value:
-                if lane_value_str:
-                    lane_suffix = f" for {lane_name}" if lane_name else ""
+                if lane_name:
                     gcmd.respond_info(
-                        f"Stored OpenAMS PTFE length {lane_value_str}{lane_suffix} in your cfg."
+                        f"Stored OpenAMS PTFE length {saved_unit_value} for {lane_name} in your cfg."
                     )
                 else:
                     gcmd.respond_info(
@@ -1461,7 +1571,7 @@ class afcAMS(afcUnit):
                     )
                 return
 
-            formatted = self._format_numeric_values(captured_values)
+            formatted = self._format_numeric_values(current_values)
             if formatted:
                 gcmd.respond_info(
                     f"OpenAMS PTFE length {formatted} reported but could not be stored."
@@ -1808,6 +1918,23 @@ class afcAMS(afcUnit):
             if idx == spool_index:
                 return lane
         return None
+
+    def _expected_lane_count(self, minimum: int = 0) -> int:
+        lanes = getattr(self, "lanes", None)
+        try:
+            if isinstance(lanes, dict):
+                count = len(lanes)
+            else:
+                count = len(lanes)
+        except Exception:
+            count = 0
+
+        minimum = max(minimum, 0)
+        if count < minimum:
+            count = minimum
+        if count <= 0:
+            count = max(minimum, 4)
+        return count
 
     def _resolve_lane_reference(self, lane_name: Optional[str]):
         """Return a lane object by name (or alias), case-insensitively."""
