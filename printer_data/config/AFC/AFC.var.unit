@@ -24,7 +24,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -39,7 +39,7 @@
             "map": "T6",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
+            "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "ABS-GF",
             "density": 1.08,
@@ -50,9 +50,9 @@
             "weight": 888.3174933074396,
             "extruder_temp": 250,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -125,7 +125,7 @@
             "map": "T5",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
+            "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
@@ -136,8 +136,8 @@
             "weight": 925.3120106089228,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
@@ -234,7 +234,7 @@
             "hub": "direct_load",
             "extruder": "extruder",
             "buffer": "TN",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 1,
             "map": "T0",
             "load": true,
@@ -247,13 +247,13 @@
             "empty_spool_weight": 170.0,
             "spool_id": 42,
             "color": "#ffffff",
-            "weight": 939.3241255401947,
+            "weight": 938.6841050721338,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Loaded",
-            "dist_hub": 1970.0,
+            "status": "Tooled",
+            "dist_hub": 1940.0,
             "td1_data": {}
         },
         "lane1": {
@@ -262,7 +262,7 @@
             "hub": "direct_load",
             "extruder": "extruder1",
             "buffer": "TN1",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 2,
             "map": "T1",
             "load": true,
@@ -281,7 +281,7 @@
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
             "status": "Loaded",
-            "dist_hub": 2130.0,
+            "dist_hub": 2120.0,
             "td1_data": {}
         },
         "lane2": {
@@ -290,7 +290,7 @@
             "hub": "direct_load",
             "extruder": "extruder2",
             "buffer": "TN2",
-            "buffer_status": "Trailing",
+            "buffer_status": "Advancing",
             "lane": 3,
             "map": "T2",
             "load": true,
@@ -309,7 +309,7 @@
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
             "status": "Loaded",
-            "dist_hub": 1990.0,
+            "dist_hub": 2110.0,
             "td1_data": {}
         },
         "lane3": {
@@ -318,7 +318,7 @@
             "hub": "direct_load",
             "extruder": "extruder3",
             "buffer": "TN3",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 4,
             "map": "T3",
             "load": true,
@@ -337,7 +337,7 @@
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
             "status": "Loaded",
-            "dist_hub": 2225.0,
+            "dist_hub": 2230.0,
             "td1_data": {}
         }
     },
@@ -360,10 +360,10 @@
                 "lane_loaded": "lane3"
             },
             "extruder4": {
-                "lane_loaded": "lane6"
+                "lane_loaded": null
             },
             "extruder5": {
-                "lane_loaded": "lane5"
+                "lane_loaded": null
             }
         },
         "bypass": {
