@@ -631,22 +631,92 @@ class afcAMS(afcUnit):
         if not messages:
             return None
 
-        pattern = re.compile(
-            r"hub_hes[^0-9\-]*(-?[0-9]+(?:\.[0-9]+)?)",
-            re.IGNORECASE,
-        )
+        pattern = re.compile(r"-?[0-9]+(?:\.[0-9]+)?")
 
         extracted: List[float] = []
         for message in messages:
             if not isinstance(message, str):
                 continue
-            for match in pattern.finditer(message):
+
+            lowered = message.lower()
+            start = lowered.find("hub_hes")
+            if start == -1:
+                continue
+
+            for match in pattern.finditer(message[start:]):
                 try:
-                    extracted.append(float(match.group(1)))
+                    extracted.append(float(match.group(0)))
                 except (TypeError, ValueError):
                     continue
 
         return extracted or None
+
+    def _normalize_numeric_sequence(self, values) -> Optional[List[float]]:
+        if values is None:
+            return None
+
+        if isinstance(values, str):
+            matches = re.findall(r"-?[0-9]+(?:\.[0-9]+)?", values)
+            values = matches
+
+        if isinstance(values, (list, tuple)):
+            normalized: List[float] = []
+            for value in values:
+                if value is None:
+                    continue
+                try:
+                    normalized.append(float(value))
+                except (TypeError, ValueError):
+                    try:
+                        normalized.append(float(str(value).strip()))
+                    except (TypeError, ValueError):
+                        continue
+            return normalized or None
+
+        try:
+            return [float(values)]
+        except (TypeError, ValueError):
+            try:
+                return [float(str(values).strip())]
+            except (TypeError, ValueError):
+                return None
+
+    def _fetch_unit_numeric_values(
+        self,
+        status_key: str,
+        attr_name: str,
+        attempts: int = 3,
+        delay: float = 0.05,
+    ) -> Optional[List[float]]:
+        for attempt in range(max(attempts, 1)):
+            values = None
+
+            if self.hardware_service is not None:
+                try:
+                    status = self.hardware_service.poll_status()
+                except Exception:
+                    self.logger.exception("Failed to poll OpenAMS hardware status during calibration")
+                else:
+                    if status:
+                        values = status.get(status_key)
+                        normalized = self._normalize_numeric_sequence(values)
+                        if normalized:
+                            return normalized
+
+            if self.oams is not None:
+                values = getattr(self.oams, attr_name, None)
+                normalized = self._normalize_numeric_sequence(values)
+                if normalized:
+                    return normalized
+
+            if delay and hasattr(self.afc, "reactor"):
+                try:
+                    now = self.afc.reactor.monotonic()
+                    self.afc.reactor.pause(now + delay)
+                except Exception:
+                    break
+
+        return None
 
     def _format_numeric_values(self, values):
         if not values:
@@ -1330,15 +1400,22 @@ class afcAMS(afcUnit):
             return
 
         captured_values = self._extract_hub_hes_from_messages(captured_messages)
-        if captured_values:
-            saved_value = self._save_unit_value("hub_hes_on", captured_values)
+        values_to_store = self._fetch_unit_numeric_values(
+            "hub_hes_value", "hub_hes_value"
+        )
+
+        if values_to_store is None:
+            values_to_store = captured_values
+
+        if values_to_store:
+            saved_value = self._save_unit_value("hub_hes_on", values_to_store)
             if saved_value:
                 gcmd.respond_info(
                     f"Stored OpenAMS hub_hes_on {saved_value} in your cfg."
                 )
                 return
 
-            formatted = self._format_numeric_values(captured_values)
+            formatted = self._format_numeric_values(values_to_store)
             if formatted:
                 gcmd.respond_info(
                     f"OpenAMS hub_hes_on {formatted} reported but could not be stored."
