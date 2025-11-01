@@ -313,9 +313,6 @@ class afcAMS(afcUnit):
         """Prompt for calibrating HUB HES values via OpenAMS macros."""
 
         prompt = AFCprompt(gcmd, self.logger)
-        buttons = []
-        group_buttons = []
-        index = 0
         title = f"{self.name} Lane Calibration"
         text = (
             "Select a loaded lane from {} to calibrate HUB HES using OpenAMS. "
@@ -323,12 +320,30 @@ class afcAMS(afcUnit):
         ).format(self.name)
 
         lane_container = getattr(self, "lanes", None)
-        lane_values = []
         if isinstance(lane_container, Mapping):
             lane_values = list(lane_container.values())
+        elif hasattr(lane_container, "values"):
+            try:
+                lane_values = list(lane_container.values())
+            except Exception:
+                self.logger.exception(
+                    "Failed to enumerate OpenAMS lanes for calibration prompt"
+                )
+                lane_values = []
+        elif isinstance(lane_container, (list, tuple)):
+            lane_values = list(lane_container)
+        else:
+            lane_values = []
+
+        groups: List[List[tuple]] = []
+        current_group: List[tuple] = []
+        index = 0
 
         for lane in lane_values:
-            if not lane.load_state:
+            try:
+                if not getattr(lane, "load_state", False):
+                    continue
+            except Exception:
                 continue
 
             command = self._format_openams_calibration_command(
@@ -339,20 +354,20 @@ class afcAMS(afcUnit):
 
             button_label = "{}".format(lane)
             button_style = "primary" if index % 2 == 0 else "secondary"
-            group_buttons.append((button_label, command, button_style))
-
+            current_group.append((button_label, command, button_style))
             index += 1
-            if index % 4 == 0:
-                buttons.append(list(group_buttons))
-                group_buttons = []
 
-        if group_buttons:
-            buttons.append(list(group_buttons))
+            if index % 4 == 0:
+                groups.append(current_group)
+                current_group = []
+
+        if current_group:
+            groups.append(current_group)
 
         if index == 0:
             text = "No lanes are loaded, please load before calibration"
         elif index > 1:
-            buttons.insert(
+            groups.insert(
                 0,
                 [
                     (
@@ -365,15 +380,19 @@ class afcAMS(afcUnit):
 
         back = [("Back", "UNIT_CALIBRATION UNIT={}".format(self.name), "info")]
 
-        prompt.create_custom_p(title, text, None, True, buttons, back)
+        prompt.create_custom_p(
+            title,
+            text,
+            buttons=None,
+            cancel=True,
+            groups=groups if groups else None,
+            footer_buttons=back,
+        )
 
     def cmd_UNIT_BOW_CALIBRATION(self, gcmd):
         """Prompt for calibrating PTFE length for OpenAMS lanes."""
 
         prompt = AFCprompt(gcmd, self.logger)
-        buttons = []
-        group_buttons = []
-        index = 0
         title = f"OAMS PTFE Calibration {self.name}"
         text = (
             "Select a loaded lane from {} to calibrate PTFE length using OpenAMS. "
@@ -382,12 +401,30 @@ class afcAMS(afcUnit):
         ).format(self.name)
 
         lane_container = getattr(self, "lanes", None)
-        lane_values = []
         if isinstance(lane_container, Mapping):
             lane_values = list(lane_container.values())
+        elif hasattr(lane_container, "values"):
+            try:
+                lane_values = list(lane_container.values())
+            except Exception:
+                self.logger.exception(
+                    "Failed to enumerate OpenAMS lanes for PTFE calibration prompt"
+                )
+                lane_values = []
+        elif isinstance(lane_container, (list, tuple)):
+            lane_values = list(lane_container)
+        else:
+            lane_values = []
+
+        groups: List[List[tuple]] = []
+        current_group: List[tuple] = []
+        index = 0
 
         for lane in lane_values:
-            if not lane.load_state:
+            try:
+                if not getattr(lane, "load_state", False):
+                    continue
+            except Exception:
                 continue
 
             command = self._format_openams_calibration_command(
@@ -398,22 +435,29 @@ class afcAMS(afcUnit):
 
             button_label = "{}".format(lane)
             button_style = "primary" if index % 2 == 0 else "secondary"
-            group_buttons.append((button_label, command, button_style))
-
+            current_group.append((button_label, command, button_style))
             index += 1
-            if index % 4 == 0:
-                buttons.append(list(group_buttons))
-                group_buttons = []
 
-        if group_buttons:
-            buttons.append(list(group_buttons))
+            if index % 4 == 0:
+                groups.append(current_group)
+                current_group = []
+
+        if current_group:
+            groups.append(current_group)
 
         if index == 0:
             text = "No lanes are loaded, please load before calibration"
 
         back = [("Back", "UNIT_CALIBRATION UNIT={}".format(self.name), "info")]
 
-        prompt.create_custom_p(title, text, None, True, buttons, back)
+        prompt.create_custom_p(
+            title,
+            text,
+            buttons=None,
+            cancel=True,
+            groups=groups if groups else None,
+            footer_buttons=back,
+        )
 
     def _format_openams_calibration_command(self, base_command, lane):
         if base_command not in {
