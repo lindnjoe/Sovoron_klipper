@@ -12,8 +12,7 @@ import os
 import re
 import traceback
 from textwrap import dedent
-from typing import Dict, Optional, List, Tuple
-from types import MethodType
+from typing import Callable, Dict, Optional, List, Tuple
 
 from configparser import Error as ConfigError
 try: from extras.AFC_utils import ERROR_STR
@@ -38,7 +37,6 @@ except Exception:  # pragma: no cover - integration may be absent during import
     AMSRunoutCoordinator = None
 
 SYNC_INTERVAL = 2.0
-_MISSING = object()
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 
 class _VirtualRunoutHelper:
@@ -765,6 +763,32 @@ class afcAMS(afcUnit):
                 }
 
         return status
+
+    def _wait_for_openams_values(
+        self,
+        extractor: Callable[[Optional[Dict[str, object]]], Optional[List[float]]],
+        attempts: int = 5,
+        delay: float = 0.25,
+    ) -> Optional[List[float]]:
+        """Poll OpenAMS status until the extractor returns values."""
+
+        if not callable(extractor):
+            return None
+
+        tries = max(1, int(attempts))
+        for attempt in range(tries):
+            status = self._poll_openams_status()
+            values = extractor(status)
+            if values:
+                return values
+
+            if delay and attempt < tries - 1:
+                try:
+                    self.reactor.pause(self.reactor.monotonic() + delay)
+                except Exception:
+                    break
+
+        return None
 
     def _extract_hub_hes_calibration_values(
         self, status: Optional[Dict[str, object]]
@@ -1569,32 +1593,10 @@ class afcAMS(afcUnit):
         return value
 
     def _run_command_with_capture(self, command: str) -> List[str]:
-        """Execute a command while capturing respond_info messages."""
+        """Execute a command and return an empty capture list."""
 
-        captured: List[str] = []
-        respond_info = getattr(self.gcode, "respond_info", None)
-        if not callable(respond_info):
-            self.gcode.run_script_from_command(command)
-            return captured
-
-        original_attribute = self.gcode.__dict__.get("respond_info", _MISSING)
-
-        def _capture_messages(this, message, *args, **kwargs):
-            if isinstance(message, str):
-                captured.append(message)
-            return respond_info(message, *args, **kwargs)
-
-        self.gcode.respond_info = MethodType(_capture_messages, self.gcode)
-
-        try:
-            self.gcode.run_script_from_command(command)
-        finally:
-            if original_attribute is _MISSING:
-                self.gcode.__dict__.pop("respond_info", None)
-            else:
-                self.gcode.respond_info = original_attribute
-
-        return captured
+        self.gcode.run_script_from_command(command)
+        return []
 
     def _execute_hub_hes_calibration_command(
         self, gcmd, lane, oams_index: int, spool_index: int
@@ -1647,8 +1649,9 @@ class afcAMS(afcUnit):
             values_to_store = captured_values
 
         if values_to_store is None:
-            status = self._poll_openams_status()
-            status_values = self._extract_hub_hes_calibration_values(status)
+            status_values = self._wait_for_openams_values(
+                self._extract_hub_hes_calibration_values
+            )
             if status_values:
                 lane_count = self._expected_lane_count(
                     max(spool_index + 1, len(status_values))
@@ -1703,8 +1706,9 @@ class afcAMS(afcUnit):
                 lane_length_value = captured_values[0]
 
         if lane_length_value is None:
-            status = self._poll_openams_status()
-            status_values = self._extract_ptfe_calibration_values(status)
+            status_values = self._wait_for_openams_values(
+                self._extract_ptfe_calibration_values
+            )
             if status_values:
                 if 0 <= spool_index < len(status_values):
                     lane_length_value = status_values[spool_index]
