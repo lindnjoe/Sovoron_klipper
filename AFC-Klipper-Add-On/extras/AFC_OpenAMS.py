@@ -29,6 +29,8 @@ try: from extras.AFC_utils import add_filament_switch
 except: raise ConfigError(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
 try: import extras.AFC_extruder as _afc_extruder_mod
 except: raise ConfigError(ERROR_STR.format(import_lib="AFC_extruder", trace=traceback.format_exc()))
+try: from extras.AFC_respond import AFCprompt
+except: raise ConfigError(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
 
 try:  # pragma: no cover - optional at config parse time
     from extras.openams_integration import AMSHardwareService, AMSRunoutCoordinator
