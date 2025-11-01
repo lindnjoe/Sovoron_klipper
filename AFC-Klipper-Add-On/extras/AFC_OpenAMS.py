@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import traceback
 from textwrap import dedent
@@ -256,6 +255,7 @@ class afcAMS(afcUnit):
     def __init__(self, config):
         super().__init__(config)
         self.type = "OpenAMS"
+        self.config_section = config.get_name()
 
         # OpenAMS specific options
         self.oams_name = config.get("oams", "oams1")
@@ -293,6 +293,14 @@ class afcAMS(afcUnit):
             desc=self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL_help,
         )
 
+        self.gcode.register_mux_command(
+            "AFC_OAMS_CALIBRATE_HUB_HES",
+            "UNIT",
+            self.name,
+            self.cmd_AFC_OAMS_CALIBRATE_HUB_HES,
+            desc=self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_help,
+        )
+
         self._register_sync_dispatcher()
         self.gcode.register_mux_command(
             "AFC_OAMS_CALIBRATE_PTFE",
@@ -301,6 +309,8 @@ class afcAMS(afcUnit):
             self.cmd_AFC_OAMS_CALIBRATE_PTFE,
             desc=self.cmd_AFC_OAMS_CALIBRATE_PTFE_help,
         )
+
+        self._config_writer = getattr(self.afc.function, "ConfigRewrite", None)
 
     cmd_UNIT_CALIBRATION_help = (
         "open prompt to calibrate OpenAMS HUB HES or PTFE length values"
@@ -492,6 +502,43 @@ class afcAMS(afcUnit):
                 f"{skipped_lanes}."
             )
 
+    cmd_AFC_OAMS_CALIBRATE_HUB_HES_help = (
+        "calibrate the OpenAMS HUB HES value for the specified lane and save the result"
+    )
+
+    def cmd_AFC_OAMS_CALIBRATE_HUB_HES(self, gcmd):
+        prompt = AFCprompt(gcmd, self.logger)
+        prompt.p_end()
+
+        spool_index = gcmd.get_int("SPOOL", None)
+        max_index = len(self.lanes) - 1 if isinstance(self.lanes, dict) else None
+        max_label = max_index if max_index is not None and max_index >= 0 else 3
+        if (
+            spool_index is None
+            or spool_index < 0
+            or (max_index is not None and spool_index > max_index)
+        ):
+            gcmd.respond_info(
+                f"AFC_OAMS_CALIBRATE_HUB_HES requires a SPOOL parameter between 0-{max_label}"
+            )
+            return
+
+        lane = self._lane_for_spool_index(spool_index)
+        if lane is None or not getattr(lane, "load_state", False):
+            gcmd.respond_info(
+                "Select a loaded OpenAMS lane before calibrating HUB HES values."
+            )
+            return
+
+        oams_index = self._get_openams_index()
+        if oams_index is None:
+            gcmd.respond_info(
+                f"{self.name} is not mapped to an OpenAMS index for HUB HES calibration"
+            )
+            return
+
+        self._execute_hub_hes_calibration_command(gcmd, lane, oams_index, spool_index)
+
     def _get_openams_index(self):
         oams_name = getattr(self, "oams_name", None)
         if not oams_name:
@@ -529,7 +576,16 @@ class afcAMS(afcUnit):
         return f"{base_command} OAMS={oams_index} SPOOL={spool_index}"
 
     def _format_hub_hes_calibration_command(self, lane):
-        return self._format_openams_calibration_command("OAMS_CALIBRATE_HUB_HES", lane)
+        spool_index = self._get_openams_spool_index(lane)
+        if spool_index is None:
+            lane_name = getattr(lane, "name", lane)
+            self.logger.warning(
+                "Unable to format OpenAMS HUB HES calibration command for lane %s on unit %s",
+                lane_name,
+                self.name,
+            )
+            return None
+        return f"AFC_OAMS_CALIBRATE_HUB_HES UNIT={self.name} SPOOL={spool_index}"
 
     def _format_ptfe_length_calibration_command(self, lane):
         spool_index = self._get_openams_spool_index(lane)
@@ -779,6 +835,27 @@ class afcAMS(afcUnit):
 
         return extracted or None
 
+    def _extract_hub_hes_from_messages(self, messages: List[str]) -> Optional[List[float]]:
+        if not messages:
+            return None
+
+        pattern = re.compile(
+            r"hub_hes[^0-9\-]*(-?[0-9]+(?:\.[0-9]+)?)",
+            re.IGNORECASE,
+        )
+
+        extracted: List[float] = []
+        for message in messages:
+            if not isinstance(message, str):
+                continue
+            for match in pattern.finditer(message):
+                try:
+                    extracted.append(float(match.group(1)))
+                except (TypeError, ValueError):
+                    continue
+
+        return extracted or None
+
     def _format_numeric_values(self, values):
         if not values:
             return None
@@ -798,82 +875,59 @@ class afcAMS(afcUnit):
                 formatted.append(f"{number:.6f}".rstrip("0").rstrip("."))
         return ", ".join(formatted) if formatted else None
 
-    def _write_lane_config_value(self, lane, key, value):
+    def _config_rewrite(self, section: Optional[str], key: str, value: str, msg: str = "") -> bool:
+        if not section or not key or value is None:
+            return False
+        if not callable(self._config_writer):
+            self._config_writer = getattr(self.afc.function, "ConfigRewrite", None)
+        if not callable(self._config_writer):
+            return False
+        try:
+            self._config_writer(section, key, value, msg)
+            return True
+        except Exception:
+            self.logger.exception(
+                "Failed to persist %s to section %s for unit %s", key, section, self.name
+            )
+        return False
+
+    def _save_lane_value(self, lane, key: str, value) -> Optional[str]:
         if lane is None or value is None:
-            return
+            return None
+        section = getattr(lane, "fullname", None)
+        formatted = self._format_numeric_values((value,))
+        if not formatted:
+            formatted = str(value)
+        msg = f"\n{lane} {key}: Saved {formatted}"
+        if self._config_rewrite(section, key, formatted, msg):
+            return formatted
+        return None
 
-        afc_function = getattr(self.afc, "function", None)
-        if afc_function is None:
-            return
+    def _save_unit_value(self, key: str, values) -> Optional[str]:
+        formatted = self._format_numeric_values(values)
+        if not formatted:
+            return None
+        msg = f"\n{self.name} {key}: Saved {formatted}"
+        if self._config_rewrite(self.config_section, key, formatted, msg):
+            return formatted
+        return None
 
-        section_name = getattr(lane, "fullname", None)
-        if not section_name:
-            return
-
-        formatted_value = self._format_numeric_values((value,))
-        if not formatted_value:
-            formatted_value = str(value)
-
-        msg = f"\n{lane} {key}: New: {formatted_value}"
-
-        config_writer = getattr(afc_function, "ConfigRewrite", None)
-        if not callable(config_writer):
-            return
-
-        try:
-            config_writer(section_name, key, formatted_value, msg)
-        except Exception:
-            lane_name = getattr(lane, "name", lane)
-            self.logger.exception(
-                "Failed to persist %s to lane config for %s", key, lane_name
-            )
-
-    def _write_openams_config_value(self, key, value):
-        if not value:
-            return
-        afc_function = getattr(self.afc, "function", None)
-        if afc_function is None:
-            return
-
-        full_name_tokens = getattr(self, "full_name", None)
-        if isinstance(full_name_tokens, (list, tuple)):
-            section_name = " ".join(
-                str(token) for token in full_name_tokens if token is not None
-            )
-        else:
-            section_name = None
-
-        if not section_name:
-            if self.oams_name:
-                section_name = f"oams {self.oams_name}"
-            else:
-                return
-
-        msg = f"\n{self.name} {key}: New: {value}"
-
-        config_writer = getattr(afc_function, "ConfigRewrite", None)
-        if not callable(config_writer):
-            return
-
-        try:
-            config_writer(section_name, key, value, msg)
-        except Exception:
-            self.logger.exception(
-                "Failed to persist %s to oams config for unit %s", key, self.name
-            )
-
-    def _persist_openams_calibration_results(self, status):
-        hub_values = self._extract_hub_hes_calibration_values(status)
-        if hub_values:
-            formatted = self._format_numeric_values(hub_values)
-            if formatted:
-                self._write_openams_config_value("hub_hes_on", formatted)
-
-        ptfe_values = self._extract_ptfe_calibration_values(status)
-        if ptfe_values:
-            formatted = self._format_numeric_values(ptfe_values)
-            if formatted:
-                self._write_openams_config_value("ptfe_length", formatted)
+    def _fetch_openams_status(self):
+        status = None
+        if self.hardware_service is not None:
+            try:
+                status = self.hardware_service.poll_status()
+                if status is None:
+                    self.oams = self.hardware_service.resolve_controller()
+            except Exception:
+                status = None
+        elif self.oams is not None:
+            status = {
+                "hub_hes_value": getattr(self.oams, "hub_hes_value", None),
+                "hub_hes_on": getattr(self.oams, "hub_hes_on", None),
+                "ptfe_length": getattr(self.oams, "ptfe_length", None),
+            }
+        return status
 
     cmd_UNIT_BOW_CALIBRATION_help = (
         "open prompt to calibrate OpenAMS PTFE lengths"
@@ -1459,6 +1513,48 @@ class afcAMS(afcUnit):
 
         return captured
 
+    def _execute_hub_hes_calibration_command(
+        self, gcmd, lane, oams_index: int, spool_index: int
+    ):
+        lane_name = getattr(lane, "name", None)
+        raw_command = f"OAMS_CALIBRATE_HUB_HES OAMS={oams_index} SPOOL={spool_index}"
+
+        try:
+            captured_messages = self._run_command_with_capture(raw_command)
+        except Exception:
+            self.logger.exception(
+                "Failed to execute OpenAMS HUB HES calibration for lane %s", lane
+            )
+            gcmd.respond_info(
+                f"Failed to execute HUB HES calibration for {lane_name or 'lane'}. See logs."
+            )
+            return
+
+        saved_value = None
+
+        status = self._fetch_openams_status()
+        if status:
+            hub_values = self._extract_hub_hes_calibration_values(status)
+            if hub_values:
+                saved_value = self._save_unit_value("hub_hes_on", hub_values)
+
+        if not saved_value:
+            captured_values = self._extract_hub_hes_from_messages(captured_messages)
+            if captured_values:
+                saved_value = self._save_unit_value("hub_hes_on", captured_values)
+
+        if saved_value:
+            gcmd.respond_info(
+                f"Stored OpenAMS hub_hes_on {saved_value} in your cfg."
+            )
+            return
+
+        gcmd.respond_info(
+            "Completed {} but no HUB HES value was reported. Check OpenAMS status logs.".format(
+                raw_command
+            )
+        )
+
     def _execute_ptfe_calibration_command(self, gcmd, oams_index: int, spool_index: int):
         """Run the PTFE calibration macro then persist the reported value."""
 
@@ -1474,16 +1570,20 @@ class afcAMS(afcUnit):
             elif len(captured_values) == 1:
                 lane_length_value = captured_values[0]
 
-        formatted_capture = None
+        saved_unit_value = None
         if captured_values:
-            formatted_capture = self._format_numeric_values(captured_values)
-            if formatted_capture:
-                self._write_openams_config_value("ptfe_length", formatted_capture)
+            saved_unit_value = self._save_unit_value("ptfe_length", captured_values)
+
+        if not saved_unit_value:
+            status = self._fetch_openams_status()
+            if status:
+                ptfe_status_values = self._extract_ptfe_calibration_values(status)
+                if ptfe_status_values:
+                    saved_unit_value = self._save_unit_value("ptfe_length", ptfe_status_values)
 
         lane_value_str = None
         if lane is not None and lane_length_value is not None:
-            self._write_lane_config_value(lane, "ptfe_length", lane_length_value)
-            lane_value_str = self._format_numeric_values((lane_length_value,))
+            lane_value_str = self._save_lane_value(lane, "ptfe_length", lane_length_value)
 
         if lane_value_str:
             lane_suffix = f" for {lane_name}" if lane_name else ""
@@ -1492,9 +1592,9 @@ class afcAMS(afcUnit):
             )
             return
 
-        if formatted_capture:
+        if saved_unit_value:
             gcmd.respond_info(
-                f"Stored OpenAMS PTFE length {formatted_capture} in your cfg."
+                f"Stored OpenAMS PTFE length {saved_unit_value} in your cfg."
             )
             return
 
@@ -1745,13 +1845,6 @@ class afcAMS(afcUnit):
 
             if not status:
                 return eventtime + self.interval
-
-            try:
-                self._persist_openams_calibration_results(status)
-            except Exception:
-                self.logger.exception(
-                    "Failed to persist OpenAMS calibration data for %s", self.name
-                )
 
             encoder_clicks = status.get("encoder_clicks")
             try:
