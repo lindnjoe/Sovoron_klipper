@@ -321,7 +321,13 @@ class afcAMS(afcUnit):
             "Command: OAMS_CALIBRATE_HUB_HES"
         ).format(self.name)
 
-        for lane in self.lanes.values():
+        lanes = getattr(self, "lanes", {})
+        if isinstance(lanes, dict):
+            lane_iterable = lanes.values()
+        else:
+            lane_iterable = lanes or []
+
+        for lane in lane_iterable:
             if not getattr(lane, "load_state", False):
                 continue
 
@@ -376,7 +382,13 @@ class afcAMS(afcUnit):
             "Command: OAMS_CALIBRATE_PTFE_LENGTH"
         ).format(self.name)
 
-        for lane in self.lanes.values():
+        lanes = getattr(self, "lanes", {})
+        if isinstance(lanes, dict):
+            lane_iterable = lanes.values()
+        else:
+            lane_iterable = lanes or []
+
+        for lane in lane_iterable:
             if not getattr(lane, "load_state", False):
                 continue
             is_direct_hub = getattr(lane, "is_direct_hub", None)
