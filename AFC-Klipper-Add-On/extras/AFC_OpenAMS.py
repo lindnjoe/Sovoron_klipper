@@ -1218,11 +1218,11 @@ class afcAMS(afcUnit):
 
             if isinstance(hub_values, (list, tuple)):
                 try:
-                    self._last_hub_hes_values = [
-                        float(value) for value in hub_values
-                    ]
+                    parsed_hub_values = [float(value) for value in hub_values]
                 except (TypeError, ValueError):
-                    pass
+                    parsed_hub_values = None
+                if parsed_hub_values:
+                    self._last_hub_hes_values = parsed_hub_values
 
             if isinstance(ptfe_values, (list, tuple)):
                 try:
@@ -1653,35 +1653,29 @@ class afcAMS(afcUnit):
             return False
 
         hub_values = self._parse_hub_hes_messages(messages)
-        value = hub_values.get(spool_index)
-        if value is None and hub_values:
-            # Fall back to the last value reported if index is missing.
-            try:
-                last_index = next(reversed(list(hub_values.keys())))
-                value = hub_values.get(last_index)
-            except StopIteration:
-                value = None
-
-        if value is None:
+        if not hub_values:
             gcmd.respond_info(
                 f"Completed {command} but no HUB HES value was reported. Check OpenAMS status logs."
             )
             return False
 
         current_values = self._last_hub_hes_values
-        if current_values is None:
+        if not current_values:
             current_values = self._read_config_sequence("hub_hes_on")
 
-        if current_values is None:
+        if not current_values:
             gcmd.respond_info(
                 "Could not find hub_hes_on in your cfg; update the value manually."
             )
             return False
 
         values = list(current_values)
-        while len(values) <= spool_index:
-            values.append(0.0)
-        values[spool_index] = value
+        updated_indices = []
+        for index, parsed_value in sorted(hub_values.items()):
+            while len(values) <= index:
+                values.append(0.0)
+            values[index] = parsed_value
+            updated_indices.append(index)
 
         formatted = self._format_sequence(values)
         if not formatted:
@@ -1695,9 +1689,19 @@ class afcAMS(afcUnit):
             return False
 
         self._last_hub_hes_values = values
-        gcmd.respond_info(
-            f"Stored OpenAMS hub_hes_on {formatted} in your cfg."
-        )
+
+        if updated_indices:
+            if len(updated_indices) == 1:
+                index_text = f"index {updated_indices[0]}"
+            else:
+                index_text = "indices " + ", ".join(str(i) for i in updated_indices)
+            gcmd.respond_info(
+                f"Stored OpenAMS hub_hes_on {formatted} in your cfg (updated {index_text})."
+            )
+        else:
+            gcmd.respond_info(
+                f"Stored OpenAMS hub_hes_on {formatted} in your cfg."
+            )
         return True
 
     def _calibrate_ptfe_spool(self, spool_index, gcmd, lane_name=None):
