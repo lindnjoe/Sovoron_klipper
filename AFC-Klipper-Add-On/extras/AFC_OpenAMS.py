@@ -659,7 +659,7 @@ class afcAMS(afcUnit):
             return None
 
         pattern = re.compile(
-            r"calibrated\s+hes\s+(\d+)\s+to\s+(-?[0-9]+(?:\.[0-9]+)?)",
+            r"calibrated\s+hes\s*#?\s*(\d+)\s*to\s*(-?[0-9]+(?:\.[0-9]+)?)",
             re.IGNORECASE,
         )
 
@@ -707,43 +707,6 @@ class afcAMS(afcUnit):
                 return [float(str(values).strip())]
             except (TypeError, ValueError):
                 return None
-
-    def _fetch_unit_numeric_values(
-        self,
-        status_key: str,
-        attr_name: str,
-        attempts: int = 3,
-        delay: float = 0.05,
-    ) -> Optional[List[float]]:
-        for attempt in range(max(attempts, 1)):
-            values = None
-
-            if self.hardware_service is not None:
-                try:
-                    status = self.hardware_service.poll_status()
-                except Exception:
-                    self.logger.exception("Failed to poll OpenAMS hardware status during calibration")
-                else:
-                    if status:
-                        values = status.get(status_key)
-                        normalized = self._normalize_numeric_sequence(values)
-                        if normalized:
-                            return normalized
-
-            if self.oams is not None:
-                values = getattr(self.oams, attr_name, None)
-                normalized = self._normalize_numeric_sequence(values)
-                if normalized:
-                    return normalized
-
-            if delay and hasattr(self.afc, "reactor"):
-                try:
-                    now = self.afc.reactor.monotonic()
-                    self.afc.reactor.pause(now + delay)
-                except Exception:
-                    break
-
-        return None
 
     def _format_numeric_values(self, values):
         if not values:
@@ -868,7 +831,17 @@ class afcAMS(afcUnit):
         if not formatted:
             return None
         msg = f"\n{self.name} {key}: Saved {formatted}"
-        for section in self._unit_config_sections():
+        sections = self._unit_config_sections()
+        prioritized: List[str] = []
+        fallbacks: List[str] = []
+        for section in sections:
+            normalized = section.lower()
+            if normalized.startswith("oams "):
+                prioritized.append(section)
+            else:
+                fallbacks.append(section)
+
+        for section in prioritized + fallbacks:
             if self._config_rewrite(section, key, formatted, msg):
                 return formatted
         return None
@@ -1489,10 +1462,6 @@ class afcAMS(afcUnit):
 
             lane_count = self._expected_lane_count(target_index + 1)
             current_values = self._read_unit_numeric_values("hub_hes_on")
-            if current_values is None:
-                current_values = self._fetch_unit_numeric_values(
-                    "hub_hes_value", "hub_hes_value"
-                )
             if current_values is None:
                 current_values = [0.0] * lane_count
 
