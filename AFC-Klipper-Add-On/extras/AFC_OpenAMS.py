@@ -457,20 +457,20 @@ class afcAMS(afcUnit):
             )
             return
 
-        calibrations: List[Tuple[object, str]] = []
+        calibrations: List[Tuple[object, int]] = []
         skipped: List[str] = []
 
         for lane in self.lanes.values():
             if not getattr(lane, "load_state", False):
                 continue
 
-            command = self._format_hub_hes_calibration_command(lane)
-            if not command:
+            spool_index = self._get_openams_spool_index(lane)
+            if spool_index is None:
                 lane_name = getattr(lane, "name", str(lane))
                 skipped.append(lane_name)
                 continue
 
-            calibrations.append((lane, command))
+            calibrations.append((lane, spool_index))
 
         if not calibrations:
             gcmd.respond_info(
@@ -478,25 +478,25 @@ class afcAMS(afcUnit):
             )
             return
 
+        oams_index = self._get_openams_index()
+        if oams_index is None:
+            gcmd.respond_info(
+                f"{self.name} is not mapped to an OpenAMS index for HUB HES calibration"
+            )
+            return
+
         successful = 0
 
-        for lane, command in calibrations:
+        for lane, spool_index in calibrations:
             lane_name = getattr(lane, "name", str(lane))
+            command = f"AFC_OAMS_CALIBRATE_HUB_HES UNIT={self.name} SPOOL={spool_index}"
             gcmd.respond_info(
                 f"Running HUB HES calibration for {lane_name} with '{command}'."
             )
-            try:
-                self.gcode.run_script_from_command(command)
-            except Exception:
-                self.logger.exception(
-                    "Failed to execute OpenAMS HUB HES calibration for lane %s", lane
-                )
-                gcmd.respond_info(
-                    f"Failed to execute HUB HES calibration for {lane_name}. See logs."
-                )
-                continue
-
-            successful += 1
+            if self._execute_hub_hes_calibration_command(
+                gcmd, lane, oams_index, spool_index
+            ):
+                successful += 1
 
         gcmd.respond_info(
             f"Completed HUB HES calibration for {successful} OpenAMS lane(s)."
@@ -1432,12 +1432,14 @@ class afcAMS(afcUnit):
 
     def _execute_hub_hes_calibration_command(
         self, gcmd, lane, oams_index: int, spool_index: int
-    ):
+    ) -> bool:
         lane_name = getattr(lane, "name", None)
         raw_command = f"OAMS_CALIBRATE_HUB_HES OAMS={oams_index} SPOOL={spool_index}"
 
+        command_executed = False
         try:
             captured_messages = self._run_command_with_capture(raw_command)
+            command_executed = True
         except Exception:
             self.logger.exception(
                 "Failed to execute OpenAMS HUB HES calibration for lane %s", lane
@@ -1445,7 +1447,7 @@ class afcAMS(afcUnit):
             gcmd.respond_info(
                 f"Failed to execute HUB HES calibration for {lane_name or 'lane'}. See logs."
             )
-            return
+            return False
 
         calibration_result = self._extract_hub_hes_calibration_result(captured_messages)
         if calibration_result is None:
@@ -1484,28 +1486,33 @@ class afcAMS(afcUnit):
                 gcmd.respond_info(
                     f"Stored OpenAMS hub_hes_on {saved_value} in your cfg."
                 )
-                return
+                return True
 
             formatted = self._format_numeric_values(values_to_store)
             if formatted:
                 gcmd.respond_info(
                     f"OpenAMS hub_hes_on {formatted} reported but could not be stored."
                 )
-                return
+                return command_executed
 
         gcmd.respond_info(
             "Completed {} but no HUB HES value was reported. Check OpenAMS status logs.".format(
                 raw_command
             )
         )
+        return command_executed
 
-    def _execute_ptfe_calibration_command(self, gcmd, oams_index: int, spool_index: int):
+    def _execute_ptfe_calibration_command(
+        self, gcmd, oams_index: int, spool_index: int
+    ) -> bool:
         """Run the PTFE calibration macro then persist the reported value."""
 
         lane = self._lane_for_spool_index(spool_index)
         lane_name = getattr(lane, "name", None)
         raw_command = f"OAMS_CALIBRATE_PTFE_LENGTH OAMS={oams_index} SPOOL={spool_index}"
+        command_executed = False
         captured_messages = self._run_command_with_capture(raw_command)
+        command_executed = True
         captured_values = self._extract_ptfe_length_from_messages(captured_messages)
         lane_length_value = None
         if captured_values:
@@ -1538,20 +1545,21 @@ class afcAMS(afcUnit):
                     gcmd.respond_info(
                         f"Stored OpenAMS PTFE length {saved_unit_value} in your cfg."
                     )
-                return
+                return True
 
             formatted = self._format_numeric_values(current_values)
             if formatted:
                 gcmd.respond_info(
                     f"OpenAMS PTFE length {formatted} reported but could not be stored."
                 )
-                return
+                return command_executed
 
         gcmd.respond_info(
             "Completed {} but no PTFE length was reported. Check OpenAMS status logs.".format(
                 raw_command
             )
         )
+        return command_executed
 
     cmd_AFC_OAMS_CALIBRATE_PTFE_help = (
         "calibrate the OpenAMS PTFE length for the specified lane and save the result"
