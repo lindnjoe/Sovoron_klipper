@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import traceback
@@ -279,6 +280,7 @@ class afcAMS(afcUnit):
         self._last_encoder_clicks: Optional[int] = None
         self._last_hub_hes_string: Optional[str] = None
         self._last_ptfe_string: Optional[str] = None
+        self._last_lane_ptfe_lengths: Dict[str, float] = {}
         self.oams = None
         self.hardware_service = None
 
@@ -789,6 +791,84 @@ class afcAMS(afcUnit):
                 formatted.append(f"{number:.6f}".rstrip("0").rstrip("."))
         return ", ".join(formatted) if formatted else None
 
+    def _persist_lane_ptfe_length(self, lane, new_length) -> bool:
+        """Persist a calibrated PTFE length to the lane's hub configuration."""
+
+        if lane is None:
+            return False
+
+        hub = getattr(lane, "hub_obj", None)
+        if hub is None:
+            return False
+
+        try:
+            numeric_length = float(new_length)
+        except (TypeError, ValueError):
+            return False
+
+        if not math.isfinite(numeric_length) or numeric_length <= 0.0:
+            return False
+
+        lane_key = getattr(lane, "name", None) or str(lane)
+        tolerance = 1e-3
+        last_saved = self._last_lane_ptfe_lengths.get(lane_key)
+        if last_saved is not None and abs(last_saved - numeric_length) <= tolerance:
+            return False
+
+        previous_unload = getattr(hub, "afc_unload_bowden_length", None)
+        previous_bowden = getattr(hub, "afc_bowden_length", None)
+
+        try:
+            hub.afc_unload_bowden_length = numeric_length
+            if hasattr(hub, "afc_bowden_length"):
+                hub.afc_bowden_length = numeric_length
+        except Exception:
+            self.logger.exception(
+                "Failed to update hub bowden lengths for lane %s", lane_key
+            )
+
+        hub_fullname = getattr(hub, "fullname", None)
+        afc_function = getattr(self.afc, "function", None)
+        config_writer = getattr(afc_function, "ConfigRewrite", None)
+
+        formatted_new = self._format_numeric_values([numeric_length]) or str(
+            numeric_length
+        )
+        unload_msg = f"\n afc_unload_bowden_length: New: {formatted_new}"
+        if previous_unload is not None:
+            formatted_previous_unload = self._format_numeric_values(
+                [previous_unload]
+            )
+            if formatted_previous_unload:
+                unload_msg += f" Old: {formatted_previous_unload}"
+
+        bowden_msg = f"\n afc_bowden_length: New: {formatted_new}"
+        if previous_bowden is not None:
+            formatted_previous_bowden = self._format_numeric_values([previous_bowden])
+            if formatted_previous_bowden:
+                bowden_msg += f" Old: {formatted_previous_bowden}"
+
+        persisted = False
+        if callable(config_writer) and hub_fullname:
+            try:
+                config_writer(hub_fullname, "afc_bowden_length", numeric_length, bowden_msg)
+                config_writer(
+                    hub_fullname,
+                    "afc_unload_bowden_length",
+                    numeric_length,
+                    unload_msg,
+                )
+                persisted = True
+            except Exception:
+                self.logger.exception(
+                    "Failed to persist PTFE length for lane %s", lane_key
+                )
+
+        if persisted:
+            self._last_lane_ptfe_lengths[lane_key] = numeric_length
+
+        return persisted
+
     def _rewrite_oams_config_file(
         self, section_name: str, key: str, value: str, msg: str
     ) -> bool:
@@ -796,64 +876,75 @@ class afcAMS(afcUnit):
         if not config_dir:
             return False
 
-        config_path = os.path.join(config_dir, "oamsc.cfg")
-        if not os.path.isfile(config_path):
-            return False
-
         try:
-            with open(config_path, "r", encoding="utf-8") as cfg_file:
-                lines = cfg_file.readlines()
+            config_files = sorted(
+                os.path.join(config_dir, filename)
+                for filename in os.listdir(config_dir)
+                if filename.lower().endswith(".cfg")
+            )
         except Exception:
             return False
 
         header = f"[{section_name}]".strip().lower()
         key_pattern = re.compile(rf"\s*{re.escape(key)}\s*:")
 
-        in_section = False
-        updated = False
-        output_lines = []
+        for config_path in config_files:
+            if not os.path.isfile(config_path):
+                continue
 
-        for raw_line in lines:
-            line = raw_line.rstrip("\n")
-            stripped = line.strip()
+            try:
+                with open(config_path, "r", encoding="utf-8") as cfg_file:
+                    lines = cfg_file.readlines()
+            except Exception:
+                continue
 
-            if stripped.startswith("[") and stripped.endswith("]"):
-                if in_section and not updated:
-                    output_lines.append(f"{key}:{value}")
+            in_section = False
+            updated = False
+            output_lines = []
+
+            for raw_line in lines:
+                line = raw_line.rstrip("\n")
+                stripped = line.strip()
+
+                if stripped.startswith("[") and stripped.endswith("]"):
+                    if in_section and not updated:
+                        output_lines.append(f"{key}:{value}")
+                        updated = True
+                    in_section = stripped.lower() == header
+                    output_lines.append(line)
+                    continue
+
+                if in_section and key_pattern.match(line):
+                    comment = ""
+                    if "#" in line:
+                        comment_index = line.index("#")
+                        comment = line[comment_index:].strip()
+                    new_line = f"{key}:{value}"
+                    if comment:
+                        new_line = f"{new_line} {comment}"
+                    output_lines.append(new_line)
                     updated = True
-                in_section = stripped.lower() == header
+                    continue
+
                 output_lines.append(line)
-                continue
 
-            if in_section and key_pattern.match(line):
-                comment = ""
-                if "#" in line:
-                    comment_index = line.index("#")
-                    comment = line[comment_index:].strip()
-                new_line = f"{key}:{value}"
-                if comment:
-                    new_line = f"{new_line} {comment}"
-                output_lines.append(new_line)
+            if in_section and not updated:
+                output_lines.append(f"{key}:{value}")
                 updated = True
+
+            if not updated:
                 continue
 
-            output_lines.append(line)
+            try:
+                with open(config_path, "w", encoding="utf-8") as cfg_file:
+                    cfg_file.write("\n".join(output_lines) + "\n")
+            except Exception:
+                continue
 
-        if in_section and not updated:
-            output_lines.append(f"{key}:{value}")
-            updated = True
+            self.logger.info(msg)
+            return True
 
-        if not updated:
-            return False
-
-        try:
-            with open(config_path, "w", encoding="utf-8") as cfg_file:
-                cfg_file.write("\n".join(output_lines) + "\n")
-        except Exception:
-            return False
-
-        self.logger.info(msg)
-        return True
+        return False
 
     def _write_openams_config_value(self, key, value, previous_string=None):
         if not value:
@@ -901,6 +992,17 @@ class afcAMS(afcUnit):
                 )
             if formatted:
                 self._last_ptfe_string = formatted
+            for lane in self.lanes.values():
+                spool_index = self._get_openams_spool_index(lane)
+                if spool_index is None:
+                    continue
+                try:
+                    lane_value = ptfe_values[spool_index]
+                except (IndexError, TypeError):
+                    continue
+                if lane_value is None:
+                    continue
+                self._persist_lane_ptfe_length(lane, lane_value)
 
     cmd_UNIT_BOW_CALIBRATION_help = (
         "open prompt to calibrate OpenAMS PTFE lengths"
@@ -1536,6 +1638,16 @@ class afcAMS(afcUnit):
         raw_command = f"OAMS_CALIBRATE_PTFE_LENGTH OAMS={oams_index} SPOOL={spool_index}"
         captured_messages = self._run_command_with_capture(raw_command)
         captured_values = self._extract_ptfe_length_from_messages(captured_messages)
+        lane_length_value = None
+        lane_persisted = False
+        if lane is not None and captured_values:
+            if 0 <= spool_index < len(captured_values):
+                lane_length_value = captured_values[spool_index]
+            elif len(captured_values) == 1:
+                lane_length_value = captured_values[0]
+            if lane_length_value is not None:
+                lane_persisted = self._persist_lane_ptfe_length(lane, lane_length_value)
+
         formatted_capture = None
         if captured_values:
             formatted_capture = self._format_numeric_values(captured_values)
@@ -1552,6 +1664,15 @@ class afcAMS(afcUnit):
             gcmd.respond_info(
                 f"Stored OpenAMS PTFE length {formatted_capture}{lane_suffix} in oamsc.cfg."
             )
+            if lane_persisted and lane_length_value is not None:
+                hub_name = getattr(getattr(lane, "hub_obj", None), "name", None)
+                target_name = hub_name or lane_name or "hub"
+                formatted_lane = self._format_numeric_values([lane_length_value]) or str(
+                    lane_length_value
+                )
+                gcmd.respond_info(
+                    f"Saved bowden lengths of {formatted_lane}mm for {target_name} in configuration."
+                )
             return
 
         if self._last_ptfe_string:
@@ -1565,6 +1686,16 @@ class afcAMS(afcUnit):
                 "Completed {} but no PTFE length was reported. Check OpenAMS status logs.".format(
                     raw_command
                 )
+            )
+
+        if lane_persisted and lane_length_value is not None and not formatted_capture:
+            hub_name = getattr(getattr(lane, "hub_obj", None), "name", None)
+            target_name = hub_name or lane_name or "hub"
+            formatted_lane = self._format_numeric_values([lane_length_value]) or str(
+                lane_length_value
+            )
+            gcmd.respond_info(
+                f"Saved bowden lengths of {formatted_lane}mm for {target_name} in configuration."
             )
 
     @classmethod
