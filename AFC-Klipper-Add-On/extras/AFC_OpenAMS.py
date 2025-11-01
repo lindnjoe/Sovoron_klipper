@@ -1659,23 +1659,36 @@ class afcAMS(afcUnit):
             )
             return False
 
-        current_values = self._last_hub_hes_values
-        if not current_values:
-            current_values = self._read_config_sequence("hub_hes_on")
+        config_values = self._read_config_sequence("hub_hes_on")
+        if not config_values:
+            config_values = self._last_hub_hes_values or []
 
-        if not current_values:
+        if not config_values:
             gcmd.respond_info(
                 "Could not find hub_hes_on in your cfg; update the value manually."
             )
             return False
 
-        values = list(current_values)
+        values = list(config_values)
+        max_length = len(values)
         updated_indices = []
         for index, parsed_value in sorted(hub_values.items()):
-            while len(values) <= index:
-                values.append(0.0)
+            if index >= max_length:
+                gcmd.respond_info(
+                    "HUB HES calibration reported index {} but your cfg only "
+                    "defines {} value(s); update the remaining entries manually."
+                    .format(index, max_length)
+                )
+                continue
             values[index] = parsed_value
             updated_indices.append(index)
+
+        if not updated_indices:
+            gcmd.respond_info(
+                "Completed {} but no HUB HES value was stored; check your cfg."
+                .format(command)
+            )
+            return False
 
         formatted = self._format_sequence(values)
         if not formatted:
