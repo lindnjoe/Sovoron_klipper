@@ -652,6 +652,23 @@ class afcAMS(afcUnit):
 
         return extracted or None
 
+    def _values_look_binary(self, values) -> bool:
+        if not values:
+            return False
+
+        tolerance = 1e-3
+        for value in values:
+            if value is None:
+                continue
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return False
+            if abs(number) <= tolerance or abs(number - 1.0) <= tolerance:
+                continue
+            return False
+        return True
+
     def _extract_hub_hes_calibration_result(
         self, messages: List[str]
     ) -> Optional[Tuple[int, float]]:
@@ -707,6 +724,155 @@ class afcAMS(afcUnit):
                 return [float(str(values).strip())]
             except (TypeError, ValueError):
                 return None
+
+    def _poll_openams_status(self) -> Optional[Dict[str, object]]:
+        status = None
+        if self.hardware_service is not None:
+            try:
+                status = self.hardware_service.poll_status()
+            except Exception:
+                status = None
+
+            if status is None:
+                try:
+                    self.oams = self.hardware_service.resolve_controller()
+                except Exception:
+                    pass
+
+        controller = self.oams
+        if controller is None and self.hardware_service is not None:
+            try:
+                controller = self.hardware_service.resolve_controller()
+            except Exception:
+                controller = None
+
+        if status is None and controller is not None:
+            try:
+                direct_status = controller.get_status()  # type: ignore[attr-defined]
+            except Exception:
+                direct_status = None
+
+            if isinstance(direct_status, dict):
+                status = dict(direct_status)
+            else:
+                status = {
+                    "hub_hes_on": getattr(controller, "hub_hes_on", None),
+                    "hub_hes_value": getattr(controller, "hub_hes_value", None),
+                    "hub_hes_values": getattr(controller, "hub_hes_values", None),
+                    "ptfe_length": getattr(controller, "ptfe_length", None),
+                    "ptfe_lengths": getattr(controller, "ptfe_lengths", None),
+                    "calibration": getattr(controller, "calibration", None),
+                }
+
+        return status
+
+    def _extract_hub_hes_calibration_values(
+        self, status: Optional[Dict[str, object]]
+    ) -> Optional[List[float]]:
+        if not status:
+            return None
+
+        candidates: List[object] = []
+        for key in ("hub_hes_on", "hub_hes_value", "hub_hes_values"):
+            value = status.get(key)
+            if value is not None:
+                candidates.append(value)
+
+        calibration = status.get("calibration")
+        if isinstance(calibration, dict):
+            for key in ("hub_hes_on", "hub_hes_value", "hub_hes_values"):
+                value = calibration.get(key)
+                if value is not None:
+                    candidates.append(value)
+
+        controller = self.oams
+        if controller is None and self.hardware_service is not None:
+            try:
+                controller = self.hardware_service.resolve_controller()
+            except Exception:
+                controller = None
+
+        if controller is not None:
+            for attr in ("hub_hes_on", "hub_hes_value", "hub_hes_values"):
+                try:
+                    value = getattr(controller, attr)
+                except Exception:
+                    value = None
+                if value is not None:
+                    candidates.append(value)
+
+        for candidate in candidates:
+            normalized = self._normalize_numeric_sequence(candidate)
+            if not normalized:
+                continue
+            if self._values_look_binary(normalized):
+                continue
+            return normalized
+
+        return None
+
+    def _extract_ptfe_calibration_values(
+        self, status: Optional[Dict[str, object]]
+    ) -> Optional[List[float]]:
+        if not status:
+            return None
+
+        candidates: List[object] = []
+        for key in (
+            "ptfe_length",
+            "ptfe_lengths",
+            "ptfe_value",
+            "ptfe_values",
+            "bowden_length",
+            "bowden_lengths",
+        ):
+            value = status.get(key)
+            if value is not None:
+                candidates.append(value)
+
+        calibration = status.get("calibration")
+        if isinstance(calibration, dict):
+            for key in (
+                "ptfe_length",
+                "ptfe_lengths",
+                "ptfe_value",
+                "ptfe_values",
+                "bowden_length",
+                "bowden_lengths",
+            ):
+                value = calibration.get(key)
+                if value is not None:
+                    candidates.append(value)
+
+        controller = self.oams
+        if controller is None and self.hardware_service is not None:
+            try:
+                controller = self.hardware_service.resolve_controller()
+            except Exception:
+                controller = None
+
+        if controller is not None:
+            for attr in (
+                "ptfe_length",
+                "ptfe_lengths",
+                "ptfe_value",
+                "ptfe_values",
+                "bowden_length",
+                "bowden_lengths",
+            ):
+                try:
+                    value = getattr(controller, attr)
+                except Exception:
+                    value = None
+                if value is not None:
+                    candidates.append(value)
+
+        for candidate in candidates:
+            normalized = self._normalize_numeric_sequence(candidate)
+            if normalized:
+                return normalized
+
+        return None
 
     def _format_numeric_values(self, values):
         if not values:
@@ -1480,6 +1646,21 @@ class afcAMS(afcUnit):
         elif captured_values:
             values_to_store = captured_values
 
+        if values_to_store is None:
+            status = self._poll_openams_status()
+            status_values = self._extract_hub_hes_calibration_values(status)
+            if status_values:
+                lane_count = self._expected_lane_count(
+                    max(spool_index + 1, len(status_values))
+                )
+                values_to_store = list(status_values)
+                if len(values_to_store) < lane_count:
+                    filler = values_to_store[-1] if values_to_store else 0.0
+                    values_to_store.extend([filler] * (lane_count - len(values_to_store)))
+                if 0 <= spool_index < len(values_to_store):
+                    measured_value = values_to_store[spool_index]
+                    values_to_store[spool_index] = measured_value
+
         if values_to_store:
             saved_value = self._save_unit_value("hub_hes_on", values_to_store)
             if saved_value:
@@ -1520,6 +1701,15 @@ class afcAMS(afcUnit):
                 lane_length_value = captured_values[spool_index]
             elif len(captured_values) == 1:
                 lane_length_value = captured_values[0]
+
+        if lane_length_value is None:
+            status = self._poll_openams_status()
+            status_values = self._extract_ptfe_calibration_values(status)
+            if status_values:
+                if 0 <= spool_index < len(status_values):
+                    lane_length_value = status_values[spool_index]
+                elif len(status_values) == 1:
+                    lane_length_value = status_values[0]
 
         if lane_length_value is not None:
             lane_count = self._expected_lane_count(spool_index + 1)
