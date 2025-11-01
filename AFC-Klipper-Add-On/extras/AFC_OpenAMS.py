@@ -259,6 +259,12 @@ class afcAMS(afcUnit):
 
         # OpenAMS specific options
         self.oams_name = config.get("oams", "oams1")
+        oams_section_name = None
+        if self.oams_name:
+            stripped_name = str(self.oams_name).strip()
+            if stripped_name:
+                oams_section_name = f"oams {stripped_name}"
+        self.oams_config_section = oams_section_name
         self.interval = config.getfloat("interval", SYNC_INTERVAL, above=0.0)
 
         self.reactor = self.printer.get_reactor()
@@ -600,220 +606,6 @@ class afcAMS(afcUnit):
 
         return f"AFC_OAMS_CALIBRATE_PTFE UNIT={self.name} SPOOL={spool_index}"
 
-    def _values_look_binary(self, values):
-        if not values:
-            return False
-        tolerance = 1e-3
-        for value in values:
-            if value is None:
-                continue
-            if abs(value) <= tolerance or abs(value - 1.0) <= tolerance:
-                continue
-            return False
-        return True
-
-    def _normalize_numeric_sequence(self, raw_values):
-        if raw_values is None:
-            return None
-        if isinstance(raw_values, (int, float)):
-            return (float(raw_values),)
-        if isinstance(raw_values, str):
-            candidate = raw_values.strip()
-            if not candidate:
-                return None
-            if "," in candidate:
-                parts = [part.strip() for part in candidate.split(",")]
-                numbers = []
-                for part in parts:
-                    if not part:
-                        continue
-                    try:
-                        numbers.append(float(part))
-                    except (TypeError, ValueError):
-                        try:
-                            match_numbers = re.findall(r"[-+]?[0-9]*\.?[0-9]+", part)
-                        except re.error:
-                            match_numbers = []
-                        if not match_numbers:
-                            return None
-                        for item in match_numbers:
-                            try:
-                                numbers.append(float(item))
-                            except (TypeError, ValueError):
-                                return None
-                return tuple(numbers) if numbers else None
-            try:
-                return (float(candidate),)
-            except (TypeError, ValueError):
-                try:
-                    match_numbers = re.findall(r"[-+]?[0-9]*\.?[0-9]+", candidate)
-                except re.error:
-                    match_numbers = []
-                if not match_numbers:
-                    return None
-                numbers = []
-                for item in match_numbers:
-                    try:
-                        numbers.append(float(item))
-                    except (TypeError, ValueError):
-                        return None
-                return tuple(numbers) if numbers else None
-        if isinstance(raw_values, (list, tuple)):
-            numbers = []
-            for item in raw_values:
-                normalized = self._normalize_numeric_sequence(item)
-                if not normalized:
-                    continue
-                numbers.extend(normalized)
-            return tuple(numbers) if numbers else None
-        if isinstance(raw_values, dict):
-            items = []
-            numeric_keys = True
-            keys = list(raw_values.keys())
-            for key in keys:
-                try:
-                    int(key)
-                except (TypeError, ValueError):
-                    numeric_keys = False
-                    break
-            if numeric_keys:
-                for key in sorted(keys, key=lambda item: int(item)):
-                    items.append(raw_values[key])
-            else:
-                items.extend(raw_values.values())
-            numbers = []
-            for item in items:
-                normalized = self._normalize_numeric_sequence(item)
-                if not normalized:
-                    continue
-                numbers.extend(normalized)
-            return tuple(numbers) if numbers else None
-        return None
-
-    def _extract_hub_hes_calibration_values(self, status):
-        candidates = []
-        if status:
-            for key in ("hub_hes_on", "hub_hes_value", "hub_hes_values"):
-                value = status.get(key)
-                if value is not None:
-                    candidates.append(value)
-            calibration = status.get("calibration")
-            if isinstance(calibration, dict):
-                for key in ("hub_hes_on", "hub_hes_value", "hub_hes_values"):
-                    value = calibration.get(key)
-                    if value is not None:
-                        candidates.append(value)
-
-        controller = None
-        if self.hardware_service is not None:
-            try:
-                controller = self.hardware_service.resolve_controller()
-            except Exception:
-                controller = None
-        if controller is None:
-            controller = self.oams
-
-        if controller is not None:
-            for attr in ("hub_hes_on", "hub_hes_value", "hub_hes_values"):
-                try:
-                    value = getattr(controller, attr)
-                except Exception:
-                    value = None
-                if value is not None:
-                    candidates.append(value)
-
-        for candidate in candidates:
-            normalized = self._normalize_numeric_sequence(candidate)
-            if not normalized:
-                continue
-            if self._values_look_binary(normalized):
-                continue
-            return normalized
-        return None
-
-    def _collect_status_values_for_keys(self, status, keys):
-        if not status:
-            return []
-
-        stack = [status]
-        seen = set()
-        collected = []
-        target_keys = {key.lower() for key in keys if isinstance(key, str)}
-        while stack:
-            current = stack.pop()
-            ident = id(current)
-            if ident in seen:
-                continue
-            seen.add(ident)
-
-            if isinstance(current, dict):
-                alias = None
-                for key, value in current.items():
-                    key_name = key.lower() if isinstance(key, str) else key
-                    if key_name in target_keys:
-                        collected.append(value)
-                    if isinstance(value, (dict, list, tuple, set)):
-                        stack.append(value)
-                    if (
-                        alias is None
-                        and isinstance(value, str)
-                        and value.lower() in target_keys
-                    ):
-                        alias = value
-                if alias is not None:
-                    for candidate_key in ("value", "values", "data", "result", "results"):
-                        candidate = current.get(candidate_key)
-                        if candidate is not None:
-                            collected.append(candidate)
-            elif isinstance(current, (list, tuple, set)):
-                for item in current:
-                    if isinstance(item, (dict, list, tuple, set)):
-                        stack.append(item)
-
-        return collected
-
-    def _extract_ptfe_calibration_values(self, status):
-        candidates = []
-        ptfe_keys = (
-            "ptfe_length",
-            "ptfe_lengths",
-            "ptfe_length_value",
-            "ptfe_length_values",
-            "ptfe_length_mm",
-            "ptfe_lengths_mm",
-            "bowden_length",
-            "bowden_lengths",
-        )
-
-        candidates.extend(self._collect_status_values_for_keys(status, ptfe_keys))
-
-        controller = None
-        if self.hardware_service is not None:
-            try:
-                controller = self.hardware_service.resolve_controller()
-            except Exception:
-                controller = None
-        if controller is None:
-            controller = self.oams
-
-        if controller is not None:
-            for attr in ptfe_keys:
-                try:
-                    value = getattr(controller, attr)
-                except Exception:
-                    value = None
-                if value is not None:
-                    candidates.append(value)
-
-        for candidate in candidates:
-            normalized = self._normalize_numeric_sequence(candidate)
-            if not normalized:
-                continue
-            if self._values_look_binary(normalized):
-                continue
-            return normalized
-        return None
-
     def _extract_ptfe_length_from_messages(self, messages: List[str]) -> Optional[List[float]]:
         if not messages:
             return None
@@ -903,31 +695,38 @@ class afcAMS(afcUnit):
             return formatted
         return None
 
+    def _unit_config_sections(self) -> List[str]:
+        sections: List[str] = []
+        oams_section = getattr(self, "oams_config_section", None)
+        if oams_section:
+            sections.append(oams_section)
+
+        oams_name = getattr(self, "oams_name", None)
+        if oams_name:
+            stripped = str(oams_name).strip()
+            if stripped:
+                derived = f"oams {stripped}"
+                if derived not in sections:
+                    sections.append(derived)
+                lowered = derived.lower()
+                if lowered not in sections:
+                    sections.append(lowered)
+
+        config_section = getattr(self, "config_section", None)
+        if config_section and config_section not in sections:
+            sections.append(config_section)
+
+        return [section for section in sections if section]
+
     def _save_unit_value(self, key: str, values) -> Optional[str]:
         formatted = self._format_numeric_values(values)
         if not formatted:
             return None
         msg = f"\n{self.name} {key}: Saved {formatted}"
-        if self._config_rewrite(self.config_section, key, formatted, msg):
-            return formatted
+        for section in self._unit_config_sections():
+            if self._config_rewrite(section, key, formatted, msg):
+                return formatted
         return None
-
-    def _fetch_openams_status(self):
-        status = None
-        if self.hardware_service is not None:
-            try:
-                status = self.hardware_service.poll_status()
-                if status is None:
-                    self.oams = self.hardware_service.resolve_controller()
-            except Exception:
-                status = None
-        elif self.oams is not None:
-            status = {
-                "hub_hes_value": getattr(self.oams, "hub_hes_value", None),
-                "hub_hes_on": getattr(self.oams, "hub_hes_on", None),
-                "ptfe_length": getattr(self.oams, "ptfe_length", None),
-            }
-        return status
 
     cmd_UNIT_BOW_CALIBRATION_help = (
         "open prompt to calibrate OpenAMS PTFE lengths"
@@ -1530,24 +1329,21 @@ class afcAMS(afcUnit):
             )
             return
 
-        saved_value = None
+        captured_values = self._extract_hub_hes_from_messages(captured_messages)
+        if captured_values:
+            saved_value = self._save_unit_value("hub_hes_on", captured_values)
+            if saved_value:
+                gcmd.respond_info(
+                    f"Stored OpenAMS hub_hes_on {saved_value} in your cfg."
+                )
+                return
 
-        status = self._fetch_openams_status()
-        if status:
-            hub_values = self._extract_hub_hes_calibration_values(status)
-            if hub_values:
-                saved_value = self._save_unit_value("hub_hes_on", hub_values)
-
-        if not saved_value:
-            captured_values = self._extract_hub_hes_from_messages(captured_messages)
-            if captured_values:
-                saved_value = self._save_unit_value("hub_hes_on", captured_values)
-
-        if saved_value:
-            gcmd.respond_info(
-                f"Stored OpenAMS hub_hes_on {saved_value} in your cfg."
-            )
-            return
+            formatted = self._format_numeric_values(captured_values)
+            if formatted:
+                gcmd.respond_info(
+                    f"OpenAMS hub_hes_on {formatted} reported but could not be stored."
+                )
+                return
 
         gcmd.respond_info(
             "Completed {} but no HUB HES value was reported. Check OpenAMS status logs.".format(
@@ -1570,33 +1366,30 @@ class afcAMS(afcUnit):
             elif len(captured_values) == 1:
                 lane_length_value = captured_values[0]
 
-        saved_unit_value = None
-        if captured_values:
-            saved_unit_value = self._save_unit_value("ptfe_length", captured_values)
-
-        if not saved_unit_value:
-            status = self._fetch_openams_status()
-            if status:
-                ptfe_status_values = self._extract_ptfe_calibration_values(status)
-                if ptfe_status_values:
-                    saved_unit_value = self._save_unit_value("ptfe_length", ptfe_status_values)
-
         lane_value_str = None
         if lane is not None and lane_length_value is not None:
             lane_value_str = self._save_lane_value(lane, "ptfe_length", lane_length_value)
 
-        if lane_value_str:
-            lane_suffix = f" for {lane_name}" if lane_name else ""
-            gcmd.respond_info(
-                f"Stored OpenAMS PTFE length {lane_value_str}{lane_suffix} in your cfg."
-            )
-            return
+        if captured_values:
+            saved_unit_value = self._save_unit_value("ptfe_length", captured_values)
+            if saved_unit_value:
+                if lane_value_str:
+                    lane_suffix = f" for {lane_name}" if lane_name else ""
+                    gcmd.respond_info(
+                        f"Stored OpenAMS PTFE length {lane_value_str}{lane_suffix} in your cfg."
+                    )
+                else:
+                    gcmd.respond_info(
+                        f"Stored OpenAMS PTFE length {saved_unit_value} in your cfg."
+                    )
+                return
 
-        if saved_unit_value:
-            gcmd.respond_info(
-                f"Stored OpenAMS PTFE length {saved_unit_value} in your cfg."
-            )
-            return
+            formatted = self._format_numeric_values(captured_values)
+            if formatted:
+                gcmd.respond_info(
+                    f"OpenAMS PTFE length {formatted} reported but could not be stored."
+                )
+                return
 
         gcmd.respond_info(
             "Completed {} but no PTFE length was reported. Check OpenAMS status logs.".format(
