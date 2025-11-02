@@ -276,7 +276,7 @@ class afcAMS(afcUnit):
         self._lane_feed_activity_by_lane: Dict[object, bool] = {}
         self._last_encoder_clicks: Optional[int] = None
         self._last_hub_hes_values: Optional[List[float]] = None
-        self._last_ptfe_values: Optional[List[float]] = None
+        self._last_ptfe_value: Optional[float] = None
         self.oams = None
         self.hardware_service = None
 
@@ -1224,13 +1224,22 @@ class afcAMS(afcUnit):
                 if parsed_hub_values:
                     self._last_hub_hes_values = parsed_hub_values
 
+            new_ptfe_value = None
             if isinstance(ptfe_values, (list, tuple)):
+                for entry in ptfe_values:
+                    try:
+                        new_ptfe_value = float(entry)
+                        break
+                    except (TypeError, ValueError):
+                        continue
+            elif ptfe_values is not None:
                 try:
-                    self._last_ptfe_values = [
-                        float(value) for value in ptfe_values
-                    ]
+                    new_ptfe_value = float(ptfe_values)
                 except (TypeError, ValueError):
-                    pass
+                    new_ptfe_value = None
+
+            if new_ptfe_value is not None:
+                self._last_ptfe_value = new_ptfe_value
 
             active_lane_name = None
             if encoder_clicks is not None:
@@ -1758,39 +1767,23 @@ class afcAMS(afcUnit):
             )
             return False
 
-        current_values = self._last_ptfe_values
-        if current_values is None:
-            current_values = self._read_config_sequence("ptfe_length")
-
-        if current_values is None:
-            gcmd.respond_info(
-                "Could not find ptfe_length in your cfg; update the value manually."
-            )
-            return False
-
-        values = list(current_values)
-        while len(values) <= spool_index:
-            values.append(0.0)
-        values[spool_index] = value
-
-        formatted_all = self._format_sequence(values)
-        formatted_lane = self._format_numeric(value)
-        if not formatted_all or formatted_lane is None:
+        formatted_value = self._format_numeric(value)
+        if formatted_value is None:
             gcmd.respond_info(
                 "Unable to format PTFE calibration value for config storage."
             )
             return False
 
-        if not self._write_config_value("ptfe_length", formatted_all):
+        if not self._write_config_value("ptfe_length", formatted_value):
             gcmd.respond_info(
                 "Failed to update ptfe_length in your cfg; please update it manually."
             )
             return False
 
-        self._last_ptfe_values = values
+        self._last_ptfe_value = value
         target_name = lane_label
         gcmd.respond_info(
-            f"Stored OpenAMS ptfe_length {formatted_lane} for {target_name} in your cfg."
+            f"Stored OpenAMS ptfe_length {formatted_value} for {target_name} in your cfg."
         )
         return True
 
