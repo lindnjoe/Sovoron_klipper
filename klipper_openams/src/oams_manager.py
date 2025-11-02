@@ -1286,6 +1286,42 @@ class OAMSManager:
         ):
             return
 
+        remaining_attempts = 0
+        if spool_idx is not None and hasattr(oams, "get_remaining_load_attempts"):
+            try:
+                remaining_attempts = oams.get_remaining_load_attempts(spool_idx)
+            except Exception:
+                self.logger.exception(
+                    "Failed to query remaining load attempts for %s spool %s",
+                    fps_name,
+                    spool_idx,
+                )
+                remaining_attempts = 0
+
+        if remaining_attempts > 0:
+            if self.logger.isEnabledFor(logging.WARNING):
+                self.logger.warning(
+                    "Load stall detected for %s spool %s; aborting for retry (%d attempts remaining)",
+                    fps_name,
+                    spool_idx,
+                    remaining_attempts,
+                )
+            if oams is not None:
+                try:
+                    oams.abort_current_action()
+                except Exception:
+                    self.logger.exception(
+                        "Failed to abort stalled load on %s spool %s for retry",
+                        fps_name,
+                        spool_idx,
+                    )
+            fps_state.clear_encoder_samples()
+            fps_state.following = False
+            fps_state.load_low_movement_count = 0
+            fps_state.load_last_progress_time = now
+            fps_state.load_progress_encoder = encoder_value
+            return
+
         group_label = fps_state.current_group or fps_name
         spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
         message = f"Spool appears stuck while loading {group_label} spool {spool_label}"

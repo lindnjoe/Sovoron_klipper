@@ -329,6 +329,16 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self._unload_retry_count = 0
         self._last_unload_attempt = 0.0
 
+    def get_load_retry_count(self, spool_idx: int) -> int:
+        """Return the number of attempts that have been started for a spool."""
+        return self._load_retry_count.get(spool_idx, 0)
+
+    def get_remaining_load_attempts(self, spool_idx: int) -> int:
+        """Return how many additional load attempts are still available."""
+        started = self._load_retry_count.get(spool_idx, 0)
+        remaining = self.load_retry_max - started
+        return remaining if remaining > 0 else 0
+
     def load_spool_with_retry(self, spool_idx: int) -> Tuple[bool, str]:
         retry_count = self._load_retry_count.get(spool_idx, 0)
 
