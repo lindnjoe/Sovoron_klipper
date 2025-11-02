@@ -390,6 +390,10 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             f"Failed to load spool {spool_idx} after {self.load_retry_max} attempts: {message}"
         )
 
+    def get_last_load_attempt_time(self, spool_idx: int) -> Optional[float]:
+        """Return timestamp of the most recent load attempt for spool."""
+        return self._last_load_attempt.get(spool_idx)
+
     def unload_spool_with_retry(self) -> Tuple[bool, str]:
         if self._unload_retry_count >= self.unload_retry_max:
             self._reset_unload_retry_count()
