@@ -1207,6 +1207,10 @@ class OAMSManager:
         if fps_state.stuck_spool_active:
             return
 
+        if not fps_state.following or fps_state.direction != 1:
+            fps_state.load_low_movement_count = 0
+            return
+
         spool_idx = fps_state.current_spool_idx
         if (
             spool_idx is not None
