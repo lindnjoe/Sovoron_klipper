@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 
 class AMSHardwareService:
-    """Centralised interface for accessing OpenAMS hardware from AFC (OPTIMIZED).
+    """Centralised interface for accessing OpenAMS hardware from AFC.
 
     The service tracks the underlying ``OAMS`` firmware object created by
     ``klipper_openams`` and exposes high level helpers so AFC can interact with
@@ -35,7 +35,7 @@ class AMSHardwareService:
         self._status_callbacks: List[Callable[[Dict[str, Any]], None]] = []
         self._lanes_by_spool: Dict[Tuple[str, int], str] = {}
         
-        # OPTIMIZATION: Cache reactor reference
+        # Cache reactor reference
         self._reactor = None
 
     @classmethod
@@ -82,7 +82,7 @@ class AMSHardwareService:
         return controller
 
     def _monotonic(self) -> float:
-        """OPTIMIZATION: Cache reactor reference for faster lookups."""
+        """Cache reactor reference for faster lookups."""
         if self._reactor is None:
             reactor = getattr(self.printer, "get_reactor", None)
             if callable(reactor):
@@ -111,7 +111,7 @@ class AMSHardwareService:
         try:
             status = controller.get_status(eventtime)
         except Exception:
-            # OPTIMIZATION: Direct attribute access fallback
+            #  Direct attribute access fallback
             status = {
                 "current_spool": getattr(controller, "current_spool", None),
                 "f1s_hes_value": list(getattr(controller, "f1s_hes_value", []) or []),
@@ -130,7 +130,7 @@ class AMSHardwareService:
             self._status = dict(status)
             callbacks = list(self._status_callbacks)
         
-        # OPTIMIZATION: Only call callbacks if there are any registered
+        # Only call callbacks if there are any registered
         if callbacks:
             status_copy = dict(status)
             for callback in callbacks:
@@ -233,7 +233,7 @@ class AMSHardwareService:
 
 
 class AMSRunoutCoordinator:
-    """Coordinates runout events between OpenAMS and AFC (OPTIMIZED)."""
+    """Coordinates runout events between OpenAMS and AFC """
 
     _units: Dict[Tuple[int, str], List[Any]] = {}
     _monitors: Dict[Tuple[int, str], List[Any]] = {}

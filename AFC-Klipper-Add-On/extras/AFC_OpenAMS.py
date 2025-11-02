@@ -217,7 +217,7 @@ def _patch_extruder_for_virtual_ams() -> None:
     extruder_cls._ams_virtual_tool_patched = True
 
 class afcAMS(afcUnit):
-    """AFC unit subclass that synchronises state with OpenAMS (OPTIMIZED)."""
+    """AFC unit subclass that synchronises state with OpenAMS"""
 
     _sync_command_registered = False
     _sync_instances: Dict[str, "afcAMS"] = {}
@@ -229,7 +229,7 @@ class afcAMS(afcUnit):
         self.oams_name = config.get("oams", "oams1")
         self.interval = config.getfloat("interval", SYNC_INTERVAL, above=0.0)
         
-        # OPTIMIZATION: Adaptive polling intervals
+        # Adaptive polling intervals
         self.interval_idle = self.interval * 2.0
         self.interval_active = self.interval
         self._consecutive_idle_polls = 0
@@ -239,7 +239,7 @@ class afcAMS(afcUnit):
         self.timer = self.reactor.register_timer(self._sync_event)
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
-        # OPTIMIZATION: Build lane index map for O(1) lookup
+        #  Build lane index map for O(1) lookup
         self._lane_by_index: Dict[int, Any] = {}
 
         self._last_lane_states: Dict[str, bool] = {}
@@ -254,7 +254,7 @@ class afcAMS(afcUnit):
         self._last_hub_hes_values: Optional[List[float]] = None
         self._last_ptfe_value: Optional[float] = None
         
-        # OPTIMIZATION: Cache sensor helper reference
+        # Cache sensor helper reference
         self._cached_sensor_helper = None
         
         self.oams = None
@@ -294,7 +294,7 @@ class afcAMS(afcUnit):
 
         self._ensure_virtual_tool_sensor()
 
-        # OPTIMIZATION: Build lane index map once
+        #  Build lane index map once
         self._lane_by_index = {}
         for lane in self.lanes.values():
             lane.prep_state = False
@@ -491,7 +491,7 @@ class afcAMS(afcUnit):
             if canonical_lane and self._lane_tool_latches.get(canonical_lane) is False:
                 return
 
-        # OPTIMIZATION: Use cached sensor helper
+        #  Use cached sensor helper
         helper = self._cached_sensor_helper
         if helper is None:
             sensor = self._virtual_tool_sensor
@@ -842,7 +842,7 @@ class afcAMS(afcUnit):
             self._last_lane_states[lane_name] = bool(lane_val)
 
     def _sync_event(self, eventtime):
-        """Poll OpenAMS for state updates and propagate to lanes/hubs (OPTIMIZED - adaptive polling)."""
+        """Poll OpenAMS for state updates and propagate to lanes/hubs"""
         try:
             status = None
             if self.hardware_service is not None:
@@ -963,7 +963,7 @@ class afcAMS(afcUnit):
         except Exception:
             pass
 
-        # OPTIMIZATION: Adaptive polling interval
+        #  Adaptive polling interval
         if encoder_changed:
             return eventtime + self.interval_active
         
@@ -974,7 +974,7 @@ class afcAMS(afcUnit):
         return eventtime + self.interval_active
 
     def _lane_for_spool_index(self, spool_index: Optional[int]):
-        """OPTIMIZATION: Use indexed lookup instead of iteration."""
+        """Use indexed lookup instead of iteration."""
         if spool_index is None or spool_index < 0 or spool_index >= 4:
             return None
         return self._lane_by_index.get(spool_index)
@@ -1466,7 +1466,7 @@ class afcAMS(afcUnit):
         return True
 
     def _find_lane_by_spool(self, spool_index):
-        """OPTIMIZATION: Use indexed lookup."""
+        """Use indexed lookup."""
         return self._lane_by_index.get(spool_index)
 
     def _get_openams_index(self):

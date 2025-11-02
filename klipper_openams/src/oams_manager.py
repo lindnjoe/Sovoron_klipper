@@ -49,9 +49,9 @@ class OAMSRunoutState:
     PAUSED = "PAUSED"
 
 
-# OPTIMIZATION: Use integer states instead of strings for faster comparisons
+#  Use integer states instead of strings for faster comparisons
 class FPSLoadState:
-    """Enum for FPS loading states (OPTIMIZED - integer constants)."""
+    """Enum for FPS loading states """
     UNLOADED = 0
     LOADED = 1
     LOADING = 2
@@ -148,7 +148,7 @@ class OAMSRunoutMonitor:
 
                 self.latest_lane_name = lane_name
 
-                # OPTIMIZATION: Use integer state comparison
+                #  Use integer state comparison
                 if (is_printing and fps_state.state == FPSLoadState.LOADED and 
                     fps_state.current_group is not None and fps_state.current_spool_idx is not None and spool_empty):
                     self.state = OAMSRunoutState.DETECTED
@@ -230,7 +230,7 @@ class OAMSState:
         
 
 class FPSState:
-    """Tracks the state of a single FPS (OPTIMIZED - uses integers for state)."""
+    """Tracks the state of a single FPS """
     
     def __init__(self, 
                  state: int = FPSLoadState.UNLOADED,
@@ -238,7 +238,7 @@ class FPSState:
                  current_oams: Optional[str] = None, 
                  current_spool_idx: Optional[int] = None):
         
-        # OPTIMIZATION: Use integer state
+        #  Use integer state
         self.state = state
         self.current_group = current_group
         self.current_oams = current_oams
@@ -327,7 +327,7 @@ class FPSState:
 
 
 class OAMSManager:
-    """Main coordinator for OpenAMS system (OPTIMIZED)."""
+    """Main coordinator for OpenAMS system"""
     
     def __init__(self, config):
         self.config = config
@@ -392,7 +392,7 @@ class OAMSManager:
             if status_name != name:
                 attributes["oams"][name] = oam_status
 
-        # OPTIMIZATION: Use integer state
+        # Use integer state
         state_names = {0: "UNLOADED", 1: "LOADED", 2: "LOADING", 3: "UNLOADING"}
         for fps_name, fps_state in self.current_state.fps_state.items():
             attributes[fps_name] = {
@@ -1142,9 +1142,9 @@ class OAMSManager:
         fps_state.stuck_spool_start_time = None
         self._pause_printer_message(message, fps_state.current_oams)
 
-    # OPTIMIZATION: Consolidated unified monitor combining all checks
+    #  Consolidated unified monitor combining all checks
     def _unified_monitor_for_fps(self, fps_name):
-        """Consolidated monitor handling all FPS checks in a single timer (OPTIMIZED)."""
+        """Consolidated monitor handling all FPS checks in a single timer."""
         def _unified_monitor(self, eventtime):
             fps_state = self.current_state.fps_state.get(fps_name)
             fps = self.fpss.get(fps_name)
@@ -1154,7 +1154,7 @@ class OAMSManager:
             
             oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
             
-            # Cache all sensor reads at once (OPTIMIZATION)
+            # Cache all sensor reads at once 
             try:
                 if oams:
                     encoder_value = oams.encoder_clicks
@@ -1169,7 +1169,7 @@ class OAMSManager:
             now = self.reactor.monotonic()
             state = fps_state.state
             
-            # Run appropriate checks based on state (OPTIMIZATION: consolidated checks)
+            # Run appropriate checks based on state 
             if state == FPSLoadState.UNLOADING and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
                 self._check_unload_speed(fps_name, fps_state, oams, encoder_value, now)
             elif state == FPSLoadState.LOADING and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
@@ -1353,12 +1353,12 @@ class OAMSManager:
             self._pause_printer_message(message, fps_state.current_oams)
 
     def start_monitors(self):
-        """Start all monitoring timers (OPTIMIZED - consolidated monitors)."""
+        """Start all monitoring timers """
         self.monitor_timers = []
         self.runout_monitors = {}
         reactor = self.printer.get_reactor()
         
-        # OPTIMIZATION: Single unified monitor per FPS instead of 4+ separate timers
+        # Single unified monitor per FPS instead of 4+ separate timers
         for fps_name in self.current_state.fps_state.keys():
             self.monitor_timers.append(
                 reactor.register_timer(

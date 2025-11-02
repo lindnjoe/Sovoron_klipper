@@ -15,7 +15,7 @@ try:  # pragma: no cover - optional dependency during unit tests
 except Exception:  # pragma: no cover - best-effort integration only
     AMSHardwareService = None
 
-# Pre-compiled struct formats for float conversions (OPTIMIZATION)
+# Pre-compiled struct formats for float conversions 
 _FLOAT_STRUCT = struct.Struct("f")
 _U32_STRUCT = struct.Struct("I")
 
@@ -190,7 +190,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         )
 
     def handle_connect(self):
-        """Initialize MCU commands (OPTIMIZED - batched lookup)."""
+        """Initialize MCU commands """
         # Define all commands in a structured way
         command_defs = {
             'load_spool': "oams_cmd_load_spool spool=%c",
@@ -203,7 +203,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         }
         
         try:
-            # Batch command lookup (OPTIMIZATION)
+            # Batch command lookup 
             for cmd_name, cmd_string in command_defs.items():
                 cmd_obj = self.mcu.lookup_command(cmd_string)
                 setattr(self, f'oams_{cmd_name}_cmd', cmd_obj)
@@ -502,11 +502,11 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             )
 
     def float_to_u32(self, f: float) -> int:
-        """Convert float to u32 using pre-compiled struct (OPTIMIZED)."""
+        """Convert float to u32 using pre-compiled struct"""
         return _U32_STRUCT.unpack(_FLOAT_STRUCT.pack(f))[0]
 
     def u32_to_float(self, i: int) -> float:
-        """Convert u32 to float using pre-compiled struct (OPTIMIZED)."""
+        """Convert u32 to float using pre-compiled struct"""
         return _FLOAT_STRUCT.unpack(_U32_STRUCT.pack(i))[0]
 
     def _build_config(self):
