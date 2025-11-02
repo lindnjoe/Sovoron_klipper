@@ -291,6 +291,11 @@ class AFCLane:
             # Registering lane name in unit
             self.unit_obj.lanes[self.name] = self
             self.afc.lanes[self.name] = self
+            invalidate_cache = getattr(
+                self.unit_obj, "_invalidate_lane_index_cache", None
+            )
+            if callable(invalidate_cache):
+                invalidate_cache()
 
 
         self.hub_obj = self.unit_obj.hub_obj
