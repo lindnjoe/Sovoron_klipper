@@ -473,6 +473,7 @@ class OAMSManager:
 
         # Monitoring and control
         self.monitor_timers: List[Any] = []
+        self.monitor_schedules: Dict[str, List[Dict[str, Any]]] = {}
         self.runout_monitors: Dict[str, OAMSRunoutMonitor] = {}
         self.ready: bool = False
 
@@ -2241,14 +2242,25 @@ class OAMSManager:
 
     def start_monitors(self):
         self.monitor_timers = []
+        self.monitor_schedules = {}
         self.runout_monitors = {}
         reactor = self.printer.get_reactor()
         for (fps_name, fps_state) in self.current_state.fps_state.items():
-            self.monitor_timers.append(reactor.register_timer(self._monitor_unload_speed_for_fps(fps_name), reactor.NOW))
-            self.monitor_timers.append(reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), reactor.NOW))
-            self.monitor_timers.append(reactor.register_timer(self._monitor_stuck_spool_for_fps(fps_name), reactor.NOW))
+            callbacks = [
+                self._monitor_unload_speed_for_fps(fps_name),
+                self._monitor_load_speed_for_fps(fps_name),
+                self._monitor_stuck_spool_for_fps(fps_name),
+                self._monitor_clog_for_fps(fps_name),
+            ]
 
-            self.monitor_timers.append(reactor.register_timer(self._monitor_clog_for_fps(fps_name), reactor.NOW))
+            schedule = [
+                {"callback": callback, "next_run": reactor.NOW}
+                for callback in callbacks
+            ]
+            self.monitor_schedules[fps_name] = schedule
+            self.monitor_timers.append(
+                reactor.register_timer(self._monitor_fps_group(fps_name), reactor.NOW)
+            )
 
 
             def _reload_callback(fps_name=fps_name, fps_state=fps_state):
@@ -2426,9 +2438,49 @@ class OAMSManager:
         for timer in self.monitor_timers:
             self.printer.get_reactor().unregister_timer(timer)
         self.monitor_timers = []
+        self.monitor_schedules = {}
         for monitor in self.runout_monitors.values():
             monitor.reset()
         self.runout_monitors = {}
+
+    def _monitor_fps_group(self, fps_name: str):
+        reactor = self.printer.get_reactor()
+
+        def _monitor(eventtime):
+            entries = self.monitor_schedules.get(fps_name)
+            if not entries:
+                return reactor.NEVER
+
+            next_wake = None
+            for entry in entries:
+                callback = entry.get("callback")
+                next_run = entry.get("next_run", eventtime)
+                if callback is None:
+                    continue
+
+                if eventtime >= next_run:
+                    try:
+                        scheduled = callback(eventtime)
+                    except Exception:
+                        logging.getLogger(__name__).exception(
+                            "OAMS: Monitor callback failed for %s", fps_name
+                        )
+                        scheduled = None
+
+                    if isinstance(scheduled, (int, float)):
+                        entry["next_run"] = scheduled
+                    else:
+                        entry["next_run"] = eventtime + MONITOR_ENCODER_PERIOD
+                next_time = entry.get("next_run")
+                if isinstance(next_time, (int, float)):
+                    next_wake = next_time if next_wake is None else min(next_wake, next_time)
+
+            if next_wake is None:
+                next_wake = eventtime + MONITOR_ENCODER_PERIOD
+
+            return next_wake
+
+        return _monitor
 
 
 def load_config(config):
