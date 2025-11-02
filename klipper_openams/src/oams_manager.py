@@ -18,6 +18,8 @@ except Exception:
 PAUSE_DISTANCE = 60
 MIN_ENCODER_DIFF = 1
 LOAD_ENCODER_STALL_CYCLES = 3
+LOAD_ENCODER_STALL_TIMEOUT = 6.0
+LOAD_ENCODER_PROGRESS_DELTA = 4
 FILAMENT_PATH_LENGTH_FACTOR = 1.14
 MONITOR_ENCODER_PERIOD = 2.0
 MONITOR_ENCODER_SPEED_GRACE = 2.0
@@ -256,6 +258,8 @@ class FPSState:
         self.encoder_sample_prev: Optional[int] = None
         self.encoder_sample_current: Optional[int] = None
         self.load_low_movement_count: int = 0
+        self.load_last_progress_time: Optional[float] = None
+        self.load_progress_encoder: Optional[int] = None
 
         self.following: bool = False
         self.direction: int = 0
@@ -295,6 +299,8 @@ class FPSState:
         self.encoder_sample_prev = None
         self.encoder_sample_current = None
         self.load_low_movement_count = 0
+        self.load_last_progress_time = None
+        self.load_progress_encoder = None
 
     def reset_runout_positions(self) -> None:
         self.runout_position = None
@@ -782,6 +788,8 @@ class OAMSManager:
             fps_state.current_group = None
             fps_state.current_spool_idx = None
             fps_state.since = self.reactor.monotonic()
+            fps_state.load_last_progress_time = None
+            fps_state.load_progress_encoder = None
             self.current_group = None
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
@@ -820,6 +828,8 @@ class OAMSManager:
             fps_state.following = False
             fps_state.direction = 0
             fps_state.since = self.reactor.monotonic()
+            fps_state.load_last_progress_time = None
+            fps_state.load_progress_encoder = None
             if lane_name:
                 try:
                     AMSRunoutCoordinator.notify_lane_tool_state(self.printer, fps_state.current_oams or oams.name, lane_name, loaded=False, spool_index=spool_index, eventtime=fps_state.since)
@@ -834,6 +844,8 @@ class OAMSManager:
             return True, message
 
         fps_state.state = FPSLoadState.LOADED
+        fps_state.load_last_progress_time = None
+        fps_state.load_progress_encoder = None
         return False, message
 
     def _load_filament_for_group(self, group_name: str) -> Tuple[bool, str]:
@@ -861,6 +873,8 @@ class OAMSManager:
                 fps_state.state = FPSLoadState.LOADING
                 fps_state.encoder = oam.encoder_clicks
                 fps_state.since = self.reactor.monotonic()
+                fps_state.load_last_progress_time = fps_state.since
+                fps_state.load_progress_encoder = fps_state.encoder
                 fps_state.current_oams = oam.name
                 fps_state.current_spool_idx = bay_index
             except Exception:
@@ -884,6 +898,8 @@ class OAMSManager:
                 fps_state.state = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
                 fps_state.direction = 1
+                fps_state.load_last_progress_time = None
+                fps_state.load_progress_encoder = None
                 self.current_group = group_name
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
@@ -913,6 +929,8 @@ class OAMSManager:
             fps_state.current_spool_idx = None
             fps_state.current_oams = None
             fps_state.following = False
+            fps_state.load_last_progress_time = None
+            fps_state.load_progress_encoder = None
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
             self._cancel_post_load_pressure_check(fps_state)
@@ -1062,6 +1080,15 @@ class OAMSManager:
             oams.set_oams_follower(1, direction)
             fps_state.following = True
             fps_state.direction = direction
+            if direction == 1:
+                fps_state.load_last_progress_time = self.reactor.monotonic()
+                try:
+                    fps_state.load_progress_encoder = oams.encoder_clicks
+                except Exception:
+                    fps_state.load_progress_encoder = None
+            else:
+                fps_state.load_last_progress_time = None
+                fps_state.load_progress_encoder = None
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug("Enabled follower for %s spool %s after %s.", fps_name, fps_state.current_spool_idx, context)
         except Exception:
@@ -1209,6 +1236,8 @@ class OAMSManager:
 
         if not fps_state.following or fps_state.direction != 1:
             fps_state.load_low_movement_count = 0
+            fps_state.load_last_progress_time = now
+            fps_state.load_progress_encoder = encoder_value
             return
 
         spool_idx = fps_state.current_spool_idx
@@ -1222,6 +1251,8 @@ class OAMSManager:
                 fps_state.since = last_attempt
                 fps_state.clear_encoder_samples()
                 fps_state.load_low_movement_count = 0
+                fps_state.load_last_progress_time = last_attempt
+                fps_state.load_progress_encoder = encoder_value
                 if now - fps_state.since <= MONITOR_ENCODER_SPEED_GRACE:
                     return
 
@@ -1232,18 +1263,34 @@ class OAMSManager:
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug("OAMS[%d] Load Monitor: Encoder diff %d", getattr(oams, "oams_idx", -1), encoder_diff)
 
-        if encoder_diff < MIN_ENCODER_DIFF:
-            fps_state.load_low_movement_count += 1
-            if fps_state.load_low_movement_count < LOAD_ENCODER_STALL_CYCLES:
-                return
-            group_label = fps_state.current_group or fps_name
-            spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
-            message = f"Spool appears stuck while loading {group_label} spool {spool_label}"
-            self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
-            self.stop_monitors()
+        if fps_state.load_progress_encoder is None:
+            fps_state.load_progress_encoder = encoder_value
+            if fps_state.load_last_progress_time is None:
+                fps_state.load_last_progress_time = now
+
+        progress_delta = abs(encoder_value - (fps_state.load_progress_encoder or encoder_value))
+        if progress_delta >= LOAD_ENCODER_PROGRESS_DELTA:
+            fps_state.load_progress_encoder = encoder_value
             fps_state.load_low_movement_count = 0
+            fps_state.load_last_progress_time = now
             return
 
+        fps_state.load_low_movement_count += 1
+        stall_time = None
+        if fps_state.load_last_progress_time is not None:
+            stall_time = now - fps_state.load_last_progress_time
+
+        if (
+            fps_state.load_low_movement_count < LOAD_ENCODER_STALL_CYCLES
+            and (stall_time is None or stall_time < LOAD_ENCODER_STALL_TIMEOUT)
+        ):
+            return
+
+        group_label = fps_state.current_group or fps_name
+        spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
+        message = f"Spool appears stuck while loading {group_label} spool {spool_label}"
+        self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
+        self.stop_monitors()
         fps_state.load_low_movement_count = 0
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, pressure, hes_values, now):
