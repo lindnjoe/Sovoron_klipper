@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import logging
+import math
 import time
 from functools import partial
 from collections import deque
@@ -2239,16 +2240,66 @@ class OAMSManager:
 
 
 
+    def _create_fps_monitor_bundle(self, fps_name: str):
+        """Create a unified timer callback for all FPS monitors."""
+
+        reactor = self.printer.get_reactor()
+        callbacks = (
+            self._monitor_unload_speed_for_fps(fps_name),
+            self._monitor_load_speed_for_fps(fps_name),
+            self._monitor_stuck_spool_for_fps(fps_name),
+            self._monitor_clog_for_fps(fps_name),
+        )
+        schedule = {cb: reactor.NOW for cb in callbacks}
+        log = logging.getLogger(__name__)
+
+        def _run_bundle(eventtime):
+            next_wake = None
+            for cb in callbacks:
+                due = schedule.get(cb, reactor.NOW)
+                if eventtime + 1e-6 < due:
+                    if next_wake is None or due < next_wake:
+                        next_wake = due
+                    continue
+
+                try:
+                    target = cb(eventtime)
+                except Exception:
+                    log.exception(
+                        "OAMS: FPS monitor callback failed for %s", fps_name
+                    )
+                    target = eventtime + MONITOR_ENCODER_PERIOD
+
+                try:
+                    target_time = float(target)
+                except (TypeError, ValueError):
+                    target_time = eventtime + MONITOR_ENCODER_PERIOD
+                else:
+                    if not math.isfinite(target_time):
+                        target_time = eventtime + MONITOR_ENCODER_PERIOD
+
+                schedule[cb] = target_time
+                if next_wake is None or target_time < next_wake:
+                    next_wake = target_time
+
+            if next_wake is None:
+                next_wake = eventtime + MONITOR_ENCODER_PERIOD
+            return next_wake
+
+        return schedule, _run_bundle
+
+
     def start_monitors(self):
         self.monitor_timers = []
         self.runout_monitors = {}
+        self._monitor_schedules: Dict[str, Dict[Callable, float]] = {}
         reactor = self.printer.get_reactor()
         for (fps_name, fps_state) in self.current_state.fps_state.items():
-            self.monitor_timers.append(reactor.register_timer(self._monitor_unload_speed_for_fps(fps_name), reactor.NOW))
-            self.monitor_timers.append(reactor.register_timer(self._monitor_load_speed_for_fps(fps_name), reactor.NOW))
-            self.monitor_timers.append(reactor.register_timer(self._monitor_stuck_spool_for_fps(fps_name), reactor.NOW))
-
-            self.monitor_timers.append(reactor.register_timer(self._monitor_clog_for_fps(fps_name), reactor.NOW))
+            schedule, callback = self._create_fps_monitor_bundle(fps_name)
+            self._monitor_schedules[fps_name] = schedule
+            self.monitor_timers.append(
+                reactor.register_timer(callback, reactor.NOW)
+            )
 
 
             def _reload_callback(fps_name=fps_name, fps_state=fps_state):
@@ -2426,6 +2477,7 @@ class OAMSManager:
         for timer in self.monitor_timers:
             self.printer.get_reactor().unregister_timer(timer)
         self.monitor_timers = []
+        self._monitor_schedules = {}
         for monitor in self.runout_monitors.values():
             monitor.reset()
         self.runout_monitors = {}
