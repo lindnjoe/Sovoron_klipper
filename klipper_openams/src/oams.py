@@ -8,7 +8,7 @@ import logging
 import mcu
 import struct
 from math import pi
-from typing import Tuple, List, Optional, Any
+from typing import Tuple, List, Optional, Any, Dict
 
 try:  # pragma: no cover - optional dependency during unit tests
     from extras.ams_integration import AMSHardwareService
@@ -134,6 +134,21 @@ class OAMS:
         self.name = config.get_name()
         self.register_commands(self.name.split()[-1])
 
+        # Retry configuration
+        self.load_retry_max: int = config.getint("load_retry_max", 3, minval=1, maxval=5)
+        self.unload_retry_max: int = config.getint("unload_retry_max", 2, minval=1, maxval=3)
+        self.retry_backoff_base: float = config.getfloat("retry_backoff_base", 1.0, above=0.0)
+        self.retry_backoff_max: float = config.getfloat("retry_backoff_max", 5.0, above=0.0)
+        self.auto_unload_on_failed_load: bool = config.getboolean(
+            "auto_unload_on_failed_load", True
+        )
+
+        # Retry state tracking
+        self._load_retry_count: Dict[int, int] = {}
+        self._unload_retry_count: int = 0
+        self._last_load_attempt: Dict[int, float] = {}
+        self._last_unload_attempt: float = 0.0
+
         # Expose the underlying hardware controller to AFC when available
         if AMSHardwareService is not None:
             try:
@@ -246,7 +261,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
     def register_commands(self, name):
         id = str(self.oams_idx)
         gcode = self.printer.lookup_object("gcode")
-        
+
         # Register all mux commands
         commands = [
             ("OAMS_LOAD_SPOOL", self.cmd_OAMS_LOAD_SPOOL, self.cmd_OAMS_LOAD_SPOOL_help),
@@ -257,10 +272,167 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             ("OAMS_PID_AUTOTUNE", self.cmd_OAMS_PID_AUTOTUNE, self.cmd_OAMS_PID_AUTOTUNE_help),
             ("OAMS_PID_SET", self.cmd_OAMS_PID_SET, self.cmd_OAMS_PID_SET_help),
             ("OAMS_CURRENT_PID_SET", self.cmd_OAMS_CURRENT_PID_SET, self.cmd_OAMS_CURRENT_PID_SET_help),
+            ("OAMS_RETRY_STATUS", self.cmd_OAMS_RETRY_STATUS, self.cmd_OAMS_RETRY_STATUS_help),
+            (
+                "OAMS_RESET_RETRY_COUNTS",
+                self.cmd_OAMS_RESET_RETRY_COUNTS,
+                self.cmd_OAMS_RESET_RETRY_COUNTS_help,
+            ),
         ]
-        
+
         for cmd_name, handler, help_text in commands:
             gcode.register_mux_command(cmd_name, "OAMS", id, handler, desc=help_text)
+
+    cmd_OAMS_RETRY_STATUS_help = "Display retry configuration and state"
+
+    def cmd_OAMS_RETRY_STATUS(self, gcmd):
+        msg_lines = [
+            f"OAMS[{self.oams_idx}] Retry Status:",
+            f"  Load retry max: {self.load_retry_max}",
+            f"  Unload retry max: {self.unload_retry_max}",
+            f"  Backoff: {self.retry_backoff_base:.1f}s (max {self.retry_backoff_max:.1f}s)",
+            f"  Auto-unload on failed load: {self.auto_unload_on_failed_load}",
+            f"  Current unload retry count: {self._unload_retry_count}",
+        ]
+
+        if self._load_retry_count:
+            msg_lines.append("  Load retry counts:")
+            for spool_idx, count in sorted(self._load_retry_count.items()):
+                msg_lines.append(
+                    f"    Spool {spool_idx}: {count}/{self.load_retry_max}"
+                )
+        else:
+            msg_lines.append("  No active load retries")
+
+        gcmd.respond_info("\n".join(msg_lines))
+
+    cmd_OAMS_RESET_RETRY_COUNTS_help = "Reset retry counters"
+
+    def cmd_OAMS_RESET_RETRY_COUNTS(self, gcmd):
+        self._load_retry_count.clear()
+        self._unload_retry_count = 0
+        self._last_load_attempt.clear()
+        self._last_unload_attempt = 0.0
+        gcmd.respond_info(f"OAMS[{self.oams_idx}]: Reset all retry counters")
+
+    def _calculate_retry_delay(self, attempt_number: int) -> float:
+        delay = self.retry_backoff_base * (2 ** max(attempt_number - 1, 0))
+        return min(delay, self.retry_backoff_max)
+
+    def _reset_load_retry_count(self, spool_idx: int) -> None:
+        if spool_idx in self._load_retry_count:
+            del self._load_retry_count[spool_idx]
+        if spool_idx in self._last_load_attempt:
+            del self._last_load_attempt[spool_idx]
+
+    def _reset_unload_retry_count(self) -> None:
+        self._unload_retry_count = 0
+        self._last_unload_attempt = 0.0
+
+    def load_spool_with_retry(self, spool_idx: int) -> Tuple[bool, str]:
+        retry_count = self._load_retry_count.get(spool_idx, 0)
+
+        if retry_count >= self.load_retry_max:
+            self._reset_load_retry_count(spool_idx)
+            return False, f"Failed to load spool {spool_idx} after {self.load_retry_max} attempts"
+
+        if retry_count > 0:
+            delay = self._calculate_retry_delay(retry_count)
+            logging.info(
+                "OAMS[%d]: Load retry %d/%d for spool %d, waiting %.1fs",
+                self.oams_idx,
+                retry_count + 1,
+                self.load_retry_max,
+                spool_idx,
+                delay,
+            )
+            self.reactor.pause(self.reactor.monotonic() + delay)
+
+        self._load_retry_count[spool_idx] = retry_count + 1
+        self._last_load_attempt[spool_idx] = self.reactor.monotonic()
+
+        success, message = self.load_spool(spool_idx)
+
+        if success:
+            self._reset_load_retry_count(spool_idx)
+            logging.info(
+                "OAMS[%d]: Successfully loaded spool %d on attempt %d",
+                self.oams_idx,
+                spool_idx,
+                retry_count + 1,
+            )
+            return True, message
+
+        if retry_count + 1 < self.load_retry_max:
+            logging.warning(
+                "OAMS[%d]: Load failed for spool %d: %s. Attempt %d/%d",
+                self.oams_idx,
+                spool_idx,
+                message,
+                retry_count + 1,
+                self.load_retry_max,
+            )
+
+            if self.auto_unload_on_failed_load:
+                logging.info("OAMS[%d]: Auto-unloading before retry", self.oams_idx)
+                unload_success, unload_msg = self.unload_spool_with_retry()
+                if not unload_success:
+                    logging.error(
+                        "OAMS[%d]: Failed to unload before retry: %s",
+                        self.oams_idx,
+                        unload_msg,
+                    )
+
+            return self.load_spool_with_retry(spool_idx)
+
+        self._reset_load_retry_count(spool_idx)
+        return False, (
+            f"Failed to load spool {spool_idx} after {self.load_retry_max} attempts: {message}"
+        )
+
+    def unload_spool_with_retry(self) -> Tuple[bool, str]:
+        if self._unload_retry_count >= self.unload_retry_max:
+            self._reset_unload_retry_count()
+            return False, f"Failed to unload after {self.unload_retry_max} attempts"
+
+        if self._unload_retry_count > 0:
+            delay = self._calculate_retry_delay(self._unload_retry_count)
+            logging.info(
+                "OAMS[%d]: Unload retry %d/%d, waiting %.1fs",
+                self.oams_idx,
+                self._unload_retry_count + 1,
+                self.unload_retry_max,
+                delay,
+            )
+            self.reactor.pause(self.reactor.monotonic() + delay)
+
+        self._unload_retry_count += 1
+        attempt_number = self._unload_retry_count
+        self._last_unload_attempt = self.reactor.monotonic()
+
+        success, message = self.unload_spool()
+
+        if success:
+            self._reset_unload_retry_count()
+            logging.info(
+                "OAMS[%d]: Successfully unloaded spool on attempt %d",
+                self.oams_idx,
+                attempt_number,
+            )
+            return True, message
+
+        if self._unload_retry_count < self.unload_retry_max:
+            logging.warning(
+                "OAMS[%d]: Unload failed: %s. Attempt %d/%d",
+                self.oams_idx,
+                message,
+                self._unload_retry_count,
+                self.unload_retry_max,
+            )
+            return self.unload_spool_with_retry()
+
+        self._reset_unload_retry_count()
+        return False, f"Failed to unload after {self.unload_retry_max} attempts: {message}"
 
     cmd_OAMS_CURRENT_PID_SET_help = "Set the PID values for the current sensor"
     def cmd_OAMS_CURRENT_PID_SET(self, gcmd):
@@ -395,7 +567,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         if spool_idx < 0 or spool_idx > 3:
             raise gcmd.error("Invalid SPOOL index")
         
-        success, message = self.load_spool(spool_idx)
+        success, message = self.load_spool_with_retry(spool_idx)
         
         if success:
             gcmd.respond_info(message)
@@ -419,7 +591,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
     cmd_OAMS_UNLOAD_SPOOL_help = "Unload a spool of filament"
     def cmd_OAMS_UNLOAD_SPOOL(self, gcmd):
-        success, message = self.unload_spool()
+        success, message = self.unload_spool_with_retry()
         if success:
             gcmd.respond_info(message)
         else:

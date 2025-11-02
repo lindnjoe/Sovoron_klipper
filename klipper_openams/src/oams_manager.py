@@ -807,7 +807,7 @@ class OAMSManager:
             return False, f"Failed to prepare unload on {fps_name}"
 
         try:
-            success, message = oams.unload_spool()
+            success, message = oams.unload_spool_with_retry()
         except Exception:
             self.logger.exception("Exception while unloading filament on %s", fps_name)
             return False, f"Exception unloading filament on {fps_name}"
@@ -869,7 +869,7 @@ class OAMSManager:
                 continue
 
             try:
-                success, message = oam.load_spool(bay_index)
+                success, message = oam.load_spool_with_retry(bay_index)
             except Exception:
                 self.logger.exception("Exception while loading group %s bay %s", group_name, bay_index)
                 success, message = False, f"Exception loading spool {bay_index} on {group_name}"
