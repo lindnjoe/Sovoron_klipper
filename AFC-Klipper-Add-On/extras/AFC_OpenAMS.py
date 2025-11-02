@@ -680,6 +680,12 @@ class afcAMS(afcUnit):
 
     cmd_SYNC_TOOL_SENSOR_help = "Synchronise the AMS virtual tool-start sensor with the assigned lane."
     def cmd_SYNC_TOOL_SENSOR(self, gcmd):
+        cls = self.__class__
+
+        unit_value = gcmd.get("UNIT", None)
+        if not unit_value:
+            unit_value = cls._extract_raw_param(gcmd.get_commandline(), "UNIT")
+
         lane_name = gcmd.get("LANE", None)
         if lane_name is None:
             lane_name = gcmd.get("FPS", None)
@@ -1328,6 +1334,23 @@ class afcAMS(afcUnit):
                 continue
             for match in pattern.finditer(message):
                 try:
+                    index = int(match.group(1))
+                    value = float(match.group(2))
+                except (TypeError, ValueError):
+                    continue
+                results[index] = value
+
+        return results
+
+    def _parse_ptfe_messages(self, messages):
+        values = []
+        pattern = re.compile(r"(?:ptfe|bowden)[^0-9\-]*(-?[0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
+
+        for message in messages or []:
+            if not isinstance(message, str):
+                continue
+            for match in pattern.finditer(message):
+                try:
                     values.append(float(match.group(1)))
                 except (TypeError, ValueError):
                     continue
@@ -1470,6 +1493,70 @@ class afcAMS(afcUnit):
             is_printing = False
         return bool(is_printing)
 
+    def _register_sync_dispatcher(self) -> None:
+        """Ensure the shared sync command is available for all AMS units."""
+        cls = self.__class__
+        if not cls._sync_command_registered:
+            self.gcode.register_command(
+                "AFC_AMS_SYNC_TOOL_SENSOR",
+                cls._dispatch_sync_tool_sensor,
+                desc=self.cmd_SYNC_TOOL_SENSOR_help,
+            )
+            cls._sync_command_registered = True
+
+        cls._sync_instances[self.name] = self
+
+    @classmethod
+    def _extract_raw_param(cls, commandline: str, key: str) -> Optional[str]:
+        """Recover multi-word parameter values from the raw command line."""
+        if not commandline:
+            return None
+
+        key_upper = key.upper() + "="
+        command_upper = commandline.upper()
+        start = command_upper.find(key_upper)
+        if start == -1:
+            return None
+
+        start += len(key_upper)
+        remainder = commandline[start:]
+        match = re.search(r"\s[A-Z0-9_]+=|;", remainder)
+        end = start + match.start() if match else len(commandline)
+
+        value = commandline[start:end].strip()
+        if not value:
+            return None
+
+        if value[0] in ('\'', '"') and value[-1] == value[0]:
+            value = value[1:-1]
+
+        return value
+
+    @classmethod
+    def _dispatch_sync_tool_sensor(cls, gcmd):
+        """Route sync requests to the correct AMS instance, tolerating spaces."""
+        unit_value = gcmd.get("UNIT", None)
+        if not unit_value:
+            unit_value = cls._extract_raw_param(gcmd.get_commandline(), "UNIT")
+
+        lane_name = gcmd.get("LANE", None)
+        if lane_name is None:
+            lane_name = gcmd.get("FPS", None)
+
+        if lane_name is None:
+            commandline = gcmd.get_commandline()
+            lane_name = cls._extract_raw_param(commandline, "LANE")
+            if lane_name is None:
+                lane_name = cls._extract_raw_param(commandline, "FPS")
+
+        for instance in cls._sync_instances.values():
+            if not instance._unit_matches(unit_value):
+                continue
+
+            resolved_lane = instance._resolve_lane_alias(lane_name)
+            eventtime = instance.reactor.monotonic()
+            instance._sync_virtual_tool_sensor(eventtime, resolved_lane)
+
 def _patch_lane_pre_sensor_for_ams() -> None:
     """Patch AFCLane.get_toolhead_pre_sensor_state for AMS virtual sensors."""
     if _ORIGINAL_LANE_PRE_SENSOR is None:
@@ -1529,71 +1616,3 @@ def load_config_prefix(config):
     _patch_lane_pre_sensor_for_ams()
     _patch_extruder_for_virtual_ams()
     return afcAMS(config)
- match in pattern.finditer(message):
-                try:
-                    index = int(match.group(1))
-                    value = float(match.group(2))
-                except (TypeError, ValueError):
-                    continue
-                results[index] = value
-
-        return results
-
-    def _parse_ptfe_messages(self, messages):
-        values = []
-        pattern = re.compile(r"(?:ptfe|bowden)[^0-9\-]*(-?[0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
-
-        for message in messages or []:
-            if not isinstance(message, str):
-                continue
-            for = gcmd.get("FPS", None)
-
-        lane_name = self._resolve_lane_alias(lane_name)
-        eventtime = self.reactor.monotonic()
-        self._sync_virtual_tool_sensor(eventtime, lane_name)
-
-    def _register_sync_dispatcher(self) -> None:
-        """Ensure the shared sync command is available for all AMS units."""
-        cls = self.__class__
-        if not cls._sync_command_registered:
-            self.gcode.register_command("AFC_AMS_SYNC_TOOL_SENSOR", cls._dispatch_sync_tool_sensor, desc=self.cmd_SYNC_TOOL_SENSOR_help)
-            cls._sync_command_registered = True
-
-        cls._sync_instances[self.name] = self
-
-    @classmethod
-    def _extract_raw_param(cls, commandline: str, key: str) -> Optional[str]:
-        """Recover multi-word parameter values from the raw command line."""
-        if not commandline:
-            return None
-
-        key_upper = key.upper() + "="
-        command_upper = commandline.upper()
-        start = command_upper.find(key_upper)
-        if start == -1:
-            return None
-
-        start += len(key_upper)
-        remainder = commandline[start:]
-        match = re.search(r"\s[A-Z0-9_]+=|;", remainder)
-        end = start + match.start() if match else len(commandline)
-
-        value = commandline[start:end].strip()
-        if not value:
-            return None
-
-        if value[0] in "'\"" and value[-1] == value[0]:
-            value = value[1:-1]
-
-        return value
-
-    @classmethod
-    def _dispatch_sync_tool_sensor(cls, gcmd):
-        """Route sync requests to the correct AMS instance, tolerating spaces."""
-        unit_value = gcmd.get("UNIT", None)
-        if not unit_value:
-            unit_value = cls._extract_raw_param(gcmd.get_commandline(), "UNIT")
-
-        lane_name = gcmd.get("LANE", None)
-        if lane_name is None:
-            lane_name
