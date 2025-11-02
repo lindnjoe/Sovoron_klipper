@@ -17,6 +17,7 @@ except Exception:
 # Configuration constants
 PAUSE_DISTANCE = 60
 MIN_ENCODER_DIFF = 1
+LOAD_ENCODER_STALL_CYCLES = 3
 FILAMENT_PATH_LENGTH_FACTOR = 1.14
 MONITOR_ENCODER_PERIOD = 2.0
 MONITOR_ENCODER_SPEED_GRACE = 2.0
@@ -254,6 +255,7 @@ class FPSState:
         # OPTIMIZATION: Simple variables instead of deque for 2-element tracking
         self.encoder_sample_prev: Optional[int] = None
         self.encoder_sample_current: Optional[int] = None
+        self.load_low_movement_count: int = 0
 
         self.following: bool = False
         self.direction: int = 0
@@ -292,6 +294,7 @@ class FPSState:
         """Reset encoder tracking."""
         self.encoder_sample_prev = None
         self.encoder_sample_current = None
+        self.load_low_movement_count = 0
 
     def reset_runout_positions(self) -> None:
         self.runout_position = None
@@ -807,7 +810,7 @@ class OAMSManager:
             return False, f"Failed to prepare unload on {fps_name}"
 
         try:
-            success, message = oams.unload_spool()
+            success, message = oams.unload_spool_with_retry()
         except Exception:
             self.logger.exception("Exception while unloading filament on %s", fps_name)
             return False, f"Exception unloading filament on {fps_name}"
@@ -869,7 +872,7 @@ class OAMSManager:
                 continue
 
             try:
-                success, message = oam.load_spool(bay_index)
+                success, message = oam.load_spool_with_retry(bay_index)
             except Exception:
                 self.logger.exception("Exception while loading group %s bay %s", group_name, bay_index)
                 success, message = False, f"Exception loading spool {bay_index} on {group_name}"
@@ -1203,20 +1206,41 @@ class OAMSManager:
         """Check load speed using optimized encoder tracking."""
         if fps_state.stuck_spool_active:
             return
-        
+
+        spool_idx = fps_state.current_spool_idx
+        if (
+            spool_idx is not None
+            and fps_state.since is not None
+            and hasattr(oams, "get_last_load_attempt_time")
+        ):
+            last_attempt = oams.get_last_load_attempt_time(spool_idx)
+            if last_attempt is not None and last_attempt > fps_state.since:
+                fps_state.since = last_attempt
+                fps_state.clear_encoder_samples()
+                fps_state.load_low_movement_count = 0
+                if now - fps_state.since <= MONITOR_ENCODER_SPEED_GRACE:
+                    return
+
         encoder_diff = fps_state.record_encoder_sample(encoder_value)
         if encoder_diff is None:
             return
-        
+
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug("OAMS[%d] Load Monitor: Encoder diff %d", getattr(oams, "oams_idx", -1), encoder_diff)
-        
+
         if encoder_diff < MIN_ENCODER_DIFF:
+            fps_state.load_low_movement_count += 1
+            if fps_state.load_low_movement_count < LOAD_ENCODER_STALL_CYCLES:
+                return
             group_label = fps_state.current_group or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
             message = f"Spool appears stuck while loading {group_label} spool {spool_label}"
             self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
             self.stop_monitors()
+            fps_state.load_low_movement_count = 0
+            return
+
+        fps_state.load_low_movement_count = 0
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, pressure, hes_values, now):
         """Check for stuck spool conditions."""
