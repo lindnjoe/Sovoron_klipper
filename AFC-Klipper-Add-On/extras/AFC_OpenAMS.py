@@ -276,6 +276,16 @@ class afcAMS(afcUnit):
         self._last_encoder_clicks: Optional[int] = None
         self._last_hub_hes_values: Optional[List[float]] = None
         self._last_ptfe_value: Optional[float] = None
+        self._lane_alias_index: Dict[str, str] = {}
+        self._lane_group_index: Dict[str, str] = {}
+        self._lane_index_version: int = -1
+        self._idle_backoff: int = 0
+        self._max_idle_interval: float = max(self.interval * 4.0, 8.0)
+        _interval = self.interval
+        self._max_idle_backoff: int = 0
+        while _interval < self._max_idle_interval:
+            self._max_idle_backoff += 1
+            _interval *= 2.0
         self.oams = None
         self.hardware_service = None
 
@@ -748,27 +758,21 @@ class afcAMS(afcUnit):
         if not lookup:
             return None
 
-        lane = self.lanes.get(lookup)
-        if lane is not None:
-            return lane.name
+        self._ensure_lane_indexes()
 
-        lowered = lookup.lower()
+        lane_name = self._lane_alias_index.get(lookup)
+        if lane_name:
+            return lane_name
+
+        lane_name = self._lane_alias_index.get(lookup.lower())
+        if lane_name:
+            return lane_name
+
         normalized_lookup = self._normalize_group_name(lookup)
-        for lane in self.lanes.values():
-            if lane.name.lower() == lowered:
-                return lane.name
-
-            lane_map = getattr(lane, "map", None)
-            if isinstance(lane_map, str) and lane_map.lower() == lowered:
-                return lane.name
-
-            canonical_map = self._normalize_group_name(lane_map)
-            if (
-                canonical_map is not None
-                and normalized_lookup is not None
-                and canonical_map.lower() == normalized_lookup.lower()
-            ):
-                return lane.name
+        if normalized_lookup:
+            lane_name = self._lane_group_index.get(normalized_lookup.lower())
+            if lane_name:
+                return lane_name
 
         return None
 
@@ -958,6 +962,55 @@ class afcAMS(afcUnit):
                         "Failed to attach AMSHardwareService for %s", self.oams_name
                     )
         self.reactor.update_timer(self.timer, self.reactor.NOW)
+        self._lane_index_version = -1
+
+    def _ensure_lane_indexes(self) -> None:
+        if self._lane_index_version == len(self.lanes):
+            return
+
+        alias_index: Dict[str, str] = {}
+        group_index: Dict[str, str] = {}
+
+        for lane_name, lane in self.lanes.items():
+            canonical = getattr(lane, "name", lane_name)
+            if not canonical:
+                continue
+
+            canonical_key = str(canonical).strip()
+            if not canonical_key:
+                continue
+
+            alias_index[canonical_key] = canonical
+            alias_index[canonical_key.lower()] = canonical
+
+            normalized_lane = self._normalize_group_name(canonical_key)
+            if normalized_lane:
+                group_index[normalized_lane.lower()] = canonical
+
+            lane_map = getattr(lane, "map", None)
+            if isinstance(lane_map, str):
+                mapped = lane_map.strip()
+                if mapped:
+                    alias_index[mapped] = canonical
+                    alias_index[mapped.lower()] = canonical
+                    normalized_map = self._normalize_group_name(mapped)
+                    if normalized_map:
+                        group_index[normalized_map.lower()] = canonical
+
+        self._lane_alias_index = alias_index
+        self._lane_group_index = group_index
+        self._lane_index_version = len(self.lanes)
+
+    def _next_poll_interval(self, activity_detected: bool) -> float:
+        if activity_detected:
+            self._idle_backoff = 0
+        elif self._idle_backoff < self._max_idle_backoff:
+            self._idle_backoff += 1
+
+        interval = self.interval * (2 ** self._idle_backoff)
+        if interval > self._max_idle_interval:
+            interval = self._max_idle_interval
+        return interval
 
     def _update_shared_lane(self, lane, lane_val, eventtime):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
@@ -1039,6 +1092,9 @@ class afcAMS(afcUnit):
     def _sync_event(self, eventtime):
         """Poll OpenAMS for state updates and propagate to lanes/hubs."""
 
+        self._ensure_lane_indexes()
+        activity_detected = False
+
         try:
             status = None
             if self.hardware_service is not None:
@@ -1053,7 +1109,7 @@ class afcAMS(afcUnit):
                 }
 
             if not status:
-                return eventtime + self.interval
+                return eventtime + self._next_poll_interval(activity_detected)
 
             encoder_clicks = status.get("encoder_clicks")
             try:
@@ -1070,7 +1126,8 @@ class afcAMS(afcUnit):
                     parsed_hub_values = [float(value) for value in hub_values]
                 except (TypeError, ValueError):
                     parsed_hub_values = None
-                if parsed_hub_values:
+                if parsed_hub_values and parsed_hub_values != self._last_hub_hes_values:
+                    activity_detected = True
                     self._last_hub_hes_values = parsed_hub_values
 
             new_ptfe_value = None
@@ -1087,13 +1144,15 @@ class afcAMS(afcUnit):
                 except (TypeError, ValueError):
                     new_ptfe_value = None
 
-            if new_ptfe_value is not None:
+            if new_ptfe_value is not None and new_ptfe_value != self._last_ptfe_value:
+                activity_detected = True
                 self._last_ptfe_value = new_ptfe_value
 
             active_lane_name = None
             if encoder_clicks is not None:
                 last_clicks = self._last_encoder_clicks
                 if last_clicks is not None and encoder_clicks != last_clicks:
+                    activity_detected = True
                     current_loading = getattr(self.afc, "current_loading", None)
                     if current_loading:
                         lane = self.lanes.get(current_loading)
@@ -1109,7 +1168,7 @@ class afcAMS(afcUnit):
                         if canonical_lane:
                             self._lane_feed_activity[canonical_lane] = True
                 self._last_encoder_clicks = encoder_clicks
-            elif encoder_clicks is None:
+            else:
                 self._last_encoder_clicks = None
 
             for lane in list(self.lanes.values()):
@@ -1121,6 +1180,13 @@ class afcAMS(afcUnit):
                     continue
 
                 lane_val = bool(lane_values[idx])
+                previous_state = self._last_lane_states.get(lane.name)
+                if previous_state is None:
+                    if lane_val:
+                        activity_detected = True
+                elif bool(previous_state) != lane_val:
+                    activity_detected = True
+
                 if getattr(lane, "ams_share_prep_load", False):
                     self._update_shared_lane(lane, lane_val, eventtime)
                 elif lane_val != self._last_lane_states.get(lane.name):
@@ -1150,6 +1216,7 @@ class afcAMS(afcUnit):
 
                 hub_val = bool(hub_values[idx])
                 if hub_val != self._last_hub_states.get(hub.name):
+                    activity_detected = True
                     hub.switch_pin_callback(eventtime, hub_val)
                     fila = getattr(hub, "fila", None)
                     if fila is not None:
@@ -1160,7 +1227,8 @@ class afcAMS(afcUnit):
             # Avoid stopping the reactor loop if OpenAMS query fails.
             pass
 
-        return eventtime + self.interval
+        next_interval = self._next_poll_interval(activity_detected)
+        return eventtime + next_interval
 
     def _lane_for_spool_index(self, spool_index: Optional[int]):
         if spool_index is None:
