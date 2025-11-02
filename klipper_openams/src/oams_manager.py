@@ -1203,11 +1203,24 @@ class OAMSManager:
         """Check load speed using optimized encoder tracking."""
         if fps_state.stuck_spool_active:
             return
-        
+
+        spool_idx = fps_state.current_spool_idx
+        if (
+            spool_idx is not None
+            and fps_state.since is not None
+            and hasattr(oams, "get_last_load_attempt_time")
+        ):
+            last_attempt = oams.get_last_load_attempt_time(spool_idx)
+            if last_attempt is not None and last_attempt > fps_state.since:
+                fps_state.since = last_attempt
+                fps_state.clear_encoder_samples()
+                if now - fps_state.since <= MONITOR_ENCODER_SPEED_GRACE:
+                    return
+
         encoder_diff = fps_state.record_encoder_sample(encoder_value)
         if encoder_diff is None:
             return
-        
+
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug("OAMS[%d] Load Monitor: Encoder diff %d", getattr(oams, "oams_idx", -1), encoder_diff)
         
