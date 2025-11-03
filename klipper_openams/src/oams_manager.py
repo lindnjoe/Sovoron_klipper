@@ -796,6 +796,7 @@ class OAMSManager:
             fps_state.since = self.reactor.monotonic()
             fps_state.current_oams = oams.name
             fps_state.current_spool_idx = oams.current_spool
+            fps_state.clear_encoder_samples()  # Clear stale encoder samples
         except Exception:
             self.logger.exception("Failed to capture unload state for %s", fps_name)
             return False, f"Failed to prepare unload on {fps_name}"
@@ -1207,6 +1208,10 @@ class OAMSManager:
 
     def _check_unload_speed(self, fps_name, fps_state, oams, encoder_value, now):
         """Check unload speed using optimized encoder tracking."""
+        # Skip check if already handling a stuck spool
+        if fps_state.stuck_spool_active:
+            return
+            
         encoder_diff = fps_state.record_encoder_sample(encoder_value)
         if encoder_diff is None:
             return
@@ -1215,12 +1220,23 @@ class OAMSManager:
             self.logger.debug("OAMS[%d] Unload Monitor: Encoder diff %d", getattr(oams, "oams_idx", -1), encoder_diff)
         
         if encoder_diff < MIN_ENCODER_DIFF:
+            group_label = fps_state.current_group or fps_name
+            spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
+            message = f"Spool appears stuck while unloading {group_label} spool {spool_label}"
+            
+            # Abort the current unload operation cleanly
             try:
-                oams.set_led_error(fps_state.current_spool_idx, 1)
+                oams.abort_current_action()
+                self.logger.info("Aborted stuck spool unload operation on %s", fps_name)
             except Exception:
-                self.logger.exception("Failed to set unload LED on %s", fps_name)
-            self._pause_printer_message("Printer paused because the unloading speed of the moving filament was too low", fps_state.current_oams)
-            self.stop_monitors()
+                self.logger.exception("Failed to abort unload operation on %s", fps_name)
+            
+            # Transition to LOADED state cleanly (unload failed, so still loaded)
+            fps_state.state = FPSLoadState.LOADED
+            fps_state.clear_encoder_samples()
+            
+            # Trigger the pause but DON'T stop monitors - let them keep running
+            self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
 
     def _check_load_speed(self, fps_name, fps_state, oams, encoder_value, now):
         """Check load speed using optimized encoder tracking."""
@@ -1245,7 +1261,6 @@ class OAMSManager:
         if encoder_diff < MIN_ENCODER_DIFF:
             group_label = fps_state.current_group or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
-            message = f"Spool appears stuck while loading {group_label} spool {spool_label}"
             
             # Abort the current load operation cleanly
             try:
@@ -1254,12 +1269,22 @@ class OAMSManager:
             except Exception:
                 self.logger.exception("Failed to abort load operation on %s", fps_name)
             
+            # Set LED error
+            try:
+                oams.set_led_error(fps_state.current_spool_idx, 1)
+            except Exception:
+                self.logger.exception("Failed to set LED during load stuck detection on %s", fps_name)
+            
             # Transition to UNLOADED state cleanly
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.clear_encoder_samples()
             
-            # Trigger the pause but DON'T stop monitors - let them keep running
-            self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
+            # Set the stuck flag but DON'T pause - let the OAMS retry logic handle it
+            # The retry logic will clear this flag if the retry succeeds
+            fps_state.stuck_spool_active = True
+            fps_state.stuck_spool_start_time = None
+            
+            self.logger.info("Spool appears stuck while loading %s spool %s - letting retry logic handle it", group_label, spool_label)
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, pressure, hes_values, now):
         """Check for stuck spool conditions."""
