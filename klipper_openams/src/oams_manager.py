@@ -1279,7 +1279,10 @@ class OAMSManager:
 
         if not fps_state.following or fps_state.direction != 1:
             fps_state.stuck_spool_start_time = None
-            if fps_state.stuck_spool_restore_follower and is_printing and oams is not None:
+            # Auto-enable follower if we have a spool loaded but follower is disabled
+            if is_printing and oams is not None and not fps_state.following:
+                self._ensure_forward_follower(fps_name, fps_state, "auto-enable after manual load")
+            elif fps_state.stuck_spool_restore_follower and is_printing and oams is not None:
                 self._restore_follower_if_needed(fps_name, fps_state, oams, "stuck spool recovery")
             return
 
