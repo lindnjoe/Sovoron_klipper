@@ -777,6 +777,7 @@ class OAMSManager:
             fps_state.following = False
             fps_state.direction = 0
             fps_state.current_group = None
+            self._clear_stuck_spool_indicator(fps_name, fps_state, oams)
             fps_state.current_spool_idx = None
             fps_state.since = self.reactor.monotonic()
             self.current_group = None
@@ -823,6 +824,7 @@ class OAMSManager:
                 except Exception:
                     self.logger.exception("Failed to notify AFC that lane %s unloaded on %s", lane_name, fps_name)
             fps_state.current_group = None
+            self._clear_stuck_spool_indicator(fps_name, fps_state, oams)
             fps_state.current_spool_idx = None
             self.current_group = None
             fps_state.reset_stuck_spool_state()
@@ -882,6 +884,7 @@ class OAMSManager:
                 fps_state.since = self.reactor.monotonic()
                 fps_state.direction = 1
                 self.current_group = group_name
+                self._clear_stuck_spool_indicator(fps_name, fps_state, oam)
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
                 self._ensure_forward_follower(fps_name, fps_state, "load filament")
@@ -907,6 +910,7 @@ class OAMSManager:
 
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.current_group = None
+            self._clear_stuck_spool_indicator(fps_name, fps_state, oam)
             fps_state.current_spool_idx = None
             fps_state.current_oams = None
             fps_state.following = False
@@ -1141,6 +1145,35 @@ class OAMSManager:
         fps_state.stuck_spool_active = True
         fps_state.stuck_spool_start_time = None
         self._pause_printer_message(message, fps_state.current_oams)
+
+    def _clear_stuck_spool_indicator(
+        self,
+        fps_name: str,
+        fps_state: "FPSState",
+        oams: Optional[Any] = None,
+    ) -> None:
+        """Best-effort helper to clear any latched stuck-spool indicators."""
+
+        if not fps_state.stuck_spool_active:
+            return
+
+        if fps_state.current_spool_idx is None:
+            return
+
+        if oams is None and fps_state.current_oams is not None:
+            oams = self.oams.get(fps_state.current_oams)
+
+        if oams is None:
+            return
+
+        try:
+            oams.set_led_error(fps_state.current_spool_idx, 0)
+        except Exception:
+            self.logger.exception(
+                "Failed to clear stuck spool LED on %s spool %s",
+                fps_name,
+                fps_state.current_spool_idx,
+            )
 
     #  Consolidated unified monitor combining all checks
     def _unified_monitor_for_fps(self, fps_name):
