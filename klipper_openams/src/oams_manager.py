@@ -894,7 +894,15 @@ class OAMSManager:
                 
                 # FIX: Skip post-load pressure check if this load completed after retries
                 # Retries indicate unstable conditions and pressure sensors need time to stabilize
-                if not oam.last_load_was_retry(bay_index):
+                skip_pressure_check = False
+                try:
+                    if hasattr(oam, 'last_load_was_retry'):
+                        skip_pressure_check = oam.last_load_was_retry(bay_index)
+                except Exception:
+                    self.logger.exception("Failed to check retry status for bay %d", bay_index)
+                    skip_pressure_check = False
+                
+                if not skip_pressure_check:
                     self._schedule_post_load_pressure_check(fps_name, fps_state)
                 else:
                     self.logger.info("OAMS[%s]: Skipping post-load pressure check after retry for spool %d", 
