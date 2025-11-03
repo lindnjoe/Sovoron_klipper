@@ -851,9 +851,9 @@ class OAMSManager:
             try:
                 fps_state.state = FPSLoadState.LOADING
                 fps_state.encoder = oam.encoder_clicks
-                fps_state.since = self.reactor.monotonic()
                 fps_state.current_oams = oam.name
                 fps_state.current_spool_idx = bay_index
+                # Don't set fps_state.since yet - will be set after successful load
             except Exception:
                 self.logger.exception("Failed to capture load state for group %s bay %s", group_name, bay_index)
                 fps_state.state = FPSLoadState.UNLOADED
@@ -872,15 +872,17 @@ class OAMSManager:
                 fps_state.current_group = group_name
                 fps_state.current_oams = oam.name
                 fps_state.current_spool_idx = bay_index
-                fps_state.state = FPSLoadState.LOADED
                 
-                # CRITICAL FIX: Update fps_state.since to match the successful load time
-                # This prevents stuck spool detection from triggering on retry loads
+                # CRITICAL FIX: Set fps_state.since to the successful load time BEFORE changing state
+                # This prevents the monitor from seeing stale timestamps during LOADING state
                 successful_load_time = oam.get_last_successful_load_time(bay_index)
                 if successful_load_time is not None:
                     fps_state.since = successful_load_time
                 else:
                     fps_state.since = self.reactor.monotonic()
+                
+                # Now set state to LOADED after timestamp is correct
+                fps_state.state = FPSLoadState.LOADED
                 
                 fps_state.direction = 1
                 self.current_group = group_name
@@ -1205,19 +1207,28 @@ class OAMSManager:
 
         spool_idx = fps_state.current_spool_idx
         
-        # CRITICAL FIX: Use get_last_successful_load_time instead of get_last_load_attempt_time
-        # This ensures we check against the actual successful load time, not failed attempts
+        # CRITICAL FIX: Check if we're in a retry scenario
+        # If the OAMS has a more recent load attempt, update our since timestamp
         if (
             spool_idx is not None
-            and fps_state.since is not None
-            and hasattr(oams, "get_last_successful_load_time")
+            and hasattr(oams, "get_last_load_attempt_time")
         ):
-            successful_load_time = oams.get_last_successful_load_time(spool_idx)
-            if successful_load_time is not None and successful_load_time > fps_state.since:
-                fps_state.since = successful_load_time
+            last_attempt = oams.get_last_load_attempt_time(spool_idx)
+            if last_attempt is not None and (fps_state.since is None or last_attempt > fps_state.since):
+                # This is a retry - update the since time to the most recent attempt
+                fps_state.since = last_attempt
                 fps_state.clear_encoder_samples()
+                # Give grace period for the new attempt
                 if now - fps_state.since <= MONITOR_ENCODER_SPEED_GRACE:
                     return
+
+        # Skip check if we don't have a valid since timestamp yet
+        if fps_state.since is None:
+            return
+            
+        # Skip check if we're still in grace period
+        if now - fps_state.since <= MONITOR_ENCODER_SPEED_GRACE:
+            return
 
         encoder_diff = fps_state.record_encoder_sample(encoder_value)
         if encoder_diff is None:
