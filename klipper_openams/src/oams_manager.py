@@ -853,7 +853,9 @@ class OAMSManager:
                 fps_state.encoder = oam.encoder_clicks
                 fps_state.current_oams = oam.name
                 fps_state.current_spool_idx = bay_index
-                # Don't set fps_state.since yet - will be set after successful load
+                # Set since to now for THIS load attempt (will be updated on success)
+                fps_state.since = self.reactor.monotonic()
+                fps_state.clear_encoder_samples()
             except Exception:
                 self.logger.exception("Failed to capture load state for group %s bay %s", group_name, bay_index)
                 fps_state.state = FPSLoadState.UNLOADED
@@ -1205,24 +1207,7 @@ class OAMSManager:
         if fps_state.stuck_spool_active:
             return
 
-        spool_idx = fps_state.current_spool_idx
-        
-        # CRITICAL FIX: Check if we're in a retry scenario
-        # If the OAMS has a more recent load attempt, update our since timestamp
-        if (
-            spool_idx is not None
-            and hasattr(oams, "get_last_load_attempt_time")
-        ):
-            last_attempt = oams.get_last_load_attempt_time(spool_idx)
-            if last_attempt is not None and (fps_state.since is None or last_attempt > fps_state.since):
-                # This is a retry - update the since time to the most recent attempt
-                fps_state.since = last_attempt
-                fps_state.clear_encoder_samples()
-                # Give grace period for the new attempt
-                if now - fps_state.since <= MONITOR_ENCODER_SPEED_GRACE:
-                    return
-
-        # Skip check if we don't have a valid since timestamp yet
+        # Skip check if we don't have a valid since timestamp
         if fps_state.since is None:
             return
             
