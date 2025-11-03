@@ -49,9 +49,8 @@ class OAMSRunoutState:
     PAUSED = "PAUSED"
 
 
-#  Use integer states instead of strings for faster comparisons
 class FPSLoadState:
-    """Enum for FPS loading states """
+    """Enum for FPS loading states"""
     UNLOADED = 0
     LOADED = 1
     LOADING = 2
@@ -148,7 +147,6 @@ class OAMSRunoutMonitor:
 
                 self.latest_lane_name = lane_name
 
-                #  Use integer state comparison
                 if (is_printing and fps_state.state == FPSLoadState.LOADED and 
                     fps_state.current_group is not None and fps_state.current_spool_idx is not None and spool_empty):
                     self.state = OAMSRunoutState.DETECTED
@@ -230,7 +228,7 @@ class OAMSState:
         
 
 class FPSState:
-    """Tracks the state of a single FPS """
+    """Tracks the state of a single FPS"""
     
     def __init__(self, 
                  state: int = FPSLoadState.UNLOADED,
@@ -238,7 +236,6 @@ class FPSState:
                  current_oams: Optional[str] = None, 
                  current_spool_idx: Optional[int] = None):
         
-        #  Use integer state
         self.state = state
         self.current_group = current_group
         self.current_oams = current_oams
@@ -251,7 +248,6 @@ class FPSState:
         self.monitor_pause_timer = None
         self.monitor_load_next_spool_timer = None
         
-        # OPTIMIZATION: Simple variables instead of deque for 2-element tracking
         self.encoder_sample_prev: Optional[int] = None
         self.encoder_sample_current: Optional[int] = None
 
@@ -278,7 +274,6 @@ class FPSState:
         self.post_load_pressure_timer = None
         self.post_load_pressure_start: Optional[float] = None
 
-    # OPTIMIZATION: Direct encoder tracking instead of deque
     def record_encoder_sample(self, value: int) -> Optional[int]:
         """Record encoder sample and return diff if we have 2 samples."""
         self.encoder_sample_prev = self.encoder_sample_current
@@ -392,7 +387,6 @@ class OAMSManager:
             if status_name != name:
                 attributes["oams"][name] = oam_status
 
-        # Use integer state
         state_names = {0: "UNLOADED", 1: "LOADED", 2: "LOADING", 3: "UNLOADING"}
         for fps_name, fps_state in self.current_state.fps_state.items():
             attributes[fps_name] = {
@@ -777,7 +771,6 @@ class OAMSManager:
             fps_state.following = False
             fps_state.direction = 0
             fps_state.current_group = None
-            self._clear_stuck_spool_indicator(fps_name, fps_state, oams)
             fps_state.current_spool_idx = None
             fps_state.since = self.reactor.monotonic()
             self.current_group = None
@@ -824,7 +817,6 @@ class OAMSManager:
                 except Exception:
                     self.logger.exception("Failed to notify AFC that lane %s unloaded on %s", lane_name, fps_name)
             fps_state.current_group = None
-            self._clear_stuck_spool_indicator(fps_name, fps_state, oams)
             fps_state.current_spool_idx = None
             self.current_group = None
             fps_state.reset_stuck_spool_state()
@@ -881,10 +873,17 @@ class OAMSManager:
                 fps_state.current_oams = oam.name
                 fps_state.current_spool_idx = bay_index
                 fps_state.state = FPSLoadState.LOADED
-                fps_state.since = self.reactor.monotonic()
+                
+                # CRITICAL FIX: Update fps_state.since to match the successful load time
+                # This prevents stuck spool detection from triggering on retry loads
+                successful_load_time = oam.get_last_successful_load_time(bay_index)
+                if successful_load_time is not None:
+                    fps_state.since = successful_load_time
+                else:
+                    fps_state.since = self.reactor.monotonic()
+                
                 fps_state.direction = 1
                 self.current_group = group_name
-                self._clear_stuck_spool_indicator(fps_name, fps_state, oam)
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
                 self._ensure_forward_follower(fps_name, fps_state, "load filament")
@@ -910,7 +909,6 @@ class OAMSManager:
 
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.current_group = None
-            self._clear_stuck_spool_indicator(fps_name, fps_state, oam)
             fps_state.current_spool_idx = None
             fps_state.current_oams = None
             fps_state.following = False
@@ -1146,36 +1144,6 @@ class OAMSManager:
         fps_state.stuck_spool_start_time = None
         self._pause_printer_message(message, fps_state.current_oams)
 
-    def _clear_stuck_spool_indicator(
-        self,
-        fps_name: str,
-        fps_state: "FPSState",
-        oams: Optional[Any] = None,
-    ) -> None:
-        """Best-effort helper to clear any latched stuck-spool indicators."""
-
-        if not fps_state.stuck_spool_active:
-            return
-
-        if fps_state.current_spool_idx is None:
-            return
-
-        if oams is None and fps_state.current_oams is not None:
-            oams = self.oams.get(fps_state.current_oams)
-
-        if oams is None:
-            return
-
-        try:
-            oams.set_led_error(fps_state.current_spool_idx, 0)
-        except Exception:
-            self.logger.exception(
-                "Failed to clear stuck spool LED on %s spool %s",
-                fps_name,
-                fps_state.current_spool_idx,
-            )
-
-    #  Consolidated unified monitor combining all checks
     def _unified_monitor_for_fps(self, fps_name):
         """Consolidated monitor handling all FPS checks in a single timer."""
         def _unified_monitor(self, eventtime):
@@ -1187,7 +1155,6 @@ class OAMSManager:
             
             oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
             
-            # Cache all sensor reads at once 
             try:
                 if oams:
                     encoder_value = oams.encoder_clicks
@@ -1202,7 +1169,6 @@ class OAMSManager:
             now = self.reactor.monotonic()
             state = fps_state.state
             
-            # Run appropriate checks based on state 
             if state == FPSLoadState.UNLOADING and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
                 self._check_unload_speed(fps_name, fps_state, oams, encoder_value, now)
             elif state == FPSLoadState.LOADING and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
@@ -1238,14 +1204,17 @@ class OAMSManager:
             return
 
         spool_idx = fps_state.current_spool_idx
+        
+        # CRITICAL FIX: Use get_last_successful_load_time instead of get_last_load_attempt_time
+        # This ensures we check against the actual successful load time, not failed attempts
         if (
             spool_idx is not None
             and fps_state.since is not None
-            and hasattr(oams, "get_last_load_attempt_time")
+            and hasattr(oams, "get_last_successful_load_time")
         ):
-            last_attempt = oams.get_last_load_attempt_time(spool_idx)
-            if last_attempt is not None and last_attempt > fps_state.since:
-                fps_state.since = last_attempt
+            successful_load_time = oams.get_last_successful_load_time(spool_idx)
+            if successful_load_time is not None and successful_load_time > fps_state.since:
+                fps_state.since = successful_load_time
                 fps_state.clear_encoder_samples()
                 if now - fps_state.since <= MONITOR_ENCODER_SPEED_GRACE:
                     return
@@ -1399,12 +1368,11 @@ class OAMSManager:
             self._pause_printer_message(message, fps_state.current_oams)
 
     def start_monitors(self):
-        """Start all monitoring timers """
+        """Start all monitoring timers"""
         self.monitor_timers = []
         self.runout_monitors = {}
         reactor = self.printer.get_reactor()
         
-        # Single unified monitor per FPS instead of 4+ separate timers
         for fps_name in self.current_state.fps_state.keys():
             self.monitor_timers.append(
                 reactor.register_timer(

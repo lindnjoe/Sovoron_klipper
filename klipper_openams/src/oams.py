@@ -148,6 +148,7 @@ class OAMS:
         self._unload_retry_count: int = 0
         self._last_load_attempt: Dict[int, float] = {}
         self._last_unload_attempt: float = 0.0
+        self._last_successful_load: Dict[int, float] = {}
 
         # Expose the underlying hardware controller to AFC when available
         if AMSHardwareService is not None:
@@ -313,23 +314,26 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self._unload_retry_count = 0
         self._last_load_attempt.clear()
         self._last_unload_attempt = 0.0
+        self._last_successful_load.clear()
         gcmd.respond_info(f"OAMS[{self.oams_idx}]: Reset all retry counters")
 
     def _calculate_retry_delay(self, attempt_number: int) -> float:
+        """Calculate exponential backoff delay with max cap."""
         delay = self.retry_backoff_base * (2 ** max(attempt_number - 1, 0))
         return min(delay, self.retry_backoff_max)
 
     def _reset_load_retry_count(self, spool_idx: int) -> None:
-        if spool_idx in self._load_retry_count:
-            del self._load_retry_count[spool_idx]
-        if spool_idx in self._last_load_attempt:
-            del self._last_load_attempt[spool_idx]
+        """Clear retry tracking for a specific spool."""
+        self._load_retry_count.pop(spool_idx, None)
+        self._last_load_attempt.pop(spool_idx, None)
 
     def _reset_unload_retry_count(self) -> None:
+        """Clear unload retry tracking."""
         self._unload_retry_count = 0
         self._last_unload_attempt = 0.0
 
     def load_spool_with_retry(self, spool_idx: int) -> Tuple[bool, str]:
+        """Load spool with automatic retry on failure."""
         retry_count = self._load_retry_count.get(spool_idx, 0)
 
         if retry_count >= self.load_retry_max:
@@ -354,6 +358,8 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         success, message = self.load_spool(spool_idx)
 
         if success:
+            # Record successful load timestamp for stuck spool detection
+            self._last_successful_load[spool_idx] = self.reactor.monotonic()
             self._reset_load_retry_count(spool_idx)
             logging.info(
                 "OAMS[%d]: Successfully loaded spool %d on attempt %d",
@@ -394,7 +400,12 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         """Return timestamp of the most recent load attempt for spool."""
         return self._last_load_attempt.get(spool_idx)
 
+    def get_last_successful_load_time(self, spool_idx: int) -> Optional[float]:
+        """Return timestamp of the most recent successful load for spool."""
+        return self._last_successful_load.get(spool_idx)
+
     def unload_spool_with_retry(self) -> Tuple[bool, str]:
+        """Unload spool with automatic retry on failure."""
         if self._unload_retry_count >= self.unload_retry_max:
             self._reset_unload_retry_count()
             return False, f"Failed to unload after {self.unload_retry_max} attempts"
