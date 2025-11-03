@@ -340,56 +340,63 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             self._reset_load_retry_count(spool_idx)
             return False, f"Failed to load spool {spool_idx} after {self.load_retry_max} attempts"
 
-        if retry_count > 0:
-            delay = self._calculate_retry_delay(retry_count)
-            logging.info(
-                "OAMS[%d]: Load retry %d/%d for spool %d, waiting %.1fs",
-                self.oams_idx,
-                retry_count + 1,
-                self.load_retry_max,
-                spool_idx,
-                delay,
-            )
-            self.reactor.pause(self.reactor.monotonic() + delay)
+        # Use a loop instead of recursion to prevent monitor state issues
+        while retry_count < self.load_retry_max:
+            if retry_count > 0:
+                delay = self._calculate_retry_delay(retry_count)
+                logging.info(
+                    "OAMS[%d]: Load retry %d/%d for spool %d, waiting %.1fs",
+                    self.oams_idx,
+                    retry_count + 1,
+                    self.load_retry_max,
+                    spool_idx,
+                    delay,
+                )
+                self.reactor.pause(self.reactor.monotonic() + delay)
 
-        self._load_retry_count[spool_idx] = retry_count + 1
-        self._last_load_attempt[spool_idx] = self.reactor.monotonic()
+            self._load_retry_count[spool_idx] = retry_count + 1
+            self._last_load_attempt[spool_idx] = self.reactor.monotonic()
 
-        success, message = self.load_spool(spool_idx)
+            success, message = self.load_spool(spool_idx)
 
-        if success:
-            # Record successful load timestamp for stuck spool detection
-            self._last_successful_load[spool_idx] = self.reactor.monotonic()
-            self._reset_load_retry_count(spool_idx)
-            logging.info(
-                "OAMS[%d]: Successfully loaded spool %d on attempt %d",
-                self.oams_idx,
-                spool_idx,
-                retry_count + 1,
-            )
-            return True, message
+            if success:
+                # Record successful load timestamp for stuck spool detection
+                self._last_successful_load[spool_idx] = self.reactor.monotonic()
+                self._reset_load_retry_count(spool_idx)
+                logging.info(
+                    "OAMS[%d]: Successfully loaded spool %d on attempt %d",
+                    self.oams_idx,
+                    spool_idx,
+                    retry_count + 1,
+                )
+                return True, message
 
-        if retry_count + 1 < self.load_retry_max:
-            logging.warning(
-                "OAMS[%d]: Load failed for spool %d: %s. Attempt %d/%d",
-                self.oams_idx,
-                spool_idx,
-                message,
-                retry_count + 1,
-                self.load_retry_max,
-            )
+            # Load failed
+            if retry_count + 1 < self.load_retry_max:
+                logging.warning(
+                    "OAMS[%d]: Load failed for spool %d: %s. Attempt %d/%d",
+                    self.oams_idx,
+                    spool_idx,
+                    message,
+                    retry_count + 1,
+                    self.load_retry_max,
+                )
 
-            if self.auto_unload_on_failed_load:
-                logging.info("OAMS[%d]: Auto-unloading before retry", self.oams_idx)
-                unload_success, unload_msg = self.unload_spool_with_retry()
-                if not unload_success:
-                    logging.error(
-                        "OAMS[%d]: Failed to unload before retry: %s",
-                        self.oams_idx,
-                        unload_msg,
-                    )
-
-            return self.load_spool_with_retry(spool_idx)
+                if self.auto_unload_on_failed_load:
+                    logging.info("OAMS[%d]: Auto-unloading before retry", self.oams_idx)
+                    unload_success, unload_msg = self.unload_spool_with_retry()
+                    if not unload_success:
+                        logging.error(
+                            "OAMS[%d]: Failed to unload before retry: %s",
+                            self.oams_idx,
+                            unload_msg,
+                        )
+                
+                # Increment and continue loop
+                retry_count += 1
+            else:
+                # Max retries reached
+                break
 
         self._reset_load_retry_count(spool_idx)
         return False, (
@@ -410,41 +417,47 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             self._reset_unload_retry_count()
             return False, f"Failed to unload after {self.unload_retry_max} attempts"
 
-        if self._unload_retry_count > 0:
-            delay = self._calculate_retry_delay(self._unload_retry_count)
-            logging.info(
-                "OAMS[%d]: Unload retry %d/%d, waiting %.1fs",
-                self.oams_idx,
-                self._unload_retry_count + 1,
-                self.unload_retry_max,
-                delay,
-            )
-            self.reactor.pause(self.reactor.monotonic() + delay)
+        # Use a loop instead of recursion to prevent monitor state issues
+        while self._unload_retry_count < self.unload_retry_max:
+            if self._unload_retry_count > 0:
+                delay = self._calculate_retry_delay(self._unload_retry_count)
+                logging.info(
+                    "OAMS[%d]: Unload retry %d/%d, waiting %.1fs",
+                    self.oams_idx,
+                    self._unload_retry_count + 1,
+                    self.unload_retry_max,
+                    delay,
+                )
+                self.reactor.pause(self.reactor.monotonic() + delay)
 
-        self._unload_retry_count += 1
-        attempt_number = self._unload_retry_count
-        self._last_unload_attempt = self.reactor.monotonic()
+            self._unload_retry_count += 1
+            attempt_number = self._unload_retry_count
+            self._last_unload_attempt = self.reactor.monotonic()
 
-        success, message = self.unload_spool()
+            success, message = self.unload_spool()
 
-        if success:
-            self._reset_unload_retry_count()
-            logging.info(
-                "OAMS[%d]: Successfully unloaded spool on attempt %d",
-                self.oams_idx,
-                attempt_number,
-            )
-            return True, message
+            if success:
+                self._reset_unload_retry_count()
+                logging.info(
+                    "OAMS[%d]: Successfully unloaded spool on attempt %d",
+                    self.oams_idx,
+                    attempt_number,
+                )
+                return True, message
 
-        if self._unload_retry_count < self.unload_retry_max:
-            logging.warning(
-                "OAMS[%d]: Unload failed: %s. Attempt %d/%d",
-                self.oams_idx,
-                message,
-                self._unload_retry_count,
-                self.unload_retry_max,
-            )
-            return self.unload_spool_with_retry()
+            # Unload failed
+            if self._unload_retry_count < self.unload_retry_max:
+                logging.warning(
+                    "OAMS[%d]: Unload failed: %s. Attempt %d/%d",
+                    self.oams_idx,
+                    message,
+                    self._unload_retry_count,
+                    self.unload_retry_max,
+                )
+                # Continue loop for retry
+            else:
+                # Max retries reached
+                break
 
         self._reset_unload_retry_count()
         return False, f"Failed to unload after {self.unload_retry_max} attempts: {message}"

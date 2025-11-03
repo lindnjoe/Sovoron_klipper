@@ -1105,6 +1105,11 @@ class OAMSManager:
             self.logger.info("Restarted follower for %s spool %s after %s.", fps_name, fps_state.current_spool_idx, context)
 
     def _handle_printing_resumed(self, _eventtime):
+        # Check if monitors were stopped and need to be restarted
+        if not self.monitor_timers:
+            self.logger.info("Restarting monitors after pause/intervention")
+            self.start_monitors()
+        
         for fps_name, fps_state in self.current_state.fps_state.items():
             oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
             if fps_state.stuck_spool_restore_follower:
@@ -1226,8 +1231,20 @@ class OAMSManager:
             group_label = fps_state.current_group or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
             message = f"Spool appears stuck while loading {group_label} spool {spool_label}"
+            
+            # Abort the current load operation cleanly
+            try:
+                oams.abort_current_action()
+                self.logger.info("Aborted stuck spool load operation on %s", fps_name)
+            except Exception:
+                self.logger.exception("Failed to abort load operation on %s", fps_name)
+            
+            # Transition to UNLOADED state cleanly
+            fps_state.state = FPSLoadState.UNLOADED
+            fps_state.clear_encoder_samples()
+            
+            # Trigger the pause but DON'T stop monitors - let them keep running
             self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
-            self.stop_monitors()
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, pressure, hes_values, now):
         """Check for stuck spool conditions."""
