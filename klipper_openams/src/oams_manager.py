@@ -1290,6 +1290,14 @@ class OAMSManager:
 
         if fps_state.since is not None and now - fps_state.since < STUCK_SPOOL_LOAD_GRACE:
             fps_state.stuck_spool_start_time = None
+            # Clear stuck spool flag during grace period after successful load
+            if fps_state.stuck_spool_active:
+                if oams is not None and fps_state.current_spool_idx is not None:
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 0)
+                    except Exception:
+                        self.logger.exception("Failed to clear stuck spool LED during grace period on %s", fps_name)
+                fps_state.reset_stuck_spool_state(preserve_restore=True)
             return
 
         if not fps_state.following or fps_state.direction != 1:
