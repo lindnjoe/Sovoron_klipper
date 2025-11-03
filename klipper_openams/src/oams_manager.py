@@ -891,7 +891,14 @@ class OAMSManager:
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
                 self._ensure_forward_follower(fps_name, fps_state, "load filament")
-                self._schedule_post_load_pressure_check(fps_name, fps_state)
+                
+                # FIX: Skip post-load pressure check if this load completed after retries
+                # Retries indicate unstable conditions and pressure sensors need time to stabilize
+                if not oam.last_load_was_retry(bay_index):
+                    self._schedule_post_load_pressure_check(fps_name, fps_state)
+                else:
+                    self.logger.info("OAMS[%s]: Skipping post-load pressure check after retry for spool %d", 
+                                     oam.oams_idx, bay_index)
 
                 if AMSRunoutCoordinator is not None:
                     lane_name: Optional[str] = None

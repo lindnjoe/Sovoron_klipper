@@ -1,8 +1,11 @@
-# OpenAMS Mainboard (OPTIMIZED)
+# OpenAMS Mainboard (OPTIMIZED) - FIXED VERSION
 #
 # Copyright (C) 2025 JR Lomas <lomas.jr@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+#
+# FIX: Added last_load_was_retry() method to prevent false positive clog detection
+#      after successful load retries
 
 import logging
 import mcu
@@ -149,6 +152,8 @@ class OAMS:
         self._last_load_attempt: Dict[int, float] = {}
         self._last_unload_attempt: float = 0.0
         self._last_successful_load: Dict[int, float] = {}
+        # FIX: Track whether the last successful load was after retries
+        self._last_load_was_retry: Dict[int, bool] = {}
 
         # Expose the underlying hardware controller to AFC when available
         if AMSHardwareService is not None:
@@ -315,6 +320,8 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self._last_load_attempt.clear()
         self._last_unload_attempt = 0.0
         self._last_successful_load.clear()
+        # FIX: Also clear the retry flag tracking
+        self._last_load_was_retry.clear()
         gcmd.respond_info(f"OAMS[{self.oams_idx}]: Reset all retry counters")
 
     def _calculate_retry_delay(self, attempt_number: int) -> float:
@@ -362,6 +369,11 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             if success:
                 # Record successful load timestamp for stuck spool detection
                 self._last_successful_load[spool_idx] = self.reactor.monotonic()
+                # FIX: Track whether this load completed after retries
+                if retry_count > 0:
+                    self._last_load_was_retry[spool_idx] = True
+                else:
+                    self._last_load_was_retry[spool_idx] = False
                 self._reset_load_retry_count(spool_idx)
                 logging.info(
                     "OAMS[%d]: Successfully loaded spool %d on attempt %d",
@@ -410,6 +422,16 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
     def get_last_successful_load_time(self, spool_idx: int) -> Optional[float]:
         """Return timestamp of the most recent successful load for spool."""
         return self._last_successful_load.get(spool_idx)
+
+    # FIX: New method to check if last load was after retries
+    def last_load_was_retry(self, spool_idx: int) -> bool:
+        """
+        Check if the last successful load for this spool was after retries.
+        
+        This is used by the manager to skip post-load pressure checks after retries,
+        since pressure may not have stabilized yet and could cause false positives.
+        """
+        return self._last_load_was_retry.get(spool_idx, False)
 
     def unload_spool_with_retry(self) -> Tuple[bool, str]:
         """Unload spool with automatic retry on failure."""
