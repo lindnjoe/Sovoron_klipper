@@ -342,6 +342,195 @@ class LaneRegistry:
 
 
 # ============================================================================
+# Temperature cache utilities
+# ============================================================================
+
+class TemperatureCache:
+    """Centralised temperature tracking for filament changes."""
+
+    _instances: Dict[int, "TemperatureCache"] = {}
+    _lock = threading.RLock()
+
+    def __init__(self, printer):
+        self._printer = printer
+        self.logger = logging.getLogger("TemperatureCache")
+        self._lane_temps: Dict[str, int] = {}
+        self._last_loaded: Dict[str, Optional[str]] = {}
+
+    @classmethod
+    def for_printer(cls, printer):
+        """Return a shared cache instance for the supplied printer."""
+        with cls._lock:
+            key = id(printer)
+            instance = cls._instances.get(key)
+            if instance is None:
+                instance = cls(printer)
+                cls._instances[key] = instance
+            return instance
+
+    # ------------------------------------------------------------------
+    # Normalisation helpers
+    # ------------------------------------------------------------------
+    def _normalise_lane(self, lane_name: Optional[str]) -> Optional[str]:
+        if not lane_name:
+            return None
+
+        lookup = str(lane_name).strip()
+        if not lookup:
+            return None
+
+        if not lookup.lower().startswith("lane"):
+            lookup = f"lane{lookup}"
+
+        return lookup
+
+    def _lookup_lane(self, lane_name: Optional[str]):
+        if not lane_name:
+            return None
+
+        lookup = f"AFC_lane {lane_name}"
+
+        lookup_fn = getattr(self._printer, "lookup_object", None)
+        lane = None
+        if callable(lookup_fn):
+            try:
+                lane = lookup_fn(lookup, None)
+            except Exception:
+                lane = None
+
+        if lane is None:
+            objects = getattr(self._printer, "objects", None)
+            if isinstance(objects, dict):
+                lane = objects.get(lookup)
+
+        return lane
+
+    def _coerce_temp(self, value: Optional[Any], default: int) -> int:
+        if value is None:
+            return default
+
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    # ------------------------------------------------------------------
+    # Cache management
+    # ------------------------------------------------------------------
+    def cache_lane_temp(self, lane_name: Optional[str], temp: Optional[Any]) -> None:
+        """Persist the recommended temperature for a lane."""
+
+        lane = self._normalise_lane(lane_name)
+        if lane is None:
+            return
+
+        if temp is None:
+            self._lane_temps.pop(lane, None)
+            return
+
+        try:
+            temp_value = int(temp)
+        except (TypeError, ValueError):
+            self.logger.debug("Ignoring non-numeric temp %r for %s", temp, lane)
+            return
+
+        self._lane_temps[lane] = temp_value
+
+    def get_lane_temp(self, lane_name: Optional[str], default: int = 240) -> int:
+        """Return the cached or discovered temperature for a lane."""
+
+        base = self._coerce_temp(default, 240)
+        lane = self._normalise_lane(lane_name)
+
+        if lane is None:
+            return base
+
+        if lane in self._lane_temps:
+            return self._lane_temps[lane]
+
+        lane_obj = self._lookup_lane(lane)
+        if lane_obj is not None:
+            temp_value = getattr(lane_obj, "extruder_temp", None)
+            if temp_value is not None:
+                try:
+                    resolved = int(temp_value)
+                except (TypeError, ValueError):
+                    resolved = None
+                else:
+                    self._lane_temps[lane] = resolved
+                    return resolved
+
+        return base
+
+    def prepare_unload(self, extruder: Optional[str], lane_name: Optional[str], default: int = 240) -> Tuple[Optional[str], int]:
+        """Record the lane being unloaded and return its purge temperature."""
+
+        temp = self.get_lane_temp(lane_name, default)
+        lane = self._normalise_lane(lane_name)
+
+        if lane is not None:
+            self._lane_temps[lane] = temp
+
+        if extruder:
+            self._last_loaded[str(extruder)] = lane
+
+        return lane, temp
+
+    def get_purge_temp(
+        self,
+        extruder: Optional[str],
+        old_lane: Optional[str],
+        new_lane: Optional[str],
+        default: int = 240,
+    ) -> int:
+        """Return the purge temperature for an old -> new lane swap."""
+
+        extruder_key = str(extruder) if extruder else None
+
+        resolved_old = self._normalise_lane(old_lane)
+        if resolved_old is None and extruder_key is not None:
+            resolved_old = self._normalise_lane(self._last_loaded.get(extruder_key))
+
+        resolved_new = self._normalise_lane(new_lane)
+
+        old_temp = self.get_lane_temp(resolved_old, default)
+        new_temp = self.get_lane_temp(resolved_new, default)
+
+        purge_temp = max(old_temp, new_temp)
+
+        if resolved_old:
+            self._lane_temps[resolved_old] = old_temp
+
+        if resolved_new:
+            self._lane_temps[resolved_new] = new_temp
+
+        if extruder_key and resolved_new:
+            self._last_loaded[extruder_key] = resolved_new
+
+        return purge_temp
+
+    def record_load(self, extruder: Optional[str], lane_name: Optional[str]) -> Optional[str]:
+        """Record that an extruder has loaded a particular lane."""
+
+        lane = self._normalise_lane(lane_name)
+        if extruder:
+            self._last_loaded[str(extruder)] = lane
+
+        if lane is not None:
+            self.get_lane_temp(lane)
+
+        return lane
+
+    def get_last_loaded_lane(self, extruder: Optional[str]) -> Optional[str]:
+        """Return the last lane recorded for an extruder."""
+
+        if not extruder:
+            return None
+
+        return self._last_loaded.get(str(extruder))
+
+
+# ============================================================================
 # Original AMSHardwareService (Enhanced with Registry)
 # ============================================================================
 

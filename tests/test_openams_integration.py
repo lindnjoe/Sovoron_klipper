@@ -25,12 +25,15 @@ def reset_openams_module_state():
     module.AMSHardwareService._instances.clear()
     module.AMSRunoutCoordinator._units.clear()
     module.AMSRunoutCoordinator._monitors.clear()
+    module.TemperatureCache._instances.clear()
+    module.TemperatureCache._lock = module.threading.RLock()
     yield
     module.AMSEventBus._instance = None
     module.LaneRegistry._instances.clear()
     module.AMSHardwareService._instances.clear()
     module.AMSRunoutCoordinator._units.clear()
     module.AMSRunoutCoordinator._monitors.clear()
+    module.TemperatureCache._instances.clear()
 
 
 def test_event_bus_priority_and_history():
@@ -100,6 +103,46 @@ def test_lane_registry_register_and_resolve():
 
     extruder_lanes = {lane.lane_name for lane in registry.get_by_extruder("extruder4")}
     assert extruder_lanes == {"lane4", "lane5"}
+
+
+def test_temperature_cache_purge_calculation():
+    module = _openams_module
+
+    class DummyLane:
+        def __init__(self, name, temp):
+            self.name = name
+            self.extruder_temp = temp
+
+    class DummyPrinter:
+        def __init__(self):
+            self.objects = {}
+
+        def lookup_object(self, name, default=None):
+            return self.objects.get(name, default)
+
+    printer = DummyPrinter()
+    printer.objects["AFC_lane lane7"] = DummyLane("lane7", 210)
+    printer.objects["AFC_lane lane8"] = DummyLane("lane8", 220)
+
+    cache = module.TemperatureCache.for_printer(printer)
+
+    lane, temp = cache.prepare_unload("extruder4", "lane7", 240)
+    assert lane == "lane7"
+    assert temp == 210
+
+    cache.record_load("extruder4", "lane7")
+
+    purge = cache.get_purge_temp("extruder4", "lane7", "lane8", 240)
+    assert purge == 220
+
+    printer.objects["AFC_lane lane8"].extruder_temp = 260
+    cache.cache_lane_temp("lane8", 260)
+    purge = cache.get_purge_temp("extruder4", None, "lane8", 200)
+    assert purge == 260
+
+    printer.objects["AFC_lane lane7"].extruder_temp = None
+    cache.cache_lane_temp("lane7", None)
+    assert cache.get_lane_temp("lane7", 230) == 230
 
 
 def test_hardware_service_spool_and_snapshot_events():
