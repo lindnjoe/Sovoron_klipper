@@ -1000,6 +1000,28 @@ class OAMSManager:
             self.logger.exception("Failed to query toolhead state during pause handling")
             return
 
+        try:
+            state_message = self.printer.get_state_message()
+        except Exception:
+            state_message = None
+
+        if isinstance(state_message, (list, tuple)) and state_message:
+            printer_state_text = state_message[0]
+        else:
+            printer_state_text = state_message
+
+        printer_state_text = printer_state_text if isinstance(printer_state_text, str) else None
+
+        if printer_state_text:
+            lowered_state = printer_state_text.lower()
+            if "lost communication" in lowered_state or "mcu" in lowered_state:
+                self.logger.warning(
+                    "Skipping PAUSE command because printer reported an error state: %s",
+                    printer_state_text,
+                )
+                gcode.respond_info(f"Pause notification skipped: {printer_state_text}")
+                return
+
         if all(axis in homed_axes for axis in ("x", "y", "z")):
             try:
                 gcode.run_script("PAUSE")
