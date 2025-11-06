@@ -309,6 +309,8 @@ class FPSState:
         self.clog_min_pressure = None
         self.clog_max_pressure = None
         self.clog_last_extruder = None
+        self.clog_restore_follower = False
+        self.clog_restore_direction = 1
 
     def prime_clog_tracker(self, extruder_pos: float, encoder_clicks: int, pressure: float, timestamp: float) -> None:
         self.clog_start_extruder = extruder_pos

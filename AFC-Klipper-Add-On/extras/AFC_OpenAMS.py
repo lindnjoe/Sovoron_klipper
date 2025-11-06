@@ -8,12 +8,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import traceback
 from textwrap import dedent
 from types import MethodType
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from configparser import Error as ConfigError
 try: from extras.AFC_utils import ERROR_STR
@@ -272,6 +273,9 @@ class afcAMS(afcUnit):
                 self.temp_cache = TemperatureCache.for_printer(self.printer)
             except Exception:
                 self.logger.exception("Failed to initialise TemperatureCache")
+
+        self._saved_unit_cache: Optional[Dict[str, Any]] = None
+        self._saved_unit_mtime: Optional[float] = None
 
         self._last_lane_states: Dict[str, bool] = {}
         self._last_hub_states: Dict[str, bool] = {}
@@ -843,6 +847,72 @@ class afcAMS(afcUnit):
 
         return lane
 
+    def _saved_unit_file_path(self) -> Optional[str]:
+        afc = getattr(self, "afc", None)
+        base_path = getattr(afc, "VarFile", None)
+        if not base_path:
+            return None
+
+        return os.path.expanduser(str(base_path) + ".unit")
+
+    def _load_saved_unit_snapshot(self) -> Optional[Dict[str, Any]]:
+        filename = self._saved_unit_file_path()
+        if not filename:
+            return None
+
+        try:
+            mtime = os.path.getmtime(filename)
+        except OSError:
+            self._saved_unit_cache = None
+            self._saved_unit_mtime = None
+            return None
+
+        if self._saved_unit_cache is not None and self._saved_unit_mtime == mtime:
+            return self._saved_unit_cache
+
+        try:
+            with open(filename, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        except Exception:
+            self.logger.debug("Failed to read saved AFC unit data from %s", filename, exc_info=True)
+            self._saved_unit_cache = None
+        else:
+            self._saved_unit_cache = data if isinstance(data, dict) else None
+
+        self._saved_unit_mtime = mtime
+        return self._saved_unit_cache
+
+    def _get_saved_lane_temperature(self, lane_name: Optional[str]) -> Optional[int]:
+        canonical = self._canonical_lane_name(lane_name)
+        if canonical is None:
+            return None
+
+        snapshot = self._load_saved_unit_snapshot()
+        if not snapshot:
+            return None
+
+        unit_key = getattr(self, "name", None)
+        unit_data = snapshot.get(str(unit_key)) if unit_key is not None else None
+        if not isinstance(unit_data, dict):
+            return None
+
+        lane_data = unit_data.get(canonical)
+        if not isinstance(lane_data, dict):
+            return None
+
+        temp_value = lane_data.get("extruder_temp")
+        if temp_value is None:
+            temp_value = lane_data.get("nozzle_temp")
+        if temp_value is None:
+            return None
+
+        try:
+            resolved = int(temp_value)
+        except (TypeError, ValueError):
+            return None
+
+        return resolved
+
     def _update_lane_temperature_cache(self, lane) -> None:
         if self.temp_cache is None or lane is None:
             return
@@ -862,6 +932,10 @@ class afcAMS(afcUnit):
         fallback = int(default_temp)
 
         lane_obj = self._get_lane_object(lane_name)
+        canonical_name = self._canonical_lane_name(lane_name)
+        if canonical_name is None and lane_obj is not None:
+            canonical_name = self._canonical_lane_name(getattr(lane_obj, "name", None))
+
         if lane_obj is not None:
             temp_value = getattr(lane_obj, "extruder_temp", None)
             if temp_value is not None:
@@ -872,16 +946,28 @@ class afcAMS(afcUnit):
                 else:
                     if self.temp_cache is not None:
                         try:
-                            self.temp_cache.cache_lane_temp(lane_name, resolved)
+                            cache_key = canonical_name if canonical_name is not None else lane_name
+                            self.temp_cache.cache_lane_temp(cache_key, resolved)
                         except Exception:
                             self.logger.debug("Failed to cache extruder temp for lane %s", lane_name, exc_info=True)
                     return resolved
+
+        saved_temp = self._get_saved_lane_temperature(canonical_name)
+        if saved_temp is not None:
+            if self.temp_cache is not None:
+                try:
+                    cache_key = canonical_name if canonical_name is not None else lane_name
+                    self.temp_cache.cache_lane_temp(cache_key, saved_temp)
+                except Exception:
+                    self.logger.debug("Failed to cache saved extruder temp for lane %s", lane_name, exc_info=True)
+            return saved_temp
 
         if self.temp_cache is None:
             return fallback
 
         try:
-            return self.temp_cache.get_lane_temp(lane_name, fallback)
+            cache_key = canonical_name if canonical_name is not None else lane_name
+            return self.temp_cache.get_lane_temp(cache_key, fallback)
         except Exception:
             self.logger.exception("Failed to resolve lane temperature for %s", lane_name)
             return fallback
