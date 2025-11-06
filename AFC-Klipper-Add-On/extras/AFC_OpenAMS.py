@@ -13,7 +13,7 @@ import re
 import traceback
 from textwrap import dedent
 from types import MethodType
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from configparser import Error as ConfigError
 try: from extras.AFC_utils import ERROR_STR
@@ -37,12 +37,14 @@ try:
         AMSRunoutCoordinator,
         LaneRegistry,
         AMSEventBus,
+        TemperatureCache,
     )
 except Exception:
     AMSHardwareService = None
     AMSRunoutCoordinator = None
     LaneRegistry = None
     AMSEventBus = None
+    TemperatureCache = None
 
 # OPTIMIZATION: Configurable sync intervals
 SYNC_INTERVAL = 2.0
@@ -264,6 +266,13 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.exception("Failed to subscribe to AMS events")
 
+        self.temp_cache = None
+        if TemperatureCache is not None:
+            try:
+                self.temp_cache = TemperatureCache.for_printer(self.printer)
+            except Exception:
+                self.logger.exception("Failed to initialise TemperatureCache")
+
         self._last_lane_states: Dict[str, bool] = {}
         self._last_hub_states: Dict[str, bool] = {}
         self._virtual_tool_sensor = None
@@ -409,6 +418,8 @@ class afcAMS(afcUnit):
                         )
                     except Exception:
                         self.logger.exception("Failed to register lane %s with registry", lane_name)
+
+            self._update_lane_temperature_cache(lane)
 
         first_leg = ("<span class=warning--text>|</span>"
                     "<span class=error--text>_</span>")
@@ -780,6 +791,154 @@ class afcAMS(afcUnit):
             return resolved
 
         return lookup
+
+    def _get_extruder_object(self, extruder_name: Optional[str]):
+        if not extruder_name:
+            return None
+
+        key = f"AFC_extruder {extruder_name}"
+        lookup = getattr(self.printer, "lookup_object", None)
+        extruder = None
+        if callable(lookup):
+            try:
+                extruder = lookup(key, None)
+            except Exception:
+                extruder = None
+
+        if extruder is None:
+            objects = getattr(self.printer, "objects", None)
+            if isinstance(objects, dict):
+                extruder = objects.get(key)
+
+        return extruder
+
+    def _current_lane_for_extruder(self, extruder_name: Optional[str]) -> Optional[str]:
+        extruder = self._get_extruder_object(extruder_name)
+        lane_name = getattr(extruder, "lane_loaded", None) if extruder else None
+        return self._canonical_lane_name(lane_name)
+
+    def _get_lane_object(self, lane_name: Optional[str]):
+        canonical = self._canonical_lane_name(lane_name)
+        if canonical is None:
+            return None
+
+        lane = self.lanes.get(canonical)
+        if lane is not None:
+            return lane
+
+        key = f"AFC_lane {canonical}"
+        lookup = getattr(self.printer, "lookup_object", None)
+        if callable(lookup):
+            try:
+                lane = lookup(key, None)
+            except Exception:
+                lane = None
+        else:
+            lane = None
+
+        if lane is None:
+            objects = getattr(self.printer, "objects", None)
+            if isinstance(objects, dict):
+                lane = objects.get(key)
+
+        return lane
+
+    def _update_lane_temperature_cache(self, lane) -> None:
+        if self.temp_cache is None or lane is None:
+            return
+
+        try:
+            lane_name = getattr(lane, "name", None)
+        except Exception:
+            lane_name = None
+
+        temp_value = getattr(lane, "extruder_temp", None)
+        try:
+            self.temp_cache.cache_lane_temp(lane_name, temp_value)
+        except Exception:
+            self.logger.exception("Failed to update temperature cache for lane %s", lane_name)
+
+    def get_lane_temperature(self, lane_name: Optional[str], default_temp: int = 240) -> int:
+        if self.temp_cache is None:
+            return int(default_temp)
+
+        try:
+            return self.temp_cache.get_lane_temp(lane_name, default_temp)
+        except Exception:
+            self.logger.exception("Failed to resolve lane temperature for %s", lane_name)
+            return int(default_temp)
+
+    def prepare_unload(self, extruder: Optional[str] = None, default_temp: int = 240) -> Tuple[Optional[str], int]:
+        extruder_name = extruder or getattr(self, "extruder", None)
+        lane_name = self._current_lane_for_extruder(extruder_name)
+
+        lane_obj = self._get_lane_object(lane_name)
+        self._update_lane_temperature_cache(lane_obj)
+
+        if self.temp_cache is None:
+            return lane_name, int(default_temp)
+
+        try:
+            lane, temp = self.temp_cache.prepare_unload(extruder_name, lane_name, default_temp)
+        except Exception:
+            self.logger.exception("Failed to prepare unload for %s", extruder_name)
+            return lane_name, int(default_temp)
+
+        return lane, temp
+
+    def get_purge_temp_for_change(
+        self,
+        old_lane: Optional[str],
+        new_lane: Optional[str],
+        *,
+        extruder: Optional[str] = None,
+        default_temp: int = 240,
+    ) -> int:
+        extruder_name = extruder or getattr(self, "extruder", None)
+
+        self._update_lane_temperature_cache(self._get_lane_object(old_lane))
+        self._update_lane_temperature_cache(self._get_lane_object(new_lane))
+
+        if self.temp_cache is None:
+            return int(default_temp)
+
+        try:
+            return self.temp_cache.get_purge_temp(extruder_name, old_lane, new_lane, default_temp)
+        except Exception:
+            self.logger.exception(
+                "Failed to calculate purge temperature for %s ? %s on %s",
+                old_lane,
+                new_lane,
+                extruder_name,
+            )
+            return int(default_temp)
+
+    def record_load(self, extruder: Optional[str] = None, lane_name: Optional[str] = None) -> Optional[str]:
+        extruder_name = extruder or getattr(self, "extruder", None)
+        canonical = self._canonical_lane_name(lane_name)
+
+        lane_obj = self._get_lane_object(canonical)
+        self._update_lane_temperature_cache(lane_obj)
+
+        if self.temp_cache is None:
+            return canonical
+
+        try:
+            return self.temp_cache.record_load(extruder_name, canonical)
+        except Exception:
+            self.logger.exception("Failed to record load for extruder %s", extruder_name)
+            return canonical
+
+    def get_last_loaded_lane(self, extruder: Optional[str] = None) -> Optional[str]:
+        extruder_name = extruder or getattr(self, "extruder", None)
+        if self.temp_cache is None or extruder_name is None:
+            return None
+
+        try:
+            return self.temp_cache.get_last_loaded_lane(extruder_name)
+        except Exception:
+            self.logger.exception("Failed to fetch last loaded lane for %s", extruder_name)
+            return None
 
     cmd_SYNC_TOOL_SENSOR_help = "Synchronise the AMS virtual tool-start sensor with the assigned lane."
     def cmd_SYNC_TOOL_SENSOR(self, gcmd):
@@ -1281,6 +1440,17 @@ class afcAMS(afcUnit):
         self._last_lane_states[lane.name] = True
 
         eventtime = kwargs.get("eventtime", 0.0)
+        self._update_lane_temperature_cache(lane)
+
+        extruder_name = getattr(lane, "extruder_name", None)
+        if extruder_name is None and self.registry is not None:
+            try:
+                extruder_name = self.registry.resolve_extruder(lane.name)
+            except Exception:
+                extruder_name = None
+
+        self.record_load(extruder=extruder_name, lane_name=lane.name)
+
         if self.hardware_service is not None and normalized_index is not None:
             hub_state = getattr(lane, "loaded_to_hub", None)
             tool_state = getattr(lane, "tool_loaded", None)
@@ -1293,6 +1463,7 @@ class afcAMS(afcUnit):
                     eventtime,
                     spool_index=normalized_index,
                     tool_state=tool_state if tool_state is not None else None,
+                    emit_spool_event=False,
                 )
             except Exception:
                 self.logger.exception("Failed to mirror spool load event for %s", lane.name)
@@ -1318,6 +1489,8 @@ class afcAMS(afcUnit):
         lane.tool_loaded = False
         lane.loaded_to_hub = False
 
+        self._update_lane_temperature_cache(lane)
+
         eventtime = kwargs.get("eventtime", 0.0)
         if self.hardware_service is not None and normalized_index is not None:
             try:
@@ -1329,6 +1502,7 @@ class afcAMS(afcUnit):
                     eventtime,
                     spool_index=normalized_index,
                     tool_state=False,
+                    emit_spool_event=False,
                 )
             except Exception:
                 self.logger.exception("Failed to mirror spool unload event for %s", lane.name)
