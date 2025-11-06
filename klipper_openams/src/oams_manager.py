@@ -1033,6 +1033,22 @@ class OAMSManager:
                     f"Pause notification may fail because printer reported: {printer_state_text}"
                 )
 
+        already_paused = False
+        try:
+            pause_resume = self.printer.lookup_object("pause_resume")
+        except Exception:
+            pause_resume = None
+
+        if pause_resume is not None:
+            try:
+                already_paused = bool(getattr(pause_resume, "is_paused", False))
+            except Exception:
+                already_paused = False
+
+        if already_paused:
+            self.logger.debug("Skipping PAUSE command because printer is already paused")
+            return
+
         if all(axis in homed_axes for axis in ("x", "y", "z")):
             try:
                 gcode.run_script("PAUSE")
