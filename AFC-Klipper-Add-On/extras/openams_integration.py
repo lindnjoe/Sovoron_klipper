@@ -277,7 +277,7 @@ class LaneRegistry:
                 self._by_extruder[extruder] = []
             self._by_extruder[extruder].append(info)
             
-            self.logger.info("Registered lane: %s ? %s[%d] ? %s (extruder=%s, fps=%s)", 
+            self.logger.info("Registered lane: %s → %s[%d] → %s (extruder=%s, fps=%s)", 
                            lane_name, unit_name, spool_index, group, extruder, fps_name)
             
             return info
@@ -504,9 +504,21 @@ class AMSHardwareService:
         """
         key = f"{unit_name}:{lane_name}"
         
+        normalized_index: Optional[int]
+        if spool_index is not None:
+            try:
+                normalized_index = int(spool_index)
+            except (TypeError, ValueError):
+                normalized_index = None
+            else:
+                if normalized_index < 0:
+                    normalized_index = None
+        else:
+            normalized_index = None
+
         with self._lock:
             old_snapshot = self._lane_snapshots.get(key, {})
-            
+
             self._lane_snapshots[key] = {
                 "unit": unit_name,
                 "lane": lane_name,
@@ -514,20 +526,35 @@ class AMSHardwareService:
                 "hub_state": None if hub_state is None else bool(hub_state),
                 "timestamp": eventtime,
             }
-            if spool_index is not None:
-                try:
-                    normalized_index = int(spool_index)
-                except (TypeError, ValueError):
-                    normalized_index = None
-                else:
-                    self._lane_snapshots[key]["spool_index"] = normalized_index
+            if normalized_index is not None:
+                self._lane_snapshots[key]["spool_index"] = normalized_index
+            elif "spool_index" in old_snapshot:
+                self._lane_snapshots[key]["spool_index"] = old_snapshot["spool_index"]
             if tool_state is not None:
                 self._lane_snapshots[key]["tool_state"] = bool(tool_state)
-        
+            
+        # Determine the best spool index to report with events
+        event_spool_index = normalized_index
+        if event_spool_index is None:
+            event_spool_index = old_snapshot.get("spool_index")
+
         # PHASE 5: Publish state change events
+        old_lane_state = old_snapshot.get("lane_state")
+        new_lane_state = bool(lane_state)
+
+        if (old_lane_state is None or old_lane_state != new_lane_state) and event_spool_index is not None:
+            event_type = "spool_loaded" if new_lane_state else "spool_unloaded"
+            self.event_bus.publish(
+                event_type,
+                unit_name=unit_name,
+                lane_name=lane_name,
+                spool_index=event_spool_index,
+                eventtime=eventtime,
+            )
+
         old_hub_state = old_snapshot.get("hub_state")
         new_hub_state = hub_state
-        
+
         if old_hub_state is not None and new_hub_state is not None:
             if old_hub_state != new_hub_state:
                 event_type = "lane_hub_loaded" if new_hub_state else "lane_hub_unloaded"

@@ -410,36 +410,6 @@ class afcAMS(afcUnit):
                     except Exception:
                         self.logger.exception("Failed to register lane %s with registry", lane_name)
 
-                if self.registry is not None:
-                    lane_name = getattr(lane, "name", None)
-                    unit_name = self.oams_name or self.name
-                    group = getattr(lane, "map", None)
-                    if not group and lane_name:
-                        lane_num = ''.join(ch for ch in str(lane_name) if ch.isdigit())
-                        if lane_num:
-                            group = f"T{lane_num}"
-                        else:
-                            group = str(lane_name)
-
-                    extruder_name = getattr(lane, "extruder_name", None) or getattr(self, "extruder", None)
-
-                    if lane_name and group and extruder_name:
-                        try:
-                            self.registry.register_lane(
-                                lane_name=lane_name,
-                                unit_name=unit_name,
-                                spool_index=idx,
-                                group=group,
-                                extruder=extruder_name,
-                                fps_name=None,
-                                hub_name=getattr(lane, "hub", None),
-                                led_index=getattr(lane, "led_index", None),
-                                custom_load_cmd=getattr(lane, "custom_load_cmd", None),
-                                custom_unload_cmd=getattr(lane, "custom_unload_cmd", None),
-                            )
-                        except Exception:
-                            self.logger.exception("Failed to register lane %s with registry", lane_name)
-
         first_leg = ("<span class=warning--text>|</span>"
                     "<span class=error--text>_</span>")
         second_leg = f"{first_leg}<span class=warning--text>|</span>"
