@@ -1169,6 +1169,21 @@ class OAMSManager:
             fps_state.stuck_spool_restore_follower = False
             self.logger.info("Restarted follower for %s spool %s after %s.", fps_name, fps_state.current_spool_idx, context)
 
+    def _reactivate_clog_follower(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], context: str) -> None:
+        if not fps_state.clog_restore_follower:
+            return
+
+        if oams is None and fps_state.current_oams is not None:
+            oams = self.oams.get(fps_state.current_oams)
+        if oams is None:
+            return
+
+        direction = fps_state.clog_restore_direction if fps_state.clog_restore_direction in (0, 1) else 1
+        self._enable_follower(fps_name, fps_state, oams, direction, context)
+        if fps_state.following:
+            fps_state.clog_restore_follower = False
+            fps_state.clog_restore_direction = 1
+
     def _handle_printing_resumed(self, _eventtime):
         # Check if monitors were stopped and need to be restarted
         if not self.monitor_timers:
@@ -1530,6 +1545,7 @@ class OAMSManager:
                       f"with FPS {pressure_mid:.2f} near {CLOG_PRESSURE_TARGET:.2f}")
             fps_state.clog_active = True
             self._pause_printer_message(message, fps_state.current_oams)
+            self._reactivate_clog_follower(fps_name, fps_state, oams, "clog pause")
 
     def start_monitors(self):
         """Start all monitoring timers"""
