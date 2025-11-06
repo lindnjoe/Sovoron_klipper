@@ -457,6 +457,41 @@ class afc:
                     break
         return float(temp_value), using_min_value
 
+    def _get_lane_purge_temp(self, lane):
+        """Return the configured purge temperature for a lane."""
+        DEFAULT_PURGE_TEMP = 240
+        if lane is None:
+            return DEFAULT_PURGE_TEMP
+
+        temp = lane.extruder_temp
+        if temp is not None:
+            try:
+                temp_value = int(float(temp))
+            except (TypeError, ValueError):
+                temp_value = None
+            else:
+                if temp_value > 0:
+                    return temp_value
+
+        helper_temp = None
+        unit_name = getattr(lane, "unit", None)
+        if unit_name:
+            helper_name = f"AFC_OpenAMS {unit_name}"
+            try:
+                helper = self.printer.lookup_object(helper_name)
+            except Exception:
+                helper = None
+            if helper is not None and hasattr(helper, "get_lane_temperature"):
+                try:
+                    helper_temp = int(helper.get_lane_temperature(lane.name, DEFAULT_PURGE_TEMP))
+                except Exception:
+                    helper_temp = None
+
+        if helper_temp is not None and helper_temp > 0:
+            return helper_temp
+
+        return DEFAULT_PURGE_TEMP
+
     def _check_extruder_temp(self, cur_lane):
         """
         Helper function that check to see if extruder needs to be heated, and wait for hotend to get to temp if needed
@@ -1438,9 +1473,24 @@ class afc:
         :param cur_extruder: The extruder object associated with the lane.
         """
         if cur_lane.custom_unload_cmd:
-            self.logger.info("Running custom unload command for lane {}".format(cur_lane.name))
+            purge_temp = self._get_lane_purge_temp(cur_lane)
+            next_lane = None
+            if self.next_lane_load is not None:
+                next_lane = self.lanes.get(self.next_lane_load)
+            if next_lane is not None and next_lane is not cur_lane:
+                purge_temp = max(purge_temp, self._get_lane_purge_temp(next_lane))
+
+            unload_cmd = cur_lane.custom_unload_cmd
+            if purge_temp is not None:
+                unload_cmd = f"{unload_cmd} PURGE_TEMP={int(purge_temp)}"
+
+            self.logger.info(
+                "Running custom unload command for lane %s at %sC",
+                cur_lane.name,
+                purge_temp if purge_temp is not None else "default",
+            )
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
-            self.gcode.run_script_from_command(cur_lane.custom_unload_cmd)
+            self.gcode.run_script_from_command(unload_cmd)
             cur_lane.set_unloaded()
             cur_lane.status = AFCLaneState.NONE
             self.save_vars()
