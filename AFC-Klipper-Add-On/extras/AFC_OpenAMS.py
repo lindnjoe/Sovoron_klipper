@@ -859,14 +859,32 @@ class afcAMS(afcUnit):
             self.logger.exception("Failed to update temperature cache for lane %s", lane_name)
 
     def get_lane_temperature(self, lane_name: Optional[str], default_temp: int = 240) -> int:
+        fallback = int(default_temp)
+
+        lane_obj = self._get_lane_object(lane_name)
+        if lane_obj is not None:
+            temp_value = getattr(lane_obj, "extruder_temp", None)
+            if temp_value is not None:
+                try:
+                    resolved = int(temp_value)
+                except (TypeError, ValueError):
+                    resolved = None
+                else:
+                    if self.temp_cache is not None:
+                        try:
+                            self.temp_cache.cache_lane_temp(lane_name, resolved)
+                        except Exception:
+                            self.logger.debug("Failed to cache extruder temp for lane %s", lane_name, exc_info=True)
+                    return resolved
+
         if self.temp_cache is None:
-            return int(default_temp)
+            return fallback
 
         try:
-            return self.temp_cache.get_lane_temp(lane_name, default_temp)
+            return self.temp_cache.get_lane_temp(lane_name, fallback)
         except Exception:
             self.logger.exception("Failed to resolve lane temperature for %s", lane_name)
-            return int(default_temp)
+            return fallback
 
     def prepare_unload(self, extruder: Optional[str] = None, default_temp: int = 240) -> Tuple[Optional[str], int]:
         extruder_name = extruder or getattr(self, "extruder", None)
@@ -906,7 +924,7 @@ class afcAMS(afcUnit):
             return self.temp_cache.get_purge_temp(extruder_name, old_lane, new_lane, default_temp)
         except Exception:
             self.logger.exception(
-                "Failed to calculate purge temperature for %s ? %s on %s",
+                "Failed to calculate purge temperature for %s → %s on %s",
                 old_lane,
                 new_lane,
                 extruder_name,

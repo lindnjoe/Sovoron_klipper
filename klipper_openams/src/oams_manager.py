@@ -264,6 +264,8 @@ class FPSState:
         self.stuck_spool_restore_direction: int = 1
 
         self.clog_active: bool = False
+        self.clog_restore_follower: bool = False
+        self.clog_restore_direction: int = 1
         self.clog_start_extruder: Optional[float] = None
         self.clog_start_encoder: Optional[int] = None
         self.clog_start_time: Optional[float] = None
@@ -423,6 +425,8 @@ class OAMSManager:
                 fps_state.state = FPSLoadState.UNLOADED
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
+                fps_state.clog_restore_follower = False
+                fps_state.clog_restore_direction = 1
                 self._cancel_post_load_pressure_check(fps_state)
         
     def handle_ready(self) -> None:
@@ -770,6 +774,8 @@ class OAMSManager:
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.following = False
             fps_state.direction = 0
+            fps_state.clog_restore_follower = False
+            fps_state.clog_restore_direction = 1
             fps_state.current_group = None
             fps_state.current_spool_idx = None
             fps_state.since = self.reactor.monotonic()
@@ -811,6 +817,8 @@ class OAMSManager:
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.following = False
             fps_state.direction = 0
+            fps_state.clog_restore_follower = False
+            fps_state.clog_restore_direction = 1
             fps_state.since = self.reactor.monotonic()
             if lane_name:
                 try:
@@ -1016,11 +1024,12 @@ class OAMSManager:
             lowered_state = printer_state_text.lower()
             if "lost communication" in lowered_state or "mcu" in lowered_state:
                 self.logger.warning(
-                    "Skipping PAUSE command because printer reported an error state: %s",
+                    "Printer reported an error state during pause handling: %s",
                     printer_state_text,
                 )
-                gcode.respond_info(f"Pause notification skipped: {printer_state_text}")
-                return
+                gcode.respond_info(
+                    f"Pause notification may fail because printer reported: {printer_state_text}"
+                )
 
         if all(axis in homed_axes for axis in ("x", "y", "z")):
             try:
@@ -1166,6 +1175,18 @@ class OAMSManager:
                         oams.set_led_error(fps_state.current_spool_idx, 0)
                     except Exception:
                         self.logger.exception("Failed to clear clog LED on %s after resume", fps_name)
+
+            if fps_state.clog_restore_follower:
+                self._enable_follower(
+                    fps_name,
+                    fps_state,
+                    oams,
+                    fps_state.clog_restore_direction,
+                    "print resume",
+                )
+                if fps_state.following:
+                    fps_state.clog_restore_follower = False
+                    fps_state.clog_restore_direction = 1
             
             if fps_state.stuck_spool_restore_follower:
                 self._restore_follower_if_needed(fps_name, fps_state, oams, "print resume")
@@ -1471,10 +1492,20 @@ class OAMSManager:
             return
 
         if not fps_state.clog_active:
-            try:
-                oams.set_led_error(fps_state.current_spool_idx, 1)
-            except Exception:
-                self.logger.exception("Failed to set clog LED on %s spool %s", fps_name, fps_state.current_spool_idx)
+            if oams is not None and fps_state.current_spool_idx is not None:
+                try:
+                    oams.set_led_error(fps_state.current_spool_idx, 1)
+                except Exception:
+                    self.logger.exception("Failed to set clog LED on %s spool %s", fps_name, fps_state.current_spool_idx)
+            direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+            fps_state.clog_restore_follower = True
+            fps_state.clog_restore_direction = direction
+            if oams is not None and fps_state.following:
+                try:
+                    oams.set_oams_follower(0, direction)
+                except Exception:
+                    self.logger.exception("Failed to stop follower on %s during clog pause", fps_name)
+            fps_state.following = False
             pressure_mid = (fps_state.clog_min_pressure + fps_state.clog_max_pressure) / 2.0
             message = (f"Clog suspected on {fps_state.current_group or fps_name}: "
                       f"extruder advanced {extrusion_delta:.1f}mm while encoder moved {encoder_delta} counts "
