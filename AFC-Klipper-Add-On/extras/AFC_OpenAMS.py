@@ -906,7 +906,7 @@ class afcAMS(afcUnit):
             return self.temp_cache.get_purge_temp(extruder_name, old_lane, new_lane, default_temp)
         except Exception:
             self.logger.exception(
-                "Failed to calculate purge temperature for %s → %s on %s",
+                "Failed to calculate purge temperature for %s ? %s on %s",
                 old_lane,
                 new_lane,
                 extruder_name,
