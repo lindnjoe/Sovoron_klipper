@@ -683,10 +683,11 @@ class AMSHardwareService:
             if callback in self._status_callbacks:
                 self._status_callbacks.remove(callback)
 
-    def update_lane_snapshot(self, unit_name: str, lane_name: str, lane_state: bool, 
-                           hub_state: Optional[bool], eventtime: float, *, 
-                           spool_index: Optional[int] = None, 
-                           tool_state: Optional[bool] = None) -> None:
+    def update_lane_snapshot(self, unit_name: str, lane_name: str, lane_state: bool,
+                           hub_state: Optional[bool], eventtime: float, *,
+                           spool_index: Optional[int] = None,
+                           tool_state: Optional[bool] = None,
+                           emit_spool_event: bool = True) -> None:
         """Update the cached state snapshot for a specific lane.
         
         PHASE 5: Now publishes events when state changes.
@@ -731,7 +732,7 @@ class AMSHardwareService:
         old_lane_state = old_snapshot.get("lane_state")
         new_lane_state = bool(lane_state)
 
-        if (old_lane_state is None or old_lane_state != new_lane_state) and event_spool_index is not None:
+        if emit_spool_event and (old_lane_state is None or old_lane_state != new_lane_state) and event_spool_index is not None:
             event_type = "spool_loaded" if new_lane_state else "spool_unloaded"
             self.event_bus.publish(
                 event_type,

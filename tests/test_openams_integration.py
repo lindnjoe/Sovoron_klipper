@@ -235,7 +235,10 @@ def test_hardware_service_spool_and_snapshot_events():
         eventtime=1.0,
         spool_index=0,
         tool_state=False,
+        emit_spool_event=False,
     )
+
+    assert len(captured) == baseline
 
     service.update_lane_snapshot(
         "AMS_1",
@@ -265,7 +268,6 @@ def test_hardware_service_spool_and_snapshot_events():
     new_events = captured[baseline:]
     event_types = [event for event, _ in new_events]
     assert event_types == [
-        "spool_loaded",
         "lane_hub_loaded",
         "lane_tool_loaded",
         "spool_unloaded",

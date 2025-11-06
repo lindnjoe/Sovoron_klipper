@@ -1463,6 +1463,7 @@ class afcAMS(afcUnit):
                     eventtime,
                     spool_index=normalized_index,
                     tool_state=tool_state if tool_state is not None else None,
+                    emit_spool_event=False,
                 )
             except Exception:
                 self.logger.exception("Failed to mirror spool load event for %s", lane.name)
@@ -1501,6 +1502,7 @@ class afcAMS(afcUnit):
                     eventtime,
                     spool_index=normalized_index,
                     tool_state=False,
+                    emit_spool_event=False,
                 )
             except Exception:
                 self.logger.exception("Failed to mirror spool unload event for %s", lane.name)
