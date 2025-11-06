@@ -13,7 +13,7 @@ import re
 import traceback
 from textwrap import dedent
 from types import MethodType
-from typing import Dict, Optional, List
+from typing import Dict, List, Optional
 
 from configparser import Error as ConfigError
 try: from extras.AFC_utils import ERROR_STR
@@ -32,10 +32,17 @@ try: from extras.AFC_respond import AFCprompt
 except: raise ConfigError(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
 
 try:
-    from extras.openams_integration import AMSHardwareService, AMSRunoutCoordinator
+    from extras.openams_integration import (
+        AMSHardwareService,
+        AMSRunoutCoordinator,
+        LaneRegistry,
+        AMSEventBus,
+    )
 except Exception:
     AMSHardwareService = None
     AMSRunoutCoordinator = None
+    LaneRegistry = None
+    AMSEventBus = None
 
 # OPTIMIZATION: Configurable sync intervals
 SYNC_INTERVAL = 2.0
@@ -239,8 +246,23 @@ class afcAMS(afcUnit):
         self.timer = self.reactor.register_timer(self._sync_event)
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
-        #  Build lane index map for O(1) lookup
-        self._lane_by_index: Dict[int, Any] = {}
+        # PHASE 1: Lane registry integration
+        self.registry = None
+        if LaneRegistry is not None:
+            try:
+                self.registry = LaneRegistry.for_printer(self.printer)
+            except Exception:
+                self.logger.exception("Failed to initialize LaneRegistry")
+
+        # PHASE 5: Event bus subscription for spool changes
+        self.event_bus = None
+        if AMSEventBus is not None:
+            try:
+                self.event_bus = AMSEventBus.get_instance()
+                self.event_bus.subscribe("spool_loaded", self._handle_spool_loaded_event, priority=10)
+                self.event_bus.subscribe("spool_unloaded", self._handle_spool_unloaded_event, priority=10)
+            except Exception:
+                self.logger.exception("Failed to subscribe to AMS events")
 
         self._last_lane_states: Dict[str, bool] = {}
         self._last_hub_states: Dict[str, bool] = {}
@@ -350,18 +372,43 @@ class afcAMS(afcUnit):
 
         self._ensure_virtual_tool_sensor()
 
-        #  Build lane index map once
-        self._lane_by_index = {}
+        #  Register each lane with the shared registry
         for lane in self.lanes.values():
             lane.prep_state = False
             lane.load_state = False
             lane.status = AFCLaneState.NONE
             lane.ams_share_prep_load = getattr(lane, "load", None) is None
-            
-            # Build index map
+
             idx = getattr(lane, "index", 0) - 1
-            if idx >= 0:
-                self._lane_by_index[idx] = lane
+            if idx >= 0 and self.registry is not None:
+                lane_name = getattr(lane, "name", None)
+                unit_name = self.oams_name or self.name
+                group = getattr(lane, "map", None)
+                if not group and lane_name:
+                    lane_num = ''.join(ch for ch in str(lane_name) if ch.isdigit())
+                    if lane_num:
+                        group = f"T{lane_num}"
+                    else:
+                        group = str(lane_name)
+
+                extruder_name = getattr(lane, "extruder_name", None) or getattr(self, "extruder", None)
+
+                if lane_name and group and extruder_name:
+                    try:
+                        self.registry.register_lane(
+                            lane_name=lane_name,
+                            unit_name=unit_name,
+                            spool_index=idx,
+                            group=group,
+                            extruder=extruder_name,
+                            fps_name=None,
+                            hub_name=getattr(lane, "hub", None),
+                            led_index=getattr(lane, "led_index", None),
+                            custom_load_cmd=getattr(lane, "custom_load_cmd", None),
+                            custom_unload_cmd=getattr(lane, "custom_unload_cmd", None),
+                        )
+                    except Exception:
+                        self.logger.exception("Failed to register lane %s with registry", lane_name)
 
         first_leg = ("<span class=warning--text>|</span>"
                     "<span class=error--text>_</span>")
@@ -980,7 +1027,7 @@ class afcAMS(afcUnit):
 
             # OPTIMIZATION: Use indexed lane lookup instead of iteration
             for idx in range(4):  # OAMS supports 4 bays
-                lane = self._lane_by_index.get(idx)
+                lane = self._lane_for_spool_index(idx)
                 if lane is None:
                     continue
 
@@ -1031,9 +1078,26 @@ class afcAMS(afcUnit):
 
     def _lane_for_spool_index(self, spool_index: Optional[int]):
         """Use indexed lookup instead of iteration."""
-        if spool_index is None or spool_index < 0 or spool_index >= 4:
+        if spool_index is None:
             return None
-        return self._lane_by_index.get(spool_index)
+
+        try:
+            normalized = int(spool_index)
+        except (TypeError, ValueError):
+            return None
+
+        registry_unit = self.oams_name or self.name
+        if self.registry is not None:
+            lane_info = self.registry.get_by_spool(registry_unit, normalized)
+            if lane_info is not None:
+                lane = self.lanes.get(lane_info.lane_name)
+                if lane is not None:
+                    return lane
+
+        if normalized < 0 or normalized >= 4:
+            return None
+
+        return self._lane_by_local_index(normalized)
 
     def _resolve_lane_reference(self, lane_name: Optional[str]):
         """Return a lane object by name (or alias), case-insensitively."""
@@ -1185,6 +1249,89 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.exception("Failed to mirror tool sensor state for unloaded lane %s", lane.name)
         return True
+
+    def _is_event_for_unit(self, unit_name: Optional[str]) -> bool:
+        """Check whether an event payload targets this unit."""
+        if not unit_name:
+            return False
+
+        candidates = {str(self.name).lower()}
+        if getattr(self, "oams_name", None):
+            candidates.add(str(self.oams_name).lower())
+
+        return str(unit_name).lower() in candidates
+
+    def _handle_spool_loaded_event(self, *, event_type=None, **kwargs):
+        """Update local state in response to a spool_loaded event."""
+        unit_name = kwargs.get("unit_name")
+        if not self._is_event_for_unit(unit_name):
+            return
+
+        spool_index = kwargs.get("spool_index")
+        try:
+            normalized_index = int(spool_index) if spool_index is not None else None
+        except (TypeError, ValueError):
+            normalized_index = None
+
+        lane = self._find_lane_by_spool(normalized_index)
+        if lane is None:
+            return
+
+        lane.load_state = True
+        self._last_lane_states[lane.name] = True
+
+        eventtime = kwargs.get("eventtime", 0.0)
+        if self.hardware_service is not None and normalized_index is not None:
+            hub_state = getattr(lane, "loaded_to_hub", None)
+            tool_state = getattr(lane, "tool_loaded", None)
+            try:
+                self.hardware_service.update_lane_snapshot(
+                    self.oams_name,
+                    lane.name,
+                    True,
+                    hub_state if hub_state is not None else None,
+                    eventtime,
+                    spool_index=normalized_index,
+                    tool_state=tool_state if tool_state is not None else None,
+                )
+            except Exception:
+                self.logger.exception("Failed to mirror spool load event for %s", lane.name)
+
+    def _handle_spool_unloaded_event(self, *, event_type=None, **kwargs):
+        """Update local state in response to a spool_unloaded event."""
+        unit_name = kwargs.get("unit_name")
+        if not self._is_event_for_unit(unit_name):
+            return
+
+        spool_index = kwargs.get("spool_index")
+        try:
+            normalized_index = int(spool_index) if spool_index is not None else None
+        except (TypeError, ValueError):
+            normalized_index = None
+
+        lane = self._find_lane_by_spool(normalized_index)
+        if lane is None:
+            return
+
+        lane.load_state = False
+        self._last_lane_states[lane.name] = False
+        lane.tool_loaded = False
+        lane.loaded_to_hub = False
+
+        eventtime = kwargs.get("eventtime", 0.0)
+        if self.hardware_service is not None and normalized_index is not None:
+            try:
+                self.hardware_service.update_lane_snapshot(
+                    self.oams_name,
+                    lane.name,
+                    False,
+                    False,
+                    eventtime,
+                    spool_index=normalized_index,
+                    tool_state=False,
+                )
+            except Exception:
+                self.logger.exception("Failed to mirror spool unload event for %s", lane.name)
 
     def cmd_AFC_OAMS_CALIBRATE_HUB_HES(self, gcmd):
         """Run the OpenAMS HUB HES calibration for a specific lane."""
@@ -1522,8 +1669,37 @@ class afcAMS(afcUnit):
         return True
 
     def _find_lane_by_spool(self, spool_index):
-        """Use indexed lookup."""
-        return self._lane_by_index.get(spool_index)
+        """Resolve lane by spool index using registry when available."""
+        if spool_index is None:
+            return None
+
+        try:
+            normalized = int(spool_index)
+        except (TypeError, ValueError):
+            return None
+
+        registry_unit = self.oams_name or self.name
+        if self.registry is not None:
+            lane_info = self.registry.get_by_spool(registry_unit, normalized)
+            if lane_info is not None:
+                lane = self.lanes.get(lane_info.lane_name)
+                if lane is not None:
+                    return lane
+
+        return self._lane_by_local_index(normalized)
+
+    def _lane_by_local_index(self, normalized: int):
+        for candidate in self.lanes.values():
+            lane_index = getattr(candidate, "index", None)
+            try:
+                lane_index = int(lane_index) - 1
+            except (TypeError, ValueError):
+                continue
+
+            if lane_index == normalized:
+                return candidate
+
+        return None
 
     def _get_openams_index(self):
         """Helper to extract OAMS index."""
