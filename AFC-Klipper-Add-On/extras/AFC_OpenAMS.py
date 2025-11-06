@@ -13,7 +13,7 @@ import re
 import traceback
 from textwrap import dedent
 from types import MethodType
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from configparser import Error as ConfigError
 try: from extras.AFC_utils import ERROR_STR
@@ -264,9 +264,6 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.exception("Failed to subscribe to AMS events")
 
-        #  Build lane index map for O(1) lookup (retained as local cache)
-        self._lane_by_index: Dict[int, Any] = {}
-
         self._last_lane_states: Dict[str, bool] = {}
         self._last_hub_states: Dict[str, bool] = {}
         self._virtual_tool_sensor = None
@@ -375,18 +372,43 @@ class afcAMS(afcUnit):
 
         self._ensure_virtual_tool_sensor()
 
-        #  Build lane index map once and register with lane registry
-        self._lane_by_index = {}
+        #  Register each lane with the shared registry
         for lane in self.lanes.values():
             lane.prep_state = False
             lane.load_state = False
             lane.status = AFCLaneState.NONE
             lane.ams_share_prep_load = getattr(lane, "load", None) is None
 
-            # Build index map
             idx = getattr(lane, "index", 0) - 1
-            if idx >= 0:
-                self._lane_by_index[idx] = lane
+            if idx >= 0 and self.registry is not None:
+                lane_name = getattr(lane, "name", None)
+                unit_name = self.oams_name or self.name
+                group = getattr(lane, "map", None)
+                if not group and lane_name:
+                    lane_num = ''.join(ch for ch in str(lane_name) if ch.isdigit())
+                    if lane_num:
+                        group = f"T{lane_num}"
+                    else:
+                        group = str(lane_name)
+
+                extruder_name = getattr(lane, "extruder_name", None) or getattr(self, "extruder", None)
+
+                if lane_name and group and extruder_name:
+                    try:
+                        self.registry.register_lane(
+                            lane_name=lane_name,
+                            unit_name=unit_name,
+                            spool_index=idx,
+                            group=group,
+                            extruder=extruder_name,
+                            fps_name=None,
+                            hub_name=getattr(lane, "hub", None),
+                            led_index=getattr(lane, "led_index", None),
+                            custom_load_cmd=getattr(lane, "custom_load_cmd", None),
+                            custom_unload_cmd=getattr(lane, "custom_unload_cmd", None),
+                        )
+                    except Exception:
+                        self.logger.exception("Failed to register lane %s with registry", lane_name)
 
                 if self.registry is not None:
                     lane_name = getattr(lane, "name", None)
@@ -1035,7 +1057,7 @@ class afcAMS(afcUnit):
 
             # OPTIMIZATION: Use indexed lane lookup instead of iteration
             for idx in range(4):  # OAMS supports 4 bays
-                lane = self._lane_by_index.get(idx)
+                lane = self._lane_for_spool_index(idx)
                 if lane is None:
                     continue
 
@@ -1105,7 +1127,7 @@ class afcAMS(afcUnit):
         if normalized < 0 or normalized >= 4:
             return None
 
-        return self._lane_by_index.get(normalized)
+        return self._lane_by_local_index(normalized)
 
     def _resolve_lane_reference(self, lane_name: Optional[str]):
         """Return a lane object by name (or alias), case-insensitively."""
@@ -1694,7 +1716,20 @@ class afcAMS(afcUnit):
                 if lane is not None:
                     return lane
 
-        return self._lane_by_index.get(normalized)
+        return self._lane_by_local_index(normalized)
+
+    def _lane_by_local_index(self, normalized: int):
+        for candidate in self.lanes.values():
+            lane_index = getattr(candidate, "index", None)
+            try:
+                lane_index = int(lane_index) - 1
+            except (TypeError, ValueError):
+                continue
+
+            if lane_index == normalized:
+                return candidate
+
+        return None
 
     def _get_openams_index(self):
         """Helper to extract OAMS index."""
