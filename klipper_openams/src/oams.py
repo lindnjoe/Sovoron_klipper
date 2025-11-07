@@ -158,6 +158,12 @@ class OAMS:
         # FIX: Track whether the last successful load was after retries
         self._last_load_was_retry: Dict[int, bool] = {}
 
+        # Retry failure statistics for monitoring
+        self._load_retry_failures: int = 0
+        self._unload_retry_failures: int = 0
+        self._last_load_failure_time: Optional[float] = None
+        self._last_unload_failure_time: Optional[float] = None
+
         # Expose the underlying hardware controller to AFC when available
         if AMSHardwareService is not None:
             try:
@@ -177,7 +183,12 @@ class OAMS:
             "current_spool": self.current_spool,
             "f1s_hes_value": list(self.f1s_hes_value),
             "hub_hes_value": list(self.hub_hes_value),
-            "fps_value": self.fps_value
+            "fps_value": self.fps_value,
+            # Retry failure statistics
+            "load_retry_failures": self._load_retry_failures,
+            "unload_retry_failures": self._unload_retry_failures,
+            "last_load_failure_time": self._last_load_failure_time,
+            "last_unload_failure_time": self._last_unload_failure_time,
         }
     
     def is_bay_ready(self, bay_index: int) -> bool:
@@ -410,6 +421,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                         # FIX: Abort load retry sequence if auto-unload fails
                         # Filament is likely stuck in the tube - continuing load attempts will fail
                         self._reset_load_retry_count(spool_idx)
+                        # Record retry failure for monitoring
+                        self._load_retry_failures += 1
+                        self._last_load_failure_time = self.reactor.monotonic()
                         return False, (
                             f"Failed to unload spool {spool_idx} back to AMS before retry. "
                             f"Load aborted after {retry_count + 1} attempts. {unload_msg}"
@@ -422,6 +436,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 break
 
         self._reset_load_retry_count(spool_idx)
+        # Record retry failure for monitoring
+        self._load_retry_failures += 1
+        self._last_load_failure_time = self.reactor.monotonic()
         return False, (
             f"Failed to load spool {spool_idx} after {self.load_retry_max} attempts: {message}"
         )
@@ -489,6 +506,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 break
 
         self._reset_unload_retry_count()
+        # Record retry failure for monitoring
+        self._unload_retry_failures += 1
+        self._last_unload_failure_time = self.reactor.monotonic()
         return False, f"Failed to unload after {self.unload_retry_max} attempts: {message}"
 
     cmd_OAMS_CURRENT_PID_SET_help = "Set the PID values for the current sensor"
