@@ -16,6 +16,8 @@
 # CONFIGURABLE DETECTION PARAMETERS:
 # The following parameters can be tuned in [oams_manager] config section:
 # - stuck_spool_load_grace: Grace period (seconds) after load before stuck spool detection (default: 8.0)
+# - stuck_spool_pressure_threshold: Pressure below which stuck detection starts (default: 0.08)
+# - stuck_spool_pressure_clear_threshold: Pressure above which stuck state clears - hysteresis (default: 0.12)
 # - clog_pressure_target: Target FPS pressure for clog detection (default: 0.50)
 # - post_load_pressure_dwell: Duration (seconds) to monitor pressure after load (default: 15.0)
 # - clog_sensitivity: Detection sensitivity level - "low", "medium", "high" (default: "medium")
@@ -41,6 +43,7 @@ AFC_DELEGATION_TIMEOUT = 30.0
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
+STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
 STUCK_SPOOL_DWELL = 3.5
 STUCK_SPOOL_LOAD_GRACE = 8.0
 
@@ -380,6 +383,8 @@ class OAMSManager:
 
         # Configurable detection thresholds and timing parameters
         self.stuck_spool_load_grace = config.getfloat("stuck_spool_load_grace", STUCK_SPOOL_LOAD_GRACE)
+        self.stuck_spool_pressure_threshold = config.getfloat("stuck_spool_pressure_threshold", STUCK_SPOOL_PRESSURE_THRESHOLD)
+        self.stuck_spool_pressure_clear_threshold = config.getfloat("stuck_spool_pressure_clear_threshold", STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD)
         self.clog_pressure_target = config.getfloat("clog_pressure_target", CLOG_PRESSURE_TARGET)
         self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL)
 
@@ -1539,7 +1544,9 @@ class OAMSManager:
                 self._restore_follower_if_needed(fps_name, fps_state, oams, "stuck spool recovery")
             return
 
-        if pressure <= STUCK_SPOOL_PRESSURE_THRESHOLD:
+        # Hysteresis logic: Use lower threshold to start timer, upper threshold to clear
+        if pressure <= self.stuck_spool_pressure_threshold:
+            # Pressure is low - start or continue stuck spool timer
             if fps_state.stuck_spool_start_time is None:
                 fps_state.stuck_spool_start_time = now
             elif (not fps_state.stuck_spool_active and now - fps_state.stuck_spool_start_time >= STUCK_SPOOL_DWELL):
@@ -1547,23 +1554,28 @@ class OAMSManager:
                 if fps_state.current_group is not None:
                     message = f"Spool appears stuck on {fps_state.current_group} spool {fps_state.current_spool_idx}"
                 self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
-        else:
-            # Clear stuck spool state when pressure returns to normal
+        elif pressure >= self.stuck_spool_pressure_clear_threshold:
+            # Pressure is definitively high - clear stuck spool state
             if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
                 try:
                     oams.set_led_error(fps_state.current_spool_idx, 0)
                 except Exception:
                     self.logger.exception("Failed to clear stuck spool LED on %s spool %d", fps_name, fps_state.current_spool_idx)
-                
+
                 # Clear the stuck_spool_active flag BEFORE trying to restore follower
                 fps_state.reset_stuck_spool_state(preserve_restore=True)
-                self.logger.info("Cleared stuck spool state for %s, pressure restored", fps_name)
+                self.logger.info("Cleared stuck spool state for %s, pressure restored to %.2f", fps_name, pressure)
+
+            # Also clear timer if it was running but not yet triggered
+            if fps_state.stuck_spool_start_time is not None and not fps_state.stuck_spool_active:
+                fps_state.stuck_spool_start_time = None
 
             # Now restore/enable follower
             if fps_state.stuck_spool_restore_follower and is_printing:
                 self._restore_follower_if_needed(fps_name, fps_state, oams, "stuck spool recovery")
             elif is_printing and not fps_state.following:
                 self._ensure_forward_follower(fps_name, fps_state, "stuck spool recovery")
+        # else: Pressure is in hysteresis band (between thresholds) - maintain current state
 
     def _check_clog(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
         """Check for clog conditions (OPTIMIZED)."""
