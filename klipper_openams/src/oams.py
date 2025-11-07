@@ -339,6 +339,8 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         """Clear retry tracking for a specific spool."""
         self._load_retry_count.pop(spool_idx, None)
         self._last_load_attempt.pop(spool_idx, None)
+        # FIX: Also clear the retry flag to prevent stale state
+        self._last_load_was_retry.pop(spool_idx, None)
 
     def _reset_unload_retry_count(self) -> None:
         """Clear unload retry tracking."""
@@ -348,10 +350,6 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
     def load_spool_with_retry(self, spool_idx: int) -> Tuple[bool, str]:
         """Load spool with automatic retry on failure."""
         retry_count = self._load_retry_count.get(spool_idx, 0)
-
-        if retry_count >= self.load_retry_max:
-            self._reset_load_retry_count(spool_idx)
-            return False, f"Failed to load spool {spool_idx} after {self.load_retry_max} attempts"
 
         # Use a loop instead of recursion to prevent monitor state issues
         while retry_count < self.load_retry_max:
@@ -441,10 +439,6 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
     def unload_spool_with_retry(self) -> Tuple[bool, str]:
         """Unload spool with automatic retry on failure."""
-        if self._unload_retry_count >= self.unload_retry_max:
-            self._reset_unload_retry_count()
-            return False, f"Failed to unload after {self.unload_retry_max} attempts"
-
         # Use a loop instead of recursion to prevent monitor state issues
         while self._unload_retry_count < self.unload_retry_max:
             if self._unload_retry_count > 0:
