@@ -12,6 +12,13 @@
 # 3. State Change Tracking: FPSState tracks consecutive idle polls to intelligently
 #    switch between active and idle polling intervals
 # 4. Pre-checks: Monitor functions skip expensive sensor reads when idle and stable
+#
+# CONFIGURABLE DETECTION PARAMETERS:
+# The following parameters can be tuned in [oams_manager] config section:
+# - stuck_spool_load_grace: Grace period (seconds) after load before stuck spool detection (default: 8.0)
+# - clog_pressure_target: Target FPS pressure for clog detection (default: 0.50)
+# - post_load_pressure_dwell: Duration (seconds) to monitor pressure after load (default: 15.0)
+# - clog_sensitivity: Detection sensitivity level - "low", "medium", "high" (default: "medium")
 
 import logging
 import time
@@ -370,6 +377,11 @@ class OAMSManager:
             sensitivity = CLOG_SENSITIVITY_DEFAULT
         self.clog_sensitivity = sensitivity
         self.clog_settings = CLOG_SENSITIVITY_LEVELS[self.clog_sensitivity]
+
+        # Configurable detection thresholds and timing parameters
+        self.stuck_spool_load_grace = config.getfloat("stuck_spool_load_grace", STUCK_SPOOL_LOAD_GRACE)
+        self.clog_pressure_target = config.getfloat("clog_pressure_target", CLOG_PRESSURE_TARGET)
+        self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL)
 
         self.group_to_fps: Dict[str, str] = {}
         self._canonical_lane_by_group: Dict[str, str] = {}
@@ -1152,7 +1164,7 @@ class OAMSManager:
                 tracked_state.post_load_pressure_start = now
                 return eventtime + POST_LOAD_PRESSURE_CHECK_PERIOD
 
-            if now - tracked_state.post_load_pressure_start < POST_LOAD_PRESSURE_DWELL:
+            if now - tracked_state.post_load_pressure_start < self.post_load_pressure_dwell:
                 return eventtime + POST_LOAD_PRESSURE_CHECK_PERIOD
 
             oams_obj = None
@@ -1506,7 +1518,7 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
             return
 
-        if fps_state.since is not None and now - fps_state.since < STUCK_SPOOL_LOAD_GRACE:
+        if fps_state.since is not None and now - fps_state.since < self.stuck_spool_load_grace:
             fps_state.stuck_spool_start_time = None
             # Clear stuck spool flag during grace period after successful load
             if fps_state.stuck_spool_active:
@@ -1635,7 +1647,7 @@ class OAMSManager:
             pressure_mid = (fps_state.clog_min_pressure + fps_state.clog_max_pressure) / 2.0
             message = (f"Clog suspected on {fps_state.current_group or fps_name}: "
                       f"extruder advanced {extrusion_delta:.1f}mm while encoder moved {encoder_delta} counts "
-                      f"with FPS {pressure_mid:.2f} near {CLOG_PRESSURE_TARGET:.2f}")
+                      f"with FPS {pressure_mid:.2f} near {self.clog_pressure_target:.2f}")
             fps_state.clog_active = True
             self._pause_printer_message(message, fps_state.current_oams)
             self._reactivate_clog_follower(fps_name, fps_state, oams, "clog pause")
