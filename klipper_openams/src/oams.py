@@ -407,7 +407,14 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                             self.oams_idx,
                             unload_msg,
                         )
-                
+                        # FIX: Abort load retry sequence if auto-unload fails
+                        # Filament is likely stuck in the tube - continuing load attempts will fail
+                        self._reset_load_retry_count(spool_idx)
+                        return False, (
+                            f"Failed to unload spool {spool_idx} back to AMS before retry. "
+                            f"Load aborted after {retry_count + 1} attempts. {unload_msg}"
+                        )
+
                 # Increment and continue loop
                 retry_count += 1
             else:
