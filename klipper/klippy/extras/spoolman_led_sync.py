@@ -33,14 +33,21 @@ class SpoolmanLEDSync:
         # Defer AFC lookup until ready
         self.afc = None
 
-        # Register for multiple events to catch whenever AFC becomes available
-        self.printer.register_event_handler("klippy:ready", self._handle_ready)
-        self.printer.register_event_handler("klippy:connect", self._handle_ready)
+        try:
+            # Register for multiple events to catch whenever AFC becomes available
+            self.logger.info("Registering event handlers...")
+            self.printer.register_event_handler("klippy:ready", self._handle_ready)
+            self.logger.info("Registered klippy:ready")
+            self.printer.register_event_handler("klippy:connect", self._handle_ready)
+            self.logger.info("Registered klippy:connect")
 
-        # Also schedule delayed init in case AFC loads after this module
-        self.reactor = printer.get_reactor()
-        self.reactor.register_callback(self._delayed_init)
-        self.logger.info("Registered for ready/connect events and scheduled delayed init")
+            # Also schedule delayed init in case AFC loads after this module
+            self.reactor = printer.get_reactor()
+            self.logger.info("Got reactor, scheduling callback...")
+            self.reactor.register_callback(self._delayed_init)
+            self.logger.info("Registered for ready/connect events and scheduled delayed init")
+        except Exception as e:
+            self.logger.exception("Failed to register event handlers")
 
     def _delayed_init(self, eventtime):
         """Try to connect after a short delay, in case AFC loads after us"""
