@@ -2,30 +2,45 @@
 
 ## Overview
 
-This module provides a toggleable override for AFC's M109 macro to automatically use the deadband settings configured for each AFC extruder in `AFC_Hardware.cfg`.
+This module provides a toggleable Python-level override for AFC's M109 command to automatically use the deadband settings configured for each AFC extruder in `AFC_Hardware.cfg`.
 
 ## Problem Solved
 
-AFC overrides the standard M109 temperature command at the Python level. While AFC's M109 supports a `D` parameter for deadband, this module eliminates the need to manually specify the deadband by automatically using the value configured for each extruder.
+AFC overrides the standard M109 temperature command at the Python level. While AFC's M109 supports a `D` parameter for deadband, you had to manually specify it every time. This module eliminates that need by automatically using the value configured for each extruder.
 
-## Features
+## How It Works (Technical)
 
-- **Toggleable**: Can be enabled or disabled on the fly
-- **Automatic Deadband**: Uses the deadband value from each AFC extruder's configuration
-- **Per-Extruder Settings**: Each extruder can have its own deadband value
-- **Non-Invasive**: Doesn't modify AFC Python code, works as a macro layer
+This is a **Python module**, not a macro, because AFC itself overrides M109 at the Python level. The module:
+
+1. Loads after AFC initializes
+2. Renames AFC's M109 command to `M109_AFC_ORIGINAL`
+3. Registers its own M109 command that:
+   - Looks up the AFC extruder's deadband value
+   - Adds the `D` parameter automatically
+   - Calls `M109_AFC_ORIGINAL` with the deadband included
 
 ## Installation
 
-The module is already installed and included in your `printer.cfg`:
+The module is already installed:
 
-```ini
-[include AFC_M109_deadband_override.cfg]
+1. **Python Module**: `/home/user/Sovoron_klipper/klipper/klippy/extras/AFC_M109_deadband.py`
+2. **Configuration**: `AFC_M109_deadband_override.cfg`
+3. **Include**: Already added to `printer.cfg`
+
+After making changes, restart Klipper with:
+```
+FIRMWARE_RESTART
 ```
 
-## Usage
+## Features
 
-### Enable/Disable Commands
+- **Toggleable**: Can be enabled or disabled on the fly without restarting
+- **Automatic Deadband**: Uses the deadband value from each AFC extruder's configuration
+- **Per-Extruder Settings**: Each extruder can have its own deadband value
+- **Manual Override**: You can still manually specify `D` parameter if needed
+- **Non-Invasive**: Doesn't modify AFC files, works as a separate module
+
+## Usage Commands
 
 ```gcode
 AFC_M109_DEADBAND_ENABLE   # Enable automatic deadband usage (default)
@@ -33,23 +48,28 @@ AFC_M109_DEADBAND_DISABLE  # Disable automatic deadband usage
 AFC_M109_DEADBAND_STATUS   # Show current status
 ```
 
-### How It Works
+## How It Works (User Perspective)
 
-**When ENABLED (default):**
+### When ENABLED (default):
 ```gcode
-M109 S240 T0  # Automatically uses the deadband from AFC extruder config
-# Equivalent to: AFC_M109 S240 T0 D=10
+M109 S240 T0  # Automatically uses the deadband from AFC config
+```
+Behind the scenes: `M109_AFC_ORIGINAL S240 T0 D=10`
+
+### When DISABLED:
+```gcode
+M109 S240 T0  # Uses AFC's default behavior
+```
+Behind the scenes: `M109_AFC_ORIGINAL S240 T0`
+
+### Manual Override (works either way):
+```gcode
+M109 S240 T0 D=5  # Uses 5°C deadband instead of config value
 ```
 
-**When DISABLED:**
-```gcode
-M109 S240 T0  # Uses AFC's default behavior (no deadband unless specified)
-# Equivalent to: AFC_M109 S240 T0
-```
+## Setting Deadband Values
 
-### Setting Deadband Values
-
-Edit your deadband values in `AFC_Hardware.cfg`:
+Edit your deadband values in `AFC/AFC_Hardware.cfg`:
 
 ```ini
 [AFC_extruder extruder]
@@ -61,93 +81,147 @@ deadband: 15  # Different extruders can have different values
 tool: tool T1
 ```
 
+**Your Current Settings**: All extruders are set to 10°C deadband.
+
 ## How Deadband Works
 
 A deadband creates a temperature tolerance range:
-- Target: 240°C
-- Deadband: 10°C
-- Acceptable range: 235°C to 245°C (target ± deadband/2)
+- **Target**: 240°C
+- **Deadband**: 10°C
+- **Acceptable range**: 235°C to 245°C (target ± deadband/2)
 
-The printer will consider the target temperature reached when it enters this range, reducing wait time.
+The printer will consider the target temperature reached when it enters this range, significantly reducing wait time.
 
-## Configuration Files
+## Configuration Options
 
-- **Main Module**: `AFC_M109_deadband_override.cfg`
-- **AFC Hardware Config**: `AFC/AFC_Hardware.cfg`
-- **Documentation**: `AFC_M109_DEADBAND_README.md`
-
-## Technical Details
-
-### Macro Override Chain
-
-1. **Original M109** → Renamed to `M109.AFC_BASE`
-2. **AFC M109** → Available as `AFC_M109` command
-3. **This Module** → Intercepts M109, adds deadband, calls `AFC_M109`
-
-### Deadband Parameter Flow
-
-```
-M109 S240 T0
-    ↓
-[Check if override enabled]
-    ↓
-[Lookup AFC extruder config for T0]
-    ↓
-[Get deadband value (e.g., 10)]
-    ↓
-AFC_M109 S240 T0 D=10
-```
-
-## Default State
-
-The module is **ENABLED** by default. To change the default, edit:
+In `AFC_M109_deadband_override.cfg`:
 
 ```ini
-[gcode_macro _AFC_M109_DEADBAND_OVERRIDE]
-variable_enabled: 1  # Change to 0 to default to disabled
+[AFC_M109_deadband]
+enabled: 1  # 1 = start enabled (default), 0 = start disabled
+```
+
+## Architecture
+
+### Command Flow
+
+```
+User: M109 S240 T0
+  ↓
+[AFC_M109_deadband.py intercepts]
+  ↓
+[Check if enabled]
+  ↓
+[Lookup AFC extruder config for T0]
+  ↓
+[Get deadband value: 10]
+  ↓
+[Call M109_AFC_ORIGINAL S240 T0 D=10]
+  ↓
+[AFC's original M109 handler executes]
+```
+
+### File Structure
+
+```
+Sovoron_klipper/
+├── klipper/klippy/extras/
+│   └── AFC_M109_deadband.py          # Python module
+├── printer_data/config/
+│   ├── AFC_M109_deadband_override.cfg # Configuration
+│   ├── AFC_M109_DEADBAND_README.md    # This file
+│   └── printer.cfg                    # Includes the config
 ```
 
 ## Troubleshooting
 
-### Issue: M109 not using deadband
-**Solution**: Check that the override is enabled with `AFC_M109_DEADBAND_STATUS`
+### Error: "AFC_M109_deadband requires AFC to be loaded"
+**Cause**: The module tried to load before AFC
+**Solution**: Ensure AFC config is included before this module in `printer.cfg`
 
-### Issue: Deadband value not found
-**Solution**: Verify that the AFC extruder section exists in `AFC_Hardware.cfg` with a `deadband:` parameter
+### M109 not using deadband
+**Check**: Run `AFC_M109_DEADBAND_STATUS` to verify it's enabled
+**Solution**: Run `AFC_M109_DEADBAND_ENABLE`
 
-### Issue: Wrong extruder deadband used
-**Solution**: Check that the tool number matches the extruder name (T0 → extruder, T1 → extruder1, etc.)
+### Deadband value not found
+**Check**: Verify AFC extruder section in `AFC/AFC_Hardware.cfg`
+**Solution**: Add `deadband: 10` to each `[AFC_extruder ...]` section
+
+### Wrong extruder deadband used
+**Check**: Tool number mapping (T0 → extruder, T1 → extruder1, etc.)
+**Solution**: Verify tool mapping in AFC configuration
 
 ## Examples
 
 ```gcode
-# Enable the override
+# Check current status
+AFC_M109_DEADBAND_STATUS
+
+# Enable the override (if not already enabled)
 AFC_M109_DEADBAND_ENABLE
 
-# Heat extruder 0 to 240°C with automatic deadband
+# Heat extruder 0 to 240°C - automatically uses 10°C deadband
 M109 S240 T0
+# Console shows: "M109: Using AFC deadband 10.0°C for extruder"
 
 # Heat current extruder to 210°C with automatic deadband
 M109 S210
 
-# Disable the override if you want AFC's default behavior
+# Temporarily disable for testing
 AFC_M109_DEADBAND_DISABLE
+M109 S240 T0  # Uses AFC default (no automatic deadband)
 
-# Heat without deadband (AFC default)
-M109 S240 T0
-
-# Re-enable for future commands
+# Re-enable for normal operation
 AFC_M109_DEADBAND_ENABLE
+
+# Manual deadband override (works regardless of enable/disable status)
+M109 S240 T0 D=5  # Uses 5°C instead of configured 10°C
 ```
+
+## Default State
+
+The module is **ENABLED by default**. To change the default, edit `AFC_M109_deadband_override.cfg`:
+
+```ini
+[AFC_M109_deadband]
+enabled: 0  # Start disabled
+```
+
+Then run `FIRMWARE_RESTART` to apply.
+
+## Benefits
+
+1. **Faster Heating**: No more waiting for exact temperatures
+2. **Consistent Behavior**: All M109 commands use your configured deadband
+3. **Less Typing**: No need to add `D=10` to every M109 command
+4. **Flexible**: Can still override deadband manually when needed
+5. **Safe**: Original AFC functionality is preserved
 
 ## Notes
 
-- The module respects all standard M109 parameters (S, T)
+- The module works seamlessly with tool changes and multi-extruder setups
 - If a deadband is not found in the AFC config, it falls back to AFC's default behavior
 - Informational messages are logged to help track which deadband is being used
-- The module works seamlessly with tool changes and multi-extruder setups
+- The module loads after AFC, so AFC must be properly configured first
+- You can disable the module without removing it by running `AFC_M109_DEADBAND_DISABLE`
 
 ## Version
 
-Created: 2025-11-08
-Compatible with: AFC Klipper Add-On
+- **Created**: 2025-11-08
+- **Compatible with**: AFC Klipper Add-On (Python-level override)
+- **Type**: Klipper Python module + configuration
+
+## Upgrading Notes
+
+If you update Klipper, the Python module at `/home/user/Sovoron_klipper/klipper/klippy/extras/AFC_M109_deadband.py` will be preserved. However, if you ever need to reinstall Klipper from scratch, you'll need to:
+
+1. Restore `AFC_M109_deadband.py` to `klipper/klippy/extras/`
+2. The config file `AFC_M109_deadband_override.cfg` is in your config directory and should be backed up normally
+
+## Support
+
+For issues or questions:
+1. Check the Klipper console for error messages
+2. Run `AFC_M109_DEADBAND_STATUS` to verify the module loaded
+3. Verify AFC is working correctly first: `M109_AFC_ORIGINAL S240`
+4. Check that deadband values are set in `AFC_Hardware.cfg`
