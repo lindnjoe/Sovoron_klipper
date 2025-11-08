@@ -1159,6 +1159,18 @@ class afcAMS(afcUnit):
                     self.hardware_service.attach_controller(self.oams)
                 except Exception:
                     self.logger.exception("Failed to attach AMSHardwareService for %s", self.oams_name)
+
+        # Check if OAMS hardware was found
+        if self.oams is None:
+            self.logger.warning(
+                "OpenAMS hardware '[oams %s]' not found for AFC unit '%s'. "
+                "If you are using Box Turtle or other non-AMS hardware, "
+                "remove the '[afc_openams %s]' section from your config.",
+                self.oams_name, self.name, self.name
+            )
+            # Don't start the sync timer if no OAMS hardware
+            return
+
         self.reactor.update_timer(self.timer, self.reactor.NOW)
 
     def _update_shared_lane(self, lane, lane_val, eventtime):
@@ -2164,48 +2176,12 @@ def _patch_lane_pre_sensor_for_ams() -> None:
     AFCLane._ams_pre_sensor_patched = True
 
 def load_config_prefix(config):
-    """Load OpenAMS integration only if AMS hardware is configured."""
-    from configparser import Error as ConfigError
-    import logging
-    logger = logging.getLogger("AFC_OpenAMS")
+    """Load OpenAMS integration - actual hardware check happens at handle_ready."""
+    # Note: We can't reliably check for OAMS sections during config load because
+    # they may be in [include] files that haven't been processed yet.
+    # The actual OAMS hardware check happens in handle_ready() after all configs load.
 
-    # Check if the referenced OAMS section exists in the configuration
-    oams_name = config.get("oams", "oams1")
-    oams_section = f"oams {oams_name}"
-
-    # Get the printer object to check for OAMS configuration
-    printer = config.get_printer()
-
-    # Use the config's fileconfig object to check for OAMS sections
-    has_oams = False
-    try:
-        # Access the raw config file to check for sections
-        fileconfig = printer.get_start_args().get('config')
-        if fileconfig is not None:
-            # Check if the specific OAMS section or any OAMS section exists
-            if hasattr(fileconfig, 'has_section'):
-                has_oams = fileconfig.has_section(oams_section)
-                # Also check for any other OAMS sections
-                if not has_oams and hasattr(fileconfig, 'sections'):
-                    all_sections = fileconfig.sections()
-                    has_oams = any(s.startswith('oams ') for s in all_sections)
-    except Exception as e:
-        # If we can't determine OAMS presence during config load, proceed with loading
-        # The module will fail later if OAMS hardware is actually missing
-        logger.debug("Unable to check for OAMS configuration during load: %s", e)
-        has_oams = True  # Default to True to avoid breaking configs
-
-    if not has_oams:
-        # No AMS hardware configured - raise an error explaining the requirement
-        config_name = config.get_name()
-        raise ConfigError(
-            f"Section '{config_name}' requires OpenAMS hardware to be configured.\n"
-            f"Please add a '[{oams_section}]' section to your config, or remove the '{config_name}' section.\n"
-            f"For Box Turtle or other non-AMS systems, simply remove all '[afc_openams ...]' sections from your config."
-        )
-
-    # AMS hardware is configured, apply patches and load module
-    logger.info("OpenAMS hardware detected - loading AFC_OpenAMS module for %s", config.get_name())
+    # Always apply patches during config load for any afc_openams sections
     _patch_lane_pre_sensor_for_ams()
     _patch_extruder_for_virtual_ams()
     return afcAMS(config)
