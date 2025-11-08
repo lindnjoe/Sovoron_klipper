@@ -1,13 +1,14 @@
 # OpenAMS Spoolman LED Sync Configuration
 #
-# This optional module sets lane LEDs to match the filament color from Spoolman
-# instead of the default blue color when lanes are loaded.
+# This optional module sets the ACTIVE TOOL LED to match the filament color
+# from Spoolman instead of the default blue color.
 #
 # Features:
 # - Automatically reads filament color from Spoolman via AFC
-# - Sets lane LEDs to match the actual filament color
+# - Sets active tool LED to match the actual filament color
 # - Falls back to default color if Spoolman data not available
 # - Error states (stuck spool, clog) still override with red flashing
+# - Non-active lanes use their normal AFC LED colors
 # - Requires restart to enable/disable
 #
 # To use:

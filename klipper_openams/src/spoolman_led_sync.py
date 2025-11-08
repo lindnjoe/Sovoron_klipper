@@ -1,7 +1,9 @@
 """
 OpenAMS Spoolman LED Sync Module
 
-Optional module that sets lane LEDs to match Spoolman filament colors.
+Optional module that sets the ACTIVE TOOL LED to match Spoolman filament color
+instead of the default blue color. Non-active lanes use their normal AFC colors.
+
 Requires AFC and Spoolman integration to be active.
 
 Configuration:
@@ -84,8 +86,8 @@ class SpoolmanLEDSync:
 
     def _set_lane_led_color(self, lane):
         """
-        Set a single lane's LED to its Spoolman color.
-        Only updates if lane is loaded and has an LED index.
+        Set the active tool's LED to its Spoolman color instead of default blue.
+        Only updates the lane that is currently loaded in the toolhead.
         """
         # Skip if lane has no LED
         if not hasattr(lane, 'led_index') or lane.led_index is None:
@@ -96,19 +98,19 @@ class SpoolmanLEDSync:
                 hasattr(lane, 'load_state') and lane.load_state):
             return
 
-        # Check if this is the active toolhead lane (don't override tool_loaded state)
+        # Check if this is the active toolhead lane
         is_active = (hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None and
                      hasattr(lane.extruder_obj, 'lane_loaded') and
                      lane.extruder_obj.lane_loaded == lane.name)
 
-        if not is_active:
-            # For loaded but not active lanes, use Spoolman color
+        if is_active:
+            # For the active tool, override blue with Spoolman color
             hex_color = self._get_lane_color(lane)
             led_color_str = self._hex_to_led_string(hex_color)
 
             try:
                 self.afc.function.afc_led(led_color_str, lane.led_index)
-                self.logger.debug("Set LED for %s to color %s", lane.name, hex_color)
+                self.logger.debug("Set active tool LED for %s to color %s", lane.name, hex_color)
             except Exception as e:
                 self.logger.error("Failed to set LED for %s: %s", lane.name, e)
 
