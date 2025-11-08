@@ -15,9 +15,13 @@ class AFC_M109_Deadband:
         # Get configuration options
         self.enabled = config.getint('enabled', 1)  # Default: enabled
 
+        # Store reference to AFC and original function
+        self.afc = None
+        self.original_afc_m109 = None
+
         # Register event handler to hook in after AFC loads
-        self.printer.register_event_handler("klippy:connect",
-                                           self.handle_connect)
+        self.printer.register_event_handler("klippy:ready",
+                                           self.handle_ready)
 
         # Register gcode commands for enable/disable
         self.gcode.register_command('AFC_M109_DEADBAND_ENABLE',
@@ -30,29 +34,24 @@ class AFC_M109_Deadband:
                                    self.cmd_STATUS,
                                    desc=self.cmd_STATUS_help)
 
-    def handle_connect(self):
+    def handle_ready(self):
         """
-        This runs after Klipper connects. We need to rename AFC's M109
-        and register our own version.
+        This runs after Klipper is ready. We monkey-patch AFC's M109 handler.
         """
-        # Check if AFC is loaded
+        # Get reference to AFC object
         try:
             self.afc = self.printer.lookup_object('AFC')
         except:
             raise self.printer.config_error(
                 "AFC_M109_deadband requires AFC to be loaded")
 
-        # Rename AFC's M109 command to M109_AFC_ORIGINAL
-        try:
-            self.gcode.register_command('M109_AFC_ORIGINAL',
-                                       self.gcode.commands['M109'].func,
-                                       desc="Original AFC M109 command")
-            # Register our override
-            self.gcode.register_command('M109', self.cmd_M109,
-                                       desc="M109 with automatic AFC deadband")
-        except Exception as e:
+        # Save original AFC M109 function and replace it with our wrapper
+        if hasattr(self.afc, '_cmd_AFC_M109'):
+            self.original_afc_m109 = self.afc._cmd_AFC_M109
+            self.afc._cmd_AFC_M109 = self.wrapped_afc_m109
+        else:
             self.gcode.respond_info(
-                "AFC_M109_deadband: Could not override M109: %s" % str(e))
+                "AFC_M109_deadband: Could not find AFC's M109 handler")
 
     cmd_ENABLE_help = "Enable automatic AFC deadband usage in M109"
     def cmd_ENABLE(self, gcmd):
@@ -71,41 +70,47 @@ class AFC_M109_Deadband:
         status = "ENABLED" if self.enabled else "DISABLED"
         gcmd.respond_info("AFC M109 Deadband Override: %s" % status)
 
-    def cmd_M109(self, gcmd):
+    def wrapped_afc_m109(self, gcmd, wait=True):
         """
-        Override M109 to automatically add deadband from AFC extruder config
+        Wrapper around AFC's M109 that automatically adds deadband
         """
-        # Get parameters
-        temp = gcmd.get_float('S', 0.0)
+        # Get parameters from the command
         toolnum = gcmd.get_int('T', None, minval=0)
+        temp = gcmd.get_float('S', 0.0)
         deadband_override = gcmd.get_float('D', None)
 
-        # Build command to pass to AFC's M109
-        cmd_parts = ["M109_AFC_ORIGINAL"]
-        if temp > 0:
-            cmd_parts.append("S=%.1f" % temp)
-        if toolnum is not None:
-            cmd_parts.append("T=%d" % toolnum)
-
         # If override is enabled and no deadband was manually specified
-        if self.enabled and deadband_override is None:
+        if self.enabled and deadband_override is None and temp > 0:
             deadband = self._get_deadband_for_tool(toolnum)
             if deadband is not None:
-                cmd_parts.append("D=%.1f" % deadband)
+                # Create a modified gcmd with deadband parameter
+                # We need to add the D parameter to the original command
+                original_params = gcmd.get_command_parameters()
+
                 # Determine extruder name for logging
                 if toolnum is not None:
                     extruder_name = "extruder" if toolnum == 0 else "extruder%d" % toolnum
                 else:
                     toolhead = self.printer.lookup_object('toolhead')
                     extruder_name = toolhead.get_extruder().get_name()
+
                 gcmd.respond_info("M109: Using AFC deadband %.1f°C for %s" %
                                 (deadband, extruder_name))
-        elif deadband_override is not None:
-            # User manually specified deadband, pass it through
-            cmd_parts.append("D=%.1f" % deadband_override)
 
-        # Execute AFC's original M109
-        self.gcode.run_script_from_command(" ".join(cmd_parts))
+                # Build new command string with deadband
+                cmd_parts = ["M109"]
+                if temp > 0:
+                    cmd_parts.append("S%.1f" % temp)
+                if toolnum is not None:
+                    cmd_parts.append("T%d" % toolnum)
+                cmd_parts.append("D%.1f" % deadband)
+
+                # Execute via gcode to create proper gcmd object
+                self.gcode.run_script_from_command(" ".join(cmd_parts))
+                return
+
+        # Call original AFC M109 function
+        self.original_afc_m109(gcmd, wait)
 
     def _get_deadband_for_tool(self, toolnum):
         """
