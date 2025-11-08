@@ -36,7 +36,7 @@ class AFC_M109_Deadband:
 
     def handle_ready(self):
         """
-        This runs after Klipper is ready. We monkey-patch AFC's M109 handler.
+        This runs after Klipper is ready. We re-register M109/AFC_M109 with our wrapper.
         """
         # Get reference to AFC object
         try:
@@ -45,17 +45,26 @@ class AFC_M109_Deadband:
             raise self.printer.config_error(
                 "AFC_M109_deadband requires AFC to be loaded")
 
-        # Save original AFC M109 function and replace it with our wrapper
+        # Save original AFC M109 function
         if hasattr(self.afc, '_cmd_AFC_M109'):
             self.original_afc_m109 = self.afc._cmd_AFC_M109
-            # Create a closure that properly captures both instances
-            # Note: When replacing an instance method with a function, the function
-            # won't receive the implicit 'self', so we need to capture the AFC instance
+
+            # Create wrapper that will be registered as the command handler
+            # We need to re-register the commands because gcode.register_command
+            # stores a reference to the handler at registration time
             deadband_wrapper = self
             afc_instance = self.afc
+
             def wrapper(gcmd, wait=True):
                 return deadband_wrapper.wrapped_afc_m109(afc_instance, gcmd, wait)
-            self.afc._cmd_AFC_M109 = wrapper
+
+            # Re-register both M109 and AFC_M109 with our wrapper
+            self.gcode.register_command('M109', wrapper,
+                                       desc=self.afc._cmd_AFC_M109_help)
+            self.gcode.register_command('AFC_M109', wrapper,
+                                       desc=self.afc._cmd_AFC_M109_help)
+
+            self.gcode.respond_info("AFC M109 Deadband: Registered command handlers")
         else:
             self.gcode.respond_info(
                 "AFC_M109_deadband: Could not find AFC's M109 handler")
