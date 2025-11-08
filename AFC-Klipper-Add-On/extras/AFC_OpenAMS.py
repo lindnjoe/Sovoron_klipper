@@ -2165,6 +2165,7 @@ def _patch_lane_pre_sensor_for_ams() -> None:
 
 def load_config_prefix(config):
     """Load OpenAMS integration only if AMS hardware is configured."""
+    from configparser import Error as ConfigError
     import logging
     logger = logging.getLogger("AFC_OpenAMS")
 
@@ -2175,34 +2176,33 @@ def load_config_prefix(config):
     # Get the printer object to check for OAMS configuration
     printer = config.get_printer()
 
-    # Check if any OAMS sections are defined in the config
+    # Use the config's fileconfig object to check for OAMS sections
     has_oams = False
     try:
-        # Try to get the config file wrapper
-        gcode = printer.lookup_object('gcode')
-        configfile = printer.lookup_object('configfile')
-
-        # Check if the specific OAMS section exists in the config
-        if hasattr(configfile, 'status'):
-            settings = configfile.status.get('settings', {})
-            has_oams = oams_section in settings or any(key.startswith('oams ') for key in settings.keys())
-
-        # Fallback: try to directly check the config sections
-        if not has_oams and hasattr(printer, 'get_start_args'):
-            file_config = printer.get_start_args().get('config', None)
-            if file_config and hasattr(file_config, 'sections'):
-                sections = file_config.sections() if callable(file_config.sections) else []
-                has_oams = oams_section in sections or any(s.startswith('oams ') for s in sections)
+        # Access the raw config file to check for sections
+        fileconfig = printer.get_start_args().get('config')
+        if fileconfig is not None:
+            # Check if the specific OAMS section or any OAMS section exists
+            if hasattr(fileconfig, 'has_section'):
+                has_oams = fileconfig.has_section(oams_section)
+                # Also check for any other OAMS sections
+                if not has_oams and hasattr(fileconfig, 'sections'):
+                    all_sections = fileconfig.sections()
+                    has_oams = any(s.startswith('oams ') for s in all_sections)
     except Exception as e:
-        # If we can't determine OAMS presence, log and skip loading
-        logger.debug("Unable to check for OAMS configuration: %s", e)
-        has_oams = False
+        # If we can't determine OAMS presence during config load, proceed with loading
+        # The module will fail later if OAMS hardware is actually missing
+        logger.debug("Unable to check for OAMS configuration during load: %s", e)
+        has_oams = True  # Default to True to avoid breaking configs
 
     if not has_oams:
-        # No AMS hardware configured, skip loading this module
-        logger.info("No OpenAMS hardware detected in configuration - skipping AFC_OpenAMS module for %s",
-                   config.get_name())
-        return None
+        # No AMS hardware configured - raise an error explaining the requirement
+        config_name = config.get_name()
+        raise ConfigError(
+            f"Section '{config_name}' requires OpenAMS hardware to be configured.\n"
+            f"Please add a '[{oams_section}]' section to your config, or remove the '{config_name}' section.\n"
+            f"For Box Turtle or other non-AMS systems, simply remove all '[afc_openams ...]' sections from your config."
+        )
 
     # AMS hardware is configured, apply patches and load module
     logger.info("OpenAMS hardware detected - loading AFC_OpenAMS module for %s", config.get_name())
