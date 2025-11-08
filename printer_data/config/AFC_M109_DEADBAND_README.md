@@ -12,12 +12,12 @@ AFC overrides the standard M109 temperature command at the Python level. While A
 
 This is a **Python module**, not a macro, because AFC itself overrides M109 at the Python level. The module:
 
-1. Loads after AFC initializes
-2. Renames AFC's M109 command to `M109_AFC_ORIGINAL`
-3. Registers its own M109 command that:
-   - Looks up the AFC extruder's deadband value
-   - Adds the `D` parameter automatically
-   - Calls `M109_AFC_ORIGINAL` with the deadband included
+1. Loads after AFC initializes (during klippy:ready event)
+2. Monkey-patches AFC's `_cmd_AFC_M109` method
+3. Wraps the original function to:
+   - Look up the AFC extruder's deadband value
+   - Add the `D` parameter automatically
+   - Call AFC's original M109 handler with the deadband included
 
 ## Installation
 
@@ -54,13 +54,13 @@ AFC_M109_DEADBAND_STATUS   # Show current status
 ```gcode
 M109 S240 T0  # Automatically uses the deadband from AFC config
 ```
-Behind the scenes: `M109_AFC_ORIGINAL S240 T0 D=10`
+Behind the scenes: Adds `D=10` parameter before calling AFC's original handler
 
 ### When DISABLED:
 ```gcode
 M109 S240 T0  # Uses AFC's default behavior
 ```
-Behind the scenes: `M109_AFC_ORIGINAL S240 T0`
+Behind the scenes: Passes through to AFC's original handler unchanged
 
 ### Manual Override (works either way):
 ```gcode
@@ -108,7 +108,9 @@ enabled: 1  # 1 = start enabled (default), 0 = start disabled
 ```
 User: M109 S240 T0
   ↓
-[AFC_M109_deadband.py intercepts]
+[AFC's M109 command is called]
+  ↓
+[AFC_M109_deadband wrapper intercepts]
   ↓
 [Check if enabled]
   ↓
@@ -116,9 +118,9 @@ User: M109 S240 T0
   ↓
 [Get deadband value: 10]
   ↓
-[Call M109_AFC_ORIGINAL S240 T0 D=10]
+[Re-call M109 with D=10 parameter]
   ↓
-[AFC's original M109 handler executes]
+[AFC's original _cmd_AFC_M109 executes]
 ```
 
 ### File Structure
