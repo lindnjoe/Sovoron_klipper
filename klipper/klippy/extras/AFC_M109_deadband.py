@@ -80,35 +80,41 @@ class AFC_M109_Deadband:
         deadband_override = gcmd.get_float('D', None)
 
         # If override is enabled and no deadband was manually specified
-        if self.enabled and deadband_override is None and temp > 0:
+        if self.enabled and deadband_override is None and temp > 0 and wait:
             deadband = self._get_deadband_for_tool(toolnum)
             if deadband is not None:
-                # Determine extruder name for logging
+                # We need to handle the M109 logic ourselves with the deadband
+                # This replicates AFC's _cmd_AFC_M109 logic but with our deadband
+
+                # Determine which extruder to use (replicate AFC logic)
                 if toolnum is not None:
-                    extruder_name = "extruder" if toolnum == 0 else "extruder%d" % toolnum
+                    map_str = "T{}".format(toolnum)
+                    lane = self.afc.function.get_lane_by_map(map_str)
+                    if lane is not None:
+                        extruder = lane.extruder_obj
+                        if extruder is None:
+                            self.afc.logger.error("extruder not configured for T{}".format(toolnum))
+                            return
+                    else:
+                        self.afc.logger.error("extruder not configured for T{}".format(toolnum))
+                        return
                 else:
                     toolhead = self.printer.lookup_object('toolhead')
-                    extruder_name = toolhead.get_extruder().get_name()
+                    extruder = toolhead.get_extruder()
 
+                # Get heater and set temperature
+                pheaters = self.printer.lookup_object('heaters')
+                heater = extruder.get_heater()
+
+                # Log what we're doing
                 gcmd.respond_info("M109: Using AFC deadband %.1fC for %s" %
-                                (deadband, extruder_name))
+                                (deadband, extruder.get_name()))
 
-                # Monkey-patch the gcmd object to return our deadband value
-                # when the original AFC function queries for the 'D' parameter
-                original_get_float = gcmd.get_float
+                # Set temperature without waiting
+                pheaters.set_temperature(heater, temp, False)
 
-                def patched_get_float(param, default=None, minval=None,
-                                     maxval=None, above=None, below=None):
-                    if param == 'D':
-                        return deadband
-                    return original_get_float(param, default, minval,
-                                            maxval, above, below)
-
-                gcmd.get_float = patched_get_float
-
-                # Call original AFC M109 function with patched gcmd
-                # This will properly wait for temperature stabilization
-                self.original_afc_m109(gcmd, wait)
+                # Now wait with our deadband tolerance
+                self.afc._wait_for_temp_within_tolerance(heater, temp, deadband)
                 return
 
         # Call original AFC M109 function
