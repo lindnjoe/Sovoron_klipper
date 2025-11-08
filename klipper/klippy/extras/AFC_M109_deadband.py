@@ -48,7 +48,11 @@ class AFC_M109_Deadband:
         # Save original AFC M109 function and replace it with our wrapper
         if hasattr(self.afc, '_cmd_AFC_M109'):
             self.original_afc_m109 = self.afc._cmd_AFC_M109
-            self.afc._cmd_AFC_M109 = self.wrapped_afc_m109
+            # Create a closure that properly captures our instance
+            deadband_wrapper = self
+            def wrapper(afc_self, gcmd, wait=True):
+                return deadband_wrapper.wrapped_afc_m109(afc_self, gcmd, wait)
+            self.afc._cmd_AFC_M109 = wrapper
         else:
             self.gcode.respond_info(
                 "AFC_M109_deadband: Could not find AFC's M109 handler")
@@ -70,9 +74,10 @@ class AFC_M109_Deadband:
         status = "ENABLED" if self.enabled else "DISABLED"
         gcmd.respond_info("AFC M109 Deadband Override: %s" % status)
 
-    def wrapped_afc_m109(self, gcmd, wait=True):
+    def wrapped_afc_m109(self, afc_self, gcmd, wait=True):
         """
         Wrapper around AFC's M109 that automatically adds deadband
+        Note: afc_self is the AFC instance, self is the AFC_M109_Deadband instance
         """
         # Get parameters from the command
         toolnum = gcmd.get_int('T', None, minval=0)
