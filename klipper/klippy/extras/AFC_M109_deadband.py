@@ -122,6 +122,7 @@ class AFC_M109_Deadband:
                     lane = self.afc.function.get_lane_by_map(map_str)
                     if lane is not None:
                         extruder = lane.extruder_obj
+                        extruder_name = "extruder" if toolnum == 0 else "extruder%d" % toolnum
                         if extruder is None:
                             self.afc.logger.error("extruder not configured for T{}".format(toolnum))
                             return
@@ -131,6 +132,7 @@ class AFC_M109_Deadband:
                 else:
                     toolhead = self.printer.lookup_object('toolhead')
                     extruder = toolhead.get_extruder()
+                    extruder_name = extruder.get_name()
 
                 # Get heater and set temperature
                 pheaters = self.printer.lookup_object('heaters')
@@ -138,7 +140,7 @@ class AFC_M109_Deadband:
 
                 # Log what we're doing
                 gcmd.respond_info("M109: Using AFC deadband %.1fC for %s" %
-                                (deadband, extruder.get_name()))
+                                (deadband, extruder_name))
 
                 # Set temperature without waiting
                 pheaters.set_temperature(heater, temp, False)
