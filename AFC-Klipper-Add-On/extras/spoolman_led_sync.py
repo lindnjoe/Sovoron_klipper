@@ -33,39 +33,20 @@ class SpoolmanLEDSync:
         # Defer AFC lookup until ready
         self.afc = None
 
-        # Try immediate connection - AFC might already be loaded
-        self.logger.info("Attempting immediate AFC connection...")
-        try:
-            self.afc = self.printer.lookup_object('AFC')
-            self.logger.info("SUCCESS: AFC found immediately!")
-            self._connect_to_afc()
-        except Exception as e:
-            self.logger.info("AFC not available yet: %s", e)
-            self.logger.info("Will retry via delayed callback...")
+        # Register for ready event to hook after all units are loaded
+        printer.register_event_handler("klippy:ready", self._handle_ready)
 
-            # Schedule delayed retry
-            try:
-                self.reactor = printer.get_reactor()
-                self.logger.info("Got reactor")
-                self.reactor.register_callback(self._delayed_init)
-                self.logger.info("Scheduled delayed init callback")
-            except Exception as e2:
-                self.logger.exception("Failed to schedule delayed init")
-
-    def _delayed_init(self, eventtime):
-        """Try to connect after a short delay, in case AFC loads after us"""
-        self.logger.info("Delayed init callback triggered")
-
-        if self.afc is not None:
-            self.logger.info("Already connected to AFC")
-            return
+    def _handle_ready(self):
+        """Hook into AFC after all units are loaded (klippy:ready event)"""
+        self.logger.info("Spoolman LED sync: klippy:ready event fired")
 
         try:
             self.afc = self.printer.lookup_object('AFC')
-            self.logger.info("Found AFC via delayed callback")
+            self.logger.info("Found AFC object")
             self._connect_to_afc()
         except Exception as e:
-            self.logger.error("AFC still not available: %s", e)
+            self.logger.error("Failed to find AFC: %s", e)
+            self.enabled = False
 
     def _connect_to_afc(self):
         """Hook into AFC's LED system"""
@@ -93,10 +74,23 @@ class SpoolmanLEDSync:
         We wrap each unit's lane_tool_loaded function to override LED color.
         """
         try:
+            # Check if AFC has units
+            if not hasattr(self.afc, 'units'):
+                self.logger.error("AFC object has no 'units' attribute")
+                return
+
+            num_units = len(self.afc.units)
+            self.logger.info("AFC has %d units registered", num_units)
+
+            if num_units == 0:
+                self.logger.warning("No units registered in AFC yet - cannot hook")
+                return
+
             # Hook into each unit's lane_tool_loaded method
             units_hooked = 0
             for unit_name, unit_obj in self.afc.units.items():
                 try:
+                    self.logger.info("Attempting to hook unit: %s", unit_name)
                     original_lane_tool_loaded = unit_obj.lane_tool_loaded
 
                     def make_wrapped_lane_tool_loaded(original_func, unit_name):
@@ -117,11 +111,11 @@ class SpoolmanLEDSync:
 
                     unit_obj.lane_tool_loaded = make_wrapped_lane_tool_loaded(original_lane_tool_loaded, unit_name)
                     units_hooked += 1
-                    self.logger.info("Hooked lane_tool_loaded for unit: %s", unit_name)
+                    self.logger.info("Successfully hooked lane_tool_loaded for unit: %s", unit_name)
                 except Exception as e:
                     self.logger.error("Failed to hook unit %s: %s", unit_name, e)
 
-            self.logger.info("Successfully hooked %d units for LED color override", units_hooked)
+            self.logger.info("Successfully hooked %d/%d units for LED color override", units_hooked, num_units)
 
         except Exception as e:
             self.logger.exception("Failed to hook into AFC units: %s", e)
