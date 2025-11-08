@@ -48,10 +48,13 @@ class AFC_M109_Deadband:
         # Save original AFC M109 function and replace it with our wrapper
         if hasattr(self.afc, '_cmd_AFC_M109'):
             self.original_afc_m109 = self.afc._cmd_AFC_M109
-            # Create a closure that properly captures our instance
+            # Create a closure that properly captures both instances
+            # Note: When replacing an instance method with a function, the function
+            # won't receive the implicit 'self', so we need to capture the AFC instance
             deadband_wrapper = self
-            def wrapper(afc_self, gcmd, wait=True):
-                return deadband_wrapper.wrapped_afc_m109(afc_self, gcmd, wait)
+            afc_instance = self.afc
+            def wrapper(gcmd, wait=True):
+                return deadband_wrapper.wrapped_afc_m109(afc_instance, gcmd, wait)
             self.afc._cmd_AFC_M109 = wrapper
         else:
             self.gcode.respond_info(
