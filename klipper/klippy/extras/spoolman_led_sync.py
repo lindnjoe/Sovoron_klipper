@@ -32,10 +32,28 @@ class SpoolmanLEDSync:
 
         # Defer AFC lookup until ready
         self.afc = None
+
+        # Register for multiple events to catch whenever AFC becomes available
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
+        self.printer.register_event_handler("klippy:connect", self._handle_ready)
+
+        # Also schedule delayed init in case AFC loads after this module
+        self.reactor = printer.get_reactor()
+        self.reactor.register_callback(self._delayed_init)
+        self.logger.info("Registered for ready/connect events and scheduled delayed init")
+
+    def _delayed_init(self, eventtime):
+        """Try to connect after a short delay, in case AFC loads after us"""
+        self.logger.info("Delayed init callback triggered")
+        self._handle_ready()
 
     def _handle_ready(self):
         """Initialize AFC connection after Klipper is ready"""
+        # Skip if already connected
+        if self.afc is not None:
+            self.logger.debug("Already connected to AFC, skipping re-init")
+            return
+
         self.logger.info("Attempting to connect to AFC...")
         try:
             self.afc = self.printer.lookup_object('AFC')
