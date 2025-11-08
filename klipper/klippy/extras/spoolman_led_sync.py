@@ -90,26 +90,41 @@ class SpoolmanLEDSync:
     def _hook_into_afc(self):
         """
         Hook into AFC's lane activation system without modifying AFC code.
-        We wrap the existing handle_activate_extruder function.
+        We wrap each unit's lane_tool_loaded function to override LED color.
         """
         try:
-            afc_function = self.afc.function
-            original_activate = afc_function.handle_activate_extruder
+            # Hook into each unit's lane_tool_loaded method
+            units_hooked = 0
+            for unit_name, unit_obj in self.afc.units.items():
+                try:
+                    original_lane_tool_loaded = unit_obj.lane_tool_loaded
 
-            def wrapped_activate_extruder():
-                """Call original function, then update LEDs with Spoolman colors"""
-                # Let AFC do its normal activation
-                original_activate()
+                    def make_wrapped_lane_tool_loaded(original_func, unit_name):
+                        """Create a wrapper with closure over original function"""
+                        def wrapped_lane_tool_loaded(lane):
+                            # Check if lane has Spoolman color
+                            hex_color = self._get_lane_color(lane)
+                            if hex_color and hex_color != self.default_color:
+                                # Use Spoolman color instead of default blue
+                                led_color_str = self._hex_to_led_string(hex_color)
+                                self.logger.info("Setting active tool %s LED to Spoolman color %s",
+                                               lane.name, hex_color)
+                                self.afc.function.afc_led(led_color_str, lane.led_index)
+                            else:
+                                # No Spoolman color, use default behavior
+                                original_func(lane)
+                        return wrapped_lane_tool_loaded
 
-                # Now override LED colors for loaded lanes if we have Spoolman data
-                self._update_lane_leds()
+                    unit_obj.lane_tool_loaded = make_wrapped_lane_tool_loaded(original_lane_tool_loaded, unit_name)
+                    units_hooked += 1
+                    self.logger.info("Hooked lane_tool_loaded for unit: %s", unit_name)
+                except Exception as e:
+                    self.logger.error("Failed to hook unit %s: %s", unit_name, e)
 
-            # Replace the function with our wrapper
-            afc_function.handle_activate_extruder = wrapped_activate_extruder
-            self.logger.info("Successfully hooked into AFC lane activation")
+            self.logger.info("Successfully hooked %d units for LED color override", units_hooked)
 
         except Exception as e:
-            self.logger.exception("Failed to hook into AFC activation: %s", e)
+            self.logger.exception("Failed to hook into AFC units: %s", e)
 
     def _update_lane_leds(self):
         """Update LEDs for all lanes based on Spoolman colors"""
