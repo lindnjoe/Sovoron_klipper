@@ -83,10 +83,6 @@ class AFC_M109_Deadband:
         if self.enabled and deadband_override is None and temp > 0:
             deadband = self._get_deadband_for_tool(toolnum)
             if deadband is not None:
-                # Create a modified gcmd with deadband parameter
-                # We need to add the D parameter to the original command
-                original_params = gcmd.get_command_parameters()
-
                 # Determine extruder name for logging
                 if toolnum is not None:
                     extruder_name = "extruder" if toolnum == 0 else "extruder%d" % toolnum
@@ -97,17 +93,22 @@ class AFC_M109_Deadband:
                 gcmd.respond_info("M109: Using AFC deadband %.1fC for %s" %
                                 (deadband, extruder_name))
 
-                # Build new command string with deadband
-                # Use M109 for blocking (wait=True) or M104 for non-blocking (wait=False)
-                cmd_parts = ["M109" if wait else "M104"]
-                if temp > 0:
-                    cmd_parts.append("S%.1f" % temp)
-                if toolnum is not None:
-                    cmd_parts.append("T%d" % toolnum)
-                cmd_parts.append("D%.1f" % deadband)
+                # Monkey-patch the gcmd object to return our deadband value
+                # when the original AFC function queries for the 'D' parameter
+                original_get_float = gcmd.get_float
 
-                # Execute via gcode to create proper gcmd object
-                self.gcode.run_script_from_command(" ".join(cmd_parts))
+                def patched_get_float(param, default=None, minval=None,
+                                     maxval=None, above=None, below=None):
+                    if param == 'D':
+                        return deadband
+                    return original_get_float(param, default, minval,
+                                            maxval, above, below)
+
+                gcmd.get_float = patched_get_float
+
+                # Call original AFC M109 function with patched gcmd
+                # This will properly wait for temperature stabilization
+                self.original_afc_m109(gcmd, wait)
                 return
 
         # Call original AFC M109 function
