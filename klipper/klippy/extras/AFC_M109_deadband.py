@@ -50,15 +50,28 @@ class AFC_M109_Deadband:
             self.original_afc_m109 = self.afc._cmd_AFC_M109
 
             # Create wrapper that will be registered as the command handler
-            # We need to re-register the commands because gcode.register_command
-            # stores a reference to the handler at registration time
             deadband_wrapper = self
             afc_instance = self.afc
 
             def wrapper(gcmd, wait=True):
                 return deadband_wrapper.wrapped_afc_m109(afc_instance, gcmd, wait)
 
-            # Re-register both M109 and AFC_M109 with our wrapper
+            # Use AFC's rename pattern to replace M109 and AFC_M109 handlers
+            # 1. Unregister existing M109 and save old handler
+            prev_m109 = self.gcode.register_command('M109', None)
+            if prev_m109 is not None:
+                # Register old handler with renamed name for fallback
+                self.gcode.register_command('_AFC_DEADBAND_RENAMED_M109', prev_m109,
+                                          desc="Original M109 handler before deadband wrapper")
+
+            # 2. Unregister existing AFC_M109
+            prev_afc_m109 = self.gcode.register_command('AFC_M109', None)
+            if prev_afc_m109 is not None:
+                # Register old handler with renamed name
+                self.gcode.register_command('_AFC_DEADBAND_RENAMED_AFC_M109', prev_afc_m109,
+                                          desc="Original AFC_M109 handler before deadband wrapper")
+
+            # 3. Register our wrapper for both commands
             self.gcode.register_command('M109', wrapper,
                                        desc=self.afc._cmd_AFC_M109_help)
             self.gcode.register_command('AFC_M109', wrapper,
