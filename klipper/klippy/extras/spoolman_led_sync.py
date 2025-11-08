@@ -33,39 +33,43 @@ class SpoolmanLEDSync:
         # Defer AFC lookup until ready
         self.afc = None
 
+        # Try immediate connection - AFC might already be loaded
+        self.logger.info("Attempting immediate AFC connection...")
         try:
-            # Register for multiple events to catch whenever AFC becomes available
-            self.logger.info("Registering event handlers...")
-            self.printer.register_event_handler("klippy:ready", self._handle_ready)
-            self.logger.info("Registered klippy:ready")
-            self.printer.register_event_handler("klippy:connect", self._handle_ready)
-            self.logger.info("Registered klippy:connect")
-
-            # Also schedule delayed init in case AFC loads after this module
-            self.reactor = printer.get_reactor()
-            self.logger.info("Got reactor, scheduling callback...")
-            self.reactor.register_callback(self._delayed_init)
-            self.logger.info("Registered for ready/connect events and scheduled delayed init")
+            self.afc = self.printer.lookup_object('AFC')
+            self.logger.info("SUCCESS: AFC found immediately!")
+            self._connect_to_afc()
         except Exception as e:
-            self.logger.exception("Failed to register event handlers")
+            self.logger.info("AFC not available yet: %s", e)
+            self.logger.info("Will retry via delayed callback...")
+
+            # Schedule delayed retry
+            try:
+                self.reactor = printer.get_reactor()
+                self.logger.info("Got reactor")
+                self.reactor.register_callback(self._delayed_init)
+                self.logger.info("Scheduled delayed init callback")
+            except Exception as e2:
+                self.logger.exception("Failed to schedule delayed init")
 
     def _delayed_init(self, eventtime):
         """Try to connect after a short delay, in case AFC loads after us"""
         self.logger.info("Delayed init callback triggered")
-        self._handle_ready()
 
-    def _handle_ready(self):
-        """Initialize AFC connection after Klipper is ready"""
-        # Skip if already connected
         if self.afc is not None:
-            self.logger.debug("Already connected to AFC, skipping re-init")
+            self.logger.info("Already connected to AFC")
             return
 
-        self.logger.info("Attempting to connect to AFC...")
         try:
             self.afc = self.printer.lookup_object('AFC')
-            self.logger.info("Successfully looked up AFC object")
+            self.logger.info("Found AFC via delayed callback")
+            self._connect_to_afc()
+        except Exception as e:
+            self.logger.error("AFC still not available: %s", e)
 
+    def _connect_to_afc(self):
+        """Hook into AFC's LED system"""
+        try:
             if not hasattr(self.afc, 'function'):
                 self.logger.error("AFC object has no 'function' attribute")
                 self.enabled = False
@@ -80,7 +84,7 @@ class SpoolmanLEDSync:
             self.logger.info("Hook complete, module fully initialized")
 
         except Exception as e:
-            self.logger.exception("Failed to connect to AFC")
+            self.logger.exception("Failed to hook into AFC")
             self.enabled = False
 
     def _hook_into_afc(self):
