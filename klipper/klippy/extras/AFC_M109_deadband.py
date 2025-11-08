@@ -94,7 +94,7 @@ class AFC_M109_Deadband:
                     toolhead = self.printer.lookup_object('toolhead')
                     extruder_name = toolhead.get_extruder().get_name()
 
-                gcmd.respond_info("M109: Using AFC deadband %.1f°C for %s" %
+                gcmd.respond_info("M109: Using AFC deadband %.1fC for %s" %
                                 (deadband, extruder_name))
 
                 # Build new command string with deadband
