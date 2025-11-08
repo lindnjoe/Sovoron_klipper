@@ -98,7 +98,8 @@ class AFC_M109_Deadband:
                                 (deadband, extruder_name))
 
                 # Build new command string with deadband
-                cmd_parts = ["M109"]
+                # Use M109 for blocking (wait=True) or M104 for non-blocking (wait=False)
+                cmd_parts = ["M109" if wait else "M104"]
                 if temp > 0:
                     cmd_parts.append("S%.1f" % temp)
                 if toolnum is not None:
