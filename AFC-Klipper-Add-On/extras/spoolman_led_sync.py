@@ -36,26 +36,17 @@ class SpoolmanLEDSync:
 
     def _handle_ready(self):
         """Initialize AFC connection after Klipper is ready"""
-        self.logger.info("Attempting to connect to AFC...")
         try:
             self.afc = self.printer.lookup_object('AFC')
-            self.logger.info("Successfully looked up AFC object")
-
-            if not hasattr(self.afc, 'function'):
-                self.logger.error("AFC object has no 'function' attribute")
-                self.enabled = False
-                return
-
-            self.logger.info("AFC has function attribute, attempting hook...")
+            self.logger.info("Connected to AFC for LED control")
 
             # Register for toolhead activation events
             # AFC calls handle_activate_extruder when lanes change
             self._hook_into_afc()
 
-            self.logger.info("Hook complete, module fully initialized")
-
         except Exception as e:
-            self.logger.exception("Failed to connect to AFC")
+            self.logger.error("Failed to connect to AFC: %s", e)
+            self.logger.error("Spoolman LED sync will be disabled")
             self.enabled = False
 
     def _hook_into_afc(self):
@@ -84,39 +75,27 @@ class SpoolmanLEDSync:
 
     def _update_lane_leds(self):
         """Update LEDs for all lanes based on Spoolman colors"""
-        self.logger.info("_update_lane_leds called (enabled=%s, afc=%s)", self.enabled, self.afc is not None)
-
         if not self.enabled or not self.afc:
-            self.logger.warning("Skipping LED update - not enabled or no AFC")
             return
 
         try:
-            lane_count = len(self.afc.lanes) if hasattr(self.afc, 'lanes') else 0
-            self.logger.info("Updating LEDs for %d lanes", lane_count)
-
             for lane_name, lane in self.afc.lanes.items():
                 self._set_lane_led_color(lane)
         except Exception as e:
-            self.logger.exception("Error updating lane LEDs")
+            self.logger.exception("Error updating lane LEDs: %s", e)
 
     def _set_lane_led_color(self, lane):
         """
         Set the active tool's LED to its Spoolman color instead of default blue.
         Only updates the lane that is currently loaded in the toolhead.
         """
-        lane_name = getattr(lane, 'name', 'unknown')
-
         # Skip if lane has no LED
         if not hasattr(lane, 'led_index') or lane.led_index is None:
-            self.logger.debug("Lane %s: No LED index, skipping", lane_name)
             return
 
         # Only set color for loaded lanes
-        prep = hasattr(lane, 'prep_state') and lane.prep_state
-        load = hasattr(lane, 'load_state') and lane.load_state
-
-        if not (prep and load):
-            self.logger.debug("Lane %s: Not loaded (prep=%s, load=%s), skipping", lane_name, prep, load)
+        if not (hasattr(lane, 'prep_state') and lane.prep_state and
+                hasattr(lane, 'load_state') and lane.load_state):
             return
 
         # Check if this is the active toolhead lane
@@ -124,21 +103,16 @@ class SpoolmanLEDSync:
                      hasattr(lane.extruder_obj, 'lane_loaded') and
                      lane.extruder_obj.lane_loaded == lane.name)
 
-        self.logger.info("Lane %s: loaded, is_active=%s", lane_name, is_active)
-
         if is_active:
             # For the active tool, override blue with Spoolman color
             hex_color = self._get_lane_color(lane)
             led_color_str = self._hex_to_led_string(hex_color)
 
-            self.logger.info("Setting active tool %s LED to color %s (string: %s)",
-                           lane_name, hex_color, led_color_str)
-
             try:
                 self.afc.function.afc_led(led_color_str, lane.led_index)
-                self.logger.info("Successfully set active tool LED for %s to color %s", lane_name, hex_color)
+                self.logger.debug("Set active tool LED for %s to color %s", lane.name, hex_color)
             except Exception as e:
-                self.logger.exception("Failed to set LED for %s", lane_name)
+                self.logger.error("Failed to set LED for %s: %s", lane.name, e)
 
     def _get_lane_color(self, lane):
         """
