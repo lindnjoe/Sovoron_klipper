@@ -7,6 +7,10 @@
 # To use, add this to your printer.cfg:
 #   [toolchanger_flow_fix]
 #   debug: True  # Optional, for detailed logging
+#
+# Copyright (C) 2025  Joe Lindner <lindnjoe@gmail.com>
+#
+# This file may be distributed under the terms of the GNU GPLv3 license
 
 import logging
 
@@ -138,41 +142,45 @@ class ToolchangerFlowFix:
         print_stats._handle_activate_extruder = patched_handle_activate_extruder
 
     def _patch_afc(self, afc):
-        """Patch AFC save_pos/restore_pos to pause/resume print_stats tracking"""
+        """Patch AFC save_pos/restore_pos to skip toolchange moves in filament tracking"""
         original_save_pos = afc.save_pos
         original_restore_pos = afc.restore_pos
         debug_enabled = self.debug_enabled
         printer = self.printer
 
         def patched_save_pos():
+            # Update last_epos to current E position BEFORE AFC operations
+            # This way, the large retract won't be counted in filament usage
+            print_stats = printer.lookup_object('print_stats', None)
+            gcode_move = printer.lookup_object('gcode_move')
+            if print_stats:
+                reactor = printer.get_reactor()
+                eventtime = reactor.monotonic()
+                gc_status = gcode_move.get_status(eventtime)
+                old_epos = print_stats.last_epos
+                print_stats.last_epos = gc_status['position'].e
+                if debug_enabled:
+                    logging.info("toolchanger_flow_fix: AFC save_pos() - updated last_epos "
+                               "from %.3f to %.3f" % (old_epos, print_stats.last_epos))
+
             original_save_pos()
 
-            # CRITICAL: Pause print_stats to prevent toolchange moves from being tracked
-            print_stats = printer.lookup_object('print_stats', None)
-            if print_stats and print_stats.state == "printing":
-                print_stats.note_pause()
-                logging.info("toolchanger_flow_fix: AFC save_pos() - paused print_stats tracking")
-
-            extrude_factor = afc.extrude_factor if hasattr(afc, 'extrude_factor') else afc.gcode_move.extrude_factor
-            if debug_enabled:
-                logging.info("toolchanger_flow_fix: AFC save_pos() called, "
-                           "extrude_factor=%.3f saved" % extrude_factor)
-
         def patched_restore_pos(move_z_first=True):
-            saved_extrude_factor = afc.extrude_factor if hasattr(afc, 'extrude_factor') else None
             original_restore_pos(move_z_first)
 
-            # CRITICAL: Resume print_stats tracking after toolchange
+            # Update last_epos to current E position AFTER AFC operations
+            # This "skips over" all the toolchange moves (retract/load)
             print_stats = printer.lookup_object('print_stats', None)
-            if print_stats and print_stats.state == "paused":
-                print_stats.note_start()
-                logging.info("toolchanger_flow_fix: AFC restore_pos() - resumed print_stats tracking")
-
-            current_extrude_factor = afc.gcode_move.extrude_factor
-            if debug_enabled:
-                logging.info("toolchanger_flow_fix: AFC restore_pos() called, "
-                           "extrude_factor restored to %.3f (was saved as %.3f)"
-                           % (current_extrude_factor, saved_extrude_factor if saved_extrude_factor else 0))
+            gcode_move = printer.lookup_object('gcode_move')
+            if print_stats:
+                reactor = printer.get_reactor()
+                eventtime = reactor.monotonic()
+                gc_status = gcode_move.get_status(eventtime)
+                old_epos = print_stats.last_epos
+                print_stats.last_epos = gc_status['position'].e
+                if debug_enabled:
+                    logging.info("toolchanger_flow_fix: AFC restore_pos() - updated last_epos "
+                               "from %.3f to %.3f" % (old_epos, print_stats.last_epos))
 
         afc.save_pos = patched_save_pos
         afc.restore_pos = patched_restore_pos
