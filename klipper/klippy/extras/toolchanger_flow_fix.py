@@ -1,8 +1,7 @@
-# Monkey patch to fix flow rate tracking issues with toolchangers
+# Monkey patch to fix volumetric flow rate tracking with toolchangers
 #
-# This module fixes two issues that occur during toolchanges:
-# 1. Flow rate percentage (M221) being reset to 100%
-# 2. Volumetric flow (mm³/s) showing 0.0 or not tracking correctly
+# This module fixes the issue where volumetric flow (mm³/s) shows 0.0
+# or stops tracking correctly after toolchanges.
 #
 # To use, add this to your printer.cfg:
 #   [toolchanger_flow_fix]
@@ -18,28 +17,10 @@ class ToolchangerFlowFix:
                                            self._handle_connect)
 
     def _handle_connect(self):
-        # Patch gcode_move to preserve extrude_factor
-        gcode_move = self.printer.lookup_object('gcode_move')
-        self._patch_gcode_move(gcode_move)
-
         # Patch motion_report to track active extruder velocity
         motion_report = self.printer.lookup_object('motion_report', None)
         if motion_report is not None:
             self._patch_motion_report(motion_report)
-
-    def _patch_gcode_move(self, gcode_move):
-        """Patch GCodeMove to preserve extrude_factor during toolchanges"""
-        original_activate = gcode_move._handle_activate_extruder
-
-        def patched_handle_activate_extruder():
-            # Reset position but preserve extrude_factor
-            gcode_move.reset_last_position()
-            # Do NOT reset extrude_factor - preserve user's flow rate setting
-            # The toolchanger system uses SAVE_GCODE_STATE/RESTORE_GCODE_STATE
-            # Original code did: gcode_move.extrude_factor = 1.
-            gcode_move.base_position[3] = gcode_move.last_position[3]
-
-        gcode_move._handle_activate_extruder = patched_handle_activate_extruder
 
     def _patch_motion_report(self, motion_report):
         """Patch PrinterMotionReport to track active extruder velocity"""
