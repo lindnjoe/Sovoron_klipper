@@ -174,13 +174,21 @@ class ToolchangerFlowFix:
         print_stats._handle_activate_extruder = patched_handle_activate_extruder
 
     def _patch_afc(self, afc):
-        """Patch AFC save_pos/restore_pos to add logging"""
+        """Patch AFC save_pos/restore_pos to pause/resume print_stats tracking"""
         original_save_pos = afc.save_pos
         original_restore_pos = afc.restore_pos
         debug_enabled = self.debug_enabled
+        printer = self.printer
 
         def patched_save_pos():
             original_save_pos()
+
+            # CRITICAL: Pause print_stats to prevent toolchange moves from being tracked
+            print_stats = printer.lookup_object('print_stats', None)
+            if print_stats and print_stats.state == "printing":
+                print_stats.note_pause()
+                logging.info("toolchanger_flow_fix: AFC save_pos() - paused print_stats tracking")
+
             extrude_factor = afc.extrude_factor if hasattr(afc, 'extrude_factor') else afc.gcode_move.extrude_factor
             if debug_enabled:
                 logging.info("toolchanger_flow_fix: AFC save_pos() called, "
@@ -189,6 +197,13 @@ class ToolchangerFlowFix:
         def patched_restore_pos(move_z_first=True):
             saved_extrude_factor = afc.extrude_factor if hasattr(afc, 'extrude_factor') else None
             original_restore_pos(move_z_first)
+
+            # CRITICAL: Resume print_stats tracking after toolchange
+            print_stats = printer.lookup_object('print_stats', None)
+            if print_stats and print_stats.state == "paused":
+                print_stats.note_start()
+                logging.info("toolchanger_flow_fix: AFC restore_pos() - resumed print_stats tracking")
+
             current_extrude_factor = afc.gcode_move.extrude_factor
             if debug_enabled:
                 logging.info("toolchanger_flow_fix: AFC restore_pos() called, "
