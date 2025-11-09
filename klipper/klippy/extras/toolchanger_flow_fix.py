@@ -84,11 +84,14 @@ class ToolchangerFlowFix:
         call_count = [0]  # Mutable to allow modification in closure
 
         def patched_get_status(eventtime):
+            # Check timing BEFORE calling original (which updates next_status_time)
+            should_update = eventtime >= motion_report.next_status_time
+
             # Call original to get base status
             status = original_get_status(eventtime)
 
-            # If we're past the status refresh time, update extruder velocity
-            if eventtime >= motion_report.next_status_time - 0.001:
+            # Only update extruder velocity when status was actually refreshed
+            if should_update and motion_report.dtrapqs:
                 toolhead = motion_report.printer.lookup_object('toolhead')
                 active_extruder = toolhead.get_extruder()
 
@@ -114,16 +117,22 @@ class ToolchangerFlowFix:
                                 logging.info("toolchanger_flow_fix: Active extruder=%s, "
                                            "velocity=%.3f mm/s (was %.3f)"
                                            % (extruder_name, velocity, old_velocity))
-                        elif debug_enabled and call_count[0] % 100 == 0:
-                            logging.warning("toolchanger_flow_fix: trapq position is None "
-                                          "for extruder %s at print_time %.3f"
-                                          % (extruder_name, print_time))
-                    elif debug_enabled and call_count[0] % 100 == 0:
-                        logging.warning("toolchanger_flow_fix: No trapq handler for "
-                                      "extruder %s, available: %s"
-                                      % (extruder_name, list(motion_report.dtrapqs.keys())))
-                elif debug_enabled and call_count[0] % 100 == 0:
-                    logging.warning("toolchanger_flow_fix: No active extruder!")
+                        else:
+                            call_count[0] += 1
+                            if debug_enabled and call_count[0] % 100 == 0:
+                                logging.warning("toolchanger_flow_fix: trapq position is None "
+                                              "for extruder %s at print_time %.3f"
+                                              % (extruder_name, print_time))
+                    else:
+                        call_count[0] += 1
+                        if debug_enabled and call_count[0] % 100 == 0:
+                            logging.warning("toolchanger_flow_fix: No trapq handler for "
+                                          "extruder %s, available: %s"
+                                          % (extruder_name, list(motion_report.dtrapqs.keys())))
+                else:
+                    call_count[0] += 1
+                    if debug_enabled and call_count[0] % 100 == 0:
+                        logging.warning("toolchanger_flow_fix: No active extruder!")
 
             return status
 
