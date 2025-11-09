@@ -418,3 +418,4 @@ class SpoolmanLEDSync:
 
 def load_config(config):
     return SpoolmanLEDSync(config.get_printer(), config)
+    return SpoolmanLEDSync(config.get_printer(), config)

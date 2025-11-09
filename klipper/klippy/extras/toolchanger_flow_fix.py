@@ -7,10 +7,6 @@
 # To use, add this to your printer.cfg:
 #   [toolchanger_flow_fix]
 #   debug: True  # Optional, for detailed logging
-#
-# Copyright (C) 2025  Joe <lindnjoe@gmail.com>
-#
-# This file may be distributed under the terms of the GNU GPLv3 license
 
 import logging
 
