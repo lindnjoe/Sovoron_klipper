@@ -213,7 +213,7 @@ class OAMSRunoutMonitor:
             return eventtime + MONITOR_ENCODER_PERIOD
         
         self._timer_callback = _monitor_runout
-        self.timer = self.reactor.register_timer(self._timer_callback, self.reactor.NOW)
+        self.timer = None  # Don't register timer until start() is called
 
     def start(self) -> None:
         if self.timer is None:
@@ -382,12 +382,19 @@ class OAMSManager:
         self.clog_sensitivity = sensitivity
         self.clog_settings = CLOG_SENSITIVITY_LEVELS[self.clog_sensitivity]
 
-        # Configurable detection thresholds and timing parameters
-        self.stuck_spool_load_grace = config.getfloat("stuck_spool_load_grace", STUCK_SPOOL_LOAD_GRACE)
-        self.stuck_spool_pressure_threshold = config.getfloat("stuck_spool_pressure_threshold", STUCK_SPOOL_PRESSURE_THRESHOLD)
-        self.stuck_spool_pressure_clear_threshold = config.getfloat("stuck_spool_pressure_clear_threshold", STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD)
-        self.clog_pressure_target = config.getfloat("clog_pressure_target", CLOG_PRESSURE_TARGET)
-        self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL)
+        # Configurable detection thresholds and timing parameters with validation
+        self.stuck_spool_load_grace = config.getfloat("stuck_spool_load_grace", STUCK_SPOOL_LOAD_GRACE, minval=0.0, maxval=60.0)
+        self.stuck_spool_pressure_threshold = config.getfloat("stuck_spool_pressure_threshold", STUCK_SPOOL_PRESSURE_THRESHOLD, minval=0.0, maxval=1.0)
+        self.stuck_spool_pressure_clear_threshold = config.getfloat("stuck_spool_pressure_clear_threshold", STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD, minval=0.0, maxval=1.0)
+        self.clog_pressure_target = config.getfloat("clog_pressure_target", CLOG_PRESSURE_TARGET, minval=0.0, maxval=1.0)
+        self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL, minval=0.0, maxval=60.0)
+
+        # Validate hysteresis: clear threshold must be > trigger threshold
+        if self.stuck_spool_pressure_clear_threshold <= self.stuck_spool_pressure_threshold:
+            raise config.error(
+                f"stuck_spool_pressure_clear_threshold ({self.stuck_spool_pressure_clear_threshold}) "
+                f"must be greater than stuck_spool_pressure_threshold ({self.stuck_spool_pressure_threshold})"
+            )
 
         self.group_to_fps: Dict[str, str] = {}
         self._canonical_lane_by_group: Dict[str, str] = {}
@@ -827,8 +834,12 @@ class OAMSManager:
             return False, f"FPS {fps_name} does not exist"
 
         fps_state = self.current_state.fps_state[fps_name]
+        if fps_state.state == FPSLoadState.UNLOADED:
+            return False, f"FPS {fps_name} is already unloaded"
+        if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
+            return False, f"FPS {fps_name} is busy ({fps_state.state.name}), cannot unload"
         if fps_state.state != FPSLoadState.LOADED:
-            return False, f"FPS {fps_name} is not currently loaded"
+            return False, f"FPS {fps_name} is in unexpected state {fps_state.state.name}"
 
         if fps_state.current_oams is None:
             return False, f"FPS {fps_name} has no OAMS loaded"
@@ -863,21 +874,30 @@ class OAMSManager:
                 self.logger.exception("Failed to resolve AFC lane for unload on %s", fps_name)
                 lane_name = None
 
+        # Capture state BEFORE changing fps_state.state to avoid getting stuck
         try:
-            fps_state.state = FPSLoadState.UNLOADING
-            fps_state.encoder = oams.encoder_clicks
-            fps_state.since = self.reactor.monotonic()
-            fps_state.current_oams = oams.name
-            fps_state.current_spool_idx = oams.current_spool
-            fps_state.clear_encoder_samples()  # Clear stale encoder samples
+            encoder = oams.encoder_clicks
+            current_time = self.reactor.monotonic()
+            current_oams_name = oams.name
+            current_spool = oams.current_spool
         except Exception:
             self.logger.exception("Failed to capture unload state for %s", fps_name)
             return False, f"Failed to prepare unload on {fps_name}"
+
+        # Only set state after all preliminary operations succeed
+        fps_state.state = FPSLoadState.UNLOADING
+        fps_state.encoder = encoder
+        fps_state.since = current_time
+        fps_state.current_oams = current_oams_name
+        fps_state.current_spool_idx = current_spool
+        fps_state.clear_encoder_samples()  # Clear stale encoder samples
 
         try:
             success, message = oams.unload_spool_with_retry()
         except Exception:
             self.logger.exception("Exception while unloading filament on %s", fps_name)
+            # Reset state on exception to avoid getting stuck
+            fps_state.state = FPSLoadState.LOADED
             return False, f"Exception unloading filament on {fps_name}"
 
         if success:
@@ -933,21 +953,23 @@ class OAMSManager:
             if not is_ready:
                 continue
 
+            # Capture state BEFORE changing fps_state.state to avoid getting stuck
             try:
-                fps_state.state = FPSLoadState.LOADING
-                fps_state.encoder = oam.encoder_clicks
-                fps_state.current_oams = oam.name
-                fps_state.current_spool_idx = bay_index
-                # Set since to now for THIS load attempt (will be updated on success)
-                fps_state.since = self.reactor.monotonic()
-                fps_state.clear_encoder_samples()
+                encoder = oam.encoder_clicks
+                current_time = self.reactor.monotonic()
+                oam_name = oam.name
             except Exception:
                 self.logger.exception("Failed to capture load state for group %s bay %s", group_name, bay_index)
-                fps_state.state = FPSLoadState.UNLOADED
-                fps_state.current_group = None
-                fps_state.current_spool_idx = None
-                fps_state.current_oams = None
                 continue
+
+            # Only set state after all preliminary operations succeed
+            fps_state.state = FPSLoadState.LOADING
+            fps_state.encoder = encoder
+            fps_state.current_oams = oam_name
+            fps_state.current_spool_idx = bay_index
+            # Set since to now for THIS load attempt (will be updated on success)
+            fps_state.since = current_time
+            fps_state.clear_encoder_samples()
 
             try:
                 success, message = oam.load_spool_with_retry(bay_index)
@@ -1703,6 +1725,10 @@ class OAMSManager:
 
     def start_monitors(self):
         """Start all monitoring timers"""
+        # Stop existing monitors first to prevent timer leaks
+        if self.monitor_timers:
+            self.stop_monitors()
+
         self.monitor_timers = []
         self.runout_monitors = {}
         reactor = self.printer.get_reactor()
