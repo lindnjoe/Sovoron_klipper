@@ -414,13 +414,39 @@ class OAMSManager:
         self._initialize_oams()
         self._initialize_filament_groups()
 
+        # Dynamically register HDC1080 temperature sensor
+        # This avoids modifying Klipper's temperature_sensors.cfg file
+        self._register_hdc1080_sensor()
+
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
         self.printer.register_event_handler("idle_timeout:printing", self._handle_printing_resumed)
         self.printer.register_event_handler("pause:resume", self._handle_printing_resumed)
 
         self.printer.add_object("oams_manager", self)
         self.register_commands()
-        
+
+    def _register_hdc1080_sensor(self):
+        """
+        Dynamically register HDC1080 temperature sensor at runtime.
+        This monkey-patches the sensor registration without modifying
+        Klipper's temperature_sensors.cfg file, keeping the repo clean.
+        """
+        try:
+            # Import the HDC1080 class from our local module
+            from . import hdc1080
+
+            # Get the heaters object
+            pheater = self.printer.lookup_object("heaters")
+
+            # Register the HDC1080 sensor factory
+            pheater.add_sensor_factory("HDC1080", hdc1080.HDC1080)
+
+            self.logger.info("HDC1080 temperature sensor registered successfully (runtime monkey-patch)")
+
+        except Exception as e:
+            # Log but don't fail - HDC1080 is optional
+            self.logger.debug("HDC1080 sensor registration skipped: %s", e)
+
     def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
         """Return current status of all FPS units and OAMS hardware."""
         attributes: Dict[str, Dict[str, Any]] = {"oams": {}}
