@@ -109,10 +109,12 @@ class OAMSRunoutMonitor:
         if AMSRunoutCoordinator is not None:
             try:
                 self.hardware_service = AMSRunoutCoordinator.register_runout_monitor(self)
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "Failed to register OpenAMS monitor with AMSRunoutCoordinator"
+            except Exception as e:
+                logging.getLogger(__name__).error(
+                    "CRITICAL: Failed to register OpenAMS monitor with AFC (AMSRunoutCoordinator). "
+                    "Infinite runout and AFC integration will not function. Error: %s", e
                 )
+                self.hardware_service = None
         
         def _monitor_runout(eventtime):
             idle_timeout = self.printer.lookup_object("idle_timeout")
@@ -297,8 +299,9 @@ class FPSState:
         self.post_load_pressure_timer = None
         self.post_load_pressure_start: Optional[float] = None
 
-        # OPTIMIZATION: Adaptive polling state
+        # OPTIMIZATION: Adaptive polling state with exponential backoff
         self.consecutive_idle_polls: int = 0
+        self.idle_backoff_level: int = 0  # 0-3 for exponential backoff (1x, 2x, 4x, 8x)
         self.last_state_change: Optional[float] = None
 
     def record_encoder_sample(self, value: int) -> Optional[int]:
@@ -570,11 +573,11 @@ class OAMSManager:
         enable = gcmd.get_int('ENABLE')
         direction = gcmd.get_int('DIRECTION')
         fps_name = "fps " + gcmd.get('FPS')
-        
+
         if fps_name not in self.fpss:
             gcmd.respond_info(f"FPS {fps_name} does not exist")
             return
-        
+
         fps_state = self.current_state.fps_state[fps_name]
         if fps_state.state == FPSLoadState.UNLOADED:
             gcmd.respond_info(f"FPS {fps_name} is already unloaded")
@@ -582,7 +585,16 @@ class OAMSManager:
         if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
             gcmd.respond_info(f"FPS {fps_name} is currently busy")
             return
-        
+
+        # Prevent manual control during active error conditions
+        if fps_state.clog_active or fps_state.stuck_spool_active:
+            gcmd.respond_info(
+                f"FPS {fps_name} has active error condition "
+                f"(clog_active={fps_state.clog_active}, stuck_spool_active={fps_state.stuck_spool_active}). "
+                f"Use OAMSM_CLEAR_ERRORS first to clear error state."
+            )
+            return
+
         oams_obj = self.oams.get(fps_state.current_oams)
         if oams_obj is None:
             gcmd.respond_info(f"OAMS {fps_state.current_oams} is not available")
@@ -688,14 +700,26 @@ class OAMSManager:
         return lane_name, canonical_group
 
     def _get_afc(self):
-        # OPTIMIZATION: Cache AFC object lookup
+        # OPTIMIZATION: Cache AFC object lookup with validation
         if self.afc is not None:
-            return self.afc
+            # Validate cached object is still alive
+            try:
+                _ = self.afc.lanes  # Quick attribute access test
+                return self.afc
+            except Exception:
+                self.logger.warning("Cached AFC object invalid, re-fetching")
+                self.afc = None
 
         cached_afc = self._hardware_service_cache.get("afc_object")
         if cached_afc is not None:
-            self.afc = cached_afc
-            return self.afc
+            # Validate hardware service cache
+            try:
+                _ = cached_afc.lanes
+                self.afc = cached_afc
+                return self.afc
+            except Exception:
+                self.logger.warning("Cached AFC object in hardware service invalid, re-fetching")
+                self._hardware_service_cache.pop("afc_object", None)
 
         try:
             afc = self.printer.lookup_object('AFC')
@@ -891,6 +915,9 @@ class OAMSManager:
         fps_state.current_oams = current_oams_name
         fps_state.current_spool_idx = current_spool
         fps_state.clear_encoder_samples()  # Clear stale encoder samples
+
+        # Cancel post-load pressure check to prevent false positive clog detection during unload
+        self._cancel_post_load_pressure_check(fps_state)
 
         try:
             success, message = oams.unload_spool_with_retry()
@@ -1168,10 +1195,27 @@ class OAMSManager:
             return
 
         if all(axis in homed_axes for axis in ("x", "y", "z")):
+            pause_attempted = False
+            pause_successful = False
             try:
                 gcode.run_script("PAUSE")
+                pause_attempted = True
+
+                # Verify pause state after attempting to pause
+                if pause_resume is not None:
+                    try:
+                        pause_successful = bool(getattr(pause_resume, "is_paused", False))
+                    except Exception:
+                        self.logger.exception("Failed to verify pause state after PAUSE command")
             except Exception:
                 self.logger.exception("Failed to run PAUSE script")
+
+            if pause_attempted and not pause_successful:
+                self.logger.error(
+                    "CRITICAL: Failed to pause printer for critical error: %s. "
+                    "Print may continue despite error condition!",
+                    message
+                )
         else:
             self.logger.warning("Skipping PAUSE command because axes are not homed (homed_axes=%s)", homed_axes)
 
@@ -1251,6 +1295,29 @@ class OAMSManager:
         fps_state.post_load_pressure_start = None
 
     def _enable_follower(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], direction: int, context: str) -> None:
+        """
+        Enable the OAMS follower motor to track filament movement.
+
+        The follower motor maintains proper tension on the filament by following its movement
+        through the buffer tube. This is essential for accurate encoder tracking and preventing
+        filament tangles.
+
+        Args:
+            fps_name: Name of the FPS (Filament Pressure Sensor) being controlled
+            fps_state: Current state object for the FPS
+            oams: OAMS object controlling the hardware (can be None, will be looked up)
+            direction: Follower direction (0=reverse, 1=forward)
+            context: Description of why follower is being enabled (for logging)
+
+        State Updates:
+            - fps_state.following: Set to True on success
+            - fps_state.direction: Updated to match requested direction
+
+        Notes:
+            - Direction defaults to forward (1) if invalid value provided
+            - Fails silently if no spool is loaded (current_spool_idx is None)
+            - Logs exceptions but doesn't raise them to avoid disrupting workflow
+        """
         if fps_state.current_spool_idx is None:
             return
 
@@ -1305,6 +1372,48 @@ class OAMSManager:
             self.logger.info("Restarted follower for %s spool %s after %s.", fps_name, fps_state.current_spool_idx, context)
 
     def _reactivate_clog_follower(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], context: str) -> None:
+        """
+        Restore follower motor after clog detection pause.
+
+        FOLLOWER RESTORATION STATE MACHINE:
+
+        When a clog is detected (runtime or post-load), the system follows this sequence:
+
+        1. CLOG DETECTION:
+           - Set clog_restore_follower = True
+           - Set clog_restore_direction = current direction
+           - DISABLE follower motor (set_oams_follower(0, direction))
+           - Set fps_state.following = False
+           - Pause printer
+
+        2. IMMEDIATE RE-ENABLE (this method):
+           - Called immediately after pause to allow manual filament manipulation
+           - Attempts to re-enable follower with saved direction
+           - If successful: clears clog_restore_follower flag
+           - If failed: leaves flag set for resume handler to retry
+
+        3. RESUME HANDLING (_handle_printing_resumed):
+           - Clears clog_active flag (with preserve_restore=True)
+           - Checks clog_restore_follower flag
+           - If still set: attempts to restore follower again
+           - Clears flags only after successful restoration
+
+        This two-phase approach ensures:
+        - User can manually adjust filament while paused (immediate re-enable)
+        - System retries restoration on resume if immediate re-enable failed
+        - Follower state is always consistent when printing resumes
+
+        Args:
+            fps_name: Name of the FPS being controlled
+            fps_state: Current state object for the FPS
+            oams: OAMS object (can be None, will be looked up)
+            context: Description of when restoration is happening
+
+        State Machine Flags:
+            - clog_restore_follower: Set when clog detected, cleared after successful restore
+            - clog_restore_direction: Saved direction (0=reverse, 1=forward)
+            - following: Current motor state
+        """
         if not fps_state.clog_restore_follower:
             return
 
@@ -1421,7 +1530,11 @@ class OAMSManager:
             if not is_printing and state == FPSLoadState.LOADED:
                 fps_state.consecutive_idle_polls += 1
                 if fps_state.consecutive_idle_polls > IDLE_POLL_THRESHOLD:
-                    return eventtime + MONITOR_ENCODER_PERIOD_IDLE
+                    # Exponential backoff for idle polling
+                    if fps_state.consecutive_idle_polls % 5 == 0:
+                        fps_state.idle_backoff_level = min(fps_state.idle_backoff_level + 1, 3)
+                    backoff_multiplier = 2 ** fps_state.idle_backoff_level
+                    return eventtime + (MONITOR_ENCODER_PERIOD_IDLE * backoff_multiplier)
 
             # Read sensors
             try:
@@ -1450,15 +1563,23 @@ class OAMSManager:
                     self._check_clog(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
                     state_changed = True
 
-            # OPTIMIZATION: Adaptive polling interval
+            # OPTIMIZATION: Adaptive polling interval with exponential backoff
             if state_changed or is_printing:
                 fps_state.consecutive_idle_polls = 0
+                fps_state.idle_backoff_level = 0
                 fps_state.last_state_change = now
                 return eventtime + MONITOR_ENCODER_PERIOD
 
             fps_state.consecutive_idle_polls += 1
             if fps_state.consecutive_idle_polls > IDLE_POLL_THRESHOLD:
-                return eventtime + MONITOR_ENCODER_PERIOD_IDLE
+                # Exponential backoff: increase backoff level every 5 idle polls
+                if fps_state.consecutive_idle_polls % 5 == 0:
+                    fps_state.idle_backoff_level = min(fps_state.idle_backoff_level + 1, 3)
+
+                # Calculate backoff multiplier (1x, 2x, 4x, 8x)
+                backoff_multiplier = 2 ** fps_state.idle_backoff_level
+                interval = MONITOR_ENCODER_PERIOD_IDLE * backoff_multiplier
+                return eventtime + interval
 
             return eventtime + MONITOR_ENCODER_PERIOD
 
