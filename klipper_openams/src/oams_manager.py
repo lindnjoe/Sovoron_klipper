@@ -109,10 +109,12 @@ class OAMSRunoutMonitor:
         if AMSRunoutCoordinator is not None:
             try:
                 self.hardware_service = AMSRunoutCoordinator.register_runout_monitor(self)
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "Failed to register OpenAMS monitor with AMSRunoutCoordinator"
+            except Exception as e:
+                logging.getLogger(__name__).error(
+                    "CRITICAL: Failed to register OpenAMS monitor with AFC (AMSRunoutCoordinator). "
+                    "Infinite runout and AFC integration will not function. Error: %s", e
                 )
+                self.hardware_service = None
         
         def _monitor_runout(eventtime):
             idle_timeout = self.printer.lookup_object("idle_timeout")
@@ -570,11 +572,11 @@ class OAMSManager:
         enable = gcmd.get_int('ENABLE')
         direction = gcmd.get_int('DIRECTION')
         fps_name = "fps " + gcmd.get('FPS')
-        
+
         if fps_name not in self.fpss:
             gcmd.respond_info(f"FPS {fps_name} does not exist")
             return
-        
+
         fps_state = self.current_state.fps_state[fps_name]
         if fps_state.state == FPSLoadState.UNLOADED:
             gcmd.respond_info(f"FPS {fps_name} is already unloaded")
@@ -582,7 +584,16 @@ class OAMSManager:
         if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
             gcmd.respond_info(f"FPS {fps_name} is currently busy")
             return
-        
+
+        # Prevent manual control during active error conditions
+        if fps_state.clog_active or fps_state.stuck_spool_active:
+            gcmd.respond_info(
+                f"FPS {fps_name} has active error condition "
+                f"(clog_active={fps_state.clog_active}, stuck_spool_active={fps_state.stuck_spool_active}). "
+                f"Use OAMSM_CLEAR_ERRORS first to clear error state."
+            )
+            return
+
         oams_obj = self.oams.get(fps_state.current_oams)
         if oams_obj is None:
             gcmd.respond_info(f"OAMS {fps_state.current_oams} is not available")
@@ -688,14 +699,26 @@ class OAMSManager:
         return lane_name, canonical_group
 
     def _get_afc(self):
-        # OPTIMIZATION: Cache AFC object lookup
+        # OPTIMIZATION: Cache AFC object lookup with validation
         if self.afc is not None:
-            return self.afc
+            # Validate cached object is still alive
+            try:
+                _ = self.afc.lanes  # Quick attribute access test
+                return self.afc
+            except Exception:
+                self.logger.warning("Cached AFC object invalid, re-fetching")
+                self.afc = None
 
         cached_afc = self._hardware_service_cache.get("afc_object")
         if cached_afc is not None:
-            self.afc = cached_afc
-            return self.afc
+            # Validate hardware service cache
+            try:
+                _ = cached_afc.lanes
+                self.afc = cached_afc
+                return self.afc
+            except Exception:
+                self.logger.warning("Cached AFC object in hardware service invalid, re-fetching")
+                self._hardware_service_cache.pop("afc_object", None)
 
         try:
             afc = self.printer.lookup_object('AFC')
@@ -891,6 +914,9 @@ class OAMSManager:
         fps_state.current_oams = current_oams_name
         fps_state.current_spool_idx = current_spool
         fps_state.clear_encoder_samples()  # Clear stale encoder samples
+
+        # Cancel post-load pressure check to prevent false positive clog detection during unload
+        self._cancel_post_load_pressure_check(fps_state)
 
         try:
             success, message = oams.unload_spool_with_retry()
@@ -1168,10 +1194,27 @@ class OAMSManager:
             return
 
         if all(axis in homed_axes for axis in ("x", "y", "z")):
+            pause_attempted = False
+            pause_successful = False
             try:
                 gcode.run_script("PAUSE")
+                pause_attempted = True
+
+                # Verify pause state after attempting to pause
+                if pause_resume is not None:
+                    try:
+                        pause_successful = bool(getattr(pause_resume, "is_paused", False))
+                    except Exception:
+                        self.logger.exception("Failed to verify pause state after PAUSE command")
             except Exception:
                 self.logger.exception("Failed to run PAUSE script")
+
+            if pause_attempted and not pause_successful:
+                self.logger.error(
+                    "CRITICAL: Failed to pause printer for critical error: %s. "
+                    "Print may continue despite error condition!",
+                    message
+                )
         else:
             self.logger.warning("Skipping PAUSE command because axes are not homed (homed_axes=%s)", homed_axes)
 

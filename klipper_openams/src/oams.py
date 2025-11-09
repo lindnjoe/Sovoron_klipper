@@ -271,10 +271,19 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         
     def determine_current_spool(self):
         params = self.oams_spool_query_spool_cmd.send()
-        if params is not None and "spool" in params:
-            spool_val = params["spool"]
-            if 0 <= spool_val <= 3:
-                return spool_val
+        if params is None:
+            logging.warning("OAMS[%d]: Failed to query current spool - no response from MCU", self.oams_idx)
+            return None
+
+        if "spool" not in params:
+            logging.warning("OAMS[%d]: Spool query response missing 'spool' field", self.oams_idx)
+            return None
+
+        spool_val = params["spool"]
+        if 0 <= spool_val <= 3:
+            return spool_val
+
+        logging.error("OAMS[%d]: Hardware reported invalid spool index %d (expected 0-3)", self.oams_idx, spool_val)
         return None
         
 
