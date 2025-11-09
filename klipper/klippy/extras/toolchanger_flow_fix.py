@@ -7,6 +7,7 @@
 #
 # To use, add this to your printer.cfg:
 #   [toolchanger_flow_fix]
+#   debug: True  # Optional, for detailed logging
 #
 # Copyright (C) 2025  Joe Lindner <lindnjoe@gmail.com>
 #
@@ -39,13 +40,20 @@ class ToolchangerFlowFix:
         else:
             logging.warning("toolchanger_flow_fix: motion_report not found!")
 
+        # Try to patch AFC if it exists
+        afc = self.printer.lookup_object('AFC', None)
+        if afc is not None:
+            self._patch_afc(afc)
+            logging.info("toolchanger_flow_fix: AFC patches applied")
+        else:
+            logging.info("toolchanger_flow_fix: AFC not found, skipping AFC patches")
+
         logging.info("toolchanger_flow_fix: All patches applied successfully")
 
     def _patch_gcode_move(self, gcode_move):
         """Patch GCodeMove to preserve extrude_factor during toolchanges"""
         original_activate = gcode_move._handle_activate_extruder
         debug_enabled = self.debug_enabled
-        gcode = self.gcode
 
         def patched_handle_activate_extruder():
             # Save the current extrude_factor before doing anything
@@ -108,10 +116,12 @@ class ToolchangerFlowFix:
                                            % (extruder_name, velocity, old_velocity))
                         elif debug_enabled and call_count[0] % 100 == 0:
                             logging.warning("toolchanger_flow_fix: trapq position is None "
-                                          "for extruder %s" % extruder_name)
+                                          "for extruder %s at print_time %.3f"
+                                          % (extruder_name, print_time))
                     elif debug_enabled and call_count[0] % 100 == 0:
                         logging.warning("toolchanger_flow_fix: No trapq handler for "
-                                      "extruder %s" % extruder_name)
+                                      "extruder %s, available: %s"
+                                      % (extruder_name, list(motion_report.dtrapqs.keys())))
                 elif debug_enabled and call_count[0] % 100 == 0:
                     logging.warning("toolchanger_flow_fix: No active extruder!")
 
@@ -120,7 +130,31 @@ class ToolchangerFlowFix:
         motion_report.get_status = patched_get_status
         logging.info("toolchanger_flow_fix: motion_report patch applied")
 
-    # Add gcode command for runtime debugging
+    def _patch_afc(self, afc):
+        """Patch AFC save_pos/restore_pos to add logging"""
+        original_save_pos = afc.save_pos
+        original_restore_pos = afc.restore_pos
+        debug_enabled = self.debug_enabled
+
+        def patched_save_pos():
+            original_save_pos()
+            extrude_factor = afc.extrude_factor if hasattr(afc, 'extrude_factor') else afc.gcode_move.extrude_factor
+            if debug_enabled:
+                logging.info("toolchanger_flow_fix: AFC save_pos() called, "
+                           "extrude_factor=%.3f saved" % extrude_factor)
+
+        def patched_restore_pos(move_z_first=True):
+            saved_extrude_factor = afc.extrude_factor if hasattr(afc, 'extrude_factor') else None
+            original_restore_pos(move_z_first)
+            current_extrude_factor = afc.gcode_move.extrude_factor
+            if debug_enabled:
+                logging.info("toolchanger_flow_fix: AFC restore_pos() called, "
+                           "extrude_factor restored to %.3f (was saved as %.3f)"
+                           % (current_extrude_factor, saved_extrude_factor if saved_extrude_factor else 0))
+
+        afc.save_pos = patched_save_pos
+        afc.restore_pos = patched_restore_pos
+
     def _handle_ready(self):
         self.gcode.register_command('FLOW_FIX_STATUS',
                                    self.cmd_FLOW_FIX_STATUS,
@@ -131,6 +165,7 @@ class ToolchangerFlowFix:
         gcode_move = self.printer.lookup_object('gcode_move')
         motion_report = self.printer.lookup_object('motion_report', None)
         toolhead = self.printer.lookup_object('toolhead')
+        afc = self.printer.lookup_object('AFC', None)
 
         # Get current state
         active_extruder = toolhead.get_extruder()
@@ -150,6 +185,15 @@ class ToolchangerFlowFix:
             if active_extruder:
                 ehandler = motion_report.dtrapqs.get(extruder_name)
                 msg += "  Trapq for %s: %s\n" % (extruder_name, "Found" if ehandler else "NOT FOUND")
+                msg += "  Available trapqs: %s\n" % ", ".join(motion_report.dtrapqs.keys())
+
+        if afc:
+            msg += "\nAFC Info:\n"
+            msg += "  Current lane: %s\n" % (afc.current if hasattr(afc, 'current') else "Unknown")
+            msg += "  In toolchange: %s\n" % (afc.in_toolchange if hasattr(afc, 'in_toolchange') else "Unknown")
+            msg += "  Position saved: %s\n" % (afc.position_saved if hasattr(afc, 'position_saved') else "Unknown")
+            if hasattr(afc, 'extrude_factor'):
+                msg += "  AFC saved extrude_factor: %.3f\n" % afc.extrude_factor
 
         gcmd.respond_info(msg)
 
