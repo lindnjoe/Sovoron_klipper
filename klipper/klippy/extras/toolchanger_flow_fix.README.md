@@ -1,15 +1,22 @@
 # Toolchanger Flow Fix
 
-This module fixes the volumetric flow rate tracking issue with toolchanger configurations.
+This module fixes flow rate and filament tracking issues with toolchanger configurations.
 
-## Problem Fixed
+## Problems Fixed
 
-### Volumetric Flow Rate Always Shows 0.0 mm³/s
+### 1. Volumetric Flow Rate Always Shows 0.0 mm³/s
 **Symptom**: In Mainsail/Fluidd, the "Flow" display shows "0.0 mm³/s" and never updates, especially after the first toolchange.
 
 **Cause**: The `motion_report` module had a hardcoded check for extruder axis index 4, which doesn't work correctly with toolchangers where different extruders activate dynamically.
 
 **Fix**: The monkey patch queries the currently active extruder and tracks its velocity correctly.
+
+### 2. Filament Tracking Stops After Toolchanges
+**Symptom**: The "Filament used" counter stops incrementing after the first toolchange, and print time estimates blank out.
+
+**Cause**: The `ACTIVATE_EXTRUDER` command (called during toolchanges) resets `extrude_factor` to 1.0, which breaks the filament usage calculation in `print_stats.py`.
+
+**Fix**: The monkey patch preserves `extrude_factor` across toolchanges, allowing filament tracking and statistics to work correctly.
 
 ## Installation
 
@@ -38,11 +45,12 @@ sudo systemctl restart klipper
 
 ## How It Works
 
-The module uses runtime monkey-patching to override:
+The module uses runtime monkey-patching to override two methods:
 
-- **`motion_report.get_status()`**: Enhanced to query the currently active extruder's velocity instead of using a hardcoded axis index
+1. **`gcode_move._handle_activate_extruder()`**: Modified to preserve `extrude_factor` instead of resetting it to 1.0
+2. **`motion_report.get_status()`**: Enhanced to query the currently active extruder's velocity instead of using a hardcoded axis index
 
-The patch is applied at `klippy:connect` time, after all modules are loaded.
+These patches are applied at `klippy:connect` time, after all modules are loaded.
 
 ## Compatibility
 
