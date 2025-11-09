@@ -1303,7 +1303,7 @@ class OAMSManager:
         filament tangles.
 
         Args:
-            fps_name: Name of the FPS (Filament Position Sensor) being controlled
+            fps_name: Name of the FPS (Filament Pressure Sensor) being controlled
             fps_state: Current state object for the FPS
             oams: OAMS object controlling the hardware (can be None, will be looked up)
             direction: Follower direction (0=reverse, 1=forward)
