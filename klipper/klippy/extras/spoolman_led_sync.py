@@ -80,8 +80,10 @@ class SpoolmanLEDSync:
 
             self.logger.info("AFC has function attribute, attempting hook...")
 
-            # Register for toolhead activation events
-            # AFC calls handle_activate_extruder when lanes change
+            # Hook the main afc_led function to intercept ALL LED changes
+            self._hook_afc_led_function()
+
+            # Also hook unit methods for additional context
             self._hook_into_afc()
 
             self.logger.info("Hook complete, module fully initialized")
@@ -89,6 +91,96 @@ class SpoolmanLEDSync:
         except Exception as e:
             self.logger.exception("Failed to hook into AFC")
             self.enabled = False
+
+    def _hook_afc_led_function(self):
+        """Hook the main afc_led function to intercept all LED color changes"""
+        try:
+            original_afc_led = self.afc.function.afc_led
+
+            def wrapped_afc_led(status, index):
+                """Intercept LED changes and apply custom colors if configured"""
+                # Try to find which lane this LED belongs to
+                lane = self._find_lane_by_led_index(index)
+
+                if lane:
+                    # Check if we should override this color
+                    new_status = self._get_override_color(status, lane)
+                    if new_status is not None:
+                        self.logger.debug("Overriding LED color for %s index %s: %s -> %s",
+                                        lane.name, index, status, new_status)
+                        status = new_status
+
+                # Call original function with potentially modified color
+                return original_afc_led(status, index)
+
+            self.afc.function.afc_led = wrapped_afc_led
+            self.logger.info("Successfully hooked afc_led function")
+
+        except Exception as e:
+            self.logger.exception("Failed to hook afc_led function: %s", e)
+
+    def _find_lane_by_led_index(self, index):
+        """Find the lane that owns this LED index"""
+        if not hasattr(self.afc, 'lanes'):
+            return None
+
+        for lane in self.afc.lanes.values():
+            if hasattr(lane, 'led_index') and lane.led_index == index:
+                return lane
+        return None
+
+    def _get_override_color(self, original_color, lane):
+        """
+        Determine if we should override the color based on our configuration.
+        Returns the override color string, or None if no override should happen.
+        """
+        # Match the original color to see what state is being set
+        # and check if we have a custom color configured for that state
+
+        # Check for Spoolman color for ready/loaded states
+        spoolman_color = self._get_lane_color(lane)
+        if spoolman_color:
+            spoolman_led_str = self._hex_to_led_string(spoolman_color)
+
+            # If setting tool_loaded color and we have Spoolman data, use it
+            if (hasattr(lane, 'led_tool_loaded') and original_color == lane.led_tool_loaded):
+                return spoolman_led_str
+
+            # If setting ready color and we don't have a custom ready_color configured, use Spoolman
+            if (hasattr(lane, 'led_ready') and original_color == lane.led_ready and
+                self.ready_color is None):
+                return spoolman_led_str
+
+        # Check for custom color overrides
+        if self.ready_color and hasattr(lane, 'led_ready') and original_color == lane.led_ready:
+            return self._hex_to_led_string(self.ready_color)
+
+        if self.not_ready_color and hasattr(lane, 'led_not_ready') and original_color == lane.led_not_ready:
+            return self._hex_to_led_string(self.not_ready_color)
+
+        if self.loading_color and hasattr(lane, 'led_loading') and original_color == lane.led_loading:
+            return self._hex_to_led_string(self.loading_color)
+
+        if self.prep_loaded_color and hasattr(lane, 'led_prep_loaded') and original_color == lane.led_prep_loaded:
+            return self._hex_to_led_string(self.prep_loaded_color)
+
+        if self.unloading_color and hasattr(lane, 'led_unloading') and original_color == lane.led_unloading:
+            return self._hex_to_led_string(self.unloading_color)
+
+        if self.fault_color and hasattr(lane, 'led_fault') and original_color == lane.led_fault:
+            return self._hex_to_led_string(self.fault_color)
+
+        if self.tool_loaded_idle_color and hasattr(lane, 'led_tool_loaded_idle') and original_color == lane.led_tool_loaded_idle:
+            return self._hex_to_led_string(self.tool_loaded_idle_color)
+
+        # Also check AFC global colors
+        if self.not_ready_color and hasattr(self.afc, 'led_not_ready') and original_color == self.afc.led_not_ready:
+            return self._hex_to_led_string(self.not_ready_color)
+
+        if self.fault_color and hasattr(self.afc, 'led_fault') and original_color == self.afc.led_fault:
+            return self._hex_to_led_string(self.fault_color)
+
+        return None
 
     def _hook_into_afc(self):
         """
