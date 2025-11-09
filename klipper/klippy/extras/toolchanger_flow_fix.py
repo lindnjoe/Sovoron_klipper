@@ -1,9 +1,8 @@
 # Monkey patch to fix flow rate and filament tracking with toolchangers
 #
-# This module fixes three issues that occur during toolchanges:
+# This module fixes two issues that occur with toolchangers:
 # 1. Volumetric flow (mm³/s) showing 0.0 or not tracking correctly
-# 2. Filament used tracking stopping after toolchanges
-# 3. Print time estimates blanking out after toolchanges
+# 2. AFC lane changes causing negative filament tracking
 #
 # To use, add this to your printer.cfg:
 #   [toolchanger_flow_fix]
@@ -29,10 +28,6 @@ class ToolchangerFlowFix:
         self.gcode = self.printer.lookup_object('gcode')
         logging.info("toolchanger_flow_fix: Module loaded and connecting")
 
-        # Patch gcode_move to preserve extrude_factor during toolchanges
-        gcode_move = self.printer.lookup_object('gcode_move')
-        self._patch_gcode_move(gcode_move)
-
         # Patch motion_report to track active extruder velocity
         motion_report = self.printer.lookup_object('motion_report', None)
         if motion_report is not None:
@@ -55,33 +50,6 @@ class ToolchangerFlowFix:
             logging.info("toolchanger_flow_fix: AFC not found, skipping AFC patches")
 
         logging.info("toolchanger_flow_fix: All patches applied successfully")
-
-    def _patch_gcode_move(self, gcode_move):
-        """Patch GCodeMove to preserve extrude_factor during toolchanges"""
-        original_activate = gcode_move._handle_activate_extruder
-        debug_enabled = self.debug_enabled
-
-        def patched_handle_activate_extruder():
-            # Save the current extrude_factor before doing anything
-            saved_extrude_factor = gcode_move.extrude_factor
-
-            # Reset position but preserve extrude_factor
-            gcode_move.reset_last_position()
-            # Do NOT reset extrude_factor - preserve for filament tracking
-            # Original code did: gcode_move.extrude_factor = 1.
-            gcode_move.base_position[3] = gcode_move.last_position[3]
-
-            # Log what happened
-            if debug_enabled:
-                logging.info("toolchanger_flow_fix: ACTIVATE_EXTRUDER called - "
-                           "preserved extrude_factor=%.3f (would have reset to 1.0)"
-                           % (saved_extrude_factor,))
-            else:
-                logging.info("toolchanger_flow_fix: Extruder activated, "
-                           "extrude_factor preserved at %.3f" % (saved_extrude_factor,))
-
-        gcode_move._handle_activate_extruder = patched_handle_activate_extruder
-        logging.info("toolchanger_flow_fix: gcode_move patch applied")
 
     def _patch_motion_report(self, motion_report):
         """Patch PrinterMotionReport to track active extruder velocity"""

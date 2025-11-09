@@ -2,7 +2,7 @@
 
 ## Overview
 
-This module fixes **three critical bugs** in Klipper that affect toolchanger configurations, particularly with AFC (Armored Turtle Filament Changer) and OpenAMS systems.
+This module fixes **two critical bugs** in Klipper that affect toolchanger configurations, particularly with AFC (Armored Turtle Filament Changer) and OpenAMS systems.
 
 ## Problems Fixed
 
@@ -14,23 +14,11 @@ This module fixes **three critical bugs** in Klipper that affect toolchanger con
 
 **Our Fix**: Patched `motion_report.get_status()` to query the currently active extruder from the toolhead and track its velocity dynamically. Also fixed a timing bug where the status update check happened AFTER updating `next_status_time`, causing the update logic to never execute.
 
-**Code**: `toolchanger_flow_fix.py` lines 86-146
+**Code**: `toolchanger_flow_fix.py` lines 55-115
 
 ---
 
-### 2. Filament Tracking Stops After Toolchanges ✅
-
-**Before**: The "Filament used" counter would stop incrementing or reset to 0 after the first toolchange, and print time estimates would blank out.
-
-**Root Cause**: `gcode_move.py` line 77 unconditionally resets `extrude_factor = 1.0` during `ACTIVATE_EXTRUDER` (called on every toolchange). The `print_stats` module uses `extrude_factor` to calculate filament usage: `filament_used += (cur_epos - last_epos) / extrude_factor`. Resetting this to 1.0 breaks the calculation.
-
-**Our Fix**: Patched `gcode_move._handle_activate_extruder()` to preserve the existing `extrude_factor` value instead of resetting it, while still properly resetting position tracking.
-
-**Code**: `toolchanger_flow_fix.py` lines 59-84
-
----
-
-### 3. AFC Lane Changes Cause Negative Filament Tracking ✅
+### 2. AFC Lane Changes Cause Negative Filament Tracking ✅
 
 **Before**: With AFC OpenAMS, filament usage would go **negative** after lane changes. Example: 241mm → -9mm after a single lane change.
 
@@ -64,12 +52,11 @@ This approach:
 
 | Module | Method | Lines | Purpose |
 |--------|--------|-------|---------|
-| `gcode_move` | `_handle_activate_extruder()` | 59-84 | Preserve extrude_factor |
-| `motion_report` | `get_status()` | 86-146 | Track active extruder velocity |
-| `print_stats` | `_update_filament_usage()` | 148-174 | Add debugging |
-| `print_stats` | `_handle_activate_extruder()` | 148-174 | Add debugging |
-| `AFC` | `save_pos()` | 176-214 | Pause filament tracking |
-| `AFC` | `restore_pos()` | 176-214 | Resume filament tracking |
+| `motion_report` | `get_status()` | 55-115 | Track active extruder velocity |
+| `print_stats` | `_update_filament_usage()` | 117-143 | Add debugging |
+| `print_stats` | `_handle_activate_extruder()` | 117-143 | Add debugging |
+| `AFC` | `save_pos()` | 145-183 | Pause filament tracking |
+| `AFC` | `restore_pos()` | 145-183 | Resume filament tracking |
 
 ### Debugging Features
 
@@ -144,20 +131,19 @@ During development, we identified and fixed:
 
 ### Issue 3: Lane Changes vs Toolchanges
 **Discovery**: AFC OpenAMS lane changes on same extruder don't call `ACTIVATE_EXTRUDER`
-**Impact**: Original fix #2 didn't help with AFC lane changes
-**Solution**: Required separate AFC patches (fix #3)
+**Impact**: Needed separate AFC-specific patches
+**Solution**: Pause/resume print_stats during AFC operations (fix #2)
 
 ---
 
 ## Upstream Status
 
-As of 2025-01-09, both core Klipper bugs still exist in upstream:
+As of 2025-01-09, the core Klipper bug still exists in upstream:
 - `motion_report.py` still has hardcoded `ea_index == 4` check
-- `gcode_move.py` still resets `extrude_factor = 1.0` on toolchange
 
 **Future Plans**:
-- Submit pull request to Klipper for fixes #1 and #2
-- Coordinate with AFC project for fix #3
+- Submit pull request to Klipper for fix #1
+- Coordinate with AFC project for fix #2
 - Monitor Klipper development for any conflicts
 
 ---
@@ -220,9 +206,8 @@ If you encounter issues:
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 1.0 | 2025-01-09 | Initial release with all three fixes |
+| 1.0 | 2025-01-09 | Initial release with two fixes |
 | | | - Volumetric flow tracking |
-| | | - Filament usage preservation |
 | | | - AFC lane change fix |
 | | | - Comprehensive debugging |
 | | | - FLOW_FIX_STATUS command |

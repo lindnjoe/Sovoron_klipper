@@ -45,63 +45,7 @@ Look for:
 toolchanger_flow_fix: Active extruder=extruder1, velocity=12.345 mm/s
 ```
 
-## Test 2: Filament Usage Tracking Across Toolchanges
-
-### Expected Behavior
-The "Filament used" counter should continuously increment across toolchanges and never reset to 0.
-
-### Test Macro
-
-Add to `printer.cfg`:
-
-```ini
-[gcode_macro TEST_FILAMENT_TRACKING]
-gcode:
-    # Print starting status
-    FLOW_FIX_STATUS
-
-    # Extrude some filament on T0
-    T0
-    G92 E0
-    G1 E50 F300
-    M400  # Wait for moves to complete
-
-    # Check status - should show ~50mm
-    FLOW_FIX_STATUS
-
-    # Change to T1
-    T1
-
-    # Extrude more on T1
-    G1 E50 F300
-    M400
-
-    # Check status - should show ~100mm total
-    FLOW_FIX_STATUS
-
-    # Change back to T0
-    T0
-
-    # Check status - should still show ~100mm
-    FLOW_FIX_STATUS
-```
-
-### Expected Results
-
-After each `FLOW_FIX_STATUS`:
-1. First check: `Filament used: ~50.000 mm`
-2. Second check: `Filament used: ~100.000 mm`
-3. Third check: `Filament used: ~100.000 mm` (NOT reset to 0)
-
-### Expected Log Output (debug enabled)
-
-```
-toolchanger_flow_fix: Extruder activated, extrude_factor preserved at 1.000
-toolchanger_flow_fix: Filament tracking update - used: 50.123 (+50.123)
-toolchanger_flow_fix: print_stats.handle_activate_extruder() called - last_epos reset from 50.000 to 50.000
-```
-
-## Test 3: AFC Lane Changes (OpenAMS)
+## Test 2: AFC Lane Changes (OpenAMS)
 
 ### Expected Behavior
 With AFC, OpenAMS lane changes should NOT cause filament usage to go negative. The large retracts/loads during filament swaps should be ignored.
@@ -197,7 +141,6 @@ tail -f ~/printer_data/logs/klippy.log | grep toolchanger_flow_fix
 ```
 
 During a print, you should see:
-- Extruder activation messages when tools change
 - Filament tracking updates (every change > 0.001mm)
 - AFC pause/resume messages during lane changes
 - Periodic velocity updates (every 50th status call)
@@ -217,16 +160,6 @@ During a print, you should see:
    ```
 
 3. If trapq is "NOT FOUND", there may be a timing issue - report this
-
-### Filament tracking resets to 0 at toolchange
-
-1. Check klippy.log for:
-   ```
-   toolchanger_flow_fix: gcode_move patch applied
-   toolchanger_flow_fix: Extruder activated, extrude_factor preserved at X.XXX
-   ```
-
-2. If you see `extrude_factor preserved`, but tracking still resets, check `print_stats` patches
 
 ### Filament usage goes negative with AFC
 

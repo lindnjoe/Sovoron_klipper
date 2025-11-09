@@ -124,11 +124,10 @@ TEST_AFC_LANE_CHANGE      # Test AFC lane changes (if you have AFC)
 
 ## What's Happening Behind the Scenes?
 
-The module patches three Klipper components:
+The module patches two Klipper components:
 
 1. **Motion Report** - Tracks active extruder velocity dynamically
-2. **GCode Move** - Preserves extrude_factor across toolchanges
-3. **AFC (if present)** - Pauses filament tracking during lane changes
+2. **AFC (if present)** - Pauses filament tracking during lane changes
 
 All done via runtime patching - no Klipper files are modified!
 

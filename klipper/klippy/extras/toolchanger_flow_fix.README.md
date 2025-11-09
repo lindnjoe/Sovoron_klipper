@@ -11,14 +11,7 @@ This module fixes flow rate and filament tracking issues with toolchanger config
 
 **Fix**: The monkey patch queries the currently active extruder and tracks its velocity correctly.
 
-### 2. Filament Tracking Stops After Toolchanges
-**Symptom**: The "Filament used" counter stops incrementing after the first toolchange, and print time estimates blank out.
-
-**Cause**: The `ACTIVATE_EXTRUDER` command (called during toolchanges) resets `extrude_factor` to 1.0, which breaks the filament usage calculation in `print_stats.py`.
-
-**Fix**: The monkey patch preserves `extrude_factor` across toolchanges, allowing filament tracking and statistics to work correctly.
-
-### 3. AFC Lane Changes Cause Negative Filament Tracking
+### 2. AFC Lane Changes Cause Negative Filament Tracking
 **Symptom**: With AFC (Armored Turtle Filament Changer), filament usage tracking goes negative after OpenAMS lane changes. For example, tracking shows 241mm used, then after a lane change drops to -9mm.
 
 **Cause**: AFC's `save_pos()` and `restore_pos()` methods perform large retracts and loads during filament swaps (e.g., 250mm retract to unload), but `print_stats` continues tracking these toolchange moves as if they were print moves, causing the filament_used counter to go wildly negative.
@@ -72,12 +65,11 @@ Use the `FLOW_FIX_STATUS` G-code command to check current status at any time.
 
 The module uses runtime monkey-patching to override several methods:
 
-1. **`gcode_move._handle_activate_extruder()`**: Modified to preserve `extrude_factor` instead of resetting it to 1.0
-2. **`motion_report.get_status()`**: Enhanced to query the currently active extruder's velocity instead of using a hardcoded axis index (fixes timing bug where check happened after updating next_status_time)
-3. **`print_stats._update_filament_usage()`**: Adds debugging to track filament usage changes
-4. **`print_stats._handle_activate_extruder()`**: Adds debugging to track E position resets
-5. **`AFC.save_pos()`**: Calls `print_stats.note_pause()` to stop tracking toolchange moves
-6. **`AFC.restore_pos()`**: Calls `print_stats.note_start()` to resume tracking after toolchange
+1. **`motion_report.get_status()`**: Enhanced to query the currently active extruder's velocity instead of using a hardcoded axis index (fixes timing bug where check happened after updating next_status_time)
+2. **`print_stats._update_filament_usage()`**: Adds debugging to track filament usage changes
+3. **`print_stats._handle_activate_extruder()`**: Adds debugging to track E position resets
+4. **`AFC.save_pos()`**: Calls `print_stats.note_pause()` to stop tracking toolchange moves
+5. **`AFC.restore_pos()`**: Calls `print_stats.note_start()` to resume tracking after toolchange
 
 These patches are applied at `klippy:connect` time, after all modules are loaded. The AFC patches are only applied if AFC is detected.
 
@@ -97,7 +89,7 @@ To remove the fix:
 ## Future
 
 This is a temporary fix for testing. If proven stable:
-- The `gcode_move.py` and `motion_report.py` patches should be merged into core Klipper
+- The `motion_report.py` patch should be merged into core Klipper
 - The AFC patches may remain as AFC-specific enhancements
 - Consider submitting pull requests to both Klipper and AFC projects
 
