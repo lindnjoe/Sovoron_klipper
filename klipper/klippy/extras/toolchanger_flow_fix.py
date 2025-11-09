@@ -12,13 +12,22 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license
 
+import logging
+
 class ToolchangerFlowFix:
     def __init__(self, config):
         self.printer = config.get_printer()
+        self.gcode = None
+        self.debug_enabled = config.getboolean('debug', False)
         self.printer.register_event_handler("klippy:connect",
                                            self._handle_connect)
+        self.printer.register_event_handler("klippy:ready",
+                                           self._handle_ready)
 
     def _handle_connect(self):
+        self.gcode = self.printer.lookup_object('gcode')
+        logging.info("toolchanger_flow_fix: Module loaded and connecting")
+
         # Patch gcode_move to preserve extrude_factor during toolchanges
         gcode_move = self.printer.lookup_object('gcode_move')
         self._patch_gcode_move(gcode_move)
@@ -27,24 +36,44 @@ class ToolchangerFlowFix:
         motion_report = self.printer.lookup_object('motion_report', None)
         if motion_report is not None:
             self._patch_motion_report(motion_report)
+        else:
+            logging.warning("toolchanger_flow_fix: motion_report not found!")
+
+        logging.info("toolchanger_flow_fix: All patches applied successfully")
 
     def _patch_gcode_move(self, gcode_move):
         """Patch GCodeMove to preserve extrude_factor during toolchanges"""
         original_activate = gcode_move._handle_activate_extruder
+        debug_enabled = self.debug_enabled
+        gcode = self.gcode
 
         def patched_handle_activate_extruder():
+            # Save the current extrude_factor before doing anything
+            saved_extrude_factor = gcode_move.extrude_factor
+
             # Reset position but preserve extrude_factor
             gcode_move.reset_last_position()
             # Do NOT reset extrude_factor - preserve for filament tracking
-            # The toolchanger system uses SAVE_GCODE_STATE/RESTORE_GCODE_STATE
             # Original code did: gcode_move.extrude_factor = 1.
             gcode_move.base_position[3] = gcode_move.last_position[3]
 
+            # Log what happened
+            if debug_enabled:
+                logging.info("toolchanger_flow_fix: ACTIVATE_EXTRUDER called - "
+                           "preserved extrude_factor=%.3f (would have reset to 1.0)"
+                           % (saved_extrude_factor,))
+            else:
+                logging.info("toolchanger_flow_fix: Extruder activated, "
+                           "extrude_factor preserved at %.3f" % (saved_extrude_factor,))
+
         gcode_move._handle_activate_extruder = patched_handle_activate_extruder
+        logging.info("toolchanger_flow_fix: gcode_move patch applied")
 
     def _patch_motion_report(self, motion_report):
         """Patch PrinterMotionReport to track active extruder velocity"""
         original_get_status = motion_report.get_status
+        debug_enabled = self.debug_enabled
+        call_count = [0]  # Mutable to allow modification in closure
 
         def patched_get_status(eventtime):
             # Call original to get base status
@@ -66,13 +95,63 @@ class ToolchangerFlowFix:
 
                         if pos is not None and velocity is not None:
                             # Update the velocity from the active extruder
+                            old_velocity = status.get('live_extruder_velocity', 0)
                             status = dict(status)
                             status['live_extruder_velocity'] = velocity
                             motion_report.last_status = status
 
+                            # Debug logging - only log every 50th call to avoid spam
+                            call_count[0] += 1
+                            if debug_enabled and call_count[0] % 50 == 0:
+                                logging.info("toolchanger_flow_fix: Active extruder=%s, "
+                                           "velocity=%.3f mm/s (was %.3f)"
+                                           % (extruder_name, velocity, old_velocity))
+                        elif debug_enabled and call_count[0] % 100 == 0:
+                            logging.warning("toolchanger_flow_fix: trapq position is None "
+                                          "for extruder %s" % extruder_name)
+                    elif debug_enabled and call_count[0] % 100 == 0:
+                        logging.warning("toolchanger_flow_fix: No trapq handler for "
+                                      "extruder %s" % extruder_name)
+                elif debug_enabled and call_count[0] % 100 == 0:
+                    logging.warning("toolchanger_flow_fix: No active extruder!")
+
             return status
 
         motion_report.get_status = patched_get_status
+        logging.info("toolchanger_flow_fix: motion_report patch applied")
+
+    # Add gcode command for runtime debugging
+    def _handle_ready(self):
+        self.gcode.register_command('FLOW_FIX_STATUS',
+                                   self.cmd_FLOW_FIX_STATUS,
+                                   desc="Report toolchanger flow fix status")
+
+    cmd_FLOW_FIX_STATUS_help = "Report current flow fix status and diagnostics"
+    def cmd_FLOW_FIX_STATUS(self, gcmd):
+        gcode_move = self.printer.lookup_object('gcode_move')
+        motion_report = self.printer.lookup_object('motion_report', None)
+        toolhead = self.printer.lookup_object('toolhead')
+
+        # Get current state
+        active_extruder = toolhead.get_extruder()
+        extruder_name = active_extruder.get_name() if active_extruder else "None"
+        extrude_factor = gcode_move.extrude_factor
+
+        msg = "Flow Fix Status:\n"
+        msg += "  Active Extruder: %s\n" % extruder_name
+        msg += "  Extrude Factor: %.3f (%.1f%%)\n" % (extrude_factor, extrude_factor * 100)
+
+        if motion_report:
+            status = motion_report.get_status(self.printer.get_reactor().monotonic())
+            msg += "  Live Extruder Velocity: %.3f mm/s\n" % status.get('live_extruder_velocity', 0)
+            msg += "  Live XYZ Velocity: %.3f mm/s\n" % status.get('live_velocity', 0)
+
+            # Check if trapq exists for active extruder
+            if active_extruder:
+                ehandler = motion_report.dtrapqs.get(extruder_name)
+                msg += "  Trapq for %s: %s\n" % (extruder_name, "Found" if ehandler else "NOT FOUND")
+
+        gcmd.respond_info(msg)
 
 def load_config(config):
     return ToolchangerFlowFix(config)
