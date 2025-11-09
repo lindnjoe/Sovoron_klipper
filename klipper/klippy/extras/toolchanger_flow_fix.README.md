@@ -38,7 +38,7 @@ sudo systemctl restart klipper
 When `debug: True` is enabled, the module logs detailed information about:
 - Extruder velocity tracking updates (every 50th call)
 - Filament usage changes with delta values
-- AFC save_pos/restore_pos extrude_factor values
+- AFC save_pos/restore_pos last_epos updates
 - Trapq position lookups and any issues
 
 Use the `FLOW_FIX_STATUS` G-code command to check current status at any time.

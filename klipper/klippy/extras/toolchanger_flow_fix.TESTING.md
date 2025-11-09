@@ -79,10 +79,8 @@ After lane change:
 
 ```
 toolchanger_flow_fix: AFC save_pos() - updated last_epos from 50.123 to 50.123
-toolchanger_flow_fix: AFC save_pos() called, extrude_factor=1.000 saved
 [... AFC toolchange moves occur but are NOT tracked ...]
 toolchanger_flow_fix: AFC restore_pos() - updated last_epos from -199.877 to -199.877
-toolchanger_flow_fix: AFC restore_pos() called, extrude_factor restored to 1.000
 ```
 
 Note: The E positions may be negative after toolchange, but this is normal - the key is that `last_epos` is updated to match, so the next filament tracking calculation will have a delta of zero (skipping the toolchange moves).

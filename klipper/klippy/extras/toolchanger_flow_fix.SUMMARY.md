@@ -64,7 +64,7 @@ The module includes comprehensive debugging (enabled with `debug: True`):
 
 - **Extruder velocity tracking**: Logs every 50th update to avoid spam
 - **Filament usage changes**: Logs whenever filament_used changes by > 0.001mm
-- **AFC operations**: Logs extrude_factor during save/restore
+- **AFC operations**: Logs last_epos updates during save/restore
 - **Trapq issues**: Warns if trapq position lookups fail
 
 ### FLOW_FIX_STATUS Command

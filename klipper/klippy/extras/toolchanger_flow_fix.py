@@ -165,13 +165,7 @@ class ToolchangerFlowFix:
 
             original_save_pos()
 
-            extrude_factor = afc.extrude_factor if hasattr(afc, 'extrude_factor') else afc.gcode_move.extrude_factor
-            if debug_enabled:
-                logging.info("toolchanger_flow_fix: AFC save_pos() called, "
-                           "extrude_factor=%.3f saved" % extrude_factor)
-
         def patched_restore_pos(move_z_first=True):
-            saved_extrude_factor = afc.extrude_factor if hasattr(afc, 'extrude_factor') else None
             original_restore_pos(move_z_first)
 
             # Update last_epos to current E position AFTER AFC operations
@@ -187,12 +181,6 @@ class ToolchangerFlowFix:
                 if debug_enabled:
                     logging.info("toolchanger_flow_fix: AFC restore_pos() - updated last_epos "
                                "from %.3f to %.3f" % (old_epos, print_stats.last_epos))
-
-            current_extrude_factor = afc.gcode_move.extrude_factor
-            if debug_enabled:
-                logging.info("toolchanger_flow_fix: AFC restore_pos() called, "
-                           "extrude_factor restored to %.3f (was saved as %.3f)"
-                           % (current_extrude_factor, saved_extrude_factor if saved_extrude_factor else 0))
 
         afc.save_pos = patched_save_pos
         afc.restore_pos = patched_restore_pos
