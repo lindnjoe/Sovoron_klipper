@@ -24,7 +24,7 @@ This module fixes **two critical bugs** in Klipper that affect toolchanger confi
 
 **Root Cause**: When AFC changes lanes on the same extruder (not calling `ACTIVATE_EXTRUDER`), it calls `save_pos()` and `restore_pos()` which perform large retracts/loads (e.g., 250mm retract to unload old filament, then reload new). The `print_stats` module was still tracking these toolchange moves as print moves, causing the filament_used counter to subtract the entire retract distance.
 
-**Our Fix**: Patched AFC's `save_pos()` to call `print_stats.note_pause()` (stopping filament tracking) and `restore_pos()` to call `print_stats.note_start()` (resuming tracking). This ensures only actual print moves are counted, not toolchange mechanics.
+**Our Fix**: Patched AFC's `save_pos()` and `restore_pos()` to update `print_stats.last_epos` (the E position tracker) before and after toolchange operations. This effectively "skips over" the toolchange moves without changing the print state, preventing toolchange retracts/loads from being counted as filament usage.
 
 **Code**: `toolchanger_flow_fix.py` lines 176-214
 
@@ -55,8 +55,8 @@ This approach:
 | `motion_report` | `get_status()` | 55-115 | Track active extruder velocity |
 | `print_stats` | `_update_filament_usage()` | 117-143 | Add debugging |
 | `print_stats` | `_handle_activate_extruder()` | 117-143 | Add debugging |
-| `AFC` | `save_pos()` | 145-183 | Pause filament tracking |
-| `AFC` | `restore_pos()` | 145-183 | Resume filament tracking |
+| `AFC` | `save_pos()` | 144-198 | Update last_epos before toolchange |
+| `AFC` | `restore_pos()` | 144-198 | Update last_epos after toolchange |
 
 ### Debugging Features
 
@@ -127,7 +127,7 @@ During development, we identified and fixed:
 ### Issue 2: AFC Lane Changes Tracking
 **Symptom**: Filament used went from 241mm to -9mm after lane change
 **Evidence**: Log showed 250mm retract being tracked as negative extrusion
-**Fix**: Pause/resume print_stats during AFC save_pos/restore_pos (lines 183-211)
+**Fix**: Update last_epos before/after AFC operations to skip toolchange moves (lines 144-198)
 
 ### Issue 3: Lane Changes vs Toolchanges
 **Discovery**: AFC OpenAMS lane changes on same extruder don't call `ACTIVATE_EXTRUDER`

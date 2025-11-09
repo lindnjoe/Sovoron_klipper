@@ -67,9 +67,9 @@ Before lane change:
   Filament used: 241.109 mm
 
 During lane change (check klippy.log):
-  toolchanger_flow_fix: AFC save_pos() - paused print_stats tracking
+  toolchanger_flow_fix: AFC save_pos() - updated last_epos
   [AFC performs 250mm retract and reload - NOT tracked]
-  toolchanger_flow_fix: AFC restore_pos() - resumed print_stats tracking
+  toolchanger_flow_fix: AFC restore_pos() - updated last_epos
 
 After lane change:
   Filament used: 241.109 mm  ← Should be same or slightly higher, NEVER negative!
@@ -78,12 +78,14 @@ After lane change:
 ### Expected Log Output
 
 ```
-toolchanger_flow_fix: AFC save_pos() - paused print_stats tracking
+toolchanger_flow_fix: AFC save_pos() - updated last_epos from 50.123 to 50.123
 toolchanger_flow_fix: AFC save_pos() called, extrude_factor=1.000 saved
 [... AFC toolchange moves occur but are NOT tracked ...]
-toolchanger_flow_fix: AFC restore_pos() - resumed print_stats tracking
+toolchanger_flow_fix: AFC restore_pos() - updated last_epos from -199.877 to -199.877
 toolchanger_flow_fix: AFC restore_pos() called, extrude_factor restored to 1.000
 ```
+
+Note: The E positions may be negative after toolchange, but this is normal - the key is that `last_epos` is updated to match, so the next filament tracking calculation will have a delta of zero (skipping the toolchange moves).
 
 ### AFC Lane Change Test Macro
 
@@ -142,7 +144,7 @@ tail -f ~/printer_data/logs/klippy.log | grep toolchanger_flow_fix
 
 During a print, you should see:
 - Filament tracking updates (every change > 0.001mm)
-- AFC pause/resume messages during lane changes
+- AFC last_epos updates during lane changes
 - Periodic velocity updates (every 50th status call)
 
 ## Troubleshooting Failed Tests
@@ -170,11 +172,13 @@ During a print, you should see:
 
 2. During lane change, verify you see:
    ```
-   toolchanger_flow_fix: AFC save_pos() - paused print_stats tracking
-   toolchanger_flow_fix: AFC restore_pos() - resumed print_stats tracking
+   toolchanger_flow_fix: AFC save_pos() - updated last_epos
+   toolchanger_flow_fix: AFC restore_pos() - updated last_epos
    ```
 
 3. If AFC patches not applied, verify AFC module loaded before this module
+
+4. Verify print state stays "printing" during lane changes (not "paused")
 
 ## Performance Impact
 
