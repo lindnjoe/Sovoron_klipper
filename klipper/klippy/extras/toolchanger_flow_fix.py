@@ -40,6 +40,12 @@ class ToolchangerFlowFix:
         else:
             logging.warning("toolchanger_flow_fix: motion_report not found!")
 
+        # Patch print_stats to add debugging
+        print_stats = self.printer.lookup_object('print_stats', None)
+        if print_stats is not None:
+            self._patch_print_stats(print_stats)
+            logging.info("toolchanger_flow_fix: print_stats patches applied")
+
         # Try to patch AFC if it exists
         afc = self.printer.lookup_object('AFC', None)
         if afc is not None:
@@ -139,6 +145,34 @@ class ToolchangerFlowFix:
         motion_report.get_status = patched_get_status
         logging.info("toolchanger_flow_fix: motion_report patch applied")
 
+    def _patch_print_stats(self, print_stats):
+        """Patch print_stats to add filament tracking debugging"""
+        original_update_filament = print_stats._update_filament_usage
+        original_handle_activate = print_stats._handle_activate_extruder
+        debug_enabled = self.debug_enabled
+
+        def patched_update_filament_usage(eventtime):
+            old_filament_used = print_stats.filament_used
+            old_last_epos = print_stats.last_epos
+
+            original_update_filament(eventtime)
+
+            delta = print_stats.filament_used - old_filament_used
+            if debug_enabled and abs(delta) > 0.001:
+                logging.info("toolchanger_flow_fix: Filament tracking update - "
+                           "used: %.3f (+%.3f), last_epos: %.3f -> %.3f"
+                           % (print_stats.filament_used, delta, old_last_epos, print_stats.last_epos))
+
+        def patched_handle_activate_extruder():
+            old_last_epos = print_stats.last_epos
+            original_handle_activate()
+            logging.info("toolchanger_flow_fix: print_stats.handle_activate_extruder() called - "
+                       "last_epos reset from %.3f to %.3f"
+                       % (old_last_epos, print_stats.last_epos))
+
+        print_stats._update_filament_usage = patched_update_filament_usage
+        print_stats._handle_activate_extruder = patched_handle_activate_extruder
+
     def _patch_afc(self, afc):
         """Patch AFC save_pos/restore_pos to add logging"""
         original_save_pos = afc.save_pos
@@ -175,6 +209,7 @@ class ToolchangerFlowFix:
         motion_report = self.printer.lookup_object('motion_report', None)
         toolhead = self.printer.lookup_object('toolhead')
         afc = self.printer.lookup_object('AFC', None)
+        print_stats = self.printer.lookup_object('print_stats', None)
 
         # Get current state
         active_extruder = toolhead.get_extruder()
@@ -195,6 +230,15 @@ class ToolchangerFlowFix:
                 ehandler = motion_report.dtrapqs.get(extruder_name)
                 msg += "  Trapq for %s: %s\n" % (extruder_name, "Found" if ehandler else "NOT FOUND")
                 msg += "  Available trapqs: %s\n" % ", ".join(motion_report.dtrapqs.keys())
+
+        if print_stats:
+            stats = print_stats.get_status(self.printer.get_reactor().monotonic())
+            msg += "\nPrint Stats:\n"
+            msg += "  State: %s\n" % stats.get('state', 'unknown')
+            msg += "  Filament used: %.3f mm\n" % stats.get('filament_used', 0)
+            msg += "  Total duration: %.1f s\n" % stats.get('total_duration', 0)
+            msg += "  Print duration: %.1f s\n" % stats.get('print_duration', 0)
+            msg += "  Last E position: %.3f\n" % print_stats.last_epos
 
         if afc:
             msg += "\nAFC Info:\n"
