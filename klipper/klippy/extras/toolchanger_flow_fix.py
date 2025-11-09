@@ -148,39 +148,49 @@ class ToolchangerFlowFix:
         debug_enabled = self.debug_enabled
         printer = self.printer
 
+        # Store saved E position for calculating delta
+        saved_e_pos = [None]  # Use list to make it mutable in closures
+
         def patched_save_pos():
-            # Update last_epos to current E position BEFORE AFC operations
-            # This way, the large retract won't be counted in filament usage
-            print_stats = printer.lookup_object('print_stats', None)
+            # Save current E position before AFC operations
             gcode_move = printer.lookup_object('gcode_move')
-            if print_stats:
-                reactor = printer.get_reactor()
-                eventtime = reactor.monotonic()
-                gc_status = gcode_move.get_status(eventtime)
-                old_epos = print_stats.last_epos
-                print_stats.last_epos = gc_status['position'].e
-                if debug_enabled:
-                    logging.info("toolchanger_flow_fix: AFC save_pos() - updated last_epos "
-                               "from %.3f to %.3f" % (old_epos, print_stats.last_epos))
+            reactor = printer.get_reactor()
+            eventtime = reactor.monotonic()
+            gc_status = gcode_move.get_status(eventtime)
+            saved_e_pos[0] = gc_status['position'].e
+
+            if debug_enabled:
+                logging.info("toolchanger_flow_fix: AFC save_pos() - saved E position: %.3f"
+                           % saved_e_pos[0])
 
             original_save_pos()
 
         def patched_restore_pos(move_z_first=True):
             original_restore_pos(move_z_first)
 
-            # Update last_epos to current E position AFTER AFC operations
-            # This "skips over" all the toolchange moves (retract/load)
+            # Calculate how much E changed during AFC operations and compensate
             print_stats = printer.lookup_object('print_stats', None)
             gcode_move = printer.lookup_object('gcode_move')
-            if print_stats:
+            if print_stats and saved_e_pos[0] is not None:
                 reactor = printer.get_reactor()
                 eventtime = reactor.monotonic()
                 gc_status = gcode_move.get_status(eventtime)
-                old_epos = print_stats.last_epos
-                print_stats.last_epos = gc_status['position'].e
+                current_e = gc_status['position'].e
+                e_delta = current_e - saved_e_pos[0]
+
+                # Adjust last_epos by the AFC delta to skip toolchange moves
+                old_last_epos = print_stats.last_epos
+                print_stats.last_epos += e_delta
+
                 if debug_enabled:
-                    logging.info("toolchanger_flow_fix: AFC restore_pos() - updated last_epos "
-                               "from %.3f to %.3f" % (old_epos, print_stats.last_epos))
+                    logging.info("toolchanger_flow_fix: AFC restore_pos() - E changed by %.3f "
+                               "(%.3f -> %.3f), adjusted last_epos from %.3f to %.3f"
+                               % (e_delta, saved_e_pos[0], current_e, old_last_epos, print_stats.last_epos))
+                elif e_delta != 0:
+                    logging.info("toolchanger_flow_fix: AFC restore_pos() - compensated for "
+                               "%.3fmm E delta from lane change" % e_delta)
+
+                saved_e_pos[0] = None  # Reset for next use
 
         afc.save_pos = patched_save_pos
         afc.restore_pos = patched_restore_pos
