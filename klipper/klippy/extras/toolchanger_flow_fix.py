@@ -1,16 +1,8 @@
 # Monkey patch to fix flow rate and filament tracking with toolchangers
 #
-# This module fixes three issues that occur during toolchanges:
-# 1. Volumetric flow (mm³/s) showing 0.0 or not tracking correctly
-# 2. Filament used tracking stopping after toolchanges
-# 3. Print time estimates blanking out after toolchanges
-#
 # To use, add this to your printer.cfg:
 #   [toolchanger_flow_fix]
 #
-# Copyright (C) 2025  Joe Lindner <lindnjoe@gmail.com>
-#
-# This file may be distributed under the terms of the GNU GPLv3 license
 
 class ToolchangerFlowFix:
     def __init__(self, config):
