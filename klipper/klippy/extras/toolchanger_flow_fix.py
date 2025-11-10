@@ -88,6 +88,10 @@ class ToolchangerFlowFix:
             saved_state[0] = gc_status['position'].e
             if print_stats:
                 saved_state[1] = print_stats.last_epos
+                logging.info("AFC save_pos: E=%.3f, last_epos=%.3f, filament_used=%.3f"
+                           % (saved_state[0], saved_state[1], print_stats.filament_used))
+            else:
+                logging.info("AFC save_pos: E=%.3f (no print_stats)" % saved_state[0])
 
             original_save_pos()
 
@@ -104,10 +108,22 @@ class ToolchangerFlowFix:
                 e_delta = current_e - saved_state[0]
 
                 # Restore last_epos to skip toolchange moves
+                old_last_epos = print_stats.last_epos
                 print_stats.last_epos = saved_state[1] + e_delta
+
+                logging.info("AFC restore_pos: E changed %.3f->%.3f (delta=%.3f), "
+                           "last_epos %.3f->%.3f, filament_used=%.3f"
+                           % (saved_state[0], current_e, e_delta,
+                              old_last_epos, print_stats.last_epos,
+                              print_stats.filament_used))
 
                 saved_state[0] = None
                 saved_state[1] = None
+            else:
+                if saved_state[0] is None:
+                    logging.warning("AFC restore_pos called but no saved state!")
+                else:
+                    logging.info("AFC restore_pos: no print_stats")
 
         afc.save_pos = patched_save_pos
         afc.restore_pos = patched_restore_pos
