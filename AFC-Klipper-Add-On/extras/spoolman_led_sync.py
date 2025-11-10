@@ -114,24 +114,13 @@ class SpoolmanLEDSync:
         """
         Determine if we should override the color based on our configuration.
         Returns the override color string, or None if no override should happen.
+
+        Note: Spoolman colors are applied through unit method hooks only,
+        not through this function. This keeps BT_PREP from applying Spoolman
+        colors when it directly calls afc_led().
         """
         # Match the original color to see what state is being set
         # and check if we have a custom color configured for that state
-
-        # Check for Spoolman color for ready/loaded states
-        spoolman_color = self._get_lane_color(lane)
-        if spoolman_color:
-            spoolman_led_str = self._hex_to_led_string(spoolman_color)
-
-            # If setting tool_loaded color and we have Spoolman data, use it ONLY if active extruder
-            if (hasattr(lane, 'led_tool_loaded') and original_color == lane.led_tool_loaded):
-                if self._is_active_extruder(lane):
-                    return spoolman_led_str
-
-            # If setting ready color and we don't have a custom ready_color configured, use Spoolman
-            if (hasattr(lane, 'led_ready') and original_color == lane.led_ready and
-                self.ready_color is None):
-                return spoolman_led_str
 
         # Check for custom color overrides
         if self.ready_color and hasattr(lane, 'led_ready') and original_color == lane.led_ready:
@@ -243,23 +232,13 @@ class SpoolmanLEDSync:
     def _is_active_extruder(self, lane):
         """Check if this lane's extruder is the currently active extruder"""
         try:
-            # Check if lane has an extruder object
-            if not hasattr(lane, 'extruder_obj') or lane.extruder_obj is None:
-                return False
-
-            # Check if printer is actually in use (printing or actively using the tool)
-            # If idle, we don't consider any extruder "active" even if it's the default
-            print_stats = self.printer.lookup_object('print_stats', None)
-            if print_stats:
-                state = print_stats.get_status(0).get('state', 'standby')
-                # Only consider extruder active if we're actually printing or paused
-                # During standby/complete/error, no tool is truly "active"
-                if state not in ['printing', 'paused']:
-                    return False
-
             # Get the toolhead's current extruder
             toolhead = self.printer.lookup_object('toolhead')
             active_extruder = toolhead.get_extruder()
+
+            # Check if lane has an extruder object
+            if not hasattr(lane, 'extruder_obj') or lane.extruder_obj is None:
+                return False
 
             # Compare the lane's extruder with the active extruder
             # They might be the same object or have the same name
