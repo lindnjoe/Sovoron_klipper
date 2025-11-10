@@ -77,6 +77,20 @@ class ToolchangerFlowFix:
         original_restore_pos = afc.restore_pos
         printer = self.printer
         saved_state = [None, None]  # [saved_e_pos, saved_last_epos]
+        afc_in_progress = [False]  # Flag to block print_stats updates during AFC
+
+        # Patch print_stats to skip updates during AFC operations
+        print_stats = printer.lookup_object('print_stats', None)
+        if print_stats:
+            original_update = print_stats._update_filament_usage
+
+            def patched_update(eventtime):
+                if afc_in_progress[0]:
+                    return  # Skip update during AFC operations
+                original_update(eventtime)
+
+            print_stats._update_filament_usage = patched_update
+            logging.info("Patched print_stats to skip updates during AFC operations")
 
         def patched_save_pos():
             gcode_move = printer.lookup_object('gcode_move')
@@ -93,6 +107,7 @@ class ToolchangerFlowFix:
             else:
                 logging.info("AFC save_pos: E=%.3f (no print_stats)" % saved_state[0])
 
+            afc_in_progress[0] = True  # Block print_stats updates
             original_save_pos()
 
         def patched_restore_pos(move_z_first=True):
@@ -102,6 +117,7 @@ class ToolchangerFlowFix:
                 logging.info("AFC restore_pos: original_restore_pos completed")
             except Exception as e:
                 logging.error("AFC restore_pos: original_restore_pos FAILED: %s" % str(e))
+                afc_in_progress[0] = False  # Re-enable on error
                 raise
 
             try:
@@ -131,10 +147,13 @@ class ToolchangerFlowFix:
                         logging.warning("AFC restore_pos called but no saved state!")
                     else:
                         logging.info("AFC restore_pos: no print_stats")
+
+                afc_in_progress[0] = False  # Re-enable print_stats updates
             except Exception as e:
                 logging.error("AFC restore_pos: patch logic FAILED: %s" % str(e))
                 import traceback
                 logging.error(traceback.format_exc())
+                afc_in_progress[0] = False  # Re-enable on error
 
         afc.save_pos = patched_save_pos
         afc.restore_pos = patched_restore_pos
