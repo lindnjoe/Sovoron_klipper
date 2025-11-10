@@ -96,34 +96,45 @@ class ToolchangerFlowFix:
             original_save_pos()
 
         def patched_restore_pos(move_z_first=True):
-            original_restore_pos(move_z_first)
+            try:
+                logging.info("AFC restore_pos: CALLED with move_z_first=%s" % move_z_first)
+                original_restore_pos(move_z_first)
+                logging.info("AFC restore_pos: original_restore_pos completed")
+            except Exception as e:
+                logging.error("AFC restore_pos: original_restore_pos FAILED: %s" % str(e))
+                raise
 
-            print_stats = printer.lookup_object('print_stats', None)
-            gcode_move = printer.lookup_object('gcode_move')
-            if print_stats and saved_state[0] is not None and saved_state[1] is not None:
-                reactor = printer.get_reactor()
-                eventtime = reactor.monotonic()
-                gc_status = gcode_move.get_status(eventtime)
-                current_e = gc_status['position'].e
-                e_delta = current_e - saved_state[0]
+            try:
+                print_stats = printer.lookup_object('print_stats', None)
+                gcode_move = printer.lookup_object('gcode_move')
+                if print_stats and saved_state[0] is not None and saved_state[1] is not None:
+                    reactor = printer.get_reactor()
+                    eventtime = reactor.monotonic()
+                    gc_status = gcode_move.get_status(eventtime)
+                    current_e = gc_status['position'].e
+                    e_delta = current_e - saved_state[0]
 
-                # Restore last_epos to skip toolchange moves
-                old_last_epos = print_stats.last_epos
-                print_stats.last_epos = saved_state[1] + e_delta
+                    # Restore last_epos to skip toolchange moves
+                    old_last_epos = print_stats.last_epos
+                    print_stats.last_epos = saved_state[1] + e_delta
 
-                logging.info("AFC restore_pos: E changed %.3f->%.3f (delta=%.3f), "
-                           "last_epos %.3f->%.3f, filament_used=%.3f"
-                           % (saved_state[0], current_e, e_delta,
-                              old_last_epos, print_stats.last_epos,
-                              print_stats.filament_used))
+                    logging.info("AFC restore_pos: E changed %.3f->%.3f (delta=%.3f), "
+                               "last_epos %.3f->%.3f, filament_used=%.3f"
+                               % (saved_state[0], current_e, e_delta,
+                                  old_last_epos, print_stats.last_epos,
+                                  print_stats.filament_used))
 
-                saved_state[0] = None
-                saved_state[1] = None
-            else:
-                if saved_state[0] is None:
-                    logging.warning("AFC restore_pos called but no saved state!")
+                    saved_state[0] = None
+                    saved_state[1] = None
                 else:
-                    logging.info("AFC restore_pos: no print_stats")
+                    if saved_state[0] is None:
+                        logging.warning("AFC restore_pos called but no saved state!")
+                    else:
+                        logging.info("AFC restore_pos: no print_stats")
+            except Exception as e:
+                logging.error("AFC restore_pos: patch logic FAILED: %s" % str(e))
+                import traceback
+                logging.error(traceback.format_exc())
 
         afc.save_pos = patched_save_pos
         afc.restore_pos = patched_restore_pos
