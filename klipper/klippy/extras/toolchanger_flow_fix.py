@@ -6,7 +6,6 @@
 #
 # To use, add this to your printer.cfg:
 #   [toolchanger_flow_fix]
-#   debug: True  # Optional, for detailed logging
 #
 # Copyright (C) 2025  Joe Lindner <lindnjoe@gmail.com>
 #
@@ -18,7 +17,6 @@ class ToolchangerFlowFix:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.gcode = None
-        self.debug_enabled = config.getboolean('debug', False)
         self.printer.register_event_handler("klippy:connect",
                                            self._handle_connect)
         self.printer.register_event_handler("klippy:ready",
@@ -26,7 +24,6 @@ class ToolchangerFlowFix:
 
     def _handle_connect(self):
         self.gcode = self.printer.lookup_object('gcode')
-        logging.info("toolchanger_flow_fix: Module loaded and connecting")
 
         # Patch motion_report to track active extruder velocity
         motion_report = self.printer.lookup_object('motion_report', None)
@@ -35,33 +32,20 @@ class ToolchangerFlowFix:
         else:
             logging.warning("toolchanger_flow_fix: motion_report not found!")
 
-        # Patch print_stats to add debugging
-        print_stats = self.printer.lookup_object('print_stats', None)
-        if print_stats is not None:
-            self._patch_print_stats(print_stats)
-            logging.info("toolchanger_flow_fix: print_stats patches applied")
-
         # Try to patch AFC if it exists
         afc = self.printer.lookup_object('AFC', None)
         if afc is not None:
             self._patch_afc(afc)
-            logging.info("toolchanger_flow_fix: AFC patches applied")
-        else:
-            logging.info("toolchanger_flow_fix: AFC not found, skipping AFC patches")
 
-        logging.info("toolchanger_flow_fix: All patches applied successfully")
+        logging.info("toolchanger_flow_fix: Patches applied successfully")
 
     def _patch_motion_report(self, motion_report):
         """Patch PrinterMotionReport to track active extruder velocity"""
         original_get_status = motion_report.get_status
-        debug_enabled = self.debug_enabled
-        call_count = [0]  # Mutable to allow modification in closure
 
         def patched_get_status(eventtime):
             # Check timing BEFORE calling original (which updates next_status_time)
             should_update = eventtime >= motion_report.next_status_time
-
-            # Call original to get base status
             status = original_get_status(eventtime)
 
             # Only update extruder velocity when status was actually refreshed
@@ -79,118 +63,51 @@ class ToolchangerFlowFix:
                         pos, velocity = ehandler.get_trapq_position(print_time)
 
                         if pos is not None and velocity is not None:
-                            # Update the velocity from the active extruder
-                            old_velocity = status.get('live_extruder_velocity', 0)
                             status = dict(status)
                             status['live_extruder_velocity'] = velocity
                             motion_report.last_status = status
 
-                            # Debug logging - only log every 50th call to avoid spam
-                            call_count[0] += 1
-                            if debug_enabled and call_count[0] % 50 == 0:
-                                logging.info("toolchanger_flow_fix: Active extruder=%s, "
-                                           "velocity=%.3f mm/s (was %.3f)"
-                                           % (extruder_name, velocity, old_velocity))
-                        else:
-                            call_count[0] += 1
-                            if debug_enabled and call_count[0] % 100 == 0:
-                                logging.warning("toolchanger_flow_fix: trapq position is None "
-                                              "for extruder %s at print_time %.3f"
-                                              % (extruder_name, print_time))
-                    else:
-                        call_count[0] += 1
-                        if debug_enabled and call_count[0] % 100 == 0:
-                            logging.warning("toolchanger_flow_fix: No trapq handler for "
-                                          "extruder %s, available: %s"
-                                          % (extruder_name, list(motion_report.dtrapqs.keys())))
-                else:
-                    call_count[0] += 1
-                    if debug_enabled and call_count[0] % 100 == 0:
-                        logging.warning("toolchanger_flow_fix: No active extruder!")
-
             return status
 
         motion_report.get_status = patched_get_status
-        logging.info("toolchanger_flow_fix: motion_report patch applied")
-
-    def _patch_print_stats(self, print_stats):
-        """Patch print_stats to add filament tracking debugging"""
-        original_update_filament = print_stats._update_filament_usage
-        original_handle_activate = print_stats._handle_activate_extruder
-        debug_enabled = self.debug_enabled
-
-        def patched_update_filament_usage(eventtime):
-            old_filament_used = print_stats.filament_used
-            old_last_epos = print_stats.last_epos
-
-            original_update_filament(eventtime)
-
-            delta = print_stats.filament_used - old_filament_used
-            if debug_enabled and abs(delta) > 0.001:
-                logging.info("toolchanger_flow_fix: Filament tracking update - "
-                           "used: %.3f (+%.3f), last_epos: %.3f -> %.3f"
-                           % (print_stats.filament_used, delta, old_last_epos, print_stats.last_epos))
-
-        def patched_handle_activate_extruder():
-            old_last_epos = print_stats.last_epos
-            original_handle_activate()
-            logging.info("toolchanger_flow_fix: print_stats.handle_activate_extruder() called - "
-                       "last_epos reset from %.3f to %.3f"
-                       % (old_last_epos, print_stats.last_epos))
-
-        print_stats._update_filament_usage = patched_update_filament_usage
-        print_stats._handle_activate_extruder = patched_handle_activate_extruder
 
     def _patch_afc(self, afc):
         """Patch AFC save_pos/restore_pos to skip toolchange moves in filament tracking"""
         original_save_pos = afc.save_pos
         original_restore_pos = afc.restore_pos
-        debug_enabled = self.debug_enabled
         printer = self.printer
-
-        # Store saved E position for calculating delta
-        saved_e_pos = [None]  # Use list to make it mutable in closures
+        saved_state = [None, None]  # [saved_e_pos, saved_last_epos]
 
         def patched_save_pos():
-            # Save current E position before AFC operations
             gcode_move = printer.lookup_object('gcode_move')
+            print_stats = printer.lookup_object('print_stats', None)
             reactor = printer.get_reactor()
             eventtime = reactor.monotonic()
             gc_status = gcode_move.get_status(eventtime)
-            saved_e_pos[0] = gc_status['position'].e
 
-            if debug_enabled:
-                logging.info("toolchanger_flow_fix: AFC save_pos() - saved E position: %.3f"
-                           % saved_e_pos[0])
+            saved_state[0] = gc_status['position'].e
+            if print_stats:
+                saved_state[1] = print_stats.last_epos
 
             original_save_pos()
 
         def patched_restore_pos(move_z_first=True):
             original_restore_pos(move_z_first)
 
-            # Calculate how much E changed during AFC operations and compensate
             print_stats = printer.lookup_object('print_stats', None)
             gcode_move = printer.lookup_object('gcode_move')
-            if print_stats and saved_e_pos[0] is not None:
+            if print_stats and saved_state[0] is not None and saved_state[1] is not None:
                 reactor = printer.get_reactor()
                 eventtime = reactor.monotonic()
                 gc_status = gcode_move.get_status(eventtime)
                 current_e = gc_status['position'].e
-                e_delta = current_e - saved_e_pos[0]
+                e_delta = current_e - saved_state[0]
 
-                # Adjust last_epos by the AFC delta to skip toolchange moves
-                old_last_epos = print_stats.last_epos
-                print_stats.last_epos += e_delta
+                # Restore last_epos to skip toolchange moves
+                print_stats.last_epos = saved_state[1] + e_delta
 
-                if debug_enabled:
-                    logging.info("toolchanger_flow_fix: AFC restore_pos() - E changed by %.3f "
-                               "(%.3f -> %.3f), adjusted last_epos from %.3f to %.3f"
-                               % (e_delta, saved_e_pos[0], current_e, old_last_epos, print_stats.last_epos))
-                elif e_delta != 0:
-                    logging.info("toolchanger_flow_fix: AFC restore_pos() - compensated for "
-                               "%.3fmm E delta from lane change" % e_delta)
-
-                saved_e_pos[0] = None  # Reset for next use
+                saved_state[0] = None
+                saved_state[1] = None
 
         afc.save_pos = patched_save_pos
         afc.restore_pos = patched_restore_pos
@@ -242,8 +159,6 @@ class ToolchangerFlowFix:
             msg += "  Current lane: %s\n" % (afc.current if hasattr(afc, 'current') else "Unknown")
             msg += "  In toolchange: %s\n" % (afc.in_toolchange if hasattr(afc, 'in_toolchange') else "Unknown")
             msg += "  Position saved: %s\n" % (afc.position_saved if hasattr(afc, 'position_saved') else "Unknown")
-            if hasattr(afc, 'extrude_factor'):
-                msg += "  AFC saved extrude_factor: %.3f\n" % afc.extrude_factor
 
         gcmd.respond_info(msg)
 
