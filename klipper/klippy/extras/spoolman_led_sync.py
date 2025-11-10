@@ -262,13 +262,23 @@ class SpoolmanLEDSync:
     def _is_active_extruder(self, lane):
         """Check if this lane's extruder is the currently active extruder"""
         try:
-            # Get the toolhead's current extruder
-            toolhead = self.printer.lookup_object('toolhead')
-            active_extruder = toolhead.get_extruder()
-
             # Check if lane has an extruder object
             if not hasattr(lane, 'extruder_obj') or lane.extruder_obj is None:
                 return False
+
+            # Check if printer is actually in use (printing or actively using the tool)
+            # If idle, we don't consider any extruder "active" even if it's the default
+            print_stats = self.printer.lookup_object('print_stats', None)
+            if print_stats:
+                state = print_stats.get_status(0).get('state', 'standby')
+                # Only consider extruder active if we're actually printing or paused
+                # During standby/complete/error, no tool is truly "active"
+                if state not in ['printing', 'paused']:
+                    return False
+
+            # Get the toolhead's current extruder
+            toolhead = self.printer.lookup_object('toolhead')
+            active_extruder = toolhead.get_extruder()
 
             # Compare the lane's extruder with the active extruder
             # They might be the same object or have the same name
