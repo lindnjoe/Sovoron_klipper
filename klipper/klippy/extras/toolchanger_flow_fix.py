@@ -248,8 +248,6 @@ class ToolchangerFlowFix:
             msg += "  Current lane: %s\n" % (afc.current if hasattr(afc, 'current') else "Unknown")
             msg += "  In toolchange: %s\n" % (afc.in_toolchange if hasattr(afc, 'in_toolchange') else "Unknown")
             msg += "  Position saved: %s\n" % (afc.position_saved if hasattr(afc, 'position_saved') else "Unknown")
-            if hasattr(afc, 'extrude_factor'):
-                msg += "  AFC saved extrude_factor: %.3f\n" % afc.extrude_factor
 
         gcmd.respond_info(msg)
 
