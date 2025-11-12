@@ -1,4 +1,4 @@
-# Support for toolchnagers
+# Support for toolchangers
 #
 # Copyright (C) 2025 @Contomo and @cekim
 #
