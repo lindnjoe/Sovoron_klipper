@@ -1203,29 +1203,35 @@ class afc:
             cur_lane.do_enable(True)
 
             # Move filament to the hub if it's not already loaded there.
-            if not cur_lane.loaded_to_hub or cur_lane.is_direct_hub():
-                cur_lane.move_advanced(cur_lane.dist_hub, SpeedMode.HUB, assist_active = AssistActive.DYNAMIC)
-                self.afcDeltaTime.log_with_time("Loaded to hub")
+            # Skip movement for lanes with load_to_hub=False (e.g., OpenAMS lanes without steppers)
+            if cur_lane.load_to_hub:
+                if not cur_lane.loaded_to_hub or cur_lane.is_direct_hub():
+                    cur_lane.move_advanced(cur_lane.dist_hub, SpeedMode.HUB, assist_active = AssistActive.DYNAMIC)
+                    self.afcDeltaTime.log_with_time("Loaded to hub")
 
-            cur_lane.loaded_to_hub = True
-            hub_attempts = 0
+                cur_lane.loaded_to_hub = True
+                hub_attempts = 0
 
-            # Ensure filament moves past the hub.
-            while not cur_hub.state and not cur_lane.is_direct_hub():
-                if hub_attempts == 0:
-                    cur_lane.move_advanced(cur_hub.move_dis, SpeedMode.SHORT)
-                else:
-                    cur_lane.move_advanced(cur_lane.short_move_dis, SpeedMode.SHORT)
-                hub_attempts += 1
-                if hub_attempts > 20:
-                    message = 'filament did not trigger hub sensor, CHECK FILAMENT PATH\n||=====||==>--||-----||\nTRG   LOAD   HUB   TOOL.'
-                    if self.function.in_print():
-                        message += '\nOnce issue is resolved please manually load {} with {} macro and click resume to continue printing.'.format(cur_lane.name, cur_lane.map)
-                        message += '\nIf you have to retract filament back, use LANE_MOVE macro for {}.'.format(cur_lane.name)
-                    self.error.handle_lane_failure(cur_lane, message)
-                    return False
+                # Ensure filament moves past the hub.
+                while not cur_hub.state and not cur_lane.is_direct_hub():
+                    if hub_attempts == 0:
+                        cur_lane.move_advanced(cur_hub.move_dis, SpeedMode.SHORT)
+                    else:
+                        cur_lane.move_advanced(cur_lane.short_move_dis, SpeedMode.SHORT)
+                    hub_attempts += 1
+                    if hub_attempts > 20:
+                        message = 'filament did not trigger hub sensor, CHECK FILAMENT PATH\n||=====||==>--||-----||\nTRG   LOAD   HUB   TOOL.'
+                        if self.function.in_print():
+                            message += '\nOnce issue is resolved please manually load {} with {} macro and click resume to continue printing.'.format(cur_lane.name, cur_lane.map)
+                            message += '\nIf you have to retract filament back, use LANE_MOVE macro for {}.'.format(cur_lane.name)
+                        self.error.handle_lane_failure(cur_lane, message)
+                        return False
 
-            self.afcDeltaTime.log_with_time("Filament loaded to hub")
+                self.afcDeltaTime.log_with_time("Filament loaded to hub")
+            else:
+                # For lanes with load_to_hub=False, assume filament position is managed externally (e.g., by OpenAMS)
+                cur_lane.loaded_to_hub = True
+                self.logger.info("{} has load_to_hub=False, skipping stepper-based hub loading".format(cur_lane.name))
 
             # Move filament towards the toolhead.
             if not cur_lane.is_direct_hub():
@@ -1577,42 +1583,50 @@ class afc:
             self.save_vars()
             # Synchronize and move filament out of the hub.
             cur_lane.unsync_to_extruder()
-            if not cur_lane.is_direct_hub():
-                cur_lane.move_advanced(cur_hub.afc_unload_bowden_length * -1, SpeedMode.LONG, assist_active = AssistActive.YES)
+
+            # Skip stepper-based movements for lanes with load_to_hub=False (e.g., OpenAMS)
+            if cur_lane.load_to_hub:
+                if not cur_lane.is_direct_hub():
+                    cur_lane.move_advanced(cur_hub.afc_unload_bowden_length * -1, SpeedMode.LONG, assist_active = AssistActive.YES)
+                else:
+                    cur_lane.move_advanced(cur_lane.dist_hub * -1, SpeedMode.HUB, assist_active = AssistActive.DYNAMIC)
+
+                self.afcDeltaTime.log_with_time("Long retract done")
+
+                # Clear toolhead's loaded state for easier error handling later.
+                cur_lane.set_unloaded()
+                self.save_vars()
+
+                # Ensure filament is fully cleared from the hub.
+                num_tries = 0
+                while cur_hub.state:
+                    cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT, assist_active = AssistActive.YES)
+                    num_tries += 1
+                    if num_tries > (cur_hub.afc_unload_bowden_length / cur_lane.short_move_dis):
+                        # Handle failure if the filament doesn't clear the hub.
+                        message = 'Hub is not clearing, filament may be stuck in hub'
+                        message += '\nPlease check to make sure filament has not broken off and caused the sensor to stay stuck'
+                        message += '\nIf you have to retract filament back, use LANE_MOVE macro for {}.'.format(cur_lane.name)
+                        if self.function.in_print():
+                            # Check to make sure next_lane_loaded is not None before adding instructions on how to manually load next lane
+                            if self.next_lane_load is not None:
+                                message += "\nOnce hub is clear, manually load {} with {} macro".format(self.next_lane_load, self.lanes[self.next_lane_load].map)
+                                if self.function.in_print():
+                                    message += "\nOnce lane is loaded click resume to continue printing"
+
+                        self.error.handle_lane_failure(cur_lane, message)
+                        return False
+
+                self.afcDeltaTime.log_with_time("Hub cleared")
+
+                #Move to make sure hub path is clear based on the move_clear_dis var
+                if not cur_lane.is_direct_hub():
+                    cur_lane.move_advanced(cur_hub.hub_clear_move_dis * -1, SpeedMode.SHORT, assist_active = AssistActive.YES)
             else:
-                cur_lane.move_advanced(cur_lane.dist_hub * -1, SpeedMode.HUB, assist_active = AssistActive.DYNAMIC)
-
-            self.afcDeltaTime.log_with_time("Long retract done")
-
-            # Clear toolhead's loaded state for easier error handling later.
-            cur_lane.set_unloaded()
-            self.save_vars()
-
-            # Ensure filament is fully cleared from the hub.
-            num_tries = 0
-            while cur_hub.state:
-                cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT, assist_active = AssistActive.YES)
-                num_tries += 1
-                if num_tries > (cur_hub.afc_unload_bowden_length / cur_lane.short_move_dis):
-                    # Handle failure if the filament doesn't clear the hub.
-                    message = 'Hub is not clearing, filament may be stuck in hub'
-                    message += '\nPlease check to make sure filament has not broken off and caused the sensor to stay stuck'
-                    message += '\nIf you have to retract filament back, use LANE_MOVE macro for {}.'.format(cur_lane.name)
-                    if self.function.in_print():
-                        # Check to make sure next_lane_loaded is not None before adding instructions on how to manually load next lane
-                        if self.next_lane_load is not None:
-                            message += "\nOnce hub is clear, manually load {} with {} macro".format(self.next_lane_load, self.lanes[self.next_lane_load].map)
-                            if self.function.in_print():
-                                message += "\nOnce lane is loaded click resume to continue printing"
-
-                    self.error.handle_lane_failure(cur_lane, message)
-                    return False
-
-            self.afcDeltaTime.log_with_time("Hub cleared")
-
-            #Move to make sure hub path is clear based on the move_clear_dis var
-            if not cur_lane.is_direct_hub():
-                cur_lane.move_advanced(cur_hub.hub_clear_move_dis * -1, SpeedMode.SHORT, assist_active = AssistActive.YES)
+                # For lanes with load_to_hub=False, assume filament position is managed externally (e.g., by OpenAMS)
+                cur_lane.set_unloaded()
+                self.save_vars()
+                self.logger.info("{} has load_to_hub=False, skipping stepper-based hub unloading".format(cur_lane.name))
 
                 # Cut filament at the hub, if configured.
                 if cur_hub.cut:
