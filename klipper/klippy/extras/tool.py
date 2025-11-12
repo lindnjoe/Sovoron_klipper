@@ -51,6 +51,7 @@ class Tool:
         self.t_command_restore_axis = self._config_get(
             config, 't_command_restore_axis', 'XYZ')
         self.tool_number = config.getint('tool_number', -1, minval=0)
+        self.resonance_chip = self._config_get(config, 'resonance_chip', None)
 
         gcode = self.printer.lookup_object('gcode')
         gcode.register_mux_command("ASSIGN_TOOL", "TOOL", self.name,
@@ -83,6 +84,7 @@ class Tool:
                 'extruder': self.extruder_name,
                 'extruder_stepper': self.extruder_stepper_name,
                 'fan': self.fan_name,
+                'resonance_chip': self.resonance_chip if self.resonance_chip else '',
                 'active': self.main_toolchanger.get_selected_tool() == self,
                 'gcode_x_offset': self.gcode_x_offset if self.gcode_x_offset else 0.0,
                 'gcode_y_offset': self.gcode_y_offset if self.gcode_y_offset else 0.0,
@@ -134,6 +136,10 @@ class Tool:
                     "SYNC_EXTRUDER_MOTION EXTRUDER='%s' MOTION_QUEUE=" % (hotend_extruder, ))
                 gcode.run_script_from_command(
                     "SYNC_EXTRUDER_MOTION EXTRUDER='%s' MOTION_QUEUE='%s'" % (self.extruder_stepper_name, hotend_extruder, ))
+        if self.resonance_chip:
+            resonance_tester = self.printer.lookup_object('resonance_tester', None)
+            if resonance_tester:
+                resonance_tester.accel_chip_names = [["xy", self.resonance_chip]]
         if self.fan:
             self.toolchanger.fan_switcher.activate_fan(self.fan)
     def deactivate(self):
