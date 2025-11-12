@@ -1,0 +1,450 @@
+# AFC Toolchanger Bridge
+#
+# Copyright (C) 2024 - AFC + Toolchanger Integration
+#
+# This file may be distributed under the terms of the GNU GPLv3 license.
+#
+# This module bridges AFC (Armored Filament Changer) with klipper-toolchanger-easy
+# to provide seamless integration between filament management and physical tool changes.
+#
+# Key Features:
+# - Auto-discovery of lane → extruder → tool mappings
+# - Smart tool change detection (only when extruder changes)
+# - Optional dock/pickup for same-tool lane swaps (for OpenAMS safety)
+# - Tool offset management via toolchanger
+# - Physical tool detection verification
+# - Simplified lane change commands
+
+import logging
+
+class AFCToolchangerBridge:
+    def __init__(self, config):
+        self.printer = config.get_printer()
+        self.gcode = self.printer.lookup_object('gcode')
+        self.reactor = self.printer.get_reactor()
+
+        self.name = config.get_name()
+
+        # Core objects (loaded later)
+        self.toolchanger = None
+        self.afc = None
+
+        # Configuration
+        self.enabled = config.getboolean('enable', True)
+        self.auto_tool_change = config.getboolean('auto_tool_change', True)
+        self.verify_tool_mounted = config.getboolean('verify_tool_mounted', True)
+        self.verify_timeout = config.getfloat('verify_timeout', 1.0)
+
+        # Dock behavior for same-tool lane swaps (OpenAMS use case)
+        self.dock_when_swap = config.getboolean('dock_when_swap', False)
+
+        # Purge behavior
+        self.auto_purge = config.getboolean('auto_purge', False)
+        self.purge_command = config.get('purge_command', 'LOAD_NOZZLE')
+        self.purge_before_pickup = config.getboolean('purge_before_pickup', False)
+
+        # Speed overrides (optional - uses toolchanger defaults if not set)
+        self.tool_change_speed = config.getfloat('tool_change_speed', None)
+        self.path_speed = config.getfloat('path_speed', None)
+
+        # Mapping data structures
+        self.lane_map = {}              # lane_name → {extruder, tool, tool_number, tool_obj}
+        self.extruder_tool_map = {}     # extruder_name → tool_obj
+        self.current_lane = None        # Currently loaded lane name
+
+        # State tracking
+        self.in_lane_change = False
+        self.pending_pickup_tool = None
+
+        # Register event handlers
+        self.printer.register_event_handler("klippy:ready", self._handle_ready)
+
+        # Register GCode commands
+        self.gcode.register_command("AFC_CHANGE_LANE",
+                                    self.cmd_AFC_CHANGE_LANE,
+                                    desc=self.cmd_AFC_CHANGE_LANE_help)
+        self.gcode.register_command("AFC_BRIDGE_STATUS",
+                                    self.cmd_AFC_BRIDGE_STATUS,
+                                    desc=self.cmd_AFC_BRIDGE_STATUS_help)
+        self.gcode.register_command("AFC_BRIDGE_GET_TOOL",
+                                    self.cmd_AFC_BRIDGE_GET_TOOL,
+                                    desc=self.cmd_AFC_BRIDGE_GET_TOOL_help)
+        self.gcode.register_command("AFC_BRIDGE_PREPARE_LANE",
+                                    self.cmd_AFC_BRIDGE_PREPARE_LANE,
+                                    desc=self.cmd_AFC_BRIDGE_PREPARE_LANE_help)
+        self.gcode.register_command("AFC_BRIDGE_LANE_LOADED",
+                                    self.cmd_AFC_BRIDGE_LANE_LOADED,
+                                    desc=self.cmd_AFC_BRIDGE_LANE_LOADED_help)
+
+        logging.info("AFC_toolchanger_bridge initialized (enabled=%s)" % self.enabled)
+
+    def _handle_ready(self):
+        """Build mappings after all components are loaded"""
+        if not self.enabled:
+            logging.info("AFC_toolchanger_bridge: Disabled, skipping initialization")
+            return
+
+        # Load AFC and Toolchanger objects
+        try:
+            self.afc = self.printer.lookup_object('AFC')
+        except Exception as e:
+            logging.warning("AFC_toolchanger_bridge: AFC not found, bridge disabled (%s)" % str(e))
+            self.enabled = False
+            return
+
+        try:
+            self.toolchanger = self.printer.lookup_object('toolchanger')
+        except Exception as e:
+            logging.warning("AFC_toolchanger_bridge: Toolchanger not found, bridge disabled (%s)" % str(e))
+            self.enabled = False
+            return
+
+        # Build the mapping
+        self._build_mappings()
+
+        logging.info("AFC_toolchanger_bridge: Ready with %d lanes mapped" % len(self.lane_map))
+
+    def _build_mappings(self):
+        """Auto-discover lane → extruder → tool relationships"""
+        # Find all tools and map them by extruder
+        for tool_obj in self.toolchanger.tools.values():
+            if hasattr(tool_obj, 'extruder_name') and tool_obj.extruder_name:
+                self.extruder_tool_map[tool_obj.extruder_name] = tool_obj
+                logging.info("AFC_toolchanger_bridge: Mapped %s → Tool %s (T%d)" %
+                           (tool_obj.extruder_name, tool_obj.name, tool_obj.tool_number))
+
+        # Map each AFC lane to its tool
+        for lane_name, lane_obj in self.afc.lanes.items():
+            extruder_name = lane_obj.extruder_name
+
+            if not extruder_name:
+                logging.warning("AFC_toolchanger_bridge: Lane %s has no extruder defined" % lane_name)
+                continue
+
+            # Find the tool for this extruder
+            tool_obj = self.extruder_tool_map.get(extruder_name)
+
+            if tool_obj:
+                self.lane_map[lane_name] = {
+                    'extruder': extruder_name,
+                    'tool': tool_obj.name,
+                    'tool_number': tool_obj.tool_number,
+                    'tool_obj': tool_obj,
+                    'lane_obj': lane_obj
+                }
+                logging.info("AFC_toolchanger_bridge: Lane %s → %s (T%d)" %
+                           (lane_name, tool_obj.name, tool_obj.tool_number))
+            else:
+                logging.warning("AFC_toolchanger_bridge: Lane %s uses %s, but no tool found for that extruder" %
+                              (lane_name, extruder_name))
+
+    def get_lane_info(self, lane_name):
+        """Get mapping info for a lane"""
+        return self.lane_map.get(lane_name)
+
+    def get_current_tool(self):
+        """Get the currently active tool from toolchanger"""
+        if not self.toolchanger:
+            return None
+        return self.toolchanger.active_tool
+
+    def needs_tool_change(self, from_lane, to_lane):
+        """Check if switching lanes requires a physical tool change"""
+        from_info = self.get_lane_info(from_lane) if from_lane else None
+        to_info = self.get_lane_info(to_lane)
+
+        if not to_info:
+            return False
+
+        # If no current lane, definitely need to select tool
+        if not from_info:
+            return True
+
+        # Check if extruders differ
+        return from_info['extruder'] != to_info['extruder']
+
+    def should_dock_for_swap(self, from_lane, to_lane):
+        """Check if we should dock the tool for a same-tool lane swap"""
+        if not self.dock_when_swap:
+            return False
+
+        # Only dock if staying on the same extruder/tool
+        return not self.needs_tool_change(from_lane, to_lane)
+
+    def select_tool(self, tool_number, restore_axis='ZYX'):
+        """Select a tool via toolchanger"""
+        if not self.auto_tool_change:
+            logging.info("AFC_toolchanger_bridge: auto_tool_change disabled, skipping SELECT_TOOL T=%d" % tool_number)
+            return
+
+        cmd = "SELECT_TOOL T=%d" % tool_number
+        if restore_axis:
+            cmd += " RESTORE_AXIS=%s" % restore_axis
+
+        logging.info("AFC_toolchanger_bridge: Executing %s" % cmd)
+        self.gcode.run_script_from_command(cmd)
+
+    def unselect_tool(self):
+        """Unselect (dock) the current tool"""
+        if not self.auto_tool_change:
+            logging.info("AFC_toolchanger_bridge: auto_tool_change disabled, skipping UNSELECT_TOOL")
+            return
+
+        logging.info("AFC_toolchanger_bridge: Executing UNSELECT_TOOL")
+        self.gcode.run_script_from_command("UNSELECT_TOOL")
+
+    def verify_tool(self, expected_tool_number, timeout=None):
+        """Verify the expected tool is mounted via detection pins"""
+        if not self.verify_tool_mounted:
+            return True
+
+        if timeout is None:
+            timeout = self.verify_timeout
+
+        if not self.toolchanger.has_detection:
+            logging.warning("AFC_toolchanger_bridge: verify_tool_mounted enabled but toolchanger has no detection pins")
+            return True
+
+        # Wait a bit for detection to settle
+        self.reactor.pause(self.reactor.monotonic() + timeout)
+
+        detected = self.toolchanger.detected_tool
+        if detected and detected.tool_number == expected_tool_number:
+            logging.info("AFC_toolchanger_bridge: Verified T%d is mounted" % expected_tool_number)
+            return True
+
+        detected_num = detected.tool_number if detected else None
+        logging.error("AFC_toolchanger_bridge: Tool verification failed! Expected T%d, detected T%s" %
+                     (expected_tool_number, detected_num))
+        return False
+
+    def prepare_lane_change(self, to_lane, from_lane=None):
+        """Prepare for a lane change - handles tool docking if needed"""
+        to_info = self.get_lane_info(to_lane)
+        if not to_info:
+            logging.warning("AFC_toolchanger_bridge: Unknown lane %s" % to_lane)
+            return
+
+        from_info = self.get_lane_info(from_lane) if from_lane else None
+
+        # Case 1: Same tool lane swap with dock_when_swap enabled
+        if self.should_dock_for_swap(from_lane, to_lane):
+            current_tool = self.get_current_tool()
+            if current_tool:
+                logging.info("AFC_toolchanger_bridge: Same-tool swap (%s→%s), docking %s" %
+                           (from_lane, to_lane, current_tool.name))
+                self.unselect_tool()
+                self.pending_pickup_tool = to_info['tool_number']
+
+        # Case 2: Different tool - need tool change
+        elif self.needs_tool_change(from_lane, to_lane):
+            logging.info("AFC_toolchanger_bridge: Tool change needed for %s→%s" %
+                       (from_lane or 'None', to_lane))
+            self.select_tool(to_info['tool_number'])
+
+            # Verify tool is mounted
+            if self.verify_tool_mounted:
+                if not self.verify_tool(to_info['tool_number']):
+                    raise self.printer.command_error(
+                        "AFC_toolchanger_bridge: Tool verification failed for T%d" % to_info['tool_number'])
+
+    def finalize_lane_change(self, to_lane):
+        """Finalize after lane is loaded - pickup tool if needed, trigger purge"""
+        to_info = self.get_lane_info(to_lane)
+        if not to_info:
+            return
+
+        # Handle purge and pickup order based on configuration
+        has_pending_pickup = self.pending_pickup_tool is not None
+
+        # Case 1: Purge before pickup (tool still docked, common for OpenAMS)
+        if self.purge_before_pickup and has_pending_pickup:
+            # Purge first while tool is docked
+            if self.auto_purge and self.purge_command:
+                logging.info("AFC_toolchanger_bridge: Purging before pickup (tool docked)")
+                self.gcode.run_script_from_command(self.purge_command)
+
+            # Then pickup tool
+            logging.info("AFC_toolchanger_bridge: Picking up T%d after purge" % self.pending_pickup_tool)
+            self.select_tool(self.pending_pickup_tool)
+
+            # Verify pickup
+            if self.verify_tool_mounted:
+                if not self.verify_tool(self.pending_pickup_tool):
+                    raise self.printer.command_error(
+                        "AFC_toolchanger_bridge: Tool pickup verification failed for T%d" % self.pending_pickup_tool)
+
+            self.pending_pickup_tool = None
+
+        # Case 2: Pickup before purge (standard workflow)
+        else:
+            # Pickup tool first if we docked it earlier
+            if has_pending_pickup:
+                logging.info("AFC_toolchanger_bridge: Picking up T%d before purge" % self.pending_pickup_tool)
+                self.select_tool(self.pending_pickup_tool)
+
+                # Verify pickup
+                if self.verify_tool_mounted:
+                    if not self.verify_tool(self.pending_pickup_tool):
+                        raise self.printer.command_error(
+                            "AFC_toolchanger_bridge: Tool pickup verification failed for T%d" % self.pending_pickup_tool)
+
+                self.pending_pickup_tool = None
+
+            # Then purge if enabled
+            if self.auto_purge and self.purge_command:
+                logging.info("AFC_toolchanger_bridge: Purging after pickup (tool mounted)")
+                self.gcode.run_script_from_command(self.purge_command)
+
+        # Update current lane
+        self.current_lane = to_lane
+
+    # GCode Commands
+
+    cmd_AFC_CHANGE_LANE_help = "Change AFC lane with automatic tool handling"
+    def cmd_AFC_CHANGE_LANE(self, gcmd):
+        """
+        Main command for lane changes. Handles:
+        1. Tool docking (if same-tool swap and dock_when_swap=True)
+        2. AFC unload of old lane
+        3. Tool change (if different extruder)
+        4. AFC load of new lane
+        5. Tool pickup (if we docked earlier)
+        6. Purge (if auto_purge=True)
+        """
+        if not self.enabled:
+            raise gcmd.error("AFC_toolchanger_bridge is disabled")
+
+        from_lane = gcmd.get('FROM', self.current_lane)
+        to_lane = gcmd.get('TO', None)
+
+        if not to_lane:
+            raise gcmd.error("AFC_CHANGE_LANE: TO parameter required")
+
+        to_info = self.get_lane_info(to_lane)
+        if not to_info:
+            raise gcmd.error("AFC_CHANGE_LANE: Unknown lane %s" % to_lane)
+
+        try:
+            self.in_lane_change = True
+
+            gcmd.respond_info("AFC Bridge: Changing lane %s → %s" % (from_lane or 'None', to_lane))
+
+            # Step 1: Prepare (dock if needed)
+            self.prepare_lane_change(to_lane, from_lane)
+
+            # Step 2: Unload old lane (if exists)
+            if from_lane:
+                gcmd.respond_info("AFC Bridge: Unloading %s" % from_lane)
+                # Call AFC's unload via existing macros or direct AFC call
+                # For now, user's custom_unload_cmd handles this
+                # Future: Could call AFC.unload_lane() directly
+
+            # Step 3: Load new lane
+            gcmd.respond_info("AFC Bridge: Loading %s" % to_lane)
+            # Call AFC's load via existing macros or direct AFC call
+            # For now, user's custom_load_cmd handles this
+            # Future: Could call AFC.load_lane() directly
+
+            # Step 4: Finalize (pickup if needed, purge)
+            self.finalize_lane_change(to_lane)
+
+            gcmd.respond_info("AFC Bridge: Lane change complete - %s ready" % to_lane)
+
+        finally:
+            self.in_lane_change = False
+
+    cmd_AFC_BRIDGE_PREPARE_LANE_help = "Prepare for lane load (dock tool if needed)"
+    def cmd_AFC_BRIDGE_PREPARE_LANE(self, gcmd):
+        """
+        Called from custom_load_cmd macros to prepare for lane load.
+        Handles tool docking if needed.
+        """
+        if not self.enabled:
+            return
+
+        to_lane = gcmd.get('LANE', None)
+        if not to_lane:
+            raise gcmd.error("AFC_BRIDGE_PREPARE_LANE: LANE parameter required")
+
+        from_lane = gcmd.get('FROM', self.current_lane)
+
+        self.prepare_lane_change(to_lane, from_lane)
+
+    cmd_AFC_BRIDGE_LANE_LOADED_help = "Finalize after lane load (pickup tool if needed)"
+    def cmd_AFC_BRIDGE_LANE_LOADED(self, gcmd):
+        """
+        Called from custom_load_cmd macros after lane is loaded.
+        Handles tool pickup if we docked earlier.
+        """
+        if not self.enabled:
+            return
+
+        to_lane = gcmd.get('LANE', None)
+        if not to_lane:
+            raise gcmd.error("AFC_BRIDGE_LANE_LOADED: LANE parameter required")
+
+        self.finalize_lane_change(to_lane)
+
+    cmd_AFC_BRIDGE_GET_TOOL_help = "Get tool info for a lane"
+    def cmd_AFC_BRIDGE_GET_TOOL(self, gcmd):
+        """Query which tool is needed for a lane"""
+        lane = gcmd.get('LANE', None)
+        if not lane:
+            raise gcmd.error("AFC_BRIDGE_GET_TOOL: LANE parameter required")
+
+        info = self.get_lane_info(lane)
+        if info:
+            gcmd.respond_info("Lane %s: Tool=%s (T%d), Extruder=%s" %
+                            (lane, info['tool'], info['tool_number'], info['extruder']))
+        else:
+            gcmd.respond_info("Lane %s: Not found in mapping" % lane)
+
+    cmd_AFC_BRIDGE_STATUS_help = "Show AFC toolchanger bridge status"
+    def cmd_AFC_BRIDGE_STATUS(self, gcmd):
+        """Display bridge status and mappings"""
+        msg = "AFC Toolchanger Bridge Status:\n"
+        msg += "  Enabled: %s\n" % self.enabled
+        msg += "  Auto Tool Change: %s\n" % self.auto_tool_change
+        msg += "  Dock When Swap: %s\n" % self.dock_when_swap
+        msg += "  Auto Purge: %s\n" % self.auto_purge
+        msg += "  Verify Tool: %s (timeout: %.1fs)\n" % (self.verify_tool_mounted, self.verify_timeout)
+        msg += "  Current Lane: %s\n" % (self.current_lane or 'None')
+
+        if self.toolchanger:
+            current_tool = self.get_current_tool()
+            detected_tool = self.toolchanger.detected_tool
+            msg += "\nToolchanger:\n"
+            msg += "  Active Tool: %s\n" % (current_tool.name if current_tool else 'None')
+            msg += "  Detected Tool: %s\n" % (detected_tool.name if detected_tool else 'None')
+            msg += "  Has Detection: %s\n" % self.toolchanger.has_detection
+
+        msg += "\nLane Mappings (%d lanes):\n" % len(self.lane_map)
+        for lane_name in sorted(self.lane_map.keys()):
+            info = self.lane_map[lane_name]
+            msg += "  %s → %s (T%d) via %s\n" %
+                   (lane_name, info['tool'], info['tool_number'], info['extruder'])
+
+        gcmd.respond_info(msg)
+
+    def get_status(self, eventtime):
+        """Provide status for Moonraker/Mainsail"""
+        current_tool = self.get_current_tool()
+        detected_tool = self.toolchanger.detected_tool if self.toolchanger else None
+
+        return {
+            'enabled': self.enabled,
+            'auto_tool_change': self.auto_tool_change,
+            'dock_when_swap': self.dock_when_swap,
+            'auto_purge': self.auto_purge,
+            'current_lane': self.current_lane,
+            'current_tool': current_tool.name if current_tool else None,
+            'current_tool_number': current_tool.tool_number if current_tool else -1,
+            'detected_tool': detected_tool.name if detected_tool else None,
+            'detected_tool_number': detected_tool.tool_number if detected_tool else -1,
+            'lanes_mapped': len(self.lane_map),
+            'in_lane_change': self.in_lane_change,
+        }
+
+def load_config(config):
+    return AFCToolchangerBridge(config)
