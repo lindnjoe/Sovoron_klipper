@@ -159,6 +159,38 @@ class AFCToolchangerBridge:
         """Get mapping info for a lane"""
         return self.lane_map.get(lane_name)
 
+    def is_openams_lane(self, lane_name):
+        """Check if a lane is an OpenAMS lane (load_to_hub: False)"""
+        lane_info = self.get_lane_info(lane_name)
+        if not lane_info or 'lane_obj' not in lane_info:
+            return False
+
+        lane_obj = lane_info['lane_obj']
+        # OpenAMS lanes have load_to_hub: False, meaning no AFC stepper
+        return hasattr(lane_obj, 'load_to_hub') and not lane_obj.load_to_hub
+
+    def get_openams_params(self, lane_name):
+        """Get OpenAMS-specific parameters for a lane (GROUP and FPS)"""
+        lane_info = self.get_lane_info(lane_name)
+        if not lane_info or 'lane_obj' not in lane_info:
+            return None, None
+
+        lane_obj = lane_info['lane_obj']
+
+        # GROUP is the lane's map (e.g., T4, T6)
+        group = getattr(lane_obj, 'map', None)
+
+        # FPS is derived from the unit name (e.g., AMS_1 -> fps1, AMS_2 -> fps2)
+        fps = None
+        if hasattr(lane_obj, 'unit_obj') and lane_obj.unit_obj:
+            unit_name = getattr(lane_obj.unit_obj, 'name', '')
+            # Extract number from unit name (e.g., "AMS_1" -> "1")
+            if '_' in unit_name:
+                unit_num = unit_name.split('_')[-1]
+                fps = 'fps' + unit_num
+
+        return group, fps
+
     def get_current_tool(self):
         """Get the currently active tool from toolchanger"""
         if not self.toolchanger:
@@ -494,8 +526,18 @@ class AFCToolchangerBridge:
                 from_info = self.get_lane_info(from_lane)
                 if from_info:
                     gcmd.respond_info("AFC Bridge: Unloading %s" % from_lane)
-                    # Call AFC's built-in unload command
-                    self.gcode.run_script_from_command("TOOL_UNLOAD LANE=%s" % from_lane)
+
+                    # Check if this is an OpenAMS lane
+                    if self.is_openams_lane(from_lane):
+                        group, fps = self.get_openams_params(from_lane)
+                        if fps:
+                            gcmd.respond_info("AFC Bridge: Using OpenAMS unload for %s (FPS=%s)" % (from_lane, fps))
+                            self.gcode.run_script_from_command("OAMSM_UNLOAD_FILAMENT FPS=%s" % fps)
+                        else:
+                            gcmd.error("AFC Bridge: Cannot determine FPS for OpenAMS lane %s" % from_lane)
+                    else:
+                        # Use AFC's standard unload for lanes with steppers
+                        self.gcode.run_script_from_command("TOOL_UNLOAD LANE=%s" % from_lane)
 
             # Step 3: Heat extruder to target temperature
             target_temp = self.get_lane_temperature(to_lane)
@@ -509,9 +551,20 @@ class AFCToolchangerBridge:
                 # Heat and wait for temperature
                 self.gcode.run_script_from_command("M109 S%d" % target_temp)
 
-            # Step 4: Load new lane using AFC's built-in load command
+            # Step 4: Load new lane
             gcmd.respond_info("AFC Bridge: Loading %s" % to_lane)
-            self.gcode.run_script_from_command("TOOL_LOAD LANE=%s" % to_lane)
+
+            # Check if this is an OpenAMS lane
+            if self.is_openams_lane(to_lane):
+                group, fps = self.get_openams_params(to_lane)
+                if group:
+                    gcmd.respond_info("AFC Bridge: Using OpenAMS load for %s (GROUP=%s)" % (to_lane, group))
+                    self.gcode.run_script_from_command("OAMSM_LOAD_FILAMENT GROUP=%s" % group)
+                else:
+                    gcmd.error("AFC Bridge: Cannot determine GROUP for OpenAMS lane %s" % to_lane)
+            else:
+                # Use AFC's standard load for lanes with steppers
+                self.gcode.run_script_from_command("TOOL_LOAD LANE=%s" % to_lane)
 
             # Step 5: Finalize (pickup if needed, purge)
             self.finalize_lane_change(to_lane)
