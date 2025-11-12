@@ -1082,7 +1082,11 @@ class OAMSManager:
             return False, f"Unit {base_unit_name} has no oams_name defined"
 
         # Find the OAMS object
+        # OAMS objects are stored with full name like "oams oams1", not just "oams1"
         oam = self.oams.get(oams_name)
+        if oam is None:
+            # Try with "oams " prefix
+            oam = self.oams.get(f"oams {oams_name}")
         if oam is None:
             return False, f"OAMS {oams_name} not found"
 
