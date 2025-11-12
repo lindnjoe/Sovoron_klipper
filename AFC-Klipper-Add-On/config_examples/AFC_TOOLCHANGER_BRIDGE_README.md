@@ -272,7 +272,7 @@ Bridge:
 ✓ Check: dock_when_swap? YES
 → Action: Dock tool before load
 
-Sequence:
+Sequence (without cutting):
 1. Unload lane4
 2. UNSELECT_TOOL (dock T4)
 3. Load lane6 into extruder4
@@ -280,7 +280,17 @@ Sequence:
 5. SELECT_TOOL T=4 (pickup T4)
 6. Purge (if purge_before_pickup=False)
 
-Result: Safe lane swap with tool out of the way
+Sequence (with tool_cut=True):
+1. Unload lane4
+2. AFC_CUT (severs filament at toolhead)
+3. UNSELECT_TOOL (dock T4)
+4. Continue unloading from hub/buffer
+5. Load lane6 into hub/buffer and extruder4
+6. Purge (if purge_before_pickup=True)
+7. SELECT_TOOL T=4 (pickup T4)
+8. Purge (if purge_before_pickup=False)
+
+Result: Safe lane swap with tool out of the way (cleaner with cutting)
 ```
 
 ---
@@ -293,16 +303,22 @@ User: Load lane4 (extruder4/T4) → lane0 (extruder/T0)
 Bridge:
 ✓ Check: Same extruder? NO
 ✓ Check: Tool change needed? YES
-→ Action: SELECT_TOOL T=0
+→ Action: SELECT_TOOL T=0 (dock T4, pickup T0)
 
 Sequence:
-1. Unload lane4
-2. SELECT_TOOL T=0 (automatic tool change)
-3. Verify T0 mounted (if verify_tool_mounted=True)
-4. Load lane0 into extruder
-5. Apply tool offsets (automatic via toolchanger)
+1. Unload lane4 (via your macro - optional)
+2. AFC_BRIDGE_PREPARE_LANE:
+   - Dock T4 (filament STAYS in extruder4)
+   - Pickup T0
+   - Verify T0 mounted
+3. Load lane0 into extruder
+4. Apply tool offsets (automatic via toolchanger)
 
-Result: Complete tool change with verification
+IMPORTANT: Filament remains in each tool's extruder when docked!
+- T4 docked with lane4 still in extruder4
+- T0 picked up ready to load lane0 into extruder
+
+Result: Complete tool change without unloading previous tool
 ```
 
 ---

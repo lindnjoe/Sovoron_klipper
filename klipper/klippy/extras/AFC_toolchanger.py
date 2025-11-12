@@ -38,6 +38,10 @@ class AFCToolchangerBridge:
         # Dock behavior for same-tool lane swaps (OpenAMS use case)
         self.dock_when_swap = config.getboolean('dock_when_swap', False)
 
+        # Tool cutting behavior
+        self.tool_cut = config.getboolean('tool_cut', False)
+        self.tool_cut_command = config.get('tool_cut_command', 'AFC_CUT')
+
         # Purge behavior
         self.auto_purge = config.getboolean('auto_purge', False)
         self.purge_command = config.get('purge_command', 'LOAD_NOZZLE')
@@ -219,7 +223,17 @@ class AFCToolchangerBridge:
         return False
 
     def prepare_lane_change(self, to_lane, from_lane=None):
-        """Prepare for a lane change - handles tool docking if needed"""
+        """
+        Prepare for a lane change - handles tool docking/changing if needed.
+
+        IMPORTANT: This does NOT unload filament from the previous tool.
+        Filament remains loaded in each tool's extruder when the tool is docked.
+
+        Behavior:
+        - Same extruder (lane swap): Optionally dock tool if dock_when_swap=True
+        - Different extruder (tool change): Dock current tool, pickup new tool
+        - Filament unload/load is handled separately by AFC macros
+        """
         to_info = self.get_lane_info(to_lane)
         if not to_info:
             logging.warning("AFC_toolchanger_bridge: Unknown lane %s" % to_lane)
@@ -228,18 +242,32 @@ class AFCToolchangerBridge:
         from_info = self.get_lane_info(from_lane) if from_lane else None
 
         # Case 1: Same tool lane swap with dock_when_swap enabled
+        # Use case: OpenAMS on toolhead needs tool out of the way for safe loading
         if self.should_dock_for_swap(from_lane, to_lane):
             current_tool = self.get_current_tool()
             if current_tool:
                 logging.info("AFC_toolchanger_bridge: Same-tool swap (%s→%s), docking %s" %
                            (from_lane, to_lane, current_tool.name))
+
+                # Cut filament before docking if enabled
+                if self.tool_cut and self.tool_cut_command:
+                    logging.info("AFC_toolchanger_bridge: Cutting filament before dock: %s" % self.tool_cut_command)
+                    self.gcode.run_script_from_command(self.tool_cut_command)
+
+                # Dock the tool
                 self.unselect_tool()
                 self.pending_pickup_tool = to_info['tool_number']
 
         # Case 2: Different tool - need tool change
+        # SELECT_TOOL handles: dock current tool → pickup new tool
+        # Filament stays in the previous tool's extruder (not unloaded)
         elif self.needs_tool_change(from_lane, to_lane):
-            logging.info("AFC_toolchanger_bridge: Tool change needed for %s→%s" %
-                       (from_lane or 'None', to_lane))
+            current_tool = self.get_current_tool()
+            logging.info("AFC_toolchanger_bridge: Tool change %s→%s (extruder change)" %
+                       (current_tool.name if current_tool else 'None', to_info['tool']))
+            logging.info("AFC_toolchanger_bridge: Filament remains in previous tool's extruder")
+
+            # Dock current tool and pickup new tool
             self.select_tool(to_info['tool_number'])
 
             # Verify tool is mounted
