@@ -622,6 +622,66 @@ class OAMSManager:
             self._rebuild_group_fps_index()
         return self.group_to_fps.get(group_name)
 
+    def get_fps_for_afc_lane(self, lane_name: str) -> Optional[str]:
+        """Get the FPS name for an AFC lane by querying its unit configuration.
+
+        This method:
+        1. Gets the lane's unit string (e.g., "AMS_1:1")
+        2. Extracts the base unit name (e.g., "AMS_1")
+        3. Looks up the AFC_OpenAMS unit to get the OAMS name
+        4. Finds which FPS has that OAMS
+
+        Returns the FPS name (e.g., "fps1") or None if not found.
+        """
+        afc = self._get_afc()
+        if afc is None:
+            return None
+
+        lane = afc.lanes.get(lane_name)
+        if lane is None:
+            return None
+
+        # Get the unit string (e.g., "AMS_1:1")
+        unit_str = getattr(lane, "unit", None)
+        if not unit_str or not isinstance(unit_str, str):
+            return None
+
+        # Extract base unit name (e.g., "AMS_1" from "AMS_1:1")
+        if ':' in unit_str:
+            base_unit_name = unit_str.split(':')[0]
+        else:
+            base_unit_name = unit_str
+
+        # Look up the AFC unit object
+        unit_obj = getattr(lane, "unit_obj", None)
+        if unit_obj is None:
+            # Try to find it from AFC's units
+            units = getattr(afc, "units", {})
+            unit_obj = units.get(base_unit_name)
+
+        if unit_obj is None:
+            return None
+
+        # Get the OAMS name from the unit (e.g., "oams1")
+        oams_name = getattr(unit_obj, "oams_name", None)
+        if not oams_name:
+            return None
+
+        # Find which FPS has this OAMS
+        for fps_name, fps in self.fpss.items():
+            if hasattr(fps, "oams"):
+                fps_oams = fps.oams
+                # fps.oams could be a list or a single oams object
+                if isinstance(fps_oams, list):
+                    for oam in fps_oams:
+                        if getattr(oam, "name", None) == oams_name:
+                            return fps_name
+                else:
+                    if getattr(fps_oams, "name", None) == oams_name:
+                        return fps_name
+
+        return None
+
     def _normalize_group_name(self, group: Optional[str]) -> Optional[str]:
         if not group or not isinstance(group, str):
             return None
@@ -778,37 +838,36 @@ class OAMSManager:
         if (source_extruder is not None and target_extruder is not None and source_extruder is not target_extruder):
             return None, runout_lane_name, True, lane_name
 
-        target_group = self._canonical_group_by_lane.get(runout_lane_name)
-        if not target_group:
-            target_group = self._normalize_group_name(getattr(target_lane, "_map", None))
-        if not target_group:
-            target_group = self._normalize_group_name(getattr(target_lane, "map", None))
+        # Check if both lanes are on the same FPS by querying their unit configurations
+        # This replaces the group-based lookup system
+        source_fps = self.get_fps_for_afc_lane(lane_name)
+        target_fps = self.get_fps_for_afc_lane(runout_lane_name)
 
-        if not target_group:
+        # If we can't determine FPS for either lane, defer to AFC
+        if source_fps is None or target_fps is None:
+            self.logger.info("Cannot determine FPS for lanes %s or %s, deferring to AFC", lane_name, runout_lane_name)
             return None, runout_lane_name, True, lane_name
 
-        if runout_lane_name not in self._canonical_group_by_lane:
-            self._canonical_group_by_lane[runout_lane_name] = target_group
-        if target_group not in self._canonical_lane_by_group:
-            self._canonical_lane_by_group[target_group] = runout_lane_name
-        self._rebuild_lane_location_index()
-
-        if target_group == normalized_group:
-            return None, runout_lane_name, True, lane_name
-
-        if normalized_group not in self.filament_groups:
-            return None, runout_lane_name, True, lane_name
-
-        if target_group not in self.filament_groups:
-            return None, runout_lane_name, True, lane_name
-
-        source_fps = self.group_fps_name(normalized_group)
-        target_fps = self.group_fps_name(target_group)
+        # If lanes are on different FPS or not on the current FPS, defer to AFC
         if source_fps != fps_name or target_fps != fps_name:
-            self.logger.info("Deferring infinite runout for %s on %s to AFC lane %s", normalized_group, fps_name, runout_lane_name)
+            self.logger.info("Deferring infinite runout: %s on %s, %s on %s (current FPS: %s)",
+                           lane_name, source_fps, runout_lane_name, target_fps, fps_name)
             return None, runout_lane_name, True, lane_name
 
-        self.logger.info("Infinite runout configured for %s on %s -> %s (lanes %s -> %s)", normalized_group, fps_name, target_group, lane_name, runout_lane_name)
+        # If source and target are the same lane, defer to AFC (no swap needed)
+        if lane_name == runout_lane_name:
+            return None, runout_lane_name, True, lane_name
+
+        # Both lanes are on the same FPS - OpenAMS can handle the swap internally
+        self.logger.info("Infinite runout: %s -> %s on %s (same FPS)",
+                       lane_name, runout_lane_name, fps_name)
+
+        # For backwards compatibility, still try to get group names for the return value
+        # but this is optional and won't affect the FPS-based logic
+        target_group = self._normalize_group_name(getattr(target_lane, "map", None))
+        if not target_group:
+            target_group = runout_lane_name  # Fall back to lane name if no map
+
         return target_group, runout_lane_name, False, lane_name
 
     def _delegate_runout_to_afc(self, fps_name: str, fps_state: 'FPSState', source_lane_name: Optional[str], target_lane_name: Optional[str]) -> bool:
@@ -959,6 +1018,111 @@ class OAMSManager:
         fps_state.state = FPSLoadState.LOADED
         return False, message
 
+    def _load_filament_for_lane(self, lane_name: str) -> Tuple[bool, str]:
+        """Load filament for a lane by deriving OAMS and bay from the lane's unit configuration.
+
+        This eliminates the need for [filament_group] configs by directly using:
+        - lane.unit (e.g., "AMS_1:1") to get bay number
+        - AFC_OpenAMS unit config to get OAMS name
+        """
+        afc = self._get_afc()
+        if afc is None:
+            return False, "AFC not available"
+
+        lane = afc.lanes.get(lane_name)
+        if lane is None:
+            return False, f"Lane {lane_name} does not exist"
+
+        # Get the unit string (e.g., "AMS_1:1")
+        unit_str = getattr(lane, "unit", None)
+        if not unit_str or not isinstance(unit_str, str):
+            return False, f"Lane {lane_name} has no unit defined"
+
+        # Extract base unit name and slot number (e.g., "AMS_1" and "1")
+        if ':' in unit_str:
+            base_unit_name, slot_str = unit_str.split(':', 1)
+            try:
+                slot_number = int(slot_str)
+            except ValueError:
+                return False, f"Invalid slot number in unit {unit_str}"
+        else:
+            return False, f"Unit {unit_str} must be in format 'UNIT:SLOT' (e.g., 'AMS_1:1')"
+
+        # Convert slot number to 0-indexed bay number
+        bay_index = slot_number - 1
+        if bay_index < 0:
+            return False, f"Invalid slot number {slot_number} (must be >= 1)"
+
+        # Look up the AFC unit object to get OAMS name
+        unit_obj = getattr(lane, "unit_obj", None)
+        if unit_obj is None:
+            units = getattr(afc, "units", {})
+            unit_obj = units.get(base_unit_name)
+
+        if unit_obj is None:
+            return False, f"AFC unit {base_unit_name} not found"
+
+        # Get the OAMS name from the unit (e.g., "oams1")
+        oams_name = getattr(unit_obj, "oams_name", None)
+        if not oams_name:
+            return False, f"Unit {base_unit_name} has no oams_name defined"
+
+        # Find the OAMS object
+        oam = self.oams.get(oams_name)
+        if oam is None:
+            return False, f"OAMS {oams_name} not found"
+
+        # Find which FPS has this OAMS
+        fps_name = None
+        for fps_name_candidate, fps in self.fpss.items():
+            if hasattr(fps, "oams"):
+                fps_oams = fps.oams
+                if isinstance(fps_oams, list):
+                    if oam in fps_oams:
+                        fps_name = fps_name_candidate
+                        break
+                else:
+                    if fps_oams == oam:
+                        fps_name = fps_name_candidate
+                        break
+
+        if not fps_name:
+            return False, f"No FPS found for OAMS {oams_name}"
+
+        fps_state = self.current_state.fps_state[fps_name]
+        if fps_state.state == FPSLoadState.LOADED:
+            return False, f"FPS {fps_name} is already loaded"
+
+        self._cancel_post_load_pressure_check(fps_state)
+
+        # Check if the bay is ready
+        try:
+            is_ready = oam.is_bay_ready(bay_index)
+        except Exception:
+            self.logger.exception("Failed to check bay %s readiness on %s", bay_index, oams_name)
+            return False, f"Failed to check bay {bay_index} readiness on {oams_name}"
+
+        if not is_ready:
+            return False, f"Bay {bay_index} on {oams_name} is not ready (no spool detected)"
+
+        # Load the filament
+        self.logger.info("Loading lane %s: %s bay %s via %s", lane_name, oams_name, bay_index, fps_name)
+
+        fps_state.state = FPSLoadState.LOADING
+        fps_state.current_oams = oams_name
+        fps_state.current_spool_idx = bay_index
+
+        try:
+            oam.load(bay_index)
+        except Exception:
+            self.logger.exception("Failed to load bay %s on %s", bay_index, oams_name)
+            fps_state.state = FPSLoadState.UNLOADED
+            return False, f"Failed to load bay {bay_index} on {oams_name}"
+
+        # Monitor the load
+        self.start_monitors([fps_name])
+        return True, f"Loading lane {lane_name} ({oams_name} bay {bay_index})"
+
     def _load_filament_for_group(self, group_name: str) -> Tuple[bool, str]:
         if group_name not in self.filament_groups:
             return False, f"Group {group_name} does not exist"
@@ -1099,18 +1263,16 @@ class OAMSManager:
         if not success or (message and message != "Spool unloaded successfully"):
             gcmd.respond_info(message)
 
-    cmd_LOAD_FILAMENT_help = "Load a spool from a specific group"
+    cmd_LOAD_FILAMENT_help = "Load a spool from a specific AFC lane (LANE=name)"
     def cmd_LOAD_FILAMENT(self, gcmd):
-        group_name = gcmd.get('GROUP')
-        if group_name not in self.filament_groups:
-            gcmd.respond_info(f"Group {group_name} does not exist")
+        lane_name = gcmd.get('LANE', None)
+
+        if not lane_name:
+            gcmd.respond_info("LANE parameter is required (e.g., LANE=lane4)")
             return
-        fps_name = self.group_fps_name(group_name)
-        fps_state = self.current_state.fps_state[fps_name]
-        if fps_state.state == FPSLoadState.LOADED:
-            gcmd.respond_info(f"Group {group_name} is already loaded")
-            return
-        success, message = self._load_filament_for_group(group_name)
+
+        # Load directly from lane configuration
+        success, message = self._load_filament_for_lane(lane_name)
         gcmd.respond_info(message)
 
     def _pause_printer_message(self, message, oams_name: Optional[str] = None):
