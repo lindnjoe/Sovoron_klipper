@@ -1263,34 +1263,17 @@ class OAMSManager:
         if not success or (message and message != "Spool unloaded successfully"):
             gcmd.respond_info(message)
 
-    cmd_LOAD_FILAMENT_help = "Load a spool from a specific lane or group (LANE=name or GROUP=name for backwards compat)"
+    cmd_LOAD_FILAMENT_help = "Load a spool from a specific AFC lane (LANE=name)"
     def cmd_LOAD_FILAMENT(self, gcmd):
-        # Support both LANE (new way) and GROUP (old way for backwards compatibility)
         lane_name = gcmd.get('LANE', None)
-        group_name = gcmd.get('GROUP', None)
 
-        if lane_name:
-            # New way: Load directly from lane configuration
-            success, message = self._load_filament_for_lane(lane_name)
-            gcmd.respond_info(message)
+        if not lane_name:
+            gcmd.respond_info("LANE parameter is required (e.g., LANE=lane4)")
             return
 
-        if group_name:
-            # Old way: Use group-based loading (requires [filament_group] configs)
-            if group_name not in self.filament_groups:
-                gcmd.respond_info(f"Group {group_name} does not exist")
-                return
-            fps_name = self.group_fps_name(group_name)
-            fps_state = self.current_state.fps_state[fps_name]
-            if fps_state.state == FPSLoadState.LOADED:
-                gcmd.respond_info(f"Group {group_name} is already loaded")
-                return
-            success, message = self._load_filament_for_group(group_name)
-            gcmd.respond_info(message)
-            return
-
-        gcmd.respond_info("Either LANE or GROUP parameter is required")
-        return
+        # Load directly from lane configuration
+        success, message = self._load_filament_for_lane(lane_name)
+        gcmd.respond_info(message)
 
     def _pause_printer_message(self, message, oams_name: Optional[str] = None):
         self.logger.info(message)
