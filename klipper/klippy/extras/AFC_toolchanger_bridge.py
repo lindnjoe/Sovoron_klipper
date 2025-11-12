@@ -596,8 +596,7 @@ class AFCToolchangerBridge:
         msg += "\nLane Mappings (%d lanes):\n" % len(self.lane_map)
         for lane_name in sorted(self.lane_map.keys()):
             info = self.lane_map[lane_name]
-            msg += "  %s → %s (T%d) via %s\n" %
-                   (lane_name, info['tool'], info['tool_number'], info['extruder'])
+            msg += "  %s → %s (T%d) via %s\n" % (lane_name, info['tool'], info['tool_number'], info['extruder'])
 
         gcmd.respond_info(msg)
 
