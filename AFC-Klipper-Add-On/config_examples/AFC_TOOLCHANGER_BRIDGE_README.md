@@ -295,14 +295,14 @@ Sequence (without cutting):
 6. Purge (if purge_before_pickup=False)
 
 Sequence (with tool_cut=True):
-1. Unload lane4
-2. AFC_CUT (severs filament at toolhead)
+1. AFC_CUT (severs filament at toolhead) - FIRST!
+2. Retract tool_stn_unload (pulls cut filament back)
 3. UNSELECT_TOOL (dock T4)
-4. Continue unloading from hub/buffer
-5. Load lane6 into hub/buffer and extruder4
-6. Purge (if purge_before_pickup=True)
-7. SELECT_TOOL T=4 (pickup T4)
-8. Purge (if purge_before_pickup=False)
+4. Unload lane4 from hub/buffer (user macro)
+5. Load lane6 into hub/buffer (user macro)
+6. Extrude tool_stn (pushes new filament into position)
+7. Purge configured amount
+8. SELECT_TOOL T=4 (pickup T4)
 
 Result: Safe lane swap with tool out of the way (cleaner with cutting)
 ```

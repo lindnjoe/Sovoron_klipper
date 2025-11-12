@@ -50,6 +50,11 @@ class AFCToolchangerBridge:
         self.tool_cut = config.getboolean('tool_cut', False)
         self.tool_cut_command = config.get('tool_cut_command', 'AFC_CUT')
 
+        # Post-cut retract and pre-purge extrude amounts (from AFC extruder settings)
+        # These will be read from AFC extruder objects at runtime if not specified
+        self.tool_stn_unload = config.getfloat('tool_stn_unload', None)  # Retract after cut
+        self.tool_stn = config.getfloat('tool_stn', None)  # Extrude before purge
+
         # Purge behavior
         self.auto_purge = config.getboolean('auto_purge', False)
         self.purge_command = config.get('purge_command', 'LOAD_NOZZLE')
@@ -192,6 +197,32 @@ class AFCToolchangerBridge:
         # Fall back to global setting (deprecated)
         return self.dock_when_swap
 
+    def get_extruder_setting(self, extruder_name, setting_name, default=None):
+        """Get a setting from AFC extruder object"""
+        if not self.afc or not extruder_name:
+            return default
+
+        # Try to find the extruder in AFC's tools/extruders
+        extruder_obj = self.afc.tools.get(extruder_name)
+        if extruder_obj and hasattr(extruder_obj, setting_name):
+            value = getattr(extruder_obj, setting_name)
+            if value is not None:
+                return value
+
+        return default
+
+    def get_tool_stn_unload(self, extruder_name):
+        """Get tool_stn_unload for an extruder (retract after cut)"""
+        if self.tool_stn_unload is not None:
+            return self.tool_stn_unload
+        return self.get_extruder_setting(extruder_name, 'tool_stn_unload', 0)
+
+    def get_tool_stn(self, extruder_name):
+        """Get tool_stn for an extruder (extrude before purge)"""
+        if self.tool_stn is not None:
+            return self.tool_stn
+        return self.get_extruder_setting(extruder_name, 'tool_stn', 0)
+
     def select_tool(self, tool_number, restore_axis='ZYX'):
         """Select a tool via toolchanger"""
         if not self.auto_tool_change:
@@ -263,15 +294,24 @@ class AFCToolchangerBridge:
         if self.should_dock_for_swap(from_lane, to_lane):
             current_tool = self.get_current_tool()
             if current_tool:
+                extruder_name = to_info['extruder']
                 logging.info("AFC_toolchanger_bridge: Same-tool swap (%s→%s) on %s, docking %s" %
-                           (from_lane, to_lane, to_info['extruder'], current_tool.name))
+                           (from_lane, to_lane, extruder_name, current_tool.name))
 
-                # Cut filament before docking if enabled
+                # Step 1: Cut filament if enabled (BEFORE any unloading)
                 if self.tool_cut and self.tool_cut_command:
-                    logging.info("AFC_toolchanger_bridge: Cutting filament before dock: %s" % self.tool_cut_command)
+                    logging.info("AFC_toolchanger_bridge: Cutting filament: %s" % self.tool_cut_command)
                     self.gcode.run_script_from_command(self.tool_cut_command)
 
-                # Dock the tool
+                    # Step 2: Retract tool_stn_unload after cut
+                    tool_stn_unload = self.get_tool_stn_unload(extruder_name)
+                    if tool_stn_unload > 0:
+                        logging.info("AFC_toolchanger_bridge: Retracting %.1fmm after cut" % tool_stn_unload)
+                        self.gcode.run_script_from_command(
+                            "G1 E-%.3f F300" % tool_stn_unload
+                        )
+
+                # Step 3: Dock the tool
                 self.unselect_tool()
                 self.pending_pickup_tool = to_info['tool_number']
 
@@ -304,7 +344,17 @@ class AFCToolchangerBridge:
 
         # Case 1: Purge before pickup (tool still docked, common for OpenAMS)
         if self.purge_before_pickup and has_pending_pickup:
-            # Purge first while tool is docked
+            extruder_name = to_info['extruder']
+
+            # Extrude tool_stn before purging (pushes new filament into position)
+            tool_stn = self.get_tool_stn(extruder_name)
+            if tool_stn > 0:
+                logging.info("AFC_toolchanger_bridge: Extruding %.1fmm before purge" % tool_stn)
+                self.gcode.run_script_from_command(
+                    "G1 E%.3f F300" % tool_stn
+                )
+
+            # Purge while tool is docked
             if self.auto_purge and self.purge_command:
                 logging.info("AFC_toolchanger_bridge: Purging before pickup (tool docked)")
                 self.gcode.run_script_from_command(self.purge_command)
@@ -323,6 +373,8 @@ class AFCToolchangerBridge:
 
         # Case 2: Pickup before purge (standard workflow)
         else:
+            extruder_name = to_info['extruder']
+
             # Pickup tool first if we docked it earlier
             if has_pending_pickup:
                 logging.info("AFC_toolchanger_bridge: Picking up T%d before purge" % self.pending_pickup_tool)
@@ -335,6 +387,15 @@ class AFCToolchangerBridge:
                             "AFC_toolchanger_bridge: Tool pickup verification failed for T%d" % self.pending_pickup_tool)
 
                 self.pending_pickup_tool = None
+
+            # Extrude tool_stn before purging (if we had a tool swap)
+            if has_pending_pickup or self.tool_cut:
+                tool_stn = self.get_tool_stn(extruder_name)
+                if tool_stn > 0:
+                    logging.info("AFC_toolchanger_bridge: Extruding %.1fmm before purge" % tool_stn)
+                    self.gcode.run_script_from_command(
+                        "G1 E%.3f F300" % tool_stn
+                    )
 
             # Then purge if enabled
             if self.auto_purge and self.purge_command:
