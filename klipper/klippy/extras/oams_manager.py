@@ -1033,20 +1033,34 @@ class OAMSManager:
         if lane is None:
             return False, f"Lane {lane_name} does not exist"
 
-        # Get the unit string (e.g., "AMS_1:1")
+        # Get the unit string and slot/index
+        # AFC stores "unit: AMS_1:1" as unit="AMS_1" and index stored separately
         unit_str = getattr(lane, "unit", None)
-        if not unit_str or not isinstance(unit_str, str):
+        if not unit_str:
             return False, f"Lane {lane_name} has no unit defined"
 
-        # Extract base unit name and slot number (e.g., "AMS_1" and "1")
-        if ':' in unit_str:
+        # Try to get slot number from different possible attributes
+        slot_number = None
+
+        # Method 1: If unit_str contains ':', parse it directly (e.g., "AMS_1:1")
+        if isinstance(unit_str, str) and ':' in unit_str:
             base_unit_name, slot_str = unit_str.split(':', 1)
             try:
                 slot_number = int(slot_str)
             except ValueError:
                 return False, f"Invalid slot number in unit {unit_str}"
         else:
-            return False, f"Unit {unit_str} must be in format 'UNIT:SLOT' (e.g., 'AMS_1:1')"
+            # Method 2: unit_str is just the unit name (e.g., "AMS_1"), get slot from lane.index
+            base_unit_name = str(unit_str)
+            slot_number = getattr(lane, "index", None)
+
+            if slot_number is None:
+                # Method 3: Try to get it from the lane's name if it follows a pattern
+                # This is a fallback - lane names might not always have indices
+                return False, f"Lane {lane_name} unit '{unit_str}' doesn't specify slot number"
+
+        if slot_number is None:
+            return False, f"Could not determine slot number for lane {lane_name}"
 
         # Convert slot number to 0-indexed bay number
         bay_index = slot_number - 1
