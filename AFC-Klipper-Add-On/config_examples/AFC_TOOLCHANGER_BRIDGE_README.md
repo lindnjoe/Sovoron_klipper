@@ -236,6 +236,67 @@ extruder: extruder4
 
 ## Usage
 
+### Direct Lane Changes (Recommended for OpenAMS)
+
+For OpenAMS setups, you can use `AFC_CHANGE_LANE` directly instead of custom macros:
+
+```gcode
+# Simple lane swap (same extruder)
+AFC_CHANGE_LANE FROM=lane4 TO=lane6
+
+# Different tool change
+AFC_CHANGE_LANE FROM=lane4 TO=lane0
+
+# First load (no FROM lane)
+AFC_CHANGE_LANE TO=lane4
+```
+
+**Configuration for Direct Lane Changes:**
+
+```ini
+[AFC_toolchanger_bridge]
+enable: True
+auto_tool_change: True
+dock_when_swap_extruders: extruder4, extruder5  # OpenAMS extruders
+tool_cut: True
+purge_before_pickup: True
+auto_purge: True
+purge_command: LOAD_NOZZLE  # Your purge macro
+verify_tool_mounted: True
+```
+
+**In your slicer:**
+- Set lane change command to: `AFC_CHANGE_LANE FROM={previous_filament} TO={next_filament}`
+- The bridge handles everything automatically
+- No need for `custom_load_cmd` or `custom_unload_cmd` in lane configs
+
+**Simplified Lane Configuration:**
+
+Before (with custom macros):
+```ini
+[AFC_lane lane4]
+unit: AMS_1:1
+extruder: extruder4
+map: T4
+custom_load_cmd: _TX1 GROUP=T4        # No longer needed!
+custom_unload_cmd: SAFE_UNLOAD_FILAMENT1  # No longer needed!
+hub: Hub_1
+led_index: AFC_Sndicator:2
+```
+
+After (using AFC_CHANGE_LANE):
+```ini
+[AFC_lane lane4]
+unit: AMS_1:1
+extruder: extruder4
+map: T4
+hub: Hub_1
+led_index: AFC_Sndicator:2
+# custom_load_cmd and custom_unload_cmd removed - bridge handles it!
+```
+
+---
+
 ### Diagnostic Commands
 
 ```gcode
@@ -445,7 +506,7 @@ gcode:
 
 ---
 
-### Phase 2: Full Automation (Future)
+### Phase 2: Full Automation (Available Now!)
 
 Let bridge handle everything:
 
@@ -453,10 +514,21 @@ Let bridge handle everything:
 AFC_CHANGE_LANE FROM=lane4 TO=lane6
 ```
 
+**What it does:**
+1. Prepares lane change (docks tool if needed)
+2. Unloads old lane using `TOOL_UNLOAD`
+3. Changes tools if different extruder
+4. Heats to correct temperature (from OpenAMS cache or material settings)
+5. Loads new lane using `TOOL_LOAD`
+6. Picks up tool if docked earlier
+7. Purges if `auto_purge=True`
+
 **Benefits:**
-- Simplest possible macro
-- Bridge handles all coordination
+- Simplest possible workflow - one command does everything
+- No custom macros needed (custom_load_cmd/custom_unload_cmd optional)
+- Bridge handles all coordination automatically
 - Consistent behavior across all tools
+- Temperature management integrated
 
 ---
 

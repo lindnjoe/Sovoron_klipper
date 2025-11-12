@@ -223,6 +223,53 @@ class AFCToolchangerBridge:
             return self.tool_stn
         return self.get_extruder_setting(extruder_name, 'tool_stn', 0)
 
+    def get_lane_temperature(self, lane_name, default_temp=240):
+        """
+        Get the target temperature for a lane.
+        For OpenAMS lanes, this reads from the unit's temperature cache.
+        Falls back to AFC's default material temperatures.
+        """
+        if not self.afc or not lane_name:
+            return default_temp
+
+        # Try to get lane object
+        lane_key = "AFC_lane %s" % lane_name
+        lane = self.printer.lookup_object(lane_key, None)
+        if not lane:
+            return default_temp
+
+        # Check if lane has explicit temperature set
+        lane_temp = getattr(lane, 'extruder_temp', None) or getattr(lane, 'nozzle_temp', None)
+        if lane_temp is not None:
+            try:
+                return int(lane_temp)
+            except (TypeError, ValueError):
+                pass
+
+        # For OpenAMS units, try to get cached temperature
+        unit = getattr(lane, 'unit_obj', None)
+        if unit and hasattr(unit, 'get_lane_temperature'):
+            try:
+                temp = unit.get_lane_temperature(lane_name, default_temp)
+                if temp is not None:
+                    return int(temp)
+            except Exception as e:
+                logging.warning("AFC_toolchanger_bridge: Failed to get OpenAMS temperature for %s: %s" % (lane_name, e))
+
+        # Fall back to AFC default material temps
+        material = getattr(lane, 'material', None) or getattr(lane, '_material', None)
+        if material and self.afc.default_material_temps:
+            for temp_entry in self.afc.default_material_temps:
+                if isinstance(temp_entry, str) and ':' in temp_entry:
+                    mat, temp = temp_entry.split(':', 1)
+                    if mat.strip().upper() in str(material).upper():
+                        try:
+                            return int(temp)
+                        except (TypeError, ValueError):
+                            pass
+
+        return default_temp
+
     def select_tool(self, tool_number, restore_axis='ZYX'):
         """Select a tool via toolchanger"""
         if not self.auto_tool_change:
@@ -410,13 +457,16 @@ class AFCToolchangerBridge:
     cmd_AFC_CHANGE_LANE_help = "Change AFC lane with automatic tool handling"
     def cmd_AFC_CHANGE_LANE(self, gcmd):
         """
-        Main command for lane changes. Handles:
+        Main command for lane changes. Handles complete orchestration:
         1. Tool docking (if same-tool swap and dock_when_swap=True)
         2. AFC unload of old lane
         3. Tool change (if different extruder)
-        4. AFC load of new lane
-        5. Tool pickup (if we docked earlier)
-        6. Purge (if auto_purge=True)
+        4. Temperature management
+        5. AFC load of new lane
+        6. Tool pickup (if we docked earlier)
+        7. Purge (if auto_purge=True)
+
+        This eliminates the need for custom_load_cmd and custom_unload_cmd macros.
         """
         if not self.enabled:
             raise gcmd.error("AFC_toolchanger_bridge is disabled")
@@ -436,23 +486,34 @@ class AFCToolchangerBridge:
 
             gcmd.respond_info("AFC Bridge: Changing lane %s → %s" % (from_lane or 'None', to_lane))
 
-            # Step 1: Prepare (dock if needed)
+            # Step 1: Prepare (dock if needed, tool change)
             self.prepare_lane_change(to_lane, from_lane)
 
             # Step 2: Unload old lane (if exists)
             if from_lane:
-                gcmd.respond_info("AFC Bridge: Unloading %s" % from_lane)
-                # Call AFC's unload via existing macros or direct AFC call
-                # For now, user's custom_unload_cmd handles this
-                # Future: Could call AFC.unload_lane() directly
+                from_info = self.get_lane_info(from_lane)
+                if from_info:
+                    gcmd.respond_info("AFC Bridge: Unloading %s" % from_lane)
+                    # Call AFC's built-in unload command
+                    self.gcode.run_script_from_command("TOOL_UNLOAD LANE=%s" % from_lane)
 
-            # Step 3: Load new lane
+            # Step 3: Heat extruder to target temperature
+            target_temp = self.get_lane_temperature(to_lane)
+            if target_temp:
+                extruder_name = to_info['extruder']
+                gcmd.respond_info("AFC Bridge: Heating %s to %dC" % (extruder_name, target_temp))
+                # Activate the correct extruder and heat it
+                if extruder_name != 'extruder':
+                    # Switch to the correct extruder first
+                    self.gcode.run_script_from_command("ACTIVATE_EXTRUDER EXTRUDER=%s" % extruder_name)
+                # Heat and wait for temperature
+                self.gcode.run_script_from_command("M109 S%d" % target_temp)
+
+            # Step 4: Load new lane using AFC's built-in load command
             gcmd.respond_info("AFC Bridge: Loading %s" % to_lane)
-            # Call AFC's load via existing macros or direct AFC call
-            # For now, user's custom_load_cmd handles this
-            # Future: Could call AFC.load_lane() directly
+            self.gcode.run_script_from_command("TOOL_LOAD LANE=%s" % to_lane)
 
-            # Step 4: Finalize (pickup if needed, purge)
+            # Step 5: Finalize (pickup if needed, purge)
             self.finalize_lane_change(to_lane)
 
             gcmd.respond_info("AFC Bridge: Lane change complete - %s ready" % to_lane)
