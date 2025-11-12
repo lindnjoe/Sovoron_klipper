@@ -36,7 +36,15 @@ class AFCToolchangerBridge:
         self.verify_timeout = config.getfloat('verify_timeout', 1.0)
 
         # Dock behavior for same-tool lane swaps (OpenAMS use case)
-        self.dock_when_swap = config.getboolean('dock_when_swap', False)
+        # Support both old (global) and new (per-extruder) configuration
+        self.dock_when_swap = config.getboolean('dock_when_swap', False)  # Deprecated global
+        dock_extruders_str = config.get('dock_when_swap_extruders', '')
+        self.dock_when_swap_extruders = set()
+        if dock_extruders_str:
+            # Parse comma-separated list of extruder names
+            self.dock_when_swap_extruders = set(
+                name.strip() for name in dock_extruders_str.split(',') if name.strip()
+            )
 
         # Tool cutting behavior
         self.tool_cut = config.getboolean('tool_cut', False)
@@ -169,11 +177,20 @@ class AFCToolchangerBridge:
 
     def should_dock_for_swap(self, from_lane, to_lane):
         """Check if we should dock the tool for a same-tool lane swap"""
-        if not self.dock_when_swap:
+        # Only dock if staying on the same extruder/tool
+        if self.needs_tool_change(from_lane, to_lane):
             return False
 
-        # Only dock if staying on the same extruder/tool
-        return not self.needs_tool_change(from_lane, to_lane)
+        # Check per-extruder setting first (new method)
+        if self.dock_when_swap_extruders:
+            to_info = self.get_lane_info(to_lane)
+            if to_info:
+                extruder = to_info['extruder']
+                return extruder in self.dock_when_swap_extruders
+            return False
+
+        # Fall back to global setting (deprecated)
+        return self.dock_when_swap
 
     def select_tool(self, tool_number, restore_axis='ZYX'):
         """Select a tool via toolchanger"""
@@ -246,8 +263,8 @@ class AFCToolchangerBridge:
         if self.should_dock_for_swap(from_lane, to_lane):
             current_tool = self.get_current_tool()
             if current_tool:
-                logging.info("AFC_toolchanger_bridge: Same-tool swap (%s→%s), docking %s" %
-                           (from_lane, to_lane, current_tool.name))
+                logging.info("AFC_toolchanger_bridge: Same-tool swap (%s→%s) on %s, docking %s" %
+                           (from_lane, to_lane, to_info['extruder'], current_tool.name))
 
                 # Cut filament before docking if enabled
                 if self.tool_cut and self.tool_cut_command:
@@ -434,7 +451,14 @@ class AFCToolchangerBridge:
         msg = "AFC Toolchanger Bridge Status:\n"
         msg += "  Enabled: %s\n" % self.enabled
         msg += "  Auto Tool Change: %s\n" % self.auto_tool_change
-        msg += "  Dock When Swap: %s\n" % self.dock_when_swap
+
+        # Show dock configuration
+        if self.dock_when_swap_extruders:
+            msg += "  Dock When Swap: Per-extruder (%s)\n" % ', '.join(sorted(self.dock_when_swap_extruders))
+        else:
+            msg += "  Dock When Swap: %s (global)\n" % self.dock_when_swap
+
+        msg += "  Tool Cut: %s\n" % self.tool_cut
         msg += "  Auto Purge: %s\n" % self.auto_purge
         msg += "  Verify Tool: %s (timeout: %.1fs)\n" % (self.verify_tool_mounted, self.verify_timeout)
         msg += "  Current Lane: %s\n" % (self.current_lane or 'None')

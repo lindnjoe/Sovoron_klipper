@@ -87,10 +87,23 @@ verify_timeout: 1.0
 [AFC_toolchanger_bridge]
 enable: True
 auto_tool_change: True
-dock_when_swap: True            # Dock tool before loading lanes
+dock_when_swap_extruders: extruder4, extruder5  # Extruders with OpenAMS
+tool_cut: True                  # Enable cutting on these extruders
 purge_before_pickup: True       # Purge while tool is docked
 auto_purge: True                # Let bridge handle purge
 purge_command: LOAD_NOZZLE      # Your purge macro
+verify_tool_mounted: True
+verify_timeout: 1.0
+```
+
+**For Mixed Setup (Some OpenAMS, Some Standard):**
+```ini
+[AFC_toolchanger_bridge]
+enable: True
+auto_tool_change: True
+dock_when_swap_extruders: extruder4  # Only extruder4 has OpenAMS, needs docking
+                                     # extruder and extruder1 are standard, no docking
+tool_cut: True                       # Will only cut on extruder4 swaps
 verify_tool_mounted: True
 verify_timeout: 1.0
 ```
@@ -262,10 +275,11 @@ Result: Direct lane swap, tool stays mounted
 
 ---
 
-### Scenario 2: Same-Tool Lane Swap (dock_when_swap=True)
+### Scenario 2a: Same-Tool Lane Swap (extruder4 configured for docking)
 
 ```gcode
 User: Load lane4 → lane6 (both extruder4/T4)
+Config: dock_when_swap_extruders: extruder4
 
 Bridge:
 ✓ Check: Same extruder? YES
@@ -291,6 +305,27 @@ Sequence (with tool_cut=True):
 8. Purge (if purge_before_pickup=False)
 
 Result: Safe lane swap with tool out of the way (cleaner with cutting)
+```
+
+---
+
+### Scenario 2b: Same-Tool Lane Swap (extruder NOT configured for docking)
+
+```gcode
+User: Load lane0 → lane1 (both extruder/T0)
+Config: dock_when_swap_extruders: extruder4  # Only extruder4, not extruder
+
+Bridge:
+✓ Check: Same extruder? YES
+✓ Check: extruder in dock list? NO
+→ Action: No docking, tool stays mounted
+
+Sequence:
+1. Unload lane0
+2. Load lane1 (T0 stays mounted throughout)
+3. Purge
+
+Result: Fast lane swap without dock/pickup overhead
 ```
 
 ---
