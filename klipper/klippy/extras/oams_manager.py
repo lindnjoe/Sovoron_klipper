@@ -171,7 +171,7 @@ class OAMSRunoutMonitor:
                 self.latest_lane_name = lane_name
 
                 if (is_printing and fps_state.state == FPSLoadState.LOADED and 
-                    fps_state.current_group is not None and fps_state.current_spool_idx is not None and spool_empty):
+                    fps_state.current_lane is not None and fps_state.current_spool_idx is not None and spool_empty):
                     self.state = OAMSRunoutState.DETECTED
                     logging.info("OAMS: Runout detected on FPS %s, pausing for %d mm", self.fps_name, PAUSE_DISTANCE)
                     self.runout_position = fps.extruder.last_position
@@ -255,12 +255,12 @@ class FPSState:
     
     def __init__(self, 
                  state: int = FPSLoadState.UNLOADED,
-                 current_group: Optional[str] = None, 
+                 current_lane: Optional[str] = None, 
                  current_oams: Optional[str] = None, 
                  current_spool_idx: Optional[int] = None):
         
         self.state = state
-        self.current_group = current_group
+        self.current_lane = current_lane
         self.current_oams = current_oams
         self.current_spool_idx = current_spool_idx
         
@@ -351,7 +351,7 @@ class FPSState:
         
     def __repr__(self) -> str:
         state_names = {0: "UNLOADED", 1: "LOADED", 2: "LOADING", 3: "UNLOADING"}
-        return f"FPSState(state={state_names.get(self.state, self.state)}, group={self.current_group}, oams={self.current_oams}, spool={self.current_spool_idx})"
+        return f"FPSState(state={state_names.get(self.state, self.state)}, lane={self.current_lane}, oams={self.current_oams}, spool={self.current_spool_idx})"
 
 
 class OAMSManager:
@@ -368,7 +368,6 @@ class OAMSManager:
         self.fpss: Dict[str, Any] = {}
 
         self.current_state = OAMSState()
-        self.current_group: Optional[str] = None
         self.afc = None
         self._afc_logged = False
 
@@ -444,7 +443,7 @@ class OAMSManager:
         state_names = {0: "UNLOADED", 1: "LOADED", 2: "LOADING", 3: "UNLOADING"}
         for fps_name, fps_state in self.current_state.fps_state.items():
             attributes[fps_name] = {
-                "current_group": fps_state.current_group,
+                "current_lane": fps_state.current_lane,
                 "current_oams": fps_state.current_oams,
                 "current_spool_idx": fps_state.current_spool_idx,
                 "state_name": state_names.get(fps_state.state, str(fps_state.state)),
@@ -457,7 +456,7 @@ class OAMSManager:
         """Analyze hardware state and update FPS state tracking."""
         for fps_name, fps_state in self.current_state.fps_state.items():
             (
-                fps_state.current_group,
+                fps_state.current_lane,
                 current_oams,
                 fps_state.current_spool_idx,
             ) = self.determine_current_loaded_group(fps_name)
@@ -690,7 +689,7 @@ class OAMSManager:
             gcmd.respond_info(f"\n{fps_name}:")
             gcmd.respond_info(f"  State: {fps_state.state}")
             gcmd.respond_info(f"  Current OAMS: {fps_state.current_oams}")
-            gcmd.respond_info(f"  Current Group: {fps_state.current_group}")
+            gcmd.respond_info(f"  Current Lane: {fps_state.current_lane}")
             gcmd.respond_info(f"  Spool Index: {fps_state.current_spool_idx}")
             gcmd.respond_info(f"  Following: {fps_state.following}, Direction: {fps_state.direction}")
 
@@ -703,7 +702,7 @@ class OAMSManager:
             gcmd.respond_info(f"\nAfter detection - {fps_name}:")
             gcmd.respond_info(f"  State: {fps_state.state}")
             gcmd.respond_info(f"  Current OAMS: {fps_state.current_oams}")
-            gcmd.respond_info(f"  Current Group: {fps_state.current_group}")
+            gcmd.respond_info(f"  Current Lane: {fps_state.current_lane}")
             gcmd.respond_info(f"  Spool Index: {fps_state.current_spool_idx}")
 
         gcmd.respond_info("\nCheck klippy.log for detailed state detection logs")
@@ -1066,8 +1065,8 @@ class OAMSManager:
         return self.afc
 
     def _get_infinite_runout_target_group(self, fps_name: str, fps_state: 'FPSState') -> Tuple[Optional[str], Optional[str], bool, Optional[str]]:
-        current_group = fps_state.current_group
-        normalized_group = self._normalize_group_name(current_group)
+        current_lane = fps_state.current_lane
+        normalized_group = self._normalize_group_name(current_lane)
         if normalized_group is None:
             return None, None, False, None
 
@@ -1079,7 +1078,7 @@ class OAMSManager:
 
         if resolved_group and resolved_group != normalized_group:
             normalized_group = resolved_group
-            fps_state.current_group = resolved_group
+            fps_state.current_lane = resolved_group
 
         if not lane_name:
             return None, None, False, None
@@ -1207,7 +1206,7 @@ class OAMSManager:
             fps_state.direction = 0
             fps_state.clog_restore_follower = False
             fps_state.clog_restore_direction = 1
-            fps_state.current_group = None
+            fps_state.current_lane = None
             fps_state.current_spool_idx = None
             fps_state.since = self.reactor.monotonic()
             fps_state.reset_stuck_spool_state()
@@ -1221,7 +1220,7 @@ class OAMSManager:
             try:
                 afc = self._get_afc()
                 if afc is not None:
-                    lane_name, _ = self._resolve_lane_for_state(fps_state, fps_state.current_group, afc)
+                    lane_name, _ = self._resolve_lane_for_state(fps_state, fps_state.current_lane, afc)
             except Exception:
                 self.logger.exception("Failed to resolve AFC lane for unload on %s", fps_name)
                 lane_name = None
@@ -1276,7 +1275,7 @@ class OAMSManager:
                 except Exception:
                     self.logger.exception("Failed to clear LED on %s spool %d after successful unload", fps_name, spool_index)
 
-            fps_state.current_group = None
+            fps_state.current_lane = None
             fps_state.current_spool_idx = None
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
@@ -1420,7 +1419,7 @@ class OAMSManager:
             return False, f"Failed to load bay {bay_index} on {oams_name}"
 
         if success:
-            fps_state.current_group = lane.map if hasattr(lane, 'map') else lane_name
+            fps_state.current_lane = lane.map if hasattr(lane, 'map') else lane_name
             fps_state.current_oams = oam.name
             fps_state.current_spool_idx = bay_index
 
@@ -1501,7 +1500,7 @@ class OAMSManager:
                 success, message = False, f"Exception loading spool {bay_index} on {group_name}"
 
             if success:
-                fps_state.current_group = group_name
+                fps_state.current_lane = group_name
                 fps_state.current_oams = oam.name
                 fps_state.current_spool_idx = bay_index
                 
@@ -1567,7 +1566,7 @@ class OAMSManager:
                 return True, message
 
             fps_state.state = FPSLoadState.UNLOADED
-            fps_state.current_group = None
+            fps_state.current_lane = None
             fps_state.current_spool_idx = None
             fps_state.current_oams = None
             fps_state.following = False
@@ -1776,7 +1775,7 @@ class OAMSManager:
             tracked_state.following = False
 
             tracked_state.clog_active = True
-            message = f"Possible clog detected after loading {tracked_state.current_group or fps_name}: FPS pressure {pressure:.2f} remained above {POST_LOAD_PRESSURE_THRESHOLD:.2f}"
+            message = f"Possible clog detected after loading {tracked_state.current_lane or fps_name}: FPS pressure {pressure:.2f} remained above {POST_LOAD_PRESSURE_THRESHOLD:.2f}"
             self._pause_printer_message(message, tracked_state.current_oams)
 
             # Immediately re-enable follower so user can manually fix filament with follower tracking
@@ -2097,7 +2096,7 @@ class OAMSManager:
             self.logger.debug("OAMS[%d] Unload Monitor: Encoder diff %d", getattr(oams, "oams_idx", -1), encoder_diff)
         
         if encoder_diff < MIN_ENCODER_DIFF:
-            group_label = fps_state.current_group or fps_name
+            group_label = fps_state.current_lane or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
             
             # Abort the current unload operation cleanly
@@ -2145,7 +2144,7 @@ class OAMSManager:
             self.logger.debug("OAMS[%d] Load Monitor: Encoder diff %d", getattr(oams, "oams_idx", -1), encoder_diff)
         
         if encoder_diff < MIN_ENCODER_DIFF:
-            group_label = fps_state.current_group or fps_name
+            group_label = fps_state.current_lane or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
             
             # Abort the current load operation cleanly
@@ -2229,8 +2228,8 @@ class OAMSManager:
                 fps_state.stuck_spool_start_time = now
             elif (not fps_state.stuck_spool_active and now - fps_state.stuck_spool_start_time >= STUCK_SPOOL_DWELL):
                 message = "Spool appears stuck"
-                if fps_state.current_group is not None:
-                    message = f"Spool appears stuck on {fps_state.current_group} spool {fps_state.current_spool_idx}"
+                if fps_state.current_lane is not None:
+                    message = f"Spool appears stuck on {fps_state.current_lane} spool {fps_state.current_spool_idx}"
                 self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
         elif pressure >= self.stuck_spool_pressure_clear_threshold:
             # Pressure is definitively high - clear stuck spool state
@@ -2335,7 +2334,7 @@ class OAMSManager:
                     self.logger.exception("Failed to stop follower on %s during clog pause", fps_name)
             fps_state.following = False
             pressure_mid = (fps_state.clog_min_pressure + fps_state.clog_max_pressure) / 2.0
-            message = (f"Clog suspected on {fps_state.current_group or fps_name}: "
+            message = (f"Clog suspected on {fps_state.current_lane or fps_name}: "
                       f"extruder advanced {extrusion_delta:.1f}mm while encoder moved {encoder_delta} counts "
                       f"with FPS {pressure_mid:.2f} near {self.clog_pressure_target:.2f}")
             fps_state.clog_active = True
@@ -2362,10 +2361,10 @@ class OAMSManager:
 
             def _reload_callback(fps_name=fps_name, fps_state=self.current_state.fps_state[fps_name]):
                 monitor = self.runout_monitors.get(fps_name)
-                source_group = fps_state.current_group
+                source_group = fps_state.current_lane
                 active_oams = fps_state.current_oams
                 target_group, target_lane, delegate_to_afc, source_lane = self._get_infinite_runout_target_group(fps_name, fps_state)
-                source_group = fps_state.current_group
+                source_group = fps_state.current_lane
 
                 if delegate_to_afc:
                     delegated = self._delegate_runout_to_afc(fps_name, fps_state, source_lane, target_lane)
@@ -2478,7 +2477,7 @@ class OAMSManager:
 
             if group_name and oam and bay_index is not None:
                 # Update FPS state
-                fps_state.current_group = group_name
+                fps_state.current_lane = group_name
                 fps_state.current_oams = oam.name
                 fps_state.current_spool_idx = bay_index
                 fps_state.state = FPSLoadState.LOADED
@@ -2529,7 +2528,7 @@ class OAMSManager:
 
                 # Update state
                 fps_state.state = FPSLoadState.UNLOADED
-                fps_state.current_group = None
+                fps_state.current_lane = None
                 fps_state.current_oams = None
                 fps_state.current_spool_idx = None
                 fps_state.since = self.reactor.monotonic()
