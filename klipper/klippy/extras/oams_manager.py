@@ -551,8 +551,9 @@ class OAMSManager:
         if afc is None:
             return None, None, None
 
-        # Check each AFC extruder to see which lane is loaded
-        for extruder_name, extruder_obj in afc.extruders.items():
+        # Check each AFC tool/extruder to see which lane is loaded
+        # AFC uses 'tools' dict, not 'extruders'
+        for extruder_name, extruder_obj in afc.tools.items():
             # Get the currently loaded lane name from AFC extruder state
             loaded_lane_name = getattr(extruder_obj, 'lane_loaded', None)
             if not loaded_lane_name:
