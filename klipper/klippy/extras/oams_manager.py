@@ -546,119 +546,90 @@ class OAMSManager:
         return None, None, None
 
     def _determine_loaded_lane_for_fps(self, fps_name: str, fps) -> Tuple[Optional[str], Optional[object], Optional[int]]:
-        """Determine which AFC lane is loaded by asking AFC which lane is loaded to each extruder."""
+        """Determine which AFC lane is loaded by asking AFC which lane is loaded to each extruder.
+
+        With load_to_hub: False configuration, filament bypasses OAMS hub sensors and goes
+        directly to toolhead. AFC tracks filament position via its own sensors and is the
+        authoritative source for what's loaded.
+        """
         afc = self._get_afc()
         if afc is None:
             self.logger.warning("State detection: AFC not found")
             return None, None, None
 
-        self.logger.info("State detection: Checking AFC tools for %s", fps_name)
-
-        # Check each AFC tool/extruder to see which lane is loaded
-        # AFC uses 'tools' dict, not 'extruders'
         if not hasattr(afc, 'tools'):
             self.logger.warning("State detection: AFC has no 'tools' attribute")
             return None, None, None
 
-        self.logger.info("State detection: AFC has %d tools: %s", len(afc.tools), list(afc.tools.keys()))
-
+        # Check each AFC tool/extruder to see which lane is loaded
         for extruder_name, extruder_obj in afc.tools.items():
-            # Get the currently loaded lane name from AFC extruder state
             loaded_lane_name = getattr(extruder_obj, 'lane_loaded', None)
-            self.logger.info("State detection: Tool %s has lane_loaded=%s", extruder_name, loaded_lane_name)
-
             if not loaded_lane_name:
                 continue
 
             # Check if this lane is on the current FPS
             lane_fps = self.get_fps_for_afc_lane(loaded_lane_name)
-            self.logger.info("State detection: Lane %s is on FPS '%s' (checking '%s'), match=%s",
-                           loaded_lane_name, lane_fps, fps_name, lane_fps == fps_name)
-
             if lane_fps != fps_name:
-                self.logger.info("State detection: Skipping %s - different FPS", loaded_lane_name)
                 continue  # This lane is on a different FPS
-
-            # FPS matches! Continue with this lane
-            self.logger.info("State detection: FPS matches! Processing %s for %s", loaded_lane_name, fps_name)
 
             # Get the lane object
             lane = afc.lanes.get(loaded_lane_name)
             if lane is None:
-                self.logger.warning("State detection: Lane %s not found in afc.lanes", loaded_lane_name)
+                self.logger.warning("Lane %s not found in afc.lanes", loaded_lane_name)
                 continue
-
-            self.logger.info("State detection: Found lane object for %s", loaded_lane_name)
 
             # Get the OAMS and bay index for this lane
             unit_str = getattr(lane, "unit", None)
             if not unit_str:
-                self.logger.warning("State detection: Lane %s has no unit", loaded_lane_name)
+                self.logger.warning("Lane %s has no unit", loaded_lane_name)
                 continue
-
-            self.logger.info("State detection: Lane %s has unit=%s", loaded_lane_name, unit_str)
 
             # Parse unit and slot
             if isinstance(unit_str, str) and ':' in unit_str:
                 base_unit_name, slot_str = unit_str.split(':', 1)
                 try:
                     slot_number = int(slot_str)
-                    self.logger.info("State detection: Parsed unit %s: base=%s, slot=%d", unit_str, base_unit_name, slot_number)
                 except ValueError:
-                    self.logger.warning("State detection: Invalid slot number in unit %s", unit_str)
+                    self.logger.warning("Invalid slot number in unit %s", unit_str)
                     continue
             else:
                 base_unit_name = str(unit_str)
                 slot_number = getattr(lane, "index", None)
                 if slot_number is None:
-                    self.logger.warning("State detection: No index found for lane %s", loaded_lane_name)
+                    self.logger.warning("No index found for lane %s", loaded_lane_name)
                     continue
-                self.logger.info("State detection: Using lane index: base=%s, slot=%d", base_unit_name, slot_number)
 
             # Convert to bay index
             bay_index = slot_number - 1
             if bay_index < 0:
-                self.logger.warning("State detection: Invalid bay index %d (slot %d)", bay_index, slot_number)
+                self.logger.warning("Invalid bay index %d (slot %d)", bay_index, slot_number)
                 continue
-
-            self.logger.info("State detection: Bay index=%d for lane %s", bay_index, loaded_lane_name)
 
             # Get OAMS name from AFC unit
             unit_obj = getattr(lane, "unit_obj", None)
             if unit_obj is None:
                 units = getattr(afc, "units", {})
                 unit_obj = units.get(base_unit_name)
-                self.logger.info("State detection: Looked up unit %s from afc.units", base_unit_name)
             if unit_obj is None:
-                self.logger.warning("State detection: Unit %s not found", base_unit_name)
+                self.logger.warning("Unit %s not found", base_unit_name)
                 continue
 
             oams_name = getattr(unit_obj, "oams_name", None)
             if not oams_name:
-                self.logger.warning("State detection: Unit %s has no oams_name", base_unit_name)
+                self.logger.warning("Unit %s has no oams_name", base_unit_name)
                 continue
 
-            self.logger.info("State detection: OAMS name=%s for lane %s", oams_name, loaded_lane_name)
-
-            # Find OAMS object
+            # Find OAMS object - check both short and prefixed names
             oam = self.oams.get(oams_name)
             if oam is None:
                 oam = self.oams.get(f"oams {oams_name}")
             if oam is None:
-                self.logger.warning("State detection: OAMS %s not found in self.oams", oams_name)
+                self.logger.warning("OAMS %s not found", oams_name)
                 continue
-
-            self.logger.info("State detection: Found OAMS object for %s", oams_name)
-
-            # With load_to_hub: False, filament bypasses OAMS hub sensors
-            # AFC is the authoritative source - it knows lane is loaded via its own sensors
-            # So just trust AFC directly instead of checking OAMS hub sensors
-            self.logger.info("State detection: AFC says %s loaded to %s - trusting AFC (load_to_hub: False means OAMS hub sensors not used)",
-                           loaded_lane_name, extruder_name)
 
             # Found loaded lane! Return lane's map name (e.g., "T4") as the group
             group_name = lane.map if hasattr(lane, 'map') else loaded_lane_name
-            self.logger.info("State detection: SUCCESS! %s loaded to %s (bay %d on %s)",
+            self.logger.info("Detected %s loaded to %s (bay %d on %s)",
                            loaded_lane_name, extruder_name, bay_index, oams_name)
             return group_name, oam, bay_index
 
@@ -820,31 +791,19 @@ class OAMSManager:
     def get_fps_for_afc_lane(self, lane_name: str) -> Optional[str]:
         """Get the FPS name for an AFC lane by querying its unit configuration.
 
-        This method:
-        1. Gets the lane's unit string (e.g., "AMS_1:1")
-        2. Extracts the base unit name (e.g., "AMS_1")
-        3. Looks up the AFC_OpenAMS unit to get the OAMS name
-        4. Finds which FPS has that OAMS
-
-        Returns the FPS name (e.g., "fps1") or None if not found.
+        Returns the FPS name (e.g., "fps fps1") or None if not found.
         """
-        self.logger.info("get_fps_for_afc_lane: Checking lane %s", lane_name)
-
         afc = self._get_afc()
         if afc is None:
-            self.logger.warning("get_fps_for_afc_lane: AFC not found")
             return None
 
         lane = afc.lanes.get(lane_name)
         if lane is None:
-            self.logger.warning("get_fps_for_afc_lane: Lane %s not found in afc.lanes", lane_name)
             return None
 
         # Get the unit string (e.g., "AMS_1:1")
         unit_str = getattr(lane, "unit", None)
-        self.logger.info("get_fps_for_afc_lane: Lane %s has unit=%s (type=%s)", lane_name, unit_str, type(unit_str).__name__)
         if not unit_str or not isinstance(unit_str, str):
-            self.logger.warning("get_fps_for_afc_lane: Lane %s unit is invalid", lane_name)
             return None
 
         # Extract base unit name (e.g., "AMS_1" from "AMS_1:1")
@@ -852,64 +811,41 @@ class OAMSManager:
             base_unit_name = unit_str.split(':')[0]
         else:
             base_unit_name = unit_str
-        self.logger.info("get_fps_for_afc_lane: Base unit name=%s", base_unit_name)
 
         # Look up the AFC unit object
         unit_obj = getattr(lane, "unit_obj", None)
         if unit_obj is None:
-            # Try to find it from AFC's units
             units = getattr(afc, "units", {})
-            self.logger.info("get_fps_for_afc_lane: afc.units has %d units: %s", len(units), list(units.keys()))
             unit_obj = units.get(base_unit_name)
-            if unit_obj:
-                self.logger.info("get_fps_for_afc_lane: Found unit_obj for %s in afc.units", base_unit_name)
-            else:
-                self.logger.warning("get_fps_for_afc_lane: Unit %s not found in afc.units", base_unit_name)
 
         if unit_obj is None:
-            self.logger.warning("get_fps_for_afc_lane: unit_obj is None for %s", base_unit_name)
             return None
 
         # Get the OAMS name from the unit (e.g., "oams1")
         oams_name = getattr(unit_obj, "oams_name", None)
-        self.logger.info("get_fps_for_afc_lane: oams_name=%s for unit %s", oams_name, base_unit_name)
         if not oams_name:
-            self.logger.warning("get_fps_for_afc_lane: No oams_name on unit %s", base_unit_name)
             return None
 
         # Find which FPS has this OAMS
-        self.logger.info("get_fps_for_afc_lane: Searching for OAMS %s in %d FPS: %s", oams_name, len(self.fpss), list(self.fpss.keys()))
         for fps_name, fps in self.fpss.items():
             if hasattr(fps, "oams"):
                 fps_oams = fps.oams
-                self.logger.info("get_fps_for_afc_lane: %s has oams (type=%s)", fps_name, type(fps_oams).__name__)
                 # fps.oams could be a list or a single oams object
                 if isinstance(fps_oams, list):
-                    oams_names = [getattr(oam, "name", None) for oam in fps_oams]
-                    self.logger.info("get_fps_for_afc_lane: %s has OAMS list: %s", fps_name, oams_names)
                     for oam in fps_oams:
                         oam_name_full = getattr(oam, "name", None)
-                        # OAMS objects can be registered with different capitalizations
-                        # AFC units store just "oams1", but Klipper may use "oams oams1" or "OAMS oams1"
-                        # Check all possible forms
+                        # OAMS objects can be registered as "oams1", "oams oams1", or "OAMS oams1"
                         if (oam_name_full == oams_name or
                             oam_name_full == f"oams {oams_name}" or
                             oam_name_full == f"OAMS {oams_name}"):
-                            self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s (matched %s)", lane_name, fps_name, oam_name_full)
                             return fps_name
                 else:
                     oam_name_check = getattr(fps_oams, "name", None)
-                    self.logger.info("get_fps_for_afc_lane: %s has single OAMS: %s", fps_name, oam_name_check)
-                    # Check all possible forms: "oams1", "oams oams1", "OAMS oams1"
                     if (oam_name_check == oams_name or
                         oam_name_check == f"oams {oams_name}" or
                         oam_name_check == f"OAMS {oams_name}"):
-                        self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s (matched %s)", lane_name, fps_name, oam_name_check)
                         return fps_name
-            else:
-                self.logger.info("get_fps_for_afc_lane: %s has no oams attribute", fps_name)
 
-        self.logger.warning("get_fps_for_afc_lane: No FPS found for OAMS %s (lane %s)", oams_name, lane_name)
         return None
 
     def _normalize_group_name(self, group: Optional[str]) -> Optional[str]:
@@ -1772,56 +1708,40 @@ class OAMSManager:
             - Fails silently if no spool is loaded (current_spool_idx is None)
             - Logs exceptions but doesn't raise them to avoid disrupting workflow
         """
-        self.logger.info("_enable_follower called: fps=%s, oams=%s, direction=%d, context=%s, spool_idx=%s",
-                        fps_name, oams.name if oams else None, direction, context, fps_state.current_spool_idx)
-
         if fps_state.current_spool_idx is None:
-            self.logger.info("_enable_follower: early return - no spool loaded (current_spool_idx is None)")
             return
 
         if oams is None and fps_state.current_oams is not None:
-            self.logger.info("_enable_follower: oams is None, looking up from fps_state.current_oams=%s", fps_state.current_oams)
             oams = self.oams.get(fps_state.current_oams)
         if oams is None:
-            self.logger.warning("_enable_follower: OAMS is None, cannot enable follower!")
+            self.logger.warning("Cannot enable follower: OAMS not found")
             return
 
         direction = direction if direction in (0, 1) else 1
 
         try:
-            self.logger.info("_enable_follower: calling oams.set_oams_follower(1, %d) on %s", direction, oams.name)
             oams.set_oams_follower(1, direction)
             fps_state.following = True
             fps_state.direction = direction
-            self.logger.info("_enable_follower: SUCCESS - follower enabled for %s spool %s after %s",
+            self.logger.info("Follower enabled for %s spool %s (%s)",
                            fps_name, fps_state.current_spool_idx, context)
         except Exception:
             self.logger.exception("Failed to enable follower for %s after %s", fps_name, context)
 
     def _ensure_forward_follower(self, fps_name: str, fps_state: "FPSState", context: str) -> None:
-        self.logger.info("_ensure_forward_follower called for %s, context=%s, current_oams=%s, spool_idx=%s, state=%s, following=%s",
-                         fps_name, context, fps_state.current_oams, fps_state.current_spool_idx,
-                         fps_state.state, fps_state.following)
-
+        """Ensure follower is enabled in forward direction after successful load."""
         if (fps_state.current_oams is None or fps_state.current_spool_idx is None or
             fps_state.stuck_spool_active or fps_state.state != FPSLoadState.LOADED):
-            self.logger.info("_ensure_forward_follower: early return - current_oams=%s, spool_idx=%s, stuck=%s, state=%s",
-                           fps_state.current_oams, fps_state.current_spool_idx,
-                           fps_state.stuck_spool_active, fps_state.state)
             return
 
         if fps_state.following and fps_state.direction == 1:
-            self.logger.info("_ensure_forward_follower: already following in direction 1, skipping")
-            return
+            return  # Already following in correct direction
 
         oams = self.oams.get(fps_state.current_oams)
         if oams is None:
-            self.logger.warning("_ensure_forward_follower: OAMS %s not found! Available: %s",
-                              fps_state.current_oams, list(self.oams.keys()))
+            self.logger.warning("Cannot enable follower: OAMS %s not found", fps_state.current_oams)
             return
 
-        self.logger.info("_ensure_forward_follower: enabling follower for %s spool %s",
-                        fps_name, fps_state.current_spool_idx)
         fps_state.direction = 1
         self._enable_follower(fps_name, fps_state, oams, 1, context)
 
