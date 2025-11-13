@@ -20,6 +20,7 @@
 # - stuck_spool_pressure_clear_threshold: Pressure above which stuck state clears - hysteresis (default: 0.12)
 # - clog_pressure_target: Target FPS pressure for clog detection (default: 0.50)
 # - post_load_pressure_dwell: Duration (seconds) to monitor pressure after load (default: 15.0)
+# - load_fps_stuck_threshold: FPS pressure above which load is considered failed (default: 0.75)
 # - clog_sensitivity: Detection sensitivity level - "low", "medium", "high" (default: "medium")
 
 import logging
@@ -58,6 +59,9 @@ CLOG_SENSITIVITY_DEFAULT = "medium"
 POST_LOAD_PRESSURE_THRESHOLD = 0.65
 POST_LOAD_PRESSURE_DWELL = 15.0
 POST_LOAD_PRESSURE_CHECK_PERIOD = 0.5
+
+# Threshold for detecting failed load - if FPS stays above this during LOADING, filament isn't engaging
+LOAD_FPS_STUCK_THRESHOLD = 0.75
 
 
 class OAMSRunoutState:
@@ -390,6 +394,7 @@ class OAMSManager:
         self.stuck_spool_pressure_clear_threshold = config.getfloat("stuck_spool_pressure_clear_threshold", STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD, minval=0.0, maxval=1.0)
         self.clog_pressure_target = config.getfloat("clog_pressure_target", CLOG_PRESSURE_TARGET, minval=0.0, maxval=1.0)
         self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL, minval=0.0, maxval=60.0)
+        self.load_fps_stuck_threshold = config.getfloat("load_fps_stuck_threshold", LOAD_FPS_STUCK_THRESHOLD, minval=0.0, maxval=1.0)
 
         # Validate hysteresis: clear threshold must be > trigger threshold
         if self.stuck_spool_pressure_clear_threshold <= self.stuck_spool_pressure_threshold:
@@ -2052,7 +2057,7 @@ class OAMSManager:
                 self._check_unload_speed(fps_name, fps_state, oams, encoder_value, now)
                 state_changed = True
             elif state == FPSLoadState.LOADING and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
-                self._check_load_speed(fps_name, fps_state, oams, encoder_value, now)
+                self._check_load_speed(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
                 state_changed = True
             elif state == FPSLoadState.LOADED:
                 if is_printing:
@@ -2123,15 +2128,15 @@ class OAMSManager:
             
             self.logger.info("Spool appears stuck while unloading %s spool %s - letting retry logic handle it", group_label, spool_label)
 
-    def _check_load_speed(self, fps_name, fps_state, oams, encoder_value, now):
-        """Check load speed using optimized encoder tracking."""
+    def _check_load_speed(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
+        """Check load speed using optimized encoder tracking and FPS pressure monitoring."""
         if fps_state.stuck_spool_active:
             return
 
         # Skip check if we don't have a valid since timestamp
         if fps_state.since is None:
             return
-            
+
         # Skip check if we're still in grace period
         if now - fps_state.since <= MONITOR_ENCODER_SPEED_GRACE:
             return
@@ -2141,35 +2146,52 @@ class OAMSManager:
             return
 
         if self.logger.isEnabledFor(logging.DEBUG):
-            self.logger.debug("OAMS[%d] Load Monitor: Encoder diff %d", getattr(oams, "oams_idx", -1), encoder_diff)
-        
+            self.logger.debug("OAMS[%d] Load Monitor: Encoder diff %d, FPS pressure %.2f",
+                            getattr(oams, "oams_idx", -1), encoder_diff, pressure)
+
+        # Check for stuck spool conditions:
+        # 1. Encoder not moving (original check)
+        # 2. FPS pressure staying high (filament not engaging) - NEW CHECK
+        stuck_detected = False
+        stuck_reason = ""
+
         if encoder_diff < MIN_ENCODER_DIFF:
+            stuck_detected = True
+            stuck_reason = "encoder not moving"
+        elif pressure >= self.load_fps_stuck_threshold:
+            # FPS pressure is high while loading - filament isn't being pulled in
+            # This catches cases where extruder is turning but filament missed the drive gear
+            stuck_detected = True
+            stuck_reason = f"FPS pressure {pressure:.2f} >= {self.load_fps_stuck_threshold:.2f} (filament not engaging)"
+
+        if stuck_detected:
             group_label = fps_state.current_lane or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
-            
+
             # Abort the current load operation cleanly
             try:
                 oams.abort_current_action()
-                self.logger.info("Aborted stuck spool load operation on %s", fps_name)
+                self.logger.info("Aborted stuck spool load operation on %s: %s", fps_name, stuck_reason)
             except Exception:
                 self.logger.exception("Failed to abort load operation on %s", fps_name)
-            
+
             # Set LED error
             try:
                 oams.set_led_error(fps_state.current_spool_idx, 1)
             except Exception:
                 self.logger.exception("Failed to set LED during load stuck detection on %s", fps_name)
-            
+
             # Transition to UNLOADED state cleanly
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.clear_encoder_samples()
-            
+
             # Set the stuck flag but DON'T pause - let the OAMS retry logic handle it
             # The retry logic will clear this flag if the retry succeeds
             fps_state.stuck_spool_active = True
             fps_state.stuck_spool_start_time = None
-            
-            self.logger.info("Spool appears stuck while loading %s spool %s - letting retry logic handle it", group_label, spool_label)
+
+            self.logger.info("Spool appears stuck while loading %s spool %s (%s) - letting retry logic handle it",
+                           group_label, spool_label, stuck_reason)
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, pressure, hes_values, now):
         """Check for stuck spool conditions (OPTIMIZED)."""
