@@ -684,6 +684,12 @@ class OAMSManager:
                     lane_loaded = getattr(tool_obj, 'lane_loaded', None)
                     gcmd.respond_info(f"  Tool {tool_name}: lane_loaded={lane_loaded}")
 
+            # DIAGNOSTIC: Show lane→FPS cache mappings
+            gcmd.respond_info(f"\nLane→FPS Cache ({len(self._lane_to_fps_cache)} entries):")
+            for lane_name in sorted(self._lane_to_fps_cache.keys()):
+                fps = self._lane_to_fps_cache[lane_name]
+                gcmd.respond_info(f"  {lane_name} → {fps}")
+
         # Show FPS states
         for fps_name, fps_state in self.current_state.fps_state.items():
             gcmd.respond_info(f"\n{fps_name}:")
@@ -983,6 +989,9 @@ class OAMSManager:
                 if fps_name is not None:
                     self._lane_to_fps_cache[lane_name] = fps_name
                     cache_built = True
+                    self.logger.info("Lane→FPS cache: %s → %s", lane_name, fps_name)
+                else:
+                    self.logger.warning("Could not determine FPS for lane %s", lane_name)
 
         if updated:
             self._rebuild_lane_location_index()
