@@ -549,29 +549,44 @@ class OAMSManager:
         """Determine which AFC lane is loaded by asking AFC which lane is loaded to each extruder."""
         afc = self._get_afc()
         if afc is None:
+            self.logger.warning("State detection: AFC not found")
             return None, None, None
+
+        self.logger.info("State detection: Checking AFC tools for %s", fps_name)
 
         # Check each AFC tool/extruder to see which lane is loaded
         # AFC uses 'tools' dict, not 'extruders'
+        if not hasattr(afc, 'tools'):
+            self.logger.warning("State detection: AFC has no 'tools' attribute")
+            return None, None, None
+
+        self.logger.info("State detection: AFC has %d tools: %s", len(afc.tools), list(afc.tools.keys()))
+
         for extruder_name, extruder_obj in afc.tools.items():
             # Get the currently loaded lane name from AFC extruder state
             loaded_lane_name = getattr(extruder_obj, 'lane_loaded', None)
+            self.logger.info("State detection: Tool %s has lane_loaded=%s", extruder_name, loaded_lane_name)
+
             if not loaded_lane_name:
                 continue
 
             # Check if this lane is on the current FPS
             lane_fps = self.get_fps_for_afc_lane(loaded_lane_name)
+            self.logger.info("State detection: Lane %s is on FPS %s (checking %s)", loaded_lane_name, lane_fps, fps_name)
+
             if lane_fps != fps_name:
                 continue  # This lane is on a different FPS
 
             # Get the lane object
             lane = afc.lanes.get(loaded_lane_name)
             if lane is None:
+                self.logger.warning("State detection: Lane %s not found in afc.lanes", loaded_lane_name)
                 continue
 
             # Get the OAMS and bay index for this lane
             unit_str = getattr(lane, "unit", None)
             if not unit_str:
+                self.logger.warning("State detection: Lane %s has no unit", loaded_lane_name)
                 continue
 
             # Parse unit and slot
@@ -642,6 +657,7 @@ class OAMSManager:
             ("OAMSM_LOAD_FILAMENT", self.cmd_LOAD_FILAMENT, self.cmd_LOAD_FILAMENT_help),
             ("OAMSM_FOLLOWER", self.cmd_FOLLOWER, self.cmd_FOLLOWER_help),
             ("OAMSM_CLEAR_ERRORS", self.cmd_CLEAR_ERRORS, self.cmd_CLEAR_ERRORS_help),
+            ("OAMSM_STATUS", self.cmd_STATUS, self.cmd_STATUS_help),
         ]
         for cmd_name, handler, help_text in commands:
             gcode.register_command(cmd_name, handler, desc=help_text)
@@ -663,7 +679,49 @@ class OAMSManager:
                 self.logger.exception("Failed to clear errors on %s", getattr(oam, "name", "<unknown>"))
         self.determine_state()
         self.start_monitors()
-    
+
+    cmd_STATUS_help = "Show OAMS manager state and run state detection diagnostics"
+    def cmd_STATUS(self, gcmd):
+        """Diagnostic command to show current state and test state detection."""
+        afc = self._get_afc()
+
+        gcmd.respond_info("=== OAMS Manager Status ===")
+
+        # Show AFC info
+        if afc is None:
+            gcmd.respond_info("AFC: Not found!")
+        else:
+            gcmd.respond_info(f"AFC: Found, has {len(getattr(afc, 'tools', {}))} tools, {len(getattr(afc, 'lanes', {}))} lanes")
+
+            # Show what AFC thinks is loaded
+            if hasattr(afc, 'tools'):
+                for tool_name, tool_obj in afc.tools.items():
+                    lane_loaded = getattr(tool_obj, 'lane_loaded', None)
+                    gcmd.respond_info(f"  Tool {tool_name}: lane_loaded={lane_loaded}")
+
+        # Show FPS states
+        for fps_name, fps_state in self.current_state.fps_state.items():
+            gcmd.respond_info(f"\n{fps_name}:")
+            gcmd.respond_info(f"  State: {fps_state.state}")
+            gcmd.respond_info(f"  Current OAMS: {fps_state.current_oams}")
+            gcmd.respond_info(f"  Current Group: {fps_state.current_group}")
+            gcmd.respond_info(f"  Spool Index: {fps_state.current_spool_idx}")
+            gcmd.respond_info(f"  Following: {fps_state.following}, Direction: {fps_state.direction}")
+
+        # Run state detection and show results
+        gcmd.respond_info("\n=== Running State Detection ===")
+        self.determine_state()
+
+        # Show state after detection
+        for fps_name, fps_state in self.current_state.fps_state.items():
+            gcmd.respond_info(f"\nAfter detection - {fps_name}:")
+            gcmd.respond_info(f"  State: {fps_state.state}")
+            gcmd.respond_info(f"  Current OAMS: {fps_state.current_oams}")
+            gcmd.respond_info(f"  Current Group: {fps_state.current_group}")
+            gcmd.respond_info(f"  Spool Index: {fps_state.current_spool_idx}")
+
+        gcmd.respond_info("\nCheck klippy.log for detailed state detection logs")
+
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
     def cmd_FOLLOWER(self, gcmd):
         enable = gcmd.get_int('ENABLE')
