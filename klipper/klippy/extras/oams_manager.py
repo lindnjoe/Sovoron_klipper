@@ -404,6 +404,7 @@ class OAMSManager:
         self._canonical_group_by_lane: Dict[str, str] = {}
         self._lane_unit_map: Dict[str, str] = {}
         self._lane_by_location: Dict[Tuple[str, int], str] = {}
+        self._lane_to_fps_cache: Dict[str, str] = {}  # OPTIMIZATION: Lane→FPS direct mapping cache
 
         # OPTIMIZATION: Cache hardware service lookups
         self._hardware_service_cache: Dict[str, Any] = {}
@@ -792,7 +793,21 @@ class OAMSManager:
         """Get the FPS name for an AFC lane by querying its unit configuration.
 
         Returns the FPS name (e.g., "fps fps1") or None if not found.
+        Uses cached mapping when available for performance.
         """
+        # OPTIMIZATION: Check cache first
+        cached = self._lane_to_fps_cache.get(lane_name)
+        if cached is not None:
+            return cached
+
+        # Cache miss - compute and cache the result
+        fps_name = self._compute_fps_for_afc_lane(lane_name)
+        if fps_name is not None:
+            self._lane_to_fps_cache[lane_name] = fps_name
+        return fps_name
+
+    def _compute_fps_for_afc_lane(self, lane_name: str) -> Optional[str]:
+        """Compute the FPS name for an AFC lane (internal helper for caching)."""
         afc = self._get_afc()
         if afc is None:
             return None
@@ -868,9 +883,86 @@ class OAMSManager:
                 mapping[(oam.name, bay_index)] = lane_name
         self._lane_by_location = mapping
 
+    def _validate_afc_oams_integration(self, afc) -> None:
+        """Validate AFC lane configs match OAMS hardware configuration.
+
+        Checks for common integration issues:
+        - Lanes without unit definitions
+        - Lanes referencing non-existent AFC units
+        - Units without OAMS names
+        - OAMS names that don't exist in OAMS manager
+        - Lanes that can't be mapped to any FPS
+        """
+        lanes = getattr(afc, "lanes", {})
+        if not lanes:
+            return
+
+        issues = []
+        valid_lanes = 0
+
+        for lane_name, lane in lanes.items():
+            # Check lane has valid unit
+            unit_str = getattr(lane, "unit", None)
+            if not unit_str:
+                issues.append(f"Lane {lane_name} has no unit defined")
+                continue
+
+            # Parse unit string to get base unit name
+            if isinstance(unit_str, str) and ':' in unit_str:
+                base_unit_name = unit_str.split(':')[0]
+            else:
+                base_unit_name = str(unit_str)
+
+            # Check unit exists in AFC
+            unit_obj = getattr(lane, "unit_obj", None)
+            if unit_obj is None:
+                units = getattr(afc, "units", {})
+                unit_obj = units.get(base_unit_name)
+
+            if unit_obj is None:
+                issues.append(f"Lane {lane_name} references non-existent AFC unit '{base_unit_name}'")
+                continue
+
+            # Check unit has OAMS name
+            oams_name = getattr(unit_obj, "oams_name", None)
+            if not oams_name:
+                issues.append(f"AFC unit {base_unit_name} has no oams_name defined")
+                continue
+
+            # Check OAMS exists in OAMS manager
+            oam = self.oams.get(oams_name)
+            if oam is None:
+                oam = self.oams.get(f"oams {oams_name}")
+            if oam is None:
+                oam = self.oams.get(f"OAMS {oams_name}")
+            if oam is None:
+                issues.append(f"Lane {lane_name} references OAMS '{oams_name}' which doesn't exist in OAMS manager")
+                continue
+
+            # Check FPS can be found (use cache since we just built it)
+            fps_name = self._lane_to_fps_cache.get(lane_name)
+            if not fps_name:
+                issues.append(f"Lane {lane_name} cannot be mapped to any FPS (OAMS {oams_name} not found in any FPS config)")
+                continue
+
+            valid_lanes += 1
+
+        # Log results
+        if issues:
+            self.logger.warning("AFC-OAMS integration validation found %d issue(s):", len(issues))
+            for issue in issues:
+                self.logger.warning("  - %s", issue)
+            if valid_lanes > 0:
+                self.logger.info("AFC-OAMS integration: %d lanes configured correctly", valid_lanes)
+        else:
+            self.logger.info("AFC-OAMS integration validated: %d lanes configured correctly", valid_lanes)
+
     def _ensure_afc_lane_cache(self, afc) -> None:
+        """Build caches for AFC lane metadata and mappings."""
         lanes = getattr(afc, "lanes", {})
         updated = False
+        cache_built = False
+
         for lane_name, lane in lanes.items():
             canonical_group = self._normalize_group_name(getattr(lane, "_map", None))
             if canonical_group is None:
@@ -885,8 +977,20 @@ class OAMSManager:
             unit_name = getattr(lane, "unit", None)
             if unit_name and lane_name not in self._lane_unit_map:
                 self._lane_unit_map[lane_name] = unit_name
+
+            # OPTIMIZATION: Pre-populate lane→FPS cache
+            if lane_name not in self._lane_to_fps_cache:
+                fps_name = self._compute_fps_for_afc_lane(lane_name)
+                if fps_name is not None:
+                    self._lane_to_fps_cache[lane_name] = fps_name
+                    cache_built = True
+
         if updated:
             self._rebuild_lane_location_index()
+
+        # Validate AFC-OAMS integration after building cache
+        if cache_built and not self._afc_logged:
+            self._validate_afc_oams_integration(afc)
 
     def _resolve_lane_for_state(self, fps_state: 'FPSState', group_name: Optional[str], afc) -> Tuple[Optional[str], Optional[str]]:
         normalized_group = self._normalize_group_name(group_name)
@@ -1106,7 +1210,6 @@ class OAMSManager:
             fps_state.current_group = None
             fps_state.current_spool_idx = None
             fps_state.since = self.reactor.monotonic()
-            self.current_group = None
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
             self._cancel_post_load_pressure_check(fps_state)
@@ -1175,7 +1278,6 @@ class OAMSManager:
 
             fps_state.current_group = None
             fps_state.current_spool_idx = None
-            self.current_group = None
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
             self._cancel_post_load_pressure_check(fps_state)
@@ -1333,6 +1435,9 @@ class OAMSManager:
             fps_state.state = FPSLoadState.LOADED
             fps_state.direction = 1
 
+            # OPTIMIZATION: Enable follower immediately before cleanup operations
+            self._ensure_forward_follower(fps_name, fps_state, "load filament")
+
             # Clear LED error state if stuck spool was active
             if fps_state.stuck_spool_active:
                 try:
@@ -1343,7 +1448,6 @@ class OAMSManager:
 
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
-            self._ensure_forward_follower(fps_name, fps_state, "load filament")
 
             # Monitors are already running globally, no need to restart them
             return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
@@ -1411,9 +1515,11 @@ class OAMSManager:
                 
                 # Now set state to LOADED after timestamp is correct
                 fps_state.state = FPSLoadState.LOADED
-                
+
                 fps_state.direction = 1
-                self.current_group = group_name
+
+                # OPTIMIZATION: Enable follower immediately before cleanup operations
+                self._ensure_forward_follower(fps_name, fps_state, "load filament")
 
                 # Clear LED error state if stuck spool was active before resetting state
                 if fps_state.stuck_spool_active and oam is not None and bay_index is not None:
@@ -1425,7 +1531,6 @@ class OAMSManager:
 
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
-                self._ensure_forward_follower(fps_name, fps_state, "load filament")
                 
                 # FIX: Skip post-load pressure check if this load completed after retries
                 # Retries indicate unstable conditions and pressure sensors need time to stabilize
@@ -2337,6 +2442,101 @@ class OAMSManager:
             monitor.start()
 
         self.logger.info("All monitors started (optimized)")
+
+    # ============================================================================
+    # AFC State Change Notifications (Optional Callbacks)
+    # ============================================================================
+    # These methods can be called by AFC when lane state changes to keep OAMS
+    # manager in sync immediately without waiting for state detection polling.
+    # AFC integration is optional - these are no-ops if called when AFC is not configured.
+
+    def on_afc_lane_loaded(self, lane_name: str, extruder_name: Optional[str] = None) -> None:
+        """Callback for AFC to notify OAMS when a lane is loaded.
+
+        Args:
+            lane_name: Name of the lane that was loaded (e.g., "lane4")
+            extruder_name: Optional name of the extruder/tool it was loaded to
+
+        This allows OAMS to:
+        - Update FPS state immediately (no polling lag)
+        - Enable follower motor instantly
+        - Sync state for accurate monitoring
+        """
+        try:
+            # Get FPS for this lane (uses cache for speed)
+            fps_name = self.get_fps_for_afc_lane(lane_name)
+            if not fps_name:
+                return  # Lane not on any FPS we manage
+
+            fps_state = self.current_state.fps_state.get(fps_name)
+            if fps_state is None:
+                return
+
+            # Let state detection handle the full sync
+            # We just trigger it to run immediately instead of waiting for next poll
+            group_name, oam, bay_index = self._determine_loaded_lane_for_fps(fps_name, self.fpss[fps_name])
+
+            if group_name and oam and bay_index is not None:
+                # Update FPS state
+                fps_state.current_group = group_name
+                fps_state.current_oams = oam.name
+                fps_state.current_spool_idx = bay_index
+                fps_state.state = FPSLoadState.LOADED
+                fps_state.since = self.reactor.monotonic()
+                fps_state.direction = 1
+
+                # Enable follower immediately
+                self._ensure_forward_follower(fps_name, fps_state, "AFC lane loaded notification")
+
+                self.logger.info("Synced OAMS state from AFC: %s loaded to %s (bay %d on %s)",
+                               lane_name, fps_name, bay_index, oam.name)
+        except Exception:
+            self.logger.exception("Error processing AFC lane loaded notification for %s", lane_name)
+
+    def on_afc_lane_unloaded(self, lane_name: str, extruder_name: Optional[str] = None) -> None:
+        """Callback for AFC to notify OAMS when a lane is unloaded.
+
+        Args:
+            lane_name: Name of the lane that was unloaded (e.g., "lane4")
+            extruder_name: Optional name of the extruder/tool it was unloaded from
+
+        This allows OAMS to:
+        - Update FPS state immediately
+        - Disable follower motor
+        - Clear monitoring state
+        """
+        try:
+            # Get FPS for this lane (uses cache for speed)
+            fps_name = self.get_fps_for_afc_lane(lane_name)
+            if not fps_name:
+                return  # Lane not on any FPS we manage
+
+            fps_state = self.current_state.fps_state.get(fps_name)
+            if fps_state is None:
+                return
+
+            # Only update if this lane was actually loaded on this FPS
+            if fps_state.state == FPSLoadState.LOADED:
+                # Disable follower
+                if fps_state.current_oams and fps_state.following:
+                    oam = self.oams.get(fps_state.current_oams)
+                    if oam:
+                        try:
+                            oam.set_oams_follower(0, fps_state.direction)
+                            fps_state.following = False
+                        except Exception:
+                            self.logger.exception("Failed to disable follower during AFC unload notification")
+
+                # Update state
+                fps_state.state = FPSLoadState.UNLOADED
+                fps_state.current_group = None
+                fps_state.current_oams = None
+                fps_state.current_spool_idx = None
+                fps_state.since = self.reactor.monotonic()
+
+                self.logger.info("Synced OAMS state from AFC: %s unloaded from %s", lane_name, fps_name)
+        except Exception:
+            self.logger.exception("Error processing AFC lane unloaded notification for %s", lane_name)
 
     def stop_monitors(self):
         for timer in self.monitor_timers:
