@@ -571,7 +571,8 @@ class OAMSManager:
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
     def cmd_FOLLOWER(self, gcmd):
         enable = gcmd.get_int('ENABLE')
-        direction = gcmd.get_int('DIRECTION')
+        # DIRECTION is optional when disabling (ENABLE=0), defaults to 0
+        direction = gcmd.get_int('DIRECTION', 0)
         fps_name = "fps " + gcmd.get('FPS')
 
         if fps_name not in self.fpss:
@@ -597,16 +598,25 @@ class OAMSManager:
 
         # When disabling (ENABLE=0), just disable regardless of state
         if not enable:
-            if fps_state.current_oams:
-                oams_obj = self.oams.get(fps_state.current_oams)
-                if oams_obj:
-                    try:
-                        oams_obj.set_oams_follower(0, direction)
-                        fps_state.following = False
-                        self.logger.info("Disabled follower on %s", fps_name)
-                    except Exception:
-                        self.logger.exception("Failed to disable follower on %s", fps_state.current_oams)
-                        gcmd.respond_info(f"Failed to disable follower. Check logs.")
+            # If already unloaded or no OAMS, just mark as not following and return
+            if not fps_state.current_oams:
+                fps_state.following = False
+                self.logger.info("Follower disable requested on %s but no OAMS loaded, marking as not following", fps_name)
+                return
+
+            oams_obj = self.oams.get(fps_state.current_oams)
+            if oams_obj:
+                try:
+                    oams_obj.set_oams_follower(0, direction)
+                    fps_state.following = False
+                    self.logger.info("Disabled follower on %s", fps_name)
+                except Exception:
+                    self.logger.exception("Failed to disable follower on %s", fps_state.current_oams)
+                    gcmd.respond_info(f"Failed to disable follower. Check logs.")
+            else:
+                # OAMS not found but mark as not following anyway
+                fps_state.following = False
+                self.logger.info("Follower disable: OAMS %s not found, marking as not following", fps_state.current_oams)
             return
 
         # When enabling, we need a valid OAMS
