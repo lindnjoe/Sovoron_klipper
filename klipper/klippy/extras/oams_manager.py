@@ -521,11 +521,17 @@ class OAMSManager:
             self.filament_groups[name] = group
     
     def determine_current_loaded_group(self, fps_name: str) -> Tuple[Optional[str], Optional[object], Optional[int]]:
-        """Determine which filament group is currently loaded in the specified FPS."""
+        """Determine which filament group/lane is currently loaded in the specified FPS."""
         fps = self.fpss.get(fps_name)
         if fps is None:
             raise ValueError(f"FPS {fps_name} not found")
-            
+
+        # First try lane-based detection (new method)
+        lane_result = self._determine_loaded_lane_for_fps(fps_name, fps)
+        if lane_result[0] is not None:
+            return lane_result
+
+        # Fall back to group-based detection (legacy method)
         for group_name, group in self.filament_groups.items():
             for oam, bay_index in group.bays:
                 try:
@@ -536,7 +542,77 @@ class OAMSManager:
 
                 if is_loaded and oam in fps.oams:
                     return group_name, oam, bay_index
-                    
+
+        return None, None, None
+
+    def _determine_loaded_lane_for_fps(self, fps_name: str, fps) -> Tuple[Optional[str], Optional[object], Optional[int]]:
+        """Determine which AFC lane is loaded by checking hub sensors for each lane on this FPS."""
+        afc = self._get_afc()
+        if afc is None:
+            return None, None, None
+
+        # Check each AFC lane to see if it's on this FPS and has filament loaded
+        for lane_name, lane in afc.lanes.items():
+            # Check if this lane is on the current FPS
+            lane_fps = self.get_fps_for_afc_lane(lane_name)
+            if lane_fps != fps_name:
+                continue  # This lane is on a different FPS
+
+            # Get the OAMS and bay index for this lane
+            unit_str = getattr(lane, "unit", None)
+            if not unit_str:
+                continue
+
+            # Parse unit and slot
+            if isinstance(unit_str, str) and ':' in unit_str:
+                base_unit_name, slot_str = unit_str.split(':', 1)
+                try:
+                    slot_number = int(slot_str)
+                except ValueError:
+                    continue
+            else:
+                base_unit_name = str(unit_str)
+                slot_number = getattr(lane, "index", None)
+                if slot_number is None:
+                    continue
+
+            # Convert to bay index
+            bay_index = slot_number - 1
+            if bay_index < 0:
+                continue
+
+            # Get OAMS name from AFC unit
+            unit_obj = getattr(lane, "unit_obj", None)
+            if unit_obj is None:
+                units = getattr(afc, "units", {})
+                unit_obj = units.get(base_unit_name)
+            if unit_obj is None:
+                continue
+
+            oams_name = getattr(unit_obj, "oams_name", None)
+            if not oams_name:
+                continue
+
+            # Find OAMS object
+            oam = self.oams.get(oams_name)
+            if oam is None:
+                oam = self.oams.get(f"oams {oams_name}")
+            if oam is None:
+                continue
+
+            # Check if this bay is loaded
+            try:
+                is_loaded = oam.is_bay_loaded(bay_index)
+            except Exception:
+                self.logger.exception("Failed to query bay %s on %s for lane %s", bay_index, oams_name, lane_name)
+                continue
+
+            if is_loaded:
+                # Found loaded lane! Return lane's map name (e.g., "T4") as the group
+                group_name = lane.map if hasattr(lane, 'map') else lane_name
+                self.logger.info("State detection: Found %s loaded (bay %d on %s)", lane_name, bay_index, oams_name)
+                return group_name, oam, bay_index
+
         return None, None, None
         
     def register_commands(self):
