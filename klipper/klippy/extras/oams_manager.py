@@ -1126,20 +1126,65 @@ class OAMSManager:
         # Load the filament
         self.logger.info("Loading lane %s: %s bay %s via %s", lane_name, oams_name, bay_index, fps_name)
 
+        # Capture state BEFORE changing fps_state.state to avoid getting stuck
+        try:
+            encoder = oam.encoder_clicks
+            current_time = self.reactor.monotonic()
+            oam_name = oam.name
+        except Exception:
+            self.logger.exception("Failed to capture load state for lane %s bay %s", lane_name, bay_index)
+            return False, f"Failed to capture load state for lane {lane_name}"
+
+        # Only set state after all preliminary operations succeed
         fps_state.state = FPSLoadState.LOADING
-        fps_state.current_oams = oams_name
+        fps_state.encoder = encoder
+        fps_state.current_oams = oam_name
         fps_state.current_spool_idx = bay_index
+        # Set since to now for THIS load attempt (will be updated on success)
+        fps_state.since = current_time
+        fps_state.clear_encoder_samples()
 
         try:
-            oam.load(bay_index)
+            success, message = oam.load_spool_with_retry(bay_index)
         except Exception:
             self.logger.exception("Failed to load bay %s on %s", bay_index, oams_name)
             fps_state.state = FPSLoadState.UNLOADED
             return False, f"Failed to load bay {bay_index} on {oams_name}"
 
-        # Monitor the load
-        self.start_monitors([fps_name])
-        return True, f"Loading lane {lane_name} ({oams_name} bay {bay_index})"
+        if success:
+            fps_state.current_group = lane.map if hasattr(lane, 'map') else lane_name
+            fps_state.current_oams = oam.name
+            fps_state.current_spool_idx = bay_index
+
+            # CRITICAL: Set fps_state.since to the successful load time BEFORE changing state
+            successful_load_time = oam.get_last_successful_load_time(bay_index)
+            if successful_load_time is not None:
+                fps_state.since = successful_load_time
+            else:
+                fps_state.since = self.reactor.monotonic()
+
+            # Now set state to LOADED after timestamp is correct
+            fps_state.state = FPSLoadState.LOADED
+            fps_state.direction = 1
+
+            # Clear LED error state if stuck spool was active
+            if fps_state.stuck_spool_active:
+                try:
+                    oam.set_led_error(bay_index, 0)
+                    self.logger.info("Cleared stuck spool LED for %s spool %d after successful load", fps_name, bay_index)
+                except Exception:
+                    self.logger.exception("Failed to clear LED on %s spool %d after successful load", fps_name, bay_index)
+
+            fps_state.reset_stuck_spool_state()
+            fps_state.reset_clog_tracker()
+            self._ensure_forward_follower(fps_name, fps_state, "load filament")
+
+            # Start monitoring
+            self.start_monitors([fps_name])
+            return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
+        else:
+            fps_state.state = FPSLoadState.UNLOADED
+            return False, message if message else f"Failed to load lane {lane_name}"
 
     def _load_filament_for_group(self, group_name: str) -> Tuple[bool, str]:
         if group_name not in self.filament_groups:
