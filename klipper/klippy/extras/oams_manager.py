@@ -546,17 +546,27 @@ class OAMSManager:
         return None, None, None
 
     def _determine_loaded_lane_for_fps(self, fps_name: str, fps) -> Tuple[Optional[str], Optional[object], Optional[int]]:
-        """Determine which AFC lane is loaded by checking hub sensors for each lane on this FPS."""
+        """Determine which AFC lane is loaded by asking AFC which lane is loaded to each extruder."""
         afc = self._get_afc()
         if afc is None:
             return None, None, None
 
-        # Check each AFC lane to see if it's on this FPS and has filament loaded
-        for lane_name, lane in afc.lanes.items():
+        # Check each AFC extruder to see which lane is loaded
+        for extruder_name, extruder_obj in afc.extruders.items():
+            # Get the currently loaded lane name from AFC extruder state
+            loaded_lane_name = getattr(extruder_obj, 'lane_loaded', None)
+            if not loaded_lane_name:
+                continue
+
             # Check if this lane is on the current FPS
-            lane_fps = self.get_fps_for_afc_lane(lane_name)
+            lane_fps = self.get_fps_for_afc_lane(loaded_lane_name)
             if lane_fps != fps_name:
                 continue  # This lane is on a different FPS
+
+            # Get the lane object
+            lane = afc.lanes.get(loaded_lane_name)
+            if lane is None:
+                continue
 
             # Get the OAMS and bay index for this lane
             unit_str = getattr(lane, "unit", None)
@@ -600,17 +610,26 @@ class OAMSManager:
             if oam is None:
                 continue
 
-            # Check if this bay is loaded
+            # Verify the bay is actually loaded using OAMS hardware sensor (original working logic)
             try:
                 is_loaded = oam.is_bay_loaded(bay_index)
             except Exception:
-                self.logger.exception("Failed to query bay %s on %s for lane %s", bay_index, oams_name, lane_name)
-                continue
+                self.logger.exception("Failed to query bay %s on %s for lane %s", bay_index, oams_name, loaded_lane_name)
+                # AFC says it's loaded, so trust AFC even if sensor query fails
+                is_loaded = True
 
             if is_loaded:
                 # Found loaded lane! Return lane's map name (e.g., "T4") as the group
-                group_name = lane.map if hasattr(lane, 'map') else lane_name
-                self.logger.info("State detection: Found %s loaded (bay %d on %s)", lane_name, bay_index, oams_name)
+                group_name = lane.map if hasattr(lane, 'map') else loaded_lane_name
+                self.logger.info("State detection: Found %s loaded to %s (bay %d on %s)",
+                               loaded_lane_name, extruder_name, bay_index, oams_name)
+                return group_name, oam, bay_index
+            else:
+                # AFC says loaded but OAMS sensor says not loaded - state mismatch
+                # Trust AFC since it's the authoritative source
+                self.logger.warning("State mismatch: AFC says %s loaded to %s, but OAMS bay %d sensor says not loaded. Trusting AFC.",
+                                  loaded_lane_name, extruder_name, bay_index)
+                group_name = lane.map if hasattr(lane, 'map') else loaded_lane_name
                 return group_name, oam, bay_index
 
         return None, None, None
