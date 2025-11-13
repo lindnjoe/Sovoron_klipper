@@ -572,10 +572,15 @@ class OAMSManager:
 
             # Check if this lane is on the current FPS
             lane_fps = self.get_fps_for_afc_lane(loaded_lane_name)
-            self.logger.info("State detection: Lane %s is on FPS %s (checking %s)", loaded_lane_name, lane_fps, fps_name)
+            self.logger.info("State detection: Lane %s is on FPS '%s' (checking '%s'), match=%s",
+                           loaded_lane_name, lane_fps, fps_name, lane_fps == fps_name)
 
             if lane_fps != fps_name:
+                self.logger.info("State detection: Skipping %s - different FPS", loaded_lane_name)
                 continue  # This lane is on a different FPS
+
+            # FPS matches! Continue with this lane
+            self.logger.info("State detection: FPS matches! Processing %s for %s", loaded_lane_name, fps_name)
 
             # Get the lane object
             lane = afc.lanes.get(loaded_lane_name)
@@ -583,61 +588,82 @@ class OAMSManager:
                 self.logger.warning("State detection: Lane %s not found in afc.lanes", loaded_lane_name)
                 continue
 
+            self.logger.info("State detection: Found lane object for %s", loaded_lane_name)
+
             # Get the OAMS and bay index for this lane
             unit_str = getattr(lane, "unit", None)
             if not unit_str:
                 self.logger.warning("State detection: Lane %s has no unit", loaded_lane_name)
                 continue
 
+            self.logger.info("State detection: Lane %s has unit=%s", loaded_lane_name, unit_str)
+
             # Parse unit and slot
             if isinstance(unit_str, str) and ':' in unit_str:
                 base_unit_name, slot_str = unit_str.split(':', 1)
                 try:
                     slot_number = int(slot_str)
+                    self.logger.info("State detection: Parsed unit %s: base=%s, slot=%d", unit_str, base_unit_name, slot_number)
                 except ValueError:
+                    self.logger.warning("State detection: Invalid slot number in unit %s", unit_str)
                     continue
             else:
                 base_unit_name = str(unit_str)
                 slot_number = getattr(lane, "index", None)
                 if slot_number is None:
+                    self.logger.warning("State detection: No index found for lane %s", loaded_lane_name)
                     continue
+                self.logger.info("State detection: Using lane index: base=%s, slot=%d", base_unit_name, slot_number)
 
             # Convert to bay index
             bay_index = slot_number - 1
             if bay_index < 0:
+                self.logger.warning("State detection: Invalid bay index %d (slot %d)", bay_index, slot_number)
                 continue
+
+            self.logger.info("State detection: Bay index=%d for lane %s", bay_index, loaded_lane_name)
 
             # Get OAMS name from AFC unit
             unit_obj = getattr(lane, "unit_obj", None)
             if unit_obj is None:
                 units = getattr(afc, "units", {})
                 unit_obj = units.get(base_unit_name)
+                self.logger.info("State detection: Looked up unit %s from afc.units", base_unit_name)
             if unit_obj is None:
+                self.logger.warning("State detection: Unit %s not found", base_unit_name)
                 continue
 
             oams_name = getattr(unit_obj, "oams_name", None)
             if not oams_name:
+                self.logger.warning("State detection: Unit %s has no oams_name", base_unit_name)
                 continue
+
+            self.logger.info("State detection: OAMS name=%s for lane %s", oams_name, loaded_lane_name)
 
             # Find OAMS object
             oam = self.oams.get(oams_name)
             if oam is None:
                 oam = self.oams.get(f"oams {oams_name}")
             if oam is None:
+                self.logger.warning("State detection: OAMS %s not found in self.oams", oams_name)
                 continue
+
+            self.logger.info("State detection: Found OAMS object for %s", oams_name)
 
             # Verify the bay is actually loaded using OAMS hardware sensor (original working logic)
             try:
                 is_loaded = oam.is_bay_loaded(bay_index)
+                self.logger.info("State detection: is_bay_loaded(%d) = %s for %s", bay_index, is_loaded, oams_name)
             except Exception:
                 self.logger.exception("Failed to query bay %s on %s for lane %s", bay_index, oams_name, loaded_lane_name)
                 # AFC says it's loaded, so trust AFC even if sensor query fails
                 is_loaded = True
+                self.logger.info("State detection: Query failed, trusting AFC, is_loaded=True")
 
             if is_loaded:
                 # Found loaded lane! Return lane's map name (e.g., "T4") as the group
                 group_name = lane.map if hasattr(lane, 'map') else loaded_lane_name
-                self.logger.info("State detection: Found %s loaded to %s (bay %d on %s)",
+                self.logger.info("State detection: SUCCESS! Found %s loaded to %s (bay %d on %s)",
                                loaded_lane_name, extruder_name, bay_index, oams_name)
                 return group_name, oam, bay_index
             else:
@@ -646,6 +672,7 @@ class OAMSManager:
                 self.logger.warning("State mismatch: AFC says %s loaded to %s, but OAMS bay %d sensor says not loaded. Trusting AFC.",
                                   loaded_lane_name, extruder_name, bay_index)
                 group_name = lane.map if hasattr(lane, 'map') else loaded_lane_name
+                self.logger.info("State detection: Trusting AFC anyway, returning group=%s", group_name)
                 return group_name, oam, bay_index
 
         return None, None, None
