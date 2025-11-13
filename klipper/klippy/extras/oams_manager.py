@@ -600,17 +600,24 @@ class OAMSManager:
             if oam is None:
                 continue
 
-            # Check if this bay is loaded
+            # Check if this bay/lane is loaded by checking AFC lane sensor states
+            # Use load_state (toolhead sensor) since load_to_hub: False means filament goes to toolhead
             try:
-                is_loaded = oam.is_bay_loaded(bay_index)
+                # Check AFC lane sensor state instead of OAMS hub sensor
+                # prep_state = hub sensor, load_state = toolhead sensor
+                is_loaded = getattr(lane, 'load_state', False) or getattr(lane, 'prep_state', False)
+                self.logger.debug("State detection: %s load_state=%s, prep_state=%s",
+                                lane_name, getattr(lane, 'load_state', False),
+                                getattr(lane, 'prep_state', False))
             except Exception:
-                self.logger.exception("Failed to query bay %s on %s for lane %s", bay_index, oams_name, lane_name)
+                self.logger.exception("Failed to query sensor state for lane %s", lane_name)
                 continue
 
             if is_loaded:
                 # Found loaded lane! Return lane's map name (e.g., "T4") as the group
                 group_name = lane.map if hasattr(lane, 'map') else lane_name
-                self.logger.info("State detection: Found %s loaded (bay %d on %s)", lane_name, bay_index, oams_name)
+                self.logger.info("State detection: Found %s loaded (bay %d on %s) via AFC lane sensors",
+                               lane_name, bay_index, oams_name)
                 return group_name, oam, bay_index
 
         return None, None, None
