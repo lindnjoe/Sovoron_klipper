@@ -650,30 +650,17 @@ class OAMSManager:
 
             self.logger.info("State detection: Found OAMS object for %s", oams_name)
 
-            # Verify the bay is actually loaded using OAMS hardware sensor (original working logic)
-            try:
-                is_loaded = oam.is_bay_loaded(bay_index)
-                self.logger.info("State detection: is_bay_loaded(%d) = %s for %s", bay_index, is_loaded, oams_name)
-            except Exception:
-                self.logger.exception("Failed to query bay %s on %s for lane %s", bay_index, oams_name, loaded_lane_name)
-                # AFC says it's loaded, so trust AFC even if sensor query fails
-                is_loaded = True
-                self.logger.info("State detection: Query failed, trusting AFC, is_loaded=True")
+            # With load_to_hub: False, filament bypasses OAMS hub sensors
+            # AFC is the authoritative source - it knows lane is loaded via its own sensors
+            # So just trust AFC directly instead of checking OAMS hub sensors
+            self.logger.info("State detection: AFC says %s loaded to %s - trusting AFC (load_to_hub: False means OAMS hub sensors not used)",
+                           loaded_lane_name, extruder_name)
 
-            if is_loaded:
-                # Found loaded lane! Return lane's map name (e.g., "T4") as the group
-                group_name = lane.map if hasattr(lane, 'map') else loaded_lane_name
-                self.logger.info("State detection: SUCCESS! Found %s loaded to %s (bay %d on %s)",
-                               loaded_lane_name, extruder_name, bay_index, oams_name)
-                return group_name, oam, bay_index
-            else:
-                # AFC says loaded but OAMS sensor says not loaded - state mismatch
-                # Trust AFC since it's the authoritative source
-                self.logger.warning("State mismatch: AFC says %s loaded to %s, but OAMS bay %d sensor says not loaded. Trusting AFC.",
-                                  loaded_lane_name, extruder_name, bay_index)
-                group_name = lane.map if hasattr(lane, 'map') else loaded_lane_name
-                self.logger.info("State detection: Trusting AFC anyway, returning group=%s", group_name)
-                return group_name, oam, bay_index
+            # Found loaded lane! Return lane's map name (e.g., "T4") as the group
+            group_name = lane.map if hasattr(lane, 'map') else loaded_lane_name
+            self.logger.info("State detection: SUCCESS! %s loaded to %s (bay %d on %s)",
+                           loaded_lane_name, extruder_name, bay_index, oams_name)
+            return group_name, oam, bay_index
 
         return None, None, None
         
@@ -901,14 +888,23 @@ class OAMSManager:
                     oams_names = [getattr(oam, "name", None) for oam in fps_oams]
                     self.logger.info("get_fps_for_afc_lane: %s has OAMS list: %s", fps_name, oams_names)
                     for oam in fps_oams:
-                        if getattr(oam, "name", None) == oams_name:
-                            self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s", lane_name, fps_name)
+                        oam_name_full = getattr(oam, "name", None)
+                        # OAMS objects can be registered with different capitalizations
+                        # AFC units store just "oams1", but Klipper may use "oams oams1" or "OAMS oams1"
+                        # Check all possible forms
+                        if (oam_name_full == oams_name or
+                            oam_name_full == f"oams {oams_name}" or
+                            oam_name_full == f"OAMS {oams_name}"):
+                            self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s (matched %s)", lane_name, fps_name, oam_name_full)
                             return fps_name
                 else:
                     oam_name_check = getattr(fps_oams, "name", None)
                     self.logger.info("get_fps_for_afc_lane: %s has single OAMS: %s", fps_name, oam_name_check)
-                    if oam_name_check == oams_name:
-                        self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s", lane_name, fps_name)
+                    # Check all possible forms: "oams1", "oams oams1", "OAMS oams1"
+                    if (oam_name_check == oams_name or
+                        oam_name_check == f"oams {oams_name}" or
+                        oam_name_check == f"OAMS {oams_name}"):
+                        self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s (matched %s)", lane_name, fps_name, oam_name_check)
                         return fps_name
             else:
                 self.logger.info("get_fps_for_afc_lane: %s has no oams attribute", fps_name)
