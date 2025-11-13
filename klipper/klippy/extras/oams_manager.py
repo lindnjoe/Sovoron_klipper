@@ -579,9 +579,9 @@ class OAMSManager:
             return
 
         fps_state = self.current_state.fps_state[fps_name]
-        if fps_state.state == FPSLoadState.UNLOADED:
-            gcmd.respond_info(f"FPS {fps_name} is already unloaded")
-            return
+
+        # Allow enabling follower when UNLOADED (before load starts) or LOADED
+        # Only block during active LOADING/UNLOADING operations
         if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
             gcmd.respond_info(f"FPS {fps_name} is currently busy")
             return
@@ -595,15 +595,32 @@ class OAMSManager:
             )
             return
 
+        # When disabling (ENABLE=0), just disable regardless of state
+        if not enable:
+            if fps_state.current_oams:
+                oams_obj = self.oams.get(fps_state.current_oams)
+                if oams_obj:
+                    try:
+                        oams_obj.set_oams_follower(0, direction)
+                        fps_state.following = False
+                        self.logger.info("Disabled follower on %s", fps_name)
+                    except Exception:
+                        self.logger.exception("Failed to disable follower on %s", fps_state.current_oams)
+                        gcmd.respond_info(f"Failed to disable follower. Check logs.")
+            return
+
+        # When enabling, we need a valid OAMS
         oams_obj = self.oams.get(fps_state.current_oams)
         if oams_obj is None:
             gcmd.respond_info(f"OAMS {fps_state.current_oams} is not available")
             return
 
         try:
+            self.logger.info("OAMSM_FOLLOWER: enabling follower on %s, direction=%d", fps_name, direction)
             oams_obj.set_oams_follower(enable, direction)
             fps_state.following = bool(enable)
             fps_state.direction = direction
+            self.logger.info("OAMSM_FOLLOWER: successfully enabled follower on %s", fps_name)
         except Exception:
             self.logger.exception("Failed to set follower on %s", fps_state.current_oams)
             gcmd.respond_info(f"Failed to set follower. Check logs.")
@@ -1543,37 +1560,56 @@ class OAMSManager:
             - Fails silently if no spool is loaded (current_spool_idx is None)
             - Logs exceptions but doesn't raise them to avoid disrupting workflow
         """
+        self.logger.info("_enable_follower called: fps=%s, oams=%s, direction=%d, context=%s, spool_idx=%s",
+                        fps_name, oams.name if oams else None, direction, context, fps_state.current_spool_idx)
+
         if fps_state.current_spool_idx is None:
+            self.logger.info("_enable_follower: early return - no spool loaded (current_spool_idx is None)")
             return
 
         if oams is None and fps_state.current_oams is not None:
+            self.logger.info("_enable_follower: oams is None, looking up from fps_state.current_oams=%s", fps_state.current_oams)
             oams = self.oams.get(fps_state.current_oams)
         if oams is None:
+            self.logger.warning("_enable_follower: OAMS is None, cannot enable follower!")
             return
 
         direction = direction if direction in (0, 1) else 1
 
         try:
+            self.logger.info("_enable_follower: calling oams.set_oams_follower(1, %d) on %s", direction, oams.name)
             oams.set_oams_follower(1, direction)
             fps_state.following = True
             fps_state.direction = direction
-            if self.logger.isEnabledFor(logging.DEBUG):
-                self.logger.debug("Enabled follower for %s spool %s after %s.", fps_name, fps_state.current_spool_idx, context)
+            self.logger.info("_enable_follower: SUCCESS - follower enabled for %s spool %s after %s",
+                           fps_name, fps_state.current_spool_idx, context)
         except Exception:
             self.logger.exception("Failed to enable follower for %s after %s", fps_name, context)
 
     def _ensure_forward_follower(self, fps_name: str, fps_state: "FPSState", context: str) -> None:
-        if (fps_state.current_oams is None or fps_state.current_spool_idx is None or 
+        self.logger.info("_ensure_forward_follower called for %s, context=%s, current_oams=%s, spool_idx=%s, state=%s, following=%s",
+                         fps_name, context, fps_state.current_oams, fps_state.current_spool_idx,
+                         fps_state.state, fps_state.following)
+
+        if (fps_state.current_oams is None or fps_state.current_spool_idx is None or
             fps_state.stuck_spool_active or fps_state.state != FPSLoadState.LOADED):
+            self.logger.info("_ensure_forward_follower: early return - current_oams=%s, spool_idx=%s, stuck=%s, state=%s",
+                           fps_state.current_oams, fps_state.current_spool_idx,
+                           fps_state.stuck_spool_active, fps_state.state)
             return
 
         if fps_state.following and fps_state.direction == 1:
+            self.logger.info("_ensure_forward_follower: already following in direction 1, skipping")
             return
 
         oams = self.oams.get(fps_state.current_oams)
         if oams is None:
+            self.logger.warning("_ensure_forward_follower: OAMS %s not found! Available: %s",
+                              fps_state.current_oams, list(self.oams.keys()))
             return
 
+        self.logger.info("_ensure_forward_follower: enabling follower for %s spool %s",
+                        fps_name, fps_state.current_spool_idx)
         fps_state.direction = 1
         self._enable_follower(fps_name, fps_state, oams, 1, context)
 
