@@ -888,14 +888,18 @@ class OAMSManager:
                     oams_names = [getattr(oam, "name", None) for oam in fps_oams]
                     self.logger.info("get_fps_for_afc_lane: %s has OAMS list: %s", fps_name, oams_names)
                     for oam in fps_oams:
-                        if getattr(oam, "name", None) == oams_name:
-                            self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s", lane_name, fps_name)
+                        oam_name_full = getattr(oam, "name", None)
+                        # OAMS objects are registered as "oams oams1" but AFC units store "oams1"
+                        # Check both forms: "oams1" and "oams oams1"
+                        if oam_name_full == oams_name or oam_name_full == f"oams {oams_name}":
+                            self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s (matched %s)", lane_name, fps_name, oam_name_full)
                             return fps_name
                 else:
                     oam_name_check = getattr(fps_oams, "name", None)
                     self.logger.info("get_fps_for_afc_lane: %s has single OAMS: %s", fps_name, oam_name_check)
-                    if oam_name_check == oams_name:
-                        self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s", lane_name, fps_name)
+                    # Check both forms: "oams1" and "oams oams1"
+                    if oam_name_check == oams_name or oam_name_check == f"oams {oams_name}":
+                        self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s (matched %s)", lane_name, fps_name, oam_name_check)
                         return fps_name
             else:
                 self.logger.info("get_fps_for_afc_lane: %s has no oams attribute", fps_name)
