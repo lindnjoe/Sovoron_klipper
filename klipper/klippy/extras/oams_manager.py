@@ -1196,8 +1196,7 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             self._ensure_forward_follower(fps_name, fps_state, "load filament")
 
-            # Start monitoring
-            self.start_monitors([fps_name])
+            # Monitors are already running globally, no need to restart them
             return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
         else:
             fps_state.state = FPSLoadState.UNLOADED
