@@ -889,16 +889,21 @@ class OAMSManager:
                     self.logger.info("get_fps_for_afc_lane: %s has OAMS list: %s", fps_name, oams_names)
                     for oam in fps_oams:
                         oam_name_full = getattr(oam, "name", None)
-                        # OAMS objects are registered as "oams oams1" but AFC units store "oams1"
-                        # Check both forms: "oams1" and "oams oams1"
-                        if oam_name_full == oams_name or oam_name_full == f"oams {oams_name}":
+                        # OAMS objects can be registered with different capitalizations
+                        # AFC units store just "oams1", but Klipper may use "oams oams1" or "OAMS oams1"
+                        # Check all possible forms
+                        if (oam_name_full == oams_name or
+                            oam_name_full == f"oams {oams_name}" or
+                            oam_name_full == f"OAMS {oams_name}"):
                             self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s (matched %s)", lane_name, fps_name, oam_name_full)
                             return fps_name
                 else:
                     oam_name_check = getattr(fps_oams, "name", None)
                     self.logger.info("get_fps_for_afc_lane: %s has single OAMS: %s", fps_name, oam_name_check)
-                    # Check both forms: "oams1" and "oams oams1"
-                    if oam_name_check == oams_name or oam_name_check == f"oams {oams_name}":
+                    # Check all possible forms: "oams1", "oams oams1", "OAMS oams1"
+                    if (oam_name_check == oams_name or
+                        oam_name_check == f"oams {oams_name}" or
+                        oam_name_check == f"OAMS {oams_name}"):
                         self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s (matched %s)", lane_name, fps_name, oam_name_check)
                         return fps_name
             else:
