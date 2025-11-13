@@ -841,17 +841,23 @@ class OAMSManager:
 
         Returns the FPS name (e.g., "fps1") or None if not found.
         """
+        self.logger.info("get_fps_for_afc_lane: Checking lane %s", lane_name)
+
         afc = self._get_afc()
         if afc is None:
+            self.logger.warning("get_fps_for_afc_lane: AFC not found")
             return None
 
         lane = afc.lanes.get(lane_name)
         if lane is None:
+            self.logger.warning("get_fps_for_afc_lane: Lane %s not found in afc.lanes", lane_name)
             return None
 
         # Get the unit string (e.g., "AMS_1:1")
         unit_str = getattr(lane, "unit", None)
+        self.logger.info("get_fps_for_afc_lane: Lane %s has unit=%s (type=%s)", lane_name, unit_str, type(unit_str).__name__)
         if not unit_str or not isinstance(unit_str, str):
+            self.logger.warning("get_fps_for_afc_lane: Lane %s unit is invalid", lane_name)
             return None
 
         # Extract base unit name (e.g., "AMS_1" from "AMS_1:1")
@@ -859,35 +865,55 @@ class OAMSManager:
             base_unit_name = unit_str.split(':')[0]
         else:
             base_unit_name = unit_str
+        self.logger.info("get_fps_for_afc_lane: Base unit name=%s", base_unit_name)
 
         # Look up the AFC unit object
         unit_obj = getattr(lane, "unit_obj", None)
         if unit_obj is None:
             # Try to find it from AFC's units
             units = getattr(afc, "units", {})
+            self.logger.info("get_fps_for_afc_lane: afc.units has %d units: %s", len(units), list(units.keys()))
             unit_obj = units.get(base_unit_name)
+            if unit_obj:
+                self.logger.info("get_fps_for_afc_lane: Found unit_obj for %s in afc.units", base_unit_name)
+            else:
+                self.logger.warning("get_fps_for_afc_lane: Unit %s not found in afc.units", base_unit_name)
 
         if unit_obj is None:
+            self.logger.warning("get_fps_for_afc_lane: unit_obj is None for %s", base_unit_name)
             return None
 
         # Get the OAMS name from the unit (e.g., "oams1")
         oams_name = getattr(unit_obj, "oams_name", None)
+        self.logger.info("get_fps_for_afc_lane: oams_name=%s for unit %s", oams_name, base_unit_name)
         if not oams_name:
+            self.logger.warning("get_fps_for_afc_lane: No oams_name on unit %s", base_unit_name)
             return None
 
         # Find which FPS has this OAMS
+        self.logger.info("get_fps_for_afc_lane: Searching for OAMS %s in %d FPS: %s", oams_name, len(self.fpss), list(self.fpss.keys()))
         for fps_name, fps in self.fpss.items():
             if hasattr(fps, "oams"):
                 fps_oams = fps.oams
+                self.logger.info("get_fps_for_afc_lane: %s has oams (type=%s)", fps_name, type(fps_oams).__name__)
                 # fps.oams could be a list or a single oams object
                 if isinstance(fps_oams, list):
+                    oams_names = [getattr(oam, "name", None) for oam in fps_oams]
+                    self.logger.info("get_fps_for_afc_lane: %s has OAMS list: %s", fps_name, oams_names)
                     for oam in fps_oams:
                         if getattr(oam, "name", None) == oams_name:
+                            self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s", lane_name, fps_name)
                             return fps_name
                 else:
-                    if getattr(fps_oams, "name", None) == oams_name:
+                    oam_name_check = getattr(fps_oams, "name", None)
+                    self.logger.info("get_fps_for_afc_lane: %s has single OAMS: %s", fps_name, oam_name_check)
+                    if oam_name_check == oams_name:
+                        self.logger.info("get_fps_for_afc_lane: FOUND! %s is on %s", lane_name, fps_name)
                         return fps_name
+            else:
+                self.logger.info("get_fps_for_afc_lane: %s has no oams attribute", fps_name)
 
+        self.logger.warning("get_fps_for_afc_lane: No FPS found for OAMS %s (lane %s)", oams_name, lane_name)
         return None
 
     def _normalize_group_name(self, group: Optional[str]) -> Optional[str]:
