@@ -8,3 +8,8 @@ axiscope.bak
 *.csv
 *.zip
 *.git
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
