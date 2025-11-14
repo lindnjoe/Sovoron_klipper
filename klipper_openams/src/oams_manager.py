@@ -830,30 +830,6 @@ class OAMSManager:
     def _rebuild_lane_location_index(self) -> None:
         """No longer needed - using lane-based detection only."""
         pass
-    def _rebuild_lane_location_index(self) -> None:
-        """No longer needed - using lane-based detection only."""
-        pass
-    def _rebuild_lane_location_index(self) -> None:
-        """No longer needed - using lane-based detection only."""
-        pass
-    def _rebuild_lane_location_index(self) -> None:
-        """No longer needed - using lane-based detection only."""
-        pass
-    def _rebuild_lane_location_index(self) -> None:
-        """No longer needed - using lane-based detection only."""
-        pass
-    def _rebuild_lane_location_index(self) -> None:
-        """No longer needed - using lane-based detection only."""
-        pass
-    def _rebuild_lane_location_index(self) -> None:
-        """No longer needed - using lane-based detection only."""
-        pass
-    def _rebuild_lane_location_index(self) -> None:
-        """No longer needed - using lane-based detection only."""
-        pass
-    def _rebuild_lane_location_index(self) -> None:
-        """No longer needed - using lane-based detection only."""
-        pass
 
     def _validate_afc_oams_integration(self, afc) -> None:
         """Validate AFC lane configs match OAMS hardware configuration.
