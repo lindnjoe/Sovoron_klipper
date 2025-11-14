@@ -1506,6 +1506,9 @@ class OAMSManager:
         fps_state.stuck_spool_start_time = None
         self._pause_printer_message(message, fps_state.current_oams)
 
+        # Immediately re-enable follower so user can manually fix filament with follower tracking
+        self._restore_follower_if_needed(fps_name, fps_state, oams, "stuck spool pause")
+
     def _unified_monitor_for_fps(self, fps_name):
         """Consolidated monitor handling all FPS checks in a single timer (OPTIMIZED)."""
         def _unified_monitor(self, eventtime):
