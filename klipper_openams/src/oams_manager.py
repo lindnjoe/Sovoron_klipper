@@ -915,7 +915,7 @@ class OAMSManager:
             if unit_name and lane_name not in self._lane_unit_map:
                 self._lane_unit_map[lane_name] = unit_name
 
-            # OPTIMIZATION: Pre-populate lane→FPS cache
+            # OPTIMIZATION: Pre-populate lane?FPS cache
             if lane_name not in self._lane_to_fps_cache:
                 fps_name = self._compute_fps_for_afc_lane(lane_name)
                 if fps_name is not None:
