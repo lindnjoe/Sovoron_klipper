@@ -8,3 +8,4 @@ axiscope.bak
 *.csv
 *.zip
 *.git
+klipper_openams/src/__pycache__/
