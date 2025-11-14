@@ -459,7 +459,7 @@ class OAMSManager:
                 fps_state.current_lane,
                 current_oams,
                 fps_state.current_spool_idx,
-            ) = self.determine_current_loaded_group(fps_name)
+            ) = self.determine_current_loaded_lane(fps_name)
 
             if current_oams is not None:
                 fps_state.current_oams = current_oams.name
@@ -505,7 +505,6 @@ class OAMSManager:
         except Exception:
             self._toolhead_obj = None
 
-        self._rebuild_group_fps_index()
         self.determine_state()
         self.start_monitors()
         self.ready = True
@@ -514,7 +513,7 @@ class OAMSManager:
         for name, oam in self.printer.lookup_objects(module="oams"):
             self.oams[name] = oam
         
-    def determine_current_loaded_group(self, fps_name: str) -> Tuple[Optional[str], Optional[object], Optional[int]]:
+    def determine_current_loaded_lane(self, fps_name: str) -> Tuple[Optional[str], Optional[object], Optional[int]]:
         """Determine which lane is currently loaded in the specified FPS."""
         fps = self.fpss.get(fps_name)
         if fps is None:
@@ -605,11 +604,11 @@ class OAMSManager:
                 self.logger.warning("OAMS %s not found", oams_name)
                 continue
 
-            # Found loaded lane! Return lane's map name (e.g., "T4") as the group
-            group_name = lane.map if hasattr(lane, 'map') else loaded_lane_name
+            # Found loaded lane! Return lane's map name (e.g., "T4") for display
+            lane_map_name = lane.map if hasattr(lane, 'map') else loaded_lane_name
             self.logger.info("Detected %s loaded to %s (bay %d on %s)",
                            loaded_lane_name, extruder_name, bay_index, oams_name)
-            return group_name, oam, bay_index
+            return lane_map_name, oam, bay_index
 
         return None, None, None
         
@@ -1047,10 +1046,10 @@ class OAMSManager:
         self.logger.info("Infinite runout: %s -> %s on %s (same FPS)",
                        lane_name, runout_lane_name, fps_name)
 
-        # Return target lane info (target_group is now just the lane map or lane name)
-        target_group = getattr(target_lane, "map", runout_lane_name)
+        # Return target lane info (lane map or lane name for display)
+        target_lane_map = getattr(target_lane, "map", runout_lane_name)
 
-        return target_group, runout_lane_name, False, lane_name
+        return target_lane_map, runout_lane_name, False, lane_name
 
     def _delegate_runout_to_afc(self, fps_name: str, fps_state: 'FPSState', source_lane_name: Optional[str], target_lane_name: Optional[str]) -> bool:
         afc = self._get_afc()
@@ -2283,11 +2282,11 @@ class OAMSManager:
 
             # Let state detection handle the full sync
             # We just trigger it to run immediately instead of waiting for next poll
-            group_name, oam, bay_index = self._determine_loaded_lane_for_fps(fps_name, self.fpss[fps_name])
+            lane_map_name, oam, bay_index = self._determine_loaded_lane_for_fps(fps_name, self.fpss[fps_name])
 
-            if group_name and oam and bay_index is not None:
+            if lane_map_name and oam and bay_index is not None:
                 # Update FPS state
-                fps_state.current_lane = group_name
+                fps_state.current_lane = lane_map_name
                 fps_state.current_oams = oam.name
                 fps_state.current_spool_idx = bay_index
                 fps_state.state = FPSLoadState.LOADED
