@@ -453,6 +453,41 @@ class AMSHardwareService:
         except Exception:
             return 0.0
 
+    def _log_info(self, message: str) -> None:
+        """Helper to log info messages compatible with both AFC_logger and standard logging."""
+        try:
+            # AFC_logger signature: info(message, console_only=False)
+            self.logger.info(message)
+        except TypeError:
+            # Standard logging signature: info(msg, *args)
+            self.logger.info(message)
+
+    def _log_warning(self, message: str) -> None:
+        """Helper to log warning messages compatible with both AFC_logger and standard logging."""
+        try:
+            self.logger.warning(message)
+        except TypeError:
+            self.logger.warning(message)
+
+    def _log_error(self, message: str) -> None:
+        """Helper to log error messages compatible with both AFC_logger and standard logging."""
+        try:
+            # AFC_logger has error() but not exception()
+            if hasattr(self.logger, 'error'):
+                self.logger.error(message)
+            else:
+                self.logger.error(message)
+        except Exception:
+            # Fallback to print if all else fails
+            print(f"AMSHardwareService: {message}")
+
+    def _log_debug(self, message: str) -> None:
+        """Helper to log debug messages compatible with both AFC_logger and standard logging."""
+        try:
+            self.logger.debug(message)
+        except Exception:
+            pass  # Ignore debug logging failures
+
     def start_polling(self) -> None:
         """Start the unified hardware polling timer.
 
@@ -460,14 +495,14 @@ class AMSHardwareService:
         Publishes events when sensor values change.
         """
         if self._polling_timer is not None:
-            self.logger.warning("Polling already started for %s", self.name)
+            self._log_warning(f"Polling already started for {self.name}")
             return
 
         if self._reactor is None:
             self._monotonic()  # Initialize reactor
 
         if self._reactor is None:
-            self.logger.error("Cannot start polling: reactor not available")
+            self._log_error("Cannot start polling: reactor not available")
             return
 
         self._polling_enabled = True
@@ -475,7 +510,7 @@ class AMSHardwareService:
             self._polling_callback,
             self._reactor.NOW
         )
-        self.logger.info("Started unified hardware polling for %s", self.name)
+        self._log_info(f"Started unified hardware polling for {self.name}")
 
     def stop_polling(self) -> None:
         """Stop the unified hardware polling timer."""
@@ -483,7 +518,7 @@ class AMSHardwareService:
         if self._polling_timer is not None and self._reactor is not None:
             self._reactor.unregister_timer(self._polling_timer)
             self._polling_timer = None
-            self.logger.info("Stopped unified hardware polling for %s", self.name)
+            self._log_info(f"Stopped unified hardware polling for {self.name}")
 
     def _polling_callback(self, eventtime: float) -> float:
         """Unified polling callback that detects changes and publishes events.
@@ -526,9 +561,9 @@ class AMSHardwareService:
                         eventtime=eventtime
                     )
                     if old_val is None:
-                        self.logger.info("f1s[%d] initial state: %s", bay, new_val)
+                        self._log_info(f"f1s[{bay}] initial state: {new_val}")
                     else:
-                        self.logger.debug("f1s[%d] changed: %s -> %s", bay, old_val, new_val)
+                        self._log_debug(f"f1s[{bay}] changed: {old_val} -> {new_val}")
 
                 self._last_f1s_hes[bay] = new_val
 
@@ -549,9 +584,9 @@ class AMSHardwareService:
                         eventtime=eventtime
                     )
                     if old_val is None:
-                        self.logger.info("hub[%d] initial state: %s", bay, new_val)
+                        self._log_info(f"hub[{bay}] initial state: {new_val}")
                     else:
-                        self.logger.debug("hub[%d] changed: %s -> %s", bay, old_val, new_val)
+                        self._log_debug(f"hub[{bay}] changed: {old_val} -> {new_val}")
 
                 self._last_hub_hes[bay] = new_val
 
@@ -581,7 +616,8 @@ class AMSHardwareService:
             return eventtime + self._polling_interval
 
         except Exception:
-            self.logger.exception("Error in unified polling callback for %s", self.name)
+            import traceback
+            self._log_error(f"Error in unified polling callback for {self.name}: {traceback.format_exc()}")
             return eventtime + self._polling_interval_idle
 
     def poll_status(self) -> Optional[Dict[str, Any]]:
@@ -620,7 +656,8 @@ class AMSHardwareService:
                 try:
                     callback(status_copy)
                 except Exception:
-                    self.logger.exception("AMS status observer failed for %s", self.name)
+                    import traceback
+                    self._log_error(f"AMS status observer failed for {self.name}: {traceback.format_exc()}")
 
     def latest_status(self) -> Dict[str, Any]:
         """Return the most recently cached status snapshot."""
