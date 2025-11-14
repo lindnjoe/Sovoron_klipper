@@ -174,11 +174,28 @@ class OAMSRunoutMonitor:
 
                 self.latest_lane_name = lane_name
 
-                if (is_printing and fps_state.state == FPSLoadState.LOADED and 
+                if (is_printing and fps_state.state == FPSLoadState.LOADED and
                     fps_state.current_lane is not None and fps_state.current_spool_idx is not None and spool_empty):
                     self.state = OAMSRunoutState.DETECTED
                     logging.info("OAMS: Runout detected on FPS %s, pausing for %d mm", self.fps_name, PAUSE_DISTANCE)
                     self.runout_position = fps.extruder.last_position
+
+                    # Update lane snapshot to mark the lane as empty for AFC
+                    # This overrides the f1s sensor which may still show filament in the bay
+                    if self.hardware_service is not None and lane_name is not None:
+                        try:
+                            self.hardware_service.update_lane_snapshot(
+                                unit_name, lane_name,
+                                lane_state=False,  # Mark lane as empty despite f1s sensor
+                                hub_state=False,   # Hub is also empty (runout condition)
+                                eventtime=eventtime,
+                                spool_index=spool_idx,
+                                emit_spool_event=False  # Don't emit duplicate event
+                            )
+                            logging.debug("OAMS: Updated lane %s snapshot to empty for runout", lane_name)
+                        except Exception:
+                            logging.exception("OAMS: Failed to update lane snapshot during runout")
+
                     if AMSRunoutCoordinator is not None:
                         try:
                             AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=lane_name)
@@ -188,7 +205,8 @@ class OAMSRunoutMonitor:
             elif self.state == OAMSRunoutState.DETECTED:
                 traveled_distance = fps.extruder.last_position - self.runout_position
                 if traveled_distance >= PAUSE_DISTANCE:
-                    logging.info("OAMS: Pause complete, coasting the follower.")
+                    logging.info("OAMS: Pause complete (%.1f mm), stopping follower and entering COASTING state on %s",
+                                traveled_distance, self.fps_name)
                     try:
                         self.oams[fps_state.current_oams].set_oams_follower(0, 1)
                     except Exception:
@@ -198,6 +216,8 @@ class OAMSRunoutMonitor:
                     self.bldc_clear_position = fps.extruder.last_position
                     self.runout_after_position = 0.0
                     self.state = OAMSRunoutState.COASTING
+                    logging.info("OAMS: Entered COASTING state on %s, will load next spool when filament path is clear",
+                                self.fps_name)
 
             elif self.state == OAMSRunoutState.COASTING:
                 traveled_distance_after_bldc_clear = max(fps.extruder.last_position - self.bldc_clear_position, 0.0)
@@ -207,14 +227,29 @@ class OAMSRunoutMonitor:
                 except Exception:
                     logging.exception("OAMS: Failed to read filament path length while coasting on %s", self.fps_name)
                     return eventtime + MONITOR_ENCODER_PERIOD
-                
+
                 effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
                 consumed_with_margin = (self.runout_after_position + PAUSE_DISTANCE + self.reload_before_toolhead_distance)
 
+                # Debug logging for runout reload decision
+                if self.runout_after_position % 10.0 < 0.5:  # Log every ~10mm
+                    logging.info(
+                        "OAMS: Coasting on %s - consumed: %.1f mm, path_length: %.1f mm, effective: %.1f mm, threshold: %.1f mm",
+                        self.fps_name, self.runout_after_position, path_length, effective_path_length, consumed_with_margin
+                    )
+
                 if consumed_with_margin >= effective_path_length:
-                    logging.info("OAMS: Loading next spool (%.2f mm consumed)", self.runout_after_position + PAUSE_DISTANCE)
+                    logging.info(
+                        "OAMS: Reload threshold reached on %s - consumed: %.1f mm >= effective: %.1f mm, calling reload_callback",
+                        self.fps_name, consumed_with_margin, effective_path_length
+                    )
                     self.state = OAMSRunoutState.RELOADING
-                    self.reload_callback()
+                    try:
+                        self.reload_callback()
+                    except Exception:
+                        logging.exception("OAMS: reload_callback failed on %s", self.fps_name)
+                        # Reset to allow manual recovery
+                        self.state = OAMSRunoutState.PAUSED
             
             return eventtime + MONITOR_ENCODER_PERIOD
         
@@ -2251,11 +2286,14 @@ class OAMSManager:
             )
 
             def _reload_callback(fps_name=fps_name, fps_state=self.current_state.fps_state[fps_name]):
+                self.logger.info("OAMS: reload_callback triggered for %s", fps_name)
                 monitor = self.runout_monitors.get(fps_name)
                 source_lane_name = fps_state.current_lane
                 active_oams = fps_state.current_oams
                 target_lane_map, target_lane, delegate_to_afc, source_lane = self._get_infinite_runout_target_lane(fps_name, fps_state)
                 source_lane_name = fps_state.current_lane
+                self.logger.info("OAMS: Runout reload for %s - source_lane: %s, target_lane: %s, delegate_to_afc: %s",
+                                fps_name, source_lane_name, target_lane, delegate_to_afc)
 
                 if delegate_to_afc:
                     delegated = self._delegate_runout_to_afc(fps_name, fps_state, source_lane, target_lane)
