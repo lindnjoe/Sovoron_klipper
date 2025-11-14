@@ -366,8 +366,7 @@ class OAMSManager:
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.logger = logging.getLogger(__name__)
-        
-        self.filament_groups: Dict[str, Any] = {}
+
         self.oams: Dict[str, Any] = {}
         self.fpss: Dict[str, Any] = {}
 
@@ -403,9 +402,6 @@ class OAMSManager:
                 f"must be greater than stuck_spool_pressure_threshold ({self.stuck_spool_pressure_threshold})"
             )
 
-        self.group_to_fps: Dict[str, str] = {}
-        self._canonical_lane_by_group: Dict[str, str] = {}
-        self._canonical_group_by_lane: Dict[str, str] = {}
         self._lane_unit_map: Dict[str, str] = {}
         self._lane_by_location: Dict[Tuple[str, int], str] = {}
         self._lane_to_fps_cache: Dict[str, str] = {}  # OPTIMIZATION: Lane?FPS direct mapping cache
@@ -417,7 +413,6 @@ class OAMSManager:
         self._toolhead_obj = None
 
         self._initialize_oams()
-        self._initialize_filament_groups()
 
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
         self.printer.register_event_handler("idle_timeout:printing", self._handle_printing_resumed)
@@ -519,36 +514,14 @@ class OAMSManager:
         for name, oam in self.printer.lookup_objects(module="oams"):
             self.oams[name] = oam
         
-    def _initialize_filament_groups(self) -> None:
-        for name, group in self.printer.lookup_objects(module="filament_group"):
-            name = name.split()[-1]
-            self.logger.info("Adding group %s", name)
-            self.filament_groups[name] = group
-    
     def determine_current_loaded_group(self, fps_name: str) -> Tuple[Optional[str], Optional[object], Optional[int]]:
-        """Determine which filament group/lane is currently loaded in the specified FPS."""
+        """Determine which lane is currently loaded in the specified FPS."""
         fps = self.fpss.get(fps_name)
         if fps is None:
             raise ValueError(f"FPS {fps_name} not found")
 
-        # First try lane-based detection (new method)
-        lane_result = self._determine_loaded_lane_for_fps(fps_name, fps)
-        if lane_result[0] is not None:
-            return lane_result
-
-        # Fall back to group-based detection (legacy method)
-        for group_name, group in self.filament_groups.items():
-            for oam, bay_index in group.bays:
-                try:
-                    is_loaded = oam.is_bay_loaded(bay_index)
-                except Exception:
-                    self.logger.exception("Failed to query bay %s on %s", bay_index, getattr(oam, "name", "<unknown>"))
-                    continue
-
-                if is_loaded and oam in fps.oams:
-                    return group_name, oam, bay_index
-
-        return None, None, None
+        # Lane-based detection only
+        return self._determine_loaded_lane_for_fps(fps_name, fps)
 
     def _determine_loaded_lane_for_fps(self, fps_name: str, fps) -> Tuple[Optional[str], Optional[object], Optional[int]]:
         """Determine which AFC lane is loaded by asking AFC which lane is loaded to each extruder.
@@ -779,20 +752,6 @@ class OAMSManager:
             self.logger.exception("Failed to set follower on %s", fps_state.current_oams)
             gcmd.respond_info(f"Failed to set follower. Check logs.")
 
-    def _rebuild_group_fps_index(self) -> None:
-        mapping: Dict[str, str] = {}
-        for group_name, group in self.filament_groups.items():
-            for fps_name, fps in self.fpss.items():
-                if any(oam in fps.oams for oam in group.oams):
-                    mapping[group_name] = fps_name
-                    break
-        self.group_to_fps = mapping
-
-    def group_fps_name(self, group_name: str) -> Optional[str]:
-        if group_name not in self.group_to_fps and self.fpss:
-            self._rebuild_group_fps_index()
-        return self.group_to_fps.get(group_name)
-
     def get_fps_for_afc_lane(self, lane_name: str) -> Optional[str]:
         """Get the FPS name for an AFC lane by querying its unit configuration.
 
@@ -867,25 +826,34 @@ class OAMSManager:
 
         return None
 
-    def _normalize_group_name(self, group: Optional[str]) -> Optional[str]:
-        if not group or not isinstance(group, str):
-            return None
-        group = group.strip()
-        if not group:
-            return None
-        if " " in group:
-            group = group.split()[-1]
-        return group
 
     def _rebuild_lane_location_index(self) -> None:
-        mapping: Dict[Tuple[str, int], str] = {}
-        for group_name, lane_name in self._canonical_lane_by_group.items():
-            group = self.filament_groups.get(group_name)
-            if not group:
-                continue
-            for oam, bay_index in group.bays:
-                mapping[(oam.name, bay_index)] = lane_name
-        self._lane_by_location = mapping
+        """No longer needed - using lane-based detection only."""
+        pass
+    def _rebuild_lane_location_index(self) -> None:
+        """No longer needed - using lane-based detection only."""
+        pass
+    def _rebuild_lane_location_index(self) -> None:
+        """No longer needed - using lane-based detection only."""
+        pass
+    def _rebuild_lane_location_index(self) -> None:
+        """No longer needed - using lane-based detection only."""
+        pass
+    def _rebuild_lane_location_index(self) -> None:
+        """No longer needed - using lane-based detection only."""
+        pass
+    def _rebuild_lane_location_index(self) -> None:
+        """No longer needed - using lane-based detection only."""
+        pass
+    def _rebuild_lane_location_index(self) -> None:
+        """No longer needed - using lane-based detection only."""
+        pass
+    def _rebuild_lane_location_index(self) -> None:
+        """No longer needed - using lane-based detection only."""
+        pass
+    def _rebuild_lane_location_index(self) -> None:
+        """No longer needed - using lane-based detection only."""
+        pass
 
     def _validate_afc_oams_integration(self, afc) -> None:
         """Validate AFC lane configs match OAMS hardware configuration.
@@ -972,11 +940,11 @@ class OAMSManager:
             if canonical_group is None:
                 canonical_group = self._normalize_group_name(getattr(lane, "map", None))
             if canonical_group:
-                if lane_name not in self._canonical_group_by_lane:
-                    self._canonical_group_by_lane[lane_name] = canonical_group
-                    updated = True
-                if canonical_group not in self._canonical_lane_by_group:
-                    self._canonical_lane_by_group[canonical_group] = lane_name
+        #                 if lane_name not in self._canonical_group_by_lane:
+        #                     self._canonical_group_by_lane[lane_name] = canonical_group
+        #                     updated = True
+        #                 if canonical_group not in self._canonical_lane_by_group:
+        #                     self._canonical_lane_by_group[canonical_group] = lane_name
                     updated = True
             unit_name = getattr(lane, "unit", None)
             if unit_name and lane_name not in self._lane_unit_map:
@@ -1003,12 +971,14 @@ class OAMSManager:
         if fps_state.current_oams and fps_state.current_spool_idx is not None:
             lane_name = self._lane_by_location.get((fps_state.current_oams, fps_state.current_spool_idx))
             if lane_name:
-                lane_group = self._canonical_group_by_lane.get(lane_name)
-                if lane_group:
-                    normalized_group = lane_group
+                pass  # Group-based resolution removed
+            #             #                 lane_group = self._canonical_group_by_lane.get(lane_name)
+            #                 if lane_group:
+            #                     normalized_group = lane_group
 
         if lane_name is None and normalized_group:
-            lane_name = self._canonical_lane_by_group.get(normalized_group)
+            pass  # Group-based resolution removed
+            #             lane_name = self._canonical_lane_by_group.get(normalized_group)
 
         lanes = getattr(afc, "lanes", {})
         if lane_name is None and normalized_group:
@@ -1025,10 +995,10 @@ class OAMSManager:
 
                 if canonical_candidate:
                     canonical_group = canonical_candidate
-                    if lane_name not in self._canonical_group_by_lane:
-                        self._canonical_group_by_lane[lane_name] = canonical_candidate
-                    if canonical_candidate not in self._canonical_lane_by_group:
-                        self._canonical_lane_by_group[canonical_candidate] = lane_name
+                        #                     if lane_name not in self._canonical_group_by_lane:
+                        #                         self._canonical_group_by_lane[lane_name] = canonical_candidate
+                        #                     if canonical_candidate not in self._canonical_lane_by_group:
+                        #                         self._canonical_lane_by_group[canonical_candidate] = lane_name
                     self._rebuild_lane_location_index()
 
         return lane_name, canonical_group
@@ -1459,128 +1429,6 @@ class OAMSManager:
             fps_state.state = FPSLoadState.UNLOADED
             return False, message if message else f"Failed to load lane {lane_name}"
 
-    def _load_filament_for_group(self, group_name: str) -> Tuple[bool, str]:
-        if group_name not in self.filament_groups:
-            return False, f"Group {group_name} does not exist"
-
-        fps_name = self.group_fps_name(group_name)
-        if fps_name is None:
-            return False, f"No FPS associated with group {group_name}"
-
-        fps_state = self.current_state.fps_state[fps_name]
-        self._cancel_post_load_pressure_check(fps_state)
-
-        for (oam, bay_index) in self.filament_groups[group_name].bays:
-            try:
-                is_ready = oam.is_bay_ready(bay_index)
-            except Exception:
-                self.logger.exception("Failed to query readiness of bay %s on %s", bay_index, getattr(oam, "name", "<unknown>"))
-                continue
-
-            if not is_ready:
-                continue
-
-            # Capture state BEFORE changing fps_state.state to avoid getting stuck
-            try:
-                encoder = oam.encoder_clicks
-                current_time = self.reactor.monotonic()
-                oam_name = oam.name
-            except Exception:
-                self.logger.exception("Failed to capture load state for group %s bay %s", group_name, bay_index)
-                continue
-
-            # Only set state after all preliminary operations succeed
-            fps_state.state = FPSLoadState.LOADING
-            fps_state.encoder = encoder
-            fps_state.current_oams = oam_name
-            fps_state.current_spool_idx = bay_index
-            # Set since to now for THIS load attempt (will be updated on success)
-            fps_state.since = current_time
-            fps_state.clear_encoder_samples()
-
-            try:
-                success, message = oam.load_spool_with_retry(bay_index)
-            except Exception:
-                self.logger.exception("Exception while loading group %s bay %s", group_name, bay_index)
-                success, message = False, f"Exception loading spool {bay_index} on {group_name}"
-
-            if success:
-                fps_state.current_lane = group_name
-                fps_state.current_oams = oam.name
-                fps_state.current_spool_idx = bay_index
-                
-                # CRITICAL FIX: Set fps_state.since to the successful load time BEFORE changing state
-                # This prevents the monitor from seeing stale timestamps during LOADING state
-                successful_load_time = oam.get_last_successful_load_time(bay_index)
-                if successful_load_time is not None:
-                    fps_state.since = successful_load_time
-                else:
-                    fps_state.since = self.reactor.monotonic()
-                
-                # Now set state to LOADED after timestamp is correct
-                fps_state.state = FPSLoadState.LOADED
-
-                fps_state.direction = 1
-
-                # OPTIMIZATION: Enable follower immediately before cleanup operations
-                self._ensure_forward_follower(fps_name, fps_state, "load filament")
-
-                # Clear LED error state if stuck spool was active before resetting state
-                if fps_state.stuck_spool_active and oam is not None and bay_index is not None:
-                    try:
-                        oam.set_led_error(bay_index, 0)
-                        self.logger.info("Cleared stuck spool LED for %s spool %d after successful load", fps_name, bay_index)
-                    except Exception:
-                        self.logger.exception("Failed to clear LED on %s spool %d after successful load", fps_name, bay_index)
-
-                fps_state.reset_stuck_spool_state()
-                fps_state.reset_clog_tracker()
-                
-                # FIX: Skip post-load pressure check if this load completed after retries
-                # Retries indicate unstable conditions and pressure sensors need time to stabilize
-                skip_pressure_check = False
-                try:
-                    if hasattr(oam, 'last_load_was_retry'):
-                        skip_pressure_check = oam.last_load_was_retry(bay_index)
-                except Exception:
-                    self.logger.exception("Failed to check retry status for bay %d", bay_index)
-                    skip_pressure_check = False
-                
-                if not skip_pressure_check:
-                    self._schedule_post_load_pressure_check(fps_name, fps_state)
-                else:
-                    self.logger.info("OAMS[%s]: Skipping post-load pressure check after retry for spool %d", 
-                                     oam.oams_idx, bay_index)
-
-                if AMSRunoutCoordinator is not None:
-                    lane_name: Optional[str] = None
-                    try:
-                        afc = self._get_afc()
-                        if afc is not None:
-                            lane_name, _ = self._resolve_lane_for_state(fps_state, group_name, afc)
-                    except Exception:
-                        self.logger.exception("Failed to resolve AFC lane for group %s on %s", group_name, fps_name)
-                        lane_name = None
-
-                    if lane_name:
-                        try:
-                            AMSRunoutCoordinator.notify_lane_tool_state(self.printer, fps_state.current_oams or oam.name, lane_name, loaded=True, spool_index=fps_state.current_spool_idx, eventtime=fps_state.since)
-                        except Exception:
-                            self.logger.exception("Failed to notify AFC that lane %s loaded for %s", lane_name, group_name)
-
-                return True, message
-
-            fps_state.state = FPSLoadState.UNLOADED
-            fps_state.current_lane = None
-            fps_state.current_spool_idx = None
-            fps_state.current_oams = None
-            fps_state.following = False
-            fps_state.reset_stuck_spool_state()
-            fps_state.reset_clog_tracker()
-            self._cancel_post_load_pressure_check(fps_state)
-            return False, message
-
-        return False, f"No spool available for group {group_name}"
 
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
     def cmd_UNLOAD_FILAMENT(self, gcmd):
@@ -2407,10 +2255,16 @@ class OAMSManager:
                         monitor.paused()
                     return
 
-                group_to_load = target_group or source_group
+                # Load the target lane directly
+                if target_lane is None:
+                    self.logger.error("No lane available to reload on %s", fps_name)
+                    self._pause_printer_message(f"No lane available to reload on {fps_name}", fps_state.current_oams or active_oams)
+                    if monitor:
+                        monitor.paused()
+                    return
 
                 if target_group:
-                    self.logger.info("Infinite runout triggered for %s on %s -> %s", fps_name, source_group, target_group)
+                    self.logger.info("Infinite runout triggered for %s on %s -> %s", fps_name, source_group, target_lane)
                     unload_success, unload_message = self._unload_filament_for_fps(fps_name)
                     if not unload_success:
                         self.logger.error("Failed to unload filament during infinite runout on %s: %s", fps_name, unload_message)
@@ -2420,16 +2274,9 @@ class OAMSManager:
                             monitor.paused()
                         return
 
-                if group_to_load is None:
-                    self.logger.error("No filament group available to reload on %s", fps_name)
-                    self._pause_printer_message(f"No filament group available to reload on {fps_name}", fps_state.current_oams or active_oams)
-                    if monitor:
-                        monitor.paused()
-                    return
-
-                load_success, load_message = self._load_filament_for_group(group_to_load)
+                load_success, load_message = self._load_filament_for_lane(target_lane)
                 if load_success:
-                    self.logger.info("Successfully loaded group %s on %s%s", group_to_load, fps_name, " after infinite runout" if target_group else "")
+                    self.logger.info("Successfully loaded lane %s on %s%s", target_lane, fps_name, " after infinite runout" if target_group else "")
                     if target_group and target_lane:
                         handled = False
                         if AMSRunoutCoordinator is not None:
@@ -2451,8 +2298,8 @@ class OAMSManager:
                         monitor.start()
                     return
 
-                self.logger.error("Failed to load group %s on %s: %s", group_to_load, fps_name, load_message)
-                failure_message = load_message or f"No spool available for group {group_to_load}"
+                self.logger.error("Failed to load lane %s on %s: %s", target_lane, fps_name, load_message)
+                failure_message = load_message or f"No spool available for lane {target_lane}"
                 self._pause_printer_message(failure_message, fps_state.current_oams or active_oams)
                 if monitor:
                     monitor.paused()
