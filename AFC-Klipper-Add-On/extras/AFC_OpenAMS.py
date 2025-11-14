@@ -1294,26 +1294,30 @@ class afcAMS(afcUnit):
     def _update_shared_lane(self, lane, lane_val, eventtime):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
         # Check if runout has been detected for this lane
-        # If so, ignore sensor state updates that would show filament present
+        # Only block sensor updates if actively in runout state
         if hasattr(lane, '_oams_runout_detected') and lane._oams_runout_detected:
-            # Clear the flag if printer is no longer printing or lane is not current
+            should_block = False
             try:
                 is_printing = self.afc.function.is_printing()
-                is_current = (getattr(lane, 'name', None) == getattr(self.afc, 'current', None))
-                if not is_printing or not is_current:
+                is_tool_loaded = getattr(lane, 'tool_loaded', False)
+                lane_status = getattr(lane, 'status', None)
+                # Only block if actively printing with this lane loaded and in runout state
+                if is_printing and is_tool_loaded and lane_status in (AFCLaneState.INFINITE_RUNOUT, AFCLaneState.TOOL_UNLOADING):
+                    should_block = True
+                else:
+                    # Clear the flag - runout handling is complete
                     lane._oams_runout_detected = False
-                    self.logger.debug("Clearing runout flag for shared lane %s - printer not printing or lane not current", getattr(lane, "name", "unknown"))
+                    self.logger.debug("Clearing runout flag for shared lane %s - runout handling complete", getattr(lane, "name", "unknown"))
             except Exception:
-                pass
+                # On error, clear the flag to be safe
+                lane._oams_runout_detected = False
 
-            if hasattr(lane, '_oams_runout_detected') and lane._oams_runout_detected:
-                if lane_val:  # Trying to set sensors to True (filament present)
-                    self.logger.debug("Ignoring shared lane sensor update for lane %s - runout already detected", getattr(lane, "name", "unknown"))
-                    return
-                else:  # Sensor is confirming empty state
-                    # Clear the runout flag since sensor is now correctly reporting empty
-                    lane._oams_runout_detected = False
-                    self.logger.debug("Shared lane sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
+            if should_block and lane_val:  # Only block if conditions met and trying to set sensors to True
+                self.logger.debug("Ignoring shared lane sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
+                return
+            elif not lane_val:  # Sensor confirms empty - always clear flag
+                lane._oams_runout_detected = False
+                self.logger.debug("Shared lane sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
 
         if lane_val == self._last_lane_states.get(lane.name):
             return
@@ -1351,27 +1355,34 @@ class afcAMS(afcUnit):
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
         """Apply a boolean lane sensor value using existing AFC callbacks."""
         # Check if runout has been detected for this lane
-        # If so, ignore sensor state updates that would show filament present
-        # This prevents physical sensors from overwriting the runout state
+        # Only block sensor updates if:
+        # 1. Runout flag is set AND
+        # 2. Printer is actively printing AND
+        # 3. Lane is currently loaded to tool AND
+        # 4. Lane status indicates it's in a runout/unload state
         if hasattr(lane, '_oams_runout_detected') and lane._oams_runout_detected:
-            # Clear the flag if printer is no longer printing or lane is not current
+            should_block = False
             try:
                 is_printing = self.afc.function.is_printing()
-                is_current = (getattr(lane, 'name', None) == getattr(self.afc, 'current', None))
-                if not is_printing or not is_current:
+                is_tool_loaded = getattr(lane, 'tool_loaded', False)
+                lane_status = getattr(lane, 'status', None)
+                # Only block if actively printing with this lane loaded and in runout state
+                if is_printing and is_tool_loaded and lane_status in (AFCLaneState.INFINITE_RUNOUT, AFCLaneState.TOOL_UNLOADING):
+                    should_block = True
+                else:
+                    # Clear the flag - runout handling is complete
                     lane._oams_runout_detected = False
-                    self.logger.debug("Clearing runout flag for lane %s - printer not printing or lane not current", getattr(lane, "name", "unknown"))
+                    self.logger.debug("Clearing runout flag for lane %s - runout handling complete", getattr(lane, "name", "unknown"))
             except Exception:
-                pass
+                # On error, clear the flag to be safe
+                lane._oams_runout_detected = False
 
-            if hasattr(lane, '_oams_runout_detected') and lane._oams_runout_detected:
-                if lane_val:  # Trying to set sensors to True (filament present)
-                    self.logger.debug("Ignoring sensor update for lane %s - runout already detected", getattr(lane, "name", "unknown"))
-                    return
-                else:  # Sensor is confirming empty state
-                    # Clear the runout flag since sensor is now correctly reporting empty
-                    lane._oams_runout_detected = False
-                    self.logger.debug("Sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
+            if should_block and lane_val:  # Only block if conditions met and trying to set sensors to True
+                self.logger.debug("Ignoring sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
+                return
+            elif not lane_val:  # Sensor confirms empty - always clear flag
+                lane._oams_runout_detected = False
+                self.logger.debug("Sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
 
         try:
             share = getattr(lane, "ams_share_prep_load", False)
