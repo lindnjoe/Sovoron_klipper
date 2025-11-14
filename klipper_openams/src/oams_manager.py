@@ -908,76 +908,38 @@ class OAMSManager:
     def _ensure_afc_lane_cache(self, afc) -> None:
         """Build caches for AFC lane metadata and mappings."""
         lanes = getattr(afc, "lanes", {})
-        updated = False
         cache_built = False
 
         for lane_name, lane in lanes.items():
-            canonical_group = self._normalize_group_name(getattr(lane, "_map", None))
-            if canonical_group is None:
-                canonical_group = self._normalize_group_name(getattr(lane, "map", None))
-            if canonical_group:
-        #                 if lane_name not in self._canonical_group_by_lane:
-        #                     self._canonical_group_by_lane[lane_name] = canonical_group
-        #                     updated = True
-        #                 if canonical_group not in self._canonical_lane_by_group:
-        #                     self._canonical_lane_by_group[canonical_group] = lane_name
-                    updated = True
+            # Cache unit mapping
             unit_name = getattr(lane, "unit", None)
             if unit_name and lane_name not in self._lane_unit_map:
                 self._lane_unit_map[lane_name] = unit_name
 
-            # OPTIMIZATION: Pre-populate lane?FPS cache
+            # OPTIMIZATION: Pre-populate lane→FPS cache
             if lane_name not in self._lane_to_fps_cache:
                 fps_name = self._compute_fps_for_afc_lane(lane_name)
                 if fps_name is not None:
                     self._lane_to_fps_cache[lane_name] = fps_name
                     cache_built = True
 
-        if updated:
-            self._rebuild_lane_location_index()
-
         # Validate AFC-OAMS integration after building cache
         if cache_built and not self._afc_logged:
             self._validate_afc_oams_integration(afc)
 
-    def _resolve_lane_for_state(self, fps_state: 'FPSState', group_name: Optional[str], afc) -> Tuple[Optional[str], Optional[str]]:
-        normalized_group = self._normalize_group_name(group_name)
-        lane_name: Optional[str] = None
-
-        if fps_state.current_oams and fps_state.current_spool_idx is not None:
-            lane_name = self._lane_by_location.get((fps_state.current_oams, fps_state.current_spool_idx))
-            if lane_name:
-                pass  # Group-based resolution removed
-            #             #                 lane_group = self._canonical_group_by_lane.get(lane_name)
-            #                 if lane_group:
-            #                     normalized_group = lane_group
-
-        if lane_name is None and normalized_group:
-            pass  # Group-based resolution removed
-            #             lane_name = self._canonical_lane_by_group.get(normalized_group)
-
-        lanes = getattr(afc, "lanes", {})
-        if lane_name is None and normalized_group:
-            lane_name = next((name for name, lane in lanes.items() 
-                             if self._normalize_group_name(getattr(lane, "_map", None)) == normalized_group), None)
-
-        canonical_group = normalized_group
+    def _resolve_lane_for_state(self, fps_state: 'FPSState', lane_name: Optional[str], afc) -> Tuple[Optional[str], Optional[str]]:
+        """Resolve lane name from FPS state. Returns (lane_name, None) - group support removed."""
+        # If lane_name provided, return it
         if lane_name:
-            lane = lanes.get(lane_name)
-            if lane is not None:
-                canonical_candidate = self._normalize_group_name(getattr(lane, "_map", None))
-                if canonical_candidate is None:
-                    canonical_candidate = self._normalize_group_name(getattr(lane, "map", None))
+            return lane_name, None
 
-                if canonical_candidate:
-                    canonical_group = canonical_candidate
-                        #                     if lane_name not in self._canonical_group_by_lane:
-                        #                         self._canonical_group_by_lane[lane_name] = canonical_candidate
-                        #                     if canonical_candidate not in self._canonical_lane_by_group:
-                        #                         self._canonical_lane_by_group[canonical_candidate] = lane_name
-                    self._rebuild_lane_location_index()
+        # Try to get from current state (legacy location-based lookup)
+        if fps_state.current_oams and fps_state.current_spool_idx is not None:
+            located_lane = self._lane_by_location.get((fps_state.current_oams, fps_state.current_spool_idx))
+            if located_lane:
+                return located_lane, None
 
-        return lane_name, canonical_group
+        return None, None
 
     def _get_afc(self):
         # OPTIMIZATION: Cache AFC object lookup with validation
@@ -1017,19 +979,14 @@ class OAMSManager:
 
     def _get_infinite_runout_target_group(self, fps_name: str, fps_state: 'FPSState') -> Tuple[Optional[str], Optional[str], bool, Optional[str]]:
         current_lane = fps_state.current_lane
-        normalized_group = self._normalize_group_name(current_lane)
-        if normalized_group is None:
+        if not current_lane:
             return None, None, False, None
 
         afc = self._get_afc()
         if afc is None:
             return None, None, False, None
 
-        lane_name, resolved_group = self._resolve_lane_for_state(fps_state, normalized_group, afc)
-
-        if resolved_group and resolved_group != normalized_group:
-            normalized_group = resolved_group
-            fps_state.current_lane = resolved_group
+        lane_name, _ = self._resolve_lane_for_state(fps_state, current_lane, afc)
 
         if not lane_name:
             return None, None, False, None
@@ -1082,11 +1039,8 @@ class OAMSManager:
         self.logger.info("Infinite runout: %s -> %s on %s (same FPS)",
                        lane_name, runout_lane_name, fps_name)
 
-        # For backwards compatibility, still try to get group names for the return value
-        # but this is optional and won't affect the FPS-based logic
-        target_group = self._normalize_group_name(getattr(target_lane, "map", None))
-        if not target_group:
-            target_group = runout_lane_name  # Fall back to lane name if no map
+        # Return target lane info (target_group is now just the lane map or lane name)
+        target_group = getattr(target_lane, "map", runout_lane_name)
 
         return target_group, runout_lane_name, False, lane_name
 
