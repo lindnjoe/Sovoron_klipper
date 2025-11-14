@@ -977,7 +977,15 @@ class OAMSManager:
             self._afc_logged = True
         return self.afc
 
-    def _get_infinite_runout_target_group(self, fps_name: str, fps_state: 'FPSState') -> Tuple[Optional[str], Optional[str], bool, Optional[str]]:
+    def _get_infinite_runout_target_lane(self, fps_name: str, fps_state: 'FPSState') -> Tuple[Optional[str], Optional[str], bool, Optional[str]]:
+        """Get target lane for infinite runout.
+
+        Returns: (target_lane_map, target_lane_name, delegate_to_afc, source_lane_name)
+        - target_lane_map: Lane map attribute or lane name (for display)
+        - target_lane_name: Actual target lane name to load
+        - delegate_to_afc: True if AFC should handle (different FPS/extruder)
+        - source_lane_name: Current source lane name
+        """
         current_lane = fps_state.current_lane
         if not current_lane:
             return None, None, False, None
@@ -1002,7 +1010,7 @@ class OAMSManager:
 
         target_lane = afc.lanes.get(runout_lane_name)
         if target_lane is None:
-            self.logger.warning("Runout lane %s for %s on %s is not available; deferring to AFC", runout_lane_name, normalized_group, fps_name)
+            self.logger.warning("Runout lane %s for %s on %s is not available; deferring to AFC", runout_lane_name, lane_name, fps_name)
             return None, runout_lane_name, True, lane_name
 
         source_unit = self._lane_unit_map.get(lane_name)
@@ -2164,10 +2172,10 @@ class OAMSManager:
 
             def _reload_callback(fps_name=fps_name, fps_state=self.current_state.fps_state[fps_name]):
                 monitor = self.runout_monitors.get(fps_name)
-                source_group = fps_state.current_lane
+                source_lane_name = fps_state.current_lane
                 active_oams = fps_state.current_oams
-                target_group, target_lane, delegate_to_afc, source_lane = self._get_infinite_runout_target_group(fps_name, fps_state)
-                source_group = fps_state.current_lane
+                target_lane_map, target_lane, delegate_to_afc, source_lane = self._get_infinite_runout_target_lane(fps_name, fps_state)
+                source_lane_name = fps_state.current_lane
 
                 if delegate_to_afc:
                     delegated = self._delegate_runout_to_afc(fps_name, fps_state, source_lane, target_lane)
@@ -2178,9 +2186,9 @@ class OAMSManager:
                             monitor.start()
                         return
 
-                    self.logger.error("Failed to delegate infinite runout for %s on %s via AFC", fps_name, source_group or "<unknown>")
+                    self.logger.error("Failed to delegate infinite runout for %s on %s via AFC", fps_name, source_lane_name or "<unknown>")
                     fps_state.reset_runout_positions()
-                    self._pause_printer_message(f"Unable to delegate infinite runout for {source_group or fps_name}", fps_state.current_oams or active_oams)
+                    self._pause_printer_message(f"Unable to delegate infinite runout for {source_lane_name or fps_name}", fps_state.current_oams or active_oams)
                     if monitor:
                         monitor.paused()
                     return
@@ -2193,8 +2201,8 @@ class OAMSManager:
                         monitor.paused()
                     return
 
-                if target_group:
-                    self.logger.info("Infinite runout triggered for %s on %s -> %s", fps_name, source_group, target_lane)
+                if target_lane_map:
+                    self.logger.info("Infinite runout triggered for %s on %s -> %s", fps_name, source_lane_name, target_lane)
                     unload_success, unload_message = self._unload_filament_for_fps(fps_name)
                     if not unload_success:
                         self.logger.error("Failed to unload filament during infinite runout on %s: %s", fps_name, unload_message)
@@ -2206,8 +2214,8 @@ class OAMSManager:
 
                 load_success, load_message = self._load_filament_for_lane(target_lane)
                 if load_success:
-                    self.logger.info("Successfully loaded lane %s on %s%s", target_lane, fps_name, " after infinite runout" if target_group else "")
-                    if target_group and target_lane:
+                    self.logger.info("Successfully loaded lane %s on %s%s", target_lane, fps_name, " after infinite runout" if target_lane_map else "")
+                    if target_lane_map and target_lane:
                         handled = False
                         if AMSRunoutCoordinator is not None:
                             try:
