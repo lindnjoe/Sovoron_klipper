@@ -515,7 +515,8 @@ class AMSHardwareService:
                 new_val = bool(f1s_values[bay])
                 old_val = self._last_f1s_hes[bay]
 
-                if old_val is not None and new_val != old_val:
+                # Publish on first detection (old_val is None) OR when value changes
+                if old_val is None or new_val != old_val:
                     # Publish sensor change event
                     self.event_bus.publish(
                         "f1s_changed",
@@ -524,7 +525,10 @@ class AMSHardwareService:
                         value=new_val,
                         eventtime=eventtime
                     )
-                    self.logger.debug("f1s[%d] changed: %s -> %s", bay, old_val, new_val)
+                    if old_val is None:
+                        self.logger.info("f1s[%d] initial state: %s", bay, new_val)
+                    else:
+                        self.logger.debug("f1s[%d] changed: %s -> %s", bay, old_val, new_val)
 
                 self._last_f1s_hes[bay] = new_val
 
@@ -534,7 +538,8 @@ class AMSHardwareService:
                 new_val = bool(hub_values[bay])
                 old_val = self._last_hub_hes[bay]
 
-                if old_val is not None and new_val != old_val:
+                # Publish on first detection (old_val is None) OR when value changes
+                if old_val is None or new_val != old_val:
                     # Publish sensor change event
                     self.event_bus.publish(
                         "hub_changed",
@@ -543,7 +548,10 @@ class AMSHardwareService:
                         value=new_val,
                         eventtime=eventtime
                     )
-                    self.logger.debug("hub[%d] changed: %s -> %s", bay, old_val, new_val)
+                    if old_val is None:
+                        self.logger.info("hub[%d] initial state: %s", bay, new_val)
+                    else:
+                        self.logger.debug("hub[%d] changed: %s -> %s", bay, old_val, new_val)
 
                 self._last_hub_hes[bay] = new_val
 
