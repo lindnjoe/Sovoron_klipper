@@ -558,6 +558,14 @@ class AFCLane:
         self.logger.info("Infinite Spool triggered for {}".format(self.name))
         empty_lane = self.afc.lanes[self.afc.current]
         change_lane = self.afc.lanes[self.runout_lane]
+
+        # Check if the runout lane has filament loaded to the load sensor
+        if not change_lane.load_state:
+            msg = "Infinite spool runout detected for {}, but runout lane {} is not loaded.\n".format(self.name, change_lane.name)
+            msg += "Please insert filament into {} and ensure it reaches the load sensor, then resume to continue printing.".format(change_lane.name)
+            self.afc.error.AFC_error(msg)
+            return
+
         change_lane.status = AFCLaneState.INFINITE_RUNOUT
         # Pause printer with manual command
         self.afc.error.pause_resume.send_pause_command()
