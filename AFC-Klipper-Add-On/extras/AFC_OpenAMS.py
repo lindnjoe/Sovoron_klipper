@@ -750,13 +750,22 @@ class afcAMS(afcUnit):
         super().lane_tool_loaded(lane)
 
         # When a new lane loads to toolhead, clear tool_loaded on any OTHER lanes from this unit
+        # that are on the SAME FPS/extruder (each FPS can have its own lane loaded)
         # This handles cross-FPS runout where AFC switches from OpenAMS lane to different FPS lane
-        for other_lane in self.lanes.values():
-            if other_lane.name != lane.name and getattr(other_lane, 'tool_loaded', False):
-                other_lane.tool_loaded = False
-                if hasattr(other_lane, '_oams_runout_detected'):
-                    other_lane._oams_runout_detected = False
-                self.logger.debug("Cleared tool_loaded for %s (new lane %s loaded)", other_lane.name, lane.name)
+        lane_extruder = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
+        if lane_extruder:
+            for other_lane in self.lanes.values():
+                if other_lane.name == lane.name:
+                    continue
+                if not getattr(other_lane, 'tool_loaded', False):
+                    continue
+                # Check if other lane is on same extruder
+                other_extruder = getattr(other_lane.extruder_obj, "name", None) if hasattr(other_lane, "extruder_obj") else None
+                if other_extruder == lane_extruder:
+                    other_lane.tool_loaded = False
+                    if hasattr(other_lane, '_oams_runout_detected'):
+                        other_lane._oams_runout_detected = False
+                    self.logger.debug("Cleared tool_loaded for %s on same FPS (new lane %s loaded)", other_lane.name, lane.name)
 
         if not self._lane_matches_extruder(lane):
             return
