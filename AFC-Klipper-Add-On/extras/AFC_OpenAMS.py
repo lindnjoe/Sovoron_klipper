@@ -1132,6 +1132,7 @@ class afcAMS(afcUnit):
                 self.afc.function.afc_led(cur_lane.led_fault, cur_lane.led_index)
                 msg += '<span class=error--text> NOT READY</span>'
                 cur_lane.do_enable(False)
+                cur_lane.disable_buffer()
                 msg = '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
                 succeeded = False
         else:
@@ -1140,11 +1141,15 @@ class afcAMS(afcUnit):
             if not cur_lane.load_state:
                 msg += '<span class=error--text> NOT LOADED</span>'
                 self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
+                cur_lane.disable_buffer()
                 succeeded = False
             else:
                 cur_lane.status = AFCLaneState.LOADED
                 msg += '<span class=success--text> AND LOADED</span>'
                 self.afc.function.afc_led(cur_lane.led_spool_illum, cur_lane.led_spool_index)
+
+                # Enable buffer whenever lane is loaded, unless in error state
+                cur_lane.enable_buffer()
 
                 if cur_lane.tool_loaded:
                     tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.tool_start == "buffer" or cur_lane.extruder_obj.tool_end_state)
@@ -1157,10 +1162,11 @@ class afcAMS(afcUnit):
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             cur_lane.unit_obj.lane_tool_loaded(cur_lane)
                             cur_lane.status = AFCLaneState.TOOLED
-                        cur_lane.enable_buffer()
                     elif tool_ready:
                         msg += '<span class=error--text> error in ToolHead. Lane identified as loaded but not identified as loaded in extruder</span>'
                         succeeded = False
+                        # Disable buffer on error
+                        cur_lane.disable_buffer()
 
         if assignTcmd:
             self.afc.function.TcmdAssign(cur_lane)
