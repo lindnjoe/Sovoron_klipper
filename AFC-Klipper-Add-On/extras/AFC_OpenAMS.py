@@ -362,11 +362,11 @@ class afcAMS(afcUnit):
             gcmd.respond_info("PTFE calibration is only available for OpenAMS units.")
             return
 
-        # Check if any lane is loaded to toolhead
-        loaded_lane = self._check_toolhead_loaded()
-        if loaded_lane:
-            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead. Please unload the tool and try again.")
-            return
+        # Check if any lane on THIS UNIT is loaded to toolhead
+        for lane in self.lanes.values():
+            if getattr(lane, "tool_loaded", False):
+                gcmd.respond_info(f"Cannot run OpenAMS calibration while {lane.name} is loaded to the toolhead. Please unload the tool and try again.")
+                return
 
         prompt = AFCprompt(gcmd, self.logger)
         buttons = []
@@ -414,11 +414,11 @@ class afcAMS(afcUnit):
             super().cmd_UNIT_LANE_CALIBRATION(gcmd)
             return
 
-        # Check if any lane is loaded to toolhead
-        loaded_lane = self._check_toolhead_loaded()
-        if loaded_lane:
-            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead. Please unload the tool and try again.")
-            return
+        # Check if any lane on THIS UNIT is loaded to toolhead
+        for lane in self.lanes.values():
+            if getattr(lane, "tool_loaded", False):
+                gcmd.respond_info(f"Cannot run OpenAMS calibration while {lane.name} is loaded to the toolhead. Please unload the tool and try again.")
+                return
 
         prompt = AFCprompt(gcmd, self.logger)
         buttons = []
@@ -1996,28 +1996,33 @@ class afcAMS(afcUnit):
 
     def cmd_AFC_OAMS_CALIBRATE_HUB_HES(self, gcmd):
         """Run the OpenAMS HUB HES calibration for a specific lane."""
-        # Check if any lane is loaded to toolhead
-        loaded_lane = self._check_toolhead_loaded()
-        if loaded_lane:
-            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead. Please unload the tool and try again.")
-            return
-
         spool_index = gcmd.get_int("SPOOL", None)
         if spool_index is None:
             gcmd.respond_info("SPOOL parameter is required for OpenAMS HUB HES calibration.")
             return
 
         lane = self._find_lane_by_spool(spool_index)
+        if lane is None:
+            gcmd.respond_info(f"Could not find lane for spool index {spool_index}.")
+            return
+
+        # Check if this lane's extruder has something loaded to toolhead
+        extruder_name = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
+        loaded_lane = self._check_toolhead_loaded(extruder_name)
+        if loaded_lane:
+            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead on this extruder. Please unload the tool and try again.")
+            return
+
         lane_name = getattr(lane, "name", None)
         self._calibrate_hub_hes_spool(spool_index, gcmd, lane_name=lane_name)
 
     def cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL(self, gcmd):
         """Calibrate HUB HES for every loaded OpenAMS lane in this unit."""
-        # Check if any lane is loaded to toolhead
-        loaded_lane = self._check_toolhead_loaded()
-        if loaded_lane:
-            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead. Please unload the tool and try again.")
-            return
+        # Check if any lane on THIS UNIT has something loaded to toolhead
+        for lane in self.lanes.values():
+            if getattr(lane, "tool_loaded", False):
+                gcmd.respond_info(f"Cannot run OpenAMS calibration while {lane.name} is loaded to the toolhead. Please unload the tool and try again.")
+                return
 
         prompt = AFCprompt(gcmd, self.logger)
         prompt.p_end()
@@ -2050,18 +2055,23 @@ class afcAMS(afcUnit):
 
     def cmd_AFC_OAMS_CALIBRATE_PTFE(self, gcmd):
         """Run the OpenAMS PTFE calibration for a specific lane."""
-        # Check if any lane is loaded to toolhead
-        loaded_lane = self._check_toolhead_loaded()
-        if loaded_lane:
-            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead. Please unload the tool and try again.")
-            return
-
         spool_index = gcmd.get_int("SPOOL", None)
         if spool_index is None:
             gcmd.respond_info("SPOOL parameter is required for OpenAMS PTFE calibration.")
             return
 
         lane = self._find_lane_by_spool(spool_index)
+        if lane is None:
+            gcmd.respond_info(f"Could not find lane for spool index {spool_index}.")
+            return
+
+        # Check if this lane's extruder has something loaded to toolhead
+        extruder_name = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
+        loaded_lane = self._check_toolhead_loaded(extruder_name)
+        if loaded_lane:
+            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead on this extruder. Please unload the tool and try again.")
+            return
+
         lane_name = getattr(lane, "name", None)
         self._calibrate_ptfe_spool(spool_index, gcmd, lane_name=lane_name)
 
@@ -2334,15 +2344,26 @@ class afcAMS(afcUnit):
 
         return True
 
-    def _check_toolhead_loaded(self):
-        """Check if any lane is currently loaded to the toolhead.
+    def _check_toolhead_loaded(self, extruder_name=None):
+        """Check if a lane is currently loaded to the specified extruder's toolhead.
+
+        Args:
+            extruder_name: Optional extruder name to check. If None, checks all extruders.
 
         Returns: Lane name if loaded, None otherwise.
         """
-        # Check all lanes across all AFC units
-        for lane_name, lane in self.afc.lanes.items():
-            if getattr(lane, "tool_loaded", False):
-                return lane_name
+        # If specific extruder provided, only check lanes on that extruder
+        if extruder_name:
+            for lane_name, lane in self.afc.lanes.items():
+                if getattr(lane, "tool_loaded", False):
+                    lane_extruder = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
+                    if lane_extruder == extruder_name:
+                        return lane_name
+        else:
+            # Check all lanes across all AFC units
+            for lane_name, lane in self.afc.lanes.items():
+                if getattr(lane, "tool_loaded", False):
+                    return lane_name
         return None
 
     def _find_lane_by_spool(self, spool_index):
