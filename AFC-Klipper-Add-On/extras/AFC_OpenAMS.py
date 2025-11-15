@@ -749,6 +749,15 @@ class afcAMS(afcUnit):
         """Update the virtual tool sensor when a lane loads into the tool."""
         super().lane_tool_loaded(lane)
 
+        # When a new lane loads to toolhead, clear tool_loaded on any OTHER lanes from this unit
+        # This handles cross-FPS runout where AFC switches from OpenAMS lane to different FPS lane
+        for other_lane in self.lanes.values():
+            if other_lane.name != lane.name and getattr(other_lane, 'tool_loaded', False):
+                other_lane.tool_loaded = False
+                if hasattr(other_lane, '_oams_runout_detected'):
+                    other_lane._oams_runout_detected = False
+                self.logger.debug("Cleared tool_loaded for %s (new lane %s loaded)", other_lane.name, lane.name)
+
         if not self._lane_matches_extruder(lane):
             return
 
