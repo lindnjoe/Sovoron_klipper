@@ -311,6 +311,7 @@ class afcAMS(afcUnit):
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES, desc="calibrate the OpenAMS HUB HES value for a specific lane")
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES_ALL", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL, desc="calibrate the OpenAMS HUB HES value for every loaded lane")
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_PTFE", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_PTFE, desc="calibrate the OpenAMS PTFE length for a specific lane")
+        self.gcode.register_mux_command("UNIT_PTFE_CALIBRATION", "UNIT", self.name, self.cmd_UNIT_PTFE_CALIBRATION, desc="show OpenAMS PTFE calibration menu")
 
     def _is_openams_unit(self):
         """Check if this unit has OpenAMS hardware available."""
@@ -333,10 +334,90 @@ class afcAMS(afcUnit):
 
         return f"AFC_OAMS_CALIBRATE_PTFE UNIT={self.name} SPOOL={spool_index}"
 
+    def cmd_UNIT_CALIBRATION(self, gcmd):
+        """Override base calibration menu to show OpenAMS-specific options."""
+        if not self._is_openams_unit():
+            super().cmd_UNIT_CALIBRATION(gcmd)
+            return
+
+        prompt = AFCprompt(gcmd, self.logger)
+        title = f"{self.name} Calibration"
+        text = "Select OpenAMS calibration type"
+        buttons = []
+
+        # HUB HES calibration button
+        buttons.append(("Calibrate HUB HES", f"UNIT_LANE_CALIBRATION UNIT={self.name}", "primary"))
+
+        # PTFE calibration button
+        buttons.append(("Calibrate PTFE Length", f"UNIT_PTFE_CALIBRATION UNIT={self.name}", "secondary"))
+
+        # Back button
+        back = [("Back", "AFC_CALIBRATION", "info")]
+
+        prompt.create_custom_p(title, text, None, True, [buttons], back)
+
+    def cmd_UNIT_PTFE_CALIBRATION(self, gcmd):
+        """Show PTFE calibration menu with buttons for each loaded lane."""
+        if not self._is_openams_unit():
+            gcmd.respond_info("PTFE calibration is only available for OpenAMS units.")
+            return
+
+        # Check if any lane is loaded to toolhead
+        loaded_lane = self._check_toolhead_loaded()
+        if loaded_lane:
+            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead. Please unload the tool and try again.")
+            return
+
+        prompt = AFCprompt(gcmd, self.logger)
+        buttons = []
+        group_buttons = []
+        index = 0
+        title = f"{self.name} PTFE Length Calibration"
+        text = (
+            "Select a loaded lane from {} to calibrate PTFE length using OpenAMS. "
+            "Command: OAMS_CALIBRATE_PTFE_LENGTH"
+        ).format(self.name)
+
+        for lane in self.lanes.values():
+            if not getattr(lane, "load_state", False):
+                continue
+
+            button_command = self._format_openams_calibration_command(
+                "OAMS_CALIBRATE_PTFE_LENGTH", lane
+            )
+            if button_command is None:
+                continue
+
+            button_label = f"{lane}"
+            button_style = "primary" if index % 2 == 0 else "secondary"
+            group_buttons.append((button_label, button_command, button_style))
+
+            index += 1
+            if index % 2 == 0:
+                buttons.append(list(group_buttons))
+                group_buttons = []
+
+        if group_buttons:
+            buttons.append(list(group_buttons))
+
+        total_buttons = sum(len(group) for group in buttons)
+        if total_buttons == 0:
+            text = "No lanes are loaded, please load before calibration"
+
+        back = [("Back", f"UNIT_CALIBRATION UNIT={self.name}", "info")]
+
+        prompt.create_custom_p(title, text, None, True, buttons, back)
+
     def cmd_UNIT_LANE_CALIBRATION(self, gcmd):
         """Override base prompt to expose an all-lane HUB HES calibration action."""
         if not self._is_openams_unit():
             super().cmd_UNIT_LANE_CALIBRATION(gcmd)
+            return
+
+        # Check if any lane is loaded to toolhead
+        loaded_lane = self._check_toolhead_loaded()
+        if loaded_lane:
+            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead. Please unload the tool and try again.")
             return
 
         prompt = AFCprompt(gcmd, self.logger)
