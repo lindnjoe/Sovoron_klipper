@@ -1612,6 +1612,8 @@ class afcAMS(afcUnit):
 
         # Mark lane as completely empty (prep and load sensors)
         # This ensures AFC sees the lane as empty even if f1s sensor still shows filament
+        # DO NOT call handle_load_runout() here - let AFC's own sensor detect runout naturally
+        # after the filament coasts through the system
         try:
             lane.prep_state = False
             lane.load_state = False
@@ -1622,16 +1624,14 @@ class afcAMS(afcUnit):
             if not hasattr(lane, '_oams_runout_detected'):
                 lane._oams_runout_detected = False
             lane._oams_runout_detected = True
-            self.logger.info("Marked lane %s as empty for runout", lane.name)
+            self.logger.info("Marked lane %s as empty for runout (AFC will detect via sensor)", lane.name)
         except Exception:
             self.logger.exception("Failed to mark lane %s as empty during runout", lane.name)
 
-        try:
-            lane.handle_load_runout(eventtime, False)
-        except TypeError:
-            lane.handle_load_runout(eventtime, load_state=False)
-        except AttributeError:
-            self.logger.warning("Lane %s is missing load runout handler for AMS integration", lane)
+        # NOTE: We do NOT call lane.handle_load_runout() here
+        # This would trigger infinite runout immediately when OpenAMS detects the spool is empty
+        # Instead, we let the filament coast naturally and AFC's prep/load sensor will detect
+        # the runout when the filament actually clears, triggering infinite runout at the proper time
 
     def handle_openams_lane_tool_state(self, lane_name: str, loaded: bool, *, spool_index: Optional[int] = None, eventtime: Optional[float] = None) -> bool:
         """Update lane/tool state in response to OpenAMS hardware events."""
