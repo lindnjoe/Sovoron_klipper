@@ -312,6 +312,10 @@ class afcAMS(afcUnit):
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES_ALL", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL, desc="calibrate the OpenAMS HUB HES value for every loaded lane")
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_PTFE", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_PTFE, desc="calibrate the OpenAMS PTFE length for a specific lane")
 
+    def _is_openams_unit(self):
+        """Check if this unit has OpenAMS hardware available."""
+        return self.oams is not None
+
     def _format_openams_calibration_command(self, base_command, lane):
         if base_command not in {"OAMS_CALIBRATE_HUB_HES", "OAMS_CALIBRATE_PTFE_LENGTH"}:
             return super()._format_openams_calibration_command(base_command, lane)
