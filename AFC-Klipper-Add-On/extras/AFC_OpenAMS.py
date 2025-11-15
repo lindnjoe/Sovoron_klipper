@@ -780,14 +780,15 @@ class afcAMS(afcUnit):
                         )
 
                         if is_virtual_sensor:
-                            # Virtual sensor - manually unsync to clear extruder.lane_loaded
+                            # Virtual sensor - manually unsync AND clear extruder.lane_loaded
                             # (Real sensors would handle this naturally when filament clears)
                             try:
                                 other_lane.unsync_to_extruder()
+                                other_extruder_obj.lane_loaded = None  # CRITICAL: Clear extruder's lane_loaded
                                 other_lane.tool_loaded = False
                                 if hasattr(other_lane, '_oams_runout_detected'):
                                     other_lane._oams_runout_detected = False
-                                self.logger.info("Unsynced %s from virtual sensor extruder %s (cross-FPS runout, new lane %s on %s)",
+                                self.logger.info("Unsynced %s from virtual sensor extruder %s and cleared lane_loaded (cross-FPS runout, new lane %s on %s)",
                                                other_lane.name, other_extruder, lane.name, lane_extruder)
                             except Exception:
                                 self.logger.exception("Failed to unsync %s from extruder during cross-FPS lane load", other_lane.name)
@@ -1610,10 +1611,12 @@ class afcAMS(afcUnit):
                         tool_start.upper().startswith("AMS_")
                     )
                     if is_virtual_sensor:
-                        # Virtual sensor - unsync from extruder to clear extruder.lane_loaded
+                        # Virtual sensor - unsync from extruder AND clear extruder.lane_loaded
+                        # (unsync_to_extruder only unsyncs stepper, doesn't clear lane_loaded!)
                         try:
                             lane.unsync_to_extruder()
-                            self.logger.info("Unsynced %s from virtual sensor extruder %s when sensor cleared",
+                            extruder_obj.lane_loaded = None  # CRITICAL: Clear the extruder's lane_loaded
+                            self.logger.info("Unsynced %s from virtual sensor extruder %s and cleared lane_loaded when sensor cleared",
                                            lane.name, extruder_obj.name)
                         except Exception:
                             self.logger.exception("Failed to unsync %s from extruder when sensor cleared", lane.name)
