@@ -1180,6 +1180,40 @@ class afcAMS(afcUnit):
         cur_lane.set_afc_prep_done()
         return succeeded
 
+    def calibrate_bowden(self, cur_lane, dis, tol):
+        """OpenAMS units use different calibration commands."""
+        msg = (
+            "OpenAMS units do not support standard AFC bowden calibration. "
+            "Use OpenAMS-specific calibration commands instead:\n"
+            "  - AFC_OAMS_CALIBRATE_HUB_HES UNIT={} SPOOL=<spool_index>\n"
+            "  - AFC_OAMS_CALIBRATE_PTFE UNIT={} SPOOL=<spool_index>\n"
+            "  - AFC_OAMS_CALIBRATE_HUB_HES_ALL UNIT={}"
+        ).format(self.name, self.name, self.name)
+        self.logger.info(msg)
+        return False, msg, 0
+
+    def calibrate_td1(self, cur_lane, dis, tol):
+        """OpenAMS units use different calibration commands."""
+        msg = (
+            "OpenAMS units do not support standard AFC TD1 calibration. "
+            "Use OpenAMS-specific calibration commands instead:\n"
+            "  - AFC_OAMS_CALIBRATE_HUB_HES UNIT={} SPOOL=<spool_index>\n"
+            "  - AFC_OAMS_CALIBRATE_PTFE UNIT={} SPOOL=<spool_index>"
+        ).format(self.name, self.name)
+        self.logger.info(msg)
+        return False, msg, 0
+
+    def calibrate_hub(self, cur_lane, tol):
+        """OpenAMS units use different calibration commands."""
+        msg = (
+            "OpenAMS units do not support standard AFC hub calibration. "
+            "Use OpenAMS-specific calibration commands instead:\n"
+            "  - AFC_OAMS_CALIBRATE_HUB_HES UNIT={} SPOOL=<spool_index>\n"
+            "  - AFC_OAMS_CALIBRATE_HUB_HES_ALL UNIT={}"
+        ).format(self.name, self.name)
+        self.logger.info(msg)
+        return False, msg, 0
+
     def handle_ready(self):
         """Resolve the OpenAMS object once Klippy is ready."""
         # First check if ANY OpenAMS hardware exists in the system
