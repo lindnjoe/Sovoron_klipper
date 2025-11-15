@@ -604,11 +604,11 @@ class OAMSManager:
                 self.logger.warning("OAMS %s not found", oams_name)
                 continue
 
-            # Found loaded lane! Return lane's map name (e.g., "T4") for display
-            lane_map_name = lane.map if hasattr(lane, 'map') else loaded_lane_name
+            # Found loaded lane! Return lane name (e.g., "lane8") not map (e.g., "T4")
+            # Map can be retrieved from lane object if needed for display
             self.logger.info("Detected %s loaded to %s (bay %d on %s)",
                            loaded_lane_name, extruder_name, bay_index, oams_name)
-            return lane_map_name, oam, bay_index
+            return loaded_lane_name, oam, bay_index
 
         return None, None, None
         
@@ -1331,7 +1331,7 @@ class OAMSManager:
             return False, f"Failed to load bay {bay_index} on {oams_name}"
 
         if success:
-            fps_state.current_lane = lane.map if hasattr(lane, 'map') else lane_name
+            fps_state.current_lane = lane_name  # Store lane name (e.g., "lane8") not map (e.g., "T0")
             fps_state.current_oams = oam.name
             fps_state.current_spool_idx = bay_index
 
@@ -2282,11 +2282,11 @@ class OAMSManager:
 
             # Let state detection handle the full sync
             # We just trigger it to run immediately instead of waiting for next poll
-            lane_map_name, oam, bay_index = self._determine_loaded_lane_for_fps(fps_name, self.fpss[fps_name])
+            detected_lane_name, oam, bay_index = self._determine_loaded_lane_for_fps(fps_name, self.fpss[fps_name])
 
-            if lane_map_name and oam and bay_index is not None:
-                # Update FPS state
-                fps_state.current_lane = lane_map_name
+            if detected_lane_name and oam and bay_index is not None:
+                # Update FPS state - store lane name (e.g., "lane8") not map (e.g., "T0")
+                fps_state.current_lane = detected_lane_name
                 fps_state.current_oams = oam.name
                 fps_state.current_spool_idx = bay_index
                 fps_state.state = FPSLoadState.LOADED
@@ -2297,7 +2297,7 @@ class OAMSManager:
                 self._ensure_forward_follower(fps_name, fps_state, "AFC lane loaded notification")
 
                 self.logger.info("Synced OAMS state from AFC: %s loaded to %s (bay %d on %s)",
-                               lane_name, fps_name, bay_index, oam.name)
+                               detected_lane_name, fps_name, bay_index, oam.name)
         except Exception:
             self.logger.exception("Error processing AFC lane loaded notification for %s", lane_name)
 
