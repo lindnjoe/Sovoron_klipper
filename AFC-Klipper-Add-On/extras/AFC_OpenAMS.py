@@ -1740,18 +1740,44 @@ class afcAMS(afcUnit):
 
         eventtime = self.reactor.monotonic()
 
-        # Set runout flag to prevent sensor state sync from overwriting empty state
-        # during AFC's runout handling. Do NOT manually set prep_state/load_state here -
-        # let the actual hardware sensors report when filament clears each sensor.
-        # This allows proper coasting - filament continues through PTFE tube after hub
-        # empties, and AFC triggers infinite runout when prep sensor actually goes empty.
-        try:
-            if not hasattr(lane, '_oams_runout_detected'):
-                lane._oams_runout_detected = False
-            lane._oams_runout_detected = True
-            self.logger.info("Marked lane %s for runout tracking (waiting for sensor to clear)", lane.name)
-        except Exception:
-            self.logger.exception("Failed to mark lane %s for runout tracking", lane.name)
+        # Check if this is a same-FPS runout (OpenAMS handles internally) vs cross-FPS (AFC handles)
+        runout_lane_name = getattr(lane, "runout_lane", None)
+        is_same_fps = False
+        if runout_lane_name:
+            target_lane = self.afc.lanes.get(runout_lane_name)
+            if target_lane:
+                source_extruder = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
+                target_extruder = getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None
+                is_same_fps = (source_extruder == target_extruder and source_extruder is not None)
+
+        # For SAME FPS runouts: OpenAMS handles internally, explicitly mark sensors False
+        # For CROSS FPS runouts: AFC handles via CHANGE_TOOL, let sensors sync naturally
+        if is_same_fps:
+            # Explicitly set sensors False for same-FPS infinite runout
+            # OpenAMS is handling the reload internally, need to mark lane empty immediately
+            try:
+                lane.prep_state = False
+                lane.load_state = False
+                self._last_lane_states[lane.name] = False
+                if hasattr(lane, 'hub_obj') and lane.hub_obj:
+                    self._last_hub_states[lane.hub_obj.name] = False
+                # Set runout flag to prevent sensor sync from overwriting
+                if not hasattr(lane, '_oams_runout_detected'):
+                    lane._oams_runout_detected = False
+                lane._oams_runout_detected = True
+                self.logger.info("Same-FPS runout: Marked lane %s sensors False (OpenAMS handling reload)", lane.name)
+            except Exception:
+                self.logger.exception("Failed to mark lane %s as empty during same-FPS runout", lane.name)
+        else:
+            # Cross-FPS runout: AFC will handle via CHANGE_TOOL, just set flag
+            # Let sensor sync handle the state changes naturally
+            try:
+                if not hasattr(lane, '_oams_runout_detected'):
+                    lane._oams_runout_detected = False
+                lane._oams_runout_detected = True
+                self.logger.info("Cross-FPS runout: Marked lane %s for runout tracking (AFC will handle tool change)", lane.name)
+            except Exception:
+                self.logger.exception("Failed to mark lane %s for runout tracking", lane.name)
 
         # NOTE: We do NOT call lane.handle_load_runout() here
         # This would trigger infinite runout immediately when OpenAMS detects the spool is empty
