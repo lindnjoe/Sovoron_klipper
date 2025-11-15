@@ -1881,6 +1881,12 @@ class afcAMS(afcUnit):
 
     def cmd_AFC_OAMS_CALIBRATE_HUB_HES(self, gcmd):
         """Run the OpenAMS HUB HES calibration for a specific lane."""
+        # Check if any lane is loaded to toolhead
+        loaded_lane = self._check_toolhead_loaded()
+        if loaded_lane:
+            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead. Please unload the tool and try again.")
+            return
+
         spool_index = gcmd.get_int("SPOOL", None)
         if spool_index is None:
             gcmd.respond_info("SPOOL parameter is required for OpenAMS HUB HES calibration.")
@@ -1892,21 +1898,14 @@ class afcAMS(afcUnit):
 
     def cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL(self, gcmd):
         """Calibrate HUB HES for every loaded OpenAMS lane in this unit."""
+        # Check if any lane is loaded to toolhead
+        loaded_lane = self._check_toolhead_loaded()
+        if loaded_lane:
+            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead. Please unload the tool and try again.")
+            return
+
         prompt = AFCprompt(gcmd, self.logger)
         prompt.p_end()
-
-        active_lane = getattr(self.afc, "current", None)
-        if isinstance(active_lane, AFCLane):
-            active_lane_obj = active_lane
-        elif isinstance(active_lane, str):
-            active_lane_obj = self.lanes.get(active_lane)
-        else:
-            active_lane_obj = None
-
-        if (isinstance(active_lane_obj, AFCLane) and getattr(active_lane_obj, "unit_obj", None) is self and getattr(active_lane_obj, "tool_loaded", False)):
-            lane_label = getattr(active_lane_obj, "name", "current lane")
-            gcmd.respond_info("Cannot calibrate all OpenAMS lanes while {} is active on this unit. Please unload the current tool and try again.".format(lane_label))
-            return
 
         calibrations = []
         skipped = []
@@ -1936,6 +1935,12 @@ class afcAMS(afcUnit):
 
     def cmd_AFC_OAMS_CALIBRATE_PTFE(self, gcmd):
         """Run the OpenAMS PTFE calibration for a specific lane."""
+        # Check if any lane is loaded to toolhead
+        loaded_lane = self._check_toolhead_loaded()
+        if loaded_lane:
+            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead. Please unload the tool and try again.")
+            return
+
         spool_index = gcmd.get_int("SPOOL", None)
         if spool_index is None:
             gcmd.respond_info("SPOOL parameter is required for OpenAMS PTFE calibration.")
@@ -2213,6 +2218,17 @@ class afcAMS(afcUnit):
             return False
 
         return True
+
+    def _check_toolhead_loaded(self):
+        """Check if any lane is currently loaded to the toolhead.
+
+        Returns: Lane name if loaded, None otherwise.
+        """
+        # Check all lanes across all AFC units
+        for lane_name, lane in self.afc.lanes.items():
+            if getattr(lane, "tool_loaded", False):
+                return lane_name
+        return None
 
     def _find_lane_by_spool(self, spool_index):
         """Resolve lane by spool index using registry when available."""
