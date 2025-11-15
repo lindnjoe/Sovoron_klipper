@@ -1566,6 +1566,16 @@ class afcAMS(afcUnit):
         except Exception:
             self.logger.exception("Failed to update prep sensor for lane %s", lane)
 
+        # When sensor goes False (empty), clear tool_loaded like same-FPS runout does
+        # This mimics the behavior in _update_shared_lane() for non-shared lanes
+        if not lane_val:
+            lane.tool_loaded = False
+            lane.loaded_to_hub = False
+            lane.status = AFCLaneState.NONE
+            lane.unit_obj.lane_unloaded(lane)
+            lane.td1_data = {}
+            lane.afc.spool.clear_values(lane)
+
         self._mirror_lane_to_virtual_sensor(lane, eventtime)
         lane_name = getattr(lane, "name", None)
         if lane_name:
