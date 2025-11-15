@@ -60,28 +60,6 @@ IDLE_POLL_THRESHOLD = 3  # Number of polls before going idle
 
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 
-class _SafeMoonrakerWrapper:
-    """Wrapper for AFC moonraker that safely handles None moonraker instance."""
-
-    def __init__(self, moonraker):
-        self._moonraker = moonraker
-
-    def send_lane_data(self, lane_data):
-        """Safely send lane data, no-op if moonraker is None."""
-        if self._moonraker is not None:
-            self._moonraker.send_lane_data(lane_data)
-
-    def __getattr__(self, name):
-        """Delegate all other attributes to the underlying moonraker."""
-        if self._moonraker is None:
-            # Return a no-op callable for any method when moonraker is None
-            return lambda *args, **kwargs: None
-        return getattr(self._moonraker, name)
-
-    def __bool__(self):
-        """Allow truthiness checks on the wrapper."""
-        return self._moonraker is not None
-
 class _VirtualRunoutHelper:
     """Minimal runout helper used by AMS-managed virtual sensors."""
 
@@ -1237,11 +1215,6 @@ class afcAMS(afcUnit):
             # Fallback: use legacy polling if hardware_service unavailable
             self.logger.warning("AMSHardwareService not available, using legacy polling for %s", self.name)
             self.reactor.update_timer(self.timer, self.reactor.NOW)
-
-        # Install safe moonraker wrapper to prevent AttributeError when moonraker is None
-        if hasattr(self.afc, 'moonraker') and not isinstance(self.afc.moonraker, _SafeMoonrakerWrapper):
-            self.afc.moonraker = _SafeMoonrakerWrapper(self.afc.moonraker)
-            self.logger.debug("Installed safe moonraker wrapper for AFC")
 
     def _on_f1s_changed(self, event_type, unit_name, bay, value, eventtime, **kwargs):
         """Handle f1s sensor change events (PHASE 2: event-driven).
