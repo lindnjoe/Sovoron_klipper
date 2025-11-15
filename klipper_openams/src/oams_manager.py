@@ -2074,51 +2074,18 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             return
 
-        # Skip clog detection if this is actually a stuck spool scenario during lane loading
-        # This happens when AFC is loading a lane to toolhead (TOOL_LOADING state) while FPS state is LOADED
-        # Stuck spool conditions: very low FPS pressure OR lane currently loading to toolhead
+        # Skip clog detection if FPS pressure is very low - indicates stuck spool, not clog
+        # During lane loads, stuck spool should trigger retry logic, not clog pause
+        # During normal printing, low pressure also indicates stuck spool (separate detection)
         if pressure <= self.stuck_spool_pressure_threshold:
             # Very low FPS pressure indicates stuck spool, not clog - skip clog detection
             fps_state.reset_clog_tracker()
             return
 
-        # Check if AFC lane is currently loading to toolhead
-        # BUT: If toolhead sensor is triggered, filament is IN the extruder - enable clog detection
-        # (can't retry load if filament already in extruder - need to unload first)
-        if fps_state.current_lane:
-            try:
-                afc = self._get_afc()
-                if afc is not None:
-                    lane = afc.lanes.get(fps_state.current_lane)
-                    if lane is not None:
-                        lane_status = getattr(lane, "status", None)
-                        # AFCLaneState values: TOOL_LOADING=4
-                        if lane_status == 4:  # TOOL_LOADING
-                            # Check if toolhead sensor is triggered
-                            extruder_obj = getattr(lane, "extruder_obj", None)
-                            tool_start_triggered = False
-                            if extruder_obj is not None:
-                                # Check if using buffer or sensor
-                                tool_start = getattr(extruder_obj, "tool_start", None)
-                                if tool_start == "buffer":
-                                    # Using buffer - check buffer advance state
-                                    buffer_obj = getattr(lane, "buffer_obj", None)
-                                    if buffer_obj is not None:
-                                        tool_start_triggered = getattr(buffer_obj, "advance_state", False)
-                                else:
-                                    # Using sensor - check tool_start_state
-                                    tool_start_triggered = getattr(extruder_obj, "tool_start_state", False)
-
-                            if not tool_start_triggered:
-                                # Lane is loading but filament NOT yet in extruder - skip clog detection
-                                # Allow AFC load to fail and retry if stuck spool
-                                fps_state.reset_clog_tracker()
-                                return
-                            # else: Toolhead sensor triggered - filament IS in extruder
-                            # Continue with clog detection (can't retry load, need to pause for clog)
-            except Exception:
-                # If we can't check lane status, continue with clog detection
-                pass
+        # Clog detection now runs normally for all states (including TOOL_LOADING)
+        # During load purge: extruder advances + encoder doesn't move = genuine clog, detect it
+        # Before purge starts: extruder not advancing = clog won't trigger (extrusion_delta < threshold)
+        # The existing clog logic is already smart enough to handle this correctly
 
         try:
             extruder_pos = float(getattr(fps.extruder, "last_position", 0.0))
