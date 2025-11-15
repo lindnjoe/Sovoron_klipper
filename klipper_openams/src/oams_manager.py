@@ -2074,6 +2074,32 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             return
 
+        # Skip clog detection if this is actually a stuck spool scenario during lane loading
+        # This happens when AFC is loading a lane to toolhead (TOOL_LOADING state) while FPS state is LOADED
+        # Stuck spool conditions: very low FPS pressure OR lane currently loading to toolhead
+        if pressure <= self.stuck_spool_pressure_threshold:
+            # Very low FPS pressure indicates stuck spool, not clog - skip clog detection
+            fps_state.reset_clog_tracker()
+            return
+
+        # Check if AFC lane is currently loading to toolhead
+        if fps_state.current_lane:
+            try:
+                afc = self._get_afc()
+                if afc is not None:
+                    lane = afc.lanes.get(fps_state.current_lane)
+                    if lane is not None:
+                        lane_status = getattr(lane, "status", None)
+                        # AFCLaneState values: TOOL_LOADING=4
+                        if lane_status == 4:  # TOOL_LOADING
+                            # Lane is actively loading to toolhead - skip clog detection
+                            # The stuck spool detection in _check_load_speed will handle retries
+                            fps_state.reset_clog_tracker()
+                            return
+            except Exception:
+                # If we can't check lane status, continue with clog detection
+                pass
+
         try:
             extruder_pos = float(getattr(fps.extruder, "last_position", 0.0))
         except Exception:
