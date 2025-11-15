@@ -1148,8 +1148,13 @@ class afcAMS(afcUnit):
                 msg += '<span class=success--text> AND LOADED</span>'
                 self.afc.function.afc_led(cur_lane.led_spool_illum, cur_lane.led_spool_index)
 
-                # Enable buffer whenever lane is loaded, unless in error state
-                cur_lane.enable_buffer()
+                # Enable buffer if: (prep AND hub sensor) OR tool_loaded
+                # Check hub sensor to distinguish loaded lanes from lanes with just filament present
+                hub_loaded = cur_lane.hub_obj and cur_lane.hub_obj.state
+                if hub_loaded or cur_lane.tool_loaded:
+                    cur_lane.enable_buffer()
+                else:
+                    cur_lane.disable_buffer()
 
                 if cur_lane.tool_loaded:
                     tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.tool_start == "buffer" or cur_lane.extruder_obj.tool_end_state)
