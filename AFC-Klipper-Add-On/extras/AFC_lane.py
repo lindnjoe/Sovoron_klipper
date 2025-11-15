@@ -1115,8 +1115,7 @@ class AFCLane:
                     "lane"          : lane_number
                 }
             }
-            if self.afc.moonraker is not None:
-                self.afc.moonraker.send_lane_data(lane_data)
+            self.afc.moonraker.send_lane_data(lane_data)
 
     def clear_lane_data(self):
         """
@@ -1137,8 +1136,7 @@ class AFCLane:
                     "lane"          : lane_number
                 }
             }
-            if self.afc.moonraker is not None:
-                self.afc.moonraker.send_lane_data(lane_data)
+            self.afc.moonraker.send_lane_data(lane_data)
 
     def get_td1_data(self):
         """
