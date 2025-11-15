@@ -1753,14 +1753,13 @@ class afcAMS(afcUnit):
         # For SAME FPS runouts: OpenAMS handles internally, explicitly mark sensors False
         # For CROSS FPS runouts: AFC handles via CHANGE_TOOL, let sensors sync naturally
         if is_same_fps:
-            # Explicitly set sensors False for same-FPS infinite runout
+            # Explicitly set lane sensors False for same-FPS infinite runout
             # OpenAMS is handling the reload internally, need to mark lane empty immediately
+            # Hub sensor will clear naturally when filament physically clears it
             try:
                 lane.prep_state = False
                 lane.load_state = False
                 self._last_lane_states[lane.name] = False
-                if hasattr(lane, 'hub_obj') and lane.hub_obj:
-                    self._last_hub_states[lane.hub_obj.name] = False
                 # Set runout flag to prevent sensor sync from overwriting
                 if not hasattr(lane, '_oams_runout_detected'):
                     lane._oams_runout_detected = False
