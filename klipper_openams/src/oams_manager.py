@@ -1012,15 +1012,25 @@ class OAMSManager:
             self.logger.warning("Runout lane %s for %s on %s is not available; deferring to AFC", runout_lane_name, lane_name, fps_name)
             return None, runout_lane_name, True, lane_name
 
-        # ALWAYS delegate to AFC to preserve coasting and PTFE length calculation logic
-        # AFC's CHANGE_TOOL handles proper timing for infinite runout
-        self.logger.info("Infinite runout: %s -> %s on %s (delegating to AFC for proper timing)",
-                       lane_name, runout_lane_name, fps_name)
+        # Check if source and target lanes are on the same FPS/extruder
+        # If SAME FPS: OpenAMS handles reload internally (coast, PTFE calc, load new spool)
+        # If DIFFERENT FPS: AFC handles via CHANGE_TOOL (full runout, then switch tools)
+        source_extruder = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
+        target_extruder = getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None
 
-        # Return target lane info (lane map or lane name for display)
+        same_fps = (source_extruder == target_extruder and source_extruder is not None)
+        delegate_to_afc = not same_fps  # Only delegate if different FPS
+
         target_lane_map = getattr(target_lane, "map", runout_lane_name)
 
-        return target_lane_map, runout_lane_name, True, lane_name
+        if same_fps:
+            self.logger.info("Infinite runout: %s -> %s on same FPS %s (OpenAMS handling internally)",
+                           lane_name, runout_lane_name, fps_name)
+        else:
+            self.logger.info("Infinite runout: %s -> %s on different FPS (delegating to AFC for tool change)",
+                           lane_name, runout_lane_name)
+
+        return target_lane_map, runout_lane_name, delegate_to_afc, lane_name
 
     def _delegate_runout_to_afc(self, fps_name: str, fps_state: 'FPSState', source_lane_name: Optional[str], target_lane_name: Optional[str]) -> bool:
         afc = self._get_afc()
