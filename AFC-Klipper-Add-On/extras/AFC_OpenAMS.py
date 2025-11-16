@@ -761,11 +761,22 @@ class afcAMS(afcUnit):
                     continue
                 # Check if other lane is on same extruder
                 other_extruder = getattr(other_lane.extruder_obj, "name", None) if hasattr(other_lane, "extruder_obj") else None
+                other_extruder_obj = getattr(other_lane, "extruder_obj", None)
+
                 if other_extruder == lane_extruder:
+                    # Same FPS: Just clear tool_loaded
                     other_lane.tool_loaded = False
                     if hasattr(other_lane, '_oams_runout_detected'):
                         other_lane._oams_runout_detected = False
                     self.logger.debug("Cleared tool_loaded for %s on same FPS (new lane %s loaded)", other_lane.name, lane.name)
+                elif other_extruder_obj is not None and hasattr(other_lane, '_oams_runout_detected') and other_lane._oams_runout_detected:
+                    # Cross-FPS during runout: Set the old extruder's virtual sensor to False
+                    # This triggers natural cleanup via sensor handling code
+                    other_extruder_obj.tool_start_state = False
+                    other_lane.tool_loaded = False
+                    other_lane._oams_runout_detected = False
+                    self.logger.info("Cross-FPS runout: Set %s virtual sensor to False (lane %s loading on %s)",
+                                   other_extruder, lane.name, lane_extruder)
 
         if not self._lane_matches_extruder(lane):
             return
