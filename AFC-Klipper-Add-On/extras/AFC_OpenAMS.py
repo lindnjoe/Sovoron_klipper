@@ -761,7 +761,7 @@ class afcAMS(afcUnit):
                     continue
                 # Check if other lane is on same extruder
                 other_extruder = getattr(other_lane.extruder_obj, "name", None) if hasattr(other_lane, "extruder_obj") else None
-                other_extruder_obj = getattr(other_lane, "extruder_obj", None)
+                other_lane_status = getattr(other_lane, 'status', None)
 
                 if other_extruder == lane_extruder:
                     # Same FPS: Just clear tool_loaded
@@ -769,14 +769,20 @@ class afcAMS(afcUnit):
                     if hasattr(other_lane, '_oams_runout_detected'):
                         other_lane._oams_runout_detected = False
                     self.logger.debug("Cleared tool_loaded for %s on same FPS (new lane %s loaded)", other_lane.name, lane.name)
-                elif other_extruder_obj is not None and hasattr(other_lane, '_oams_runout_detected') and other_lane._oams_runout_detected:
-                    # Cross-FPS during runout: Set the old extruder's virtual sensor to False
-                    # This triggers natural cleanup via sensor handling code
-                    other_extruder_obj.tool_start_state = False
-                    other_lane.tool_loaded = False
-                    other_lane._oams_runout_detected = False
-                    self.logger.info("Cross-FPS runout: Set %s virtual sensor to False (lane %s loading on %s)",
-                                   other_extruder, lane.name, lane_extruder)
+                elif (other_extruder is not None and
+                      other_extruder != lane_extruder and
+                      other_lane_status == AFCLaneState.INFINITE_RUNOUT):
+                    # Cross-FPS during runout: Manually unsync and unload the old lane
+                    # Equivalent to calling UNSET_LANE_LOADED on the old lane
+                    try:
+                        other_lane.unsync_to_extruder()
+                        other_lane.set_unloaded()
+                        if hasattr(other_lane, '_oams_runout_detected'):
+                            other_lane._oams_runout_detected = False
+                        self.logger.info("Cross-FPS runout: Unset %s from %s (new lane %s loading on %s)",
+                                       other_lane.name, other_extruder, lane.name, lane_extruder)
+                    except Exception:
+                        self.logger.exception("Failed to unset %s during cross-FPS runout", other_lane.name)
 
         if not self._lane_matches_extruder(lane):
             return
