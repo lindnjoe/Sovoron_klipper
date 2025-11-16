@@ -763,6 +763,12 @@ class afcAMS(afcUnit):
                 other_extruder = getattr(other_lane.extruder_obj, "name", None) if hasattr(other_lane, "extruder_obj") else None
                 other_lane_status = getattr(other_lane, 'status', None)
 
+                # Debug: Log what we're checking
+                if other_extruder != lane_extruder:
+                    self.logger.info("DEBUG: Checking lane %s (tool_loaded=%s, extruder=%s, status=%s) vs new lane %s (extruder=%s)",
+                                   other_lane.name, getattr(other_lane, 'tool_loaded', False),
+                                   other_extruder, other_lane_status, lane.name, lane_extruder)
+
                 if other_extruder == lane_extruder:
                     # Same FPS: Just clear tool_loaded
                     other_lane.tool_loaded = False
