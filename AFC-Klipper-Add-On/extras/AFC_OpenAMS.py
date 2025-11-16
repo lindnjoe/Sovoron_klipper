@@ -1494,8 +1494,13 @@ class afcAMS(afcUnit):
                 else:
                     self.logger.debug("Shared lane sensor empty but runout in progress for lane %s - keeping runout flag for cross-FPS handler", getattr(lane, "name", "unknown"))
 
-        if lane_val == self._last_lane_states.get(lane.name):
+        # Check for duplicate updates
+        last_state = self._last_lane_states.get(lane.name)
+        if lane_val == last_state:
+            self.logger.debug("Ignoring duplicate sensor update for lane %s (value=%s, last=%s)", getattr(lane, "name", "unknown"), lane_val, last_state)
             return
+
+        self.logger.debug("Processing sensor change for lane %s: %s -> %s", getattr(lane, "name", "unknown"), last_state, lane_val)
 
         if lane_val:
             lane.load_state = False
@@ -1578,7 +1583,10 @@ class afcAMS(afcUnit):
         previous = self._last_lane_states.get(getattr(lane, "name", ""))
 
         if previous is not None and bool(previous) == bool(lane_val):
+            self.logger.debug("Ignoring duplicate sensor update for lane %s (value=%s, last=%s)", getattr(lane, "name", "unknown"), lane_val, previous)
             return
+
+        self.logger.debug("Processing sensor change for lane %s: %s -> %s", getattr(lane, "name", "unknown"), previous, lane_val)
 
         try:
             lane.load_callback(eventtime, lane_val)
