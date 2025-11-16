@@ -751,7 +751,7 @@ class afcAMS(afcUnit):
 
         # When a new lane loads to toolhead, clear tool_loaded on any OTHER lanes from this unit
         # that are on the SAME FPS/extruder (each FPS can have its own lane loaded)
-        # Also unsync lanes on DIFFERENT extruders to allow AFC to unload them
+        # This handles cross-FPS runout where AFC switches from OpenAMS lane to different FPS lane
         lane_extruder = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
         if lane_extruder:
             for other_lane in self.lanes.values():
@@ -762,40 +762,10 @@ class afcAMS(afcUnit):
                 # Check if other lane is on same extruder
                 other_extruder = getattr(other_lane.extruder_obj, "name", None) if hasattr(other_lane, "extruder_obj") else None
                 if other_extruder == lane_extruder:
-                    # Same extruder - just clear tool_loaded
                     other_lane.tool_loaded = False
                     if hasattr(other_lane, '_oams_runout_detected'):
                         other_lane._oams_runout_detected = False
                     self.logger.debug("Cleared tool_loaded for %s on same FPS (new lane %s loaded)", other_lane.name, lane.name)
-                elif other_extruder is not None:
-                    # Different extruder - check if it's using virtual sensor
-                    # Only unsync for virtual sensors (AMS_EXTRUDER) - real sensors handle clearing naturally
-                    other_extruder_obj = getattr(other_lane, "extruder_obj", None)
-                    if other_extruder_obj is not None:
-                        other_tool_start = getattr(other_extruder_obj, "tool_start", None)
-                        is_virtual_sensor = (
-                            other_tool_start is not None and
-                            isinstance(other_tool_start, str) and
-                            other_tool_start.upper().startswith("AMS_")
-                        )
-
-                        if is_virtual_sensor:
-                            # Virtual sensor - manually unsync AND clear extruder.lane_loaded
-                            # (Real sensors would handle this naturally when filament clears)
-                            try:
-                                other_lane.unsync_to_extruder()
-                                other_extruder_obj.lane_loaded = None  # CRITICAL: Clear extruder's lane_loaded
-                                other_lane.tool_loaded = False
-                                if hasattr(other_lane, '_oams_runout_detected'):
-                                    other_lane._oams_runout_detected = False
-                                self.logger.info("Unsynced %s from virtual sensor extruder %s and cleared lane_loaded (cross-FPS runout, new lane %s on %s)",
-                                               other_lane.name, other_extruder, lane.name, lane_extruder)
-                            except Exception:
-                                self.logger.exception("Failed to unsync %s from extruder during cross-FPS lane load", other_lane.name)
-                        else:
-                            # Real sensor - let AFC's natural sensor handling clear it when filament clears
-                            self.logger.debug("Skipping unsync for %s on real sensor extruder %s (AFC will handle naturally)",
-                                           other_lane.name, other_extruder)
 
         if not self._lane_matches_extruder(lane):
             return
@@ -1531,16 +1501,7 @@ class afcAMS(afcUnit):
             lane.status = AFCLaneState.NONE
             lane.unit_obj.lane_unloaded(lane)
             lane.td1_data = {}
-            try:
-                lane.afc.spool.clear_values(lane)
-            except AttributeError:
-                # Moonraker integration not available - manually clear spool values
-                lane.spool_id = ''
-                lane.material = ''
-                lane.color = ''
-                lane.weight = 0
-                lane.extruder_temp = None
-                lane.bed_temp = None
+            lane.afc.spool.clear_values(lane)
 
         lane.afc.save_vars()
         self._last_lane_states[lane.name] = lane_val
@@ -1613,16 +1574,7 @@ class afcAMS(afcUnit):
             lane.status = AFCLaneState.NONE
             lane.unit_obj.lane_unloaded(lane)
             lane.td1_data = {}
-            try:
-                lane.afc.spool.clear_values(lane)
-            except AttributeError:
-                # Moonraker integration not available - manually clear spool values
-                lane.spool_id = ''
-                lane.material = ''
-                lane.color = ''
-                lane.weight = 0
-                lane.extruder_temp = None
-                lane.bed_temp = None
+            lane.afc.spool.clear_values(lane)
 
         self._mirror_lane_to_virtual_sensor(lane, eventtime)
         lane_name = getattr(lane, "name", None)
