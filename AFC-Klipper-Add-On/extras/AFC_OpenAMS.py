@@ -1385,16 +1385,28 @@ class afcAMS(afcUnit):
             self.afc._original_LANE_UNLOAD = self.afc.LANE_UNLOAD
 
             # Create wrapper
-            def wrapped_lane_unload(gcmd):
-                # Get the lane being unloaded
-                lane_name = gcmd.get('LANE', None)
-                if lane_name and lane_name in self.afc.lanes:
-                    lane = self.afc.lanes[lane_name]
+            def wrapped_lane_unload(gcmd_or_lane):
+                # LANE_UNLOAD can be called two ways:
+                # 1. As gcode command: LANE_UNLOAD LANE=lane7 (gcmd has .get())
+                # 2. Direct call: self.LANE_UNLOAD(cur_lane) (AFCLane object)
+                lane = None
 
-                    # Check if this is an OpenAMS lane with cross-extruder runout flag
+                # Check if it's a GCodeCommand (has 'get' method) or AFCLane object
+                if hasattr(gcmd_or_lane, 'get'):
+                    # Gcode command - extract lane name
+                    lane_name = gcmd_or_lane.get('LANE', None)
+                    if lane_name and lane_name in self.afc.lanes:
+                        lane = self.afc.lanes[lane_name]
+                elif hasattr(gcmd_or_lane, 'name'):
+                    # Direct lane object passed
+                    lane = gcmd_or_lane
+
+                # Check if this is an OpenAMS lane with cross-extruder runout flag
+                if lane is not None:
                     if getattr(lane, 'unit_obj', None) is not None and getattr(lane.unit_obj, 'type', None) == "OpenAMS":
                         is_cross_extruder = getattr(lane, '_oams_cross_extruder_runout', False)
                         if is_cross_extruder:
+                            lane_name = getattr(lane, 'name', 'unknown')
                             self.logger.info("Cross-Extruder LANE_UNLOAD for {} - clearing extruder.lane_loaded to bypass check".format(lane_name))
                             try:
                                 # Get the extruder and current active extruder
@@ -1417,7 +1429,7 @@ class afcAMS(afcUnit):
                                 self.logger.exception("Failed to handle cross-extruder LANE_UNLOAD for {}: {}".format(lane_name, str(e)))
 
                 # Call original method
-                return self.afc._original_LANE_UNLOAD(gcmd)
+                return self.afc._original_LANE_UNLOAD(gcmd_or_lane)
 
             # Apply wrapper
             self.afc.LANE_UNLOAD = wrapped_lane_unload
@@ -1572,7 +1584,11 @@ class afcAMS(afcUnit):
             lane.status = AFCLaneState.NONE
             lane.unit_obj.lane_unloaded(lane)
             lane.td1_data = {}
-            lane.afc.spool.clear_values(lane)
+            try:
+                lane.afc.spool.clear_values(lane)
+            except AttributeError:
+                # Moonraker not available - silently continue
+                pass
 
         lane.afc.save_vars()
         self._last_lane_states[lane.name] = lane_val
