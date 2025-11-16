@@ -1372,6 +1372,48 @@ class afcAMS(afcUnit):
             self.logger.warning("AMSHardwareService not available, using legacy polling for %s", self.name)
             self.reactor.update_timer(self.timer, self.reactor.NOW)
 
+        # Hook into lane infinite runout handling for cross-FPS runouts
+        self._wrap_lane_infinite_runout()
+
+    def _wrap_lane_infinite_runout(self):
+        """Wrap _perform_infinite_runout() for all OpenAMS lanes to handle cross-FPS runouts."""
+        if not hasattr(self, 'afc') or self.afc is None:
+            return
+
+        for lane_name, lane in self.afc.lanes.items():
+            # Only wrap lanes that belong to this OpenAMS unit
+            unit_obj = getattr(lane, 'unit_obj', None)
+            if unit_obj is not self:
+                continue
+
+            # Store original method if not already wrapped
+            if not hasattr(lane, '_original_perform_infinite_runout'):
+                lane._original_perform_infinite_runout = lane._perform_infinite_runout
+
+                # Create wrapper function with proper closure
+                def make_wrapper(lane_obj, original_method, unit_obj):
+                    def wrapped_perform_infinite_runout(*args, **kwargs):
+                        # Check if this is a cross-FPS OpenAMS runout
+                        is_cross_fps = getattr(lane_obj, '_oams_cross_fps_runout', False)
+                        if is_cross_fps:
+                            unit_obj.logger.info("Cross-FPS infinite runout starting for %s - issuing UNSET_LANE_LOADED", lane_obj.name)
+                            try:
+                                # Clear the old extruder's lane_loaded before AFC tries to unload
+                                unit_obj.gcode.run_script_from_command("UNSET_LANE_LOADED")
+                                unit_obj.logger.info("Cross-FPS: Cleared lane_loaded from old extruder for %s", lane_obj.name)
+                            except Exception:
+                                unit_obj.logger.exception("Failed to issue UNSET_LANE_LOADED during cross-FPS infinite runout for %s", lane_obj.name)
+                            finally:
+                                # Clear the flag
+                                lane_obj._oams_cross_fps_runout = False
+                        # Call original method
+                        return original_method(*args, **kwargs)
+                    return wrapped_perform_infinite_runout
+
+                # Apply wrapper
+                lane._perform_infinite_runout = make_wrapper(lane, lane._original_perform_infinite_runout, self)
+                self.logger.debug("Wrapped _perform_infinite_runout for OpenAMS lane %s", lane_name)
+
     def _on_f1s_changed(self, event_type, unit_name, bay, value, eventtime, **kwargs):
         """Handle f1s sensor change events (PHASE 2: event-driven).
 
@@ -1803,17 +1845,13 @@ class afcAMS(afcUnit):
                 lane._oams_runout_detected = False
             lane._oams_runout_detected = True
 
+            # Mark whether this is a cross-FPS runout for later handling
+            lane._oams_cross_fps_runout = not is_same_fps
+
             if is_same_fps:
                 self.logger.info("Same-FPS runout: Marked lane %s for runout (OpenAMS handling reload, sensors sync naturally)", lane.name)
             else:
-                self.logger.info("Cross-FPS runout: Marked lane %s for runout (AFC will handle tool change)", lane.name)
-                # Cross-FPS: Clear this lane from toolhead NOW while we're still on this extruder
-                # This prevents "LANE is loaded in toolhead, can't unload" error later
-                try:
-                    self.gcode.run_script_from_command("UNSET_LANE_LOADED")
-                    self.logger.info("Cross-FPS runout: Issued UNSET_LANE_LOADED for %s before extruder switch", lane.name)
-                except Exception:
-                    self.logger.exception("Failed to issue UNSET_LANE_LOADED for %s during cross-FPS runout", lane.name)
+                self.logger.info("Cross-FPS runout: Marked lane %s for runout (AFC will handle tool change, will clear old extruder in infinite runout)", lane.name)
         except Exception:
             self.logger.exception("Failed to mark lane %s for runout tracking", lane.name)
 
