@@ -1372,11 +1372,11 @@ class afcAMS(afcUnit):
             self.logger.warning("AMSHardwareService not available, using legacy polling for %s", self.name)
             self.reactor.update_timer(self.timer, self.reactor.NOW)
 
-        # Hook into AFC's LANE_UNLOAD for cross-FPS runouts
+        # Hook into AFC's LANE_UNLOAD for cross-extruder runouts
         self._wrap_afc_lane_unload()
 
     def _wrap_afc_lane_unload(self):
-        """Wrap AFC's LANE_UNLOAD to handle cross-FPS runout scenarios."""
+        """Wrap AFC's LANE_UNLOAD to handle cross-extruder runout scenarios."""
         if not hasattr(self, 'afc') or self.afc is None:
             return
 
@@ -1391,11 +1391,11 @@ class afcAMS(afcUnit):
                 if lane_name and lane_name in self.afc.lanes:
                     lane = self.afc.lanes[lane_name]
 
-                    # Check if this is an OpenAMS lane with cross-FPS runout flag
+                    # Check if this is an OpenAMS lane with cross-extruder runout flag
                     if getattr(lane, 'unit_obj', None) is not None and getattr(lane.unit_obj, 'type', None) == "OpenAMS":
-                        is_cross_fps = getattr(lane, '_oams_cross_fps_runout', False)
-                        if is_cross_fps:
-                            self.logger.info("Cross-FPS LANE_UNLOAD for {} - clearing extruder.lane_loaded to bypass check".format(lane_name))
+                        is_cross_extruder = getattr(lane, '_oams_cross_extruder_runout', False)
+                        if is_cross_extruder:
+                            self.logger.info("Cross-Extruder LANE_UNLOAD for {} - clearing extruder.lane_loaded to bypass check".format(lane_name))
                             try:
                                 # Get the extruder and current active extruder
                                 lane_extruder = getattr(lane, 'extruder_obj', None)
@@ -1403,25 +1403,25 @@ class afcAMS(afcUnit):
 
                                 # If lane is loaded in a different extruder than current, clear it
                                 if lane_extruder is not None and current_extruder != getattr(lane_extruder, 'name', None):
-                                    self.logger.info("Cross-FPS: Lane {} on extruder {}, current is {} - clearing lane_loaded".format(
+                                    self.logger.info("Cross-Extruder: Lane {} on extruder {}, current is {} - clearing lane_loaded".format(
                                         lane_name,
                                         getattr(lane_extruder, 'name', 'unknown'),
                                         current_extruder
                                     ))
                                     lane_extruder.lane_loaded = None
-                                    self.logger.info("Cross-FPS: Cleared extruder.lane_loaded for cross-FPS unload")
+                                    self.logger.info("Cross-Extruder: Cleared extruder.lane_loaded for cross-extruder unload")
 
                                 # Clear the flag
-                                lane._oams_cross_fps_runout = False
+                                lane._oams_cross_extruder_runout = False
                             except Exception as e:
-                                self.logger.exception("Failed to handle cross-FPS LANE_UNLOAD for {}: {}".format(lane_name, str(e)))
+                                self.logger.exception("Failed to handle cross-extruder LANE_UNLOAD for {}: {}".format(lane_name, str(e)))
 
                 # Call original method
                 return self.afc._original_LANE_UNLOAD(gcmd)
 
             # Apply wrapper
             self.afc.LANE_UNLOAD = wrapped_lane_unload
-            self.logger.info("Wrapped AFC.LANE_UNLOAD for cross-FPS runout handling")
+            self.logger.info("Wrapped AFC.LANE_UNLOAD for cross-extruder runout handling")
 
     def _on_f1s_changed(self, event_type, unit_name, bay, value, eventtime, **kwargs):
         """Handle f1s sensor change events (PHASE 2: event-driven).
@@ -1855,7 +1855,7 @@ class afcAMS(afcUnit):
                 target_extruder = getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None
                 is_same_fps = (source_extruder == target_extruder and source_extruder is not None)
 
-        # For both same-FPS and cross-FPS runouts: Set runout flag and let sensor sync handle the states
+        # For both same-extruder and cross-extruder runouts: Set runout flag and let sensor sync handle the states
         # The f1s sensors update in real-time and should naturally report False when filament clears
         # The runout flag prevents sensor sync from overwriting empty->True during runout handling
         try:
@@ -1863,13 +1863,13 @@ class afcAMS(afcUnit):
                 lane._oams_runout_detected = False
             lane._oams_runout_detected = True
 
-            # Mark whether this is a cross-FPS runout for later handling
-            lane._oams_cross_fps_runout = not is_same_fps
+            # Mark whether this is a cross-extruder runout for later handling
+            lane._oams_cross_extruder_runout = not is_same_fps
 
             if is_same_fps:
-                self.logger.info("Same-FPS runout: Marked lane {} for runout (OpenAMS handling reload, sensors sync naturally)".format(lane.name))
+                self.logger.info("Same-extruder runout: Marked lane {} for runout (OpenAMS handling reload, sensors sync naturally)".format(lane.name))
             else:
-                self.logger.info("Cross-FPS runout: Marked lane {} for runout (AFC will handle tool change, will clear old extruder during LANE_UNLOAD)".format(lane.name))
+                self.logger.info("Cross-extruder runout: Marked lane {} for runout (AFC will handle tool change, will clear old extruder during LANE_UNLOAD)".format(lane.name))
         except Exception:
             self.logger.exception("Failed to mark lane {} for runout tracking".format(lane.name))
 
