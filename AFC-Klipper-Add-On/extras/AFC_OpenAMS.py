@@ -1398,6 +1398,10 @@ class afcAMS(afcUnit):
                         if is_cross_fps:
                             unit_obj.logger.info("Cross-FPS infinite runout starting for %s - clearing old extruder", lane_obj.name)
                             try:
+                                # Save current lane to afc.current so AFC knows which lane is running out
+                                lane_obj.afc.current = lane_obj.name
+                                unit_obj.logger.info("Cross-FPS: Set afc.current to %s for runout tracking", lane_obj.name)
+
                                 # Surgically clear extruder.lane_loaded WITHOUT resetting runout mappings
                                 # Get the extruder object
                                 extruder_obj = getattr(lane_obj, 'extruder_obj', None)
