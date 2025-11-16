@@ -1807,6 +1807,13 @@ class afcAMS(afcUnit):
                 self.logger.info("Same-FPS runout: Marked lane %s for runout (OpenAMS handling reload, sensors sync naturally)", lane.name)
             else:
                 self.logger.info("Cross-FPS runout: Marked lane %s for runout (AFC will handle tool change)", lane.name)
+                # Cross-FPS: Clear this lane from toolhead NOW while we're still on this extruder
+                # This prevents "LANE is loaded in toolhead, can't unload" error later
+                try:
+                    self.gcode.run_script_from_command("UNSET_LANE_LOADED")
+                    self.logger.info("Cross-FPS runout: Issued UNSET_LANE_LOADED for %s before extruder switch", lane.name)
+                except Exception:
+                    self.logger.exception("Failed to issue UNSET_LANE_LOADED for %s during cross-FPS runout", lane.name)
         except Exception:
             self.logger.exception("Failed to mark lane %s for runout tracking", lane.name)
 
