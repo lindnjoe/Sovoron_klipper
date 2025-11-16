@@ -1396,13 +1396,22 @@ class afcAMS(afcUnit):
                         # Check if this is a cross-FPS OpenAMS runout
                         is_cross_fps = getattr(lane_obj, '_oams_cross_fps_runout', False)
                         if is_cross_fps:
-                            unit_obj.logger.info("Cross-FPS infinite runout starting for %s - issuing UNSET_LANE_LOADED", lane_obj.name)
+                            unit_obj.logger.info("Cross-FPS infinite runout starting for %s - clearing old extruder", lane_obj.name)
                             try:
-                                # Clear the old extruder's lane_loaded before AFC tries to unload
-                                unit_obj.gcode.run_script_from_command("UNSET_LANE_LOADED")
-                                unit_obj.logger.info("Cross-FPS: Cleared lane_loaded from old extruder for %s", lane_obj.name)
+                                # Surgically clear extruder.lane_loaded WITHOUT resetting runout mappings
+                                # Get the extruder object
+                                extruder_obj = getattr(lane_obj, 'extruder_obj', None)
+                                if extruder_obj is not None:
+                                    # Unsync the stepper
+                                    lane_obj.unsync_to_extruder()
+                                    # Directly clear the lane_loaded attribute
+                                    extruder_obj.lane_loaded = None
+                                    unit_obj.logger.info("Cross-FPS: Cleared lane_loaded from extruder %s for %s",
+                                                        getattr(extruder_obj, 'name', 'unknown'), lane_obj.name)
+                                else:
+                                    unit_obj.logger.warning("Cross-FPS: No extruder_obj found for %s", lane_obj.name)
                             except Exception:
-                                unit_obj.logger.exception("Failed to issue UNSET_LANE_LOADED during cross-FPS infinite runout for %s", lane_obj.name)
+                                unit_obj.logger.exception("Failed to clear extruder.lane_loaded during cross-FPS infinite runout for %s", lane_obj.name)
                             finally:
                                 # Clear the flag
                                 lane_obj._oams_cross_fps_runout = False
