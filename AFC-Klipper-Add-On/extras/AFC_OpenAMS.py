@@ -761,25 +761,11 @@ class afcAMS(afcUnit):
                     continue
                 # Check if other lane is on same extruder
                 other_extruder = getattr(other_lane.extruder_obj, "name", None) if hasattr(other_lane, "extruder_obj") else None
-                other_extruder_obj = getattr(other_lane, "extruder_obj", None)
-
-                # Same-FPS: Clear lanes on same extruder
                 if other_extruder == lane_extruder:
                     other_lane.tool_loaded = False
                     if hasattr(other_lane, '_oams_runout_detected'):
                         other_lane._oams_runout_detected = False
                     self.logger.debug("Cleared tool_loaded for %s on same FPS (new lane %s loaded)", other_lane.name, lane.name)
-
-                # Cross-FPS: If other lane is in runout state on DIFFERENT extruder, clear it
-                elif (hasattr(other_lane, '_oams_runout_detected') and other_lane._oams_runout_detected and
-                      other_extruder != lane_extruder and other_extruder_obj is not None):
-                    # Clear the old lane's tool_loaded
-                    other_lane.tool_loaded = False
-                    other_lane._oams_runout_detected = False
-                    # Clear the old extruder's lane_loaded reference
-                    other_extruder_obj.lane_loaded = None
-                    self.logger.info("Cross-FPS runout: Cleared %s from %s (new lane %s loaded on %s)",
-                                   other_lane.name, other_extruder, lane.name, lane_extruder)
 
         if not self._lane_matches_extruder(lane):
             return
@@ -1483,24 +1469,12 @@ class afcAMS(afcUnit):
             if should_block and lane_val:  # Only block if conditions met and trying to set sensors to True
                 self.logger.debug("Ignoring shared lane sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
                 return
-            elif not lane_val:  # Sensor confirms empty
-                # Only clear runout flag if NOT in active runout state
-                # (if in runout, keep flag until cross-FPS handler clears it when new lane loads)
-                is_tool_loaded = getattr(lane, 'tool_loaded', False)
-                lane_status = getattr(lane, 'status', None)
-                if not (is_tool_loaded and lane_status in (AFCLaneState.INFINITE_RUNOUT, AFCLaneState.TOOL_UNLOADING)):
-                    lane._oams_runout_detected = False
-                    self.logger.debug("Shared lane sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
-                else:
-                    self.logger.debug("Shared lane sensor empty but runout in progress for lane %s - keeping runout flag for cross-FPS handler", getattr(lane, "name", "unknown"))
+            elif not lane_val:  # Sensor confirms empty - always clear flag
+                lane._oams_runout_detected = False
+                self.logger.debug("Shared lane sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
 
-        # Check for duplicate updates
-        last_state = self._last_lane_states.get(lane.name)
-        if lane_val == last_state:
-            self.logger.debug("Ignoring duplicate sensor update for lane %s (value=%s, last=%s)", getattr(lane, "name", "unknown"), lane_val, last_state)
+        if lane_val == self._last_lane_states.get(lane.name):
             return
-
-        self.logger.debug("Processing sensor change for lane %s: %s -> %s", getattr(lane, "name", "unknown"), last_state, lane_val)
 
         if lane_val:
             lane.load_state = False
@@ -1560,16 +1534,9 @@ class afcAMS(afcUnit):
             if should_block and lane_val:  # Only block if conditions met and trying to set sensors to True
                 self.logger.debug("Ignoring sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
                 return
-            elif not lane_val:  # Sensor confirms empty
-                # Only clear runout flag if NOT in active runout state
-                # (if in runout, keep flag until cross-FPS handler clears it when new lane loads)
-                is_tool_loaded = getattr(lane, 'tool_loaded', False)
-                lane_status = getattr(lane, 'status', None)
-                if not (is_tool_loaded and lane_status in (AFCLaneState.INFINITE_RUNOUT, AFCLaneState.TOOL_UNLOADING)):
-                    lane._oams_runout_detected = False
-                    self.logger.debug("Sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
-                else:
-                    self.logger.debug("Sensor empty but runout in progress for lane %s - keeping runout flag for cross-FPS handler", getattr(lane, "name", "unknown"))
+            elif not lane_val:  # Sensor confirms empty - always clear flag
+                lane._oams_runout_detected = False
+                self.logger.debug("Sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
 
         try:
             share = getattr(lane, "ams_share_prep_load", False)
@@ -1583,10 +1550,7 @@ class afcAMS(afcUnit):
         previous = self._last_lane_states.get(getattr(lane, "name", ""))
 
         if previous is not None and bool(previous) == bool(lane_val):
-            self.logger.debug("Ignoring duplicate sensor update for lane %s (value=%s, last=%s)", getattr(lane, "name", "unknown"), lane_val, previous)
             return
-
-        self.logger.debug("Processing sensor change for lane %s: %s -> %s", getattr(lane, "name", "unknown"), previous, lane_val)
 
         try:
             lane.load_callback(eventtime, lane_val)
