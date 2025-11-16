@@ -1531,7 +1531,16 @@ class afcAMS(afcUnit):
             lane.status = AFCLaneState.NONE
             lane.unit_obj.lane_unloaded(lane)
             lane.td1_data = {}
-            lane.afc.spool.clear_values(lane)
+            try:
+                lane.afc.spool.clear_values(lane)
+            except AttributeError:
+                # Moonraker integration not available - manually clear spool values
+                lane.spool_id = ''
+                lane.material = ''
+                lane.color = ''
+                lane.weight = 0
+                lane.extruder_temp = None
+                lane.bed_temp = None
 
         lane.afc.save_vars()
         self._last_lane_states[lane.name] = lane_val
@@ -1626,7 +1635,16 @@ class afcAMS(afcUnit):
             lane.status = AFCLaneState.NONE
             lane.unit_obj.lane_unloaded(lane)
             lane.td1_data = {}
-            lane.afc.spool.clear_values(lane)
+            try:
+                lane.afc.spool.clear_values(lane)
+            except AttributeError:
+                # Moonraker integration not available - manually clear spool values
+                lane.spool_id = ''
+                lane.material = ''
+                lane.color = ''
+                lane.weight = 0
+                lane.extruder_temp = None
+                lane.bed_temp = None
 
         self._mirror_lane_to_virtual_sensor(lane, eventtime)
         lane_name = getattr(lane, "name", None)
