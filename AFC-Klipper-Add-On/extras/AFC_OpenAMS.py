@@ -1449,11 +1449,11 @@ class afcAMS(afcUnit):
 
         # Detect F1S sensor going False (spool empty) - trigger runout detection AFTER sensor update
         if prev_val and not lane_val:
-            self.logger.info("F1S sensor False for %s (spool empty), triggering runout detection", lane.name)
+            self.logger.info("F1S sensor False for {} (spool empty), triggering runout detection".format(lane.name))
             try:
                 self.handle_runout_detected(bay, None, lane_name=lane.name)
             except Exception:
-                self.logger.exception("Failed to handle runout detection for %s", lane.name)
+                self.logger.exception("Failed to handle runout detection for {}".format(lane.name))
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -1858,11 +1858,11 @@ class afcAMS(afcUnit):
             lane._oams_cross_fps_runout = not is_same_fps
 
             if is_same_fps:
-                self.logger.info("Same-FPS runout: Marked lane %s for runout (OpenAMS handling reload, sensors sync naturally)", lane.name)
+                self.logger.info("Same-FPS runout: Marked lane {} for runout (OpenAMS handling reload, sensors sync naturally)".format(lane.name))
             else:
-                self.logger.info("Cross-FPS runout: Marked lane %s for runout (AFC will handle tool change, will clear old extruder in infinite runout)", lane.name)
+                self.logger.info("Cross-FPS runout: Marked lane {} for runout (AFC will handle tool change, will clear old extruder during LANE_UNLOAD)".format(lane.name))
         except Exception:
-            self.logger.exception("Failed to mark lane %s for runout tracking", lane.name)
+            self.logger.exception("Failed to mark lane {} for runout tracking".format(lane.name))
 
         # NOTE: We do NOT call lane.handle_load_runout() here
         # This would trigger infinite runout immediately when OpenAMS detects the spool is empty
