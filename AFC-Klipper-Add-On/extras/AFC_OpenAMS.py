@@ -761,11 +761,25 @@ class afcAMS(afcUnit):
                     continue
                 # Check if other lane is on same extruder
                 other_extruder = getattr(other_lane.extruder_obj, "name", None) if hasattr(other_lane, "extruder_obj") else None
+                other_extruder_obj = getattr(other_lane, "extruder_obj", None)
+
+                # Same-FPS: Clear lanes on same extruder
                 if other_extruder == lane_extruder:
                     other_lane.tool_loaded = False
                     if hasattr(other_lane, '_oams_runout_detected'):
                         other_lane._oams_runout_detected = False
                     self.logger.debug("Cleared tool_loaded for %s on same FPS (new lane %s loaded)", other_lane.name, lane.name)
+
+                # Cross-FPS: If other lane is in runout state on DIFFERENT extruder, clear it
+                elif (hasattr(other_lane, '_oams_runout_detected') and other_lane._oams_runout_detected and
+                      other_extruder != lane_extruder and other_extruder_obj is not None):
+                    # Clear the old lane's tool_loaded
+                    other_lane.tool_loaded = False
+                    other_lane._oams_runout_detected = False
+                    # Clear the old extruder's lane_loaded reference
+                    other_extruder_obj.lane_loaded = None
+                    self.logger.info("Cross-FPS runout: Cleared %s from %s (new lane %s loaded on %s)",
+                                   other_lane.name, other_extruder, lane.name, lane_extruder)
 
         if not self._lane_matches_extruder(lane):
             return
