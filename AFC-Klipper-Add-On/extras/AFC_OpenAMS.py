@@ -1448,12 +1448,17 @@ class afcAMS(afcUnit):
             self._last_lane_states[lane.name] = lane_val
 
         # Detect F1S sensor going False (spool empty) - trigger runout detection AFTER sensor update
+        # Only trigger if lane is actually loaded in toolhead (not during filament insertion)
         if prev_val and not lane_val:
-            self.logger.info("F1S sensor False for {} (spool empty), triggering runout detection".format(lane.name))
-            try:
-                self.handle_runout_detected(bay, None, lane_name=lane.name)
-            except Exception:
-                self.logger.exception("Failed to handle runout detection for {}".format(lane.name))
+            is_tool_loaded = getattr(lane, 'tool_loaded', False)
+            if is_tool_loaded:
+                self.logger.info("F1S sensor False for {} (spool empty, tool_loaded), triggering runout detection".format(lane.name))
+                try:
+                    self.handle_runout_detected(bay, None, lane_name=lane.name)
+                except Exception:
+                    self.logger.exception("Failed to handle runout detection for {}".format(lane.name))
+            else:
+                self.logger.debug("F1S sensor False for {} but not tool_loaded - skipping runout detection (likely filament insertion/removal)".format(lane.name))
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
