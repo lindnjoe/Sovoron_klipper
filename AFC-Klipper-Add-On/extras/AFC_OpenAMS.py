@@ -1387,15 +1387,7 @@ class afcAMS(afcUnit):
         lane_val = bool(value)
         prev_val = self._last_lane_states.get(lane.name)
 
-        # Detect F1S sensor going False (spool empty) - trigger runout detection
-        if prev_val and not lane_val:
-            self.logger.info("F1S sensor False for %s (spool empty), triggering runout detection", lane.name)
-            try:
-                self.handle_runout_detected(bay, None, lane_name=lane.name)
-            except Exception:
-                self.logger.exception("Failed to handle runout detection for %s", lane.name)
-
-        # Update lane state based on sensor
+        # Update lane state based on sensor FIRST
         if getattr(lane, "ams_share_prep_load", False):
             self._update_shared_lane(lane, lane_val, eventtime)
         elif lane_val != prev_val:
@@ -1403,6 +1395,14 @@ class afcAMS(afcUnit):
             lane.prep_callback(eventtime, lane_val)
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
             self._last_lane_states[lane.name] = lane_val
+
+        # Detect F1S sensor going False (spool empty) - trigger runout detection AFTER sensor update
+        if prev_val and not lane_val:
+            self.logger.info("F1S sensor False for %s (spool empty), triggering runout detection", lane.name)
+            try:
+                self.handle_runout_detected(bay, None, lane_name=lane.name)
+            except Exception:
+                self.logger.exception("Failed to handle runout detection for %s", lane.name)
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
