@@ -1480,10 +1480,9 @@ class afcAMS(afcUnit):
             if should_block and lane_val:  # Only block if conditions met and trying to set sensors to True
                 self.logger.debug("Ignoring shared lane sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
                 return
-            # Note: Don't clear flag when sensor goes False - let cross-FPS handler clear it
-            # elif not lane_val:
-            #     lane._oams_runout_detected = False
-            #     self.logger.debug("Shared lane sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
+            elif not lane_val:  # Sensor confirms empty - always clear flag
+                lane._oams_runout_detected = False
+                self.logger.debug("Shared lane sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
 
         if lane_val == self._last_lane_states.get(lane.name):
             return
@@ -1546,10 +1545,9 @@ class afcAMS(afcUnit):
             if should_block and lane_val:  # Only block if conditions met and trying to set sensors to True
                 self.logger.debug("Ignoring sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
                 return
-            # Note: Don't clear flag when sensor goes False - let cross-FPS handler clear it
-            # elif not lane_val:
-            #     lane._oams_runout_detected = False
-            #     self.logger.debug("Sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
+            elif not lane_val:  # Sensor confirms empty - always clear flag
+                lane._oams_runout_detected = False
+                self.logger.debug("Sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
 
         try:
             share = getattr(lane, "ams_share_prep_load", False)
