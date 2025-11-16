@@ -1396,26 +1396,31 @@ class afcAMS(afcUnit):
                         # Check if this is a cross-FPS OpenAMS runout
                         is_cross_fps = getattr(lane_obj, '_oams_cross_fps_runout', False)
                         if is_cross_fps:
-                            unit_obj.logger.info("Cross-FPS infinite runout starting for %s - clearing old extruder", lane_obj.name)
+                            lane_name = getattr(lane_obj, 'name', 'unknown')
+                            unit_obj.logger.info("Cross-FPS infinite runout starting for {} - clearing old extruder".format(lane_name))
                             try:
                                 # Save current lane to afc.current so AFC knows which lane is running out
-                                lane_obj.afc.current = lane_obj.name
-                                unit_obj.logger.info("Cross-FPS: Set afc.current to %s for runout tracking", lane_obj.name)
+                                if hasattr(lane_obj, 'afc') and lane_obj.afc is not None:
+                                    lane_obj.afc.current = lane_name
+                                    unit_obj.logger.info("Cross-FPS: Set afc.current to {} for runout tracking".format(lane_name))
+                                else:
+                                    unit_obj.logger.error("Cross-FPS: lane_obj.afc is None or missing for {}".format(lane_name))
 
                                 # Surgically clear extruder.lane_loaded WITHOUT resetting runout mappings
                                 # Get the extruder object
                                 extruder_obj = getattr(lane_obj, 'extruder_obj', None)
                                 if extruder_obj is not None:
+                                    extruder_name = getattr(extruder_obj, 'name', 'unknown')
+                                    unit_obj.logger.info("Cross-FPS: Unsyncing stepper for {}".format(lane_name))
                                     # Unsync the stepper
                                     lane_obj.unsync_to_extruder()
                                     # Directly clear the lane_loaded attribute
                                     extruder_obj.lane_loaded = None
-                                    unit_obj.logger.info("Cross-FPS: Cleared lane_loaded from extruder %s for %s",
-                                                        getattr(extruder_obj, 'name', 'unknown'), lane_obj.name)
+                                    unit_obj.logger.info("Cross-FPS: Cleared lane_loaded from extruder {} for {}".format(extruder_name, lane_name))
                                 else:
-                                    unit_obj.logger.warning("Cross-FPS: No extruder_obj found for %s", lane_obj.name)
-                            except Exception:
-                                unit_obj.logger.exception("Failed to clear extruder.lane_loaded during cross-FPS infinite runout for %s", lane_obj.name)
+                                    unit_obj.logger.warning("Cross-FPS: No extruder_obj found for {}".format(lane_name))
+                            except Exception as e:
+                                unit_obj.logger.exception("Failed to clear extruder.lane_loaded during cross-FPS infinite runout for {}: {}".format(lane_name, str(e)))
                             finally:
                                 # Clear the flag
                                 lane_obj._oams_cross_fps_runout = False
@@ -1425,7 +1430,7 @@ class afcAMS(afcUnit):
 
                 # Apply wrapper
                 lane._perform_infinite_runout = make_wrapper(lane, lane._original_perform_infinite_runout, self)
-                self.logger.debug("Wrapped _perform_infinite_runout for OpenAMS lane %s", lane_name)
+                self.logger.debug("Wrapped _perform_infinite_runout for OpenAMS lane {}".format(lane.name))
 
     def _on_f1s_changed(self, event_type, unit_name, bay, value, eventtime, **kwargs):
         """Handle f1s sensor change events (PHASE 2: event-driven).
