@@ -1445,7 +1445,7 @@ class afcAMS(afcUnit):
                                                     if hasattr(fps_state, 'reset_stuck_spool_state'):
                                                         fps_state.reset_stuck_spool_state()
 
-                                    self.logger.info("Cross-Extruder: Cleared FPS state for {} (was spool {})".format(fps_name, spool_index))
+                                                    self.logger.info("Cross-Extruder: Cleared FPS state for {} (was spool {})".format(fps_name, spool_index))
 
                                                     # Notify AFC via AMSRunoutCoordinator
                                                     try:
