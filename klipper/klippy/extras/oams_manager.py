@@ -174,7 +174,48 @@ class OAMSRunoutMonitor:
 
                 self.latest_lane_name = lane_name
 
-                if (is_printing and fps_state.state == FPSLoadState.LOADED and 
+                # Disable the follower as soon as the hub reports empty so we stop
+                # pulling on a dry spool instead of waiting for the toolhead sensor
+                # to trip. Once any hub sees filament again we restore the follower
+                # (unless another pause mode owns it).
+                if spool_idx is not None:
+                    follower_direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+                    if spool_empty:
+                        if fps_state.following:
+                            try:
+                                oams_obj.set_oams_follower(0, follower_direction)
+                                logging.info(
+                                    "OAMS: Hub empty on %s spool %s, disabled follower until reload",
+                                    self.fps_name,
+                                    spool_idx,
+                                )
+                            except Exception:
+                                logging.exception(
+                                    "OAMS: Failed to stop follower when hub emptied on %s",
+                                    self.fps_name,
+                                )
+                            finally:
+                                fps_state.following = False
+                        fps_state.runout_follower_disabled = True
+                    elif (fps_state.runout_follower_disabled and not fps_state.following
+                          and not fps_state.stuck_spool_active and not fps_state.clog_active):
+                        try:
+                            oams_obj.set_oams_follower(1, 1)
+                            fps_state.following = True
+                            fps_state.direction = 1
+                            fps_state.runout_follower_disabled = False
+                            logging.info(
+                                "OAMS: Hub detected filament on %s spool %s, re-enabled follower",
+                                self.fps_name,
+                                spool_idx,
+                            )
+                        except Exception:
+                            logging.exception(
+                                "OAMS: Failed to re-enable follower after hub detected filament on %s",
+                                self.fps_name,
+                            )
+
+                if (is_printing and fps_state.state == FPSLoadState.LOADED and
                     fps_state.current_lane is not None and fps_state.current_spool_idx is not None and spool_empty):
                     self.state = OAMSRunoutState.DETECTED
                     logging.info("OAMS: Runout detected on FPS %s, pausing for %d mm", self.fps_name, PAUSE_DISTANCE)
@@ -285,6 +326,11 @@ class FPSState:
         self.afc_delegation_active: bool = False
         self.afc_delegation_until: float = 0.0
 
+        # Tracks whether we intentionally disabled the follower because a hub ran dry
+        # so we can auto-restore it once filament returns without fighting other
+        # pause modes (clog/stuck spool handling manages their own flags).
+        self.runout_follower_disabled: bool = False
+
         self.stuck_spool_start_time: Optional[float] = None
         self.stuck_spool_active: bool = False
         self.stuck_spool_restore_follower: bool = False
@@ -325,6 +371,7 @@ class FPSState:
     def reset_runout_positions(self) -> None:
         self.runout_position = None
         self.runout_after_position = None
+        self.runout_follower_disabled = False
 
     def reset_stuck_spool_state(self, preserve_restore: bool = False) -> None:
         self.stuck_spool_start_time = None
@@ -1158,6 +1205,7 @@ class OAMSManager:
         if oams.current_spool is None:
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.following = False
+            fps_state.runout_follower_disabled = False
             fps_state.direction = 0
             fps_state.clog_restore_follower = False
             fps_state.clog_restore_direction = 1
@@ -1212,6 +1260,7 @@ class OAMSManager:
         if success:
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.following = False
+            fps_state.runout_follower_disabled = False
             fps_state.direction = 0
             fps_state.clog_restore_follower = False
             fps_state.clog_restore_direction = 1
@@ -1343,8 +1392,37 @@ class OAMSManager:
                             "Set virtual sensor %s to False after runout (matching cross-extruder handling)",
                             sensor_name
                         )
-            except Exception:
-                self.logger.error("Failed to update virtual sensor for lane %s after runout", lane_name)
+        except Exception:
+            self.logger.error("Failed to update virtual sensor for lane %s after runout", lane_name)
+
+    def _ensure_runout_monitor_active(self, fps_name: str, fps_state: "FPSState") -> None:
+        """Make sure the associated runout monitor is actively tracking filament."""
+
+        monitor = self.runout_monitors.get(fps_name)
+        if monitor is None:
+            return
+
+        # Only re-arm monitors when a spool is actually loaded. During unloads or idle
+        # periods the monitor can legitimately sit paused/stopped.
+        if fps_state.state != FPSLoadState.LOADED:
+            return
+
+        if monitor.state == OAMSRunoutState.MONITORING:
+            return
+
+        previous_state = monitor.state
+        try:
+            if monitor.state == OAMSRunoutState.PAUSED:
+                # Timer is still registered, so just flip back to monitoring.
+                monitor.start()
+            else:
+                # For STOPPED/RELOADING/DETECTED/COASTING we reset the timer to ensure
+                # the callback is registered before re-arming.
+                monitor.reset()
+                monitor.start()
+            self.logger.info("Rearmed runout monitor for %s (was %s)", fps_name, previous_state)
+        except Exception:
+            self.logger.error("Failed to reactivate runout monitor for %s from state %s", fps_name, previous_state)
 
     def _load_filament_for_lane(self, lane_name: str) -> Tuple[bool, str]:
         """Load filament for a lane by deriving OAMS and bay from the lane's unit configuration.
@@ -1508,6 +1586,10 @@ class OAMSManager:
 
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
+
+            # Manual loads (e.g. after a fallback runout) may leave the runout monitor
+            # paused. Ensure it resumes tracking now that we're loaded again.
+            self._ensure_runout_monitor_active(fps_name, fps_state)
 
             # Monitors are already running globally, no need to restart them
             return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
@@ -1773,6 +1855,7 @@ class OAMSManager:
             oams.set_oams_follower(1, direction)
             fps_state.following = True
             fps_state.direction = direction
+            fps_state.runout_follower_disabled = False
             self.logger.info("Follower enabled for %s spool %s (%s)",
                            fps_name, fps_state.current_spool_idx, context)
         except Exception:
@@ -1963,6 +2046,12 @@ class OAMSManager:
 
             oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
 
+            monitor = self.runout_monitors.get(fps_name)
+            if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
+                # If we're loaded, try to automatically resume monitoring before giving up.
+                self._ensure_runout_monitor_active(fps_name, fps_state)
+                monitor = self.runout_monitors.get(fps_name)
+
             # OPTIMIZATION: Use cached idle_timeout object
             is_printing = False
             if self._idle_timeout_obj is not None:
@@ -2147,12 +2236,11 @@ class OAMSManager:
             except Exception:
                 is_printing = False
 
-        monitor = self.runout_monitors.get(fps_name)
-        if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
-            if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
-                try:
-                    oams.set_led_error(fps_state.current_spool_idx, 0)
-                except Exception:
+            if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
+                if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 0)
+                    except Exception:
                     self.logger.error("Failed to clear stuck spool LED while runout monitor inactive on %s", fps_name)
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
             return
@@ -2468,6 +2556,10 @@ class OAMSManager:
 
                 self.logger.info("Synced OAMS state from AFC: %s loaded to %s (bay %d on %s)",
                                lane_name, fps_name, bay_index, oam.name)
+
+                # Resuming after manual intervention? Re-arm the runout monitor so clog/stuck
+                # detection starts sampling encoder/FPS data again.
+                self._ensure_runout_monitor_active(fps_name, fps_state)
         except Exception:
             self.logger.error("Error processing AFC lane loaded notification for %s", lane_name)
 
