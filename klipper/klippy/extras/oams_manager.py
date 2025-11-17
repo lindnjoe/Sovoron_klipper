@@ -1194,6 +1194,24 @@ class OAMSManager:
                 except Exception:
                     self.logger.error("Failed to notify AFC that lane %s unloaded on %s", lane_name, fps_name)
 
+                # Also set virtual sensor to False for AMS virtual extruders
+                try:
+                    afc = self._get_afc()
+                    if afc:
+                        lane = afc.lanes.get(lane_name)
+                        if lane and hasattr(lane, 'extruder_obj'):
+                            extruder = lane.extruder_obj
+                            extruder_name = getattr(extruder, 'name', None)
+                            if extruder_name and extruder_name.upper().startswith('AMS_'):
+                                sensor_name = extruder_name.replace('ams_', '').replace('AMS_', '')
+                                sensor = self.printer.lookup_object(f"filament_switch_sensor {sensor_name}", None)
+                                if sensor and hasattr(sensor, 'runout_helper'):
+                                    eventtime = self.reactor.monotonic()
+                                    sensor.runout_helper.note_filament_present(eventtime, is_filament_present=False)
+                                    self.logger.info("Set virtual sensor %s to False after unload of lane %s", sensor_name, lane_name)
+                except Exception:
+                    self.logger.error("Failed to update virtual sensor for lane %s after unload", lane_name)
+
             # Clear LED error state if stuck spool was active before resetting state
             if fps_state.stuck_spool_active and oams is not None and spool_index is not None:
                 try:
