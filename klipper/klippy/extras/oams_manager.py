@@ -2341,6 +2341,15 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             return
 
+        # When the runout monitor has already shut the follower down because the hub
+        # emptied, pressure/encoder readings will naturally drop even though this is a
+        # normal runout. Treat that condition as "runout handling active" and skip clog
+        # detection so we don't pause a print that is already transitioning to its
+        # infinite-spool target.
+        if fps_state.runout_follower_disabled and not fps_state.clog_active:
+            fps_state.reset_clog_tracker()
+            return
+
         if not is_printing:
             if fps_state.clog_active and oams is not None and fps_state.current_spool_idx is not None:
                 try:
