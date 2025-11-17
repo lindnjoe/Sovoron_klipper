@@ -368,10 +368,22 @@ class FPSState:
         self.encoder_sample_prev = None
         self.encoder_sample_current = None
 
-    def reset_runout_positions(self) -> None:
+    def reset_runout_positions(self, reset_runout_flag: bool = False) -> None:
+        """Clear saved runout trip points.
+
+        Args:
+            reset_runout_flag: When True, also clear the
+                ``runout_follower_disabled`` marker so clog detection resumes
+                immediately. By default we preserve the marker until the
+                follower is explicitly re-enabled, which lets downstream
+                detectors know the hub is still empty even if other logic
+                (e.g. runout delegation) resets the positions early.
+        """
+
         self.runout_position = None
         self.runout_after_position = None
-        self.runout_follower_disabled = False
+        if reset_runout_flag:
+            self.runout_follower_disabled = False
 
     def reset_stuck_spool_state(self, preserve_restore: bool = False) -> None:
         self.stuck_spool_start_time = None
@@ -2509,7 +2521,7 @@ class OAMSManager:
                                 self.logger.debug("Marked lane %s as loaded after infinite runout on %s", target_lane, fps_name)
                             except Exception:
                                 self.logger.error("Failed to mark lane %s as loaded after infinite runout on %s", target_lane, fps_name)
-                    fps_state.reset_runout_positions()
+                    fps_state.reset_runout_positions(reset_runout_flag=True)
                     if monitor:
                         monitor.reset()
                         monitor.start()
