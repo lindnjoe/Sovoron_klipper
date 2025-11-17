@@ -1589,7 +1589,7 @@ class OAMSManager:
             pause_attempted = False
             pause_successful = False
             try:
-                gcode.run_script("PAUSE")
+                gcode.run_script_from_command("PAUSE")
                 pause_attempted = True
 
                 # Verify pause state after attempting to pause
@@ -1599,7 +1599,14 @@ class OAMSManager:
                     except Exception:
                         self.logger.error("Failed to verify pause state after PAUSE command")
             except Exception:
-                self.logger.error("Failed to run PAUSE script")
+                self.logger.error("Failed to run PAUSE command via PAUSE macro")
+                if pause_resume is not None:
+                    try:
+                        pause_resume.send_pause_command()
+                        pause_attempted = True
+                        pause_successful = bool(getattr(pause_resume, "is_paused", False))
+                    except Exception:
+                        self.logger.error("Fallback pause_resume send failed during pause handling")
 
             if pause_attempted and not pause_successful:
                 self.logger.error(
