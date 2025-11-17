@@ -2310,13 +2310,20 @@ class OAMSManager:
                 if target_lane is None:
                     # Only hit when neither same-FPS nor cross-extruder infinite runout targets
                     # exist. Other runout modes follow the target-lane path below unchanged.
-                    self.logger.info("No infinite runout target for %s on %s - clearing lane from toolhead and OAMS",
-                                   source_lane_name or fps_name, fps_name)
+                    self.logger.info(
+                        "No infinite runout target for %s on %s - pausing and clearing lane",
+                        source_lane_name or fps_name,
+                        fps_name,
+                    )
 
+                    pause_message = f"No lane available to reload on {fps_name}"
+                    self.logger.error(pause_message)
+                    self._pause_printer_message(pause_message, fps_state.current_oams or active_oams)
+
+                    # Clear FPS/AFC state after the pause request so the UI still reflects the
+                    # lane/extruder association when the PAUSE command executes.
                     self._clear_lane_on_runout(fps_name, fps_state, source_lane_name)
 
-                    self.logger.error("No lane available to reload on %s", fps_name)
-                    self._pause_printer_message(f"No lane available to reload on {fps_name}", fps_state.current_oams or active_oams)
                     if monitor:
                         monitor.paused()
                     return
