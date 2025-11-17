@@ -2253,6 +2253,8 @@ class OAMSManager:
 
                 # Load the target lane directly
                 if target_lane is None:
+                    # Only hit when neither same-FPS nor cross-extruder infinite runout targets
+                    # exist. Other runout modes follow the target-lane path below unchanged.
                     self.logger.info("No infinite runout target for %s on %s - clearing lane from toolhead and OAMS",
                                    source_lane_name or fps_name, fps_name)
 
