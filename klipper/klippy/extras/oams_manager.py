@@ -926,16 +926,49 @@ class OAMSManager:
         if cache_built and not self._afc_logged:
             self._validate_afc_oams_integration(afc)
 
+    def _resolve_afc_lane(self, afc, lane_identifier: Optional[str]) -> Tuple[Optional[str], Optional[Any]]:
+        """Resolve an AFC lane by name or map alias."""
+        if afc is None or not lane_identifier:
+            return None, None
+
+        lanes = getattr(afc, "lanes", {})
+        lane = lanes.get(lane_identifier)
+        if lane is not None:
+            return lane_identifier, lane
+
+        lowered = lane_identifier.lower()
+        resolved_name = None
+        resolved_lane = None
+
+        for candidate_name, candidate in lanes.items():
+            if candidate_name.lower() == lowered:
+                resolved_name = candidate_name
+                resolved_lane = candidate
+                break
+
+            map_name = getattr(candidate, "map", None)
+            if isinstance(map_name, str) and map_name.lower() == lowered:
+                resolved_name = candidate_name
+                resolved_lane = candidate
+                break
+
+        return resolved_name, resolved_lane
+
     def _resolve_lane_for_state(self, fps_state: 'FPSState', lane_name: Optional[str], afc) -> Tuple[Optional[str], Optional[str]]:
         """Resolve lane name from FPS state. Returns (lane_name, None) - group support removed."""
-        # If lane_name provided, return it
         if lane_name:
+            resolved_name, _ = self._resolve_afc_lane(afc, lane_name)
+            if resolved_name:
+                return resolved_name, None
             return lane_name, None
 
         # Try to get from current state (legacy location-based lookup)
         if fps_state.current_oams and fps_state.current_spool_idx is not None:
             located_lane = self._lane_by_location.get((fps_state.current_oams, fps_state.current_spool_idx))
             if located_lane:
+                resolved_name, _ = self._resolve_afc_lane(afc, located_lane)
+                if resolved_name:
+                    return resolved_name, None
                 return located_lane, None
 
         return None, None
@@ -998,58 +1031,65 @@ class OAMSManager:
         if not lane_name:
             return None, None, False, None
 
-        lanes = getattr(afc, "lanes", {})
-        lane = afc.lanes.get(lane_name)
+        _, lane = self._resolve_afc_lane(afc, lane_name)
         if lane is None:
+            self.logger.warning("Unable to resolve AFC lane %s while computing runout target for %s", lane_name, fps_name)
             return None, None, False, lane_name
 
         runout_lane_name = getattr(lane, "runout_lane", None)
         if not runout_lane_name:
             return None, None, False, lane_name
 
-        target_lane = afc.lanes.get(runout_lane_name)
+        target_lane_name, target_lane = self._resolve_afc_lane(afc, runout_lane_name)
         if target_lane is None:
             self.logger.warning("Runout lane %s for %s on %s is not available; deferring to AFC", runout_lane_name, lane_name, fps_name)
             return None, runout_lane_name, True, lane_name
 
-        source_unit = self._lane_unit_map.get(lane_name)
-        target_unit = self._lane_unit_map.get(runout_lane_name)
+        resolved_source_name = lane_name
+        resolved_target_name = target_lane_name or runout_lane_name
+
+        source_unit = self._lane_unit_map.get(resolved_source_name)
+        target_unit = self._lane_unit_map.get(resolved_target_name)
         if source_unit and target_unit and source_unit != target_unit:
-            return None, runout_lane_name, True, lane_name
+            return None, runout_lane_name, True, resolved_source_name
 
         source_extruder = getattr(lane, "extruder_obj", None)
         target_extruder = getattr(target_lane, "extruder_obj", None)
         if (source_extruder is not None and target_extruder is not None and source_extruder is not target_extruder):
-            return None, runout_lane_name, True, lane_name
+            return None, runout_lane_name, True, resolved_source_name
 
         # Check if both lanes are on the same FPS by querying their unit configurations
         # This replaces the group-based lookup system
-        source_fps = self.get_fps_for_afc_lane(lane_name)
-        target_fps = self.get_fps_for_afc_lane(runout_lane_name)
+        source_fps = self.get_fps_for_afc_lane(resolved_source_name)
+        target_fps = self.get_fps_for_afc_lane(resolved_target_name)
 
         # If we can't determine FPS for either lane, defer to AFC
         if source_fps is None or target_fps is None:
-            self.logger.info("Cannot determine FPS for lanes %s or %s, deferring to AFC", lane_name, runout_lane_name)
-            return None, runout_lane_name, True, lane_name
+            self.logger.info(
+                "Cannot determine FPS for lanes %s or %s, deferring to AFC",
+                resolved_source_name,
+                resolved_target_name,
+            )
+            return None, runout_lane_name, True, resolved_source_name
 
         # If lanes are on different FPS or not on the current FPS, defer to AFC
         if source_fps != fps_name or target_fps != fps_name:
             self.logger.info("Deferring infinite runout: %s on %s, %s on %s (current FPS: %s)",
-                           lane_name, source_fps, runout_lane_name, target_fps, fps_name)
-            return None, runout_lane_name, True, lane_name
+                           resolved_source_name, source_fps, resolved_target_name, target_fps, fps_name)
+            return None, runout_lane_name, True, resolved_source_name
 
         # If source and target are the same lane, defer to AFC (no swap needed)
-        if lane_name == runout_lane_name:
-            return None, runout_lane_name, True, lane_name
+        if resolved_source_name == resolved_target_name:
+            return None, runout_lane_name, True, resolved_source_name
 
         # Both lanes are on the same FPS - OpenAMS can handle the swap internally
         self.logger.info("Infinite runout: %s -> %s on %s (same FPS)",
-                       lane_name, runout_lane_name, fps_name)
+                       resolved_source_name, resolved_target_name, fps_name)
 
         # Return target lane info (lane map or lane name for display)
         target_lane_map = getattr(target_lane, "map", runout_lane_name)
 
-        return target_lane_map, runout_lane_name, False, lane_name
+        return target_lane_map, resolved_target_name, False, resolved_source_name
 
     def _delegate_runout_to_afc(self, fps_name: str, fps_state: 'FPSState', source_lane_name: Optional[str], target_lane_name: Optional[str]) -> bool:
         afc = self._get_afc()
@@ -1059,7 +1099,9 @@ class OAMSManager:
         if not source_lane_name:
             return False
 
-        lane = afc.lanes.get(source_lane_name)
+        resolved_name, lane = self._resolve_afc_lane(afc, source_lane_name)
+        if resolved_name:
+            source_lane_name = resolved_name
         if lane is None:
             self.logger.warning("AFC lane %s not found while delegating infinite runout for %s", source_lane_name, fps_name)
             return False
@@ -1076,7 +1118,8 @@ class OAMSManager:
         if fps_state.afc_delegation_active and now < fps_state.afc_delegation_until:
             return True
 
-        if runout_target not in afc.lanes:
+        resolved_target, _ = self._resolve_afc_lane(afc, runout_target)
+        if resolved_target is None:
             self.logger.warning("AFC runout lane %s referenced by %s is unavailable", runout_target, source_lane_name)
             return False
 
@@ -1211,10 +1254,9 @@ class OAMSManager:
         lane_obj = None
         afc_function = None
         if afc and lane_name:
-            try:
-                lane_obj = afc.lanes.get(lane_name)
-            except Exception:
-                lane_obj = None
+            resolved_name, lane_obj = self._resolve_afc_lane(afc, lane_name)
+            if resolved_name:
+                lane_name = resolved_name
             afc_function = getattr(afc, "function", None)
 
         if afc_function:
