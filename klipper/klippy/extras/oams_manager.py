@@ -1217,10 +1217,20 @@ class OAMSManager:
         Clear lane state from toolhead and OAMS when runout occurs without infinite spool target.
 
         This ensures proper cleanup when a lane runs out and has no runout_lane configured.
-        Similar to cross-extruder runout handling, this:
-        1. Clears FPS state in OAMS manager
-        2. Notifies AFC that lane is unloaded from toolhead
-        3. Stops follower motor
+        Called after the runout sequence completes:
+        1. F1S sensor detects empty spool
+        2. 60mm PAUSE_DISTANCE allows hub to clear
+        3. Follower motor stopped when entering COASTING (hub already cleared)
+        4. PTFE amount coasts to toolhead
+        5. This method is called to clear state
+
+        Actions:
+        - Clears FPS state in OAMS manager (sets UNLOADED, updates follower state flag)
+        - Notifies AFC that lane is unloaded from toolhead
+        - Resets stuck spool and clog tracking
+
+        Note: Follower motor is already stopped by this point (stopped after hub cleared
+        during COASTING transition). This method just updates the state flags.
 
         Args:
             fps_name: Name of the FPS (e.g., "fps fps1")
