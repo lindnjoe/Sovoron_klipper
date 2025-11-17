@@ -1178,6 +1178,17 @@ class OAMSManager:
             fps_state.afc_delegation_until = 0.0
             return False
 
+        # Once AFC has accepted the delegation, immediately clear the depleted
+        # lane locally so the AMS virtual toolhead pin and UI reflect that the
+        # source FPS no longer has filament loaded.
+        try:
+            self._clear_lane_on_runout(fps_name, fps_state, source_lane_name)
+        except Exception:
+            self.logger.error(
+                "Failed to clear FPS lane %s after delegating infinite runout",
+                source_lane_name,
+            )
+
         fps_state.afc_delegation_active = True
         fps_state.afc_delegation_until = now + AFC_DELEGATION_TIMEOUT
         self.logger.info("Delegated infinite runout for %s via AFC lane %s -> %s", fps_name, source_lane_name, runout_target)
@@ -2228,6 +2239,8 @@ class OAMSManager:
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, pressure, hes_values, now):
         """Check for stuck spool conditions (OPTIMIZED)."""
+        monitor = self.runout_monitors.get(fps_name)
+
         # OPTIMIZATION: Use cached idle_timeout object
         is_printing = False
         if self._idle_timeout_obj is not None:
@@ -2236,14 +2249,14 @@ class OAMSManager:
             except Exception:
                 is_printing = False
 
-            if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
-                if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 0)
-                    except Exception:
-                        self.logger.error("Failed to clear stuck spool LED while runout monitor inactive on %s", fps_name)
-                fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
-                return
+        if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
+            if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+                try:
+                    oams.set_led_error(fps_state.current_spool_idx, 0)
+                except Exception:
+                    self.logger.error("Failed to clear stuck spool LED while runout monitor inactive on %s", fps_name)
+            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
+            return
 
         if not is_printing:
             if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
