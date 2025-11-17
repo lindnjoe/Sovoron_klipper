@@ -1217,17 +1217,18 @@ class OAMSManager:
                 lane_obj = None
             afc_function = getattr(afc, "function", None)
 
-        if afc_function and lane_name:
+        if afc_function:
             try:
-                current_lane = afc_function.get_current_lane_obj()
+                afc_function.unset_lane_loaded()
+                if lane_name:
+                    self.logger.info("Cleared AFC toolhead loaded lane via unset for %s", lane_name)
+                else:
+                    self.logger.info("Cleared AFC toolhead loaded lane via unset (lane unknown)")
             except Exception:
-                current_lane = None
-            if current_lane is not None and getattr(current_lane, "name", None) == lane_name:
-                try:
-                    afc_function.unset_lane_loaded()
-                    self.logger.info("Unset AFC lane %s as loaded after runout", lane_name)
-                except Exception:
+                if lane_name:
                     self.logger.error("Failed to unset AFC lane %s as loaded after runout", lane_name)
+                else:
+                    self.logger.error("Failed to unset AFC toolhead lane after runout")
 
         if oams_obj is not None:
             try:
