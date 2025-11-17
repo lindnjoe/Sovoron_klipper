@@ -1261,7 +1261,7 @@ class OAMSManager:
 
         self.logger.info("Cleared FPS state for %s (was lane %s, spool %s)", fps_name, lane_name, spool_index)
 
-        # Notify AFC via AMSRunoutCoordinator that lane is unloaded from toolhead
+        # Notify AFC that lane is unloaded from toolhead
         if AMSRunoutCoordinator is not None and oams_name and lane_name:
             try:
                 AMSRunoutCoordinator.notify_lane_tool_state(
@@ -1272,9 +1272,21 @@ class OAMSManager:
                     spool_index=spool_index,
                     eventtime=fps_state.since
                 )
-                self.logger.info("Notified AFC that lane %s unloaded from toolhead after runout", lane_name)
+                self.logger.info("Notified AFC coordinator that lane %s unloaded from toolhead after runout", lane_name)
             except Exception:
-                self.logger.error("Failed to notify AFC about lane %s unload after runout", lane_name)
+                self.logger.error("Failed to notify AFC coordinator about lane %s unload after runout", lane_name)
+
+        # Also call AFC's lane unload command to ensure AFC state is fully updated
+        # This is necessary because AMSRunoutCoordinator notification alone may not update all AFC state
+        afc = self._get_afc()
+        if afc and lane_name:
+            try:
+                gcode = self.printer.lookup_object("gcode")
+                # Use SET_LANE_UNLOADED to update AFC's internal lane state
+                gcode.run_script(f"SET_LANE_UNLOADED LANE={lane_name}")
+                self.logger.info("Called SET_LANE_UNLOADED for lane %s after runout", lane_name)
+            except Exception:
+                self.logger.error("Failed to call SET_LANE_UNLOADED for lane %s after runout", lane_name)
 
     def _load_filament_for_lane(self, lane_name: str) -> Tuple[bool, str]:
         """Load filament for a lane by deriving OAMS and bay from the lane's unit configuration.
