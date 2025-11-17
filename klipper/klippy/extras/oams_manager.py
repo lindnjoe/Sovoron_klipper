@@ -1190,17 +1190,6 @@ class OAMSManager:
             fps_state.afc_delegation_until = 0.0
             return False
 
-        # Once AFC has accepted the delegation, immediately clear the depleted
-        # lane locally so the AMS virtual toolhead pin and UI reflect that the
-        # source FPS no longer has filament loaded.
-        try:
-            self._clear_lane_on_runout(fps_name, fps_state, source_lane_name)
-        except Exception:
-            self.logger.error(
-                "Failed to clear FPS lane %s after delegating infinite runout",
-                source_lane_name,
-            )
-
         fps_state.afc_delegation_active = True
         fps_state.afc_delegation_until = now + AFC_DELEGATION_TIMEOUT
         self.logger.info("Delegated infinite runout for %s via AFC lane %s -> %s", fps_name, source_lane_name, runout_target)
@@ -1402,21 +1391,7 @@ class OAMSManager:
                 self.logger.error("Failed to notify AFC coordinator about lane %s unload after runout", lane_name)
 
         if lane_obj is not None:
-            try:
-                extruder = getattr(lane_obj, 'extruder_obj', None)
-                extruder_name = getattr(extruder, 'name', None)
-                if extruder_name and extruder_name.upper().startswith('AMS_'):
-                    sensor_name = extruder_name.replace('ams_', '').replace('AMS_', '')
-                    sensor = self.printer.lookup_object(f"filament_switch_sensor {sensor_name}", None)
-                    if sensor and hasattr(sensor, 'runout_helper'):
-                        eventtime = self.reactor.monotonic()
-                        sensor.runout_helper.note_filament_present(eventtime, is_filament_present=False)
-                        self.logger.info(
-                            "Set virtual sensor %s to False after runout (matching cross-extruder handling)",
-                            sensor_name
-                        )
-            except Exception:
-                self.logger.error("Failed to update virtual sensor for lane %s after runout", lane_name)
+            self._force_virtual_sensor_state(lane_obj, False)
 
     def _ensure_runout_monitor_active(self, fps_name: str, fps_state: "FPSState") -> None:
         """Make sure the associated runout monitor is actively tracking filament."""
@@ -1446,6 +1421,34 @@ class OAMSManager:
             self.logger.info("Rearmed runout monitor for %s (was %s)", fps_name, previous_state)
         except Exception:
             self.logger.error("Failed to reactivate runout monitor for %s from state %s", fps_name, previous_state)
+
+    def _force_virtual_sensor_state(self, lane_obj: Any, is_filament_present: bool) -> None:
+        """Drive the AMS virtual toolhead pin for the lane's extruder to desired state."""
+
+        try:
+            extruder = getattr(lane_obj, 'extruder_obj', None)
+            extruder_name = getattr(extruder, 'name', None)
+            if not extruder_name:
+                return
+
+            if not extruder_name.upper().startswith('AMS_'):
+                return
+
+            sensor_name = extruder_name.replace('ams_', '').replace('AMS_', '')
+            sensor = self.printer.lookup_object(f"filament_switch_sensor {sensor_name}", None)
+            if sensor is None or not hasattr(sensor, 'runout_helper'):
+                return
+
+            eventtime = self.reactor.monotonic()
+            sensor.runout_helper.note_filament_present(eventtime, is_filament_present=is_filament_present)
+            self.logger.info(
+                "Forced virtual sensor %s to %s",
+                sensor_name,
+                "present" if is_filament_present else "absent",
+            )
+        except Exception:
+            lane_name = getattr(lane_obj, 'name', '<unknown lane>')
+            self.logger.error("Failed to update virtual sensor for lane %s", lane_name)
 
     def _load_filament_for_lane(self, lane_name: str) -> Tuple[bool, str]:
         """Load filament for a lane by deriving OAMS and bay from the lane's unit configuration.
@@ -2563,6 +2566,7 @@ class OAMSManager:
         - Sync state for accurate monitoring
         """
         try:
+            afc = self._get_afc()
             # Get FPS for this lane (uses cache for speed)
             fps_name = self.get_fps_for_afc_lane(lane_name)
             if not fps_name:
@@ -2637,6 +2641,11 @@ class OAMSManager:
                 fps_state.current_oams = None
                 fps_state.current_spool_idx = None
                 fps_state.since = self.reactor.monotonic()
+
+                if afc is not None:
+                    _, lane_obj = self._resolve_afc_lane(afc, lane_name)
+                    if lane_obj is not None:
+                        self._force_virtual_sensor_state(lane_obj, False)
 
                 self.logger.info("Synced OAMS state from AFC: %s unloaded from %s", lane_name, fps_name)
         except Exception:
