@@ -1206,6 +1206,7 @@ class OAMSManager:
 
         spool_index = fps_state.current_spool_idx
         oams_name = fps_state.current_oams
+        oams_obj = self.oams.get(oams_name) if oams_name else None
         afc = self._get_afc()
         lane_obj = None
         afc_function = None
@@ -1228,6 +1229,13 @@ class OAMSManager:
                 except Exception:
                     self.logger.error("Failed to unset AFC lane %s as loaded after runout", lane_name)
 
+        if oams_obj is not None:
+            try:
+                oams_obj.current_spool = None
+                self.logger.info("Cleared OAMS %s current spool after runout", oams_name)
+            except Exception:
+                self.logger.error("Failed to clear OAMS %s current spool after runout", oams_name)
+
         fps_state.state = FPSLoadState.UNLOADED
         fps_state.following = False
         fps_state.direction = 0
@@ -1245,10 +1253,24 @@ class OAMSManager:
 
         if lane_obj is not None:
             try:
+                if getattr(lane_obj, "tool_loaded", False):
+                    try:
+                        lane_obj.unsync_to_extruder()
+                        self.logger.info("Un-synced lane %s from extruder before clearing runout", lane_name)
+                    except Exception:
+                        self.logger.error("Failed to un-sync lane %s from extruder during runout clear", lane_name)
                 lane_obj.set_unloaded()
                 self.logger.info("Marked AFC lane %s as unloaded after runout on %s", lane_name, fps_name)
             except Exception:
                 self.logger.error("Failed to mark AFC lane %s as unloaded after runout", lane_name)
+
+            lane_afc = getattr(lane_obj, "afc", None)
+            if lane_afc is not None:
+                try:
+                    lane_afc.save_vars()
+                    self.logger.info("Persisted AFC state after clearing lane %s runout", lane_name)
+                except Exception:
+                    self.logger.error("Failed to persist AFC state after clearing lane %s runout", lane_name)
 
         if AMSRunoutCoordinator is not None and oams_name and lane_name:
             try:
