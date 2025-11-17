@@ -1392,8 +1392,8 @@ class OAMSManager:
                             "Set virtual sensor %s to False after runout (matching cross-extruder handling)",
                             sensor_name
                         )
-        except Exception:
-            self.logger.error("Failed to update virtual sensor for lane %s after runout", lane_name)
+            except Exception:
+                self.logger.error("Failed to update virtual sensor for lane %s after runout", lane_name)
 
     def _ensure_runout_monitor_active(self, fps_name: str, fps_state: "FPSState") -> None:
         """Make sure the associated runout monitor is actively tracking filament."""
@@ -2241,9 +2241,9 @@ class OAMSManager:
                     try:
                         oams.set_led_error(fps_state.current_spool_idx, 0)
                     except Exception:
-                    self.logger.error("Failed to clear stuck spool LED while runout monitor inactive on %s", fps_name)
-            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
-            return
+                        self.logger.error("Failed to clear stuck spool LED while runout monitor inactive on %s", fps_name)
+                fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
+                return
 
         if not is_printing:
             if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
