@@ -1677,6 +1677,9 @@ class afcAMS(afcUnit):
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
 
+            # Save tool_loaded state BEFORE clearing it
+            was_tool_loaded = getattr(lane, 'tool_loaded', False)
+
             lane.tool_loaded = False
             lane.loaded_to_hub = False
             lane.status = AFCLaneState.NONE
@@ -1688,14 +1691,15 @@ class afcAMS(afcUnit):
                 # Moonraker not available - silently continue
                 pass
             # CRITICAL: For shared lanes (same-FPS runout), unsync and clear extruder.lane_loaded
-            # unsync_to_extruder() only unsyncs the stepper, doesn't clear lane_loaded!
-            try:
-                if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
-                    lane.unsync_to_extruder()
-                    lane.extruder_obj.lane_loaded = None
-                    self.logger.debug("Unsynced shared lane %s and cleared extruder.lane_loaded when sensor went False", lane.name)
-            except Exception:
-                self.logger.exception("Failed to unsync shared lane %s from extruder when sensor cleared", lane.name)
+            # ONLY if lane was actually loaded to toolhead (prevents breaking sensor sync during normal operations)
+            if was_tool_loaded:
+                try:
+                    if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
+                        lane.unsync_to_extruder()
+                        lane.extruder_obj.lane_loaded = None
+                        self.logger.debug("Unsynced shared lane %s and cleared extruder.lane_loaded when sensor went False", lane.name)
+                except Exception:
+                    self.logger.exception("Failed to unsync shared lane %s from extruder when sensor cleared", lane.name)
 
         lane.afc.save_vars()
         self._last_lane_states[lane.name] = lane_val
@@ -1747,6 +1751,9 @@ class afcAMS(afcUnit):
         # When sensor goes False (empty), clear tool_loaded like same-FPS runout does
         # This mimics the behavior in _update_shared_lane() for non-shared lanes
         if not lane_val:
+            # Save tool_loaded state BEFORE clearing it
+            was_tool_loaded = getattr(lane, 'tool_loaded', False)
+
             lane.tool_loaded = False
             lane.loaded_to_hub = False
             lane.status = AFCLaneState.NONE
@@ -1754,14 +1761,15 @@ class afcAMS(afcUnit):
             lane.td1_data = {}
             lane.afc.spool.clear_values(lane)
             # CRITICAL: For virtual sensors, unsync stepper AND clear extruder.lane_loaded
-            # unsync_to_extruder() only unsyncs the stepper, doesn't clear lane_loaded!
-            try:
-                if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
-                    lane.unsync_to_extruder()
-                    lane.extruder_obj.lane_loaded = None
-                    self.logger.debug("Unsynced %s and cleared extruder.lane_loaded when sensor went False", lane.name)
-            except Exception:
-                self.logger.exception("Failed to unsync %s from extruder when sensor cleared", lane.name)
+            # ONLY if lane was actually loaded to toolhead (prevents breaking sensor sync during normal operations)
+            if was_tool_loaded:
+                try:
+                    if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
+                        lane.unsync_to_extruder()
+                        lane.extruder_obj.lane_loaded = None
+                        self.logger.debug("Unsynced %s and cleared extruder.lane_loaded when sensor went False", lane.name)
+                except Exception:
+                    self.logger.exception("Failed to unsync %s from extruder when sensor cleared", lane.name)
             # Clear all runout flags when resetting lane
             if hasattr(lane, '_oams_runout_detected'):
                 lane._oams_runout_detected = False
