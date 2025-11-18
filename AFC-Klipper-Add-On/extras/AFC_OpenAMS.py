@@ -1782,13 +1782,13 @@ class afcAMS(afcUnit):
                     self.logger.exception("Failed to unsync %s from extruder when sensor cleared", lane.name)
             elif was_tool_loaded and is_cross_extruder_runout:
                 self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
-            # Clear all runout flags when resetting lane
+            # Clear runout flags when resetting lane
+            # NOTE: Do NOT clear _oams_cross_extruder_runout here - keep it set until runout completes
+            # It will be cleared in lane_tool_loaded() when the new lane loads
             if hasattr(lane, '_oams_runout_detected'):
                 lane._oams_runout_detected = False
             if hasattr(lane, '_oams_same_fps_runout'):
                 lane._oams_same_fps_runout = False
-            if hasattr(lane, '_oams_cross_extruder_runout'):
-                lane._oams_cross_extruder_runout = False
 
         self._mirror_lane_to_virtual_sensor(lane, eventtime)
         lane_name = getattr(lane, "name", None)
@@ -2742,17 +2742,6 @@ class afcAMS(afcUnit):
             is_printing = self.afc.function.is_printing()
         except Exception:
             is_printing = False
-
-        # CRITICAL: For cross-extruder runouts, clear lane state NOW using UNSET_LANE_LOADED
-        # Timing: F1S False → 60mm hub clear pause → PTFE runout calc → filament at extruder gears → HERE
-        # This is called right before AFC's _perform_infinite_runout(), perfect timing!
-        if is_printing and getattr(lane, '_oams_cross_extruder_runout', False):
-            try:
-                self.gcode.run_script_from_command("UNSET_LANE_LOADED")
-                self.logger.info("Called UNSET_LANE_LOADED for %s before infinite runout (filament at extruder gears after PTFE calc)", lane.name)
-            except Exception:
-                self.logger.exception("Failed to call UNSET_LANE_LOADED for %s before infinite runout", lane.name)
-
         return bool(is_printing)
 
     def _register_sync_dispatcher(self) -> None:
