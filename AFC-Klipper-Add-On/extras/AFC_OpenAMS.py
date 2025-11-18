@@ -2051,6 +2051,12 @@ class afcAMS(afcUnit):
                 afc_function.unset_lane_loaded()
             except Exception:
                 self.logger.error("Failed to unset currently loaded lane %s", lane.name)
+            # Update virtual sensor before returning
+            if self._lane_matches_extruder(lane):
+                try:
+                    self._set_virtual_tool_sensor_state(False, eventtime, lane.name, lane_obj=lane)
+                except Exception:
+                    self.logger.error("Failed to mirror tool sensor state for unloaded lane %s", lane.name)
             return True
 
         if getattr(lane, "tool_loaded", False):
