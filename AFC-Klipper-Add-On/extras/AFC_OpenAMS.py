@@ -2743,17 +2743,15 @@ class afcAMS(afcUnit):
         except Exception:
             is_printing = False
 
-        # CRITICAL: For cross-extruder runouts, clear extruder.lane_loaded NOW
-        # This is called right before AFC's _perform_infinite_runout(), which is the perfect time
-        # We skipped clearing earlier when F1S went False to allow filament to coast through buffer
+        # CRITICAL: For cross-extruder runouts, clear lane state NOW using UNSET_LANE_LOADED
+        # Timing: F1S False → 60mm hub clear pause → PTFE runout calc → filament at extruder gears → HERE
+        # This is called right before AFC's _perform_infinite_runout(), perfect timing!
         if is_printing and getattr(lane, '_oams_cross_extruder_runout', False):
             try:
-                if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
-                    lane.unsync_to_extruder()
-                    lane.extruder_obj.lane_loaded = None
-                    self.logger.info("Cleared extruder.lane_loaded for %s just before infinite runout (after coast)", lane.name)
+                self.gcode.run_script_from_command("UNSET_LANE_LOADED")
+                self.logger.info("Called UNSET_LANE_LOADED for %s before infinite runout (filament at extruder gears after PTFE calc)", lane.name)
             except Exception:
-                self.logger.exception("Failed to clear extruder.lane_loaded for %s before infinite runout", lane.name)
+                self.logger.exception("Failed to call UNSET_LANE_LOADED for %s before infinite runout", lane.name)
 
         return bool(is_printing)
 
