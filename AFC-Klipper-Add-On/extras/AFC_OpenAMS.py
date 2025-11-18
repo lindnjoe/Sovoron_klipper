@@ -762,23 +762,27 @@ class afcAMS(afcUnit):
                 # Check if other lane is on same extruder
                 other_extruder = getattr(other_lane.extruder_obj, "name", None) if hasattr(other_lane, "extruder_obj") else None
 
+                # CRITICAL: Clear tool_loaded, unsync stepper, and clear extruder.lane_loaded
+                # for BOTH same-FPS and cross-FPS runouts
+                # unsync_to_extruder() only unsyncs the stepper, doesn't clear lane_loaded!
+                other_lane.tool_loaded = False
+                try:
+                    if hasattr(other_lane, 'extruder_obj') and other_lane.extruder_obj is not None:
+                        other_lane.unsync_to_extruder()
+                        other_lane.extruder_obj.lane_loaded = None
+                except Exception:
+                    self.logger.exception("Failed to unsync %s when new lane loaded", other_lane.name)
+                if hasattr(other_lane, '_oams_runout_detected'):
+                    other_lane._oams_runout_detected = False
+                if hasattr(other_lane, '_oams_same_fps_runout'):
+                    other_lane._oams_same_fps_runout = False
+                if hasattr(other_lane, '_oams_cross_extruder_runout'):
+                    other_lane._oams_cross_extruder_runout = False
+
                 if other_extruder == lane_extruder:
-                    # Same FPS: Clear tool_loaded, unsync stepper, and clear extruder.lane_loaded
-                    # CRITICAL: Must clear extruder.lane_loaded to allow AFC to unload the lane
-                    other_lane.tool_loaded = False
-                    try:
-                        if hasattr(other_lane, 'extruder_obj') and other_lane.extruder_obj is not None:
-                            other_lane.unsync_to_extruder()
-                            other_lane.extruder_obj.lane_loaded = None
-                    except Exception:
-                        self.logger.exception("Failed to unsync %s when new lane loaded", other_lane.name)
-                    if hasattr(other_lane, '_oams_runout_detected'):
-                        other_lane._oams_runout_detected = False
-                    if hasattr(other_lane, '_oams_same_fps_runout'):
-                        other_lane._oams_same_fps_runout = False
-                    if hasattr(other_lane, '_oams_cross_extruder_runout'):
-                        other_lane._oams_cross_extruder_runout = False
                     self.logger.debug("Cleared tool_loaded and extruder.lane_loaded for %s on same FPS (new lane %s loaded)", other_lane.name, lane.name)
+                else:
+                    self.logger.info("Cleared tool_loaded and extruder.lane_loaded for %s on different FPS (cross-FPS runout, new lane %s loaded)", other_lane.name, lane.name)
 
         if not self._lane_matches_extruder(lane):
             return
@@ -1683,6 +1687,15 @@ class afcAMS(afcUnit):
             except AttributeError:
                 # Moonraker not available - silently continue
                 pass
+            # CRITICAL: For shared lanes (same-FPS runout), unsync and clear extruder.lane_loaded
+            # unsync_to_extruder() only unsyncs the stepper, doesn't clear lane_loaded!
+            try:
+                if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
+                    lane.unsync_to_extruder()
+                    lane.extruder_obj.lane_loaded = None
+                    self.logger.debug("Unsynced shared lane %s and cleared extruder.lane_loaded when sensor went False", lane.name)
+            except Exception:
+                self.logger.exception("Failed to unsync shared lane %s from extruder when sensor cleared", lane.name)
 
         lane.afc.save_vars()
         self._last_lane_states[lane.name] = lane_val
