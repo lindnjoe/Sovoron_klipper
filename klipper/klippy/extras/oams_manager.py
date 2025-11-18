@@ -626,11 +626,8 @@ class OAMSManager:
     
     cmd_CLEAR_ERRORS_help = "Clear the error state of the OAMS"
     def cmd_CLEAR_ERRORS(self, gcmd):
-        # Stop all monitors and reset runout states
-        if len(self.monitor_timers) > 0:
-            self.stop_monitors()
-
         # Reset all runout monitors to clear COASTING and other states
+        # DO NOT stop/restart monitors - this can corrupt reactor if called during timer execution
         for fps_name, monitor in list(self.runout_monitors.items()):
             try:
                 monitor.reset()
@@ -670,9 +667,6 @@ class OAMSManager:
         # lanes that have filament loaded to the hub (even if not loaded to toolhead)
         # This keeps filament pressure up for manual operations during troubleshooting
         self._ensure_followers_for_loaded_hubs()
-
-        # Restart all monitors
-        self.start_monitors()
 
         gcmd.respond_info("OAMS errors cleared and system re-initialized")
 
