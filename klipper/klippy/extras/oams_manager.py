@@ -626,11 +626,8 @@ class OAMSManager:
     
     cmd_CLEAR_ERRORS_help = "Clear the error state of the OAMS"
     def cmd_CLEAR_ERRORS(self, gcmd):
-        # Stop all monitors and reset runout states
-        if len(self.monitor_timers) > 0:
-            self.stop_monitors()
-
         # Reset all runout monitors to clear COASTING and other states
+        # DO NOT stop/restart monitors - this can corrupt reactor if called during timer execution
         for fps_name, monitor in list(self.runout_monitors.items()):
             try:
                 monitor.reset()
@@ -670,9 +667,6 @@ class OAMSManager:
         # lanes that have filament loaded to the hub (even if not loaded to toolhead)
         # This keeps filament pressure up for manual operations during troubleshooting
         self._ensure_followers_for_loaded_hubs()
-
-        # Restart all monitors
-        self.start_monitors()
 
         gcmd.respond_info("OAMS errors cleared and system re-initialized")
 
@@ -2544,20 +2538,22 @@ class OAMSManager:
 
                     # Only manually clear lane for AMS extruders with VIRTUAL toolhead pins
                     # Real physical toolhead sensors will naturally detect empty and clear the lane
+                    # Check FPS's extruder directly
                     is_virtual_extruder = False
-                    if source_lane_name:
-                        afc = self._get_afc()
-                        if afc:
-                            lane = afc.lanes.get(source_lane_name)
-                            if lane and hasattr(lane, 'extruder_obj'):
-                                extruder = lane.extruder_obj
-                                extruder_name = getattr(extruder, 'name', None)
-                                if extruder_name and extruder_name.upper().startswith('AMS_'):
-                                    is_virtual_extruder = True
+                    fps = self.fpss.get(fps_name)
+                    if fps and hasattr(fps, 'extruder'):
+                        extruder = fps.extruder
+                        extruder_name = getattr(extruder, 'name', None)
+                        if extruder_name and extruder_name.upper().startswith('AMS_'):
+                            is_virtual_extruder = True
+                            self.logger.info("Detected virtual extruder %s for %s", extruder_name, fps_name)
 
                     if is_virtual_extruder:
-                        self.logger.info("Virtual extruder lane %s - manually clearing from OAMS and AFC", source_lane_name)
+                        self.logger.info("Virtual extruder lane %s - manually clearing from OAMS and AFC", source_lane_name or fps_name)
                         self._clear_lane_on_runout(fps_name, fps_state, source_lane_name)
+
+                        # Re-enable followers for any hubs with filament to prepare for loading new filament
+                        self._ensure_followers_for_loaded_hubs()
                     else:
                         self.logger.info("Physical toolhead sensor lane %s - will clear naturally when sensor detects empty", source_lane_name or fps_name)
 
