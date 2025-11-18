@@ -2535,16 +2535,31 @@ class OAMSManager:
                 if target_lane is None:
                     # No infinite runout target configured
                     # Filament has already coasted to toolhead (like infinite runout flow)
-                    # Now: pause, then clear lane from OAMS and AFC
-                    self.logger.info("No infinite runout target for %s on %s - filament coasted to toolhead, pausing and clearing lane",
+                    self.logger.info("No infinite runout target for %s on %s - filament coasted to toolhead",
                                    source_lane_name or fps_name, fps_name)
 
                     # Pause the printer
                     self.logger.error("No lane available to reload on %s", fps_name)
                     self._pause_printer_message(f"No lane available to reload on {fps_name}", fps_state.current_oams or active_oams)
 
-                    # Clear the lane from OAMS and AFC
-                    self._clear_lane_on_runout(fps_name, fps_state, source_lane_name)
+                    # Only manually clear lane for AMS extruders with VIRTUAL toolhead pins
+                    # Real physical toolhead sensors will naturally detect empty and clear the lane
+                    is_virtual_extruder = False
+                    if source_lane_name:
+                        afc = self._get_afc()
+                        if afc:
+                            lane = afc.lanes.get(source_lane_name)
+                            if lane and hasattr(lane, 'extruder_obj'):
+                                extruder = lane.extruder_obj
+                                extruder_name = getattr(extruder, 'name', None)
+                                if extruder_name and extruder_name.upper().startswith('AMS_'):
+                                    is_virtual_extruder = True
+
+                    if is_virtual_extruder:
+                        self.logger.info("Virtual extruder lane %s - manually clearing from OAMS and AFC", source_lane_name)
+                        self._clear_lane_on_runout(fps_name, fps_state, source_lane_name)
+                    else:
+                        self.logger.info("Physical toolhead sensor lane %s - will clear naturally when sensor detects empty", source_lane_name or fps_name)
 
                     if monitor:
                         monitor.paused()
