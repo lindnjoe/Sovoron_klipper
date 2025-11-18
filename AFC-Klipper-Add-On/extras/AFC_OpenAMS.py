@@ -2013,19 +2013,33 @@ class afcAMS(afcUnit):
 
         # For same-FPS runouts, block sensor updates when going empty to prevent AFC from triggering infinite runout
         # OpenAMS will handle the swap internally, then we'll sync sensors when new lane loads
+        # Only block if actively printing - allow sensor sync when not printing to prevent stuck states
         is_same_fps_unload = getattr(lane, '_oams_same_fps_runout', False) and not lane_state
         if is_same_fps_unload:
-            self.logger.info("Blocking sensor update for same-FPS runout on {} - OpenAMS handling swap".format(lane.name))
-        else:
-            # Clear the same-FPS flag if this is a load (swap completed)
-            if lane_state and getattr(lane, '_oams_same_fps_runout', False):
-                self.logger.info("Same-FPS swap completed for {}, resuming normal sensor sync".format(lane.name))
-                lane._oams_same_fps_runout = False
-
+            # Check if actively printing - only block during active print
             try:
-                self._apply_lane_sensor_state(lane, lane_state, eventtime)
+                is_printing = self.afc.function.is_printing()
             except Exception:
-                self.logger.error("Failed to mirror OpenAMS lane sensor state for %s", lane.name)
+                is_printing = False
+
+            if is_printing:
+                self.logger.info("Blocking sensor update for same-FPS runout on {} - OpenAMS handling swap".format(lane.name))
+                return True  # Block the update
+            else:
+                # Not printing - clear flag and allow sensor sync to prevent stuck state
+                self.logger.info("Same-FPS flag set but not printing on {} - clearing flag and syncing sensors".format(lane.name))
+                lane._oams_same_fps_runout = False
+                # Fall through to normal sensor update
+
+        # Clear the same-FPS flag if this is a load (swap completed)
+        if lane_state and getattr(lane, '_oams_same_fps_runout', False):
+            self.logger.info("Same-FPS swap completed for {}, resuming normal sensor sync".format(lane.name))
+            lane._oams_same_fps_runout = False
+
+        try:
+            self._apply_lane_sensor_state(lane, lane_state, eventtime)
+        except Exception:
+            self.logger.error("Failed to mirror OpenAMS lane sensor state for %s", lane.name)
 
         if self.hardware_service is not None:
             hub_state = getattr(lane, "loaded_to_hub", None)
