@@ -1234,11 +1234,7 @@ class OAMSManager:
             fps_state: Current FPS state object
             lane_name: Name of the lane that ran out (e.g., "lane7")
         """
-        if not lane_name:
-            self.logger.warning("Cannot clear lane on runout - no lane name provided for %s", fps_name)
-            return
-
-        # Save spool index before clearing for AFC notification
+        # Save info before clearing
         spool_index = fps_state.current_spool_idx
         oams_name = fps_state.current_oams
 
@@ -1256,7 +1252,14 @@ class OAMSManager:
         fps_state.reset_clog_tracker()
         fps_state.reset_runout_positions()
 
-        self.logger.info("Cleared FPS state for %s (was lane %s, spool %s)", fps_name, lane_name, spool_index)
+        self.logger.info("Cleared FPS state for %s (was lane %s, oams %s, spool %s)",
+                        fps_name, lane_name or "<unknown>", oams_name, spool_index)
+
+        # Notify AFC only if we have lane name
+        if not lane_name:
+            self.logger.warning("Cannot notify AFC on runout - no lane name for %s (oams %s, spool %s)",
+                              fps_name, oams_name, spool_index)
+            return
 
         # Notify AFC that lane is unloaded from toolhead
         # This triggers AFC's _apply_lane_sensor_state() which:
@@ -2272,6 +2275,7 @@ class OAMSManager:
 
         monitor = self.runout_monitors.get(fps_name)
         if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
+            # Runout active - disable stuck spool detection
             if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
                 try:
                     oams.set_led_error(fps_state.current_spool_idx, 0)
@@ -2279,6 +2283,16 @@ class OAMSManager:
                     self.logger.error("Failed to clear stuck spool LED while runout monitor inactive on %s", fps_name)
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
             return
+
+        # Debug: Log when pressure is very low to help diagnose stuck spool detection
+        if pressure <= 0.05 and is_printing and fps_state.following:
+            if fps_state.stuck_spool_start_time is None:
+                self.logger.debug("Stuck spool timer starting for %s - pressure %.3f (threshold %.3f)",
+                                fps_name, pressure, self.stuck_spool_pressure_threshold)
+            elif not fps_state.stuck_spool_active:
+                elapsed = now - fps_state.stuck_spool_start_time
+                self.logger.debug("Stuck spool timer running for %s - pressure %.3f, elapsed %.1fs (need %.1fs)",
+                                fps_name, pressure, elapsed, STUCK_SPOOL_DWELL)
 
         if not is_printing:
             if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
