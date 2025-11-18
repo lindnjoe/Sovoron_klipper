@@ -2006,19 +2006,6 @@ class afcAMS(afcUnit):
             # Mark same-FPS runouts so sensor updates are blocked until swap completes
             lane._oams_same_fps_runout = (runout_lane_name is not None and is_same_fps)
 
-            # CRITICAL: For infinite spool runouts (same-FPS or cross-extruder), clear extruder.lane_loaded NOW
-            # This prevents LANE_UNLOAD from blocking with "LANE is loaded in toolhead, can't unload"
-            # when _perform_infinite_runout() is eventually called by AFC
-            if runout_lane_name is not None:
-                try:
-                    if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
-                        lane.unsync_to_extruder()
-                        lane.extruder_obj.lane_loaded = None
-                        self.logger.info("Cleared extruder.lane_loaded for {} during runout detection (infinite spool to {})".format(
-                            lane.name, runout_lane_name))
-                except Exception:
-                    self.logger.exception("Failed to clear extruder.lane_loaded for {} during runout detection", lane.name)
-
             if runout_lane_name is None:
                 self.logger.info("Regular runout detected for lane {} (no infinite spool configured) - will clear lane and pause".format(lane.name))
                 # Schedule UNSET_LANE_LOADED to run after pause happens (delayed by 3 seconds)
