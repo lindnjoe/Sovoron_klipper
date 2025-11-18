@@ -2533,15 +2533,37 @@ class OAMSManager:
 
                 # Load the target lane directly
                 if target_lane is None:
-                    # No infinite runout target configured - clear the lane and pause
-                    self.logger.info("No infinite runout target for %s on %s - clearing lane from toolhead and OAMS",
+                    # No infinite runout target configured - pause then unload
+                    self.logger.info("No infinite runout target for %s on %s - pausing then unloading",
                                    source_lane_name or fps_name, fps_name)
 
-                    # Clear FPS state and notify AFC (similar to cross-extruder runout handling)
-                    self._clear_lane_on_runout(fps_name, fps_state, source_lane_name)
-
+                    # First pause the printer
                     self.logger.error("No lane available to reload on %s", fps_name)
                     self._pause_printer_message(f"No lane available to reload on {fps_name}", fps_state.current_oams or active_oams)
+
+                    # Then unload filament for AMS lanes with virtual toolhead pins
+                    should_unload = False
+                    if source_lane_name:
+                        afc = self._get_afc()
+                        if afc:
+                            lane = afc.lanes.get(source_lane_name)
+                            if lane and hasattr(lane, 'extruder_obj'):
+                                extruder = lane.extruder_obj
+                                extruder_name = getattr(extruder, 'name', None)
+                                if extruder_name and extruder_name.upper().startswith('AMS_'):
+                                    should_unload = True
+
+                    if should_unload:
+                        self.logger.info("Unloading AMS lane %s after regular runout", source_lane_name)
+                        unload_success, unload_message = self._unload_filament_for_fps(fps_name)
+                        if not unload_success:
+                            self.logger.error("Failed to unload lane %s after runout: %s", source_lane_name, unload_message)
+                        else:
+                            self.logger.info("Successfully unloaded lane %s after regular runout", source_lane_name)
+                    else:
+                        # For non-AMS lanes, just clear state
+                        self._clear_lane_on_runout(fps_name, fps_state, source_lane_name)
+
                     if monitor:
                         monitor.paused()
                     return
