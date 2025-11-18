@@ -2544,19 +2544,18 @@ class OAMSManager:
 
                     # Only manually clear lane for AMS extruders with VIRTUAL toolhead pins
                     # Real physical toolhead sensors will naturally detect empty and clear the lane
+                    # Check FPS's extruder directly
                     is_virtual_extruder = False
-                    if source_lane_name:
-                        afc = self._get_afc()
-                        if afc:
-                            lane = afc.lanes.get(source_lane_name)
-                            if lane and hasattr(lane, 'extruder_obj'):
-                                extruder = lane.extruder_obj
-                                extruder_name = getattr(extruder, 'name', None)
-                                if extruder_name and extruder_name.upper().startswith('AMS_'):
-                                    is_virtual_extruder = True
+                    fps = self.fpss.get(fps_name)
+                    if fps and hasattr(fps, 'extruder'):
+                        extruder = fps.extruder
+                        extruder_name = getattr(extruder, 'name', None)
+                        if extruder_name and extruder_name.upper().startswith('AMS_'):
+                            is_virtual_extruder = True
+                            self.logger.info("Detected virtual extruder %s for %s", extruder_name, fps_name)
 
                     if is_virtual_extruder:
-                        self.logger.info("Virtual extruder lane %s - manually clearing from OAMS and AFC", source_lane_name)
+                        self.logger.info("Virtual extruder lane %s - manually clearing from OAMS and AFC", source_lane_name or fps_name)
                         self._clear_lane_on_runout(fps_name, fps_state, source_lane_name)
                     else:
                         self.logger.info("Physical toolhead sensor lane %s - will clear naturally when sensor detects empty", source_lane_name or fps_name)
