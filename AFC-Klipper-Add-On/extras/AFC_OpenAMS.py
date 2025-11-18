@@ -762,16 +762,27 @@ class afcAMS(afcUnit):
                 # Check if other lane is on same extruder
                 other_extruder = getattr(other_lane.extruder_obj, "name", None) if hasattr(other_lane, "extruder_obj") else None
 
+                # CRITICAL: Clear tool_loaded, unsync stepper, and clear extruder.lane_loaded
+                # for BOTH same-FPS and cross-FPS runouts
+                # unsync_to_extruder() only unsyncs the stepper, doesn't clear lane_loaded!
+                other_lane.tool_loaded = False
+                try:
+                    if hasattr(other_lane, 'extruder_obj') and other_lane.extruder_obj is not None:
+                        other_lane.unsync_to_extruder()
+                        other_lane.extruder_obj.lane_loaded = None
+                except Exception:
+                    self.logger.exception("Failed to unsync %s when new lane loaded", other_lane.name)
+                if hasattr(other_lane, '_oams_runout_detected'):
+                    other_lane._oams_runout_detected = False
+                if hasattr(other_lane, '_oams_same_fps_runout'):
+                    other_lane._oams_same_fps_runout = False
+                if hasattr(other_lane, '_oams_cross_extruder_runout'):
+                    other_lane._oams_cross_extruder_runout = False
+
                 if other_extruder == lane_extruder:
-                    # Same FPS: Just clear tool_loaded and all runout flags
-                    other_lane.tool_loaded = False
-                    if hasattr(other_lane, '_oams_runout_detected'):
-                        other_lane._oams_runout_detected = False
-                    if hasattr(other_lane, '_oams_same_fps_runout'):
-                        other_lane._oams_same_fps_runout = False
-                    if hasattr(other_lane, '_oams_cross_extruder_runout'):
-                        other_lane._oams_cross_extruder_runout = False
-                    self.logger.debug("Cleared tool_loaded for %s on same FPS (new lane %s loaded)", other_lane.name, lane.name)
+                    self.logger.debug("Cleared tool_loaded and extruder.lane_loaded for %s on same FPS (new lane %s loaded)", other_lane.name, lane.name)
+                else:
+                    self.logger.info("Cleared tool_loaded and extruder.lane_loaded for %s on different FPS (cross-FPS runout, new lane %s loaded)", other_lane.name, lane.name)
 
         if not self._lane_matches_extruder(lane):
             return
@@ -1666,6 +1677,9 @@ class afcAMS(afcUnit):
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
 
+            # Save tool_loaded state BEFORE clearing it
+            was_tool_loaded = getattr(lane, 'tool_loaded', False)
+
             lane.tool_loaded = False
             lane.loaded_to_hub = False
             lane.status = AFCLaneState.NONE
@@ -1676,6 +1690,16 @@ class afcAMS(afcUnit):
             except AttributeError:
                 # Moonraker not available - silently continue
                 pass
+            # CRITICAL: For shared lanes (same-FPS runout), unsync and clear extruder.lane_loaded
+            # ONLY if lane was actually loaded to toolhead (prevents breaking sensor sync during normal operations)
+            if was_tool_loaded:
+                try:
+                    if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
+                        lane.unsync_to_extruder()
+                        lane.extruder_obj.lane_loaded = None
+                        self.logger.debug("Unsynced shared lane %s and cleared extruder.lane_loaded when sensor went False", lane.name)
+                except Exception:
+                    self.logger.exception("Failed to unsync shared lane %s from extruder when sensor cleared", lane.name)
 
         lane.afc.save_vars()
         self._last_lane_states[lane.name] = lane_val
@@ -1727,12 +1751,25 @@ class afcAMS(afcUnit):
         # When sensor goes False (empty), clear tool_loaded like same-FPS runout does
         # This mimics the behavior in _update_shared_lane() for non-shared lanes
         if not lane_val:
+            # Save tool_loaded state BEFORE clearing it
+            was_tool_loaded = getattr(lane, 'tool_loaded', False)
+
             lane.tool_loaded = False
             lane.loaded_to_hub = False
             lane.status = AFCLaneState.NONE
             lane.unit_obj.lane_unloaded(lane)
             lane.td1_data = {}
             lane.afc.spool.clear_values(lane)
+            # CRITICAL: For virtual sensors, unsync stepper AND clear extruder.lane_loaded
+            # ONLY if lane was actually loaded to toolhead (prevents breaking sensor sync during normal operations)
+            if was_tool_loaded:
+                try:
+                    if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
+                        lane.unsync_to_extruder()
+                        lane.extruder_obj.lane_loaded = None
+                        self.logger.debug("Unsynced %s and cleared extruder.lane_loaded when sensor went False", lane.name)
+                except Exception:
+                    self.logger.exception("Failed to unsync %s from extruder when sensor cleared", lane.name)
             # Clear all runout flags when resetting lane
             if hasattr(lane, '_oams_runout_detected'):
                 lane._oams_runout_detected = False
@@ -1985,22 +2022,7 @@ class afcAMS(afcUnit):
                 waketime = self.reactor.monotonic() + 3.0
                 self.reactor.register_callback(_clear_lane_after_pause, waketime)
             elif is_same_fps:
-                self.logger.info("Same-extruder runout: Marked lane {} for runout, will load {} when filament clears".format(lane.name, runout_lane_name))
-                # For same-FPS runouts, OpenAMS needs to actively trigger the new lane load
-                # Schedule the lane load after filament has time to coast out (3 seconds)
-                def _trigger_same_fps_swap(eventtime):
-                    try:
-                        # Load the new lane - this will push the old filament out
-                        self.gcode.run_script_from_command("LANE_LOAD LANE={}".format(runout_lane_name))
-                        self.logger.info("Triggered same-FPS swap: loading {} to replace {}".format(runout_lane_name, lane.name))
-                    except Exception as e:
-                        self.logger.error("Failed to trigger same-FPS lane load for {}: {}".format(runout_lane_name, str(e)))
-                        # Clear flag as fallback
-                        if hasattr(lane, '_oams_same_fps_runout'):
-                            lane._oams_same_fps_runout = False
-
-                waketime = self.reactor.monotonic() + 3.0
-                self.reactor.register_callback(_trigger_same_fps_swap, waketime)
+                self.logger.info("Same-extruder runout: Marked lane {} for runout (OpenAMS handling reload, sensors sync naturally)".format(lane.name))
             else:
                 self.logger.info("Cross-extruder runout: Marked lane {} for runout (AFC will handle tool change, will clear old extruder during LANE_UNLOAD)".format(lane.name))
         except Exception:
