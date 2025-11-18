@@ -2557,6 +2557,9 @@ class OAMSManager:
                     if is_virtual_extruder:
                         self.logger.info("Virtual extruder lane %s - manually clearing from OAMS and AFC", source_lane_name or fps_name)
                         self._clear_lane_on_runout(fps_name, fps_state, source_lane_name)
+
+                        # Re-enable followers for any hubs with filament to prepare for loading new filament
+                        self._ensure_followers_for_loaded_hubs()
                     else:
                         self.logger.info("Physical toolhead sensor lane %s - will clear naturally when sensor detects empty", source_lane_name or fps_name)
 
