@@ -1692,7 +1692,11 @@ class afcAMS(afcUnit):
                 pass
             # CRITICAL: For shared lanes (same-FPS runout), unsync and clear extruder.lane_loaded
             # ONLY if lane was actually loaded to toolhead (prevents breaking sensor sync during normal operations)
-            if was_tool_loaded:
+            # BUT: For cross-extruder runouts, do NOT clear here - filament is still coasting through buffer
+            # AFC will handle clearing when _perform_infinite_runout() is called later
+            is_cross_extruder_runout = getattr(lane, '_oams_cross_extruder_runout', False)
+
+            if was_tool_loaded and not is_cross_extruder_runout:
                 try:
                     if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
                         lane.unsync_to_extruder()
@@ -1700,6 +1704,8 @@ class afcAMS(afcUnit):
                         self.logger.debug("Unsynced shared lane %s and cleared extruder.lane_loaded when sensor went False", lane.name)
                 except Exception:
                     self.logger.exception("Failed to unsync shared lane %s from extruder when sensor cleared", lane.name)
+            elif was_tool_loaded and is_cross_extruder_runout:
+                self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
 
         lane.afc.save_vars()
         self._last_lane_states[lane.name] = lane_val
@@ -1762,7 +1768,11 @@ class afcAMS(afcUnit):
             lane.afc.spool.clear_values(lane)
             # CRITICAL: For virtual sensors, unsync stepper AND clear extruder.lane_loaded
             # ONLY if lane was actually loaded to toolhead (prevents breaking sensor sync during normal operations)
-            if was_tool_loaded:
+            # BUT: For cross-extruder runouts, do NOT clear here - filament is still coasting through buffer
+            # AFC will handle clearing when _perform_infinite_runout() is called later
+            is_cross_extruder_runout = getattr(lane, '_oams_cross_extruder_runout', False)
+
+            if was_tool_loaded and not is_cross_extruder_runout:
                 try:
                     if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
                         lane.unsync_to_extruder()
@@ -1770,6 +1780,8 @@ class afcAMS(afcUnit):
                         self.logger.debug("Unsynced %s and cleared extruder.lane_loaded when sensor went False", lane.name)
                 except Exception:
                     self.logger.exception("Failed to unsync %s from extruder when sensor cleared", lane.name)
+            elif was_tool_loaded and is_cross_extruder_runout:
+                self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
             # Clear all runout flags when resetting lane
             if hasattr(lane, '_oams_runout_detected'):
                 lane._oams_runout_detected = False
@@ -2730,6 +2742,17 @@ class afcAMS(afcUnit):
             is_printing = self.afc.function.is_printing()
         except Exception:
             is_printing = False
+
+        # CRITICAL: For cross-extruder runouts, clear lane state NOW using UNSET_LANE_LOADED
+        # Timing: F1S False ? 60mm hub clear pause ? PTFE runout calc ? filament at extruder gears ? HERE
+        # This is called right before AFC's _perform_infinite_runout(), perfect timing!
+        if is_printing and getattr(lane, '_oams_cross_extruder_runout', False):
+            try:
+                self.gcode.run_script_from_command("UNSET_LANE_LOADED")
+                self.logger.info("Called UNSET_LANE_LOADED for %s before infinite runout (filament at extruder gears after PTFE calc)", lane.name)
+            except Exception:
+                self.logger.exception("Failed to call UNSET_LANE_LOADED for %s before infinite runout", lane.name)
+
         return bool(is_printing)
 
     def _register_sync_dispatcher(self) -> None:
