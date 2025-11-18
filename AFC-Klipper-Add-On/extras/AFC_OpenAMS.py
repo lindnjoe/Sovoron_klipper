@@ -1985,7 +1985,22 @@ class afcAMS(afcUnit):
                 waketime = self.reactor.monotonic() + 3.0
                 self.reactor.register_callback(_clear_lane_after_pause, waketime)
             elif is_same_fps:
-                self.logger.info("Same-extruder runout: Marked lane {} for runout (OpenAMS handling reload, sensors sync naturally)".format(lane.name))
+                self.logger.info("Same-extruder runout: Marked lane {} for runout, will load {} when filament clears".format(lane.name, runout_lane_name))
+                # For same-FPS runouts, OpenAMS needs to actively trigger the new lane load
+                # Schedule the lane load after filament has time to coast out (3 seconds)
+                def _trigger_same_fps_swap(eventtime):
+                    try:
+                        # Load the new lane - this will push the old filament out
+                        self.gcode.run_script_from_command("LANE_LOAD LANE={}".format(runout_lane_name))
+                        self.logger.info("Triggered same-FPS swap: loading {} to replace {}".format(runout_lane_name, lane.name))
+                    except Exception as e:
+                        self.logger.error("Failed to trigger same-FPS lane load for {}: {}".format(runout_lane_name, str(e)))
+                        # Clear flag as fallback
+                        if hasattr(lane, '_oams_same_fps_runout'):
+                            lane._oams_same_fps_runout = False
+
+                waketime = self.reactor.monotonic() + 3.0
+                self.reactor.register_callback(_trigger_same_fps_swap, waketime)
             else:
                 self.logger.info("Cross-extruder runout: Marked lane {} for runout (AFC will handle tool change, will clear old extruder during LANE_UNLOAD)".format(lane.name))
         except Exception:
