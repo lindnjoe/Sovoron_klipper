@@ -763,15 +763,22 @@ class afcAMS(afcUnit):
                 other_extruder = getattr(other_lane.extruder_obj, "name", None) if hasattr(other_lane, "extruder_obj") else None
 
                 if other_extruder == lane_extruder:
-                    # Same FPS: Just clear tool_loaded and all runout flags
+                    # Same FPS: Clear tool_loaded, unsync stepper, and clear extruder.lane_loaded
+                    # CRITICAL: Must clear extruder.lane_loaded to allow AFC to unload the lane
                     other_lane.tool_loaded = False
+                    try:
+                        if hasattr(other_lane, 'extruder_obj') and other_lane.extruder_obj is not None:
+                            other_lane.unsync_to_extruder()
+                            other_lane.extruder_obj.lane_loaded = None
+                    except Exception:
+                        self.logger.exception("Failed to unsync %s when new lane loaded", other_lane.name)
                     if hasattr(other_lane, '_oams_runout_detected'):
                         other_lane._oams_runout_detected = False
                     if hasattr(other_lane, '_oams_same_fps_runout'):
                         other_lane._oams_same_fps_runout = False
                     if hasattr(other_lane, '_oams_cross_extruder_runout'):
                         other_lane._oams_cross_extruder_runout = False
-                    self.logger.debug("Cleared tool_loaded for %s on same FPS (new lane %s loaded)", other_lane.name, lane.name)
+                    self.logger.debug("Cleared tool_loaded and extruder.lane_loaded for %s on same FPS (new lane %s loaded)", other_lane.name, lane.name)
 
         if not self._lane_matches_extruder(lane):
             return
@@ -1733,6 +1740,15 @@ class afcAMS(afcUnit):
             lane.unit_obj.lane_unloaded(lane)
             lane.td1_data = {}
             lane.afc.spool.clear_values(lane)
+            # CRITICAL: For virtual sensors, unsync stepper AND clear extruder.lane_loaded
+            # unsync_to_extruder() only unsyncs the stepper, doesn't clear lane_loaded!
+            try:
+                if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
+                    lane.unsync_to_extruder()
+                    lane.extruder_obj.lane_loaded = None
+                    self.logger.debug("Unsynced %s and cleared extruder.lane_loaded when sensor went False", lane.name)
+            except Exception:
+                self.logger.exception("Failed to unsync %s from extruder when sensor cleared", lane.name)
             # Clear all runout flags when resetting lane
             if hasattr(lane, '_oams_runout_detected'):
                 lane._oams_runout_detected = False
