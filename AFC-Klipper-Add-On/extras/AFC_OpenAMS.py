@@ -1402,6 +1402,10 @@ class afcAMS(afcUnit):
         # Hook into AFC's TOOL_UNLOAD to prevent unload attempts on already-empty OpenAMS runouts
         self._wrap_afc_tool_unload()
 
+        # Verify our check_runout method is accessible
+        self.logger.info("afcAMS ready() complete - check_runout method: {}".format(type(self.check_runout)))
+        self.logger.info("afcAMS instance: {}, type: {}".format(self, self.type))
+
     def _wrap_afc_lane_unload(self):
         """
         DISABLED: This wrapper is obsolete. We now block AFC entirely via check_runout()
@@ -1540,14 +1544,27 @@ class afcAMS(afcUnit):
 
             # Create wrapper
             def wrapped_tool_unload(lane):
-                # Check if this is an OpenAMS lane
-                if getattr(lane, 'unit_obj', None) is not None and getattr(lane.unit_obj, 'type', None) == "OpenAMS":
+                # Check if this is an OpenAMS lane AND it's during a runout
+                unit_obj = getattr(lane, 'unit_obj', None)
+                if unit_obj is not None and getattr(unit_obj, 'type', None) == "OpenAMS":
                     lane_name = getattr(lane, 'name', 'unknown')
-                    self.logger.info("Skipping TOOL_UNLOAD for OpenAMS lane {} (filament already ran out)".format(lane_name))
-                    # Don't call original - filament already ran out, nothing to unload
-                    return
 
-                # Not OpenAMS lane, call original
+                    # Only skip if this is an active runout (filament already ran out)
+                    # Check stored runout info OR runout flags
+                    is_runout = False
+                    if hasattr(unit_obj, '_pending_cross_extruder_swaps') and lane_name in unit_obj._pending_cross_extruder_swaps:
+                        is_runout = True
+                    elif hasattr(unit_obj, '_pending_regular_runouts') and lane_name in unit_obj._pending_regular_runouts:
+                        is_runout = True
+                    elif getattr(lane, '_oams_cross_extruder_runout', False) or getattr(lane, '_oams_regular_runout', False):
+                        is_runout = True
+
+                    if is_runout:
+                        self.logger.info("Skipping TOOL_UNLOAD for OpenAMS lane {} (runout - filament already ran out)".format(lane_name))
+                        # Don't call original - filament already ran out, nothing to unload
+                        return
+
+                # Not OpenAMS lane or not during runout, call original
                 return self.afc._original_TOOL_UNLOAD(lane)
 
             # Apply wrapper
@@ -2913,6 +2930,12 @@ class afcAMS(afcUnit):
     def check_runout(self, lane=None):
         # DEBUG: Log that afcAMS.check_runout was called
         lane_name = getattr(lane, 'name', 'None') if lane else 'None'
+
+        # Log to both logger AND stderr to ensure we see it
+        import sys
+        sys.stderr.write("!!!!! afcAMS.check_runout CALLED - lane={}, self={}\n".format(lane_name, self))
+        sys.stderr.flush()
+
         self.logger.info("afcAMS.check_runout ENTERED - lane={}".format(lane_name))
 
         if lane is None:
