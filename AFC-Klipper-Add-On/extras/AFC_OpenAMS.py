@@ -3002,7 +3002,10 @@ class afcAMS(afcUnit):
         # The lane should already have tool_loaded=False from earlier, but verify
         empty_lane.tool_loaded = False
 
-        self.logger.info("Reset {} state for new filament - status: {}, tool_loaded: {}, flags cleared".format(
+        # CRITICAL: Reset the tracked sensor state to False so new filament will register
+        self._last_lane_states[empty_lane.name] = False
+
+        self.logger.info("Reset {} state for new filament - status: {}, tool_loaded: {}, sensor_state: False, flags cleared".format(
             empty_lane.name, empty_lane.status, empty_lane.tool_loaded))
 
     def check_runout(self, lane=None):
