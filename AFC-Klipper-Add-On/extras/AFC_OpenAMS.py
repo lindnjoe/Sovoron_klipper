@@ -2976,10 +2976,21 @@ class afcAMS(afcUnit):
         else:
             self.logger.error("Error during OpenAMS cross-extruder swap, print remains paused")
 
-        # Clear stored swap info
+        # Clear stored swap info and flags on empty lane
         if hasattr(self, '_pending_cross_extruder_swaps') and empty_lane.name in self._pending_cross_extruder_swaps:
             del self._pending_cross_extruder_swaps[empty_lane.name]
             self.logger.info("Cleared stored swap info for {}".format(empty_lane.name))
+
+        # Clear all runout flags on empty lane so it can accept new filament
+        if hasattr(empty_lane, '_oams_runout_detected'):
+            empty_lane._oams_runout_detected = False
+        if hasattr(empty_lane, '_oams_cross_extruder_runout'):
+            empty_lane._oams_cross_extruder_runout = False
+        if hasattr(empty_lane, '_oams_same_fps_runout'):
+            empty_lane._oams_same_fps_runout = False
+        if hasattr(empty_lane, '_oams_regular_runout'):
+            empty_lane._oams_regular_runout = False
+        self.logger.info("Cleared all runout flags for {} - ready for new filament".format(empty_lane.name))
 
     def check_runout(self, lane=None):
         # DEBUG: Log that afcAMS.check_runout was called
