@@ -234,7 +234,7 @@
             "hub": "direct_load",
             "extruder": "extruder",
             "buffer": "TN",
-            "buffer_status": "Advancing",
+            "buffer_status": "Unknown",
             "lane": 1,
             "map": "T0",
             "load": true,
