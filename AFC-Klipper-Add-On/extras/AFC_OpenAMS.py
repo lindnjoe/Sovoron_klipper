@@ -1949,27 +1949,6 @@ class afcAMS(afcUnit):
                         if canonical_lane:
                             self._lane_feed_activity[canonical_lane] = True
 
-                # Check if any pending cross-extruder swaps have reached their target encoder position
-                if hasattr(self, '_pending_cross_extruder_swaps') and self._pending_cross_extruder_swaps:
-                    completed_swaps = []
-                    for lane_name, swap_info in self._pending_cross_extruder_swaps.items():
-                        target_encoder = swap_info.get('target_encoder', 0)
-                        if encoder_clicks >= target_encoder:
-                            # Coast complete! Execute swap
-                            lane = self.lanes.get(lane_name)
-                            if lane:
-                                self.logger.info("ENCODER TARGET REACHED for {}: {} >= {} - executing swap".format(
-                                    lane_name, encoder_clicks, target_encoder))
-                                try:
-                                    self._perform_openams_cross_extruder_swap(lane)
-                                    completed_swaps.append(lane_name)
-                                except Exception:
-                                    self.logger.exception("Failed to execute encoder-triggered swap for {}".format(lane_name))
-                                    completed_swaps.append(lane_name)  # Remove even on error to prevent retry loops
-                    # Clean up completed swaps
-                    for lane_name in completed_swaps:
-                        self._pending_cross_extruder_swaps.pop(lane_name, None)
-
                 self._last_encoder_clicks = encoder_clicks
             elif encoder_clicks is None:
                 self._last_encoder_clicks = None
@@ -2230,6 +2209,25 @@ class afcAMS(afcUnit):
         if lane_state and getattr(lane, '_oams_same_fps_runout', False):
             self.logger.info("Same-FPS swap completed for {}, resuming normal sensor sync".format(lane.name))
             lane._oams_same_fps_runout = False
+
+        # Check if this lane loading is the target of a pending cross-extruder swap
+        # When OpenAMS finishes loading the new spool, execute the swap
+        if lane_state and hasattr(self, '_pending_cross_extruder_swaps') and self._pending_cross_extruder_swaps:
+            for old_lane_name, swap_info in list(self._pending_cross_extruder_swaps.items()):
+                target_lane_name = swap_info.get('target_lane') if isinstance(swap_info, dict) else swap_info
+                if target_lane_name == lane.name:
+                    # This is the new lane loading! OpenAMS has finished loading it to toolhead
+                    old_lane = self.lanes.get(old_lane_name)
+                    if old_lane:
+                        self.logger.info("OAMS LOADED TARGET LANE {} - executing cross-extruder swap from {}".format(
+                            lane.name, old_lane_name))
+                        try:
+                            self._perform_openams_cross_extruder_swap(old_lane)
+                        except Exception:
+                            self.logger.exception("Failed to execute cross-extruder swap for {}".format(old_lane_name))
+                        # Remove from pending (already handled in _perform_openams_cross_extruder_swap, but belt-and-suspenders)
+                        self._pending_cross_extruder_swaps.pop(old_lane_name, None)
+                    break
 
         try:
             self._apply_lane_sensor_state(lane, lane_state, eventtime)
