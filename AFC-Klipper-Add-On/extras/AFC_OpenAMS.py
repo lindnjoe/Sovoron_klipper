@@ -1703,9 +1703,13 @@ class afcAMS(afcUnit):
                 pass
             # CRITICAL: For shared lanes (same-FPS runout), unsync and clear extruder.lane_loaded
             # ONLY if lane was actually loaded to toolhead (prevents breaking sensor sync during normal operations)
-            # BUT: For cross-extruder runouts, do NOT clear here - filament is still coasting through buffer
-            # AFC will handle clearing when _perform_infinite_runout() is called later
-            is_cross_extruder_runout = getattr(lane, '_oams_cross_extruder_runout', False)
+            # BUT: For cross-extruder runouts DURING PRINTING, do NOT clear here - filament is still coasting
+            # If not printing, always clear regardless of flags (prevents stale flags from breaking sync)
+            try:
+                is_printing = self.afc.function.is_printing()
+            except Exception:
+                is_printing = False
+            is_cross_extruder_runout = getattr(lane, '_oams_cross_extruder_runout', False) and is_printing
 
             if was_tool_loaded and not is_cross_extruder_runout:
                 try:
@@ -1779,9 +1783,13 @@ class afcAMS(afcUnit):
             lane.afc.spool.clear_values(lane)
             # CRITICAL: For virtual sensors, unsync stepper AND clear extruder.lane_loaded
             # ONLY if lane was actually loaded to toolhead (prevents breaking sensor sync during normal operations)
-            # BUT: For cross-extruder runouts, do NOT clear here - filament is still coasting through buffer
-            # AFC will handle clearing when _perform_infinite_runout() is called later
-            is_cross_extruder_runout = getattr(lane, '_oams_cross_extruder_runout', False)
+            # BUT: For cross-extruder runouts DURING PRINTING, do NOT clear here - filament is still coasting
+            # If not printing, always clear regardless of flags (prevents stale flags from breaking sync)
+            try:
+                is_printing = self.afc.function.is_printing()
+            except Exception:
+                is_printing = False
+            is_cross_extruder_runout = getattr(lane, '_oams_cross_extruder_runout', False) and is_printing
 
             if was_tool_loaded and not is_cross_extruder_runout:
                 try:
