@@ -1933,7 +1933,7 @@ class afcAMS(afcUnit):
                     encoder_changed = True
                     self._last_encoder_change = eventtime
                     self._consecutive_idle_polls = 0
-                    
+
                     current_loading = getattr(self.afc, "current_loading", None)
                     if current_loading:
                         lane = self.lanes.get(current_loading)
@@ -1948,6 +1948,28 @@ class afcAMS(afcUnit):
                         canonical_lane = self._canonical_lane_name(active_lane_name)
                         if canonical_lane:
                             self._lane_feed_activity[canonical_lane] = True
+
+                # Check if any pending cross-extruder swaps have reached their target encoder position
+                if hasattr(self, '_pending_cross_extruder_swaps') and self._pending_cross_extruder_swaps:
+                    completed_swaps = []
+                    for lane_name, swap_info in self._pending_cross_extruder_swaps.items():
+                        target_encoder = swap_info.get('target_encoder', 0)
+                        if encoder_clicks >= target_encoder:
+                            # Coast complete! Execute swap
+                            lane = self.lanes.get(lane_name)
+                            if lane:
+                                self.logger.info("ENCODER TARGET REACHED for {}: {} >= {} - executing swap".format(
+                                    lane_name, encoder_clicks, target_encoder))
+                                try:
+                                    self._perform_openams_cross_extruder_swap(lane)
+                                    completed_swaps.append(lane_name)
+                                except Exception:
+                                    self.logger.exception("Failed to execute encoder-triggered swap for {}".format(lane_name))
+                                    completed_swaps.append(lane_name)  # Remove even on error to prevent retry loops
+                    # Clean up completed swaps
+                    for lane_name in completed_swaps:
+                        self._pending_cross_extruder_swaps.pop(lane_name, None)
+
                 self._last_encoder_clicks = encoder_clicks
             elif encoder_clicks is None:
                 self._last_encoder_clicks = None
@@ -2105,10 +2127,26 @@ class afcAMS(afcUnit):
 
             # Store cross-extruder swap info at unit level (can't get cleared accidentally)
             if lane._oams_cross_extruder_runout:
+                # Calculate target encoder position for coast completion
+                current_encoder = self._last_encoder_clicks if hasattr(self, '_last_encoder_clicks') else 0
+                ptfe_length = self._last_ptfe_value if hasattr(self, '_last_ptfe_value') else 500.0  # Default 500mm
+
+                # Distance: 60mm hub clear + PTFE length
+                coast_distance_mm = 60.0 + ptfe_length
+
+                # Convert to encoder clicks (assuming 1.14 is mm per click)
+                clicks_needed = coast_distance_mm / 1.14
+                target_encoder = (current_encoder or 0) + int(clicks_needed)
+
                 if not hasattr(self, '_pending_cross_extruder_swaps'):
                     self._pending_cross_extruder_swaps = {}
-                self._pending_cross_extruder_swaps[lane.name] = runout_lane_name
-                self.logger.info("STORED cross-extruder swap: {} -> {}".format(lane.name, runout_lane_name))
+                self._pending_cross_extruder_swaps[lane.name] = {
+                    'target_lane': runout_lane_name,
+                    'target_encoder': target_encoder,
+                    'start_encoder': current_encoder
+                }
+                self.logger.info("STORED cross-extruder swap: {} -> {} (encoder: {} -> {}, distance: {:.1f}mm)".format(
+                    lane.name, runout_lane_name, current_encoder, target_encoder, coast_distance_mm))
 
             # Store regular runout info at unit level - but ONLY for virtual sensor lanes
             # Real physical sensor lanes will let filament run to sensor, AFC handles naturally
@@ -2876,7 +2914,12 @@ class afcAMS(afcUnit):
         # Get runout_lane from stored swap info (more reliable than lane attribute)
         runout_lane_name = None
         if hasattr(self, '_pending_cross_extruder_swaps'):
-            runout_lane_name = self._pending_cross_extruder_swaps.get(empty_lane.name)
+            swap_info = self._pending_cross_extruder_swaps.get(empty_lane.name)
+            if isinstance(swap_info, dict):
+                runout_lane_name = swap_info.get('target_lane')
+            else:
+                # Fallback for old format (just a string)
+                runout_lane_name = swap_info
 
         if not runout_lane_name:
             # Fallback to lane attribute
