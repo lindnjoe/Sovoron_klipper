@@ -2050,6 +2050,20 @@ class afcAMS(afcUnit):
                 lane.name, lane._oams_cross_extruder_runout, lane._oams_same_fps_runout,
                 lane._oams_regular_runout, runout_lane_name, is_same_fps))
 
+            # Store cross-extruder swap info at unit level (can't get cleared accidentally)
+            if lane._oams_cross_extruder_runout:
+                if not hasattr(self, '_pending_cross_extruder_swaps'):
+                    self._pending_cross_extruder_swaps = {}
+                self._pending_cross_extruder_swaps[lane.name] = runout_lane_name
+                self.logger.info("STORED cross-extruder swap: {} -> {}".format(lane.name, runout_lane_name))
+
+            # Store regular runout info at unit level
+            if lane._oams_regular_runout:
+                if not hasattr(self, '_pending_regular_runouts'):
+                    self._pending_regular_runouts = set()
+                self._pending_regular_runouts.add(lane.name)
+                self.logger.info("STORED regular runout: {}".format(lane.name))
+
             if runout_lane_name is None:
                 # Regular runout - will handle AFTER PTFE calc (like cross-extruder but just pause)
                 self.logger.info("Regular runout detected for lane {} (no infinite spool) - will clear and pause after PTFE calc".format(lane.name))
@@ -2779,6 +2793,11 @@ class afcAMS(afcUnit):
         if hasattr(empty_lane, '_oams_regular_runout'):
             empty_lane._oams_regular_runout = False
 
+        # Clear stored runout info
+        if hasattr(self, '_pending_regular_runouts') and empty_lane.name in self._pending_regular_runouts:
+            self._pending_regular_runouts.discard(empty_lane.name)
+            self.logger.info("Cleared stored regular runout info for {}".format(empty_lane.name))
+
         self.logger.info("Print paused for regular runout on {} - please load new spool and resume".format(empty_lane.name))
 
     def _perform_openams_cross_extruder_swap(self, empty_lane):
@@ -2787,10 +2806,20 @@ class afcAMS(afcUnit):
         Like AFC's _perform_infinite_runout() but skips LANE_UNLOAD (filament already ran out).
         Called after: F1S False → 60mm hub clear → PTFE calc → filament at extruder gears.
         """
-        runout_lane_name = getattr(empty_lane, "runout_lane", None)
+        # Get runout_lane from stored swap info (more reliable than lane attribute)
+        runout_lane_name = None
+        if hasattr(self, '_pending_cross_extruder_swaps'):
+            runout_lane_name = self._pending_cross_extruder_swaps.get(empty_lane.name)
+
         if not runout_lane_name:
-            self.logger.error("Cross-extruder runout but no runout_lane set for {}".format(empty_lane.name))
+            # Fallback to lane attribute
+            runout_lane_name = getattr(empty_lane, "runout_lane", None)
+
+        if not runout_lane_name:
+            self.logger.error("Cross-extruder runout but no runout_lane found for {}".format(empty_lane.name))
             return
+
+        self.logger.info("USING STORED runout_lane: {} -> {}".format(empty_lane.name, runout_lane_name))
 
         change_lane = self.afc.lanes.get(runout_lane_name)
         if not change_lane:
@@ -2834,37 +2863,30 @@ class afcAMS(afcUnit):
         else:
             self.logger.error("Error during OpenAMS cross-extruder swap, print remains paused")
 
+        # Clear stored swap info
+        if hasattr(self, '_pending_cross_extruder_swaps') and empty_lane.name in self._pending_cross_extruder_swaps:
+            del self._pending_cross_extruder_swaps[empty_lane.name]
+            self.logger.info("Cleared stored swap info for {}".format(empty_lane.name))
+
     def check_runout(self, lane=None):
         # DEBUG: Log that afcAMS.check_runout was called
-        self.logger.info("afcAMS.check_runout ENTERED - lane={}".format(getattr(lane, 'name', 'None') if lane else 'None'))
-
-        try:
-            # DEBUG: Log every call details
-            lane_name = getattr(lane, 'name', 'unknown') if lane else 'None'
-            unit_obj = getattr(lane, 'unit_obj', None) if lane else None
-            unit_type = getattr(unit_obj, 'type', 'unknown') if unit_obj else 'no_unit'
-            unit_name = getattr(unit_obj, 'name', 'unknown') if unit_obj else 'no_unit'
-            cross_flag = getattr(lane, '_oams_cross_extruder_runout', None) if lane else None
-            regular_flag = getattr(lane, '_oams_regular_runout', None) if lane else None
-            self.logger.info("DEBUG check_runout: lane={}, unit_obj={} (type={}, name={}), unit_match={}, cross={}, regular={}".format(
-                lane_name, unit_obj, unit_type, unit_name, unit_obj is self if lane else False, cross_flag, regular_flag))
-        except Exception:
-            self.logger.exception("Exception in check_runout debug logging")
+        lane_name = getattr(lane, 'name', 'None') if lane else 'None'
+        self.logger.info("afcAMS.check_runout ENTERED - lane={}".format(lane_name))
 
         if lane is None:
-            self.logger.info("DEBUG check_runout: lane is None, returning False")
             return False
         if getattr(lane, "unit_obj", None) is not self:
-            self.logger.info("DEBUG check_runout: unit_obj mismatch, returning False")
             return False
+
         try:
             is_printing = self.afc.function.is_printing()
         except Exception:
             is_printing = False
 
-        # Block AFC from calling _perform_infinite_runout() for cross-extruder runouts
-        # OpenAMS will handle these directly (like same-FPS but with manual swap)
-        if getattr(lane, '_oams_cross_extruder_runout', False):
+        # Check if this lane has a pending cross-extruder swap (stored at unit level)
+        has_pending_swap = hasattr(self, '_pending_cross_extruder_swaps') and lane_name in self._pending_cross_extruder_swaps
+
+        if has_pending_swap:
             self.logger.info("Blocking AFC runout handling for {} - OpenAMS will handle cross-extruder swap".format(getattr(lane, 'name', 'unknown')))
             # Trigger our own swap handler (after PTFE calc, filament at extruder gears)
             if is_printing:
@@ -2874,16 +2896,17 @@ class afcAMS(afcUnit):
                     self.logger.exception("Failed to perform OpenAMS cross-extruder swap for {}".format(getattr(lane, 'name', 'unknown')))
             return False  # Block AFC, we handled it
 
-        # Block AFC for regular runouts too (no infinite spool configured)
-        # OpenAMS will handle: wait for PTFE calc, then UNSET_LANE_LOADED and pause
-        if getattr(lane, '_oams_regular_runout', False):
-            self.logger.info("Blocking AFC runout handling for {} - OpenAMS will handle regular runout".format(getattr(lane, 'name', 'unknown')))
+        # Check if this lane has a pending regular runout (stored at unit level)
+        has_pending_regular = hasattr(self, '_pending_regular_runouts') and lane_name in self._pending_regular_runouts
+
+        if has_pending_regular:
+            self.logger.info("Blocking AFC runout handling for {} - OpenAMS will handle regular runout".format(lane_name))
             # Trigger our own pause handler (after PTFE calc, filament at extruder gears)
             if is_printing:
                 try:
                     self._perform_openams_regular_runout(lane)
                 except Exception:
-                    self.logger.exception("Failed to perform OpenAMS regular runout for {}".format(getattr(lane, 'name', 'unknown')))
+                    self.logger.exception("Failed to perform OpenAMS regular runout for {}".format(lane_name))
             return False  # Block AFC, we handled it
 
         return bool(is_printing)
