@@ -2831,16 +2831,27 @@ class afcAMS(afcUnit):
             self.logger.error("Error during OpenAMS cross-extruder swap, print remains paused")
 
     def check_runout(self, lane=None):
-        # DEBUG: Log every call to check_runout
-        lane_name = getattr(lane, 'name', 'unknown') if lane else 'None'
-        cross_flag = getattr(lane, '_oams_cross_extruder_runout', None) if lane else None
-        regular_flag = getattr(lane, '_oams_regular_runout', None) if lane else None
-        self.logger.info("DEBUG check_runout called: lane={}, cross_extruder={}, regular={}, unit_match={}".format(
-            lane_name, cross_flag, regular_flag, getattr(lane, "unit_obj", None) is self if lane else False))
+        # DEBUG: Log that afcAMS.check_runout was called
+        self.logger.info("afcAMS.check_runout ENTERED - lane={}".format(getattr(lane, 'name', 'None') if lane else 'None'))
+
+        try:
+            # DEBUG: Log every call details
+            lane_name = getattr(lane, 'name', 'unknown') if lane else 'None'
+            unit_obj = getattr(lane, 'unit_obj', None) if lane else None
+            unit_type = getattr(unit_obj, 'type', 'unknown') if unit_obj else 'no_unit'
+            unit_name = getattr(unit_obj, 'name', 'unknown') if unit_obj else 'no_unit'
+            cross_flag = getattr(lane, '_oams_cross_extruder_runout', None) if lane else None
+            regular_flag = getattr(lane, '_oams_regular_runout', None) if lane else None
+            self.logger.info("DEBUG check_runout: lane={}, unit_obj={} (type={}, name={}), unit_match={}, cross={}, regular={}".format(
+                lane_name, unit_obj, unit_type, unit_name, unit_obj is self if lane else False, cross_flag, regular_flag))
+        except Exception:
+            self.logger.exception("Exception in check_runout debug logging")
 
         if lane is None:
+            self.logger.info("DEBUG check_runout: lane is None, returning False")
             return False
         if getattr(lane, "unit_obj", None) is not self:
+            self.logger.info("DEBUG check_runout: unit_obj mismatch, returning False")
             return False
         try:
             is_printing = self.afc.function.is_printing()
