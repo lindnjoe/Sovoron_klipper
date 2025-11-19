@@ -1221,6 +1221,13 @@ class afcAMS(afcUnit):
 
         return self._last_loaded_lane_by_extruder.get(extruder_name)
 
+    cmd_AMS_RESET_SENSORS_help = "Reset all AMS sensor tracking states (troubleshooting)"
+    def cmd_AMS_RESET_SENSORS(self, gcmd):
+        """Reset all _last_lane_states to force sensor sync on next update."""
+        self.logger.info("Resetting all AMS sensor states for unit {}".format(self.name))
+        self._last_lane_states.clear()
+        gcmd.respond_info("Reset sensor states for AMS unit {}".format(self.name))
+
     cmd_SYNC_TOOL_SENSOR_help = "Synchronise the AMS virtual tool-start sensor with the assigned lane."
     def cmd_SYNC_TOOL_SENSOR(self, gcmd):
         cls = self.__class__
@@ -1715,6 +1722,7 @@ class afcAMS(afcUnit):
             return
 
         if lane_val == self._last_lane_states.get(lane.name):
+            self.logger.info("DEBUG: Skipping update for {} - value matches last_state (both={})".format(lane.name, lane_val))
             return
 
         if lane_val:
@@ -1733,17 +1741,10 @@ class afcAMS(afcUnit):
                 lane._prep_capture_td1()
         else:
             # Sensor False - filament cleared
-            # Call BOTH load_callback (to update state) AND handle_load_runout (to trigger runout logic)
             lane.load_callback(eventtime, False)
             lane.prep_callback(eventtime, False)
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
-
-            # Trigger AFC's runout detection logic
-            try:
-                lane.handle_load_runout(eventtime, False)
-            except Exception:
-                self.logger.exception("Failed to call handle_load_runout for {}".format(lane.name))
 
             # Save tool_loaded state BEFORE clearing it
             was_tool_loaded = getattr(lane, 'tool_loaded', False)
@@ -3067,6 +3068,16 @@ class afcAMS(afcUnit):
                 desc=self.cmd_SYNC_TOOL_SENSOR_help,
             )
             cls._sync_command_registered = True
+
+        # Register per-instance command for resetting sensors
+        try:
+            self.gcode.register_command(
+                "AFC_AMS_RESET_SENSORS_{}".format(self.name.upper()),
+                self.cmd_AMS_RESET_SENSORS,
+                desc=self.cmd_AMS_RESET_SENSORS_help,
+            )
+        except Exception:
+            pass  # Command might already be registered
 
         cls._sync_instances[self.name] = self
 
