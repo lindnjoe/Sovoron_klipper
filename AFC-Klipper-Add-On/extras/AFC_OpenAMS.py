@@ -2776,12 +2776,6 @@ class afcAMS(afcUnit):
         """
         self.logger.info("OpenAMS Regular Runout: {} (no infinite spool)".format(empty_lane.name))
 
-        # Set status
-        empty_lane.status = AFCLaneState.NONE
-
-        # Pause printer
-        self.afc.error.pause_resume.send_pause_command()
-
         # Clear lane state (filament already ran out to extruder gears)
         try:
             self.gcode.run_script_from_command("UNSET_LANE_LOADED")
@@ -2789,16 +2783,21 @@ class afcAMS(afcUnit):
         except Exception:
             self.logger.exception("Failed to call UNSET_LANE_LOADED for {}".format(empty_lane.name))
 
-        # Clear runout flag
-        if hasattr(empty_lane, '_oams_regular_runout'):
-            empty_lane._oams_regular_runout = False
-
         # Clear stored runout info
         if hasattr(self, '_pending_regular_runouts') and empty_lane.name in self._pending_regular_runouts:
             self._pending_regular_runouts.discard(empty_lane.name)
             self.logger.info("Cleared stored regular runout info for {}".format(empty_lane.name))
 
-        self.logger.info("Print paused for regular runout on {} - please load new spool and resume".format(empty_lane.name))
+        # Hand off to AFC's normal pause handler, but prevent TOOL_UNLOAD/LANE_UNLOAD
+        # (filament already ran out, nothing to unload)
+        original_unload_setting = getattr(self, 'unload_on_runout', False)
+        try:
+            self.unload_on_runout = False
+            self.logger.info("Temporarily disabled unload_on_runout, handing off to AFC pause handler")
+            empty_lane._perform_pause_runout()
+        finally:
+            self.unload_on_runout = original_unload_setting
+            self.logger.info("Restored unload_on_runout setting")
 
     def _perform_openams_cross_extruder_swap(self, empty_lane):
         """
