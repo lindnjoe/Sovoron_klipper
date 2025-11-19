@@ -2131,11 +2131,16 @@ class afcAMS(afcUnit):
                 current_encoder = self._last_encoder_clicks if hasattr(self, '_last_encoder_clicks') else 0
                 ptfe_length = self._last_ptfe_value if hasattr(self, '_last_ptfe_value') else 500.0  # Default 500mm
 
+                # Get encoder resolution from OAMS manager, fallback to 1.14 clicks/mm
+                encoder_resolution = 1.14  # Default clicks per mm
+                if hasattr(self, 'oams') and self.oams:
+                    encoder_resolution = getattr(self.oams, 'encoder_resolution', 1.14)
+
                 # Distance: 60mm hub clear + PTFE length
                 coast_distance_mm = 60.0 + ptfe_length
 
-                # Convert to encoder clicks (assuming 1.14 is mm per click)
-                clicks_needed = coast_distance_mm / 1.14
+                # Convert to encoder clicks
+                clicks_needed = coast_distance_mm * encoder_resolution
                 target_encoder = (current_encoder or 0) + int(clicks_needed)
 
                 if not hasattr(self, '_pending_cross_extruder_swaps'):
