@@ -1701,6 +1701,10 @@ class afcAMS(afcUnit):
 
     def _update_shared_lane(self, lane, lane_val, eventtime):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
+        # DEBUG: Log all sensor updates for troubleshooting
+        self.logger.info("DEBUG _update_shared_lane: lane={}, value={}, last_state={}".format(
+            lane.name, lane_val, self._last_lane_states.get(lane.name)))
+
         # Check if runout handling requires blocking this sensor update
         if self._should_block_sensor_update_for_runout(lane, lane_val):
             self.logger.debug("Ignoring shared lane sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
@@ -2981,7 +2985,8 @@ class afcAMS(afcUnit):
             del self._pending_cross_extruder_swaps[empty_lane.name]
             self.logger.info("Cleared stored swap info for {}".format(empty_lane.name))
 
-        # Clear all runout flags on empty lane so it can accept new filament
+        # Reset empty lane to accept new filament
+        # Clear all runout flags
         if hasattr(empty_lane, '_oams_runout_detected'):
             empty_lane._oams_runout_detected = False
         if hasattr(empty_lane, '_oams_cross_extruder_runout'):
@@ -2990,7 +2995,15 @@ class afcAMS(afcUnit):
             empty_lane._oams_same_fps_runout = False
         if hasattr(empty_lane, '_oams_regular_runout'):
             empty_lane._oams_regular_runout = False
-        self.logger.info("Cleared all runout flags for {} - ready for new filament".format(empty_lane.name))
+
+        # Reset lane state to NONE (already done above, but ensure it's clear)
+        empty_lane.status = AFCLaneState.NONE
+
+        # The lane should already have tool_loaded=False from earlier, but verify
+        empty_lane.tool_loaded = False
+
+        self.logger.info("Reset {} state for new filament - status: {}, tool_loaded: {}, flags cleared".format(
+            empty_lane.name, empty_lane.status, empty_lane.tool_loaded))
 
     def check_runout(self, lane=None):
         # DEBUG: Log that afcAMS.check_runout was called
