@@ -2036,15 +2036,8 @@ class afcAMS(afcUnit):
             elif is_same_fps:
                 self.logger.info("Same-extruder runout: Marked lane {} for runout (OpenAMS handling reload, sensors sync naturally)".format(lane.name))
             else:
-                # Cross-extruder runout - clear extruder.lane_loaded NOW so TOOL_LOAD can proceed later
-                self.logger.info("Cross-extruder runout: Clearing extruder.lane_loaded for {} immediately (needed for TOOL_LOAD during swap)".format(lane.name))
-                try:
-                    if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
-                        lane.unsync_to_extruder()
-                        lane.extruder_obj.lane_loaded = None
-                        self.logger.info("Cleared extruder.lane_loaded for {} at F1S False (cross-extruder runout to {})".format(lane.name, runout_lane_name))
-                except Exception:
-                    self.logger.exception("Failed to clear extruder.lane_loaded for {} during cross-extruder runout detection", lane.name)
+                # Cross-extruder runout - will clear state AFTER PTFE calc in _perform_openams_cross_extruder_swap()
+                self.logger.info("Cross-extruder runout: Marked lane {} for runout (will swap after PTFE calc)".format(lane.name))
         except Exception:
             self.logger.error("Failed to mark lane {} for runout tracking".format(lane.name))
 
