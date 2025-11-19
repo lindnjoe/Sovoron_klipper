@@ -772,6 +772,11 @@ class afcAMS(afcUnit):
                         other_lane.extruder_obj.lane_loaded = None
                 except Exception:
                     self.logger.exception("Failed to unsync %s when new lane loaded", other_lane.name)
+                # DEBUG: Log flag clearing
+                had_cross_flag = getattr(other_lane, '_oams_cross_extruder_runout', False)
+                if had_cross_flag:
+                    self.logger.info("DEBUG: Clearing cross_extruder flag for {} (new lane {} loading)".format(other_lane.name, lane.name))
+
                 if hasattr(other_lane, '_oams_runout_detected'):
                     other_lane._oams_runout_detected = False
                 if hasattr(other_lane, '_oams_same_fps_runout'):
@@ -2028,6 +2033,11 @@ class afcAMS(afcUnit):
             # Mark regular runouts (no infinite spool) to handle after PTFE calc
             lane._oams_regular_runout = (runout_lane_name is None)
 
+            # DEBUG: Log flag values
+            self.logger.info("DEBUG FLAGS SET: lane={}, cross={}, same_fps={}, regular={}, runout_lane={}, is_same_fps={}".format(
+                lane.name, lane._oams_cross_extruder_runout, lane._oams_same_fps_runout,
+                lane._oams_regular_runout, runout_lane_name, is_same_fps))
+
             if runout_lane_name is None:
                 # Regular runout - will handle AFTER PTFE calc (like cross-extruder but just pause)
                 self.logger.info("Regular runout detected for lane {} (no infinite spool) - will clear and pause after PTFE calc".format(lane.name))
@@ -2813,6 +2823,13 @@ class afcAMS(afcUnit):
             self.logger.error("Error during OpenAMS cross-extruder swap, print remains paused")
 
     def check_runout(self, lane=None):
+        # DEBUG: Log every call to check_runout
+        lane_name = getattr(lane, 'name', 'unknown') if lane else 'None'
+        cross_flag = getattr(lane, '_oams_cross_extruder_runout', None) if lane else None
+        regular_flag = getattr(lane, '_oams_regular_runout', None) if lane else None
+        self.logger.info("DEBUG check_runout called: lane={}, cross_extruder={}, regular={}, unit_match={}".format(
+            lane_name, cross_flag, regular_flag, getattr(lane, "unit_obj", None) is self if lane else False))
+
         if lane is None:
             return False
         if getattr(lane, "unit_obj", None) is not self:
