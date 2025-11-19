@@ -1567,9 +1567,32 @@ class afcAMS(afcUnit):
                         is_runout = True
 
                     if is_runout:
-                        self.logger.info("Skipping TOOL_UNLOAD for OpenAMS lane {} (runout - filament already ran out)".format(lane_name))
-                        # Don't call original - filament already ran out, nothing to unload
-                        return
+                        # Check if actively printing - only block during active print
+                        try:
+                            is_printing = self.afc.function.is_printing()
+                        except Exception:
+                            is_printing = False
+
+                        if is_printing:
+                            self.logger.info("Skipping TOOL_UNLOAD for OpenAMS lane {} (runout during active print - filament already ran out)".format(lane_name))
+                            # Don't call original - filament already ran out, nothing to unload
+                            return
+                        else:
+                            # Not printing - clear runout flags and allow unload
+                            self.logger.info("Clearing runout flags for OpenAMS lane {} (print ended, allowing manual unload)".format(lane_name))
+                            if hasattr(lane, '_oams_runout_detected'):
+                                lane._oams_runout_detected = False
+                            if hasattr(lane, '_oams_cross_extruder_runout'):
+                                lane._oams_cross_extruder_runout = False
+                            if hasattr(lane, '_oams_same_fps_runout'):
+                                lane._oams_same_fps_runout = False
+                            if hasattr(lane, '_oams_regular_runout'):
+                                lane._oams_regular_runout = False
+                            # Clear pending runout tracking
+                            if hasattr(unit_obj, '_pending_cross_extruder_swaps') and lane_name in unit_obj._pending_cross_extruder_swaps:
+                                del unit_obj._pending_cross_extruder_swaps[lane_name]
+                            if hasattr(unit_obj, '_pending_regular_runouts') and lane_name in unit_obj._pending_regular_runouts:
+                                unit_obj._pending_regular_runouts.discard(lane_name)
 
                 # Not OpenAMS lane or not during runout, call original
                 return self.afc._original_TOOL_UNLOAD(lane)
