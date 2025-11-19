@@ -530,6 +530,27 @@ class afcFunction:
         if cur_lane_loaded is not None:
             cur_lane_loaded.unsync_to_extruder()
             cur_lane_loaded.set_unloaded()
+
+            # Clear OpenAMS runout flags when manually unsetting lane
+            if hasattr(cur_lane_loaded, '_oams_runout_detected'):
+                cur_lane_loaded._oams_runout_detected = False
+            if hasattr(cur_lane_loaded, '_oams_cross_extruder_runout'):
+                cur_lane_loaded._oams_cross_extruder_runout = False
+            if hasattr(cur_lane_loaded, '_oams_same_fps_runout'):
+                cur_lane_loaded._oams_same_fps_runout = False
+            if hasattr(cur_lane_loaded, '_oams_regular_runout'):
+                cur_lane_loaded._oams_regular_runout = False
+
+            # Clear pending runout tracking in unit object
+            unit_obj = getattr(cur_lane_loaded, 'unit_obj', None)
+            if unit_obj is not None and getattr(unit_obj, 'type', None) == "OpenAMS":
+                lane_name = getattr(cur_lane_loaded, 'name', None)
+                if lane_name:
+                    if hasattr(unit_obj, '_pending_cross_extruder_swaps') and lane_name in unit_obj._pending_cross_extruder_swaps:
+                        del unit_obj._pending_cross_extruder_swaps[lane_name]
+                    if hasattr(unit_obj, '_pending_regular_runouts') and lane_name in unit_obj._pending_regular_runouts:
+                        unit_obj._pending_regular_runouts.discard(lane_name)
+
             cur_lane_loaded.unit_obj.return_to_home()
             self.afc.function.handle_activate_extruder()
             self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
