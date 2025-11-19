@@ -1403,6 +1403,14 @@ class afcAMS(afcUnit):
             self.logger.warning("AMSHardwareService not available, using legacy polling for %s", self.name)
             self.reactor.update_timer(self.timer, self.reactor.NOW)
 
+        # Initialize _last_ptfe_value from OAMS config if available
+        if hasattr(self.oams, 'filament_path_length'):
+            self._last_ptfe_value = float(self.oams.filament_path_length)
+            self.logger.info("Initialized PTFE length from config: {:.1f}mm".format(self._last_ptfe_value))
+        else:
+            self.logger.warning("OAMS object missing filament_path_length, using default 500mm")
+            self._last_ptfe_value = 500.0
+
         # Hook into AFC's LANE_UNLOAD for cross-extruder runouts
         self._wrap_afc_lane_unload()
 
