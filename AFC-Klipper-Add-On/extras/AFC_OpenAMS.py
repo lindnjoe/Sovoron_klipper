@@ -2009,6 +2009,8 @@ class afcAMS(afcUnit):
                 lane._oams_same_fps_runout = False
             if not hasattr(lane, '_oams_cross_extruder_runout'):
                 lane._oams_cross_extruder_runout = False
+            if not hasattr(lane, '_oams_regular_runout'):
+                lane._oams_regular_runout = False
 
             lane._oams_runout_detected = True
 
@@ -2017,22 +2019,12 @@ class afcAMS(afcUnit):
             lane._oams_cross_extruder_runout = (runout_lane_name is not None and not is_same_fps)
             # Mark same-FPS runouts so sensor updates are blocked until swap completes
             lane._oams_same_fps_runout = (runout_lane_name is not None and is_same_fps)
+            # Mark regular runouts (no infinite spool) to handle after PTFE calc
+            lane._oams_regular_runout = (runout_lane_name is None)
 
             if runout_lane_name is None:
-                self.logger.info("Regular runout detected for lane {} (no infinite spool configured) - will clear lane and pause".format(lane.name))
-                # Schedule UNSET_LANE_LOADED to run after pause happens (delayed by 3 seconds)
-                def _clear_lane_after_pause(eventtime):
-                    try:
-                        self.gcode.run_script_from_command("UNSET_LANE_LOADED")
-                        self.logger.info("Executed UNSET_LANE_LOADED after pause for lane {}".format(lane.name))
-                    except Exception as e:
-                        self.logger.error("Failed to execute UNSET_LANE_LOADED after pause: {}".format(str(e)))
-                        # Clear flag as fallback to prevent permanent blocking
-                        if hasattr(lane, '_oams_runout_detected'):
-                            lane._oams_runout_detected = False
-
-                waketime = self.reactor.monotonic() + 3.0
-                self.reactor.register_callback(_clear_lane_after_pause, waketime)
+                # Regular runout - will handle AFTER PTFE calc (like cross-extruder but just pause)
+                self.logger.info("Regular runout detected for lane {} (no infinite spool) - will clear and pause after PTFE calc".format(lane.name))
             elif is_same_fps:
                 self.logger.info("Same-extruder runout: Marked lane {} for runout (OpenAMS handling reload, sensors sync naturally)".format(lane.name))
             else:
@@ -2734,6 +2726,33 @@ class afcAMS(afcUnit):
         except Exception:
             return None
 
+    def _perform_openams_regular_runout(self, empty_lane):
+        """
+        Handle regular runout (no infinite spool) for OpenAMS virtual sensor lanes.
+        Called after: F1S False → 60mm hub clear → PTFE calc → filament at extruder gears.
+        Just clears state and pauses - no swap.
+        """
+        self.logger.info("OpenAMS Regular Runout: {} (no infinite spool)".format(empty_lane.name))
+
+        # Set status
+        empty_lane.status = AFCLaneState.NONE
+
+        # Pause printer
+        self.afc.error.pause_resume.send_pause_command()
+
+        # Clear lane state (filament already ran out to extruder gears)
+        try:
+            self.gcode.run_script_from_command("UNSET_LANE_LOADED")
+            self.logger.info("Called UNSET_LANE_LOADED for {} (regular runout, filament at extruder gears)".format(empty_lane.name))
+        except Exception:
+            self.logger.exception("Failed to call UNSET_LANE_LOADED for {}".format(empty_lane.name))
+
+        # Clear runout flag
+        if hasattr(empty_lane, '_oams_regular_runout'):
+            empty_lane._oams_regular_runout = False
+
+        self.logger.info("Print paused for regular runout on {} - please load new spool and resume".format(empty_lane.name))
+
     def _perform_openams_cross_extruder_swap(self, empty_lane):
         """
         Handle cross-extruder infinite spool swap for OpenAMS.
@@ -2807,6 +2826,18 @@ class afcAMS(afcUnit):
                     self._perform_openams_cross_extruder_swap(lane)
                 except Exception:
                     self.logger.exception("Failed to perform OpenAMS cross-extruder swap for {}".format(getattr(lane, 'name', 'unknown')))
+            return False  # Block AFC, we handled it
+
+        # Block AFC for regular runouts too (no infinite spool configured)
+        # OpenAMS will handle: wait for PTFE calc, then UNSET_LANE_LOADED and pause
+        if getattr(lane, '_oams_regular_runout', False):
+            self.logger.info("Blocking AFC runout handling for {} - OpenAMS will handle regular runout".format(getattr(lane, 'name', 'unknown')))
+            # Trigger our own pause handler (after PTFE calc, filament at extruder gears)
+            if is_printing:
+                try:
+                    self._perform_openams_regular_runout(lane)
+                except Exception:
+                    self.logger.exception("Failed to perform OpenAMS regular runout for {}".format(getattr(lane, 'name', 'unknown')))
             return False  # Block AFC, we handled it
 
         return bool(is_printing)
