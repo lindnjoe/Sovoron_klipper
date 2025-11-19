@@ -2140,34 +2140,13 @@ class afcAMS(afcUnit):
                 lane.name, lane._oams_cross_extruder_runout, lane._oams_same_fps_runout,
                 lane._oams_regular_runout, runout_lane_name, is_same_fps))
 
-            # Store cross-extruder swap info at unit level (can't get cleared accidentally)
+            # NOTE: Cross-extruder runouts (different FPS/extruder) are delegated to AFC by OAMS
+            # We do NOT store pending swap data for cross-extruder runouts - let AFC handle entirely
+            # We only handle same-FPS runouts where OAMS can do the swap internally
             if lane._oams_cross_extruder_runout:
-                # Calculate target encoder position for coast completion
-                # Use getattr with 'or' to handle both missing attributes and None values
-                current_encoder = getattr(self, '_last_encoder_clicks', None) or 0
-                ptfe_length = getattr(self, '_last_ptfe_value', None) or 500.0  # Default 500mm
-
-                # Get encoder resolution from OAMS manager, fallback to 1.14 clicks/mm
-                encoder_resolution = 1.14  # Default clicks per mm
-                if hasattr(self, 'oams') and self.oams:
-                    encoder_resolution = getattr(self.oams, 'encoder_resolution', 1.14)
-
-                # Distance: 60mm hub clear + PTFE length
-                coast_distance_mm = 60.0 + ptfe_length
-
-                # Convert to encoder clicks
-                clicks_needed = coast_distance_mm * encoder_resolution
-                target_encoder = (current_encoder or 0) + int(clicks_needed)
-
-                if not hasattr(self, '_pending_cross_extruder_swaps'):
-                    self._pending_cross_extruder_swaps = {}
-                self._pending_cross_extruder_swaps[lane.name] = {
-                    'target_lane': runout_lane_name,
-                    'target_encoder': target_encoder,
-                    'start_encoder': current_encoder
-                }
-                self.logger.info("STORED cross-extruder swap: {} -> {} (encoder: {} -> {}, distance: {:.1f}mm)".format(
-                    lane.name, runout_lane_name, current_encoder, target_encoder, coast_distance_mm))
+                self.logger.info("Cross-extruder runout detected for lane {} -> {} - OAMS will delegate to AFC".format(
+                    lane.name, runout_lane_name))
+                # Don't store pending swap - AFC will handle through delegation
 
             # Store regular runout info at unit level - but ONLY for virtual sensor lanes
             # Real physical sensor lanes will let filament run to sensor, AFC handles naturally
