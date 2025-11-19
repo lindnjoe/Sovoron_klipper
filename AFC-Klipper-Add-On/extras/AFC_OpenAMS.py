@@ -1395,7 +1395,13 @@ class afcAMS(afcUnit):
         self._wrap_afc_lane_unload()
 
     def _wrap_afc_lane_unload(self):
-        """Wrap AFC's LANE_UNLOAD to handle cross-extruder runout scenarios."""
+        """
+        DISABLED: This wrapper is obsolete. We now block AFC entirely via check_runout()
+        for cross-extruder runouts, so LANE_UNLOAD is never called. The wrapper was
+        clearing the _oams_cross_extruder_runout flag, breaking our blocking logic.
+        """
+        return  # Disabled - obsolete with new check_runout() blocking approach
+
         if not hasattr(self, 'afc') or self.afc is None:
             return
 
