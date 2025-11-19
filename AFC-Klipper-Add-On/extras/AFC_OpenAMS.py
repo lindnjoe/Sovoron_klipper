@@ -1728,10 +1728,18 @@ class afcAMS(afcUnit):
                 lane.afc.spool._set_values(lane)
                 lane._prep_capture_td1()
         else:
+            # Sensor False - filament cleared
+            # Call BOTH load_callback (to update state) AND handle_load_runout (to trigger runout logic)
             lane.load_callback(eventtime, False)
             lane.prep_callback(eventtime, False)
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
+
+            # Trigger AFC's runout detection logic
+            try:
+                lane.handle_load_runout(eventtime, False)
+            except Exception:
+                self.logger.exception("Failed to call handle_load_runout for {}".format(lane.name))
 
             # Save tool_loaded state BEFORE clearing it
             was_tool_loaded = getattr(lane, 'tool_loaded', False)
