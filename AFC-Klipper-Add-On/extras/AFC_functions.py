@@ -551,6 +551,16 @@ class afcFunction:
                     if hasattr(unit_obj, '_pending_regular_runouts') and lane_name in unit_obj._pending_regular_runouts:
                         unit_obj._pending_regular_runouts.discard(lane_name)
 
+                    # Notify OAMS manager that lane is unloaded (clears FPS state)
+                    try:
+                        extruder_name = getattr(cur_lane_loaded, 'extruder_name', None)
+                        oams_mgr = self.afc.printer.lookup_object("oams_manager", None)
+                        if oams_mgr is not None and hasattr(oams_mgr, 'on_afc_lane_unloaded'):
+                            oams_mgr.on_afc_lane_unloaded(lane_name, extruder_name)
+                            self.logger.info("Notified OAMS manager that {} was unloaded (FPS state cleared)".format(lane_name))
+                    except Exception as e:
+                        self.logger.error("Failed to notify OAMS manager of lane unload: {}".format(str(e)))
+
             cur_lane_loaded.unit_obj.return_to_home()
             self.afc.function.handle_activate_extruder()
             self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
