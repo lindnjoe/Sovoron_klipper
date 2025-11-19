@@ -2127,26 +2127,39 @@ class afcAMS(afcUnit):
 
             lane._oams_runout_detected = True
 
+            # Determine runout type but DON'T set flags for cross-extruder (AFC will handle)
             # Only mark as cross-extruder if there IS a runout target AND it's a different FPS
-            # Regular runouts (no infinite spool) should NOT be marked as cross-extruder
-            lane._oams_cross_extruder_runout = (runout_lane_name is not None and not is_same_fps)
-            # Mark same-FPS runouts so sensor updates are blocked until swap completes
-            lane._oams_same_fps_runout = (runout_lane_name is not None and is_same_fps)
-            # Mark regular runouts (no infinite spool) to handle after PTFE calc
-            lane._oams_regular_runout = (runout_lane_name is None)
+            is_cross_extruder = (runout_lane_name is not None and not is_same_fps)
+            # Same-FPS runouts: OpenAMS handles internally
+            is_same_fps_runout = (runout_lane_name is not None and is_same_fps)
+            # Regular runouts: no infinite spool configured
+            is_regular_runout = (runout_lane_name is None)
+
+            # For cross-extruder runouts, DON'T set any flags - let OAMS delegate to AFC
+            # AFC will handle it as a normal infinite runout without our interference
+            if not is_cross_extruder:
+                # Only set flags for runouts we're handling ourselves
+                lane._oams_cross_extruder_runout = False
+                lane._oams_same_fps_runout = is_same_fps_runout
+                lane._oams_regular_runout = is_regular_runout
+            else:
+                # Cross-extruder: clear all flags, let AFC handle
+                lane._oams_cross_extruder_runout = False
+                lane._oams_same_fps_runout = False
+                lane._oams_regular_runout = False
 
             # DEBUG: Log flag values
-            self.logger.info("DEBUG FLAGS SET: lane={}, cross={}, same_fps={}, regular={}, runout_lane={}, is_same_fps={}".format(
+            self.logger.info("DEBUG FLAGS SET: lane={}, cross={}, same_fps={}, regular={}, runout_lane={}, is_same_fps={}, is_cross_extruder={}".format(
                 lane.name, lane._oams_cross_extruder_runout, lane._oams_same_fps_runout,
-                lane._oams_regular_runout, runout_lane_name, is_same_fps))
+                lane._oams_regular_runout, runout_lane_name, is_same_fps, is_cross_extruder))
 
             # NOTE: Cross-extruder runouts (different FPS/extruder) are delegated to AFC by OAMS
-            # We do NOT store pending swap data for cross-extruder runouts - let AFC handle entirely
+            # We do NOT set flags or store data for cross-extruder runouts - let AFC handle entirely
             # We only handle same-FPS runouts where OAMS can do the swap internally
-            if lane._oams_cross_extruder_runout:
-                self.logger.info("Cross-extruder runout detected for lane {} -> {} - OAMS will delegate to AFC".format(
+            if is_cross_extruder:
+                self.logger.info("Cross-extruder runout detected for lane {} -> {} - OAMS will delegate to AFC (no flags set)".format(
                     lane.name, runout_lane_name))
-                # Don't store pending swap - AFC will handle through delegation
+                # No flags, no pending data - AFC handles everything
 
             # Store regular runout info at unit level - but ONLY for virtual sensor lanes
             # Real physical sensor lanes will let filament run to sensor, AFC handles naturally
@@ -2165,7 +2178,7 @@ class afcAMS(afcUnit):
                     # Real sensor - let AFC handle naturally (filament will run to physical sensor)
                     self.logger.info("Regular runout with REAL sensor: {} - letting AFC handle naturally".format(lane.name))
 
-            if runout_lane_name is None:
+            if is_regular_runout:
                 # Regular runout
                 extruder_name = getattr(lane.extruder_obj, 'name', '') if hasattr(lane, 'extruder_obj') else ''
                 is_virtual_sensor = extruder_name.upper().startswith('AMS_')
@@ -2173,11 +2186,11 @@ class afcAMS(afcUnit):
                     self.logger.info("Regular runout detected for lane {} (virtual sensor) - will clear and pause after PTFE calc".format(lane.name))
                 else:
                     self.logger.info("Regular runout detected for lane {} (real sensor) - will run to physical sensor".format(lane.name))
-            elif is_same_fps:
-                self.logger.info("Same-extruder runout: Marked lane {} for runout (OpenAMS handling reload, sensors sync naturally)".format(lane.name))
-            else:
-                # Cross-extruder runout - will clear state AFTER PTFE calc in _perform_openams_cross_extruder_swap()
-                self.logger.info("Cross-extruder runout: Marked lane {} for runout (will swap after PTFE calc)".format(lane.name))
+            elif is_same_fps_runout:
+                self.logger.info("Same-FPS runout: Marked lane {} for runout (OpenAMS handling reload internally)".format(lane.name))
+            elif is_cross_extruder:
+                # Cross-extruder runout - already logged above, no action needed here
+                pass
         except Exception as e:
             self.logger.error("Failed to mark lane {} for runout tracking: {} - {}".format(lane.name, type(e).__name__, str(e)))
             import traceback
