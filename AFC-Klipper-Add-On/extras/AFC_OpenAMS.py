@@ -806,13 +806,13 @@ class afcAMS(afcUnit):
 
         # Explicitly clear tool_loaded to prevent sensor sync from re-setting it
         lane.tool_loaded = False
-        # Clear all runout flags if set
+        # Clear runout flags EXCEPT cross-extruder and regular runouts (keep those set until swap completes)
         if hasattr(lane, '_oams_runout_detected'):
             lane._oams_runout_detected = False
         if hasattr(lane, '_oams_same_fps_runout'):
             lane._oams_same_fps_runout = False
-        if hasattr(lane, '_oams_cross_extruder_runout'):
-            lane._oams_cross_extruder_runout = False
+        # NOTE: Do NOT clear _oams_cross_extruder_runout or _oams_regular_runout here
+        # These flags must stay set so check_runout() can block AFC and trigger our handlers
 
         if not self._lane_matches_extruder(lane):
             return
