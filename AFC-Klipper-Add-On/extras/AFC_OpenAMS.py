@@ -2125,8 +2125,6 @@ class afcAMS(afcUnit):
             if not hasattr(lane, '_oams_regular_runout'):
                 lane._oams_regular_runout = False
 
-            lane._oams_runout_detected = True
-
             # Determine runout type but DON'T set flags for cross-extruder (AFC will handle)
             # Only mark as cross-extruder if there IS a runout target AND it's a different FPS
             is_cross_extruder = (runout_lane_name is not None and not is_same_fps)
@@ -2135,22 +2133,24 @@ class afcAMS(afcUnit):
             # Regular runouts: no infinite spool configured
             is_regular_runout = (runout_lane_name is None)
 
-            # For cross-extruder runouts, DON'T set any flags - let OAMS delegate to AFC
+            # For cross-extruder runouts, DON'T set ANY flags - let OAMS delegate to AFC
             # AFC will handle it as a normal infinite runout without our interference
             if not is_cross_extruder:
                 # Only set flags for runouts we're handling ourselves
+                lane._oams_runout_detected = True
                 lane._oams_cross_extruder_runout = False
                 lane._oams_same_fps_runout = is_same_fps_runout
                 lane._oams_regular_runout = is_regular_runout
             else:
-                # Cross-extruder: clear all flags, let AFC handle
+                # Cross-extruder: clear ALL flags, let AFC handle
+                lane._oams_runout_detected = False
                 lane._oams_cross_extruder_runout = False
                 lane._oams_same_fps_runout = False
                 lane._oams_regular_runout = False
 
             # DEBUG: Log flag values
-            self.logger.info("DEBUG FLAGS SET: lane={}, cross={}, same_fps={}, regular={}, runout_lane={}, is_same_fps={}, is_cross_extruder={}".format(
-                lane.name, lane._oams_cross_extruder_runout, lane._oams_same_fps_runout,
+            self.logger.info("DEBUG FLAGS SET: lane={}, runout_detected={}, cross={}, same_fps={}, regular={}, runout_lane={}, is_same_fps={}, is_cross_extruder={}".format(
+                lane.name, lane._oams_runout_detected, lane._oams_cross_extruder_runout, lane._oams_same_fps_runout,
                 lane._oams_regular_runout, runout_lane_name, is_same_fps, is_cross_extruder))
 
             # NOTE: Cross-extruder runouts (different FPS/extruder) are delegated to AFC by OAMS
