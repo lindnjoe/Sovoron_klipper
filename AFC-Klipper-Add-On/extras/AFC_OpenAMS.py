@@ -2167,8 +2167,10 @@ class afcAMS(afcUnit):
             else:
                 # Cross-extruder runout - will clear state AFTER PTFE calc in _perform_openams_cross_extruder_swap()
                 self.logger.info("Cross-extruder runout: Marked lane {} for runout (will swap after PTFE calc)".format(lane.name))
-        except Exception:
-            self.logger.error("Failed to mark lane {} for runout tracking".format(lane.name))
+        except Exception as e:
+            self.logger.error("Failed to mark lane {} for runout tracking: {} - {}".format(lane.name, type(e).__name__, str(e)))
+            import traceback
+            self.logger.error("Traceback: {}".format(traceback.format_exc()))
 
         # NOTE: We do NOT call lane.handle_load_runout() here
         # This would trigger infinite runout immediately when OpenAMS detects the spool is empty
