@@ -1399,6 +1399,9 @@ class afcAMS(afcUnit):
         # Hook into AFC's LANE_UNLOAD for cross-extruder runouts
         self._wrap_afc_lane_unload()
 
+        # Hook into AFC's TOOL_UNLOAD to prevent unload attempts on already-empty OpenAMS runouts
+        self._wrap_afc_tool_unload()
+
     def _wrap_afc_lane_unload(self):
         """
         DISABLED: This wrapper is obsolete. We now block AFC entirely via check_runout()
@@ -1525,6 +1528,31 @@ class afcAMS(afcUnit):
             # Apply wrapper
             self.afc.LANE_UNLOAD = wrapped_lane_unload
             self.logger.info("Wrapped AFC.LANE_UNLOAD for cross-extruder runout handling")
+
+    def _wrap_afc_tool_unload(self):
+        """Wrap AFC's TOOL_UNLOAD to prevent unload attempts on OpenAMS runouts (filament already ran out)."""
+        if not hasattr(self, 'afc') or self.afc is None:
+            return
+
+        # Store original method if not already wrapped
+        if not hasattr(self.afc, '_original_TOOL_UNLOAD'):
+            self.afc._original_TOOL_UNLOAD = self.afc.TOOL_UNLOAD
+
+            # Create wrapper
+            def wrapped_tool_unload(lane):
+                # Check if this is an OpenAMS lane
+                if getattr(lane, 'unit_obj', None) is not None and getattr(lane.unit_obj, 'type', None) == "OpenAMS":
+                    lane_name = getattr(lane, 'name', 'unknown')
+                    self.logger.info("Skipping TOOL_UNLOAD for OpenAMS lane {} (filament already ran out)".format(lane_name))
+                    # Don't call original - filament already ran out, nothing to unload
+                    return
+
+                # Not OpenAMS lane, call original
+                return self.afc._original_TOOL_UNLOAD(lane)
+
+            # Apply wrapper
+            self.afc.TOOL_UNLOAD = wrapped_tool_unload
+            self.logger.info("Wrapped AFC.TOOL_UNLOAD to skip unload for OpenAMS runouts")
 
     def _on_f1s_changed(self, event_type, unit_name, bay, value, eventtime, **kwargs):
         """Handle f1s sensor change events (PHASE 2: event-driven).
@@ -2057,16 +2085,31 @@ class afcAMS(afcUnit):
                 self._pending_cross_extruder_swaps[lane.name] = runout_lane_name
                 self.logger.info("STORED cross-extruder swap: {} -> {}".format(lane.name, runout_lane_name))
 
-            # Store regular runout info at unit level
+            # Store regular runout info at unit level - but ONLY for virtual sensor lanes
+            # Real physical sensor lanes will let filament run to sensor, AFC handles naturally
             if lane._oams_regular_runout:
-                if not hasattr(self, '_pending_regular_runouts'):
-                    self._pending_regular_runouts = set()
-                self._pending_regular_runouts.add(lane.name)
-                self.logger.info("STORED regular runout: {}".format(lane.name))
+                # Check if this lane has a virtual toolhead sensor (e.g., AMS_Extruder)
+                extruder_name = getattr(lane.extruder_obj, 'name', '') if hasattr(lane, 'extruder_obj') else ''
+                is_virtual_sensor = extruder_name.upper().startswith('AMS_')
+
+                if is_virtual_sensor:
+                    # Virtual sensor - we handle (wait for PTFE calc, then hand off)
+                    if not hasattr(self, '_pending_regular_runouts'):
+                        self._pending_regular_runouts = set()
+                    self._pending_regular_runouts.add(lane.name)
+                    self.logger.info("STORED regular runout (virtual sensor): {}".format(lane.name))
+                else:
+                    # Real sensor - let AFC handle naturally (filament will run to physical sensor)
+                    self.logger.info("Regular runout with REAL sensor: {} - letting AFC handle naturally".format(lane.name))
 
             if runout_lane_name is None:
-                # Regular runout - will handle AFTER PTFE calc (like cross-extruder but just pause)
-                self.logger.info("Regular runout detected for lane {} (no infinite spool) - will clear and pause after PTFE calc".format(lane.name))
+                # Regular runout
+                extruder_name = getattr(lane.extruder_obj, 'name', '') if hasattr(lane, 'extruder_obj') else ''
+                is_virtual_sensor = extruder_name.upper().startswith('AMS_')
+                if is_virtual_sensor:
+                    self.logger.info("Regular runout detected for lane {} (virtual sensor) - will clear and pause after PTFE calc".format(lane.name))
+                else:
+                    self.logger.info("Regular runout detected for lane {} (real sensor) - will run to physical sensor".format(lane.name))
             elif is_same_fps:
                 self.logger.info("Same-extruder runout: Marked lane {} for runout (OpenAMS handling reload, sensors sync naturally)".format(lane.name))
             else:
