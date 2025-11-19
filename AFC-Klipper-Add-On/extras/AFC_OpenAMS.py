@@ -1402,6 +1402,10 @@ class afcAMS(afcUnit):
         # Hook into AFC's TOOL_UNLOAD to prevent unload attempts on already-empty OpenAMS runouts
         self._wrap_afc_tool_unload()
 
+        # Verify our check_runout method is accessible
+        self.logger.info("afcAMS ready() complete - check_runout method: {}".format(type(self.check_runout)))
+        self.logger.info("afcAMS instance: {}, type: {}".format(self, self.type))
+
     def _wrap_afc_lane_unload(self):
         """
         DISABLED: This wrapper is obsolete. We now block AFC entirely via check_runout()
@@ -2913,6 +2917,12 @@ class afcAMS(afcUnit):
     def check_runout(self, lane=None):
         # DEBUG: Log that afcAMS.check_runout was called
         lane_name = getattr(lane, 'name', 'None') if lane else 'None'
+
+        # Log to both logger AND stderr to ensure we see it
+        import sys
+        sys.stderr.write("!!!!! afcAMS.check_runout CALLED - lane={}, self={}\n".format(lane_name, self))
+        sys.stderr.flush()
+
         self.logger.info("afcAMS.check_runout ENTERED - lane={}".format(lane_name))
 
         if lane is None:
