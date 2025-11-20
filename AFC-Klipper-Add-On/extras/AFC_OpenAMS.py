@@ -1646,7 +1646,7 @@ class afcAMS(afcUnit):
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
             self._last_lane_states[lane.name] = lane_val
 
-        # Detect F1S sensor going False (spool empty) - trigger runout detection AFTER sensor update
+        # Detect F1S sensor going False (spool empty) - set flag to wait for hub clear
         # Only trigger if printer is actively printing (not during filament insertion/removal)
         if prev_val and not lane_val:
             try:
@@ -1655,13 +1655,21 @@ class afcAMS(afcUnit):
                 is_printing = False
 
             if is_printing:
-                self.logger.info("F1S sensor False for {} (spool empty, printing), triggering runout detection".format(lane.name))
-                try:
-                    self.handle_runout_detected(bay, None, lane_name=lane.name)
-                except Exception:
-                    self.logger.error("Failed to handle runout detection for {}".format(lane.name))
+                # F1S went false - set flag to wait for hub sensor to clear
+                # This lets filament run out to hub, clearing the hub motor
+                if not hasattr(lane, '_waiting_for_hub_clear'):
+                    lane._waiting_for_hub_clear = False
+
+                lane._waiting_for_hub_clear = True
+                self.logger.info("F1S sensor False for {} (spool empty, printing), waiting for hub to clear before triggering runout".format(lane.name))
             else:
                 self.logger.debug("F1S sensor False for {} but not printing - skipping runout detection (likely filament insertion/removal)".format(lane.name))
+
+        # Clear waiting flag if F1S goes True again (new filament loaded)
+        elif not prev_val and lane_val:
+            if getattr(lane, '_waiting_for_hub_clear', False):
+                self.logger.info("F1S sensor True for {} - clearing hub wait flag (new filament loaded)".format(lane.name))
+                lane._waiting_for_hub_clear = False
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -1696,12 +1704,30 @@ class afcAMS(afcUnit):
             return
 
         hub_val = bool(value)
-        if hub_val != self._last_hub_states.get(hub.name):
+        prev_hub_val = self._last_hub_states.get(hub.name)
+
+        if hub_val != prev_hub_val:
             hub.switch_pin_callback(eventtime, hub_val)
             fila = getattr(hub, "fila", None)
             if fila is not None:
                 fila.runout_helper.note_filament_present(eventtime, hub_val)
             self._last_hub_states[hub.name] = hub_val
+
+            # Check if we're waiting for hub to clear after F1S went false
+            if not hub_val and getattr(lane, '_waiting_for_hub_clear', False):
+                # Hub sensor just went false and we were waiting for it - trigger runout now
+                self.logger.info("Hub sensor cleared for {} after F1S false, triggering runout detection".format(lane.name))
+                lane._waiting_for_hub_clear = False
+                try:
+                    is_printing = self.afc.function.is_printing()
+                except Exception:
+                    is_printing = False
+
+                if is_printing:
+                    try:
+                        self.handle_runout_detected(bay, None, lane_name=lane.name)
+                    except Exception:
+                        self.logger.error("Failed to handle runout detection for {}".format(lane.name))
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
