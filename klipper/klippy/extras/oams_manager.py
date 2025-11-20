@@ -1019,24 +1019,29 @@ class OAMSManager:
         """
         current_lane = fps_state.current_lane
         if not current_lane:
+            self.logger.info("_get_infinite_runout_target_lane: No current_lane in fps_state for %s", fps_name)
             return None, None, False, None
 
         afc = self._get_afc()
         if afc is None:
+            self.logger.info("_get_infinite_runout_target_lane: No AFC object for %s", fps_name)
             return None, None, False, None
 
         lane_name, _ = self._resolve_lane_for_state(fps_state, current_lane, afc)
 
         if not lane_name:
+            self.logger.info("_get_infinite_runout_target_lane: Could not resolve lane_name for %s (current_lane=%s)", fps_name, current_lane)
             return None, None, False, None
 
         lanes = getattr(afc, "lanes", {})
         lane = afc.lanes.get(lane_name)
         if lane is None:
+            self.logger.info("_get_infinite_runout_target_lane: Lane %s not found in afc.lanes for %s", lane_name, fps_name)
             return None, None, False, lane_name
 
         runout_lane_name = getattr(lane, "runout_lane", None)
         if not runout_lane_name:
+            self.logger.info("_get_infinite_runout_target_lane: No runout_lane configured for %s on %s", lane_name, fps_name)
             return None, None, False, lane_name
 
         target_lane = afc.lanes.get(runout_lane_name)
