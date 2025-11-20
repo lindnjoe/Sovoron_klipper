@@ -186,6 +186,17 @@ class OAMSRunoutMonitor:
                             logging.getLogger(__name__).exception("Failed to notify AFC about OpenAMS runout")
 
             elif self.state == OAMSRunoutState.DETECTED:
+                # Check if cross-extruder swap was already handled by AFC
+                afc = self._get_afc_from_manager()
+                if afc and lane_name:
+                    lane = afc.lanes.get(lane_name)
+                    if lane and getattr(lane, '_oams_cross_extruder_runout', False):
+                        logging.info("OAMS: Cross-extruder swap already handled for %s, resetting monitor", self.fps_name)
+                        fps_state.reset_runout_positions()
+                        self.reset()
+                        self.start()
+                        return eventtime + MONITOR_ENCODER_PERIOD
+
                 traveled_distance = fps.extruder.last_position - self.runout_position
                 if traveled_distance >= PAUSE_DISTANCE:
                     logging.info("OAMS: Pause complete, coasting the follower.")
@@ -200,6 +211,17 @@ class OAMSRunoutMonitor:
                     self.state = OAMSRunoutState.COASTING
 
             elif self.state == OAMSRunoutState.COASTING:
+                # Check if cross-extruder swap was already handled by AFC
+                afc = self._get_afc_from_manager()
+                if afc and lane_name:
+                    lane = afc.lanes.get(lane_name)
+                    if lane and getattr(lane, '_oams_cross_extruder_runout', False):
+                        logging.info("OAMS: Cross-extruder swap already handled for %s, resetting monitor", self.fps_name)
+                        fps_state.reset_runout_positions()
+                        self.reset()
+                        self.start()
+                        return eventtime + MONITOR_ENCODER_PERIOD
+
                 traveled_distance_after_bldc_clear = max(fps.extruder.last_position - self.bldc_clear_position, 0.0)
                 self.runout_after_position = traveled_distance_after_bldc_clear
                 try:
@@ -220,6 +242,13 @@ class OAMSRunoutMonitor:
         
         self._timer_callback = _monitor_runout
         self.timer = None  # Don't register timer until start() is called
+
+    def _get_afc_from_manager(self):
+        """Get AFC object from printer."""
+        try:
+            return self.printer.lookup_object('AFC')
+        except Exception:
+            return None
 
     def start(self) -> None:
         if self.timer is None:
