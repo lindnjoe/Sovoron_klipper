@@ -2132,12 +2132,10 @@ class afcAMS(afcUnit):
                 lane._oams_same_fps_runout = False
                 lane._oams_regular_runout = False
 
-                # Store the target lane name in a simple dictionary on the unit
-                if not hasattr(self, '_cross_extruder_targets'):
-                    self._cross_extruder_targets = {}
-                self._cross_extruder_targets[lane.name] = runout_lane_name
+                # Store the target lane directly on the lane object itself
+                lane._oams_cross_extruder_target = runout_lane_name
 
-                self.logger.info("Cross-extruder runout: {} -> {} (stored for reload)".format(
+                self.logger.info("Cross-extruder runout: {} -> {} (stored on lane)".format(
                     lane.name, runout_lane_name))
             elif is_same_fps_runout:
                 # Same-FPS runout - OpenAMS handles internally
@@ -2147,37 +2145,34 @@ class afcAMS(afcUnit):
                 lane._oams_regular_runout = False
                 self.logger.info("Same-FPS runout: {} (OpenAMS handling reload internally)".format(lane.name))
             elif is_regular_runout:
-                # Regular runout - no infinite spool
+                # Regular runout - no infinite spool configured
+                # Pause immediately and tell user to manually unload
                 lane._oams_runout_detected = True
                 lane._oams_cross_extruder_runout = False
                 lane._oams_same_fps_runout = False
                 lane._oams_regular_runout = True
 
-            # Store regular runout info at unit level - but ONLY for virtual sensor lanes
-            # Real physical sensor lanes will let filament run to sensor, AFC handles naturally
-            if lane._oams_regular_runout:
-                # Check if this lane has a virtual toolhead sensor (e.g., AMS_Extruder)
-                extruder_name = getattr(lane.extruder_obj, 'name', '') if hasattr(lane, 'extruder_obj') else ''
-                is_virtual_sensor = extruder_name.upper().startswith('AMS_')
+                # Pause the print immediately
+                try:
+                    is_printing = self.afc.function.is_printing()
+                except:
+                    is_printing = False
 
-                if is_virtual_sensor:
-                    # Virtual sensor - we handle (wait for PTFE calc, then hand off)
-                    if not hasattr(self, '_pending_regular_runouts'):
-                        self._pending_regular_runouts = set()
-                    self._pending_regular_runouts.add(lane.name)
-                    self.logger.info("STORED regular runout (virtual sensor): {}".format(lane.name))
-                else:
-                    # Real sensor - let AFC handle naturally (filament will run to physical sensor)
-                    self.logger.info("Regular runout with REAL sensor: {} - letting AFC handle naturally".format(lane.name))
+                if is_printing:
+                    self.logger.info("Regular runout detected for lane {} - pausing print immediately".format(lane.name))
 
-            if is_regular_runout:
-                # Regular runout
-                extruder_name = getattr(lane.extruder_obj, 'name', '') if hasattr(lane, 'extruder_obj') else ''
-                is_virtual_sensor = extruder_name.upper().startswith('AMS_')
-                if is_virtual_sensor:
-                    self.logger.info("Regular runout detected for lane {} (virtual sensor) - will clear and pause after PTFE calc".format(lane.name))
+                    # Pause the printer with helpful message
+                    pause_message = (
+                        "Filament runout on lane {} (no spare spool configured). "
+                        "Run BT_TOOL_UNLOAD to remove filament from extruder, "
+                        "then manually remove filament from PTFE tube."
+                    ).format(lane.name)
+
+                    self.gcode.run_script_from_command("M118 {}".format(pause_message))
+                    self.gcode.run_script_from_command("PAUSE")
+                    self.logger.info("Print paused for regular runout: {}".format(lane.name))
                 else:
-                    self.logger.info("Regular runout detected for lane {} (real sensor) - will run to physical sensor".format(lane.name))
+                    self.logger.info("Regular runout detected for lane {} (not printing)".format(lane.name))
             elif is_same_fps_runout:
                 self.logger.info("Same-FPS runout: Marked lane {} for runout (OpenAMS handling reload internally)".format(lane.name))
             elif is_cross_extruder:

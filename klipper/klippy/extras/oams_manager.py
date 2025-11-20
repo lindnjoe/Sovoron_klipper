@@ -2180,11 +2180,10 @@ class OAMSManager:
                 cross_extruder_target = None
                 afc = self._get_afc()
                 if afc and source_lane_name:
-                    # Check if AFC_OpenAMS stored a cross-extruder target
-                    for unit in afc.units.values():
-                        if hasattr(unit, '_cross_extruder_targets') and source_lane_name in unit._cross_extruder_targets:
-                            cross_extruder_target = unit._cross_extruder_targets[source_lane_name]
-                            break
+                    # Check if lane has a stored cross-extruder target
+                    lane = afc.lanes.get(source_lane_name)
+                    if lane:
+                        cross_extruder_target = getattr(lane, '_oams_cross_extruder_target', None)
 
                 self.logger.info("RELOAD CALLBACK: fps_name=%s, source_lane=%s, cross_extruder_target=%s",
                                fps_name, source_lane_name, cross_extruder_target)
@@ -2201,10 +2200,9 @@ class OAMSManager:
                         gcode.run_script_from_command("CHANGE_TOOL LANE={}".format(cross_extruder_target))
 
                         # Clear the stored target
-                        for unit in afc.units.values():
-                            if hasattr(unit, '_cross_extruder_targets') and source_lane_name in unit._cross_extruder_targets:
-                                del unit._cross_extruder_targets[source_lane_name]
-                                break
+                        lane = afc.lanes.get(source_lane_name)
+                        if lane and hasattr(lane, '_oams_cross_extruder_target'):
+                            delattr(lane, '_oams_cross_extruder_target')
 
                         # Reset and restart monitoring
                         fps_state.reset_runout_positions()
