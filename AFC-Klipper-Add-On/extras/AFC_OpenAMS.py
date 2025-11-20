@@ -2097,10 +2097,24 @@ class afcAMS(afcUnit):
         """Handle runout notifications coming from OpenAMS monitors."""
         lane = None
         if lane_name:
+            # Try direct lookup first
             lane = self.lanes.get(lane_name)
+
+            # If not found, might be a tool/map name - resolve it
             if lane is None:
+                # Try case-insensitive match
                 lowered = lane_name.lower()
                 lane = next((candidate for name, candidate in self.lanes.items() if name.lower() == lowered), None)
+
+                # Still not found? Try resolving by map attribute (tool name like "T11")
+                if lane is None:
+                    for actual_lane_name, candidate in self.lanes.items():
+                        lane_map = getattr(candidate, "map", None)
+                        if lane_map and lane_map == lane_name:
+                            self.logger.info("Resolved tool name {} to lane {}".format(lane_name, actual_lane_name))
+                            lane = candidate
+                            break
+
         if lane is None:
             lane = self._lane_for_spool_index(spool_index)
         if lane is None:
