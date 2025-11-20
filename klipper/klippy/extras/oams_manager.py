@@ -1019,29 +1019,29 @@ class OAMSManager:
         """
         current_lane = fps_state.current_lane
         if not current_lane:
-            self.logger.info("_get_infinite_runout_target_lane: No current_lane in fps_state for %s", fps_name)
+            self.logger.error("DEBUG: _get_infinite_runout_target_lane: No current_lane in fps_state for %s", fps_name)
             return None, None, False, None
 
         afc = self._get_afc()
         if afc is None:
-            self.logger.info("_get_infinite_runout_target_lane: No AFC object for %s", fps_name)
+            self.logger.error("DEBUG: _get_infinite_runout_target_lane: No AFC object for %s", fps_name)
             return None, None, False, None
 
         lane_name, _ = self._resolve_lane_for_state(fps_state, current_lane, afc)
 
         if not lane_name:
-            self.logger.info("_get_infinite_runout_target_lane: Could not resolve lane_name for %s (current_lane=%s)", fps_name, current_lane)
+            self.logger.error("DEBUG: _get_infinite_runout_target_lane: Could not resolve lane_name for %s (current_lane=%s)", fps_name, current_lane)
             return None, None, False, None
 
         lanes = getattr(afc, "lanes", {})
         lane = afc.lanes.get(lane_name)
         if lane is None:
-            self.logger.info("_get_infinite_runout_target_lane: Lane %s not found in afc.lanes for %s", lane_name, fps_name)
+            self.logger.error("DEBUG: _get_infinite_runout_target_lane: Lane %s not found in afc.lanes for %s", lane_name, fps_name)
             return None, None, False, lane_name
 
         runout_lane_name = getattr(lane, "runout_lane", None)
         if not runout_lane_name:
-            self.logger.info("_get_infinite_runout_target_lane: No runout_lane configured for %s on %s", lane_name, fps_name)
+            self.logger.error("DEBUG: _get_infinite_runout_target_lane: No runout_lane configured for %s on %s", lane_name, fps_name)
             return None, None, False, lane_name
 
         target_lane = afc.lanes.get(runout_lane_name)
@@ -2227,24 +2227,33 @@ class OAMSManager:
             )
 
             def _reload_callback(fps_name=fps_name, fps_state=self.current_state.fps_state[fps_name]):
+                self.logger.error("DEBUG: ===== RELOAD CALLBACK CALLED for %s =====", fps_name)
                 monitor = self.runout_monitors.get(fps_name)
                 source_lane_name = fps_state.current_lane
                 active_oams = fps_state.current_oams
+
+                self.logger.error("DEBUG: RELOAD CALLBACK: fps_name=%s, current_lane=%s, current_oams=%s",
+                               fps_name, source_lane_name, active_oams)
 
                 # Check if cross-extruder swap was already handled immediately by AFC
                 afc = self._get_afc()
                 if afc and source_lane_name:
                     lane = afc.lanes.get(source_lane_name)
-                    if lane and getattr(lane, '_oams_cross_extruder_runout', False):
-                        self.logger.info("RELOAD CALLBACK: Cross-extruder swap for %s was already handled immediately, skipping", source_lane_name)
-                        # Reset and restart monitoring
-                        fps_state.reset_runout_positions()
-                        if monitor:
-                            monitor.reset()
-                            monitor.start()
-                        return
+                    if lane:
+                        cross_extruder_flag = getattr(lane, '_oams_cross_extruder_runout', False)
+                        same_fps_flag = getattr(lane, '_oams_same_fps_runout', False)
+                        self.logger.error("DEBUG: RELOAD CALLBACK: Lane %s flags - cross_extruder=%s, same_fps=%s",
+                                       source_lane_name, cross_extruder_flag, same_fps_flag)
+                        if cross_extruder_flag:
+                            self.logger.error("DEBUG: RELOAD CALLBACK: Cross-extruder swap for %s was already handled immediately, skipping", source_lane_name)
+                            # Reset and restart monitoring
+                            fps_state.reset_runout_positions()
+                            if monitor:
+                                monitor.reset()
+                                monitor.start()
+                            return
 
-                self.logger.info("RELOAD CALLBACK: fps_name=%s, source_lane=%s (same-FPS or regular runout)",
+                self.logger.error("DEBUG: RELOAD CALLBACK: fps_name=%s, source_lane=%s (same-FPS or regular runout)",
                                fps_name, source_lane_name)
 
                 target_lane_map, target_lane, delegate_to_afc, source_lane = self._get_infinite_runout_target_lane(fps_name, fps_state)
