@@ -2124,17 +2124,22 @@ class afcAMS(afcUnit):
             is_same_fps_runout = (runout_lane_name is not None and is_same_fps)
             is_regular_runout = (runout_lane_name is None)
 
-            # For cross-extruder runouts, mark the lane so OAMS manager can handle it
-            # OAMS manager will detect the flag and run UNSET_LANE_LOADED + CHANGE_TOOL
+            # For cross-extruder runouts, store target lane in fps_state for the reload callback
             if is_cross_extruder:
-                # Set flag for OAMS manager to detect
+                # Set flags
                 lane._oams_runout_detected = True
                 lane._oams_cross_extruder_runout = True
                 lane._oams_same_fps_runout = False
                 lane._oams_regular_runout = False
 
-                self.logger.info("Cross-extruder runout: {} -> {} (OAMS manager will handle)".format(
-                    lane.name, runout_lane_name))
+                # Store the target lane in fps_state so reload callback can use it
+                if monitor and hasattr(monitor, 'fps_state'):
+                    monitor.fps_state.cross_extruder_target_lane = runout_lane_name
+                    self.logger.info("Cross-extruder runout: {} -> {} (stored in fps_state)".format(
+                        lane.name, runout_lane_name))
+                else:
+                    self.logger.warning("Cross-extruder runout: {} -> {} (no monitor/fps_state to store target)".format(
+                        lane.name, runout_lane_name))
             elif is_same_fps_runout:
                 # Same-FPS runout - OpenAMS handles internally
                 lane._oams_runout_detected = True
