@@ -1640,11 +1640,22 @@ class afcAMS(afcUnit):
         # Update lane state based on sensor FIRST
         if getattr(lane, "ams_share_prep_load", False):
             self._update_shared_lane(lane, lane_val, eventtime)
-        elif lane_val != prev_val:
-            lane.load_callback(eventtime, lane_val)
-            lane.prep_callback(eventtime, lane_val)
-            self._mirror_lane_to_virtual_sensor(lane, eventtime)
-            self._last_lane_states[lane.name] = lane_val
+        else:
+            # Check if sensors are out of sync with F1S sensor value
+            prep_state = getattr(lane, 'prep_state', None)
+            load_state = getattr(lane, 'load_state', None)
+            sensors_out_of_sync = (prep_state != lane_val) or (load_state != lane_val)
+
+            # Update if value changed OR if sensors are out of sync
+            if (lane_val != prev_val) or sensors_out_of_sync:
+                if sensors_out_of_sync and lane_val == prev_val:
+                    self.logger.info("Force syncing sensors for {} - F1S={}, prep={}, load={}".format(
+                        lane.name, lane_val, prep_state, load_state))
+
+                lane.load_callback(eventtime, lane_val)
+                lane.prep_callback(eventtime, lane_val)
+                self._mirror_lane_to_virtual_sensor(lane, eventtime)
+                self._last_lane_states[lane.name] = lane_val
 
         # Detect F1S sensor going False (spool empty) - set flag to wait for hub clear
         # Only trigger if printer is actively printing (not during filament insertion/removal)
