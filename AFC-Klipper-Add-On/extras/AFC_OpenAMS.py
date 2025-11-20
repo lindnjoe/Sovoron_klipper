@@ -811,13 +811,26 @@ class afcAMS(afcUnit):
 
         # Explicitly clear tool_loaded to prevent sensor sync from re-setting it
         lane.tool_loaded = False
-        # Clear runout flags EXCEPT cross-extruder and regular runouts (keep those set until swap completes)
-        if hasattr(lane, '_oams_runout_detected'):
-            lane._oams_runout_detected = False
+
+        # Only clear flags if NOT in the middle of a cross-extruder swap
+        # The reload callback will clear these after the swap completes
+        has_cross_target = hasattr(lane, '_oams_cross_extruder_target')
+
+        if not has_cross_target:
+            # Not a cross-extruder swap, safe to clear all flags
+            if hasattr(lane, '_oams_runout_detected'):
+                lane._oams_runout_detected = False
+            if hasattr(lane, '_oams_cross_extruder_runout'):
+                lane._oams_cross_extruder_runout = False
+            if hasattr(lane, '_oams_regular_runout'):
+                lane._oams_regular_runout = False
+            self.logger.info("Cleared runout flags for lane {} on unload".format(getattr(lane, 'name', 'unknown')))
+        else:
+            self.logger.info("Skipping flag clear for lane {} - cross-extruder swap in progress".format(getattr(lane, 'name', 'unknown')))
+
+        # Always clear same-FPS flags (these are safe to clear immediately)
         if hasattr(lane, '_oams_same_fps_runout'):
             lane._oams_same_fps_runout = False
-        # NOTE: Do NOT clear _oams_cross_extruder_runout or _oams_regular_runout here
-        # These flags must stay set so check_runout() can block AFC and trigger our handlers
 
         if not self._lane_matches_extruder(lane):
             return
