@@ -1080,35 +1080,8 @@ class OAMSManager:
             self.logger.warning("AFC runout lane %s referenced by %s is unavailable", runout_target, source_lane_name)
             return False
 
-        # Check if this is a cross-extruder runout being handled by AFC OpenAMS integration
-        # If so, skip the direct _perform_infinite_runout() call and let the integration handle it
-        if getattr(lane, '_oams_cross_extruder_runout', False):
-            self.logger.info("Cross-extruder runout for %s -> %s being handled by AFC OpenAMS integration",
-                           source_lane_name, runout_target)
-            # The AFC OpenAMS integration uses a simple approach: UNSET_LANE_LOADED + CHANGE_TOOL
-            # This avoids pausing the print and handles the swap seamlessly
-            try:
-                gcode = self.printer.lookup_object('gcode')
-                self.logger.info("Running UNSET_LANE_LOADED for %s", source_lane_name)
-                gcode.run_script_from_command("UNSET_LANE_LOADED")
-
-                self.logger.info("Running CHANGE_TOOL LANE=%s", runout_target)
-                gcode.run_script_from_command("CHANGE_TOOL LANE={}".format(runout_target))
-
-                # Clear the cross-extruder flag
-                lane._oams_cross_extruder_runout = False
-
-                self.logger.info("Cross-extruder swap complete: %s -> %s", source_lane_name, runout_target)
-            except Exception:
-                self.logger.exception("Failed to perform cross-extruder swap %s -> %s", source_lane_name, runout_target)
-                fps_state.afc_delegation_active = False
-                fps_state.afc_delegation_until = 0.0
-                return False
-
-            fps_state.afc_delegation_active = True
-            fps_state.afc_delegation_until = now + AFC_DELEGATION_TIMEOUT
-            return True
-
+        # Cross-extruder runouts are handled earlier in the reload callback
+        # This method only handles same-FPS runouts via AFC's _perform_infinite_runout()
         try:
             lane._perform_infinite_runout()
         except Exception:
@@ -2202,6 +2175,42 @@ class OAMSManager:
                 monitor = self.runout_monitors.get(fps_name)
                 source_lane_name = fps_state.current_lane
                 active_oams = fps_state.current_oams
+
+                # Check if this is a cross-extruder runout - handle it directly with simple commands
+                afc = self._get_afc()
+                if afc and source_lane_name:
+                    lane = afc.lanes.get(source_lane_name)
+                    if lane and getattr(lane, '_oams_cross_extruder_runout', False):
+                        runout_target = getattr(lane, "runout_lane", None)
+                        if runout_target:
+                            self.logger.info("Cross-extruder runout for %s -> %s, running UNSET_LANE_LOADED + CHANGE_TOOL",
+                                           source_lane_name, runout_target)
+                            try:
+                                gcode = self.printer.lookup_object('gcode')
+                                self.logger.info("Running UNSET_LANE_LOADED for %s", source_lane_name)
+                                gcode.run_script_from_command("UNSET_LANE_LOADED")
+
+                                self.logger.info("Running CHANGE_TOOL LANE=%s", runout_target)
+                                gcode.run_script_from_command("CHANGE_TOOL LANE={}".format(runout_target))
+
+                                # Clear the flag
+                                lane._oams_cross_extruder_runout = False
+
+                                # Reset and restart monitoring
+                                fps_state.reset_runout_positions()
+                                if monitor:
+                                    monitor.reset()
+                                    monitor.start()
+
+                                self.logger.info("Cross-extruder swap complete: %s -> %s", source_lane_name, runout_target)
+                                return
+                            except Exception:
+                                self.logger.exception("Failed to perform cross-extruder swap %s -> %s", source_lane_name, runout_target)
+                                self._pause_printer_message(f"Failed cross-extruder swap {source_lane_name} -> {runout_target}", active_oams)
+                                if monitor:
+                                    monitor.paused()
+                                return
+
                 target_lane_map, target_lane, delegate_to_afc, source_lane = self._get_infinite_runout_target_lane(fps_name, fps_state)
                 source_lane_name = fps_state.current_lane
 
