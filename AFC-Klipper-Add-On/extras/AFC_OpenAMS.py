@@ -1759,19 +1759,18 @@ class afcAMS(afcUnit):
 
     def _update_shared_lane(self, lane, lane_val, eventtime):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
-        # Check if runout handling requires blocking this sensor update
         previous_state = self._last_lane_states.get(lane.name)
-        if self._should_block_sensor_update_for_runout(lane, lane_val, previous_state):
-            # Update state tracking before returning to prevent duplicate processing
-            lane_name = getattr(lane, "name", None)
-            if lane_name:
-                self._last_lane_states[lane_name] = bool(lane_val)
-            return
 
         if lane_val == previous_state:
             return
 
         if lane_val:
+            if getattr(lane, "_oams_runout_detected", False):
+                lane._oams_runout_detected = False
+                lane._oams_same_fps_runout = False
+                lane._oams_cross_extruder_runout = False
+                lane._oams_regular_runout = False
+
             lane.load_state = False
             try:
                 lane.prep_callback(eventtime, True)
