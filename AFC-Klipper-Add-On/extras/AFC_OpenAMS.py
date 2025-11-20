@@ -1665,11 +1665,15 @@ class afcAMS(afcUnit):
             else:
                 self.logger.debug("F1S sensor False for {} but not printing - skipping runout detection (likely filament insertion/removal)".format(lane.name))
 
-        # Clear waiting flag if F1S goes True again (new filament loaded)
+        # Clear waiting flags if F1S goes True again (new filament loaded)
         elif not prev_val and lane_val:
             if getattr(lane, '_waiting_for_hub_clear', False):
                 self.logger.info("F1S sensor True for {} - clearing hub wait flag (new filament loaded)".format(lane.name))
                 lane._waiting_for_hub_clear = False
+            if getattr(lane, '_waiting_for_extrusion_buffer', False):
+                self.logger.info("F1S sensor True for {} - clearing extrusion buffer wait (new filament loaded)".format(lane.name))
+                lane._waiting_for_extrusion_buffer = False
+                lane._hub_clear_extruder_pos = None
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -1715,19 +1719,30 @@ class afcAMS(afcUnit):
 
             # Check if we're waiting for hub to clear after F1S went false
             if not hub_val and getattr(lane, '_waiting_for_hub_clear', False):
-                # Hub sensor just went false and we were waiting for it - trigger runout now
-                self.logger.info("Hub sensor cleared for {} after F1S false, triggering runout detection".format(lane.name))
+                # Hub sensor just went false - start tracking extrusion for 20mm buffer
+                self.logger.info("Hub sensor cleared for {}, waiting for 20mm extrusion buffer before triggering runout".format(lane.name))
                 lane._waiting_for_hub_clear = False
-                try:
-                    is_printing = self.afc.function.is_printing()
-                except Exception:
-                    is_printing = False
+                lane._waiting_for_extrusion_buffer = True
 
-                if is_printing:
+                # Store current extruder position
+                try:
+                    extruder = self.afc.toolhead.get_extruder()
+                    lane._hub_clear_extruder_pos = extruder.last_position
+                    self.logger.info("Hub cleared at extruder position {:.2f}mm for {}".format(lane._hub_clear_extruder_pos, lane.name))
+                except Exception:
+                    self.logger.exception("Failed to get extruder position for hub clear tracking on {}".format(lane.name))
+                    # Fallback: trigger immediately if we can't track
+                    lane._waiting_for_extrusion_buffer = False
                     try:
-                        self.handle_runout_detected(bay, None, lane_name=lane.name)
+                        is_printing = self.afc.function.is_printing()
                     except Exception:
-                        self.logger.error("Failed to handle runout detection for {}".format(lane.name))
+                        is_printing = False
+
+                    if is_printing:
+                        try:
+                            self.handle_runout_detected(bay, None, lane_name=lane.name)
+                        except Exception:
+                            self.logger.error("Failed to handle runout detection for {}".format(lane.name))
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -1940,6 +1955,53 @@ class afcAMS(afcUnit):
         if lane_name:
             self._last_lane_states[lane_name] = bool(lane_val)
 
+    def _check_extrusion_buffer_runouts(self, eventtime):
+        """Check if any lanes have extruded 20mm past hub clear and trigger runout."""
+        EXTRUSION_BUFFER = 20.0  # mm to extrude past hub clear before triggering runout
+
+        try:
+            extruder = self.afc.toolhead.get_extruder()
+            current_extruder_pos = extruder.last_position
+        except Exception:
+            return  # Can't check without extruder position
+
+        for lane in self.lanes.values():
+            if not getattr(lane, '_waiting_for_extrusion_buffer', False):
+                continue
+
+            hub_clear_pos = getattr(lane, '_hub_clear_extruder_pos', None)
+            if hub_clear_pos is None:
+                continue
+
+            extruded_distance = current_extruder_pos - hub_clear_pos
+
+            if extruded_distance >= EXTRUSION_BUFFER:
+                self.logger.info("Extruded {:.2f}mm past hub clear for {}, triggering runout".format(
+                    extruded_distance, lane.name))
+
+                # Clear flags and trigger runout
+                lane._waiting_for_extrusion_buffer = False
+                lane._hub_clear_extruder_pos = None
+
+                try:
+                    is_printing = self.afc.function.is_printing()
+                except Exception:
+                    is_printing = False
+
+                if is_printing:
+                    # Find bay/spool index for this lane
+                    bay = None
+                    for idx, candidate_lane in enumerate(self.lanes.values()):
+                        if candidate_lane == lane:
+                            bay = idx
+                            break
+
+                    if bay is not None:
+                        try:
+                            self.handle_runout_detected(bay, None, lane_name=lane.name)
+                        except Exception:
+                            self.logger.error("Failed to handle runout detection for {}".format(lane.name))
+
     def _sync_event(self, eventtime):
         """Poll OpenAMS for state updates and propagate to lanes/hubs"""
         try:
@@ -1957,6 +2019,9 @@ class afcAMS(afcUnit):
 
             if not status:
                 return eventtime + self.interval_idle
+
+            # Check for lanes waiting for 20mm extrusion buffer after hub clear
+            self._check_extrusion_buffer_runouts(eventtime)
 
             encoder_clicks = status.get("encoder_clicks")
             try:
