@@ -2097,10 +2097,24 @@ class afcAMS(afcUnit):
         """Handle runout notifications coming from OpenAMS monitors."""
         lane = None
         if lane_name:
+            # Try direct lookup first
             lane = self.lanes.get(lane_name)
+
+            # If not found, might be a tool/map name - resolve it
             if lane is None:
+                # Try case-insensitive match
                 lowered = lane_name.lower()
                 lane = next((candidate for name, candidate in self.lanes.items() if name.lower() == lowered), None)
+
+                # Still not found? Try resolving by map attribute (tool name like "T11")
+                if lane is None:
+                    for actual_lane_name, candidate in self.lanes.items():
+                        lane_map = getattr(candidate, "map", None)
+                        if lane_map and lane_map == lane_name:
+                            self.logger.info("Resolved tool name {} to lane {}".format(lane_name, actual_lane_name))
+                            lane = candidate
+                            break
+
         if lane is None:
             lane = self._lane_for_spool_index(spool_index)
         if lane is None:
@@ -2968,6 +2982,13 @@ class afcAMS(afcUnit):
 
         # Save position
         self.afc.save_pos()
+
+        # Z-hop to prevent nozzle sitting on print during extruder heating
+        # Use configured z_hop value, or default to 5mm if not configured
+        z_hop_amount = self.afc.z_hop if self.afc.z_hop > 0 else 5.0
+        z_hop_pos = self.afc.last_gcode_position[2] + z_hop_amount
+        self.afc.move_z_pos(z_hop_pos, "AMS_cross_extruder_swap")
+        self.logger.info("Z-hopped {} mm before tool change".format(z_hop_amount))
 
         # Load new lane (don't restore position yet)
         # No need to UNSET_LANE_LOADED - we're switching to a different extruder
