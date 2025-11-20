@@ -2151,7 +2151,7 @@ class afcAMS(afcUnit):
                 # Trigger the swap immediately (don't wait for PTFE calculation)
                 try:
                     if self.afc.function.is_printing():
-                        self._perform_simplified_cross_extruder_swap(lane, runout_lane_name)
+                        self._perform_ams_cross_extruder_swap(lane, runout_lane_name)
                     else:
                         self.logger.info("Cross-extruder runout detected but not printing, ignoring")
                 except Exception as e:
@@ -2946,18 +2946,18 @@ class afcAMS(afcUnit):
             self.unload_on_runout = original_unload_setting
             self.logger.info("Restored unload_on_runout setting")
 
-    def _perform_simplified_cross_extruder_swap(self, empty_lane, target_lane_name):
+    def _perform_ams_cross_extruder_swap(self, empty_lane, target_lane_name):
         """
-        Simplified cross-extruder swap for AMS lanes - triggers immediately when runout detected.
-        Unlike Box Turtle units, AMS can't pull filament back once F1S clears, so we skip LANE_UNLOAD
-        and use UNSET_LANE_LOADED instead. Filament remains in PTFE tube for manual clearing.
+        Handle cross-extruder swap for AMS lanes - triggers immediately when runout detected.
+        Unlike Box Turtle units, AMS can't pull filament back once F1S clears.
+        CHANGE_TOOL handles the lane state transition. Filament remains in PTFE tube for manual clearing.
         """
         change_lane = self.afc.lanes.get(target_lane_name)
         if not change_lane:
             self.logger.error("Target lane {} not found for cross-extruder swap from {}".format(target_lane_name, empty_lane.name))
             return
 
-        self.logger.info("Simplified Cross-Extruder Swap: {} -> {} (immediate trigger)".format(empty_lane.name, change_lane.name))
+        self.logger.info("AMS Cross-Extruder Swap: {} -> {}".format(empty_lane.name, change_lane.name))
 
         # Set statuses
         empty_lane.status = AFCLaneState.NONE
@@ -2985,7 +2985,7 @@ class afcAMS(afcUnit):
             # Restore position and resume
             self.afc.restore_pos()
             self.afc.error.pause_resume.send_resume_command()
-            self.logger.info("Simplified cross-extruder swap complete: {} -> {}".format(empty_lane.name, change_lane.name))
+            self.logger.info("AMS cross-extruder swap complete: {} -> {}".format(empty_lane.name, change_lane.name))
         else:
             self.logger.error("Error during cross-extruder swap, print remains paused")
 
@@ -3008,8 +3008,8 @@ class afcAMS(afcUnit):
         OLD METHOD - Handle cross-extruder infinite spool swap for OpenAMS.
         Like AFC's _perform_infinite_runout() but skips LANE_UNLOAD (filament already ran out).
         Called after: F1S False ? 60mm hub clear ? PTFE calc ? filament at extruder gears.
-        NOTE: This method is now deprecated in favor of _perform_simplified_cross_extruder_swap
-        which triggers immediately and uses LANE_UNLOAD like Box Turtle units.
+        NOTE: This method is now deprecated in favor of _perform_ams_cross_extruder_swap
+        which triggers immediately without waiting for PTFE calculation.
         """
         # Get runout_lane from stored swap info (more reliable than lane attribute)
         runout_lane_name = None
