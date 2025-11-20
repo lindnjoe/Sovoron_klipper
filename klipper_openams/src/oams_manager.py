@@ -2176,13 +2176,19 @@ class OAMSManager:
                 source_lane_name = fps_state.current_lane
                 active_oams = fps_state.current_oams
 
+                self.logger.info("RELOAD CALLBACK: fps_name=%s, source_lane_name=%s", fps_name, source_lane_name)
+
                 # Check if this is a cross-extruder runout - handle it directly with simple commands
                 afc = self._get_afc()
+                self.logger.info("RELOAD CALLBACK: afc=%s", afc is not None)
                 if afc and source_lane_name:
                     lane = afc.lanes.get(source_lane_name)
-                    if lane and getattr(lane, '_oams_cross_extruder_runout', False):
+                    self.logger.info("RELOAD CALLBACK: lane=%s", lane is not None)
+                    if lane:
+                        flag = getattr(lane, '_oams_cross_extruder_runout', False)
                         runout_target = getattr(lane, "runout_lane", None)
-                        if runout_target:
+                        self.logger.info("RELOAD CALLBACK: flag=%s, runout_target=%s", flag, runout_target)
+                        if flag and runout_target:
                             self.logger.info("Cross-extruder runout for %s -> %s, running UNSET_LANE_LOADED + CHANGE_TOOL",
                                            source_lane_name, runout_target)
                             try:
