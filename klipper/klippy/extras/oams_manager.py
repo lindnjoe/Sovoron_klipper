@@ -110,6 +110,7 @@ class OAMSRunoutMonitor:
 
         self.hardware_service = None
         self.latest_lane_name: Optional[str] = None
+        self._last_hubs_empty: Optional[bool] = None
         if AMSRunoutCoordinator is not None:
             try:
                 self.hardware_service = AMSRunoutCoordinator.register_runout_monitor(self)
@@ -138,6 +139,20 @@ class OAMSRunoutMonitor:
                 oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
                 if oams_obj is None:
                     return eventtime + MONITOR_ENCODER_PERIOD
+
+                hubs_have_filament = self._hubs_have_filament(oams_obj)
+                if hubs_have_filament is False:
+                    if not self._last_hubs_empty:
+                        logging.info("OAMS: All hubs empty on %s, disabling follower", self.fps_name)
+                    try:
+                        oams_obj.set_oams_follower(0, 1)
+                    except Exception:
+                        logging.exception("OAMS: Failed to disable follower when hubs are empty on %s", self.fps_name)
+                    finally:
+                        fps_state.following = False
+                        self._last_hubs_empty = True
+                elif hubs_have_filament:
+                    self._last_hubs_empty = False
 
                 spool_idx = fps_state.current_spool_idx
                 if spool_idx is None:
@@ -220,6 +235,31 @@ class OAMSRunoutMonitor:
         
         self._timer_callback = _monitor_runout
         self.timer = None  # Don't register timer until start() is called
+
+    def _hubs_have_filament(self, oams_obj) -> Optional[bool]:
+        """Return True if any hub sensor reports filament, False if all are empty."""
+        try:
+            hub_values = getattr(oams_obj, "hub_hes_value", None)
+        except Exception:
+            hub_values = None
+
+        if hub_values is not None:
+            try:
+                return any(bool(val) for val in hub_values)
+            except Exception:
+                return None
+
+        if self.hardware_service is not None and self.latest_lane_name:
+            try:
+                snapshot = self.hardware_service.latest_lane_snapshot(self.fps_name, self.latest_lane_name)
+            except Exception:
+                snapshot = None
+            if snapshot is not None:
+                hub_state = snapshot.get("hub_state")
+                if hub_state is not None:
+                    return bool(hub_state)
+
+        return None
 
     def start(self) -> None:
         if self.timer is None:
@@ -2173,54 +2213,11 @@ class OAMSManager:
 
             def _reload_callback(fps_name=fps_name, fps_state=self.current_state.fps_state[fps_name]):
                 monitor = self.runout_monitors.get(fps_name)
-                source_lane_name = fps_state.current_lane
+                source_lane_name = fps_state.current_lane or (monitor.latest_lane_name if monitor else None)
                 active_oams = fps_state.current_oams
 
-                # Check if we have a stored cross-extruder target lane
-                cross_extruder_target = None
-                afc = self._get_afc()
-                if afc and source_lane_name:
-                    # Check if lane has a stored cross-extruder target
-                    lane = afc.lanes.get(source_lane_name)
-                    if lane:
-                        cross_extruder_target = getattr(lane, '_oams_cross_extruder_target', None)
-
-                self.logger.info("RELOAD CALLBACK: fps_name=%s, source_lane=%s, cross_extruder_target=%s",
-                               fps_name, source_lane_name, cross_extruder_target)
-
-                if cross_extruder_target:
-                    self.logger.info("Cross-extruder runout for %s -> %s, running UNSET_LANE_LOADED + CHANGE_TOOL",
-                                   source_lane_name, cross_extruder_target)
-                    try:
-                        gcode = self.printer.lookup_object('gcode')
-                        self.logger.info("Running UNSET_LANE_LOADED for %s", source_lane_name)
-                        gcode.run_script_from_command("UNSET_LANE_LOADED")
-
-                        self.logger.info("Running CHANGE_TOOL LANE=%s", cross_extruder_target)
-                        gcode.run_script_from_command("CHANGE_TOOL LANE={}".format(cross_extruder_target))
-
-                        # Clear the stored target
-                        lane = afc.lanes.get(source_lane_name)
-                        if lane and hasattr(lane, '_oams_cross_extruder_target'):
-                            delattr(lane, '_oams_cross_extruder_target')
-
-                        # Reset and restart monitoring
-                        fps_state.reset_runout_positions()
-                        if monitor:
-                            monitor.reset()
-                            monitor.start()
-
-                        self.logger.info("Cross-extruder swap complete: %s -> %s", source_lane_name, cross_extruder_target)
-                        return
-                    except Exception:
-                        self.logger.exception("Failed to perform cross-extruder swap %s -> %s", source_lane_name, cross_extruder_target)
-                        self._pause_printer_message(f"Failed cross-extruder swap {source_lane_name} -> {cross_extruder_target}", active_oams)
-                        if monitor:
-                            monitor.paused()
-                        return
-
                 target_lane_map, target_lane, delegate_to_afc, source_lane = self._get_infinite_runout_target_lane(fps_name, fps_state)
-                source_lane_name = fps_state.current_lane
+                source_lane_name = fps_state.current_lane or source_lane or source_lane_name
 
                 if delegate_to_afc:
                     delegated = self._delegate_runout_to_afc(fps_name, fps_state, source_lane, target_lane)
@@ -2240,6 +2237,14 @@ class OAMSManager:
 
                 # Load the target lane directly
                 if target_lane is None:
+                    # Fall back to AFC delegation if we couldn't resolve a lane locally
+                    if source_lane_name and self._delegate_runout_to_afc(fps_name, fps_state, source_lane_name, target_lane):
+                        fps_state.reset_runout_positions()
+                        if monitor:
+                            monitor.reset()
+                            monitor.start()
+                        return
+
                     self.logger.error("No lane available to reload on %s", fps_name)
                     self._pause_printer_message(f"No lane available to reload on {fps_name}", fps_state.current_oams or active_oams)
                     if monitor:

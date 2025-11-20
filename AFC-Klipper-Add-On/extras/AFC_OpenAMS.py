@@ -57,6 +57,7 @@ except Exception:
 SYNC_INTERVAL = 2.0
 SYNC_INTERVAL_IDLE = 4.0  # Doubled when idle
 IDLE_POLL_THRESHOLD = 3  # Number of polls before going idle
+CROSS_EXTRUDER_Z_HOP = 5.0
 
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 
@@ -1649,19 +1650,31 @@ class afcAMS(afcUnit):
         # Detect F1S sensor going False (spool empty) - trigger runout detection AFTER sensor update
         # Only trigger if printer is actively printing (not during filament insertion/removal)
         if prev_val and not lane_val:
+            is_cross_extruder = self._is_cross_extruder_lane(lane)
             try:
                 is_printing = self.afc.function.is_printing()
             except Exception:
                 is_printing = False
 
             if is_printing:
-                self.logger.info("F1S sensor False for {} (spool empty, printing), triggering runout detection".format(lane.name))
-                try:
-                    self.handle_runout_detected(bay, None, lane_name=lane.name)
-                except Exception:
-                    self.logger.error("Failed to handle runout detection for {}".format(lane.name))
+                if is_cross_extruder:
+                    self.logger.info(
+                        "F1S sensor False for %s but cross-extruder runout now waits for hub sensor; skipping F1S trigger",
+                        lane.name,
+                    )
+                else:
+                    self.logger.info(
+                        "F1S sensor False for {} (spool empty, printing), triggering runout detection".format(lane.name)
+                    )
+                    try:
+                        self.handle_runout_detected(bay, None, lane_name=lane.name)
+                    except Exception:
+                        self.logger.error("Failed to handle runout detection for {}".format(lane.name))
             else:
-                self.logger.debug("F1S sensor False for {} but not printing - skipping runout detection (likely filament insertion/removal)".format(lane.name))
+                self.logger.debug(
+                    "F1S sensor False for %s but not printing - skipping runout detection (likely filament insertion/removal)"
+                    % lane.name
+                )
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -1696,12 +1709,36 @@ class afcAMS(afcUnit):
             return
 
         hub_val = bool(value)
-        if hub_val != self._last_hub_states.get(hub.name):
+        prev_hub_val = self._last_hub_states.get(hub.name)
+
+        if hub_val != prev_hub_val:
             hub.switch_pin_callback(eventtime, hub_val)
             fila = getattr(hub, "fila", None)
             if fila is not None:
                 fila.runout_helper.note_filament_present(eventtime, hub_val)
             self._last_hub_states[hub.name] = hub_val
+
+        # Detect hub sensor going False for cross-extruder infinite spool lanes
+        if prev_hub_val and not hub_val:
+            is_cross_extruder = self._is_cross_extruder_lane(lane)
+            if is_cross_extruder:
+                try:
+                    is_printing = self.afc.function.is_printing()
+                except Exception:
+                    is_printing = False
+
+                if is_printing:
+                    self.logger.info(
+                        "Hub sensor False for %s (cross-extruder), triggering runout detection", lane.name
+                    )
+                    try:
+                        self.handle_runout_detected(bay, None, lane_name=lane.name)
+                    except Exception:
+                        self.logger.error("Failed to handle runout detection for {}".format(lane.name))
+                else:
+                    self.logger.debug(
+                        "Hub sensor False for {} but not printing - skipping runout detection".format(lane.name)
+                    )
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -1715,7 +1752,29 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.error("Failed to update lane snapshot for %s", lane.name)
 
-    def _should_block_sensor_update_for_runout(self, lane, lane_val):
+    def _is_cross_extruder_lane(self, lane):
+        """Return True if the lane's runout target is on a different extruder."""
+
+        if lane is None:
+            return False
+
+        runout_lane_name = getattr(lane, "runout_lane", None)
+        if not runout_lane_name:
+            return False
+
+        target_lane = self.afc.lanes.get(runout_lane_name)
+        if target_lane is None:
+            return False
+
+        source_extruder = getattr(getattr(lane, "extruder_obj", None), "name", None)
+        target_extruder = getattr(getattr(target_lane, "extruder_obj", None), "name", None)
+
+        if not source_extruder or not target_extruder:
+            return False
+
+        return source_extruder != target_extruder
+
+    def _should_block_sensor_update_for_runout(self, lane, lane_val, previous_state=None):
         """Check if sensor update should be blocked due to active runout.
 
         Returns True if the update should be blocked, False otherwise.
@@ -1742,6 +1801,12 @@ class afcAMS(afcUnit):
 
         # Block only if conditions met and trying to set sensors to True
         if should_block and lane_val:
+            if previous_state is not None and not bool(previous_state):
+                self.logger.debug(
+                    "Allowing load/prep sync for %s despite runout flag (new filament detected)",
+                    getattr(lane, "name", "unknown"),
+                )
+                return False
             return True
         # Sensor confirms empty - always clear flag
         elif not lane_val:
@@ -1752,18 +1817,18 @@ class afcAMS(afcUnit):
 
     def _update_shared_lane(self, lane, lane_val, eventtime):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
-        # Check if runout handling requires blocking this sensor update
-        if self._should_block_sensor_update_for_runout(lane, lane_val):
-            # Update state tracking before returning to prevent duplicate processing
-            lane_name = getattr(lane, "name", None)
-            if lane_name:
-                self._last_lane_states[lane_name] = bool(lane_val)
-            return
+        previous_state = self._last_lane_states.get(lane.name)
 
-        if lane_val == self._last_lane_states.get(lane.name):
+        if lane_val == previous_state:
             return
 
         if lane_val:
+            if getattr(lane, "_oams_runout_detected", False):
+                lane._oams_runout_detected = False
+                lane._oams_same_fps_runout = False
+                lane._oams_cross_extruder_runout = False
+                lane._oams_regular_runout = False
+
             lane.load_state = False
             try:
                 lane.prep_callback(eventtime, True)
@@ -1825,13 +1890,20 @@ class afcAMS(afcUnit):
 
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
         """Apply a boolean lane sensor value using existing AFC callbacks."""
+        try:
+            share = getattr(lane, "ams_share_prep_load", False)
+        except Exception:
+            share = False
+
+        previous = self._last_lane_states.get(getattr(lane, "name", ""))
+
         # Check if runout has been detected for this lane
         # Only block sensor updates if:
         # 1. Runout flag is set AND
         # 2. Printer is actively printing AND
         # 3. Lane is currently loaded to tool AND
         # Check if runout handling requires blocking this sensor update
-        if self._should_block_sensor_update_for_runout(lane, lane_val):
+        if self._should_block_sensor_update_for_runout(lane, lane_val, previous):
             self.logger.debug("Ignoring sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
             # Update state tracking before returning to prevent duplicate processing
             lane_name = getattr(lane, "name", None)
@@ -1839,16 +1911,9 @@ class afcAMS(afcUnit):
                 self._last_lane_states[lane_name] = bool(lane_val)
             return
 
-        try:
-            share = getattr(lane, "ams_share_prep_load", False)
-        except Exception:
-            share = False
-
         if share:
             self._update_shared_lane(lane, lane_val, eventtime)
             return
-
-        previous = self._last_lane_states.get(getattr(lane, "name", ""))
 
         if previous is not None and bool(previous) == bool(lane_val):
             return
@@ -1866,6 +1931,15 @@ class afcAMS(afcUnit):
             lane.prep_callback(eventtime, prep_state=lane_val)
         except Exception:
             self.logger.error("Failed to update prep sensor for lane %s", lane)
+
+        if lane_val and getattr(lane, "_oams_runout_detected", False):
+            lane._oams_runout_detected = False
+            lane._oams_same_fps_runout = False
+            lane._oams_cross_extruder_runout = False
+            lane._oams_regular_runout = False
+            self.logger.debug(
+                "Cleared runout flags for %s after new filament detected", getattr(lane, "name", "unknown")
+            )
 
         # When sensor goes False (empty), clear tool_loaded like same-FPS runout does
         # This mimics the behavior in _update_shared_lane() for non-shared lanes
@@ -2968,6 +3042,13 @@ class afcAMS(afcUnit):
 
         # Save position
         self.afc.save_pos()
+
+        # Lift nozzle off the print while waiting on the new tool's temperature
+        try:
+            current_z = self.afc.gcode_move.last_position[2]
+            self.afc.move_z_pos(current_z + CROSS_EXTRUDER_Z_HOP, "cross_extruder_swap_z_hop", wait_moves=True)
+        except Exception:
+            self.logger.exception("Failed to perform z-hop before cross-extruder swap")
 
         # Load new lane (don't restore position yet)
         # No need to UNSET_LANE_LOADED - we're switching to a different extruder
