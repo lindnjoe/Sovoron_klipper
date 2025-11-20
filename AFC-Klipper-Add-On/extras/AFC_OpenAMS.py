@@ -2132,12 +2132,10 @@ class afcAMS(afcUnit):
                 lane._oams_same_fps_runout = False
                 lane._oams_regular_runout = False
 
-                # Store the target lane name in a simple dictionary on the unit
-                if not hasattr(self, '_cross_extruder_targets'):
-                    self._cross_extruder_targets = {}
-                self._cross_extruder_targets[lane.name] = runout_lane_name
+                # Store the target lane directly on the lane object itself
+                lane._oams_cross_extruder_target = runout_lane_name
 
-                self.logger.info("Cross-extruder runout: {} -> {} (stored for reload)".format(
+                self.logger.info("Cross-extruder runout: {} -> {} (stored on lane)".format(
                     lane.name, runout_lane_name))
             elif is_same_fps_runout:
                 # Same-FPS runout - OpenAMS handles internally
