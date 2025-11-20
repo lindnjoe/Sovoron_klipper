@@ -188,8 +188,8 @@ class OAMSRunoutMonitor:
             elif self.state == OAMSRunoutState.DETECTED:
                 # Check if cross-extruder swap was already handled by AFC
                 afc = self._get_afc_from_manager()
-                if afc and lane_name:
-                    lane = afc.lanes.get(lane_name)
+                if afc and self.latest_lane_name:
+                    lane = afc.lanes.get(self.latest_lane_name)
                     if lane and getattr(lane, '_oams_cross_extruder_runout', False):
                         logging.info("OAMS: Cross-extruder swap already handled for %s, resetting monitor", self.fps_name)
                         fps_state.reset_runout_positions()
@@ -213,8 +213,8 @@ class OAMSRunoutMonitor:
             elif self.state == OAMSRunoutState.COASTING:
                 # Check if cross-extruder swap was already handled by AFC
                 afc = self._get_afc_from_manager()
-                if afc and lane_name:
-                    lane = afc.lanes.get(lane_name)
+                if afc and self.latest_lane_name:
+                    lane = afc.lanes.get(self.latest_lane_name)
                     if lane and getattr(lane, '_oams_cross_extruder_runout', False):
                         logging.info("OAMS: Cross-extruder swap already handled for %s, resetting monitor", self.fps_name)
                         fps_state.reset_runout_positions()
@@ -336,6 +336,9 @@ class FPSState:
         self.consecutive_idle_polls: int = 0
         self.idle_backoff_level: int = 0  # 0-3 for exponential backoff (1x, 2x, 4x, 8x)
         self.last_state_change: Optional[float] = None
+
+        # Safety: Track if follower was disabled due to all hubs empty
+        self.all_hubs_empty_follower_disabled: bool = False
 
     def record_encoder_sample(self, value: int) -> Optional[int]:
         """Record encoder sample and return diff if we have 2 samples."""
@@ -1868,6 +1871,24 @@ class OAMSManager:
             except Exception:
                 self.logger.exception("Failed to read sensors for %s", fps_name)
                 return eventtime + MONITOR_ENCODER_PERIOD_IDLE
+
+            # Safety check: Disable follower if all hubs are empty
+            if oams and hes_values:
+                all_hubs_empty = all(not bool(hes_val) for hes_val in hes_values)
+
+                if all_hubs_empty and not fps_state.all_hubs_empty_follower_disabled:
+                    # All hubs are empty - disable follower for safety
+                    try:
+                        oams.set_oams_follower(0, 1)
+                        fps_state.following = False
+                        fps_state.all_hubs_empty_follower_disabled = True
+                        self.logger.info("SAFETY: All hubs empty on %s - disabled follower", fps_name)
+                    except Exception:
+                        self.logger.exception("Failed to disable follower on %s when all hubs empty", fps_name)
+                elif not all_hubs_empty and fps_state.all_hubs_empty_follower_disabled:
+                    # Hubs are no longer all empty - clear the flag
+                    fps_state.all_hubs_empty_follower_disabled = False
+                    self.logger.info("Hubs on %s are no longer all empty - follower can be enabled again", fps_name)
 
             now = self.reactor.monotonic()
             state_changed = False
