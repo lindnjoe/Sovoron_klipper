@@ -188,8 +188,8 @@ class OAMSRunoutMonitor:
             elif self.state == OAMSRunoutState.DETECTED:
                 # Check if cross-extruder swap was already handled by AFC
                 afc = self._get_afc_from_manager()
-                if afc and lane_name:
-                    lane = afc.lanes.get(lane_name)
+                if afc and self.latest_lane_name:
+                    lane = afc.lanes.get(self.latest_lane_name)
                     if lane and getattr(lane, '_oams_cross_extruder_runout', False):
                         logging.info("OAMS: Cross-extruder swap already handled for %s, resetting monitor", self.fps_name)
                         fps_state.reset_runout_positions()
@@ -213,8 +213,8 @@ class OAMSRunoutMonitor:
             elif self.state == OAMSRunoutState.COASTING:
                 # Check if cross-extruder swap was already handled by AFC
                 afc = self._get_afc_from_manager()
-                if afc and lane_name:
-                    lane = afc.lanes.get(lane_name)
+                if afc and self.latest_lane_name:
+                    lane = afc.lanes.get(self.latest_lane_name)
                     if lane and getattr(lane, '_oams_cross_extruder_runout', False):
                         logging.info("OAMS: Cross-extruder swap already handled for %s, resetting monitor", self.fps_name)
                         fps_state.reset_runout_positions()
