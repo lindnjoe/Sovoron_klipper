@@ -2181,7 +2181,7 @@ class OAMSManager:
                 afc = self._get_afc()
                 if afc and source_lane_name:
                     # Check if AFC_OpenAMS stored a cross-extruder target
-                    for unit in afc.extruders.values():
+                    for unit in afc.units.values():
                         if hasattr(unit, '_cross_extruder_targets') and source_lane_name in unit._cross_extruder_targets:
                             cross_extruder_target = unit._cross_extruder_targets[source_lane_name]
                             break
@@ -2201,7 +2201,7 @@ class OAMSManager:
                         gcode.run_script_from_command("CHANGE_TOOL LANE={}".format(cross_extruder_target))
 
                         # Clear the stored target
-                        for unit in afc.extruders.values():
+                        for unit in afc.units.values():
                             if hasattr(unit, '_cross_extruder_targets') and source_lane_name in unit._cross_extruder_targets:
                                 del unit._cross_extruder_targets[source_lane_name]
                                 break
