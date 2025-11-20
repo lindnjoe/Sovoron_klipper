@@ -1739,13 +1739,8 @@ class afcAMS(afcUnit):
 
     def _update_shared_lane(self, lane, lane_val, eventtime):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
-        # DEBUG: Log all sensor updates for troubleshooting
-        self.logger.info("DEBUG _update_shared_lane: lane={}, value={}, last_state={}".format(
-            lane.name, lane_val, self._last_lane_states.get(lane.name)))
-
         # Check if runout handling requires blocking this sensor update
         if self._should_block_sensor_update_for_runout(lane, lane_val):
-            self.logger.debug("Ignoring shared lane sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
             # Update state tracking before returning to prevent duplicate processing
             lane_name = getattr(lane, "name", None)
             if lane_name:
@@ -1753,7 +1748,6 @@ class afcAMS(afcUnit):
             return
 
         if lane_val == self._last_lane_states.get(lane.name):
-            self.logger.info("DEBUG: Skipping update for {} - value matches last_state (both={})".format(lane.name, lane_val))
             return
 
         if lane_val:
