@@ -986,25 +986,31 @@ class OAMSManager:
         - source_lane_name: Current source lane name
         """
         current_lane = fps_state.current_lane
+        self.logger.info("_get_infinite_runout_target_lane called for %s with current_lane=%s", fps_name, current_lane)
         if not current_lane:
+            self.logger.warning("_get_infinite_runout_target_lane: No current_lane for %s", fps_name)
             return None, None, False, None
 
         afc = self._get_afc()
         if afc is None:
+            self.logger.warning("_get_infinite_runout_target_lane: No AFC for %s", fps_name)
             return None, None, False, None
 
         lane_name, _ = self._resolve_lane_for_state(fps_state, current_lane, afc)
 
         if not lane_name:
+            self.logger.warning("_get_infinite_runout_target_lane: Could not resolve lane_name from current_lane %s for %s", current_lane, fps_name)
             return None, None, False, None
 
         lanes = getattr(afc, "lanes", {})
         lane = afc.lanes.get(lane_name)
         if lane is None:
+            self.logger.warning("_get_infinite_runout_target_lane: Lane %s not found in AFC for %s", lane_name, fps_name)
             return None, None, False, lane_name
 
         runout_lane_name = getattr(lane, "runout_lane", None)
         if not runout_lane_name:
+            self.logger.warning("_get_infinite_runout_target_lane: Lane %s has no runout_lane configured for %s", lane_name, fps_name)
             return None, None, False, lane_name
 
         target_lane = afc.lanes.get(runout_lane_name)
