@@ -2133,8 +2133,21 @@ class afcAMS(afcUnit):
                 lane._oams_regular_runout = False
 
                 # Store the target lane in fps_state so reload callback can use it
+                fps_state = None
                 if monitor and hasattr(monitor, 'fps_state'):
-                    monitor.fps_state.cross_extruder_target_lane = runout_lane_name
+                    fps_state = monitor.fps_state
+                else:
+                    try:
+                        oams_mgr = self.printer.lookup_object("oams_manager", None)
+                        if oams_mgr is not None:
+                            fps_name = oams_mgr.get_fps_for_afc_lane(lane.name)
+                            if fps_name:
+                                fps_state = oams_mgr.current_state.fps_state.get(fps_name)
+                    except Exception:
+                        fps_state = None
+
+                if fps_state is not None:
+                    fps_state.cross_extruder_target_lane = runout_lane_name
                     self.logger.info("Cross-extruder runout: {} -> {} (stored in fps_state)".format(
                         lane.name, runout_lane_name))
                 else:
