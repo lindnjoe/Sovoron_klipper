@@ -960,8 +960,20 @@ class OAMSManager:
 
     def _resolve_lane_for_state(self, fps_state: 'FPSState', lane_name: Optional[str], afc) -> Tuple[Optional[str], Optional[str]]:
         """Resolve lane name from FPS state. Returns (lane_name, None) - group support removed."""
-        # If lane_name provided, return it
+        # If lane_name provided, try to resolve it
         if lane_name:
+            # First, check if it's already a valid lane name
+            if lane_name in afc.lanes:
+                return lane_name, None
+
+            # If not, it might be a tool/map name (like "T11") - search for matching lane
+            for actual_lane_name, lane_obj in afc.lanes.items():
+                lane_map = getattr(lane_obj, "map", None)
+                if lane_map and lane_map == lane_name:
+                    self.logger.info("Resolved tool name %s to lane %s", lane_name, actual_lane_name)
+                    return actual_lane_name, None
+
+            # If we still haven't found it, return it as-is (for backward compatibility)
             return lane_name, None
 
         # Try to get from current state (legacy location-based lookup)
