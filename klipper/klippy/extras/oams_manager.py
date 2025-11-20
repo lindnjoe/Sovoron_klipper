@@ -110,7 +110,6 @@ class OAMSRunoutMonitor:
 
         self.hardware_service = None
         self.latest_lane_name: Optional[str] = None
-        self._last_hubs_empty: Optional[bool] = None
         if AMSRunoutCoordinator is not None:
             try:
                 self.hardware_service = AMSRunoutCoordinator.register_runout_monitor(self)
@@ -139,20 +138,6 @@ class OAMSRunoutMonitor:
                 oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
                 if oams_obj is None:
                     return eventtime + MONITOR_ENCODER_PERIOD
-
-                hubs_have_filament = self._hubs_have_filament(oams_obj)
-                if hubs_have_filament is False:
-                    if not self._last_hubs_empty:
-                        logging.info("OAMS: All hubs empty on %s, disabling follower", self.fps_name)
-                    try:
-                        oams_obj.set_oams_follower(0, 1)
-                    except Exception:
-                        logging.exception("OAMS: Failed to disable follower when hubs are empty on %s", self.fps_name)
-                    finally:
-                        fps_state.following = False
-                        self._last_hubs_empty = True
-                elif hubs_have_filament:
-                    self._last_hubs_empty = False
 
                 spool_idx = fps_state.current_spool_idx
                 if spool_idx is None:
@@ -201,6 +186,17 @@ class OAMSRunoutMonitor:
                             logging.getLogger(__name__).exception("Failed to notify AFC about OpenAMS runout")
 
             elif self.state == OAMSRunoutState.DETECTED:
+                # Check if cross-extruder swap was already handled by AFC
+                afc = self._get_afc_from_manager()
+                if afc and lane_name:
+                    lane = afc.lanes.get(lane_name)
+                    if lane and getattr(lane, '_oams_cross_extruder_runout', False):
+                        logging.info("OAMS: Cross-extruder swap already handled for %s, resetting monitor", self.fps_name)
+                        fps_state.reset_runout_positions()
+                        self.reset()
+                        self.start()
+                        return eventtime + MONITOR_ENCODER_PERIOD
+
                 traveled_distance = fps.extruder.last_position - self.runout_position
                 if traveled_distance >= PAUSE_DISTANCE:
                     logging.info("OAMS: Pause complete, coasting the follower.")
@@ -215,6 +211,17 @@ class OAMSRunoutMonitor:
                     self.state = OAMSRunoutState.COASTING
 
             elif self.state == OAMSRunoutState.COASTING:
+                # Check if cross-extruder swap was already handled by AFC
+                afc = self._get_afc_from_manager()
+                if afc and lane_name:
+                    lane = afc.lanes.get(lane_name)
+                    if lane and getattr(lane, '_oams_cross_extruder_runout', False):
+                        logging.info("OAMS: Cross-extruder swap already handled for %s, resetting monitor", self.fps_name)
+                        fps_state.reset_runout_positions()
+                        self.reset()
+                        self.start()
+                        return eventtime + MONITOR_ENCODER_PERIOD
+
                 traveled_distance_after_bldc_clear = max(fps.extruder.last_position - self.bldc_clear_position, 0.0)
                 self.runout_after_position = traveled_distance_after_bldc_clear
                 try:
@@ -236,30 +243,12 @@ class OAMSRunoutMonitor:
         self._timer_callback = _monitor_runout
         self.timer = None  # Don't register timer until start() is called
 
-    def _hubs_have_filament(self, oams_obj) -> Optional[bool]:
-        """Return True if any hub sensor reports filament, False if all are empty."""
+    def _get_afc_from_manager(self):
+        """Get AFC object from printer."""
         try:
-            hub_values = getattr(oams_obj, "hub_hes_value", None)
+            return self.printer.lookup_object('AFC')
         except Exception:
-            hub_values = None
-
-        if hub_values is not None:
-            try:
-                return any(bool(val) for val in hub_values)
-            except Exception:
-                return None
-
-        if self.hardware_service is not None and self.latest_lane_name:
-            try:
-                snapshot = self.hardware_service.latest_lane_snapshot(self.fps_name, self.latest_lane_name)
-            except Exception:
-                snapshot = None
-            if snapshot is not None:
-                hub_state = snapshot.get("hub_state")
-                if hub_state is not None:
-                    return bool(hub_state)
-
-        return None
+            return None
 
     def start(self) -> None:
         if self.timer is None:
@@ -2215,6 +2204,22 @@ class OAMSManager:
                 monitor = self.runout_monitors.get(fps_name)
                 source_lane_name = fps_state.current_lane
                 active_oams = fps_state.current_oams
+
+                # Check if cross-extruder swap was already handled immediately by AFC
+                afc = self._get_afc()
+                if afc and source_lane_name:
+                    lane = afc.lanes.get(source_lane_name)
+                    if lane and getattr(lane, '_oams_cross_extruder_runout', False):
+                        self.logger.info("RELOAD CALLBACK: Cross-extruder swap for %s was already handled immediately, skipping", source_lane_name)
+                        # Reset and restart monitoring
+                        fps_state.reset_runout_positions()
+                        if monitor:
+                            monitor.reset()
+                            monitor.start()
+                        return
+
+                self.logger.info("RELOAD CALLBACK: fps_name=%s, source_lane=%s (same-FPS or regular runout)",
+                               fps_name, source_lane_name)
 
                 target_lane_map, target_lane, delegate_to_afc, source_lane = self._get_infinite_runout_target_lane(fps_name, fps_state)
                 source_lane_name = fps_state.current_lane
