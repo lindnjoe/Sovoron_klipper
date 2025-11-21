@@ -960,8 +960,6 @@ class afc:
         This function handles the unloading of a specified lane from the extruder. It performs
         several checks and movements to ensure the lane is properly unloaded.
 
-        For AMS lanes, this command is remapped to use AMS_EJECT logic (heat extruder, form/cut tip, retract).
-
         Usage
         -----
         `LANE_UNLOAD LANE=<lane>`
@@ -982,21 +980,6 @@ class afc:
             self.logger.info('{} Unknown'.format(lane))
             return
         cur_lane = self.lanes[lane]
-
-        # Check if this is an AMS lane - if so, use AMS_EJECT logic instead
-        unit_obj = getattr(cur_lane, 'unit_obj', None)
-        if unit_obj is not None:
-            # Import afcAMS to check instance type
-            try:
-                from extras.AFC_OpenAMS import afcAMS
-                if isinstance(unit_obj, afcAMS):
-                    self.logger.info("LANE_UNLOAD: {} is an AMS lane, using AMS_EJECT logic".format(lane))
-                    # Call the AMS unit's cmd_AMS_EJECT method
-                    unit_obj.cmd_AMS_EJECT(gcmd)
-                    return
-            except ImportError:
-                pass  # AFC_OpenAMS not available, proceed with normal unload
-
         self.LANE_UNLOAD( cur_lane )
 
     def LANE_UNLOAD(self, cur_lane):
