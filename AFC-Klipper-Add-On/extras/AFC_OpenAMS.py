@@ -3291,6 +3291,15 @@ class afcAMS(afcUnit):
         cls._sync_instances[self.name] = self
 
     @classmethod
+    def _get_shared_registry(cls):
+        """Return any available LaneRegistry instance for dispatch helpers."""
+        instance = next(iter(cls._sync_instances.values()), None)
+        if instance is None:
+            return None
+
+        return getattr(instance, "registry", None)
+
+    @classmethod
     def _extract_raw_param(cls, commandline: str, key: str) -> Optional[str]:
         """Recover multi-word parameter values from the raw command line."""
         if not commandline:
@@ -3351,6 +3360,19 @@ class afcAMS(afcUnit):
         lane_identifier = gcmd.get("LANE", None)
         if lane_identifier is None:
             lane_identifier = cls._extract_raw_param(gcmd.get_commandline(), "LANE")
+
+        registry_lane_name = None
+        if lane_identifier:
+            registry = cls._get_shared_registry()
+            if registry is not None:
+                lane_info = registry.get_by_lane(lane_identifier) or registry.get_by_lane_map(lane_identifier)
+                if lane_info is not None:
+                    registry_lane_name = lane_info.lane_name
+                    if not unit_value:
+                        unit_value = lane_info.unit_name
+
+        if registry_lane_name:
+            lane_identifier = registry_lane_name
 
         if not lane_identifier:
             gcmd.respond_info("AMS_EJECT requires LANE parameter (e.g., LANE=lane11)")
