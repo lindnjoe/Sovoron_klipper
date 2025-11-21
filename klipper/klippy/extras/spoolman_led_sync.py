@@ -98,7 +98,7 @@ class SpoolmanLEDSync:
             self.logger.info("Successfully hooked afc_led function")
 
         except Exception as e:
-            self.logger.exception("Failed to hook afc_led function: %s", e)
+            self.logger.error("Failed to hook afc_led function: %s", e)
 
     def _find_lane_by_led_index(self, index):
         """Find the lane that owns this LED index"""
@@ -210,7 +210,7 @@ class SpoolmanLEDSync:
             self.logger.info("Successfully hooked %d/%d units for LED color override", units_hooked, num_units)
 
         except Exception as e:
-            self.logger.exception("Failed to hook into AFC units: %s", e)
+            self.logger.error("Failed to hook into AFC units: %s", e)
 
     def _make_wrapped_lane_tool_loaded(self, original_func):
         """Wrapper for lane_tool_loaded - active tool with Spoolman color or default"""
@@ -319,7 +319,7 @@ class SpoolmanLEDSync:
             for lane_name, lane in self.afc.lanes.items():
                 self._set_lane_led_color(lane)
         except Exception as e:
-            self.logger.exception("Error updating lane LEDs: %s", e)
+            self.logger.error("Error updating lane LEDs: %s", e)
 
     def _set_lane_led_color(self, lane):
         """
