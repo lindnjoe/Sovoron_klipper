@@ -92,7 +92,8 @@ class OAMS:
         self.hub_hes_is_above: bool = config.getboolean("hub_hes_is_above")
         
         # Physical configuration
-        self.filament_path_length: float = config.getfloat("ptfe_length")
+        self.ptfe_length: float = config.getfloat("ptfe_length")
+        self.filament_path_length: float = self.ptfe_length
         self.oams_idx: int = config.getint("oams_idx")
 
         # PID control parameters for pressure
