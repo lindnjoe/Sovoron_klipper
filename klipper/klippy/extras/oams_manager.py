@@ -42,6 +42,7 @@ MONITOR_ENCODER_PERIOD_IDLE = 4.0  # OPTIMIZATION: Longer interval when idle
 MONITOR_ENCODER_SPEED_GRACE = 2.0
 AFC_DELEGATION_TIMEOUT = 30.0
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
+FOLLOWER_HUB_CLEAR_GRACE_MM = 50.0
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
 STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
@@ -321,6 +322,8 @@ class FPSState:
 
         self.following: bool = False
         self.direction: int = 0
+        self.follower_latched: bool = False
+        self.follower_latch_direction: int = 1
         self.since: Optional[float] = None
 
         self.afc_delegation_active: bool = False
@@ -760,6 +763,7 @@ class OAMSManager:
             # If already unloaded or no OAMS, just mark as not following and return
             if not fps_state.current_oams:
                 fps_state.following = False
+                fps_state.follower_latched = False
                 self.logger.info("Follower disable requested on %s but no OAMS loaded, marking as not following", fps_name)
                 return
 
@@ -768,6 +772,7 @@ class OAMSManager:
                 try:
                     oams_obj.set_oams_follower(0, direction)
                     fps_state.following = False
+                    fps_state.follower_latched = False
                     self.logger.info("Disabled follower on %s", fps_name)
                 except Exception:
                     self.logger.exception("Failed to disable follower on %s", fps_state.current_oams)
@@ -789,6 +794,8 @@ class OAMSManager:
             oams_obj.set_oams_follower(enable, direction)
             fps_state.following = bool(enable)
             fps_state.direction = direction
+            fps_state.follower_latched = True
+            fps_state.follower_latch_direction = direction
             self.logger.info("OAMSM_FOLLOWER: successfully enabled follower on %s", fps_name)
         except Exception:
             self.logger.exception("Failed to set follower on %s", fps_state.current_oams)
@@ -1900,23 +1907,46 @@ class OAMSManager:
                 self.logger.exception("Failed to read sensors for %s", fps_name)
                 return eventtime + MONITOR_ENCODER_PERIOD_IDLE
 
-            # Safety check: Disable follower if all hubs are empty
+            # Restore a manually latched follower if something cleared it
+            if oams and fps_state.follower_latched and not fps_state.following:
+                try:
+                    oams.set_oams_follower(1, fps_state.follower_latch_direction)
+                    fps_state.following = True
+                    fps_state.direction = fps_state.follower_latch_direction
+                    self.logger.info("Restored latched follower on %s", fps_name)
+                except Exception:
+                    self.logger.exception("Failed to restore latched follower on %s", fps_name)
+
+            # Safety check: Disable follower if all hubs are empty (with same-FPS runout grace)
             if oams and hes_values:
                 all_hubs_empty = all(not bool(hes_val) for hes_val in hes_values)
 
-                if all_hubs_empty and not fps_state.all_hubs_empty_follower_disabled:
-                    # All hubs are empty - disable follower for safety
+                suppress_all_hubs_empty_check = False
+                monitor = self.runout_monitors.get(fps_name)
+                if monitor and monitor.state in (OAMSRunoutState.DETECTED, OAMSRunoutState.COASTING):
                     try:
-                        oams.set_oams_follower(0, 1)
-                        fps_state.following = False
-                        fps_state.all_hubs_empty_follower_disabled = True
-                        self.logger.info("SAFETY: All hubs empty on %s - disabled follower", fps_name)
+                        extruder_pos = fps.extruder.last_position
                     except Exception:
-                        self.logger.exception("Failed to disable follower on %s when all hubs empty", fps_name)
-                elif not all_hubs_empty and fps_state.all_hubs_empty_follower_disabled:
-                    # Hubs are no longer all empty - clear the flag
-                    fps_state.all_hubs_empty_follower_disabled = False
-                    self.logger.info("Hubs on %s are no longer all empty - follower can be enabled again", fps_name)
+                        extruder_pos = None
+                    if monitor.runout_position is not None and extruder_pos is not None:
+                        distance_since_runout = max(extruder_pos - monitor.runout_position, 0.0)
+                        if distance_since_runout < FOLLOWER_HUB_CLEAR_GRACE_MM:
+                            suppress_all_hubs_empty_check = True
+
+                if not suppress_all_hubs_empty_check:
+                    if all_hubs_empty and not fps_state.all_hubs_empty_follower_disabled and not fps_state.follower_latched:
+                        # All hubs are empty - disable follower for safety
+                        try:
+                            oams.set_oams_follower(0, 1)
+                            fps_state.following = False
+                            fps_state.all_hubs_empty_follower_disabled = True
+                            self.logger.info("SAFETY: All hubs empty on %s - disabled follower", fps_name)
+                        except Exception:
+                            self.logger.exception("Failed to disable follower on %s when all hubs empty", fps_name)
+                    elif not all_hubs_empty and fps_state.all_hubs_empty_follower_disabled:
+                        # Hubs are no longer all empty - clear the flag
+                        fps_state.all_hubs_empty_follower_disabled = False
+                        self.logger.info("Hubs on %s are no longer all empty - follower can be enabled again", fps_name)
 
             now = self.reactor.monotonic()
             state_changed = False
