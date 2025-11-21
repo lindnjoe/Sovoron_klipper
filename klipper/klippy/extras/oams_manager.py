@@ -784,8 +784,9 @@ class OAMSManager:
             return
 
         # When enabling, we need a valid OAMS. If none is tracked yet, try to
-        # derive the base unit for this FPS from AFC lane metadata so manual
-        # follower commands can be used before a lane is loaded.
+        # resolve it from AFC lane metadata so manual follower commands work
+        # before a lane is loaded. Prefer the AFC unit's configured oams_name
+        # (e.g., "oams1") and fall back to unit strings (e.g., "oams oams1").
         oams_obj = self.oams.get(fps_state.current_oams)
         if oams_obj is None:
             afc = self._get_afc()
@@ -795,18 +796,33 @@ class OAMSManager:
                     if mapped_fps != fps_name:
                         continue
 
-                    unit_name = self._lane_unit_map.get(lane_name)
-                    if not unit_name:
-                        continue
+                    lane_obj = afc.lanes.get(lane_name)
+                    unit_obj = getattr(lane_obj, "unit_obj", None) if lane_obj else None
+                    lane_unit = getattr(unit_obj, "oams_name", None)
 
-                    base_unit = unit_name.split(":", 1)[0]
-                    oams_obj = (
-                        self.oams.get(base_unit)
-                        or self.oams.get(f"oams {base_unit}")
-                        or self.oams.get(f"OAMS {base_unit}")
-                    )
+                    unit_name = self._lane_unit_map.get(lane_name)
+                    base_unit = unit_name.split(":", 1)[0] if unit_name else None
+
+                    candidate_names = []
+                    if lane_unit:
+                        candidate_names.extend([
+                            lane_unit,
+                            f"oams {lane_unit}",
+                            f"OAMS {lane_unit}",
+                        ])
+                    if base_unit:
+                        candidate_names.extend([
+                            base_unit,
+                            f"oams {base_unit}",
+                            f"OAMS {base_unit}",
+                        ])
+
+                    for candidate in candidate_names:
+                        oams_obj = self.oams.get(candidate)
+                        if oams_obj:
+                            fps_state.current_oams = oams_obj.name
+                            break
                     if oams_obj:
-                        fps_state.current_oams = oams_obj.name
                         break
 
         if oams_obj is None:
