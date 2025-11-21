@@ -42,6 +42,7 @@ MONITOR_ENCODER_PERIOD_IDLE = 4.0  # OPTIMIZATION: Longer interval when idle
 MONITOR_ENCODER_SPEED_GRACE = 2.0
 AFC_DELEGATION_TIMEOUT = 30.0
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
+FOLLOWER_HUB_CLEAR_GRACE_MM = 50.0
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
 STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
@@ -224,12 +225,24 @@ class OAMSRunoutMonitor:
 
                 traveled_distance_after_bldc_clear = max(fps.extruder.last_position - self.bldc_clear_position, 0.0)
                 self.runout_after_position = traveled_distance_after_bldc_clear
+                oams = self.oams[fps_state.current_oams]
                 try:
-                    path_length = getattr(self.oams[fps_state.current_oams], "filament_path_length", 0.0)
+                    path_length = getattr(oams, "ptfe_length", None)
                 except Exception:
-                    logging.exception("OAMS: Failed to read filament path length while coasting on %s", self.fps_name)
+                    logging.exception(
+                        "OAMS: Failed to read PTFE length while coasting on %s", self.fps_name
+                    )
                     return eventtime + MONITOR_ENCODER_PERIOD
-                
+
+                if not path_length:
+                    if not getattr(self, "_path_length_missing_logged", False):
+                        logging.error(
+                            "OAMS: ptfe_length missing for %s; cannot compute same-FPS runout coast distance",
+                            self.fps_name,
+                        )
+                        self._path_length_missing_logged = True
+                    return eventtime + MONITOR_ENCODER_PERIOD
+
                 effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
                 consumed_with_margin = (self.runout_after_position + PAUSE_DISTANCE + self.reload_before_toolhead_distance)
 
@@ -411,7 +424,6 @@ class OAMSManager:
         self.ready: bool = False
 
         self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
-
         sensitivity = config.get("clog_sensitivity", CLOG_SENSITIVITY_DEFAULT).lower()
         if sensitivity not in CLOG_SENSITIVITY_LEVELS:
             self.logger.warning("Unknown clog_sensitivity '%s', using %s", sensitivity, CLOG_SENSITIVITY_DEFAULT)
@@ -1889,23 +1901,36 @@ class OAMSManager:
                 self.logger.exception("Failed to read sensors for %s", fps_name)
                 return eventtime + MONITOR_ENCODER_PERIOD_IDLE
 
-            # Safety check: Disable follower if all hubs are empty
+            # Safety check: Disable follower if all hubs are empty (with same-FPS runout grace)
             if oams and hes_values:
                 all_hubs_empty = all(not bool(hes_val) for hes_val in hes_values)
 
-                if all_hubs_empty and not fps_state.all_hubs_empty_follower_disabled:
-                    # All hubs are empty - disable follower for safety
+                suppress_all_hubs_empty_check = False
+                monitor = self.runout_monitors.get(fps_name)
+                if monitor and monitor.state in (OAMSRunoutState.DETECTED, OAMSRunoutState.COASTING):
                     try:
-                        oams.set_oams_follower(0, 1)
-                        fps_state.following = False
-                        fps_state.all_hubs_empty_follower_disabled = True
-                        self.logger.info("SAFETY: All hubs empty on %s - disabled follower", fps_name)
+                        extruder_pos = fps.extruder.last_position
                     except Exception:
-                        self.logger.exception("Failed to disable follower on %s when all hubs empty", fps_name)
-                elif not all_hubs_empty and fps_state.all_hubs_empty_follower_disabled:
-                    # Hubs are no longer all empty - clear the flag
-                    fps_state.all_hubs_empty_follower_disabled = False
-                    self.logger.info("Hubs on %s are no longer all empty - follower can be enabled again", fps_name)
+                        extruder_pos = None
+                    if monitor.runout_position is not None and extruder_pos is not None:
+                        distance_since_runout = max(extruder_pos - monitor.runout_position, 0.0)
+                        if distance_since_runout < FOLLOWER_HUB_CLEAR_GRACE_MM:
+                            suppress_all_hubs_empty_check = True
+
+                if not suppress_all_hubs_empty_check:
+                    if all_hubs_empty and not fps_state.all_hubs_empty_follower_disabled:
+                        # All hubs are empty - disable follower for safety
+                        try:
+                            oams.set_oams_follower(0, 1)
+                            fps_state.following = False
+                            fps_state.all_hubs_empty_follower_disabled = True
+                            self.logger.info("SAFETY: All hubs empty on %s - disabled follower", fps_name)
+                        except Exception:
+                            self.logger.exception("Failed to disable follower on %s when all hubs empty", fps_name)
+                    elif not all_hubs_empty and fps_state.all_hubs_empty_follower_disabled:
+                        # Hubs are no longer all empty - clear the flag
+                        fps_state.all_hubs_empty_follower_disabled = False
+                        self.logger.info("Hubs on %s are no longer all empty - follower can be enabled again", fps_name)
 
             now = self.reactor.monotonic()
             state_changed = False
@@ -2336,11 +2361,21 @@ class OAMSManager:
                 if monitor:
                     monitor.paused()
 
-            fps_reload_margin = getattr(self.fpss[fps_name], "reload_before_toolhead_distance", None)
+            fps_obj = self.fpss[fps_name]
+
+            fps_reload_margin = getattr(fps_obj, "reload_before_toolhead_distance", None)
             if fps_reload_margin is None:
                 fps_reload_margin = self.reload_before_toolhead_distance
 
-            monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], self.current_state.fps_state[fps_name], self.oams, _reload_callback, reload_before_toolhead_distance=fps_reload_margin)
+            monitor = OAMSRunoutMonitor(
+                self.printer,
+                fps_name,
+                fps_obj,
+                self.current_state.fps_state[fps_name],
+                self.oams,
+                _reload_callback,
+                reload_before_toolhead_distance=fps_reload_margin,
+            )
             self.runout_monitors[fps_name] = monitor
             monitor.start()
 
