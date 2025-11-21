@@ -313,6 +313,41 @@ class afcAMS(afcUnit):
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_PTFE", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_PTFE, desc="calibrate the OpenAMS PTFE length for a specific lane")
         self.gcode.register_mux_command("UNIT_PTFE_CALIBRATION", "UNIT", self.name, self.cmd_UNIT_PTFE_CALIBRATION, desc="show OpenAMS PTFE calibration menu")
 
+        # Monkey patch LANE_UNLOAD to use AMS_EJECT for AMS lanes
+        self._install_lane_unload_patch()
+
+    def _install_lane_unload_patch(self):
+        """Monkey patch AFC.cmd_LANE_UNLOAD to redirect AMS lanes to AMS_EJECT."""
+        # Only patch once, on first AMS unit initialization
+        if hasattr(self.afc.__class__, '_original_cmd_LANE_UNLOAD'):
+            return  # Already patched
+
+        # Store reference to original method
+        original_cmd_LANE_UNLOAD = self.afc.cmd_LANE_UNLOAD
+        self.afc.__class__._original_cmd_LANE_UNLOAD = original_cmd_LANE_UNLOAD
+
+        # Create wrapper that intercepts AMS lane calls
+        def patched_cmd_LANE_UNLOAD(afc_self, gcmd):
+            """Wrapper for LANE_UNLOAD that redirects AMS lanes to AMS_EJECT."""
+            lane_name = gcmd.get('LANE', None)
+            if lane_name and lane_name in afc_self.lanes:
+                cur_lane = afc_self.lanes[lane_name]
+                unit_obj = getattr(cur_lane, 'unit_obj', None)
+
+                # Check if this is an AMS lane
+                if isinstance(unit_obj, afcAMS):
+                    afc_self.logger.info("LANE_UNLOAD: {} is an AMS lane, using AMS_EJECT logic".format(lane_name))
+                    # Call the AMS unit's cmd_AMS_EJECT method
+                    unit_obj.cmd_AMS_EJECT(gcmd)
+                    return
+
+            # Not an AMS lane, use original method
+            original_cmd_LANE_UNLOAD(gcmd)
+
+        # Replace the method on the AFC instance
+        self.afc.cmd_LANE_UNLOAD = MethodType(patched_cmd_LANE_UNLOAD, self.afc)
+        self.logger.info("Monkey patched LANE_UNLOAD to use AMS_EJECT for AMS lanes")
+
     def _is_openams_unit(self):
         """Check if this unit has OpenAMS hardware available."""
         return self.oams is not None
