@@ -1889,7 +1889,7 @@ class OAMSManager:
             self.logger.debug("OAMS[%d] Unload Monitor: Encoder diff %d", getattr(oams, "oams_idx", -1), encoder_diff)
         
         if encoder_diff < MIN_ENCODER_DIFF:
-            group_label = fps_state.current_lane or fps_name
+            lane_label = fps_state.current_lane or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
             
             # Abort the current unload operation cleanly
@@ -1914,7 +1914,7 @@ class OAMSManager:
             fps_state.stuck_spool_active = True
             fps_state.stuck_spool_start_time = None
             
-            self.logger.info("Spool appears stuck while unloading %s spool %s - letting retry logic handle it", group_label, spool_label)
+            self.logger.info("Spool appears stuck while unloading %s spool %s - letting retry logic handle it", lane_label, spool_label)
 
     def _check_load_speed(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
         """Check load speed using optimized encoder tracking and FPS pressure monitoring."""
@@ -1953,7 +1953,7 @@ class OAMSManager:
             stuck_reason = f"FPS pressure {pressure:.2f} >= {self.load_fps_stuck_threshold:.2f} (filament not engaging)"
 
         if stuck_detected:
-            group_label = fps_state.current_lane or fps_name
+            lane_label = fps_state.current_lane or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
 
             # Abort the current load operation cleanly
@@ -1979,7 +1979,7 @@ class OAMSManager:
             fps_state.stuck_spool_start_time = None
 
             self.logger.info("Spool appears stuck while loading %s spool %s (%s) - letting retry logic handle it",
-                           group_label, spool_label, stuck_reason)
+                           lane_label, spool_label, stuck_reason)
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, pressure, hes_values, now):
         """Check for stuck spool conditions (OPTIMIZED)."""
