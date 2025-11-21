@@ -157,10 +157,10 @@ class OAMSRunoutMonitor:
                     if snapshot:
                         hub_state = snapshot.get("hub_state")
                         lane_state = snapshot.get("lane_state")
-                        if hub_state is not None:
-                            spool_empty = not bool(hub_state)
-                        elif lane_state is not None:
+                        if lane_state is not None:
                             spool_empty = not bool(lane_state)
+                        elif hub_state is not None:
+                            spool_empty = not bool(hub_state)
 
                 if spool_empty is None:
                     try:
@@ -169,7 +169,7 @@ class OAMSRunoutMonitor:
                             return eventtime + MONITOR_ENCODER_PERIOD
                         spool_empty = not bool(hes_values[spool_idx])
                     except Exception:
-                        logging.exception("OAMS: Failed to read HES values for runout detection on %s", self.fps_name)
+                        logging.error("OAMS: Failed to read HES values for runout detection on %s", self.fps_name)
                         return eventtime + MONITOR_ENCODER_PERIOD
 
                 self.latest_lane_name = lane_name
@@ -203,7 +203,7 @@ class OAMSRunoutMonitor:
                     try:
                         self.oams[fps_state.current_oams].set_oams_follower(0, 1)
                     except Exception:
-                        logging.exception("OAMS: Failed to stop follower while coasting on %s", self.fps_name)
+                        logging.error("OAMS: Failed to stop follower while coasting on %s", self.fps_name)
                     finally:
                         fps_state.following = False
                     self.bldc_clear_position = fps.extruder.last_position
@@ -228,7 +228,7 @@ class OAMSRunoutMonitor:
                 try:
                     path_length = getattr(oams, "ptfe_length", None)
                 except Exception:
-                    logging.exception(
+                    logging.error(
                         "OAMS: Failed to read PTFE length while coasting on %s", self.fps_name
                     )
                     return eventtime + MONITOR_ENCODER_PERIOD
