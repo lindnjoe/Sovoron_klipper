@@ -1773,10 +1773,25 @@ class afcAMS(afcUnit):
                 self._last_lane_states[lane_name] = bool(lane_val)
             return
 
-        if lane_val == self._last_lane_states.get(lane.name):
+        prep_state = getattr(lane, "prep_state", None)
+        load_state = getattr(lane, "load_state", None)
+        sensors_out_of_sync = (prep_state != lane_val) or (load_state != lane_val)
+
+        previous_state = self._last_lane_states.get(lane.name)
+
+        if lane_val == self._last_lane_states.get(lane.name) and not sensors_out_of_sync:
             return
 
-        if lane_val:
+        target_state = bool(lane_val)
+
+        if target_state:
+            # Ensure we start from a clean spool state before applying defaults/spoolman
+            if previous_state is not True:
+                try:
+                    lane.afc.spool.clear_values(lane)
+                except Exception:
+                    self.logger.debug("Failed to reset spool values for %s before load", getattr(lane, "name", "unknown"), exc_info=True)
+
             lane.load_state = False
             try:
                 lane.prep_callback(eventtime, True)
@@ -1833,8 +1848,12 @@ class afcAMS(afcUnit):
             else:
                 self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
 
+        # Force prep/load states to remain aligned for shared AMS sensors
+        lane.prep_state = target_state
+        lane.load_state = target_state
+
         lane.afc.save_vars()
-        self._last_lane_states[lane.name] = lane_val
+        self._last_lane_states[lane.name] = target_state
 
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
         """Apply a boolean lane sensor value using existing AFC callbacks."""
