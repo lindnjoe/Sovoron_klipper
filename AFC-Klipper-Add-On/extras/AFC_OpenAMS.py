@@ -1657,7 +1657,7 @@ class afcAMS(afcUnit):
                 self._mirror_lane_to_virtual_sensor(lane, eventtime)
                 self._last_lane_states[lane.name] = lane_val
 
-        # Detect F1S sensor going False (spool empty) - trigger runout immediately
+        # Detect F1S sensor going False (spool empty) - set flag to wait for hub clear
         # Only trigger if printer is actively printing (not during filament insertion/removal)
         if prev_val and not lane_val:
             try:
@@ -1666,13 +1666,25 @@ class afcAMS(afcUnit):
                 is_printing = False
 
             if is_printing:
-                self.logger.info("F1S sensor False for {} (spool empty, printing), triggering runout detection".format(lane.name))
-                try:
-                    self.handle_runout_detected(bay, None, lane_name=lane.name)
-                except Exception:
-                    self.logger.error("Failed to handle runout detection for {}".format(lane.name))
+                # F1S went false - set flag to wait for hub sensor to clear
+                # This lets filament run out to hub, clearing the hub motor
+                if not hasattr(lane, '_waiting_for_hub_clear'):
+                    lane._waiting_for_hub_clear = False
+
+                lane._waiting_for_hub_clear = True
+                self.logger.info("F1S sensor False for {} (spool empty, printing), waiting for hub to clear before triggering runout".format(lane.name))
             else:
                 self.logger.debug("F1S sensor False for {} but not printing - skipping runout detection (likely filament insertion/removal)".format(lane.name))
+
+        # Clear waiting flags if F1S goes True again (new filament loaded)
+        elif not prev_val and lane_val:
+            if getattr(lane, '_waiting_for_hub_clear', False):
+                self.logger.info("F1S sensor True for {} - clearing hub wait flag (new filament loaded)".format(lane.name))
+                lane._waiting_for_hub_clear = False
+            if getattr(lane, '_waiting_for_extrusion_buffer', False):
+                self.logger.info("F1S sensor True for {} - clearing extrusion buffer wait (new filament loaded)".format(lane.name))
+                lane._waiting_for_extrusion_buffer = False
+                lane._hub_clear_extruder_pos = None
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -1715,6 +1727,33 @@ class afcAMS(afcUnit):
             if fila is not None:
                 fila.runout_helper.note_filament_present(eventtime, hub_val)
             self._last_hub_states[hub.name] = hub_val
+
+            # Check if we're waiting for hub to clear after F1S went false
+            if not hub_val and getattr(lane, '_waiting_for_hub_clear', False):
+                # Hub sensor just went false - start tracking extrusion for 20mm buffer
+                self.logger.info("Hub sensor cleared for {}, waiting for 20mm extrusion buffer before triggering runout".format(lane.name))
+                lane._waiting_for_hub_clear = False
+                lane._waiting_for_extrusion_buffer = True
+
+                # Store current extruder position
+                try:
+                    extruder = self.afc.toolhead.get_extruder()
+                    lane._hub_clear_extruder_pos = extruder.last_position
+                    self.logger.info("Hub cleared at extruder position {:.2f}mm for {}".format(lane._hub_clear_extruder_pos, lane.name))
+                except Exception:
+                    self.logger.exception("Failed to get extruder position for hub clear tracking on {}".format(lane.name))
+                    # Fallback: trigger immediately if we can't track
+                    lane._waiting_for_extrusion_buffer = False
+                    try:
+                        is_printing = self.afc.function.is_printing()
+                    except Exception:
+                        is_printing = False
+
+                    if is_printing:
+                        try:
+                            self.handle_runout_detected(bay, None, lane_name=lane.name)
+                        except Exception:
+                            self.logger.error("Failed to handle runout detection for {}".format(lane.name))
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -1773,25 +1812,10 @@ class afcAMS(afcUnit):
                 self._last_lane_states[lane_name] = bool(lane_val)
             return
 
-        prep_state = getattr(lane, "prep_state", None)
-        load_state = getattr(lane, "load_state", None)
-        sensors_out_of_sync = (prep_state != lane_val) or (load_state != lane_val)
-
-        previous_state = self._last_lane_states.get(lane.name)
-
-        if lane_val == self._last_lane_states.get(lane.name) and not sensors_out_of_sync:
+        if lane_val == self._last_lane_states.get(lane.name):
             return
 
-        target_state = bool(lane_val)
-
-        if target_state:
-            # Ensure we start from a clean spool state before applying defaults/spoolman
-            if previous_state is not True:
-                try:
-                    lane.afc.spool.clear_values(lane)
-                except Exception:
-                    self.logger.debug("Failed to reset spool values for %s before load", getattr(lane, "name", "unknown"), exc_info=True)
-
+        if lane_val:
             lane.load_state = False
             try:
                 lane.prep_callback(eventtime, True)
@@ -1848,12 +1872,8 @@ class afcAMS(afcUnit):
             else:
                 self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
 
-        # Force prep/load states to remain aligned for shared AMS sensors
-        lane.prep_state = target_state
-        lane.load_state = target_state
-
         lane.afc.save_vars()
-        self._last_lane_states[lane.name] = target_state
+        self._last_lane_states[lane.name] = lane_val
 
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
         """Apply a boolean lane sensor value using existing AFC callbacks."""
@@ -1946,6 +1966,53 @@ class afcAMS(afcUnit):
         if lane_name:
             self._last_lane_states[lane_name] = bool(lane_val)
 
+    def _check_extrusion_buffer_runouts(self, eventtime):
+        """Check if any lanes have extruded 20mm past hub clear and trigger runout."""
+        EXTRUSION_BUFFER = 20.0  # mm to extrude past hub clear before triggering runout
+
+        try:
+            extruder = self.afc.toolhead.get_extruder()
+            current_extruder_pos = extruder.last_position
+        except Exception:
+            return  # Can't check without extruder position
+
+        for lane in self.lanes.values():
+            if not getattr(lane, '_waiting_for_extrusion_buffer', False):
+                continue
+
+            hub_clear_pos = getattr(lane, '_hub_clear_extruder_pos', None)
+            if hub_clear_pos is None:
+                continue
+
+            extruded_distance = current_extruder_pos - hub_clear_pos
+
+            if extruded_distance >= EXTRUSION_BUFFER:
+                self.logger.info("Extruded {:.2f}mm past hub clear for {}, triggering runout".format(
+                    extruded_distance, lane.name))
+
+                # Clear flags and trigger runout
+                lane._waiting_for_extrusion_buffer = False
+                lane._hub_clear_extruder_pos = None
+
+                try:
+                    is_printing = self.afc.function.is_printing()
+                except Exception:
+                    is_printing = False
+
+                if is_printing:
+                    # Find bay/spool index for this lane
+                    bay = None
+                    for idx, candidate_lane in enumerate(self.lanes.values()):
+                        if candidate_lane == lane:
+                            bay = idx
+                            break
+
+                    if bay is not None:
+                        try:
+                            self.handle_runout_detected(bay, None, lane_name=lane.name)
+                        except Exception:
+                            self.logger.error("Failed to handle runout detection for {}".format(lane.name))
+
     def _sync_event(self, eventtime):
         """Poll OpenAMS for state updates and propagate to lanes/hubs"""
         try:
@@ -1963,6 +2030,9 @@ class afcAMS(afcUnit):
 
             if not status:
                 return eventtime + self.interval_idle
+
+            # Check for lanes waiting for 20mm extrusion buffer after hub clear
+            self._check_extrusion_buffer_runouts(eventtime)
 
             encoder_clicks = status.get("encoder_clicks")
             try:
