@@ -1267,6 +1267,85 @@ class afcAMS(afcUnit):
             eventtime = instance.reactor.monotonic()
             instance._sync_virtual_tool_sensor(eventtime, resolved_lane)
 
+    cmd_AMS_EJECT_help = "Eject filament from AMS lane - heats extruder, forms/cuts tip, retracts"
+    def cmd_AMS_EJECT(self, gcmd):
+        """
+        AMS_EJECT command - Ejects filament from an AMS lane.
+
+        Usage: AMS_EJECT LANE=lane11
+
+        Steps:
+        1. Heat the lane's assigned extruder to 240°C and wait
+        2. Run tool_cut_cmd if tool_cut is True, OR form_tip_cmd if form_tip is True
+        3. Retract by extruder's tool_stn_unload amount
+        """
+        # Get lane parameter
+        lane_name = gcmd.get('LANE', None)
+        if not lane_name:
+            gcmd.respond_info("AMS_EJECT requires LANE parameter (e.g., LANE=lane11)")
+            return
+
+        # Get the lane object
+        lane = self.afc.lanes.get(lane_name)
+        if not lane:
+            gcmd.respond_info("Lane {} not found".format(lane_name))
+            return
+
+        # Verify this lane belongs to this AMS unit
+        if getattr(lane, 'unit_obj', None) is not self:
+            gcmd.respond_info("Lane {} does not belong to AMS unit {}".format(lane_name, self.name))
+            return
+
+        # Get the lane's assigned extruder
+        extruder_obj = getattr(lane, 'extruder_obj', None)
+        if not extruder_obj:
+            gcmd.respond_info("Lane {} has no assigned extruder".format(lane_name))
+            return
+
+        # Get heaters object
+        pheaters = self.printer.lookup_object('heaters')
+
+        # Heat extruder to 240°C and wait
+        target_temp = 240.0
+        heater = extruder_obj.get_heater()
+
+        self.logger.info("AMS_EJECT: Heating {} to {}°C for lane {}".format(
+            extruder_obj.name, target_temp, lane_name))
+        gcmd.respond_info("Heating {} to {}°C...".format(extruder_obj.name, target_temp))
+
+        pheaters.set_temperature(heater, target_temp, wait=False)
+
+        # Wait for temperature with tolerance
+        self.afc._wait_for_temp_within_tolerance(heater, target_temp, self.afc.temp_wait_tolerance)
+
+        gcmd.respond_info("{} at temperature".format(extruder_obj.name))
+
+        # Run tool_cut_cmd or form_tip_cmd
+        if self.afc.tool_cut and self.afc.tool_cut_cmd:
+            self.logger.info("AMS_EJECT: Running tool_cut_cmd: {}".format(self.afc.tool_cut_cmd))
+            gcmd.respond_info("Running tool cut command...")
+            self.gcode.run_script_from_command(self.afc.tool_cut_cmd)
+        elif self.afc.form_tip and self.afc.form_tip_cmd:
+            self.logger.info("AMS_EJECT: Running form_tip_cmd: {}".format(self.afc.form_tip_cmd))
+            gcmd.respond_info("Running form tip command...")
+            self.gcode.run_script_from_command(self.afc.form_tip_cmd)
+        else:
+            self.logger.info("AMS_EJECT: No tool_cut or form_tip enabled, skipping tip forming")
+
+        # Retract by tool_stn_unload amount
+        unload_distance = extruder_obj.tool_stn_unload
+        if unload_distance > 0:
+            self.logger.info("AMS_EJECT: Retracting {} mm".format(unload_distance))
+            gcmd.respond_info("Retracting {} mm...".format(unload_distance))
+
+            # Perform retraction using extruder move
+            self.gcode.run_script_from_command('G91')  # Relative positioning
+            self.gcode.run_script_from_command('G1 E-{} F1800'.format(unload_distance))
+            self.gcode.run_script_from_command('G90')  # Absolute positioning
+
+        gcmd.respond_info("AMS_EJECT complete for {}".format(lane_name))
+        self.logger.info("AMS_EJECT complete for {}".format(lane_name))
+
     def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
         """Validate AMS lane state without attempting any motion."""
         msg = ""
@@ -3191,6 +3270,16 @@ class afcAMS(afcUnit):
                 "AFC_AMS_RESET_SENSORS_{}".format(self.name.upper()),
                 self.cmd_AMS_RESET_SENSORS,
                 desc=self.cmd_AMS_RESET_SENSORS_help,
+            )
+        except Exception:
+            pass  # Command might already be registered
+
+        # Register per-instance command for ejecting filament
+        try:
+            self.gcode.register_command(
+                "AMS_EJECT",
+                self.cmd_AMS_EJECT,
+                desc=self.cmd_AMS_EJECT_help,
             )
         except Exception:
             pass  # Command might already be registered
