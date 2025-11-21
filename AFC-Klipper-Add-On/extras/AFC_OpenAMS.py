@@ -694,12 +694,13 @@ class afcAMS(afcUnit):
         if lane is None:
             return None
 
+        tool_loaded = getattr(lane, "tool_loaded", None)
+        if tool_loaded is not None:
+            return bool(tool_loaded)
+
         load_state = getattr(lane, "load_state", None)
         if load_state is not None:
             return bool(load_state)
-
-        if getattr(lane, "tool_loaded", False):
-            return True
 
         return None
 
