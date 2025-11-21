@@ -155,11 +155,8 @@ class OAMSRunoutMonitor:
                     except Exception:
                         snapshot = None
                     if snapshot:
-                        hub_state = snapshot.get("hub_state")
                         lane_state = snapshot.get("lane_state")
-                        if hub_state is not None:
-                            spool_empty = not bool(hub_state)
-                        elif lane_state is not None:
+                        if lane_state is not None:
                             spool_empty = not bool(lane_state)
 
                 if spool_empty is None:
