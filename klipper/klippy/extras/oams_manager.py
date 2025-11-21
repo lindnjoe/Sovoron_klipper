@@ -227,9 +227,22 @@ class OAMSRunoutMonitor:
                 try:
                     path_length = getattr(self.oams[fps_state.current_oams], "filament_path_length", 0.0)
                 except Exception:
-                    logging.exception("OAMS: Failed to read filament path length while coasting on %s", self.fps_name)
-                    return eventtime + MONITOR_ENCODER_PERIOD
-                
+                    logging.exception(
+                        "OAMS: Failed to read filament path length while coasting on %s; using fallback",
+                        self.fps_name,
+                    )
+                    path_length = 0.0
+
+                if not path_length:
+                    fallback_length = 500.0
+                    if not getattr(self, "_path_length_fallback_logged", False):
+                        logging.warning(
+                            "OAMS: filament_path_length missing for %s; using %.1fmm fallback to finish coasting",
+                            self.fps_name, fallback_length,
+                        )
+                        self._path_length_fallback_logged = True
+                    path_length = fallback_length
+
                 effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
                 consumed_with_margin = (self.runout_after_position + PAUSE_DISTANCE + self.reload_before_toolhead_distance)
 
