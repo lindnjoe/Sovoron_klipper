@@ -783,8 +783,32 @@ class OAMSManager:
                 self.logger.info("Follower disable: OAMS %s not found, marking as not following", fps_state.current_oams)
             return
 
-        # When enabling, we need a valid OAMS
+        # When enabling, we need a valid OAMS. If none is tracked yet, try to
+        # derive the base unit for this FPS from AFC lane metadata so manual
+        # follower commands can be used before a lane is loaded.
         oams_obj = self.oams.get(fps_state.current_oams)
+        if oams_obj is None:
+            afc = self._get_afc()
+            if afc is not None:
+                self._ensure_afc_lane_cache(afc)
+                for lane_name, mapped_fps in self._lane_to_fps_cache.items():
+                    if mapped_fps != fps_name:
+                        continue
+
+                    unit_name = self._lane_unit_map.get(lane_name)
+                    if not unit_name:
+                        continue
+
+                    base_unit = unit_name.split(":", 1)[0]
+                    oams_obj = (
+                        self.oams.get(base_unit)
+                        or self.oams.get(f"oams {base_unit}")
+                        or self.oams.get(f"OAMS {base_unit}")
+                    )
+                    if oams_obj:
+                        fps_state.current_oams = oams_obj.name
+                        break
+
         if oams_obj is None:
             gcmd.respond_info(f"OAMS {fps_state.current_oams} is not available")
             return
