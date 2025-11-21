@@ -2983,13 +2983,6 @@ class afcAMS(afcUnit):
         # Save position
         self.afc.save_pos()
 
-        # Z-hop to prevent nozzle sitting on print during extruder heating
-        # Use configured z_hop value, or default to 5mm if not configured
-        z_hop_amount = self.afc.z_hop if self.afc.z_hop > 0 else 5.0
-        z_hop_pos = self.afc.last_gcode_position[2] + z_hop_amount
-        self.afc.move_z_pos(z_hop_pos, "AMS_cross_extruder_swap")
-        self.logger.info("Z-hopped {} mm before tool change".format(z_hop_amount))
-
         # Load new lane (don't restore position yet)
         # No need to UNSET_LANE_LOADED - we're switching to a different extruder
         # CHANGE_TOOL will handle setting up the new lane state
