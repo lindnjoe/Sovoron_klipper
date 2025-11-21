@@ -203,11 +203,20 @@ class OAMSRunoutMonitor:
                 traveled_distance_after_bldc_clear = max(fps.extruder.last_position - self.bldc_clear_position, 0.0)
                 self.runout_after_position = traveled_distance_after_bldc_clear
                 try:
-                    path_length = getattr(self.oams[fps_state.current_oams], "filament_path_length", 0.0)
+                    path_length = getattr(self.oams[fps_state.current_oams], "ptfe_length", None)
                 except Exception:
-                    logging.exception("OAMS: Failed to read filament path length while coasting on %s", self.fps_name)
+                    logging.exception("OAMS: Failed to read PTFE length while coasting on %s", self.fps_name)
                     return eventtime + MONITOR_ENCODER_PERIOD
-                
+
+                if not path_length:
+                    if not getattr(self, "_path_length_missing_logged", False):
+                        logging.error(
+                            "OAMS: ptfe_length missing for %s; cannot compute same-FPS runout coast distance",
+                            self.fps_name,
+                        )
+                        self._path_length_missing_logged = True
+                    return eventtime + MONITOR_ENCODER_PERIOD
+
                 effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
                 consumed_with_margin = (self.runout_after_position + PAUSE_DISTANCE + self.reload_before_toolhead_distance)
 
