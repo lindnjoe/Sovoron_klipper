@@ -1777,12 +1777,21 @@ class afcAMS(afcUnit):
         load_state = getattr(lane, "load_state", None)
         sensors_out_of_sync = (prep_state != lane_val) or (load_state != lane_val)
 
+        previous_state = self._last_lane_states.get(lane.name)
+
         if lane_val == self._last_lane_states.get(lane.name) and not sensors_out_of_sync:
             return
 
         target_state = bool(lane_val)
 
         if target_state:
+            # Ensure we start from a clean spool state before applying defaults/spoolman
+            if previous_state is not True:
+                try:
+                    lane.afc.spool.clear_values(lane)
+                except Exception:
+                    self.logger.debug("Failed to reset spool values for %s before load", getattr(lane, "name", "unknown"), exc_info=True)
+
             lane.load_state = False
             try:
                 lane.prep_callback(eventtime, True)
