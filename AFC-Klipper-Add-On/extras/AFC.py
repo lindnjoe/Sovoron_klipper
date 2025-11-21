@@ -986,40 +986,58 @@ class afc:
         cur_hub = cur_lane.hub_obj
 
         self.current_state = State.EJECTING_LANE
+        lane_enabled = False
+        try:
+            # TODO: add a check for multi-tools to verify lane is not loaded to toolhead before trying to unload
+            if cur_lane.name != cur_lane.extruder_obj.lane_loaded and not cur_lane.is_direct_hub():
+                # Setting status as ejecting so if filament is removed and de-activates the prep sensor while
+                # extruder motors are still running it does not trigger infinite spool or pause logic
+                # once user removes filament lanes status will go to None
+                cur_lane.status = AFCLaneState.EJECTING
+                self.save_vars()
+                cur_lane.do_enable(True)
+                lane_enabled = True
 
-        # TODO: add a check for multi-tools to verify lane is not loaded to toolhead before trying to unload
-        if cur_lane.name != cur_lane.extruder_obj.lane_loaded and not cur_lane.is_direct_hub():
-            # Setting status as ejecting so if filament is removed and de-activates the prep sensor while
-            # extruder motors are still running it does not trigger infinite spool or pause logic
-            # once user removes filament lanes status will go to None
-            cur_lane.status = AFCLaneState.EJECTING
-            self.save_vars()
-            cur_lane.do_enable(True)
-            if cur_lane.loaded_to_hub:
-                cur_lane.move_advanced(cur_lane.dist_hub * -1, SpeedMode.HUB, assist_active = AssistActive.DYNAMIC)
-            cur_lane.loaded_to_hub = False
-            while cur_lane.load_state:
-                cur_lane.move_advanced(cur_hub.move_dis * -1, SpeedMode.SHORT, assist_active = AssistActive.YES)
-            cur_lane.move_advanced(cur_hub.move_dis * -5, SpeedMode.SHORT)
-            cur_lane.do_enable(False)
-            cur_lane.status = AFCLaneState.NONE
-            cur_lane.unit_obj.return_to_home()
-            # Put CAM back to lane if its loaded to toolhead
-            self.function.select_loaded_lane()
-            self.save_vars()
+                # Unload from hub if needed
+                if cur_lane.loaded_to_hub:
+                    cur_lane.move_advanced(cur_lane.dist_hub * -1, SpeedMode.HUB, assist_active = AssistActive.DYNAMIC)
+                cur_lane.loaded_to_hub = False
 
-            # Removing spool from vars since it was ejected
-            self.spool.set_spoolID(cur_lane, "")
-            self.logger.info("LANE {} eject done".format(cur_lane.name))
-            self.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
+                # Safeguard against a stuck prep sensor causing an infinite loop
+                unload_deadline = self.reactor.monotonic() + 30
+                while cur_lane.load_state:
+                    if self.reactor.monotonic() >= unload_deadline:
+                        self.logger.error("LANE {} unload timed out waiting for prep sensor to clear".format(cur_lane.name))
+                        break
+                    cur_lane.move_advanced(cur_hub.move_dis * -1, SpeedMode.SHORT, assist_active = AssistActive.YES)
 
-        elif cur_lane.name == cur_lane.extruder_obj.lane_loaded:
-            self.logger.info("LANE {} is loaded in toolhead, can't unload.".format(cur_lane.name))
+                # Only finish retract if the sensor cleared or timed out gracefully
+                cur_lane.move_advanced(cur_hub.move_dis * -5, SpeedMode.SHORT)
+                cur_lane.do_enable(False)
+                lane_enabled = False
+                cur_lane.status = AFCLaneState.NONE
+                cur_lane.unit_obj.return_to_home()
+                # Put CAM back to lane if its loaded to toolhead
+                self.function.select_loaded_lane()
+                self.save_vars()
 
-        elif cur_lane.is_direct_hub():
-            self.logger.info("LANE {} is a direct lane must be tool unloaded.".format(cur_lane.name))
+                # Removing spool from vars since it was ejected
+                self.spool.set_spoolID(cur_lane, "")
+                self.logger.info("LANE {} eject done".format(cur_lane.name))
+                self.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
 
-        self.current_state = State.IDLE
+            elif cur_lane.name == cur_lane.extruder_obj.lane_loaded:
+                self.logger.info("LANE {} is loaded in toolhead, can't unload.".format(cur_lane.name))
+
+            elif cur_lane.is_direct_hub():
+                self.logger.info("LANE {} is a direct lane must be tool unloaded.".format(cur_lane.name))
+        finally:
+            if lane_enabled:
+                try:
+                    cur_lane.do_enable(False)
+                except Exception:
+                    pass
+            self.current_state = State.IDLE
 
     cmd_TOOL_LOAD_help = "Load lane into tool"
     def cmd_TOOL_LOAD(self, gcmd):

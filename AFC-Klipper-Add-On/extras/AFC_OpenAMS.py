@@ -236,6 +236,7 @@ class afcAMS(afcUnit):
     """AFC unit subclass that synchronises state with OpenAMS"""
 
     _sync_command_registered = False
+    _eject_command_registered = False
     _sync_instances: Dict[str, "afcAMS"] = {}
 
     def __init__(self, config):
@@ -498,23 +499,23 @@ class afcAMS(afcUnit):
             if idx >= 0 and self.registry is not None:
                 lane_name = getattr(lane, "name", None)
                 unit_name = self.oams_name or self.name
-                group = getattr(lane, "map", None)
-                if not group and lane_name:
+                lane_map = getattr(lane, "map", None)
+                if not lane_map and lane_name:
                     lane_num = ''.join(ch for ch in str(lane_name) if ch.isdigit())
                     if lane_num:
-                        group = f"T{lane_num}"
+                        lane_map = f"T{lane_num}"
                     else:
-                        group = str(lane_name)
+                        lane_map = str(lane_name)
 
                 extruder_name = getattr(lane, "extruder_name", None) or getattr(self, "extruder", None)
 
-                if lane_name and group and extruder_name:
+                if lane_name and extruder_name:
                     try:
                         self.registry.register_lane(
                             lane_name=lane_name,
                             unit_name=unit_name,
                             spool_index=idx,
-                            group=group,
+                            lane_map=lane_map,
                             extruder=extruder_name,
                             fps_name=None,
                             hub_name=getattr(lane, "hub", None),
@@ -928,12 +929,12 @@ class afcAMS(afcUnit):
         parts = normalized.replace("_", " ").replace("-", " ").split()
         return any(part.lower() == self.name.lower() for part in parts)
 
-    def _normalize_group_name(self, group: Optional[str]) -> Optional[str]:
-        """Return a trimmed filament group token for alias comparison."""
-        if not group or not isinstance(group, str):
+    def _normalize_lane_map(self, lane_map: Optional[str]) -> Optional[str]:
+        """Return a trimmed lane-map token for alias comparison."""
+        if not lane_map or not isinstance(lane_map, str):
             return None
 
-        normalized = group.strip()
+        normalized = lane_map.strip()
         if not normalized:
             return None
 
@@ -956,7 +957,7 @@ class afcAMS(afcUnit):
             return lane.name
 
         lowered = lookup.lower()
-        normalized_lookup = self._normalize_group_name(lookup)
+        normalized_lookup = self._normalize_lane_map(lookup)
         for lane in self.lanes.values():
             if lane.name.lower() == lowered:
                 return lane.name
@@ -965,7 +966,7 @@ class afcAMS(afcUnit):
             if isinstance(lane_map, str) and lane_map.lower() == lowered:
                 return lane.name
 
-            canonical_map = self._normalize_group_name(lane_map)
+            canonical_map = self._normalize_lane_map(lane_map)
             if (canonical_map is not None and normalized_lookup is not None and canonical_map.lower() == normalized_lookup.lower()):
                 return lane.name
 
@@ -1268,7 +1269,7 @@ class afcAMS(afcUnit):
             instance._sync_virtual_tool_sensor(eventtime, resolved_lane)
 
     cmd_AMS_EJECT_help = "Eject filament from AMS lane - heats extruder, forms/cuts tip, retracts"
-    def cmd_AMS_EJECT(self, gcmd):
+    def cmd_AMS_EJECT(self, gcmd, lane_override: Optional[str] = None):
         """
         AMS_EJECT command - Ejects filament from an AMS lane.
 
@@ -1280,10 +1281,14 @@ class afcAMS(afcUnit):
         3. Retract by extruder's tool_stn_unload amount
         """
         # Get lane parameter
-        lane_name = gcmd.get('LANE', None)
+        lane_name = lane_override if lane_override is not None else gcmd.get('LANE', None)
         if not lane_name:
             gcmd.respond_info("AMS_EJECT requires LANE parameter (e.g., LANE=lane11)")
             return
+
+        resolved_lane = self._resolve_lane_alias(lane_name)
+        if resolved_lane:
+            lane_name = resolved_lane
 
         # Get the lane object
         lane = self.afc.lanes.get(lane_name)
@@ -1514,13 +1519,6 @@ class afcAMS(afcUnit):
         self.logger.info("afcAMS instance: {}, type: {}".format(self, self.type))
 
     def _wrap_afc_lane_unload(self):
-        """
-        DISABLED: This wrapper is obsolete. We now block AFC entirely via check_runout()
-        for cross-extruder runouts, so LANE_UNLOAD is never called. The wrapper was
-        clearing the _oams_cross_extruder_runout flag, breaking our blocking logic.
-        """
-        return  # Disabled - obsolete with new check_runout() blocking approach
-
         if not hasattr(self, 'afc') or self.afc is None:
             return
 
@@ -1528,117 +1526,55 @@ class afcAMS(afcUnit):
         if not hasattr(self.afc, '_original_LANE_UNLOAD'):
             self.afc._original_LANE_UNLOAD = self.afc.LANE_UNLOAD
 
-            # Create wrapper
             def wrapped_lane_unload(gcmd_or_lane):
-                # LANE_UNLOAD can be called two ways:
-                # 1. As gcode command: LANE_UNLOAD LANE=lane7 (gcmd has .get())
-                # 2. Direct call: self.LANE_UNLOAD(cur_lane) (AFCLane object)
+                """Route AMS lanes through AMS_EJECT while leaving legacy lanes untouched."""
+
+                def _resolve_lane_from_name(name: Optional[str]):
+                    if not name:
+                        return None, None
+
+                    registry_name = name
+                    registry = self.__class__._get_shared_registry()
+                    if registry is not None:
+                        lane_info = registry.get_by_lane(name) or registry.get_by_lane_map(name)
+                        if lane_info is not None:
+                            registry_name = lane_info.lane_name
+
+                    alias_name = self._resolve_lane_alias(registry_name)
+                    lookup = alias_name or registry_name
+                    if lookup in self.afc.lanes:
+                        return self.afc.lanes[lookup], lookup
+
+                    return None, registry_name
+
                 lane = None
+                lane_name = None
 
-                # Check if it's a GCodeCommand (has 'get' method) or AFCLane object
                 if hasattr(gcmd_or_lane, 'get'):
-                    # Gcode command - extract lane name
                     lane_name = gcmd_or_lane.get('LANE', None)
-                    if lane_name and lane_name in self.afc.lanes:
-                        lane = self.afc.lanes[lane_name]
+                    if lane_name is None and hasattr(gcmd_or_lane, 'get_commandline'):
+                        lane_name = self._extract_raw_param(gcmd_or_lane.get_commandline(), 'LANE')
+                    lane, lane_name = _resolve_lane_from_name(lane_name)
                 elif hasattr(gcmd_or_lane, 'name'):
-                    # Direct lane object passed
                     lane = gcmd_or_lane
+                    lane_name = getattr(lane, 'name', None)
+                    if lane_name:
+                        lane_name = self._resolve_lane_alias(lane_name) or lane_name
 
-                # Check if this is an OpenAMS lane with cross-extruder runout flag
-                if lane is not None:
-                    if getattr(lane, 'unit_obj', None) is not None and getattr(lane.unit_obj, 'type', None) == "OpenAMS":
-                        is_cross_extruder = getattr(lane, '_oams_cross_extruder_runout', False)
-                        if is_cross_extruder:
-                            lane_name = getattr(lane, 'name', 'unknown')
-                            self.logger.info("Cross-Extruder LANE_UNLOAD for {} - clearing extruder.lane_loaded to bypass check".format(lane_name))
-                            try:
-                                # Get the extruder and current active extruder
-                                lane_extruder = getattr(lane, 'extruder_obj', None)
-                                current_extruder = self.afc.function.get_current_extruder()
+                unit_obj = getattr(lane, 'unit_obj', None)
+                if lane is not None and getattr(unit_obj, 'type', None) == "OpenAMS":
+                    lane_arg = lane_name or getattr(lane, 'name', 'unknown')
+                    try:
+                        self.logger.info("Routing LANE_UNLOAD for {} through AMS_EJECT".format(lane_arg))
+                        self.gcode.run_script_from_command("AMS_EJECT LANE={}".format(lane_arg))
+                    except Exception as exc:
+                        self.logger.error("Failed to dispatch AMS_EJECT for {}: {}".format(lane_arg, str(exc)))
+                    return
 
-                                # If lane is loaded in a different extruder than current, clear it
-                                if lane_extruder is not None and current_extruder != getattr(lane_extruder, 'name', None):
-                                    self.logger.info("Cross-Extruder: Lane {} on extruder {}, current is {} - clearing lane_loaded".format(
-                                        lane_name,
-                                        getattr(lane_extruder, 'name', 'unknown'),
-                                        current_extruder
-                                    ))
-                                    lane_extruder.lane_loaded = None
-                                    self.logger.info("Cross-Extruder: Cleared extruder.lane_loaded for cross-extruder unload")
-
-                                    # Also clear FPS state in OAMS manager
-                                    try:
-                                        oams_mgr = self.printer.lookup_object("oams_manager", None)
-                                        if oams_mgr is not None:
-                                            fps_name = oams_mgr.get_fps_for_afc_lane(lane_name)
-                                            if fps_name:
-                                                fps_state = oams_mgr.current_state.fps_state.get(fps_name)
-                                                if fps_state is not None:
-                                                    spool_index = fps_state.current_spool_idx
-
-                                                    # Clear FPS state (matching _unload_filament_for_fps logic)
-                                                    fps_state.state = 0  # FPSLoadState.UNLOADED
-                                                    fps_state.following = False
-                                                    fps_state.direction = 0
-                                                    fps_state.clog_restore_follower = False
-                                                    fps_state.clog_restore_direction = 1
-                                                    fps_state.since = self.reactor.monotonic()
-                                                    fps_state.current_lane = None
-                                                    fps_state.current_spool_idx = None
-                                                    if hasattr(fps_state, 'reset_stuck_spool_state'):
-                                                        fps_state.reset_stuck_spool_state()
-
-                                                    self.logger.info("Cross-Extruder: Cleared FPS state for {} (was spool {})".format(fps_name, spool_index))
-
-                                                    # Notify AFC via AMSRunoutCoordinator
-                                                    try:
-                                                        from .openams_integration import AMSRunoutCoordinator
-                                                        AMSRunoutCoordinator.notify_lane_tool_state(
-                                                            self.printer,
-                                                            self.oams_name,
-                                                            lane_name,
-                                                            loaded=False,
-                                                            spool_index=spool_index,
-                                                            eventtime=fps_state.since
-                                                        )
-                                                        self.logger.info("Cross-Extruder: Notified AFC that lane {} unloaded".format(lane_name))
-                                                    except Exception:
-                                                        self.logger.error("Failed to notify AFC about lane {} unload".format(lane_name))
-
-                                                    # Also manually set the virtual tool sensor to False for AMS virtual extruders
-                                                    # This ensures virtual sensor (e.g., AMS_Extruder4) shows correct state
-                                                    try:
-                                                        if lane_extruder is not None:
-                                                            extruder_name = getattr(lane_extruder, 'name', None)
-                                                            if extruder_name and extruder_name.upper().startswith('AMS_'):
-                                                                sensor_name = extruder_name.replace('ams_', '').replace('AMS_', '')
-                                                                sensor = self.printer.lookup_object("filament_switch_sensor {}".format(sensor_name), None)
-                                                                if sensor and hasattr(sensor, 'runout_helper'):
-                                                                    sensor.runout_helper.note_filament_present(self.reactor.monotonic(), is_filament_present=False)
-                                                                    self.logger.info("Cross-Extruder: Set virtual sensor {} to False after cross-extruder runout".format(sensor_name))
-                                                    except Exception:
-                                                        self.logger.error("Failed to update virtual sensor for lane {} during cross-extruder runout".format(lane_name))
-                                                else:
-                                                    self.logger.warning("Cross-Extruder: Could not find FPS state for {}".format(fps_name))
-                                            else:
-                                                self.logger.warning("Cross-Extruder: Could not find FPS name for lane {}".format(lane_name))
-                                        else:
-                                            self.logger.warning("Cross-Extruder: OAMS manager not found, FPS state not cleared")
-                                    except Exception:
-                                        self.logger.error("Failed to clear FPS state for lane {}".format(lane_name))
-
-                                # Clear the flag
-                                lane._oams_cross_extruder_runout = False
-                            except Exception as e:
-                                self.logger.error("Failed to handle cross-extruder LANE_UNLOAD for {}: {}".format(lane_name, str(e)))
-
-                # Call original method
                 return self.afc._original_LANE_UNLOAD(gcmd_or_lane)
 
-            # Apply wrapper
             self.afc.LANE_UNLOAD = wrapped_lane_unload
-            self.logger.info("Wrapped AFC.LANE_UNLOAD for cross-extruder runout handling")
+            self.logger.info("Wrapped AFC.LANE_UNLOAD to dispatch AMS lanes through AMS_EJECT")
 
     def _wrap_afc_tool_unload(self):
         """Wrap AFC's TOOL_UNLOAD to prevent unload attempts on OpenAMS runouts (filament already ran out)."""
@@ -3274,17 +3210,25 @@ class afcAMS(afcUnit):
         except Exception:
             pass  # Command might already be registered
 
-        # Register per-instance command for ejecting filament
-        try:
+        # Register shared command for ejecting filament
+        if not cls._eject_command_registered:
             self.gcode.register_command(
                 "AMS_EJECT",
-                self.cmd_AMS_EJECT,
+                cls._dispatch_eject,
                 desc=self.cmd_AMS_EJECT_help,
             )
-        except Exception:
-            pass  # Command might already be registered
+            cls._eject_command_registered = True
 
         cls._sync_instances[self.name] = self
+
+    @classmethod
+    def _get_shared_registry(cls):
+        """Return any available LaneRegistry instance for dispatch helpers."""
+        instance = next(iter(cls._sync_instances.values()), None)
+        if instance is None:
+            return None
+
+        return getattr(instance, "registry", None)
 
     @classmethod
     def _extract_raw_param(cls, commandline: str, key: str) -> Optional[str]:
@@ -3336,6 +3280,58 @@ class afcAMS(afcUnit):
             resolved_lane = instance._resolve_lane_alias(lane_name)
             eventtime = instance.reactor.monotonic()
             instance._sync_virtual_tool_sensor(eventtime, resolved_lane)
+
+    @classmethod
+    def _dispatch_eject(cls, gcmd):
+        """Route AMS_EJECT to the correct AMS instance based on lane or UNIT."""
+        unit_value = gcmd.get("UNIT", None)
+        if not unit_value:
+            unit_value = cls._extract_raw_param(gcmd.get_commandline(), "UNIT")
+
+        lane_identifier = gcmd.get("LANE", None)
+        if lane_identifier is None:
+            lane_identifier = cls._extract_raw_param(gcmd.get_commandline(), "LANE")
+
+        if not lane_identifier:
+            gcmd.respond_info("AMS_EJECT requires LANE parameter (e.g., LANE=lane11)")
+            return
+
+        registry = cls._get_shared_registry()
+        registry_lane_name = None
+        registry_unit_name = None
+        if registry is not None and lane_identifier:
+            lane_info = registry.get_by_lane(lane_identifier) or registry.get_by_lane_map(lane_identifier)
+            if lane_info is not None:
+                registry_lane_name = lane_info.lane_name
+                registry_unit_name = lane_info.unit_name
+                if not unit_value:
+                    unit_value = lane_info.unit_name
+
+        lookup_lane = registry_lane_name or lane_identifier
+
+        def _resolve_instance_lane(target_unit):
+            for instance in cls._sync_instances.values():
+                if target_unit is not None and not instance._unit_matches(target_unit):
+                    continue
+
+                resolved_lane = instance._resolve_lane_alias(lookup_lane)
+                if resolved_lane and resolved_lane in instance.lanes:
+                    return instance, resolved_lane
+
+            return None, None
+
+        instance, resolved_lane = _resolve_instance_lane(unit_value)
+        if instance is None and registry_unit_name is not None and registry_unit_name != unit_value:
+            instance, resolved_lane = _resolve_instance_lane(registry_unit_name)
+
+        if instance is not None and resolved_lane is not None:
+            instance.cmd_AMS_EJECT(gcmd, lane_override=resolved_lane)
+            return
+
+        if registry_unit_name is not None:
+            gcmd.respond_info("Lane {} not found on AMS unit {}".format(lookup_lane, registry_unit_name))
+        else:
+            gcmd.respond_info("Lane {} not found on any AMS unit".format(lookup_lane))
 
 def _patch_lane_pre_sensor_for_ams() -> None:
     """Patch AFCLane.get_toolhead_pre_sensor_state for AMS virtual sensors."""
