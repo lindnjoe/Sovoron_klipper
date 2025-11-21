@@ -1275,7 +1275,7 @@ class afcAMS(afcUnit):
         Usage: AMS_EJECT LANE=lane11
 
         Steps:
-        1. Heat the lane's assigned extruder to 240°C and wait
+        1. Heat the lane's assigned extruder to 240C and wait
         2. Run tool_cut_cmd if tool_cut is True, OR form_tip_cmd if form_tip is True
         3. Retract by extruder's tool_stn_unload amount
         """
@@ -1305,13 +1305,13 @@ class afcAMS(afcUnit):
         # Get heaters object
         pheaters = self.printer.lookup_object('heaters')
 
-        # Heat extruder to 240°C and wait
+        # Heat extruder to 240C and wait
         target_temp = 240.0
         heater = extruder_obj.get_heater()
 
-        self.logger.info("AMS_EJECT: Heating {} to {}°C for lane {}".format(
+        self.logger.info("AMS_EJECT: Heating {} to {}C for lane {}".format(
             extruder_obj.name, target_temp, lane_name))
-        gcmd.respond_info("Heating {} to {}°C...".format(extruder_obj.name, target_temp))
+        gcmd.respond_info("Heating {} to {}C...".format(extruder_obj.name, target_temp))
 
         pheaters.set_temperature(heater, target_temp, wait=False)
 
