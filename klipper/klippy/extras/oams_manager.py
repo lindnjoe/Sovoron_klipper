@@ -152,6 +152,9 @@ class OAMSRunoutMonitor:
                     try:
                         lane_name = self.hardware_service.resolve_lane_for_spool(unit_name, spool_idx)
                         snapshot = self.hardware_service.latest_lane_snapshot_for_spool(unit_name, spool_idx)
+                        if snapshot is None and fps_state.current_lane:
+                            lane_name = fps_state.current_lane
+                            snapshot = self.hardware_service.latest_lane_snapshot(unit_name, fps_state.current_lane)
                     except Exception:
                         snapshot = None
                     if snapshot:
