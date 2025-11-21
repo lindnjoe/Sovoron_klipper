@@ -771,7 +771,7 @@ class afcAMS(afcUnit):
                         other_lane.unsync_to_extruder()
                         other_lane.extruder_obj.lane_loaded = None
                 except Exception:
-                    self.logger.exception("Failed to unsync %s when new lane loaded", other_lane.name)
+                    self.logger.error("Failed to unsync %s when new lane loaded", other_lane.name)
                 # DEBUG: Log flag clearing
                 had_cross_flag = getattr(other_lane, '_oams_cross_extruder_runout', False)
                 if had_cross_flag:
@@ -1829,7 +1829,7 @@ class afcAMS(afcUnit):
                             lane.extruder_obj.lane_loaded = None
                             self.logger.debug("Unsynced shared lane %s and cleared extruder.lane_loaded when sensor went False", lane.name)
                 except Exception:
-                    self.logger.exception("Failed to unsync shared lane %s from extruder when sensor cleared", lane.name)
+                    self.logger.error("Failed to unsync shared lane %s from extruder when sensor cleared", lane.name)
             else:
                 self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
 
@@ -1911,7 +1911,7 @@ class afcAMS(afcUnit):
                             lane.extruder_obj.lane_loaded = None
                             self.logger.debug("Unsynced %s and cleared extruder.lane_loaded when sensor went False", lane.name)
                 except Exception:
-                    self.logger.exception("Failed to unsync %s from extruder when sensor cleared", lane.name)
+                    self.logger.error("Failed to unsync %s from extruder when sensor cleared", lane.name)
             else:
                 self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
             # Clear runout flags when resetting lane
@@ -2289,7 +2289,7 @@ class afcAMS(afcUnit):
                         try:
                             self._perform_openams_cross_extruder_swap(old_lane)
                         except Exception:
-                            self.logger.exception("Failed to execute cross-extruder swap for {}".format(old_lane_name))
+                            self.logger.error("Failed to execute cross-extruder swap for {}".format(old_lane_name))
                         # Remove from pending (already handled in _perform_openams_cross_extruder_swap, but belt-and-suspenders)
                         self._pending_cross_extruder_swaps.pop(old_lane_name, None)
                     break
@@ -2955,7 +2955,7 @@ class afcAMS(afcUnit):
             self.gcode.run_script_from_command("UNSET_LANE_LOADED")
             self.logger.info("Called UNSET_LANE_LOADED for {} (regular runout, filament at extruder gears)".format(empty_lane.name))
         except Exception:
-            self.logger.exception("Failed to call UNSET_LANE_LOADED for {}".format(empty_lane.name))
+            self.logger.error("Failed to call UNSET_LANE_LOADED for {}".format(empty_lane.name))
 
         # Clear stored runout info
         if hasattr(self, '_pending_regular_runouts') and empty_lane.name in self._pending_regular_runouts:
@@ -3012,7 +3012,7 @@ class afcAMS(afcUnit):
         try:
             self.gcode.run_script_from_command('SET_MAP LANE={} MAP={}'.format(change_lane.name, empty_lane.map))
         except Exception:
-            self.logger.exception("Failed to set map for cross-extruder swap")
+            self.logger.error("Failed to set map for cross-extruder swap")
 
         # Only continue if no error
         if not self.afc.error_state:
@@ -3087,7 +3087,7 @@ class afcAMS(afcUnit):
             self.gcode.run_script_from_command("UNSET_LANE_LOADED")
             self.logger.info("Called UNSET_LANE_LOADED for {} (filament already at extruder gears)".format(empty_lane.name))
         except Exception:
-            self.logger.exception("Failed to call UNSET_LANE_LOADED for {}".format(empty_lane.name))
+            self.logger.error("Failed to call UNSET_LANE_LOADED for {}".format(empty_lane.name))
 
         # Load new lane (don't restore position yet)
         self.afc.CHANGE_TOOL(change_lane, restore_pos=False)
@@ -3096,7 +3096,7 @@ class afcAMS(afcUnit):
         try:
             self.gcode.run_script_from_command('SET_MAP LANE={} MAP={}'.format(change_lane.name, empty_lane.map))
         except Exception:
-            self.logger.exception("Failed to set map for cross-extruder swap")
+            self.logger.error("Failed to set map for cross-extruder swap")
 
         # Only continue if no error
         if not self.afc.error_state:
@@ -3169,7 +3169,7 @@ class afcAMS(afcUnit):
                 try:
                     self._perform_openams_regular_runout(lane)
                 except Exception:
-                    self.logger.exception("Failed to perform OpenAMS regular runout for {}".format(lane_name))
+                    self.logger.error("Failed to perform OpenAMS regular runout for {}".format(lane_name))
             return False  # Block AFC, we handled it
 
         return bool(is_printing)

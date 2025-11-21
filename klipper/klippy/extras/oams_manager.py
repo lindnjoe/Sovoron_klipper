@@ -42,6 +42,7 @@ MONITOR_ENCODER_PERIOD_IDLE = 4.0  # OPTIMIZATION: Longer interval when idle
 MONITOR_ENCODER_SPEED_GRACE = 2.0
 AFC_DELEGATION_TIMEOUT = 30.0
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
+FOLLOWER_HUB_CLEAR_GRACE_MM = 50.0
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
 STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
@@ -224,12 +225,24 @@ class OAMSRunoutMonitor:
 
                 traveled_distance_after_bldc_clear = max(fps.extruder.last_position - self.bldc_clear_position, 0.0)
                 self.runout_after_position = traveled_distance_after_bldc_clear
+                oams = self.oams[fps_state.current_oams]
                 try:
-                    path_length = getattr(self.oams[fps_state.current_oams], "filament_path_length", 0.0)
+                    path_length = getattr(oams, "ptfe_length", None)
                 except Exception:
-                    logging.exception("OAMS: Failed to read filament path length while coasting on %s", self.fps_name)
+                    logging.exception(
+                        "OAMS: Failed to read PTFE length while coasting on %s", self.fps_name
+                    )
                     return eventtime + MONITOR_ENCODER_PERIOD
-                
+
+                if not path_length:
+                    if not getattr(self, "_path_length_missing_logged", False):
+                        logging.error(
+                            "OAMS: ptfe_length missing for %s; cannot compute same-FPS runout coast distance",
+                            self.fps_name,
+                        )
+                        self._path_length_missing_logged = True
+                    return eventtime + MONITOR_ENCODER_PERIOD
+
                 effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
                 consumed_with_margin = (self.runout_after_position + PAUSE_DISTANCE + self.reload_before_toolhead_distance)
 
@@ -309,6 +322,8 @@ class FPSState:
 
         self.following: bool = False
         self.direction: int = 0
+        self.follower_latched: bool = False
+        self.follower_latch_direction: int = 1
         self.since: Optional[float] = None
 
         self.afc_delegation_active: bool = False
@@ -411,7 +426,6 @@ class OAMSManager:
         self.ready: bool = False
 
         self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
-
         sensitivity = config.get("clog_sensitivity", CLOG_SENSITIVITY_DEFAULT).lower()
         if sensitivity not in CLOG_SENSITIVITY_LEVELS:
             self.logger.warning("Unknown clog_sensitivity '%s', using %s", sensitivity, CLOG_SENSITIVITY_DEFAULT)
@@ -749,6 +763,7 @@ class OAMSManager:
             # If already unloaded or no OAMS, just mark as not following and return
             if not fps_state.current_oams:
                 fps_state.following = False
+                fps_state.follower_latched = False
                 self.logger.info("Follower disable requested on %s but no OAMS loaded, marking as not following", fps_name)
                 return
 
@@ -757,6 +772,7 @@ class OAMSManager:
                 try:
                     oams_obj.set_oams_follower(0, direction)
                     fps_state.following = False
+                    fps_state.follower_latched = False
                     self.logger.info("Disabled follower on %s", fps_name)
                 except Exception:
                     self.logger.exception("Failed to disable follower on %s", fps_state.current_oams)
@@ -767,8 +783,48 @@ class OAMSManager:
                 self.logger.info("Follower disable: OAMS %s not found, marking as not following", fps_state.current_oams)
             return
 
-        # When enabling, we need a valid OAMS
+        # When enabling, we need a valid OAMS. If none is tracked yet, try to
+        # resolve it from AFC lane metadata so manual follower commands work
+        # before a lane is loaded. Prefer the AFC unit's configured oams_name
+        # (e.g., "oams1") and fall back to unit strings (e.g., "oams oams1").
         oams_obj = self.oams.get(fps_state.current_oams)
+        if oams_obj is None:
+            afc = self._get_afc()
+            if afc is not None:
+                self._ensure_afc_lane_cache(afc)
+                for lane_name, mapped_fps in self._lane_to_fps_cache.items():
+                    if mapped_fps != fps_name:
+                        continue
+
+                    lane_obj = afc.lanes.get(lane_name)
+                    unit_obj = getattr(lane_obj, "unit_obj", None) if lane_obj else None
+                    lane_unit = getattr(unit_obj, "oams_name", None)
+
+                    unit_name = self._lane_unit_map.get(lane_name)
+                    base_unit = unit_name.split(":", 1)[0] if unit_name else None
+
+                    candidate_names = []
+                    if lane_unit:
+                        candidate_names.extend([
+                            lane_unit,
+                            f"oams {lane_unit}",
+                            f"OAMS {lane_unit}",
+                        ])
+                    if base_unit:
+                        candidate_names.extend([
+                            base_unit,
+                            f"oams {base_unit}",
+                            f"OAMS {base_unit}",
+                        ])
+
+                    for candidate in candidate_names:
+                        oams_obj = self.oams.get(candidate)
+                        if oams_obj:
+                            fps_state.current_oams = oams_obj.name
+                            break
+                    if oams_obj:
+                        break
+
         if oams_obj is None:
             gcmd.respond_info(f"OAMS {fps_state.current_oams} is not available")
             return
@@ -778,6 +834,8 @@ class OAMSManager:
             oams_obj.set_oams_follower(enable, direction)
             fps_state.following = bool(enable)
             fps_state.direction = direction
+            fps_state.follower_latched = True
+            fps_state.follower_latch_direction = direction
             self.logger.info("OAMSM_FOLLOWER: successfully enabled follower on %s", fps_name)
         except Exception:
             self.logger.exception("Failed to set follower on %s", fps_state.current_oams)
@@ -1889,23 +1947,46 @@ class OAMSManager:
                 self.logger.exception("Failed to read sensors for %s", fps_name)
                 return eventtime + MONITOR_ENCODER_PERIOD_IDLE
 
-            # Safety check: Disable follower if all hubs are empty
+            # Restore a manually latched follower if something cleared it
+            if oams and fps_state.follower_latched and not fps_state.following:
+                try:
+                    oams.set_oams_follower(1, fps_state.follower_latch_direction)
+                    fps_state.following = True
+                    fps_state.direction = fps_state.follower_latch_direction
+                    self.logger.info("Restored latched follower on %s", fps_name)
+                except Exception:
+                    self.logger.exception("Failed to restore latched follower on %s", fps_name)
+
+            # Safety check: Disable follower if all hubs are empty (with same-FPS runout grace)
             if oams and hes_values:
                 all_hubs_empty = all(not bool(hes_val) for hes_val in hes_values)
 
-                if all_hubs_empty and not fps_state.all_hubs_empty_follower_disabled:
-                    # All hubs are empty - disable follower for safety
+                suppress_all_hubs_empty_check = False
+                monitor = self.runout_monitors.get(fps_name)
+                if monitor and monitor.state in (OAMSRunoutState.DETECTED, OAMSRunoutState.COASTING):
                     try:
-                        oams.set_oams_follower(0, 1)
-                        fps_state.following = False
-                        fps_state.all_hubs_empty_follower_disabled = True
-                        self.logger.info("SAFETY: All hubs empty on %s - disabled follower", fps_name)
+                        extruder_pos = fps.extruder.last_position
                     except Exception:
-                        self.logger.exception("Failed to disable follower on %s when all hubs empty", fps_name)
-                elif not all_hubs_empty and fps_state.all_hubs_empty_follower_disabled:
-                    # Hubs are no longer all empty - clear the flag
-                    fps_state.all_hubs_empty_follower_disabled = False
-                    self.logger.info("Hubs on %s are no longer all empty - follower can be enabled again", fps_name)
+                        extruder_pos = None
+                    if monitor.runout_position is not None and extruder_pos is not None:
+                        distance_since_runout = max(extruder_pos - monitor.runout_position, 0.0)
+                        if distance_since_runout < FOLLOWER_HUB_CLEAR_GRACE_MM:
+                            suppress_all_hubs_empty_check = True
+
+                if not suppress_all_hubs_empty_check:
+                    if all_hubs_empty and not fps_state.all_hubs_empty_follower_disabled and not fps_state.follower_latched:
+                        # All hubs are empty - disable follower for safety
+                        try:
+                            oams.set_oams_follower(0, 1)
+                            fps_state.following = False
+                            fps_state.all_hubs_empty_follower_disabled = True
+                            self.logger.info("SAFETY: All hubs empty on %s - disabled follower", fps_name)
+                        except Exception:
+                            self.logger.exception("Failed to disable follower on %s when all hubs empty", fps_name)
+                    elif not all_hubs_empty and fps_state.all_hubs_empty_follower_disabled:
+                        # Hubs are no longer all empty - clear the flag
+                        fps_state.all_hubs_empty_follower_disabled = False
+                        self.logger.info("Hubs on %s are no longer all empty - follower can be enabled again", fps_name)
 
             now = self.reactor.monotonic()
             state_changed = False
@@ -2336,11 +2417,21 @@ class OAMSManager:
                 if monitor:
                     monitor.paused()
 
-            fps_reload_margin = getattr(self.fpss[fps_name], "reload_before_toolhead_distance", None)
+            fps_obj = self.fpss[fps_name]
+
+            fps_reload_margin = getattr(fps_obj, "reload_before_toolhead_distance", None)
             if fps_reload_margin is None:
                 fps_reload_margin = self.reload_before_toolhead_distance
 
-            monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], self.current_state.fps_state[fps_name], self.oams, _reload_callback, reload_before_toolhead_distance=fps_reload_margin)
+            monitor = OAMSRunoutMonitor(
+                self.printer,
+                fps_name,
+                fps_obj,
+                self.current_state.fps_state[fps_name],
+                self.oams,
+                _reload_callback,
+                reload_before_toolhead_distance=fps_reload_margin,
+            )
             self.runout_monitors[fps_name] = monitor
             monitor.start()
 
