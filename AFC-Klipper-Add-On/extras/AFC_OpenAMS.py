@@ -236,6 +236,7 @@ class afcAMS(afcUnit):
     """AFC unit subclass that synchronises state with OpenAMS"""
 
     _sync_command_registered = False
+    _eject_command_registered = False
     _sync_instances: Dict[str, "afcAMS"] = {}
 
     def __init__(self, config):
@@ -1268,7 +1269,7 @@ class afcAMS(afcUnit):
             instance._sync_virtual_tool_sensor(eventtime, resolved_lane)
 
     cmd_AMS_EJECT_help = "Eject filament from AMS lane - heats extruder, forms/cuts tip, retracts"
-    def cmd_AMS_EJECT(self, gcmd):
+    def cmd_AMS_EJECT(self, gcmd, lane_override: Optional[str] = None):
         """
         AMS_EJECT command - Ejects filament from an AMS lane.
 
@@ -1280,10 +1281,14 @@ class afcAMS(afcUnit):
         3. Retract by extruder's tool_stn_unload amount
         """
         # Get lane parameter
-        lane_name = gcmd.get('LANE', None)
+        lane_name = lane_override if lane_override is not None else gcmd.get('LANE', None)
         if not lane_name:
             gcmd.respond_info("AMS_EJECT requires LANE parameter (e.g., LANE=lane11)")
             return
+
+        resolved_lane = self._resolve_lane_alias(lane_name)
+        if resolved_lane:
+            lane_name = resolved_lane
 
         # Get the lane object
         lane = self.afc.lanes.get(lane_name)
@@ -3274,15 +3279,14 @@ class afcAMS(afcUnit):
         except Exception:
             pass  # Command might already be registered
 
-        # Register per-instance command for ejecting filament
-        try:
+        # Register shared command for ejecting filament
+        if not cls._eject_command_registered:
             self.gcode.register_command(
                 "AMS_EJECT",
-                self.cmd_AMS_EJECT,
+                cls._dispatch_eject,
                 desc=self.cmd_AMS_EJECT_help,
             )
-        except Exception:
-            pass  # Command might already be registered
+            cls._eject_command_registered = True
 
         cls._sync_instances[self.name] = self
 
@@ -3336,6 +3340,32 @@ class afcAMS(afcUnit):
             resolved_lane = instance._resolve_lane_alias(lane_name)
             eventtime = instance.reactor.monotonic()
             instance._sync_virtual_tool_sensor(eventtime, resolved_lane)
+
+    @classmethod
+    def _dispatch_eject(cls, gcmd):
+        """Route AMS_EJECT to the correct AMS instance based on lane or UNIT."""
+        unit_value = gcmd.get("UNIT", None)
+        if not unit_value:
+            unit_value = cls._extract_raw_param(gcmd.get_commandline(), "UNIT")
+
+        lane_identifier = gcmd.get("LANE", None)
+        if lane_identifier is None:
+            lane_identifier = cls._extract_raw_param(gcmd.get_commandline(), "LANE")
+
+        if not lane_identifier:
+            gcmd.respond_info("AMS_EJECT requires LANE parameter (e.g., LANE=lane11)")
+            return
+
+        for instance in cls._sync_instances.values():
+            if not instance._unit_matches(unit_value):
+                continue
+
+            resolved_lane = instance._resolve_lane_alias(lane_identifier)
+            if resolved_lane and resolved_lane in instance.lanes:
+                instance.cmd_AMS_EJECT(gcmd, lane_override=resolved_lane)
+                return
+
+        gcmd.respond_info("Lane {} not found on any AMS unit".format(lane_identifier))
 
 def _patch_lane_pre_sensor_for_ams() -> None:
     """Patch AFCLane.get_toolhead_pre_sensor_state for AMS virtual sensors."""
