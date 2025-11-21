@@ -1640,13 +1640,24 @@ class afcAMS(afcUnit):
         # Update lane state based on sensor FIRST
         if getattr(lane, "ams_share_prep_load", False):
             self._update_shared_lane(lane, lane_val, eventtime)
-        elif lane_val != prev_val:
-            lane.load_callback(eventtime, lane_val)
-            lane.prep_callback(eventtime, lane_val)
-            self._mirror_lane_to_virtual_sensor(lane, eventtime)
-            self._last_lane_states[lane.name] = lane_val
+        else:
+            # Check if sensors are out of sync with F1S sensor value
+            prep_state = getattr(lane, 'prep_state', None)
+            load_state = getattr(lane, 'load_state', None)
+            sensors_out_of_sync = (prep_state != lane_val) or (load_state != lane_val)
 
-        # Detect F1S sensor going False (spool empty) - trigger runout detection AFTER sensor update
+            # Update if value changed OR if sensors are out of sync
+            if (lane_val != prev_val) or sensors_out_of_sync:
+                if sensors_out_of_sync and lane_val == prev_val:
+                    self.logger.info("Force syncing sensors for {} - F1S={}, prep={}, load={}".format(
+                        lane.name, lane_val, prep_state, load_state))
+
+                lane.load_callback(eventtime, lane_val)
+                lane.prep_callback(eventtime, lane_val)
+                self._mirror_lane_to_virtual_sensor(lane, eventtime)
+                self._last_lane_states[lane.name] = lane_val
+
+        # Detect F1S sensor going False (spool empty) - trigger runout immediately
         # Only trigger if printer is actively printing (not during filament insertion/removal)
         if prev_val and not lane_val:
             try:
@@ -1696,7 +1707,9 @@ class afcAMS(afcUnit):
             return
 
         hub_val = bool(value)
-        if hub_val != self._last_hub_states.get(hub.name):
+        prev_hub_val = self._last_hub_states.get(hub.name)
+
+        if hub_val != prev_hub_val:
             hub.switch_pin_callback(eventtime, hub_val)
             fila = getattr(hub, "fila", None)
             if fila is not None:
@@ -2982,6 +2995,13 @@ class afcAMS(afcUnit):
 
         # Save position
         self.afc.save_pos()
+
+        # Z-hop to prevent nozzle sitting on print during extruder heating
+        # Use configured z_hop value, or default to 5mm if not configured
+        z_hop_amount = self.afc.z_hop if self.afc.z_hop > 0 else 5.0
+        z_hop_pos = self.afc.last_gcode_position[2] + z_hop_amount
+        self.afc.move_z_pos(z_hop_pos, "AMS_cross_extruder_swap")
+        self.logger.info("Z-hopped {} mm before tool change".format(z_hop_amount))
 
         # Load new lane (don't restore position yet)
         # No need to UNSET_LANE_LOADED - we're switching to a different extruder
