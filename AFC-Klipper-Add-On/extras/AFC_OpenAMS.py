@@ -694,31 +694,12 @@ class afcAMS(afcUnit):
         if lane is None:
             return None
 
-        tool_loaded = getattr(lane, "tool_loaded", None)
-        if tool_loaded is True:
-            return True
-
-        # If the tool_loaded flag is explicitly False, allow a fallback using the
-        # extruder's remembered lane when the lane still reports load_state.
-        # This recovers cases where AFC cleared tool_loaded but the mapped
-        # extruder lane is still engaged (e.g., manual lane load/resume flows).
-        if tool_loaded is False:
-            extruder_lane = None
-            try:
-                extruder_lane = getattr(lane.extruder_obj, "lane_loaded", None)
-            except Exception:
-                extruder_lane = None
-
-            if extruder_lane and self._canonical_lane_name(extruder_lane) == self._canonical_lane_name(getattr(lane, "name", None)):
-                load_state = getattr(lane, "load_state", None)
-                if load_state is not None:
-                    return bool(load_state)
-
-            return False
-
         load_state = getattr(lane, "load_state", None)
         if load_state is not None:
             return bool(load_state)
+
+        if getattr(lane, "tool_loaded", False):
+            return True
 
         return None
 
