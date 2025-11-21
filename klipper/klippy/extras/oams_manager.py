@@ -91,7 +91,8 @@ class OAMSRunoutMonitor:
                  fps_state,
                  oams: Dict[str, Any],
                  reload_callback: Callable,
-                 reload_before_toolhead_distance: float = 0.0):
+                 reload_before_toolhead_distance: float = 0.0,
+                 fallback_path_length: float = 0.0):
         self.oams = oams
         self.printer = printer
         self.fps_name = fps_name
@@ -105,6 +106,7 @@ class OAMSRunoutMonitor:
         
         self.reload_before_toolhead_distance = reload_before_toolhead_distance
         self.reload_callback = reload_callback
+        self.fallback_path_length = fallback_path_length
 
         self.reactor = self.printer.get_reactor()
 
@@ -227,9 +229,24 @@ class OAMSRunoutMonitor:
                 try:
                     path_length = getattr(self.oams[fps_state.current_oams], "filament_path_length", 0.0)
                 except Exception:
-                    logging.exception("OAMS: Failed to read filament path length while coasting on %s", self.fps_name)
-                    return eventtime + MONITOR_ENCODER_PERIOD
-                
+                    logging.exception(
+                        "OAMS: Failed to read filament path length while coasting on %s; using fallback",
+                        self.fps_name,
+                    )
+                    path_length = 0.0
+
+                if not path_length:
+                    # Use a configurable, conservative fallback so same-FPS runouts
+                    # still reload even when hubs can't report PTFE length.
+                    fallback_length = self.fallback_path_length or 240.0
+                    if not getattr(self, "_path_length_fallback_logged", False):
+                        logging.warning(
+                            "OAMS: filament_path_length missing for %s; using %.1fmm fallback to finish coasting",
+                            self.fps_name, fallback_length,
+                        )
+                        self._path_length_fallback_logged = True
+                    path_length = fallback_length
+
                 effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
                 consumed_with_margin = (self.runout_after_position + PAUSE_DISTANCE + self.reload_before_toolhead_distance)
 
@@ -411,6 +428,9 @@ class OAMSManager:
         self.ready: bool = False
 
         self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
+        self.runout_coast_fallback_length: float = config.getfloat(
+            "runout_coast_fallback_length", 240.0, minval=120.0, maxval=600.0
+        )
 
         sensitivity = config.get("clog_sensitivity", CLOG_SENSITIVITY_DEFAULT).lower()
         if sensitivity not in CLOG_SENSITIVITY_LEVELS:
@@ -2336,11 +2356,33 @@ class OAMSManager:
                 if monitor:
                     monitor.paused()
 
-            fps_reload_margin = getattr(self.fpss[fps_name], "reload_before_toolhead_distance", None)
+            fps_obj = self.fpss[fps_name]
+
+            fps_reload_margin = getattr(fps_obj, "reload_before_toolhead_distance", None)
             if fps_reload_margin is None:
                 fps_reload_margin = self.reload_before_toolhead_distance
 
-            monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], self.current_state.fps_state[fps_name], self.oams, _reload_callback, reload_before_toolhead_distance=fps_reload_margin)
+            path_length_candidates = [
+                getattr(oam, "filament_path_length", 0.0)
+                for oam in getattr(fps_obj, "oams", [])
+                if getattr(oam, "filament_path_length", 0.0)
+            ]
+            fallback_path_length = (
+                max(path_length_candidates)
+                if path_length_candidates
+                else self.runout_coast_fallback_length
+            )
+
+            monitor = OAMSRunoutMonitor(
+                self.printer,
+                fps_name,
+                fps_obj,
+                self.current_state.fps_state[fps_name],
+                self.oams,
+                _reload_callback,
+                reload_before_toolhead_distance=fps_reload_margin,
+                fallback_path_length=fallback_path_length,
+            )
             self.runout_monitors[fps_name] = monitor
             monitor.start()
 
