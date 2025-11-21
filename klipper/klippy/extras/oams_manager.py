@@ -783,15 +783,11 @@ class OAMSManager:
                 self.logger.info("Follower disable: OAMS %s not found, marking as not following", fps_state.current_oams)
             return
 
-        # When enabling, we need a valid OAMS. If none is tracked yet, try to
-        # resolve it from AFC lane metadata so manual follower commands work
-        # before a lane is loaded. Prefer the AFC unit's configured oams_name
-        # (e.g., "oams1") and fall back to unit strings (e.g., "oams oams1").
+        # When enabling, use the FPS's configured OAMS directly. Each FPS
+        # already declares its follower/extruder pairing, so we don't need to
+        # infer from lane metadata.
         oams_obj = self.oams.get(fps_state.current_oams)
 
-        # If nothing is tracked yet, use the FPS's configured OAMS list so the
-        # follower can be manually enabled before any lane is loaded. Each FPS
-        # has its own follower/extruder pairing.
         if oams_obj is None:
             fps_obj = self.fpss.get(fps_name)
             if fps_obj and getattr(fps_obj, "oams", None):
@@ -800,44 +796,6 @@ class OAMSManager:
                     fps_state.current_oams = oams_obj.name
                 except Exception:
                     oams_obj = None
-
-        # If still unresolved, try AFC lane metadata as a last resort
-        if oams_obj is None:
-            afc = self._get_afc()
-            if afc is not None:
-                self._ensure_afc_lane_cache(afc)
-                for lane_name, mapped_fps in self._lane_to_fps_cache.items():
-                    if mapped_fps != fps_name:
-                        continue
-
-                    lane_obj = afc.lanes.get(lane_name)
-                    unit_obj = getattr(lane_obj, "unit_obj", None) if lane_obj else None
-                    lane_unit = getattr(unit_obj, "oams_name", None)
-
-                    unit_name = self._lane_unit_map.get(lane_name)
-                    base_unit = unit_name.split(":", 1)[0] if unit_name else None
-
-                    candidate_names = []
-                    if lane_unit:
-                        candidate_names.extend([
-                            lane_unit,
-                            f"oams {lane_unit}",
-                            f"OAMS {lane_unit}",
-                        ])
-                    if base_unit:
-                        candidate_names.extend([
-                            base_unit,
-                            f"oams {base_unit}",
-                            f"OAMS {base_unit}",
-                        ])
-
-                    for candidate in candidate_names:
-                        oams_obj = self.oams.get(candidate)
-                        if oams_obj:
-                            fps_state.current_oams = oams_obj.name
-                            break
-                    if oams_obj:
-                        break
 
         if oams_obj is None:
             gcmd.respond_info(f"OAMS {fps_state.current_oams} is not available")
