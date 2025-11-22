@@ -770,8 +770,8 @@ class afcAMS(afcUnit):
                     if hasattr(other_lane, 'extruder_obj') and other_lane.extruder_obj is not None:
                         other_lane.unsync_to_extruder()
                         other_lane.extruder_obj.lane_loaded = None
-                except Exception:
-                    self.logger.exception("Failed to unsync %s when new lane loaded", other_lane.name)
+                except Exception as exc:
+                    self.logger.error("Failed to unsync %s when new lane loaded: %s", other_lane.name, exc)
                 # DEBUG: Log flag clearing
                 had_cross_flag = getattr(other_lane, '_oams_cross_extruder_runout', False)
                 if had_cross_flag:
@@ -1634,8 +1634,12 @@ class afcAMS(afcUnit):
                             lane.unsync_to_extruder()
                             lane.extruder_obj.lane_loaded = None
                             self.logger.debug("Unsynced shared lane %s and cleared extruder.lane_loaded when sensor went False", lane.name)
-                except Exception:
-                    self.logger.exception("Failed to unsync shared lane %s from extruder when sensor cleared", lane.name)
+                except Exception as exc:
+                    self.logger.error(
+                        "Failed to unsync shared lane %s from extruder when sensor cleared: %s",
+                        lane.name,
+                        exc,
+                    )
             else:
                 self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
 
@@ -1716,8 +1720,12 @@ class afcAMS(afcUnit):
                             lane.unsync_to_extruder()
                             lane.extruder_obj.lane_loaded = None
                             self.logger.debug("Unsynced %s and cleared extruder.lane_loaded when sensor went False", lane.name)
-                except Exception:
-                    self.logger.exception("Failed to unsync %s from extruder when sensor cleared", lane.name)
+                except Exception as exc:
+                    self.logger.error(
+                        "Failed to unsync %s from extruder when sensor cleared: %s",
+                        lane.name,
+                        exc,
+                    )
             else:
                 self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
             # Clear runout flags when resetting lane
@@ -1735,6 +1743,8 @@ class afcAMS(afcUnit):
 
     def _sync_event(self, eventtime):
         """Poll OpenAMS for state updates and propagate to lanes/hubs"""
+        encoder_changed = False
+
         try:
             status = None
             if self.hardware_service is not None:
@@ -1787,7 +1797,6 @@ class afcAMS(afcUnit):
                 self._last_ptfe_value = new_ptfe_value
 
             # OPTIMIZATION: Track encoder changes for adaptive polling
-            encoder_changed = False
             active_lane_name = None
             if encoder_clicks is not None:
                 last_clicks = self._last_encoder_clicks
@@ -1851,19 +1860,20 @@ class afcAMS(afcUnit):
                     if fila is not None:
                         fila.runout_helper.note_filament_present(eventtime, hub_val)
                     self._last_hub_states[hub.name] = hub_val
-            
+
             self._sync_virtual_tool_sensor(eventtime)
-        except Exception:
-            pass
+        except Exception as exc:
+            self.logger.error("Failed to sync OpenAMS state: %s", exc)
+            return eventtime + self.interval_active
 
         #  Adaptive polling interval
         if encoder_changed:
             return eventtime + self.interval_active
-        
+
         self._consecutive_idle_polls += 1
         if self._consecutive_idle_polls > IDLE_POLL_THRESHOLD:
             return eventtime + self.interval_idle
-        
+
         return eventtime + self.interval_active
 
     def _lane_for_spool_index(self, spool_index: Optional[int]):
@@ -1978,8 +1988,8 @@ class afcAMS(afcUnit):
                     is_same_fps,
                     runout_lane_name,
                 )
-        except Exception:
-            self.logger.exception("Failed to process runout for lane %s".format(lane.name))
+        except Exception as exc:
+            self.logger.error("Failed to process runout for lane %s: %s", lane.name, exc)
 
         # NOTE: We do NOT call lane.handle_load_runout() here
         # This would trigger infinite runout immediately when OpenAMS detects the spool is empty
