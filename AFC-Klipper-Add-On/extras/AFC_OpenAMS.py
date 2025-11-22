@@ -2133,6 +2133,8 @@ class afcAMS(afcUnit):
         if lane is None:
             return
 
+        previous_loaded = bool(self._last_lane_states.get(lane.name))
+
         lane.load_state = True
         self._last_lane_states[lane.name] = True
 
@@ -2141,6 +2143,14 @@ class afcAMS(afcUnit):
             self.get_lane_temperature(lane.name, 240)
         except Exception:
             self.logger.debug("Failed to refresh temperature for lane %s", lane.name, exc_info=True)
+
+        try:
+            spool_mgr = getattr(self.afc, "spool", None)
+            next_id = getattr(spool_mgr, "next_spool_id", "") if spool_mgr else ""
+            if spool_mgr is not None and next_id and not previous_loaded:
+                spool_mgr._set_values(lane)
+        except Exception:
+            self.logger.debug("Failed to update spool info for %s after load event", lane.name, exc_info=True)
 
         extruder_name = getattr(lane, "extruder_name", None)
         if extruder_name is None and self.registry is not None:
