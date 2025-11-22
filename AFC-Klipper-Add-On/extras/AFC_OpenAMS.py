@@ -929,6 +929,33 @@ class afcAMS(afcUnit):
 
         return normalized
 
+    def _canonicalize_runout_target(self, target: Optional[str]) -> Tuple[Optional[str], Optional['AFCLane']]:
+        """Resolve a runout target using all known aliases.
+
+        This is a thin wrapper around ``_resolve_runout_target`` that also
+        caches group->lane mappings to avoid repeated registry sweeps and
+        to normalize inputs like ``T#`` to lane names. It returns the
+        canonical lane name and lane object (if found).
+        """
+        resolved_name, lane_obj = self._resolve_runout_target(target)
+
+        if target and resolved_name:
+            if not hasattr(self, '_runout_alias_cache'):
+                self._runout_alias_cache = {}
+            self._runout_alias_cache[target] = resolved_name
+
+        if resolved_name and lane_obj is None:
+            # Retry resolution using the local lane map if registry lookup
+            # succeeded but AFC lanes aren't populated yet for that alias
+            lane_obj = self.lanes.get(resolved_name)
+
+        elif not resolved_name and hasattr(self, '_runout_alias_cache') and target in self._runout_alias_cache:
+            cached = self._runout_alias_cache.get(target)
+            resolved_name = cached
+            lane_obj = self.lanes.get(cached)
+
+        return resolved_name, lane_obj
+
     def _resolve_runout_target(self, runout_lane_name: Optional[str]):
         """Resolve a runout target string to a canonical lane and object.
 
@@ -2122,10 +2149,11 @@ class afcAMS(afcUnit):
 
         # Check if this is a same-FPS runout (OpenAMS handles internally) vs cross-FPS (AFC handles)
         runout_lane_name = getattr(lane, "runout_lane", None)
+        raw_runout_lane = runout_lane_name
         is_same_fps = False
         target_lane = None
         if runout_lane_name:
-            runout_lane_name, target_lane = self._resolve_runout_target(runout_lane_name)
+            runout_lane_name, target_lane = self._canonicalize_runout_target(runout_lane_name)
             if target_lane:
                 source_extruder = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
                 target_extruder = getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None
@@ -2166,8 +2194,14 @@ class afcAMS(afcUnit):
             if lane._oams_cross_extruder_runout:
                 if not hasattr(self, '_pending_cross_extruder_swaps'):
                     self._pending_cross_extruder_swaps = {}
-                self._pending_cross_extruder_swaps[lane.name] = runout_lane_name
-                self.logger.info("STORED cross-extruder swap: %s -> %s (trigger on F1S empty)", lane.name, runout_lane_name)
+                self._pending_cross_extruder_swaps[lane.name] = {
+                    'target_lane': runout_lane_name,
+                    'alias': raw_runout_lane,
+                }
+                self.logger.info(
+                    "STORED cross-extruder swap: %s -> %s (alias=%s, trigger on F1S empty)",
+                    lane.name, runout_lane_name, raw_runout_lane,
+                )
 
                 try:
                     if self.afc.function.is_printing():
@@ -2206,7 +2240,7 @@ class afcAMS(afcUnit):
             else:
                 self.logger.info("Cross-extruder runout: Marked lane {} for runout (swap triggered on shared sensor empty)".format(lane.name))
         except Exception:
-            self.logger.error("Failed to mark lane {} for runout tracking".format(lane.name))
+            self.logger.exception("Failed to mark lane {} for runout tracking".format(lane.name))
 
         # NOTE: We do NOT call lane.handle_load_runout() here
         # This would trigger infinite runout immediately when OpenAMS detects the spool is empty
@@ -2963,6 +2997,8 @@ class afcAMS(afcUnit):
             swap_info = self._pending_cross_extruder_swaps.get(empty_lane.name)
             if isinstance(swap_info, dict):
                 runout_lane_name = swap_info.get('target_lane')
+                if not runout_lane_name:
+                    runout_lane_name = swap_info.get('alias')
             else:
                 # Fallback for old format (just a string)
                 runout_lane_name = swap_info
@@ -2975,7 +3011,7 @@ class afcAMS(afcUnit):
             self.logger.error("Cross-extruder runout but no runout_lane found for {}".format(empty_lane.name))
             return
 
-        resolved_runout_lane, change_lane = self._resolve_runout_target(runout_lane_name)
+        resolved_runout_lane, change_lane = self._canonicalize_runout_target(runout_lane_name)
         if resolved_runout_lane:
             runout_lane_name = resolved_runout_lane
 
