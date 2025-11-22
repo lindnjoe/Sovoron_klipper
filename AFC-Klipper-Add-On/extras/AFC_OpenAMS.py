@@ -1621,7 +1621,11 @@ class afcAMS(afcUnit):
             return
 
         if lane_val:
-            lane.load_state = False
+            # Shared AMS lanes only have a single F1S sensor; keep both prep/load
+            # states aligned with the raw sensor value so lane status mirrors the
+            # hardware reading as soon as the filament is inserted.
+            lane.prep_state = True
+            lane.load_state = True
             try:
                 lane.prep_callback(eventtime, True)
             finally:
@@ -1629,12 +1633,18 @@ class afcAMS(afcUnit):
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
 
+            # Shared prep/load inputs on AMS lanes only drive the lane state; the hub
+            # sensor downstream remains independent and is handled by its own switch.
+
             if (lane.prep_state and lane.load_state and lane.printer.state_message == "Printer is ready" and getattr(lane, "_afc_prep_done", False)):
                 lane.status = AFCLaneState.LOADED
                 lane.unit_obj.lane_loaded(lane)
                 lane.afc.spool._set_values(lane)
                 lane._prep_capture_td1()
         else:
+            lane.prep_state = False
+            lane.load_state = False
+
             lane.load_callback(eventtime, False)
             lane.prep_callback(eventtime, False)
 
@@ -1924,13 +1934,21 @@ class afcAMS(afcUnit):
 
         # Check if this is a same-FPS runout (OpenAMS handles internally) vs cross-FPS (AFC handles)
         runout_lane_name = getattr(lane, "runout_lane", None)
-        is_same_fps = False
+        runout_mode = "same"  # same: regular runout handled by OpenAMS
         if runout_lane_name:
             target_lane = self.afc.lanes.get(runout_lane_name)
             if target_lane:
-                source_extruder = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
-                target_extruder = getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None
-                is_same_fps = (source_extruder == target_extruder and source_extruder is not None)
+                source_extruder = _normalize_extruder_name(getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None)
+                target_extruder = _normalize_extruder_name(getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None)
+                if source_extruder and target_extruder and source_extruder != target_extruder:
+                    runout_mode = "cross"
+            else:
+                runout_mode = "missing"
+                self.logger.warning(
+                    "Runout handoff lane %s not found for %s; treating as normal runout via AFC handler",
+                    runout_lane_name,
+                    lane.name,
+                )
 
         # For both same-extruder and cross-extruder runouts: Set runout flag and let sensor sync handle the states
         # The f1s sensors update in real-time and should naturally report False when filament clears
@@ -1941,55 +1959,59 @@ class afcAMS(afcUnit):
             lane._oams_runout_detected = True
 
             # Mark whether this is a cross-extruder runout for later handling
-            lane._oams_cross_extruder_runout = not is_same_fps
+            lane._oams_cross_extruder_runout = runout_mode == "cross"
 
-            if is_same_fps:
+            if runout_mode == "same":
                 self.logger.info("Same-extruder runout: Marked lane {} for runout (OpenAMS handling reload, sensors sync naturally)".format(lane.name))
-            else:
+            elif runout_mode == "cross":
                 self.logger.info("Cross-extruder runout: Marked lane {} for runout (AFC will handle tool change, will clear old extruder during LANE_UNLOAD)".format(lane.name))
+            else:
+                self.logger.info("Runout handoff missing: Marked lane {} for runout (delegating to AFC runout handler)".format(lane.name))
         except Exception:
             self.logger.error("Failed to mark lane {} for runout tracking".format(lane.name))
 
         # NOTE: For cross-extruder runouts, we now delegate to lane/AFC handlers.
         # For same-FPS runouts, we let the filament coast naturally and AFC's prep/load sensor
         # will detect the runout when the filament actually clears.
+        # For missing handoff lanes, treat as a normal runout but call AFC's runout handler directly.
         # We no longer call UNSET_LANE_LOADED as a fallback - AFC handles tool changes directly.
-        
-        # Only attempt delegation for cross-extruder runouts
-        if not is_same_fps:
+
+        # Only attempt delegation for cross-extruder runouts or missing handoff lanes
+        if runout_mode in ("cross", "missing"):
             delegated = False
-            
-            # Try lane-level handlers first
-            lane_handler_names = ["handle_load_runout", "handle_load_rounout", "handle_runout"]
-            for handler_name in lane_handler_names:
-                handler = getattr(lane, handler_name, None)
-                if callable(handler):
-                    try:
-                        # Try calling with eventtime first
+
+            # Try lane-level handlers first (only for cross-extruder cases)
+            if runout_mode == "cross":
+                lane_handler_names = ["handle_load_runout", "handle_load_rounout", "handle_runout"]
+                for handler_name in lane_handler_names:
+                    handler = getattr(lane, handler_name, None)
+                    if callable(handler):
                         try:
-                            handler(eventtime)
-                            self.logger.info("Cross-FPS runout: delegated runout handling to lane.%s for %s", handler_name, lane.name)
-                            delegated = True
-                            break
-                        except TypeError:
-                            # Try calling with lane
+                            # Try calling with eventtime first
                             try:
-                                handler(lane)
+                                handler(eventtime)
                                 self.logger.info("Cross-FPS runout: delegated runout handling to lane.%s for %s", handler_name, lane.name)
                                 delegated = True
                                 break
                             except TypeError:
-                                # Try calling with no args
+                                # Try calling with lane
                                 try:
-                                    handler()
+                                    handler(lane)
                                     self.logger.info("Cross-FPS runout: delegated runout handling to lane.%s for %s", handler_name, lane.name)
                                     delegated = True
                                     break
                                 except TypeError:
-                                    pass  # Continue to next handler
-                    except Exception:
-                        self.logger.error("Exception when calling lane.%s for %s", handler_name, lane.name)
-                        # Continue to try other handlers
+                                    # Try calling with no args
+                                    try:
+                                        handler()
+                                        self.logger.info("Cross-FPS runout: delegated runout handling to lane.%s for %s", handler_name, lane.name)
+                                        delegated = True
+                                        break
+                                    except TypeError:
+                                        pass  # Continue to next handler
+                        except Exception:
+                            self.logger.error("Exception when calling lane.%s for %s", handler_name, lane.name)
+                            # Continue to try other handlers
             
             # If no lane handler succeeded, try AFC-level handlers
             if not delegated:
@@ -2003,21 +2025,21 @@ class afcAMS(afcUnit):
                                 # Try calling with lane
                                 try:
                                     handler(lane)
-                                    self.logger.info("Cross-FPS runout: delegated runout handling to afc.function.%s for %s", handler_name, lane.name)
+                                    self.logger.info("%s runout: delegated runout handling to afc.function.%s for %s", "Cross-FPS" if runout_mode == "cross" else "Missing handoff", handler_name, lane.name)
                                     delegated = True
                                     break
                                 except TypeError:
                                     # Try calling with lane name
                                     try:
                                         handler(lane.name)
-                                        self.logger.info("Cross-FPS runout: delegated runout handling to afc.function.%s for %s", handler_name, lane.name)
+                                        self.logger.info("%s runout: delegated runout handling to afc.function.%s for %s", "Cross-FPS" if runout_mode == "cross" else "Missing handoff", handler_name, lane.name)
                                         delegated = True
                                         break
                                     except TypeError:
                                         # Try calling with no args
                                         try:
                                             handler()
-                                            self.logger.info("Cross-FPS runout: delegated runout handling to afc.function.%s for %s", handler_name, lane.name)
+                                            self.logger.info("%s runout: delegated runout handling to afc.function.%s for %s", "Cross-FPS" if runout_mode == "cross" else "Missing handoff", handler_name, lane.name)
                                             delegated = True
                                             break
                                         except TypeError:
@@ -2025,11 +2047,15 @@ class afcAMS(afcUnit):
                             except Exception:
                                 self.logger.error("Exception when calling afc.function.%s for %s", handler_name, lane.name)
                                 # Continue to try other handlers
-            
+
             # If no handler was found or all failed, log a warning
             # We do NOT call UNSET_LANE_LOADED as a fallback
             if not delegated:
-                self.logger.warning("Cross-FPS runout: No AFC/lane runout handler available for %s; not clearing toolhead automatically", lane.name)
+                self.logger.warning(
+                    "%s runout: No AFC/lane runout handler available for %s; not clearing toolhead automatically",
+                    "Cross-FPS" if runout_mode == "cross" else "Missing handoff",
+                    lane.name,
+                )
 
     def handle_openams_lane_tool_state(self, lane_name: str, loaded: bool, *, spool_index: Optional[int] = None, eventtime: Optional[float] = None) -> bool:
         """Update lane/tool state in response to OpenAMS hardware events."""
