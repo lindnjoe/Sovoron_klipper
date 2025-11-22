@@ -771,7 +771,7 @@ class afcAMS(afcUnit):
                         other_lane.unsync_to_extruder()
                         other_lane.extruder_obj.lane_loaded = None
                 except Exception:
-                    self.logger.error("Failed to unsync %s when new lane loaded", other_lane.name)
+                    self.logger.exception("Failed to unsync %s when new lane loaded", other_lane.name)
                 # DEBUG: Log flag clearing
                 had_cross_flag = getattr(other_lane, '_oams_cross_extruder_runout', False)
                 if had_cross_flag:
@@ -811,26 +811,13 @@ class afcAMS(afcUnit):
 
         # Explicitly clear tool_loaded to prevent sensor sync from re-setting it
         lane.tool_loaded = False
-
-        # Only clear flags if NOT in the middle of a cross-extruder swap
-        # The reload callback will clear these after the swap completes
-        has_cross_target = hasattr(lane, '_oams_cross_extruder_target')
-
-        if not has_cross_target:
-            # Not a cross-extruder swap, safe to clear all flags
-            if hasattr(lane, '_oams_runout_detected'):
-                lane._oams_runout_detected = False
-            if hasattr(lane, '_oams_cross_extruder_runout'):
-                lane._oams_cross_extruder_runout = False
-            if hasattr(lane, '_oams_regular_runout'):
-                lane._oams_regular_runout = False
-            self.logger.info("Cleared runout flags for lane {} on unload".format(getattr(lane, 'name', 'unknown')))
-        else:
-            self.logger.info("Skipping flag clear for lane {} - cross-extruder swap in progress".format(getattr(lane, 'name', 'unknown')))
-
-        # Always clear same-FPS flags (these are safe to clear immediately)
+        # Clear runout flags EXCEPT cross-extruder and regular runouts (keep those set until swap completes)
+        if hasattr(lane, '_oams_runout_detected'):
+            lane._oams_runout_detected = False
         if hasattr(lane, '_oams_same_fps_runout'):
             lane._oams_same_fps_runout = False
+        # NOTE: Do NOT clear _oams_cross_extruder_runout or _oams_regular_runout here
+        # These flags must stay set so check_runout() can block AFC and trigger our handlers
 
         if not self._lane_matches_extruder(lane):
             return
@@ -1416,14 +1403,6 @@ class afcAMS(afcUnit):
             self.logger.warning("AMSHardwareService not available, using legacy polling for %s", self.name)
             self.reactor.update_timer(self.timer, self.reactor.NOW)
 
-        # Initialize _last_ptfe_value from OAMS config if available
-        if hasattr(self.oams, 'filament_path_length'):
-            self._last_ptfe_value = float(self.oams.filament_path_length)
-            self.logger.info("Initialized PTFE length from config: {:.1f}mm".format(self._last_ptfe_value))
-        else:
-            self.logger.warning("OAMS object missing filament_path_length, using default 500mm")
-            self._last_ptfe_value = 500.0
-
         # Hook into AFC's LANE_UNLOAD for cross-extruder runouts
         self._wrap_afc_lane_unload()
 
@@ -1580,7 +1559,7 @@ class afcAMS(afcUnit):
                     # Only skip if this is an active runout (filament already ran out)
                     # Check stored runout info OR runout flags
                     is_runout = False
-                    if hasattr(unit_obj, '_pending_cross_extruder_targets') and lane_name in unit_obj._pending_cross_extruder_targets:
+                    if hasattr(unit_obj, '_pending_cross_extruder_swaps') and lane_name in unit_obj._pending_cross_extruder_swaps:
                         is_runout = True
                     elif hasattr(unit_obj, '_pending_regular_runouts') and lane_name in unit_obj._pending_regular_runouts:
                         is_runout = True
@@ -1588,32 +1567,9 @@ class afcAMS(afcUnit):
                         is_runout = True
 
                     if is_runout:
-                        # Check if actively printing - only block during active print
-                        try:
-                            is_printing = self.afc.function.is_printing()
-                        except Exception:
-                            is_printing = False
-
-                        if is_printing:
-                            self.logger.info("Skipping TOOL_UNLOAD for OpenAMS lane {} (runout during active print - filament already ran out)".format(lane_name))
-                            # Don't call original - filament already ran out, nothing to unload
-                            return
-                        else:
-                            # Not printing - clear runout flags and allow unload
-                            self.logger.info("Clearing runout flags for OpenAMS lane {} (print ended, allowing manual unload)".format(lane_name))
-                            if hasattr(lane, '_oams_runout_detected'):
-                                lane._oams_runout_detected = False
-                            if hasattr(lane, '_oams_cross_extruder_runout'):
-                                lane._oams_cross_extruder_runout = False
-                            if hasattr(lane, '_oams_same_fps_runout'):
-                                lane._oams_same_fps_runout = False
-                            if hasattr(lane, '_oams_regular_runout'):
-                                lane._oams_regular_runout = False
-                            # Clear pending runout tracking
-                            if hasattr(unit_obj, '_pending_cross_extruder_targets') and lane_name in unit_obj._pending_cross_extruder_targets:
-                                del unit_obj._pending_cross_extruder_targets[lane_name]
-                            if hasattr(unit_obj, '_pending_regular_runouts') and lane_name in unit_obj._pending_regular_runouts:
-                                unit_obj._pending_regular_runouts.discard(lane_name)
+                        self.logger.info("Skipping TOOL_UNLOAD for OpenAMS lane {} (runout - filament already ran out)".format(lane_name))
+                        # Don't call original - filament already ran out, nothing to unload
+                        return
 
                 # Not OpenAMS lane or not during runout, call original
                 return self.afc._original_TOOL_UNLOAD(lane)
@@ -1640,24 +1596,13 @@ class afcAMS(afcUnit):
         # Update lane state based on sensor FIRST
         if getattr(lane, "ams_share_prep_load", False):
             self._update_shared_lane(lane, lane_val, eventtime)
-        else:
-            # Check if sensors are out of sync with F1S sensor value
-            prep_state = getattr(lane, 'prep_state', None)
-            load_state = getattr(lane, 'load_state', None)
-            sensors_out_of_sync = (prep_state != lane_val) or (load_state != lane_val)
+        elif lane_val != prev_val:
+            lane.load_callback(eventtime, lane_val)
+            lane.prep_callback(eventtime, lane_val)
+            self._mirror_lane_to_virtual_sensor(lane, eventtime)
+            self._last_lane_states[lane.name] = lane_val
 
-            # Update if value changed OR if sensors are out of sync
-            if (lane_val != prev_val) or sensors_out_of_sync:
-                if sensors_out_of_sync and lane_val == prev_val:
-                    self.logger.info("Force syncing sensors for {} - F1S={}, prep={}, load={}".format(
-                        lane.name, lane_val, prep_state, load_state))
-
-                lane.load_callback(eventtime, lane_val)
-                lane.prep_callback(eventtime, lane_val)
-                self._mirror_lane_to_virtual_sensor(lane, eventtime)
-                self._last_lane_states[lane.name] = lane_val
-
-        # Detect F1S sensor going False (spool empty) - trigger runout immediately
+        # Detect F1S sensor going False (spool empty) - trigger runout detection AFTER sensor update
         # Only trigger if printer is actively printing (not during filament insertion/removal)
         if prev_val and not lane_val:
             try:
@@ -1707,9 +1652,7 @@ class afcAMS(afcUnit):
             return
 
         hub_val = bool(value)
-        prev_hub_val = self._last_hub_states.get(hub.name)
-
-        if hub_val != prev_hub_val:
+        if hub_val != self._last_hub_states.get(hub.name):
             hub.switch_pin_callback(eventtime, hub_val)
             fila = getattr(hub, "fila", None)
             if fila is not None:
@@ -1765,20 +1708,21 @@ class afcAMS(afcUnit):
 
     def _update_shared_lane(self, lane, lane_val, eventtime):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
-        # Check if runout handling requires blocking this sensor update
-        sensors_out_of_sync = (
-            getattr(lane, "prep_state", None) != lane_val or
-            getattr(lane, "load_state", None) != lane_val
-        )
+        # DEBUG: Log all sensor updates for troubleshooting
+        self.logger.info("DEBUG _update_shared_lane: lane={}, value={}, last_state={}".format(
+            lane.name, lane_val, self._last_lane_states.get(lane.name)))
 
+        # Check if runout handling requires blocking this sensor update
         if self._should_block_sensor_update_for_runout(lane, lane_val):
+            self.logger.debug("Ignoring shared lane sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
             # Update state tracking before returning to prevent duplicate processing
             lane_name = getattr(lane, "name", None)
             if lane_name:
                 self._last_lane_states[lane_name] = bool(lane_val)
             return
 
-        if lane_val == self._last_lane_states.get(lane.name) and not sensors_out_of_sync:
+        if lane_val == self._last_lane_states.get(lane.name):
+            self.logger.info("DEBUG: Skipping update for {} - value matches last_state (both={})".format(lane.name, lane_val))
             return
 
         if lane_val:
@@ -1834,7 +1778,7 @@ class afcAMS(afcUnit):
                             lane.extruder_obj.lane_loaded = None
                             self.logger.debug("Unsynced shared lane %s and cleared extruder.lane_loaded when sensor went False", lane.name)
                 except Exception:
-                    self.logger.error("Failed to unsync shared lane %s from extruder when sensor cleared", lane.name)
+                    self.logger.exception("Failed to unsync shared lane %s from extruder when sensor cleared", lane.name)
             else:
                 self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
 
@@ -1916,7 +1860,7 @@ class afcAMS(afcUnit):
                             lane.extruder_obj.lane_loaded = None
                             self.logger.debug("Unsynced %s and cleared extruder.lane_loaded when sensor went False", lane.name)
                 except Exception:
-                    self.logger.error("Failed to unsync %s from extruder when sensor cleared", lane.name)
+                    self.logger.exception("Failed to unsync %s from extruder when sensor cleared", lane.name)
             else:
                 self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
             # Clear runout flags when resetting lane
@@ -2115,24 +2059,10 @@ class afcAMS(afcUnit):
         """Handle runout notifications coming from OpenAMS monitors."""
         lane = None
         if lane_name:
-            # Try direct lookup first
             lane = self.lanes.get(lane_name)
-
-            # If not found, might be a tool/map name - resolve it
             if lane is None:
-                # Try case-insensitive match
                 lowered = lane_name.lower()
                 lane = next((candidate for name, candidate in self.lanes.items() if name.lower() == lowered), None)
-
-                # Still not found? Try resolving by map attribute (tool name like "T11")
-                if lane is None:
-                    for actual_lane_name, candidate in self.lanes.items():
-                        lane_map = getattr(candidate, "map", None)
-                        if lane_map and lane_map == lane_name:
-                            self.logger.info("Resolved tool name {} to lane {}".format(lane_name, actual_lane_name))
-                            lane = candidate
-                            break
-
         if lane is None:
             lane = self._lane_for_spool_index(spool_index)
         if lane is None:
@@ -2164,81 +2094,86 @@ class afcAMS(afcUnit):
             if not hasattr(lane, '_oams_regular_runout'):
                 lane._oams_regular_runout = False
 
-            # Determine runout type
-            is_cross_extruder = (runout_lane_name is not None and not is_same_fps)
-            is_same_fps_runout = (runout_lane_name is not None and is_same_fps)
-            is_regular_runout = (runout_lane_name is None)
+            lane._oams_runout_detected = True
 
-            # For cross-extruder runouts, trigger immediate swap (simplified like Box Turtle)
-            if is_cross_extruder:
-                # Set flags
-                lane._oams_runout_detected = True
-                lane._oams_cross_extruder_runout = True
-                lane._oams_same_fps_runout = False
-                lane._oams_regular_runout = False
+            # Only mark as cross-extruder if there IS a runout target AND it's a different FPS
+            # Regular runouts (no infinite spool) should NOT be marked as cross-extruder
+            lane._oams_cross_extruder_runout = (runout_lane_name is not None and not is_same_fps)
+            # Mark same-FPS runouts so sensor updates are blocked until swap completes
+            lane._oams_same_fps_runout = (runout_lane_name is not None and is_same_fps)
+            # Mark regular runouts (no infinite spool) to handle after PTFE calc
+            lane._oams_regular_runout = (runout_lane_name is None)
 
-                self.logger.info("Cross-extruder runout: {} -> {} (triggering immediate swap)".format(
-                    lane.name, runout_lane_name))
+            # DEBUG: Log flag values
+            self.logger.info("DEBUG FLAGS SET: lane={}, cross={}, same_fps={}, regular={}, runout_lane={}, is_same_fps={}".format(
+                lane.name, lane._oams_cross_extruder_runout, lane._oams_same_fps_runout,
+                lane._oams_regular_runout, runout_lane_name, is_same_fps))
 
-                # Trigger the swap immediately (don't wait for PTFE calculation)
-                try:
-                    if self.afc.function.is_printing():
-                        self._perform_ams_cross_extruder_swap(lane, runout_lane_name)
-                    else:
-                        self.logger.info("Cross-extruder runout detected but not printing, ignoring")
-                except Exception as e:
-                    self.logger.error("Failed to perform cross-extruder swap: {} - {}".format(type(e).__name__, str(e)))
-                    import traceback
-                    self.logger.error("Traceback: {}".format(traceback.format_exc()))
-            elif is_same_fps_runout:
-                # Same-FPS runout - OpenAMS handles internally
-                lane._oams_runout_detected = True
-                lane._oams_cross_extruder_runout = False
-                lane._oams_same_fps_runout = True
-                lane._oams_regular_runout = False
-                self.logger.info("Same-FPS runout: {} (OpenAMS handling reload internally)".format(lane.name))
-            elif is_regular_runout:
-                # Regular runout - no infinite spool configured
-                # Pause immediately and tell user to manually unload
-                lane._oams_runout_detected = True
-                lane._oams_cross_extruder_runout = False
-                lane._oams_same_fps_runout = False
-                lane._oams_regular_runout = True
+            # Store cross-extruder swap info at unit level (can't get cleared accidentally)
+            if lane._oams_cross_extruder_runout:
+                # Calculate target encoder position for coast completion
+                current_encoder = self._last_encoder_clicks if hasattr(self, '_last_encoder_clicks') else 0
+                ptfe_length = self._last_ptfe_value if hasattr(self, '_last_ptfe_value') else 500.0  # Default 500mm
 
-                # Pause the print immediately
-                try:
-                    is_printing = self.afc.function.is_printing()
-                except:
-                    is_printing = False
+                # Get encoder resolution from OAMS manager, fallback to 1.14 clicks/mm
+                encoder_resolution = 1.14  # Default clicks per mm
+                if hasattr(self, 'oams') and self.oams:
+                    encoder_resolution = getattr(self.oams, 'encoder_resolution', 1.14)
 
-                if is_printing:
-                    self.logger.info("Regular runout detected for lane {} - pausing print immediately".format(lane.name))
+                # Distance: 60mm hub clear + PTFE length
+                coast_distance_mm = 60.0 + ptfe_length
 
-                    # Pause the printer with helpful message
-                    pause_message = (
-                        "Filament runout on lane {} (no spare spool configured). "
-                        "Run BT_TOOL_UNLOAD to remove filament from extruder, "
-                        "then manually remove filament from PTFE tube."
-                    ).format(lane.name)
+                # Convert to encoder clicks
+                clicks_needed = coast_distance_mm * encoder_resolution
+                target_encoder = (current_encoder or 0) + int(clicks_needed)
 
-                    self.gcode.run_script_from_command("M118 {}".format(pause_message))
-                    self.gcode.run_script_from_command("PAUSE")
-                    self.logger.info("Print paused for regular runout: {}".format(lane.name))
+                if not hasattr(self, '_pending_cross_extruder_swaps'):
+                    self._pending_cross_extruder_swaps = {}
+                self._pending_cross_extruder_swaps[lane.name] = {
+                    'target_lane': runout_lane_name,
+                    'target_encoder': target_encoder,
+                    'start_encoder': current_encoder
+                }
+                self.logger.info("STORED cross-extruder swap: {} -> {} (encoder: {} -> {}, distance: {:.1f}mm)".format(
+                    lane.name, runout_lane_name, current_encoder, target_encoder, coast_distance_mm))
+
+            # Store regular runout info at unit level - but ONLY for virtual sensor lanes
+            # Real physical sensor lanes will let filament run to sensor, AFC handles naturally
+            if lane._oams_regular_runout:
+                # Check if this lane has a virtual toolhead sensor (e.g., AMS_Extruder)
+                extruder_name = getattr(lane.extruder_obj, 'name', '') if hasattr(lane, 'extruder_obj') else ''
+                is_virtual_sensor = extruder_name.upper().startswith('AMS_')
+
+                if is_virtual_sensor:
+                    # Virtual sensor - we handle (wait for PTFE calc, then hand off)
+                    if not hasattr(self, '_pending_regular_runouts'):
+                        self._pending_regular_runouts = set()
+                    self._pending_regular_runouts.add(lane.name)
+                    self.logger.info("STORED regular runout (virtual sensor): {}".format(lane.name))
                 else:
-                    self.logger.info("Regular runout detected for lane {} (not printing)".format(lane.name))
-            elif is_same_fps_runout:
-                self.logger.info("Same-FPS runout: Marked lane {} for runout (OpenAMS handling reload internally)".format(lane.name))
-            elif is_cross_extruder:
-                # Cross-extruder runout - already logged above, no action needed here
-                pass
-        except Exception as e:
-            self.logger.error("Failed to mark lane {} for runout tracking: {} - {}".format(lane.name, type(e).__name__, str(e)))
-            import traceback
-            self.logger.error("Traceback: {}".format(traceback.format_exc()))
+                    # Real sensor - let AFC handle naturally (filament will run to physical sensor)
+                    self.logger.info("Regular runout with REAL sensor: {} - letting AFC handle naturally".format(lane.name))
 
-        # NOTE: For cross-extruder runouts, we trigger the swap immediately (simplified logic)
-        # For same-FPS runouts, OAMS handles the reload internally after PTFE calculation
-        # For regular runouts, we pause immediately and wait for manual intervention
+            if runout_lane_name is None:
+                # Regular runout
+                extruder_name = getattr(lane.extruder_obj, 'name', '') if hasattr(lane, 'extruder_obj') else ''
+                is_virtual_sensor = extruder_name.upper().startswith('AMS_')
+                if is_virtual_sensor:
+                    self.logger.info("Regular runout detected for lane {} (virtual sensor) - will clear and pause after PTFE calc".format(lane.name))
+                else:
+                    self.logger.info("Regular runout detected for lane {} (real sensor) - will run to physical sensor".format(lane.name))
+            elif is_same_fps:
+                self.logger.info("Same-extruder runout: Marked lane {} for runout (OpenAMS handling reload, sensors sync naturally)".format(lane.name))
+            else:
+                # Cross-extruder runout - will clear state AFTER PTFE calc in _perform_openams_cross_extruder_swap()
+                self.logger.info("Cross-extruder runout: Marked lane {} for runout (will swap after PTFE calc)".format(lane.name))
+        except Exception:
+            self.logger.error("Failed to mark lane {} for runout tracking".format(lane.name))
+
+        # NOTE: We do NOT call lane.handle_load_runout() here
+        # This would trigger infinite runout immediately when OpenAMS detects the spool is empty
+        # Instead, we let the filament coast naturally and AFC's prep/load sensor will detect
+        # the runout when the filament actually clears, triggering infinite runout at the proper time
 
     def handle_openams_lane_tool_state(self, lane_name: str, loaded: bool, *, spool_index: Optional[int] = None, eventtime: Optional[float] = None) -> bool:
         """Update lane/tool state in response to OpenAMS hardware events."""
@@ -2294,7 +2229,7 @@ class afcAMS(afcUnit):
                         try:
                             self._perform_openams_cross_extruder_swap(old_lane)
                         except Exception:
-                            self.logger.error("Failed to execute cross-extruder swap for {}".format(old_lane_name))
+                            self.logger.exception("Failed to execute cross-extruder swap for {}".format(old_lane_name))
                         # Remove from pending (already handled in _perform_openams_cross_extruder_swap, but belt-and-suspenders)
                         self._pending_cross_extruder_swaps.pop(old_lane_name, None)
                     break
@@ -2443,13 +2378,6 @@ class afcAMS(afcUnit):
 
         lane.load_state = True
         self._last_lane_states[lane.name] = True
-
-        # Reapply the lane's stored spool metadata (Spoolman, color, weights, etc.)
-        # so inserts don't surface stale defaults from previous spools.
-        try:
-            lane.afc.spool._set_values(lane)
-        except Exception:
-            self.logger.error("Failed to refresh spool metadata for lane %s on insert", lane.name)
 
         eventtime = kwargs.get("eventtime", 0.0)
         try:
@@ -2967,7 +2895,7 @@ class afcAMS(afcUnit):
             self.gcode.run_script_from_command("UNSET_LANE_LOADED")
             self.logger.info("Called UNSET_LANE_LOADED for {} (regular runout, filament at extruder gears)".format(empty_lane.name))
         except Exception:
-            self.logger.error("Failed to call UNSET_LANE_LOADED for {}".format(empty_lane.name))
+            self.logger.exception("Failed to call UNSET_LANE_LOADED for {}".format(empty_lane.name))
 
         # Clear stored runout info
         if hasattr(self, '_pending_regular_runouts') and empty_lane.name in self._pending_regular_runouts:
@@ -2985,77 +2913,11 @@ class afcAMS(afcUnit):
             self.unload_on_runout = original_unload_setting
             self.logger.info("Restored unload_on_runout setting")
 
-    def _perform_ams_cross_extruder_swap(self, empty_lane, target_lane_name):
-        """
-        Handle cross-extruder swap for AMS lanes - triggers immediately when runout detected.
-        Unlike Box Turtle units, AMS can't pull filament back once F1S clears.
-        CHANGE_TOOL handles the lane state transition. Filament remains in PTFE tube for manual clearing.
-        """
-        change_lane = self.afc.lanes.get(target_lane_name)
-        if not change_lane:
-            self.logger.error("Target lane {} not found for cross-extruder swap from {}".format(target_lane_name, empty_lane.name))
-            return
-
-        self.logger.info("AMS Cross-Extruder Swap: {} -> {}".format(empty_lane.name, change_lane.name))
-
-        # Set statuses
-        empty_lane.status = AFCLaneState.NONE
-        change_lane.status = AFCLaneState.INFINITE_RUNOUT
-
-        # Pause printer
-        self.afc.error.pause_resume.send_pause_command()
-
-        # Save position
-        self.afc.save_pos()
-
-        # Z-hop to prevent nozzle sitting on print during extruder heating
-        # Use configured z_hop value, or default to 5mm if not configured
-        z_hop_amount = self.afc.z_hop if self.afc.z_hop > 0 else 5.0
-        z_hop_pos = self.afc.last_gcode_position[2] + z_hop_amount
-        self.afc.move_z_pos(z_hop_pos, "AMS_cross_extruder_swap")
-        self.logger.info("Z-hopped {} mm before tool change".format(z_hop_amount))
-
-        # Load new lane (don't restore position yet)
-        # No need to UNSET_LANE_LOADED - we're switching to a different extruder
-        # CHANGE_TOOL will handle setting up the new lane state
-        self.afc.CHANGE_TOOL(change_lane, restore_pos=False)
-
-        # Change mapping
-        try:
-            self.gcode.run_script_from_command('SET_MAP LANE={} MAP={}'.format(change_lane.name, empty_lane.map))
-        except Exception:
-            self.logger.error("Failed to set map for cross-extruder swap")
-
-        # Only continue if no error
-        if not self.afc.error_state:
-            # Restore position and resume
-            self.afc.restore_pos()
-            self.afc.error.pause_resume.send_resume_command()
-            self.logger.info("AMS cross-extruder swap complete: {} -> {}".format(empty_lane.name, change_lane.name))
-        else:
-            self.logger.error("Error during cross-extruder swap, print remains paused")
-
-        # Reset empty lane to accept new filament
-        # Clear all runout flags
-        if hasattr(empty_lane, '_oams_runout_detected'):
-            empty_lane._oams_runout_detected = False
-        if hasattr(empty_lane, '_oams_cross_extruder_runout'):
-            empty_lane._oams_cross_extruder_runout = False
-        if hasattr(empty_lane, '_oams_same_fps_runout'):
-            empty_lane._oams_same_fps_runout = False
-        if hasattr(empty_lane, '_oams_regular_runout'):
-            empty_lane._oams_regular_runout = False
-
-        self.logger.info("Reset {} state for new filament - status: {}, flags cleared".format(
-            empty_lane.name, empty_lane.status))
-
     def _perform_openams_cross_extruder_swap(self, empty_lane):
         """
-        OLD METHOD - Handle cross-extruder infinite spool swap for OpenAMS.
+        Handle cross-extruder infinite spool swap for OpenAMS.
         Like AFC's _perform_infinite_runout() but skips LANE_UNLOAD (filament already ran out).
         Called after: F1S False ? 60mm hub clear ? PTFE calc ? filament at extruder gears.
-        NOTE: This method is now deprecated in favor of _perform_ams_cross_extruder_swap
-        which triggers immediately without waiting for PTFE calculation.
         """
         # Get runout_lane from stored swap info (more reliable than lane attribute)
         runout_lane_name = None
@@ -3099,7 +2961,7 @@ class afcAMS(afcUnit):
             self.gcode.run_script_from_command("UNSET_LANE_LOADED")
             self.logger.info("Called UNSET_LANE_LOADED for {} (filament already at extruder gears)".format(empty_lane.name))
         except Exception:
-            self.logger.error("Failed to call UNSET_LANE_LOADED for {}".format(empty_lane.name))
+            self.logger.exception("Failed to call UNSET_LANE_LOADED for {}".format(empty_lane.name))
 
         # Load new lane (don't restore position yet)
         self.afc.CHANGE_TOOL(change_lane, restore_pos=False)
@@ -3108,7 +2970,7 @@ class afcAMS(afcUnit):
         try:
             self.gcode.run_script_from_command('SET_MAP LANE={} MAP={}'.format(change_lane.name, empty_lane.map))
         except Exception:
-            self.logger.error("Failed to set map for cross-extruder swap")
+            self.logger.exception("Failed to set map for cross-extruder swap")
 
         # Only continue if no error
         if not self.afc.error_state:
@@ -3168,8 +3030,18 @@ class afcAMS(afcUnit):
         except Exception:
             is_printing = False
 
-        # Cross-extruder runouts are handled directly by OAMS manager via _delegate_runout_to_afc()
-        # so this method won't be called for them. We only handle regular runouts here.
+        # Check if this lane has a pending cross-extruder swap (stored at unit level)
+        has_pending_swap = hasattr(self, '_pending_cross_extruder_swaps') and lane_name in self._pending_cross_extruder_swaps
+
+        if has_pending_swap:
+            self.logger.info("Blocking AFC runout handling for {} - OpenAMS will handle cross-extruder swap".format(getattr(lane, 'name', 'unknown')))
+            # Trigger our own swap handler (after PTFE calc, filament at extruder gears)
+            if is_printing:
+                try:
+                    self._perform_openams_cross_extruder_swap(lane)
+                except Exception:
+                    self.logger.exception("Failed to perform OpenAMS cross-extruder swap for {}".format(getattr(lane, 'name', 'unknown')))
+            return False  # Block AFC, we handled it
 
         # Check if this lane has a pending regular runout (stored at unit level)
         has_pending_regular = hasattr(self, '_pending_regular_runouts') and lane_name in self._pending_regular_runouts
@@ -3181,7 +3053,7 @@ class afcAMS(afcUnit):
                 try:
                     self._perform_openams_regular_runout(lane)
                 except Exception:
-                    self.logger.error("Failed to perform OpenAMS regular runout for {}".format(lane_name))
+                    self.logger.exception("Failed to perform OpenAMS regular runout for {}".format(lane_name))
             return False  # Block AFC, we handled it
 
         return bool(is_printing)
