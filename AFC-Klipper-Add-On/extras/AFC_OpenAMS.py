@@ -1621,7 +1621,11 @@ class afcAMS(afcUnit):
             return
 
         if lane_val:
-            lane.load_state = False
+            # Shared AMS lanes only have a single F1S sensor; keep both prep/load
+            # states aligned with the raw sensor value so lane status mirrors the
+            # hardware reading as soon as the filament is inserted.
+            lane.prep_state = True
+            lane.load_state = True
             try:
                 lane.prep_callback(eventtime, True)
             finally:
@@ -1638,18 +1642,13 @@ class afcAMS(afcUnit):
                 lane.afc.spool._set_values(lane)
                 lane._prep_capture_td1()
         else:
+            lane.prep_state = False
+            lane.load_state = False
+
             lane.load_callback(eventtime, False)
             lane.prep_callback(eventtime, False)
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
-
-            hub = getattr(lane, "hub_obj", None)
-            if hub is not None and lane_val != self._last_hub_states.get(hub.name):
-                hub.switch_pin_callback(eventtime, lane_val)
-                fila = getattr(hub, "fila", None)
-                if fila is not None:
-                    fila.runout_helper.note_filament_present(eventtime, lane_val)
-                self._last_hub_states[hub.name] = lane_val
 
             lane.tool_loaded = False
             lane.loaded_to_hub = False
