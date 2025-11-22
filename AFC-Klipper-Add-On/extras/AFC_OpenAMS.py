@@ -944,7 +944,21 @@ class afcAMS(afcUnit):
         if resolved_lane_name is None and self.registry is not None:
             normalized_group = self._normalize_group_name(runout_lane_name)
             if normalized_group:
+                # Direct lookup first (exact case), then case-insensitive sweep
                 info = self.registry.get_by_group(normalized_group)
+                if info is None:
+                    try:
+                        all_lanes = self.registry.get_all_lanes()
+                    except Exception:
+                        all_lanes = []
+
+                    lowered_group = normalized_group.lower()
+                    for lane_info in all_lanes:
+                        group_name = getattr(lane_info, 'group', None)
+                        if isinstance(group_name, str) and group_name.lower() == lowered_group:
+                            info = lane_info
+                            break
+
                 if info is not None:
                     resolved_lane_name = info.lane_name
 
@@ -2116,6 +2130,8 @@ class afcAMS(afcUnit):
                 source_extruder = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
                 target_extruder = getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None
                 is_same_fps = (source_extruder == target_extruder and source_extruder is not None)
+                # Always store the canonical lane name for downstream matching
+                runout_lane_name = target_lane.name
 
         # For all runouts: Set runout flags to control sensor sync behavior
         # - Regular/cross-extruder: Flag blocks sensor updates during runout state
@@ -2148,31 +2164,17 @@ class afcAMS(afcUnit):
 
             # Store cross-extruder swap info at unit level (can't get cleared accidentally)
             if lane._oams_cross_extruder_runout:
-                # Calculate target encoder position for coast completion
-                current_encoder = self._last_encoder_clicks if hasattr(self, '_last_encoder_clicks') else 0
-                ptfe_length = self._last_ptfe_value if hasattr(self, '_last_ptfe_value') else 500.0  # Default 500mm
-
-                # Get encoder resolution from OAMS manager, fallback to 1.14 clicks/mm
-                encoder_resolution = 1.14  # Default clicks per mm
-                if hasattr(self, 'oams') and self.oams:
-                    encoder_resolution = getattr(self.oams, 'encoder_resolution', 1.14)
-
-                # Distance: 60mm hub clear + PTFE length
-                coast_distance_mm = 60.0 + ptfe_length
-
-                # Convert to encoder clicks
-                clicks_needed = coast_distance_mm * encoder_resolution
-                target_encoder = (current_encoder or 0) + int(clicks_needed)
-
                 if not hasattr(self, '_pending_cross_extruder_swaps'):
                     self._pending_cross_extruder_swaps = {}
-                self._pending_cross_extruder_swaps[lane.name] = {
-                    'target_lane': runout_lane_name,
-                    'target_encoder': target_encoder,
-                    'start_encoder': current_encoder
-                }
-                self.logger.info("STORED cross-extruder swap: {} -> {} (encoder: {} -> {}, distance: {:.1f}mm)".format(
-                    lane.name, runout_lane_name, current_encoder, target_encoder, coast_distance_mm))
+                self._pending_cross_extruder_swaps[lane.name] = runout_lane_name
+                self.logger.info("STORED cross-extruder swap: %s -> %s (trigger on F1S empty)", lane.name, runout_lane_name)
+
+                try:
+                    if self.afc.function.is_printing():
+                        self.logger.info("Triggering cross-extruder swap immediately for %s", lane.name)
+                        self._perform_openams_cross_extruder_swap(lane)
+                except Exception:
+                    self.logger.exception("Failed to trigger cross-extruder swap for %s", lane.name)
 
             # Store regular runout info at unit level - but ONLY for virtual sensor lanes
             # Real physical sensor lanes will let filament run to sensor, AFC handles naturally
@@ -2202,8 +2204,7 @@ class afcAMS(afcUnit):
             elif is_same_fps:
                 self.logger.info("Same-extruder runout: Marked lane {} for runout (OpenAMS handling reload, sensors sync naturally)".format(lane.name))
             else:
-                # Cross-extruder runout - will clear state AFTER PTFE calc in _perform_openams_cross_extruder_swap()
-                self.logger.info("Cross-extruder runout: Marked lane {} for runout (will swap after PTFE calc)".format(lane.name))
+                self.logger.info("Cross-extruder runout: Marked lane {} for runout (swap triggered on shared sensor empty)".format(lane.name))
         except Exception:
             self.logger.error("Failed to mark lane {} for runout tracking".format(lane.name))
 
