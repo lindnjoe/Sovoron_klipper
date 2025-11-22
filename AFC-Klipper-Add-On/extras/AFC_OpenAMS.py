@@ -1911,6 +1911,14 @@ class afcAMS(afcUnit):
         if not lane_name:
             return None
 
+        def _normalize_tool_token(token: Optional[str]) -> Optional[str]:
+            if not isinstance(token, str):
+                return None
+            cleaned = token.strip().lower()
+            if cleaned.startswith("t"):
+                cleaned = cleaned[1:]
+            return cleaned or None
+
         resolved_name = self._resolve_lane_alias(lane_name)
         if resolved_name:
             lane = self.lanes.get(resolved_name)
@@ -1927,6 +1935,13 @@ class afcAMS(afcUnit):
         for candidate_name, candidate in self.lanes.items():
             if candidate_name.lower() == lowered:
                 return candidate
+
+        normalized_tool = _normalize_tool_token(resolved_name)
+        if normalized_tool:
+            for candidate in self.lanes.values():
+                candidate_tool = _normalize_tool_token(getattr(candidate, "map", None))
+                if candidate_tool and candidate_tool == normalized_tool:
+                    return candidate
         return None
 
     def handle_runout_detected(self, spool_index: Optional[int], monitor=None, *, lane_name: Optional[str] = None) -> None:
@@ -1947,7 +1962,7 @@ class afcAMS(afcUnit):
         # Only handle the AMS same-extruder case here. Any other runout should fall back to
         # AFC's normal handling without OpenAMS interjection.
         runout_lane_name = getattr(lane, "runout_lane", None)
-        target_lane = self.afc.lanes.get(runout_lane_name) if runout_lane_name else None
+        target_lane = self._resolve_lane_reference(runout_lane_name) if runout_lane_name else None
         same_extruder_handoff = False
 
         if target_lane:
