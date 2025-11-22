@@ -1589,45 +1589,56 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.error("Failed to update lane snapshot for %s", lane.name)
 
+    def _should_block_sensor_update_for_runout(self, lane, lane_val):
+        """Check if sensor update should be blocked due to active runout.
+
+        Returns True if the update should be blocked, False otherwise.
+        Automatically clears the runout flag if runout handling is complete.
+        """
+        if not hasattr(lane, '_oams_runout_detected') or not lane._oams_runout_detected:
+            return False
+
+        should_block = False
+        try:
+            is_printing = self.afc.function.is_printing()
+            is_tool_loaded = getattr(lane, 'tool_loaded', False)
+            lane_status = getattr(lane, 'status', None)
+            # Only block if actively printing with this lane loaded and in runout state
+            if is_printing and is_tool_loaded and lane_status in (AFCLaneState.INFINITE_RUNOUT, AFCLaneState.TOOL_UNLOADING):
+                should_block = True
+            else:
+                # Clear the flag - runout handling is complete
+                lane._oams_runout_detected = False
+                self.logger.debug("Clearing runout flag for lane %s - runout handling complete", getattr(lane, "name", "unknown"))
+        except Exception:
+            # On error, clear the flag to be safe
+            lane._oams_runout_detected = False
+
+        # Block only if conditions met and trying to set sensors to True
+        if should_block and lane_val:
+            return True
+        # Sensor confirms empty - always clear flag
+        elif not lane_val:
+            lane._oams_runout_detected = False
+            self.logger.debug("Sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
+
+        return False
+
     def _update_shared_lane(self, lane, lane_val, eventtime):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
-        # Check if runout has been detected for this lane
-        # Only block sensor updates if actively in runout state
-        if hasattr(lane, '_oams_runout_detected') and lane._oams_runout_detected:
-            should_block = False
-            try:
-                is_printing = self.afc.function.is_printing()
-                is_tool_loaded = getattr(lane, 'tool_loaded', False)
-                lane_status = getattr(lane, 'status', None)
-                # Only block if actively printing with this lane loaded and in runout state
-                if is_printing and is_tool_loaded and lane_status in (AFCLaneState.INFINITE_RUNOUT, AFCLaneState.TOOL_UNLOADING):
-                    should_block = True
-                else:
-                    # Clear the flag - runout handling is complete
-                    lane._oams_runout_detected = False
-                    self.logger.debug("Clearing runout flag for shared lane %s - runout handling complete", getattr(lane, "name", "unknown"))
-            except Exception:
-                # On error, clear the flag to be safe
-                lane._oams_runout_detected = False
+        # Check if runout handling requires blocking this sensor update
+        if self._should_block_sensor_update_for_runout(lane, lane_val):
+            # Update state tracking before returning to prevent duplicate processing
+            lane_name = getattr(lane, "name", None)
+            if lane_name:
+                self._last_lane_states[lane_name] = bool(lane_val)
+            return
 
-            if should_block and lane_val:  # Only block if conditions met and trying to set sensors to True
-                self.logger.debug("Ignoring shared lane sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
-                return
-            elif not lane_val:  # Sensor confirms empty - always clear flag
-                lane._oams_runout_detected = False
-                self.logger.debug("Shared lane sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
+        if lane_val == self._last_lane_states.get(lane.name):
+            return
 
-        # Always realign the shared prep/load states to the current sensor reading.
-        # Skipping this when the cached value matches can leave the lane stuck in
-        # a "load sensor triggered" state after a runout/unload where AFC never
-        # saw the shared input drop. Applying the callbacks every time keeps the
-        # lane's prep/load flags in sync with the single F1S sensor.
         if lane_val:
-            # Shared AMS lanes only have a single F1S sensor; keep both prep/load
-            # states aligned with the raw sensor value so lane status mirrors the
-            # hardware reading as soon as the filament is inserted.
-            lane.prep_state = True
-            lane.load_state = True
+            lane.load_state = False
             try:
                 lane.prep_callback(eventtime, True)
             finally:
@@ -1635,22 +1646,20 @@ class afcAMS(afcUnit):
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
 
-            # Shared prep/load inputs on AMS lanes only drive the lane state; the hub
-            # sensor downstream remains independent and is handled by its own switch.
-
             if (lane.prep_state and lane.load_state and lane.printer.state_message == "Printer is ready" and getattr(lane, "_afc_prep_done", False)):
                 lane.status = AFCLaneState.LOADED
                 lane.unit_obj.lane_loaded(lane)
                 lane.afc.spool._set_values(lane)
                 lane._prep_capture_td1()
         else:
-            lane.prep_state = False
-            lane.load_state = False
-
+            # Sensor False - filament cleared
             lane.load_callback(eventtime, False)
             lane.prep_callback(eventtime, False)
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
+
+            # Save tool_loaded state BEFORE clearing it
+            was_tool_loaded = getattr(lane, 'tool_loaded', False)
 
             lane.tool_loaded = False
             lane.loaded_to_hub = False
@@ -1662,41 +1671,42 @@ class afcAMS(afcUnit):
             except AttributeError:
                 # Moonraker not available - silently continue
                 pass
+            # CRITICAL: For shared lanes (same-FPS runout), unsync and clear extruder.lane_loaded
+            # when sensor goes False, UNLESS it's an active cross-extruder runout
+            # (during cross-extruder runout while printing, filament is still coasting)
+            try:
+                is_printing = self.afc.function.is_printing()
+            except Exception:
+                is_printing = False
+            is_cross_extruder_runout = getattr(lane, '_oams_cross_extruder_runout', False) and is_printing
+
+            # Always clear if not in active cross-extruder runout, regardless of was_tool_loaded
+            # (shared lanes may have extruder.lane_loaded set even if tool_loaded flag isn't)
+            if not is_cross_extruder_runout:
+                try:
+                    if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
+                        if lane.extruder_obj.lane_loaded == lane.name:
+                            lane.unsync_to_extruder()
+                            lane.extruder_obj.lane_loaded = None
+                            self.logger.debug("Unsynced shared lane %s and cleared extruder.lane_loaded when sensor went False", lane.name)
+                except Exception:
+                    self.logger.exception("Failed to unsync shared lane %s from extruder when sensor cleared", lane.name)
+            else:
+                self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
 
         lane.afc.save_vars()
         self._last_lane_states[lane.name] = lane_val
 
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
         """Apply a boolean lane sensor value using existing AFC callbacks."""
-        # Check if runout has been detected for this lane
-        # Only block sensor updates if:
-        # 1. Runout flag is set AND
-        # 2. Printer is actively printing AND
-        # 3. Lane is currently loaded to tool AND
-        # 4. Lane status indicates it's in a runout/unload state
-        if hasattr(lane, '_oams_runout_detected') and lane._oams_runout_detected:
-            should_block = False
-            try:
-                is_printing = self.afc.function.is_printing()
-                is_tool_loaded = getattr(lane, 'tool_loaded', False)
-                lane_status = getattr(lane, 'status', None)
-                # Only block if actively printing with this lane loaded and in runout state
-                if is_printing and is_tool_loaded and lane_status in (AFCLaneState.INFINITE_RUNOUT, AFCLaneState.TOOL_UNLOADING):
-                    should_block = True
-                else:
-                    # Clear the flag - runout handling is complete
-                    lane._oams_runout_detected = False
-                    self.logger.debug("Clearing runout flag for lane %s - runout handling complete", getattr(lane, "name", "unknown"))
-            except Exception:
-                # On error, clear the flag to be safe
-                lane._oams_runout_detected = False
-
-            if should_block and lane_val:  # Only block if conditions met and trying to set sensors to True
-                self.logger.debug("Ignoring sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
-                return
-            elif not lane_val:  # Sensor confirms empty - always clear flag
-                lane._oams_runout_detected = False
-                self.logger.debug("Sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
+        # Check if runout handling requires blocking this sensor update
+        if self._should_block_sensor_update_for_runout(lane, lane_val):
+            self.logger.debug("Ignoring sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
+            # Update state tracking before returning to prevent duplicate processing
+            lane_name = getattr(lane, "name", None)
+            if lane_name:
+                self._last_lane_states[lane_name] = bool(lane_val)
+            return
 
         try:
             share = getattr(lane, "ams_share_prep_load", False)
