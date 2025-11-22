@@ -1968,6 +1968,27 @@ class afcAMS(afcUnit):
                     "Runout for %s does not target same extruder; letting AFC handle it normally",
                     lane.name,
                 )
+
+            # Allow AFC's built-in runout handler to pause or swap as configured
+            try:
+                if not hasattr(lane, '_oams_runout_detected'):
+                    lane._oams_runout_detected = False
+                lane._oams_runout_detected = True
+            except Exception:
+                pass
+
+            extruder = getattr(lane, "extruder_obj", None)
+            runout_cb = getattr(extruder, "handle_start_runout", None) if extruder is not None else None
+            if callable(runout_cb):
+                try:
+                    runout_cb(eventtime)
+                except TypeError:
+                    runout_cb(eventtime=eventtime)
+            else:
+                self.logger.warning(
+                    "Runout detected for %s but no extruder runout handler is available; AFC must handle downstream",
+                    lane.name,
+                )
             return
 
         # Same-extruder runout: set the runout flag so shared sensor updates don't bounce the state.
