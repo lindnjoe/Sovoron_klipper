@@ -929,6 +929,42 @@ class afcAMS(afcUnit):
 
         return normalized
 
+    def _resolve_runout_target(self, runout_lane_name: Optional[str]):
+        """Resolve a runout target string to a canonical lane and object.
+
+        This handles values provided as lane names ("lane8"), filament groups
+        ("T8"), or other aliases by consulting the lane registry and alias
+        resolution helpers. Returns a tuple of (resolved_lane_name, lane_obj).
+        """
+        if not runout_lane_name:
+            return None, None
+
+        resolved_lane_name = self._resolve_lane_alias(runout_lane_name)
+
+        if resolved_lane_name is None and self.registry is not None:
+            normalized_group = self._normalize_group_name(runout_lane_name)
+            if normalized_group:
+                info = self.registry.get_by_group(normalized_group)
+                if info is not None:
+                    resolved_lane_name = info.lane_name
+
+        if resolved_lane_name is None:
+            resolved_lane_name = runout_lane_name
+
+        target_lane = None
+        try:
+            target_lane = self.afc.lanes.get(resolved_lane_name)
+        except Exception:
+            target_lane = None
+
+        if target_lane is None and resolved_lane_name != runout_lane_name:
+            try:
+                target_lane = self.afc.lanes.get(runout_lane_name)
+            except Exception:
+                target_lane = None
+
+        return resolved_lane_name, target_lane
+
     def _resolve_lane_alias(self, identifier: Optional[str]) -> Optional[str]:
         """Map common aliases (fps names, case variants) to lane objects."""
         if not identifier:
@@ -2073,8 +2109,9 @@ class afcAMS(afcUnit):
         # Check if this is a same-FPS runout (OpenAMS handles internally) vs cross-FPS (AFC handles)
         runout_lane_name = getattr(lane, "runout_lane", None)
         is_same_fps = False
+        target_lane = None
         if runout_lane_name:
-            target_lane = self.afc.lanes.get(runout_lane_name)
+            runout_lane_name, target_lane = self._resolve_runout_target(runout_lane_name)
             if target_lane:
                 source_extruder = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
                 target_extruder = getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None
@@ -2937,9 +2974,12 @@ class afcAMS(afcUnit):
             self.logger.error("Cross-extruder runout but no runout_lane found for {}".format(empty_lane.name))
             return
 
+        resolved_runout_lane, change_lane = self._resolve_runout_target(runout_lane_name)
+        if resolved_runout_lane:
+            runout_lane_name = resolved_runout_lane
+
         self.logger.info("USING STORED runout_lane: {} -> {}".format(empty_lane.name, runout_lane_name))
 
-        change_lane = self.afc.lanes.get(runout_lane_name)
         if not change_lane:
             self.logger.error("Runout lane {} not found for {}".format(runout_lane_name, empty_lane.name))
             return
