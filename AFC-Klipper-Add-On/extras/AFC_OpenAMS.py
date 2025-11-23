@@ -1056,6 +1056,37 @@ class afcAMS(afcUnit):
         self._saved_unit_mtime = mtime
         return self._saved_unit_cache
 
+    def _get_saved_lane_field(self, lane_name: Optional[str], field: str) -> Optional[Any]:
+        """Fetch a field for a lane from the persisted AFC.var.unit snapshot."""
+
+        canonical = self._canonical_lane_name(lane_name)
+        if canonical is None:
+            return None
+
+        snapshot = self._load_saved_unit_snapshot()
+        if not snapshot:
+            return None
+
+        unit_key = getattr(self, "name", None)
+        unit_data = snapshot.get(str(unit_key)) if unit_key is not None else None
+        if not isinstance(unit_data, dict):
+            return None
+
+        lane_data = unit_data.get(canonical)
+        if not isinstance(lane_data, dict):
+            return None
+
+        return lane_data.get(field)
+
+    def _get_saved_lane_runout_target(self, lane_name: Optional[str]) -> Optional[str]:
+        """Return the saved runout target for a lane from AFC.var.unit, if available."""
+
+        saved_value = self._get_saved_lane_field(lane_name, "runout_lane")
+        if not saved_value:
+            return None
+
+        return self._canonical_lane_name(saved_value)
+
     def _get_saved_lane_temperature(self, lane_name: Optional[str]) -> Optional[int]:
         canonical = self._canonical_lane_name(lane_name)
         if canonical is None:
@@ -1991,7 +2022,18 @@ class afcAMS(afcUnit):
 
         # Only handle the AMS same-extruder case here. Any other runout should fall back to
         # AFC's normal handling without OpenAMS interjection.
-        runout_lane_name = getattr(lane, "runout_lane", None)
+        runout_lane_name = self._canonical_lane_name(getattr(lane, "runout_lane", None))
+        saved_runout_lane = self._get_saved_lane_runout_target(lane.name)
+        runout_from_saved = False
+
+        if not runout_lane_name and saved_runout_lane:
+            runout_lane_name = saved_runout_lane
+            runout_from_saved = True
+            try:
+                lane.runout_lane = runout_lane_name
+            except Exception:
+                self.logger.debug("Unable to write saved runout lane %s onto %s", runout_lane_name, lane.name)
+
         target_lane, handoff_trace = self._resolve_lane_reference_with_trace(runout_lane_name) if runout_lane_name else (None, [])
         same_extruder_handoff = False
 
@@ -2013,6 +2055,25 @@ class afcAMS(afcUnit):
                 lane.name,
                 " > ".join(handoff_trace) if handoff_trace else "(no trace)",
             )
+
+        if runout_lane_name and not target_lane and saved_runout_lane and saved_runout_lane != runout_lane_name:
+            self.logger.info(
+                "Runout lane %s for %s could not be resolved; falling back to saved AFC state %s",
+                runout_lane_name,
+                lane.name,
+                saved_runout_lane,
+            )
+            runout_lane_name = saved_runout_lane
+            runout_from_saved = True
+            target_lane, handoff_trace = self._resolve_lane_reference_with_trace(runout_lane_name)
+            if target_lane:
+                try:
+                    lane.runout_lane = runout_lane_name
+                except Exception:
+                    self.logger.debug("Unable to persist saved runout lane %s on %s", runout_lane_name, lane.name)
+
+        if runout_from_saved:
+            self.logger.info("Resolved runout lane for %s from saved AFC.var.unit state: %s", lane.name, runout_lane_name)
 
         if target_lane:
             if source_extruder and target_extruder and source_extruder == target_extruder:
