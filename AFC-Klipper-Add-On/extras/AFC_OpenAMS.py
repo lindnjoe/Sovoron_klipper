@@ -1913,8 +1913,23 @@ class afcAMS(afcUnit):
 
     def _resolve_lane_reference(self, lane_name: Optional[str]):
         """Return a lane object by name (or alias), case-insensitively."""
+        lane, _trace = self._resolve_lane_reference_with_trace(lane_name)
+        return lane
+
+    def _resolve_lane_reference_with_trace(self, lane_name: Optional[str]):
+        """Return a lane object and the resolution path for debugging."""
+        trace: List[str] = []
         if not lane_name:
-            return None
+            trace.append("no name provided")
+            return None, trace
+
+        def _normalize_tool_token(token: Optional[str]) -> Optional[str]:
+            if not isinstance(token, str):
+                return None
+            cleaned = token.strip().lower()
+            if cleaned.startswith("t"):
+                cleaned = cleaned[1:]
+            return cleaned or None
 
         def _normalize_tool_token(token: Optional[str]) -> Optional[str]:
             if not isinstance(token, str):
@@ -1926,28 +1941,39 @@ class afcAMS(afcUnit):
 
         resolved_name = self._resolve_lane_alias(lane_name)
         if resolved_name:
+            trace.append(f"alias -> {resolved_name}")
             lane = self.lanes.get(resolved_name)
             if lane is not None:
-                return lane
+                trace.append(f"found lane {lane.name} via alias")
+                return lane, trace
         else:
             resolved_name = lane_name
+            trace.append(f"no alias, using raw '{resolved_name}'")
 
         lane = self.lanes.get(resolved_name)
         if lane is not None:
-            return lane
+            trace.append(f"matched direct lane {lane.name}")
+            return lane, trace
 
         lowered = resolved_name.lower()
         for candidate_name, candidate in self.lanes.items():
             if candidate_name.lower() == lowered:
-                return candidate
+                trace.append(f"matched case-insensitive lane {candidate_name}")
+                return candidate, trace
 
         normalized_tool = _normalize_tool_token(resolved_name)
+        trace.append(f"normalized tool token '{normalized_tool}'" if normalized_tool else "no tool token available")
         if normalized_tool:
             for candidate in self.lanes.values():
                 candidate_tool = _normalize_tool_token(getattr(candidate, "map", None))
                 if candidate_tool and candidate_tool == normalized_tool:
-                    return candidate
-        return None
+                    trace.append(
+                        f"matched tool mapping '{getattr(candidate, 'map', None)}' -> lane {candidate.name}"
+                    )
+                    return candidate, trace
+
+        trace.append("no lane resolved")
+        return None, trace
 
     def handle_runout_detected(self, spool_index: Optional[int], monitor=None, *, lane_name: Optional[str] = None) -> None:
         """Handle runout notifications coming from OpenAMS monitors."""
@@ -1967,7 +1993,7 @@ class afcAMS(afcUnit):
         # Only handle the AMS same-extruder case here. Any other runout should fall back to
         # AFC's normal handling without OpenAMS interjection.
         runout_lane_name = getattr(lane, "runout_lane", None)
-        target_lane = self._resolve_lane_reference(runout_lane_name) if runout_lane_name else None
+        target_lane, handoff_trace = self._resolve_lane_reference_with_trace(runout_lane_name) if runout_lane_name else (None, [])
         same_extruder_handoff = False
 
         source_extruder = _normalize_extruder_name(getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None)
@@ -1982,6 +2008,12 @@ class afcAMS(afcUnit):
             source_extruder,
             target_extruder,
         )
+        if runout_lane_name:
+            self.logger.debug(
+                "Runout handoff resolution trace for %s: %s",
+                lane.name,
+                " > ".join(handoff_trace) if handoff_trace else "(no trace)",
+            )
 
         if target_lane:
             if source_extruder and target_extruder and source_extruder == target_extruder:
