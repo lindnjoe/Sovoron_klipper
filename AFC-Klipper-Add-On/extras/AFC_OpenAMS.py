@@ -59,6 +59,7 @@ SYNC_INTERVAL_IDLE = 4.0  # Doubled when idle
 IDLE_POLL_THRESHOLD = 3  # Number of polls before going idle
 
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
+_ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
 
 class _VirtualRunoutHelper:
     """Minimal runout helper used by AMS-managed virtual sensors."""
@@ -3031,6 +3032,75 @@ def _patch_lane_pre_sensor_for_ams() -> None:
     AFCLane.get_toolhead_pre_sensor_state = _ams_get_toolhead_pre_sensor_state
     AFCLane._ams_pre_sensor_patched = True
 
+
+def _patch_infinite_runout_handler() -> None:
+    """Harden AFCLane infinite runout handling without touching AFC_lane.py."""
+
+    if getattr(AFCLane, "_ams_infinite_runout_patched", False):
+        return
+
+    if not callable(_ORIGINAL_PERFORM_INFINITE_RUNOUT):
+        return
+
+    def _ams_perform_infinite_runout(self, *args, **kwargs):
+        lane_name = getattr(self, "name", "unknown")
+
+        afc = getattr(self, "afc", None)
+        lanes = getattr(afc, "lanes", {}) if afc is not None else {}
+
+        if not afc or not lanes:
+            raise RuntimeError(f"AFC context unavailable for infinite runout on {lane_name}")
+
+        runout_target = getattr(self, "runout_lane", None)
+        if not runout_target:
+            raise RuntimeError(f"No runout lane set for {lane_name}")
+
+        if runout_target not in lanes:
+            raw_target = runout_target
+            normalized = None
+            try:
+                normalized = next((key for key in lanes if key.lower() == str(runout_target).lower()), None)
+            except Exception:
+                normalized = None
+
+            if normalized:
+                try:
+                    self.runout_lane = normalized
+                    runout_target = normalized
+                    try:
+                        self.logger.info("Normalized runout lane %s -> %s for infinite runout", raw_target, normalized)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            else:
+                raise RuntimeError(
+                    f"Runout lane {runout_target} unavailable for {lane_name} (known lanes: {', '.join(lanes)})"
+                )
+
+        current_lane = getattr(afc, "current", None)
+        if current_lane not in lanes:
+            previous_lane = current_lane
+            try:
+                afc.current = lane_name
+                current_lane = getattr(afc, "current", lane_name)
+                try:
+                    self.logger.info(
+                        "Corrected AFC current lane to %s before infinite runout (was %s)", lane_name, previous_lane
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                current_lane = lane_name
+
+        if current_lane not in lanes:
+            raise RuntimeError(f"AFC current lane {current_lane} invalid during infinite runout for {lane_name}")
+
+        return _ORIGINAL_PERFORM_INFINITE_RUNOUT(self, *args, **kwargs)
+
+    AFCLane._perform_infinite_runout = _ams_perform_infinite_runout
+    AFCLane._ams_infinite_runout_patched = True
+
 def _has_openams_hardware(printer):
     """Check if any OpenAMS hardware is configured in the system.
 
@@ -3059,4 +3129,5 @@ def load_config_prefix(config):
     # The patches will only take effect if OpenAMS hardware is actually present
     _patch_lane_pre_sensor_for_ams()
     _patch_extruder_for_virtual_ams()
+    _patch_infinite_runout_handler()
     return afcAMS(config)
