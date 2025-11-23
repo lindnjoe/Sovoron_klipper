@@ -252,7 +252,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Loaded",
+            "status": "Infinite Runout",
             "dist_hub": 1940.0,
             "td1_data": {}
         },
