@@ -3051,32 +3051,59 @@ def _patch_infinite_runout_handler() -> None:
         if not afc or not lanes:
             raise RuntimeError(f"AFC context unavailable for infinite runout on {lane_name}")
 
-        runout_target = getattr(self, "runout_lane", None)
-        if not runout_target:
-            raise RuntimeError(f"No runout lane set for {lane_name}")
+        def _normalize_target(target):
+            """Resolve lane names, aliases (T#), or maps to concrete lane keys."""
+            if target is None:
+                return None
 
-        if runout_target not in lanes:
-            raw_target = runout_target
-            normalized = None
-            try:
-                normalized = next((key for key in lanes if key.lower() == str(runout_target).lower()), None)
-            except Exception:
-                normalized = None
+            lookup = str(target).strip()
+            if not lookup:
+                return None
 
-            if normalized:
+            lookup_lower = lookup.lower()
+            # Direct name match
+            for key in lanes:
+                if str(key).lower() == lookup_lower:
+                    return key
+
+            # Match against lane.map (e.g., T0, t0)
+            for key, lane_obj in lanes.items():
+                lane_map = getattr(lane_obj, "map", None)
+                if isinstance(lane_map, str) and lane_map.strip().lower() == lookup_lower:
+                    return key
+
+            # Match T# aliases to lane indices when possible
+            if lookup_lower.startswith("t") and lookup_lower[1:].isdigit():
                 try:
-                    self.runout_lane = normalized
-                    runout_target = normalized
-                    try:
-                        self.logger.info("Normalized runout lane %s -> %s for infinite runout", raw_target, normalized)
-                    except Exception:
-                        pass
+                    idx = int(lookup_lower[1:])
+                    for key, lane_obj in lanes.items():
+                        lane_idx = getattr(lane_obj, "lane", None)
+                        if lane_idx is not None and int(lane_idx) == idx:
+                            return key
                 except Exception:
                     pass
-            else:
-                raise RuntimeError(
-                    f"Runout lane {runout_target} unavailable for {lane_name} (known lanes: {', '.join(lanes)})"
-                )
+
+            return None
+
+        raw_runout_target = getattr(self, "runout_lane", None)
+        runout_target = _normalize_target(raw_runout_target)
+
+        if not runout_target:
+            raise RuntimeError(
+                f"Runout lane {raw_runout_target} unavailable for {lane_name} (known lanes: {', '.join(lanes)})"
+            )
+
+        if raw_runout_target != runout_target:
+            try:
+                self.runout_lane = runout_target
+                try:
+                    self.logger.info(
+                        "Normalized runout lane %s -> %s for infinite runout", raw_runout_target, runout_target
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
 
         current_lane = getattr(afc, "current", None)
         if current_lane not in lanes:
@@ -3096,7 +3123,11 @@ def _patch_infinite_runout_handler() -> None:
         if current_lane not in lanes:
             raise RuntimeError(f"AFC current lane {current_lane} invalid during infinite runout for {lane_name}")
 
-        return _ORIGINAL_PERFORM_INFINITE_RUNOUT(self, *args, **kwargs)
+        try:
+            return _ORIGINAL_PERFORM_INFINITE_RUNOUT(self, *args, **kwargs)
+        except Exception:
+            # Surface the underlying error so the delegator can log the true cause
+            raise
 
     AFCLane._perform_infinite_runout = _ams_perform_infinite_runout
     AFCLane._ams_infinite_runout_patched = True
