@@ -2023,6 +2023,43 @@ class afcAMS(afcUnit):
                     runout_lane_name,
                     lane.name,
                 )
+            elif target_lane:
+                # Box Turtle infinite-runout behavior: when a handoff lane is configured on a
+                # different extruder, trigger the infinite spool swap directly and let AFC resume
+                # afterward instead of treating it as a same-FPS handoff.
+                try:
+                    if not hasattr(lane, '_oams_runout_detected'):
+                        lane._oams_runout_detected = False
+                    lane._oams_runout_detected = True
+                    lane._oams_cross_extruder_runout = True
+                except Exception:
+                    pass
+
+                resolved_name = getattr(target_lane, "name", None)
+                if resolved_name and resolved_name != getattr(lane, "runout_lane", None):
+                    try:
+                        lane.runout_lane = resolved_name
+                    except Exception:
+                        self.logger.debug("Could not set resolved runout lane on %s", lane.name)
+
+                perform_infinite = getattr(lane, "_perform_infinite_runout", None)
+                if callable(perform_infinite):
+                    try:
+                        self.logger.info(
+                            "Cross-extruder runout: invoking infinite spool handoff from %s to %s",
+                            lane.name,
+                            resolved_name,
+                        )
+                        perform_infinite()
+                        return
+                    except Exception:
+                        self.logger.error(
+                            "Failed infinite spool handoff for %s -> %s; falling back to AFC runout handler",
+                            lane.name,
+                            resolved_name,
+                            exc_info=True,
+                        )
+
             else:
                 self.logger.info(
                     "Runout for %s does not target same extruder; letting AFC handle it normally",
