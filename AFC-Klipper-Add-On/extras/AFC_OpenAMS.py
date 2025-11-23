@@ -3105,29 +3105,54 @@ def _patch_infinite_runout_handler() -> None:
             except Exception:
                 pass
 
-        current_lane = getattr(afc, "current", None)
-        if current_lane not in lanes:
-            previous_lane = current_lane
-            try:
-                afc.current = lane_name
-                current_lane = getattr(afc, "current", lane_name)
-                try:
-                    self.logger.info(
-                        "Corrected AFC current lane to %s before infinite runout (was %s)", lane_name, previous_lane
-                    )
-                except Exception:
-                    pass
-            except Exception:
-                current_lane = lane_name
+        try:
+            afc.current = lane_name
+        except Exception:
+            pass
 
-        if current_lane not in lanes:
-            raise RuntimeError(f"AFC current lane {current_lane} invalid during infinite runout for {lane_name}")
+        empty_lane = lanes.get(getattr(afc, "current", lane_name), self)
+        change_lane = lanes.get(runout_target)
+
+        if change_lane is None:
+            raise RuntimeError(f"Runout target lane {runout_target} missing for infinite runout from {lane_name}")
 
         try:
-            return _ORIGINAL_PERFORM_INFINITE_RUNOUT(self, *args, **kwargs)
+            self.status = AFCLaneState.NONE
+            self.afc.function.afc_led(self.afc.led_not_ready, self.led_index)
+            change_lane.status = AFCLaneState.INFINITE_RUNOUT
         except Exception:
-            # Surface the underlying error so the delegator can log the true cause
-            raise
+            pass
+
+        self.logger.debug(
+            "Invoking AFC infinite runout from %s (map=%s, extruder=%s) to %s (map=%s, extruder=%s) with current=%s",
+            lane_name,
+            getattr(empty_lane, "map", None),
+            getattr(empty_lane, "extruder", None),
+            getattr(change_lane, "name", None),
+            getattr(change_lane, "map", None),
+            getattr(change_lane, "extruder", None),
+            getattr(afc, "current", None),
+        )
+
+        # Re-implement AFC infinite runout logic locally so we can ensure the source lane is used
+        # as the empty lane even if AFC.current is stale.
+        self.afc.error.pause_resume.send_pause_command()
+        self.afc.save_pos()
+        self.afc.CHANGE_TOOL(change_lane, restore_pos=False)
+        self.gcode.run_script_from_command(
+            "SET_MAP LANE={} MAP={}".format(getattr(change_lane, "name", runout_target), getattr(empty_lane, "map", None))
+        )
+
+        if getattr(self.afc, "error_state", False):
+            return None
+
+        self.gcode.run_script_from_command("LANE_UNLOAD LANE={}".format(getattr(empty_lane, "name", lane_name)))
+        self.afc.restore_pos()
+        self.afc.error.pause_resume.send_resume_command()
+        try:
+            self.afc.function.afc_led(self.led_not_ready, self.led_index)
+        except Exception:
+            pass
 
     AFCLane._perform_infinite_runout = _ams_perform_infinite_runout
     AFCLane._ams_infinite_runout_patched = True
