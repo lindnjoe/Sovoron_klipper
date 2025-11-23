@@ -3085,6 +3085,16 @@ def _patch_infinite_runout_handler() -> None:
 
             return None
 
+        def _normalize_current(cur):
+            if cur in lanes:
+                return cur
+            try:
+                if hasattr(cur, "name") and getattr(cur, "name", None) in lanes:
+                    return getattr(cur, "name", None)
+            except Exception:
+                pass
+            return None
+
         raw_runout_target = getattr(self, "runout_lane", None)
         runout_target = _normalize_target(raw_runout_target)
 
@@ -3103,15 +3113,16 @@ def _patch_infinite_runout_handler() -> None:
         if runout_target not in lanes:
             raise RuntimeError(f"Runout target lane {runout_target} missing for infinite runout from {lane_name}")
 
-        current_lane = getattr(afc, "current", None)
-        if current_lane not in lanes:
+        normalized_current = _normalize_current(getattr(afc, "current", None))
+        if normalized_current is None or normalized_current != lane_name:
             try:
                 afc.current = lane_name
+                normalized_current = lane_name
                 self.logger.debug("Setting AFC current lane to %s before infinite runout", lane_name)
             except Exception:
-                pass
+                normalized_current = normalized_current or lane_name
 
-        empty_lane = lanes.get(getattr(afc, "current", lane_name), self)
+        empty_lane = lanes.get(normalized_current, self)
         change_lane = lanes.get(runout_target)
 
         self.logger.debug(
@@ -3128,10 +3139,22 @@ def _patch_infinite_runout_handler() -> None:
         if not callable(_ORIGINAL_PERFORM_INFINITE_RUNOUT):
             raise RuntimeError("Original AFC infinite runout handler is unavailable")
 
+        step = "delegate"
         try:
             return _ORIGINAL_PERFORM_INFINITE_RUNOUT(self, *args, **kwargs)
         except Exception:
-            # Propagate errors with context so AFC delegation can surface the stack trace
+            self.logger.error(
+                "Infinite runout failed at step %s for %s -> %s (current=%s, empty_map=%s, target_map=%s, empty_extruder=%s, target_extruder=%s)",
+                step,
+                lane_name,
+                runout_target,
+                getattr(afc, "current", None),
+                getattr(empty_lane, "map", None),
+                getattr(change_lane, "map", None),
+                getattr(empty_lane, "extruder", None),
+                getattr(change_lane, "extruder", None),
+                exc_info=True,
+            )
             raise
 
     AFCLane._perform_infinite_runout = _ams_perform_infinite_runout
