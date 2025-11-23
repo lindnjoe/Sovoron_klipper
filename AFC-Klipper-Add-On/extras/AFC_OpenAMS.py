@@ -1763,6 +1763,7 @@ class afcAMS(afcUnit):
 
     def _sync_event(self, eventtime):
         """Poll OpenAMS for state updates and propagate to lanes/hubs"""
+        encoder_changed = False
         try:
             status = None
             if self.hardware_service is not None:
@@ -1881,7 +1882,8 @@ class afcAMS(afcUnit):
             
             self._sync_virtual_tool_sensor(eventtime)
         except Exception:
-            pass
+            self.logger.error("OpenAMS sync failed", exc_info=True)
+            return eventtime + self.interval_active
 
         #  Adaptive polling interval
         if encoder_changed:
