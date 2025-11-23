@@ -1533,7 +1533,12 @@ class afcAMS(afcUnit):
                 try:
                     self.handle_runout_detected(bay, None, lane_name=lane.name)
                 except Exception:
-                    self.logger.error("Failed to handle runout detection for {}".format(lane.name))
+                    self.logger.exception(
+                        "Failed to handle runout detection for %s (spool_index=%s, runout_lane=%s)",
+                        lane.name,
+                        bay,
+                        getattr(lane, "runout_lane", None),
+                    )
             else:
                 self.logger.debug("F1S sensor False for {} but not printing - skipping runout detection (likely filament insertion/removal)".format(lane.name))
 
@@ -1965,9 +1970,20 @@ class afcAMS(afcUnit):
         target_lane = self._resolve_lane_reference(runout_lane_name) if runout_lane_name else None
         same_extruder_handoff = False
 
+        source_extruder = _normalize_extruder_name(getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None)
+        target_extruder = _normalize_extruder_name(getattr(target_lane, "extruder_obj", None) if hasattr(target_lane, "extruder_obj") else None) if target_lane else None
+
+        self.logger.debug(
+            "Runout classification for %s: spool_index=%s, runout_lane=%s -> %s, source_extruder=%s, target_extruder=%s",
+            lane.name,
+            spool_index,
+            runout_lane_name,
+            getattr(target_lane, "name", None) if target_lane else None,
+            source_extruder,
+            target_extruder,
+        )
+
         if target_lane:
-            source_extruder = _normalize_extruder_name(getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None)
-            target_extruder = _normalize_extruder_name(getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None)
             if source_extruder and target_extruder and source_extruder == target_extruder:
                 same_extruder_handoff = True
 
@@ -1999,6 +2015,13 @@ class afcAMS(afcUnit):
                     runout_cb(eventtime)
                 except TypeError:
                     runout_cb(eventtime=eventtime)
+                except Exception:
+                    self.logger.exception(
+                        "Extruder runout handler failed for %s (spool_index=%s, runout_lane=%s)",
+                        lane.name,
+                        spool_index,
+                        runout_lane_name,
+                    )
             else:
                 self.logger.warning(
                     "Runout detected for %s but no extruder runout handler is available; AFC must handle downstream",
