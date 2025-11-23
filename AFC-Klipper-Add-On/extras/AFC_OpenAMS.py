@@ -2161,6 +2161,19 @@ class afcAMS(afcUnit):
                 perform_infinite = getattr(lane, "_perform_infinite_runout", None)
                 if callable(perform_infinite):
                     try:
+                        current_lane = getattr(self.afc, "current", None)
+                        if current_lane != lane.name:
+                            if current_lane not in getattr(self.afc, "lanes", {}):
+                                self.logger.info(
+                                    "Cross-extruder runout: AFC current lane %s invalid; overriding to %s",
+                                    current_lane,
+                                    lane.name,
+                                )
+                            try:
+                                self.afc.current = lane.name
+                            except Exception:
+                                self.logger.debug("Unable to set AFC current lane to %s before infinite runout", lane.name)
+
                         self.logger.info(
                             "Cross-extruder runout: invoking infinite spool handoff from %s to %s",
                             lane.name,
