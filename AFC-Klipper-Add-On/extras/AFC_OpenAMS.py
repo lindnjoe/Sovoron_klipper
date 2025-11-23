@@ -1632,6 +1632,14 @@ class afcAMS(afcUnit):
         Returns True if the update should be blocked, False otherwise.
         Automatically clears the runout flag if runout handling is complete.
         """
+        # Cross-extruder runouts should not block shared sensor transitions; let AFC handle
+        # them like Box Turtle units. Only same-extruder runouts set _oams_runout_detected.
+        if getattr(lane, '_oams_cross_extruder_runout', False):
+            # Make sure any stale blocking flag is cleared for cross-extruder scenarios
+            if hasattr(lane, '_oams_runout_detected'):
+                lane._oams_runout_detected = False
+            return False
+
         if not hasattr(lane, '_oams_runout_detected') or not lane._oams_runout_detected:
             return False
 
@@ -1970,11 +1978,32 @@ class afcAMS(afcUnit):
             return cleaned or None
 
         resolved_name = self._resolve_lane_alias(lane_name)
+        registry = self.registry
+
+        def _registry_lookup_by_name(name: str):
+            if registry is None:
+                return None
+            info = registry.get_by_lane(name)
+            if info is None:
+                return None
+            lane_obj = self._get_lane_object(info.lane_name)
+            if lane_obj is not None:
+                trace.append(
+                    f"registry lane {info.lane_name} (unit {info.unit_name}, extruder {info.extruder})"
+                )
+                return lane_obj
+            trace.append(f"registry lane {info.lane_name} unresolved in printer objects")
+            return None
+
         if resolved_name:
             trace.append(f"alias -> {resolved_name}")
             lane = self.lanes.get(resolved_name)
             if lane is not None:
                 trace.append(f"found lane {lane.name} via alias")
+                return lane, trace
+
+            lane = _registry_lookup_by_name(resolved_name)
+            if lane is not None:
                 return lane, trace
         else:
             resolved_name = lane_name
@@ -1991,6 +2020,10 @@ class afcAMS(afcUnit):
                 trace.append(f"matched case-insensitive lane {candidate_name}")
                 return candidate, trace
 
+        registry_lane = _registry_lookup_by_name(resolved_name)
+        if registry_lane is not None:
+            return registry_lane, trace
+
         normalized_tool = _normalize_tool_token(resolved_name)
         trace.append(f"normalized tool token '{normalized_tool}'" if normalized_tool else "no tool token available")
         if normalized_tool:
@@ -2001,6 +2034,20 @@ class afcAMS(afcUnit):
                         f"matched tool mapping '{getattr(candidate, 'map', None)}' -> lane {candidate.name}"
                     )
                     return candidate, trace
+
+            if registry is not None:
+                group_token = resolved_name if resolved_name.lower().startswith("t") else f"T{normalized_tool}"
+                info = registry.get_by_group(group_token)
+                if info is not None:
+                    lane = self._get_lane_object(info.lane_name)
+                    if lane is not None:
+                        trace.append(
+                            f"registry group '{group_token}' -> lane {info.lane_name} (unit {info.unit_name})"
+                        )
+                        return lane, trace
+                    trace.append(
+                        f"registry group '{group_token}' found lane {info.lane_name} but object missing"
+                    )
 
         trace.append("no lane resolved")
         return None, trace
