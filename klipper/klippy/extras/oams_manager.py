@@ -33,6 +33,18 @@ try:
 except Exception:
     AMSRunoutCoordinator = None
 
+
+def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
+    """Return a lowercase token for comparing extruder identifiers."""
+    if not name or not isinstance(name, str):
+        return None
+
+    cleaned = name.strip()
+    if not cleaned:
+        return None
+
+    return cleaned.lower()
+
 # Configuration constants
 PAUSE_DISTANCE = 60
 MIN_ENCODER_DIFF = 1
@@ -1086,10 +1098,10 @@ class OAMSManager:
         # Check if source and target lanes are on the same FPS/extruder
         # If SAME FPS: OpenAMS handles reload internally (coast, PTFE calc, load new spool)
         # If DIFFERENT FPS: AFC handles via CHANGE_TOOL (full runout, then switch tools)
-        source_extruder = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
-        target_extruder = getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None
+        source_extruder = _normalize_extruder_name(getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None)
+        target_extruder = _normalize_extruder_name(getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None)
 
-        same_fps = (source_extruder == target_extruder and source_extruder is not None)
+        same_fps = bool(source_extruder and target_extruder and source_extruder == target_extruder)
         delegate_to_afc = not same_fps  # Only delegate if different FPS
 
         target_lane_map = getattr(target_lane, "map", runout_lane_name)
@@ -1117,9 +1129,16 @@ class OAMSManager:
             return False
 
         raw_runout_target = getattr(lane, "runout_lane", None)
-        runout_target = self._resolve_afc_lane_name(afc, raw_runout_target)
+        resolved_request = target_lane_name or raw_runout_target
+        runout_target = self._resolve_afc_lane_name(afc, raw_runout_target) or self._resolve_afc_lane_name(afc, target_lane_name)
         if not runout_target:
-            self.logger.warning("AFC lane %s has no runout target while delegating infinite runout for %s", source_lane_name, fps_name)
+            self.logger.warning(
+                "AFC lane %s has no runout target while delegating infinite runout for %s (raw=%s, requested=%s)",
+                source_lane_name,
+                fps_name,
+                raw_runout_target,
+                resolved_request,
+            )
             return False
 
         if raw_runout_target and runout_target != raw_runout_target:
@@ -1128,16 +1147,24 @@ class OAMSManager:
                 self.logger.info("Delegating runout for %s using normalized target %s (from %s)", source_lane_name, runout_target, raw_runout_target)
             except Exception:
                 self.logger.debug("Failed to persist normalized runout target %s on %s", runout_target, source_lane_name)
-
-        if target_lane_name and target_lane_name != runout_target:
-            pass
+        elif not raw_runout_target:
+            try:
+                lane.runout_lane = runout_target
+                self.logger.debug("Delegating runout for %s using resolved target %s (no raw target set)", source_lane_name, runout_target)
+            except Exception:
+                self.logger.debug("Failed to persist resolved runout target %s on %s", runout_target, source_lane_name)
 
         now = self.reactor.monotonic()
         if fps_state.afc_delegation_active and now < fps_state.afc_delegation_until:
             return True
 
         if runout_target not in afc.lanes:
-            self.logger.warning("AFC runout lane %s referenced by %s is unavailable", runout_target, source_lane_name)
+            self.logger.warning(
+                "AFC runout lane %s referenced by %s is unavailable (requested=%s)",
+                runout_target,
+                source_lane_name,
+                resolved_request,
+            )
             return False
 
         try:
@@ -1160,7 +1187,7 @@ class OAMSManager:
                 fps_name,
                 source_lane_name,
                 runout_target,
-                target_lane_name,
+                resolved_request,
             )
             lane._perform_infinite_runout()
         except Exception:
