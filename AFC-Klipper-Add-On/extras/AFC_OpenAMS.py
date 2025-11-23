@@ -1533,11 +1533,12 @@ class afcAMS(afcUnit):
                 try:
                     self.handle_runout_detected(bay, None, lane_name=lane.name)
                 except Exception:
-                    self.logger.exception(
+                    self.logger.error(
                         "Failed to handle runout detection for %s (spool_index=%s, runout_lane=%s)",
                         lane.name,
                         bay,
                         getattr(lane, "runout_lane", None),
+                        exc_info=True,
                     )
             else:
                 self.logger.debug("F1S sensor False for {} but not printing - skipping runout detection (likely filament insertion/removal)".format(lane.name))
@@ -1695,7 +1696,11 @@ class afcAMS(afcUnit):
                             lane.extruder_obj.lane_loaded = None
                             self.logger.debug("Unsynced shared lane %s and cleared extruder.lane_loaded when sensor went False", lane.name)
                 except Exception:
-                    self.logger.exception("Failed to unsync shared lane %s from extruder when sensor cleared", lane.name)
+                    self.logger.error(
+                        "Failed to unsync shared lane %s from extruder when sensor cleared",
+                        lane.name,
+                        exc_info=True,
+                    )
             else:
                 self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
 
@@ -1931,14 +1936,6 @@ class afcAMS(afcUnit):
                 cleaned = cleaned[1:]
             return cleaned or None
 
-        def _normalize_tool_token(token: Optional[str]) -> Optional[str]:
-            if not isinstance(token, str):
-                return None
-            cleaned = token.strip().lower()
-            if cleaned.startswith("t"):
-                cleaned = cleaned[1:]
-            return cleaned or None
-
         resolved_name = self._resolve_lane_alias(lane_name)
         if resolved_name:
             trace.append(f"alias -> {resolved_name}")
@@ -2048,11 +2045,12 @@ class afcAMS(afcUnit):
                 except TypeError:
                     runout_cb(eventtime=eventtime)
                 except Exception:
-                    self.logger.exception(
+                    self.logger.error(
                         "Extruder runout handler failed for %s (spool_index=%s, runout_lane=%s)",
                         lane.name,
                         spool_index,
                         runout_lane_name,
+                        exc_info=True,
                     )
             else:
                 self.logger.warning(
