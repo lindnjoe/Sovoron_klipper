@@ -1096,9 +1096,21 @@ class OAMSManager:
             return False
 
         try:
+            self.logger.debug(
+                "Delegating infinite runout via AFC: fps=%s source=%s target=%s (resolved_request=%s)",
+                fps_name,
+                source_lane_name,
+                runout_target,
+                target_lane_name,
+            )
             lane._perform_infinite_runout()
         except Exception:
-            self.logger.error("AFC infinite runout failed for lane %s -> %s", source_lane_name, runout_target)
+            self.logger.error(
+                "AFC infinite runout failed for lane %s -> %s",
+                source_lane_name,
+                runout_target,
+                exc_info=True,
+            )
             fps_state.afc_delegation_active = False
             fps_state.afc_delegation_until = 0.0
             return False
