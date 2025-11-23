@@ -960,6 +960,35 @@ class OAMSManager:
         if cache_built and not self._afc_logged:
             self._validate_afc_oams_integration(afc)
 
+    def _resolve_afc_lane_name(self, afc, identifier: Optional[str]) -> Optional[str]:
+        """Resolve lane identifiers or map aliases (e.g., T#) to AFC lane names."""
+        if not identifier:
+            return None
+
+        lanes = getattr(afc, "lanes", {})
+        lookup = identifier.strip()
+        if lookup in lanes:
+            return lookup
+
+        lowered = lookup.lower()
+        for lane_name, lane in lanes.items():
+            if lane_name.lower() == lowered:
+                return lane_name
+
+            lane_map = getattr(lane, "map", None)
+            if not isinstance(lane_map, str):
+                continue
+
+            if lane_map == lookup or lane_map.lower() == lowered:
+                return lane_name
+
+            normalized_map = lane_map.replace(" ", "").lower()
+            normalized_lookup = lookup.replace(" ", "").lower()
+            if normalized_map == normalized_lookup:
+                return lane_name
+
+        return None
+
     def _resolve_lane_for_state(self, fps_state: 'FPSState', lane_name: Optional[str], afc) -> Tuple[Optional[str], Optional[str]]:
         """Resolve lane name from FPS state. Returns (lane_name, None) - group support removed."""
         # If lane_name provided, return it
@@ -1037,9 +1066,17 @@ class OAMSManager:
         if lane is None:
             return None, None, False, lane_name
 
-        runout_lane_name = getattr(lane, "runout_lane", None)
+        raw_runout_lane = getattr(lane, "runout_lane", None)
+        runout_lane_name = self._resolve_afc_lane_name(afc, raw_runout_lane)
         if not runout_lane_name:
             return None, None, False, lane_name
+
+        if raw_runout_lane and runout_lane_name != raw_runout_lane:
+            try:
+                lane.runout_lane = runout_lane_name
+                self.logger.debug("Normalized runout lane for %s from %s to %s", lane_name, raw_runout_lane, runout_lane_name)
+            except Exception:
+                self.logger.debug("Could not persist normalized runout lane %s on %s", runout_lane_name, lane_name)
 
         target_lane = afc.lanes.get(runout_lane_name)
         if target_lane is None:
@@ -1079,10 +1116,18 @@ class OAMSManager:
             self.logger.warning("AFC lane %s not found while delegating infinite runout for %s", source_lane_name, fps_name)
             return False
 
-        runout_target = getattr(lane, "runout_lane", None)
+        raw_runout_target = getattr(lane, "runout_lane", None)
+        runout_target = self._resolve_afc_lane_name(afc, raw_runout_target)
         if not runout_target:
             self.logger.warning("AFC lane %s has no runout target while delegating infinite runout for %s", source_lane_name, fps_name)
             return False
+
+        if raw_runout_target and runout_target != raw_runout_target:
+            try:
+                lane.runout_lane = runout_target
+                self.logger.info("Delegating runout for %s using normalized target %s (from %s)", source_lane_name, runout_target, raw_runout_target)
+            except Exception:
+                self.logger.debug("Failed to persist normalized runout target %s on %s", runout_target, source_lane_name)
 
         if target_lane_name and target_lane_name != runout_target:
             pass
@@ -1096,9 +1141,21 @@ class OAMSManager:
             return False
 
         try:
+            self.logger.debug(
+                "Delegating infinite runout via AFC: fps=%s source=%s target=%s (resolved_request=%s)",
+                fps_name,
+                source_lane_name,
+                runout_target,
+                target_lane_name,
+            )
             lane._perform_infinite_runout()
         except Exception:
-            self.logger.error("AFC infinite runout failed for lane %s -> %s", source_lane_name, runout_target)
+            self.logger.error(
+                "AFC infinite runout failed for lane %s -> %s",
+                source_lane_name,
+                runout_target,
+                exc_info=True,
+            )
             fps_state.afc_delegation_active = False
             fps_state.afc_delegation_until = 0.0
             return False
