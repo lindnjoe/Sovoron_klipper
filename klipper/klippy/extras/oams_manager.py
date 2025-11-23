@@ -25,6 +25,7 @@
 
 import logging
 import time
+import traceback
 from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
@@ -1154,6 +1155,15 @@ class OAMSManager:
             except Exception:
                 self.logger.debug("Failed to persist resolved runout target %s on %s", runout_target, source_lane_name)
 
+        if getattr(lane, "runout_lane", None) != runout_target:
+            self.logger.warning(
+                "Resolved runout target %s could not be stored on lane %s (current=%s)",
+                runout_target,
+                source_lane_name,
+                getattr(lane, "runout_lane", None),
+            )
+            return False
+
         now = self.reactor.monotonic()
         if fps_state.afc_delegation_active and now < fps_state.afc_delegation_until:
             return True
@@ -1191,11 +1201,12 @@ class OAMSManager:
             )
             lane._perform_infinite_runout()
         except Exception:
+            err_trace = traceback.format_exc()
             self.logger.error(
-                "AFC infinite runout failed for lane %s -> %s",
+                "AFC infinite runout failed for lane %s -> %s: %s",
                 source_lane_name,
                 runout_target,
-                exc_info=True,
+                err_trace,
             )
             fps_state.afc_delegation_active = False
             fps_state.afc_delegation_until = 0.0
