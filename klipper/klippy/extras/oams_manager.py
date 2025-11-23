@@ -1141,6 +1141,20 @@ class OAMSManager:
             return False
 
         try:
+            current_lane = getattr(afc, "current", None)
+            if current_lane != source_lane_name:
+                if current_lane not in afc.lanes:
+                    self.logger.debug(
+                        "AFC current lane %s invalid during runout for %s; overriding to %s",
+                        current_lane,
+                        source_lane_name,
+                        source_lane_name,
+                    )
+                try:
+                    afc.current = source_lane_name
+                except Exception:
+                    self.logger.debug("Failed to set AFC current lane to %s before delegation", source_lane_name)
+
             self.logger.debug(
                 "Delegating infinite runout via AFC: fps=%s source=%s target=%s (resolved_request=%s)",
                 fps_name,
