@@ -1931,6 +1931,14 @@ class afcAMS(afcUnit):
                 cleaned = cleaned[1:]
             return cleaned or None
 
+        def _normalize_tool_token(token: Optional[str]) -> Optional[str]:
+            if not isinstance(token, str):
+                return None
+            cleaned = token.strip().lower()
+            if cleaned.startswith("t"):
+                cleaned = cleaned[1:]
+            return cleaned or None
+
         resolved_name = self._resolve_lane_alias(lane_name)
         if resolved_name:
             trace.append(f"alias -> {resolved_name}")
