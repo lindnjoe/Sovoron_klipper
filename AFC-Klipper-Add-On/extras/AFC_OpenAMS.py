@@ -2017,6 +2017,15 @@ class afcAMS(afcUnit):
                 same_extruder_handoff = True
 
         if not same_extruder_handoff:
+            # Only block shared sensor transitions for same-FPS handoffs. For any other runout, keep
+            # sensors flowing so AFC can perform its own infinite-runout logic just like Box Turtle
+            # units.
+            try:
+                if hasattr(lane, '_oams_runout_detected'):
+                    lane._oams_runout_detected = False
+            except Exception:
+                pass
+
             if runout_lane_name and not target_lane:
                 self.logger.warning(
                     "Runout handoff lane %s not found for %s; deferring to AFC's native runout handling",
@@ -2028,9 +2037,6 @@ class afcAMS(afcUnit):
                 # different extruder, trigger the infinite spool swap directly and let AFC resume
                 # afterward instead of treating it as a same-FPS handoff.
                 try:
-                    if not hasattr(lane, '_oams_runout_detected'):
-                        lane._oams_runout_detected = False
-                    lane._oams_runout_detected = True
                     lane._oams_cross_extruder_runout = True
                 except Exception:
                     pass
@@ -2059,21 +2065,18 @@ class afcAMS(afcUnit):
                             resolved_name,
                             exc_info=True,
                         )
-
             else:
+                try:
+                    lane._oams_cross_extruder_runout = False
+                except Exception:
+                    pass
+
                 self.logger.info(
                     "Runout for %s does not target same extruder; letting AFC handle it normally",
                     lane.name,
                 )
 
             # Allow AFC's built-in runout handler to pause or swap as configured
-            try:
-                if not hasattr(lane, '_oams_runout_detected'):
-                    lane._oams_runout_detected = False
-                lane._oams_runout_detected = True
-            except Exception:
-                pass
-
             extruder = getattr(lane, "extruder_obj", None)
             runout_cb = getattr(extruder, "handle_start_runout", None) if extruder is not None else None
             if callable(runout_cb):
