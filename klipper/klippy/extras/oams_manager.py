@@ -2706,9 +2706,9 @@ class OAMSManager:
                         return
 
                     # Update hardware service snapshot before lane change
-                    if self.hardware_service is not None and fps_state.current_spool_idx is not None:
+                    if monitor and monitor.hardware_service is not None and fps_state.current_spool_idx is not None:
                         try:
-                            self.hardware_service.update_lane_snapshot(
+                            monitor.hardware_service.update_lane_snapshot(
                                 active_oams,
                                 fps_state.current_spool_idx,
                                 lane_state=False,  # F1S empty
