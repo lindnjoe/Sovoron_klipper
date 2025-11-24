@@ -2718,7 +2718,7 @@ class OAMSManager:
                         except Exception:
                             self.logger.exception("OAMS: Failed to update snapshot for %s", source_lane_name)
 
-                    # Execute cross-extruder runout sequence: Physical tool change, heat, then load
+                    # Execute cross-extruder runout sequence: Heat target, then switch (which loads)
                     try:
                         self.logger.info("OAMS: Cross-extruder infinite runout: %s -> %s", source_lane_name, target_lane_name)
                         gcode = self.printer.lookup_object("gcode")
@@ -2749,9 +2749,7 @@ class OAMSManager:
                         if target_temp <= 0:
                             raise Exception(f"Current extruder has no target temp set")
 
-                        self.logger.info("OAMS: Target extruder %s will be heated to %.1f", target_extruder_name, target_temp)
-
-                        # 5. Get tool object for target extruder and activate it
+                        # 5. Get tool object for target extruder
                         # AFC tools are keyed by extruder name
                         target_tool_obj = afc.tools.get(target_extruder_name)
                         if not target_tool_obj:
@@ -2759,23 +2757,18 @@ class OAMSManager:
 
                         # Get the tool number (e.g., "0" from "T0")
                         tool_name = getattr(target_tool_obj, 'name', None)
-                        if tool_name and tool_name.startswith('T'):
-                            tool_num = tool_name[1:]  # Strip 'T' prefix
-                            self.logger.info("OAMS: Switching to tool %s", tool_name)
-                            # Use T{n} command to physically switch tools
-                            gcode.run_script(f"T{tool_num}")
-                        else:
-                            # Fallback: activate extruder directly
-                            self.logger.info("OAMS: Activating extruder %s", target_extruder_name)
-                            gcode.run_script(f"ACTIVATE_EXTRUDER EXTRUDER={target_extruder_name}")
+                        if not (tool_name and tool_name.startswith('T')):
+                            raise Exception(f"Invalid tool name: {tool_name}")
 
-                        # 6. Heat the now-active extruder and wait
-                        self.logger.info("OAMS: Heating extruder to %.1f", target_temp)
-                        gcode.run_script(f"M109 S{target_temp}")  # No T parameter - heat active extruder
+                        tool_num = tool_name[1:]  # Strip 'T' prefix
 
-                        # 7. Load target lane into the now-active, heated tool
-                        self.logger.info("OAMS: Loading lane %s", target_lane_name)
-                        gcode.run_script(f"TOOL_LOAD LANE={target_lane_name}")
+                        # 6. Heat target extruder BEFORE switching to it
+                        self.logger.info("OAMS: Heating target tool %s to %.1f", tool_name, target_temp)
+                        gcode.run_script(f"M109 T{tool_num} S{target_temp}")  # Heat target tool and wait
+
+                        # 7. Switch to target tool (T command loads filament automatically)
+                        self.logger.info("OAMS: Switching to tool %s (will load %s)", tool_name, target_lane_name)
+                        gcode.run_script(f"T{tool_num}")
 
                         # 8. Set mapping so T# references use new lane
                         # Get the current mapping of the empty lane to preserve T# macro
