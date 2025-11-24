@@ -1283,6 +1283,29 @@ class OAMSManager:
             except Exception:
                 self.logger.error("Failed to notify AFC coordinator about lane %s unload after runout", lane_name)
 
+    def _clear_fps_state_after_delegation(self, fps_name: str, fps_state: "FPSState", lane_name: Optional[str]) -> None:
+        """Clear local FPS state when cross-extruder runout is delegated to AFC.
+
+        This avoids sending an AFC lane_unloaded notification that would interfere with
+        shared prep/load lane handling while still preventing repeated runout detection on
+        the emptied source lane.
+        """
+        fps_state.state = FPSLoadState.UNLOADED
+        fps_state.following = False
+        fps_state.direction = 0
+        fps_state.clog_restore_follower = False
+        fps_state.clog_restore_direction = 1
+        fps_state.since = self.reactor.monotonic()
+        fps_state.current_lane = None
+        fps_state.current_spool_idx = None
+        fps_state.current_oams = None
+        fps_state.reset_stuck_spool_state()
+        fps_state.reset_clog_tracker()
+        fps_state.reset_runout_positions()
+        self._cancel_post_load_pressure_check(fps_state)
+
+        self.logger.info("Cleared local FPS state for %s after delegating runout from lane %s", fps_name, lane_name)
+
     def _load_filament_for_lane(self, lane_name: str) -> Tuple[bool, str]:
         """Load filament for a lane by deriving OAMS and bay from the lane's unit configuration.
 
@@ -2500,11 +2523,11 @@ class OAMSManager:
                     delegated = self._delegate_runout_to_afc(fps_name, fps_state, source_lane, target_lane)
                     if delegated:
                         if source_lane_name:
-                            # Clear the FPS state for the source lane so we don't keep
-                            # detecting runout on the empty lane while AFC handles the
-                            # cross-extruder tool change.
+                            # Clear only the local FPS state so AFC can keep managing the
+                            # shared prep/load lane state without receiving an extra
+                            # lane_unloaded notification that would desync shared lanes.
                             try:
-                                self._clear_lane_on_runout(fps_name, fps_state, source_lane_name)
+                                self._clear_fps_state_after_delegation(fps_name, fps_state, source_lane_name)
                             except Exception:
                                 self.logger.error("Failed to clear FPS state for %s after AFC delegation", source_lane_name)
 
