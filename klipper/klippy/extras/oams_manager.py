@@ -238,9 +238,35 @@ class OAMSRunoutMonitor:
                             if target_lane_name:
                                 logging.info("OAMS: Triggering CHANGE_TOOL to %s for cross-extruder runout from %s", target_lane_name, current_lane_name)
                                 gcode = self.printer.lookup_object("gcode")
-                                # Pause first
-                                gcode.run_script_from_command("PAUSE")
-                                # Then trigger tool change
+
+                                # Update hardware service snapshot BEFORE tool change
+                                # This ensures AFC sees F1S empty state, not hub state
+                                if self.hardware_service is not None:
+                                    try:
+                                        unit_name = getattr(fps_state, "current_oams", None) or self.fps_name
+                                        # Report F1S state (empty), ignore hub state
+                                        self.hardware_service.update_lane_snapshot(
+                                            unit_name,
+                                            spool_idx,
+                                            lane_state=False,  # F1S empty
+                                            hub_state=None     # Don't report hub to avoid "detect but not loaded"
+                                        )
+                                        logging.debug("OAMS: Updated snapshot for %s to F1S empty before tool change", current_lane_name)
+                                    except Exception:
+                                        logging.exception("OAMS: Failed to update snapshot for %s", current_lane_name)
+
+                                # Z-hop 5mm before tool change to lift off print
+                                try:
+                                    gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_runout")
+                                    gcode.run_script_from_command("G91")  # Relative positioning
+                                    gcode.run_script_from_command("G1 Z5 F3000")  # Lift 5mm
+                                    gcode.run_script_from_command("G90")  # Absolute positioning
+                                    logging.info("OAMS: Z-hopped 5mm for cross-extruder runout")
+                                except Exception:
+                                    logging.exception("OAMS: Failed to Z-hop for cross-extruder runout")
+
+                                # Trigger tool change - AFC CHANGE_TOOL handles pause/resume/heating internally
+                                # Don't call PAUSE ourselves, let CHANGE_TOOL handle the complete flow
                                 gcode.run_script_from_command(f"CHANGE_TOOL LANE={target_lane_name}")
 
                                 # Remap the old lane to point to the new lane
@@ -266,28 +292,16 @@ class OAMSRunoutMonitor:
 
                         except Exception:
                             logging.exception("OAMS: Failed to trigger cross-extruder tool change for %s", self.fps_name)
-                            # Fall back to pause
+                            # Fall back to pause with Z-hop
                             try:
                                 gcode = self.printer.lookup_object("gcode")
+                                gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_runout")
+                                gcode.run_script_from_command("G91")
+                                gcode.run_script_from_command("G1 Z5 F3000")
+                                gcode.run_script_from_command("G90")
                                 gcode.run_script_from_command("PAUSE")
                             except Exception:
                                 pass
-
-                        # Update hardware service snapshot to reflect F1S empty (not hub state)
-                        # This ensures AFC sees the lane as empty, not "detect but not loaded"
-                        if self.hardware_service is not None and current_lane_name:
-                            try:
-                                unit_name = getattr(fps_state, "current_oams", None) or self.fps_name
-                                # Update snapshot with F1S state (empty), overriding hub state
-                                self.hardware_service.update_lane_snapshot(
-                                    unit_name,
-                                    spool_idx,
-                                    lane_state=False,  # F1S empty
-                                    hub_state=None     # Don't report hub state to avoid confusion
-                                )
-                                logging.debug("OAMS: Updated hardware service snapshot for %s to F1S empty", current_lane_name)
-                            except Exception:
-                                logging.exception("OAMS: Failed to update hardware service snapshot for %s", current_lane_name)
 
                         self.state = OAMSRunoutState.RELOADING
                         if AMSRunoutCoordinator is not None:
