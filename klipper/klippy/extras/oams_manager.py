@@ -255,18 +255,8 @@ class OAMSRunoutMonitor:
                                     except Exception:
                                         logging.exception("OAMS: Failed to update snapshot for %s", current_lane_name)
 
-                                # Z-hop 5mm before tool change to lift off print
-                                try:
-                                    gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_runout")
-                                    gcode.run_script_from_command("G91")  # Relative positioning
-                                    gcode.run_script_from_command("G1 Z5 F3000")  # Lift 5mm
-                                    gcode.run_script_from_command("G90")  # Absolute positioning
-                                    logging.info("OAMS: Z-hopped 5mm for cross-extruder runout")
-                                except Exception:
-                                    logging.exception("OAMS: Failed to Z-hop for cross-extruder runout")
-
-                                # Trigger tool change - AFC CHANGE_TOOL handles pause/resume/heating internally
-                                # Don't call PAUSE ourselves, let CHANGE_TOOL handle the complete flow
+                                # Trigger tool change - AFC CHANGE_TOOL handles all moves, pause/resume/heating
+                                # CHANGE_TOOL should handle parking, tool switching, and resuming at correct position
                                 gcode.run_script_from_command(f"CHANGE_TOOL LANE={target_lane_name}")
 
                                 # Remap the old lane to point to the new lane
@@ -292,13 +282,9 @@ class OAMSRunoutMonitor:
 
                         except Exception:
                             logging.exception("OAMS: Failed to trigger cross-extruder tool change for %s", self.fps_name)
-                            # Fall back to pause with Z-hop
+                            # Fall back to pause - let pause macro handle Z-hop
                             try:
                                 gcode = self.printer.lookup_object("gcode")
-                                gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_runout")
-                                gcode.run_script_from_command("G91")
-                                gcode.run_script_from_command("G1 Z5 F3000")
-                                gcode.run_script_from_command("G90")
                                 gcode.run_script_from_command("PAUSE")
                             except Exception:
                                 pass
