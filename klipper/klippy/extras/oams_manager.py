@@ -197,6 +197,15 @@ class OAMSRunoutMonitor:
                     if self.is_cross_extruder_runout:
                         logging.info("OAMS: Cross-extruder runout detected on FPS %s (F1S empty, hub loaded) - triggering immediate reload",
                                    self.fps_name)
+
+                        # Pause the printer before delegating to AFC for tool change
+                        try:
+                            gcode = self.printer.lookup_object("gcode")
+                            gcode.run_script_from_command("PAUSE")
+                            logging.info("OAMS: Paused printer for cross-extruder runout on %s", self.fps_name)
+                        except Exception:
+                            logging.exception("OAMS: Failed to pause printer for cross-extruder runout on %s", self.fps_name)
+
                         self.state = OAMSRunoutState.RELOADING
                         if AMSRunoutCoordinator is not None:
                             try:
