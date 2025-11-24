@@ -2718,7 +2718,7 @@ class OAMSManager:
                         except Exception:
                             self.logger.exception("OAMS: Failed to update snapshot for %s", source_lane_name)
 
-                    # Execute box turtle infinite runout sequence with tool heating
+                    # Execute cross-extruder runout sequence: Physical tool change, heat, then load
                     try:
                         self.logger.info("OAMS: Cross-extruder infinite runout: %s -> %s", source_lane_name, target_lane_name)
                         gcode = self.printer.lookup_object("gcode")
@@ -2734,39 +2734,60 @@ class OAMSManager:
                         gcode.run_script("G1 Z5 F600")  # Lift 5mm
                         gcode.run_script("G90")  # Absolute positioning
 
-                        # 4. Get target tool/extruder and heat it
+                        # 4. Get target lane and extruder
                         target_lane = afc.lanes.get(target_lane_name)
                         if not target_lane:
                             raise Exception(f"Target lane {target_lane_name} not found in AFC")
 
-                        # Get the extruder for this lane
                         target_extruder_name = getattr(target_lane, 'extruder_name', None)
-                        if target_extruder_name:
-                            self.logger.info("OAMS: Heating target extruder %s", target_extruder_name)
-                            # Get target temp from current extruder
-                            try:
-                                current_extruder = self.printer.lookup_object('toolhead').get_extruder()
-                                target_temp = current_extruder.get_heater().target_temp
-                                if target_temp > 0:
-                                    gcode.run_script(f"M109 T{target_lane.tool_num} S{target_temp}")  # Heat and wait
-                                    self.logger.info("OAMS: Target extruder heated to %.1f", target_temp)
-                            except Exception:
-                                self.logger.exception("OAMS: Failed to heat target extruder")
+                        if not target_extruder_name:
+                            raise Exception(f"Target lane {target_lane_name} has no extruder_name")
 
-                        # 5. Change tool to new lane (use gcode command for proper heating/loading)
-                        gcode.run_script(f"CHANGE_TOOL LANE={target_lane_name}")
+                        # Get current extruder temp to use for target
+                        current_extruder = self.printer.lookup_object('toolhead').get_extruder()
+                        target_temp = current_extruder.get_heater().target_temp
+                        if target_temp <= 0:
+                            raise Exception(f"Current extruder has no target temp set")
 
-                        # 6. Set mapping so T# references use new lane
+                        self.logger.info("OAMS: Target extruder %s will be heated to %.1f", target_extruder_name, target_temp)
+
+                        # 5. Get tool object for target extruder and activate it
+                        # AFC tools are keyed by extruder name
+                        target_tool_obj = afc.tools.get(target_extruder_name)
+                        if not target_tool_obj:
+                            raise Exception(f"Target extruder {target_extruder_name} not found in AFC tools")
+
+                        # Get the tool number (e.g., "0" from "T0")
+                        tool_name = getattr(target_tool_obj, 'name', None)
+                        if tool_name and tool_name.startswith('T'):
+                            tool_num = tool_name[1:]  # Strip 'T' prefix
+                            self.logger.info("OAMS: Switching to tool %s", tool_name)
+                            # Use T{n} command to physically switch tools
+                            gcode.run_script(f"T{tool_num}")
+                        else:
+                            # Fallback: activate extruder directly
+                            self.logger.info("OAMS: Activating extruder %s", target_extruder_name)
+                            gcode.run_script(f"ACTIVATE_EXTRUDER EXTRUDER={target_extruder_name}")
+
+                        # 6. Heat the now-active extruder and wait
+                        self.logger.info("OAMS: Heating extruder to %.1f", target_temp)
+                        gcode.run_script(f"M109 S{target_temp}")  # No T parameter - heat active extruder
+
+                        # 7. Load target lane into the now-active, heated tool
+                        self.logger.info("OAMS: Loading lane %s", target_lane_name)
+                        gcode.run_script(f"TOOL_LOAD LANE={target_lane_name}")
+
+                        # 8. Set mapping so T# references use new lane
                         # Get the current mapping of the empty lane to preserve T# macro
                         empty_lane_map = getattr(source_lane, 'map', None) or source_lane_name
                         gcode.run_script(f"SET_MAP LANE={target_lane_name} MAP={empty_lane_map}")
                         self.logger.info("OAMS: Set mapping %s -> %s", target_lane_name, empty_lane_map)
 
-                        # 7. Unload empty lane from unit
+                        # 9. Unload empty lane from unit
                         if not afc.error_state:
                             gcode.run_script(f"LANE_UNLOAD LANE={source_lane_name}")
 
-                            # 8. Restore position (brings Z back down) and resume
+                            # 10. Restore position (brings Z back down) and resume
                             afc.restore_pos()
                             gcode.run_script("RESUME")
 
@@ -2779,7 +2800,7 @@ class OAMSManager:
                         return
 
                     except Exception:
-                        self.logger.exception("OAMS: Failed to execute box turtle sequence for cross-extruder runout")
+                        self.logger.exception("OAMS: Failed to execute cross-extruder runout sequence")
                         fps_state.reset_runout_positions()
                         fps_state.is_cross_extruder_runout = False
                         self._pause_printer_message(f"Failed to change tool for {source_lane_name or fps_name}", active_oams)
