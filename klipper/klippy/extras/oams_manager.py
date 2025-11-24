@@ -204,6 +204,10 @@ class OAMSRunoutMonitor:
                             # Get the runout lane for this lane
                             afc = None
                             target_lane_name = None
+
+                            # Use fps_state.current_lane as fallback if hardware service didn't provide lane_name
+                            current_lane_name = lane_name or fps_state.current_lane
+
                             if self.hardware_service is not None:
                                 try:
                                     # Get AFC instance
@@ -219,23 +223,44 @@ class OAMSRunoutMonitor:
                                 except Exception:
                                     pass
 
-                            if afc and lane_name:
-                                lane = afc.lanes.get(lane_name)
+                            if afc and current_lane_name:
+                                lane = afc.lanes.get(current_lane_name)
                                 if lane:
                                     runout_lane = getattr(lane, 'runout_lane', None)
                                     if runout_lane:
                                         target_lane_name = runout_lane
+                                        logging.info("OAMS: Found runout_lane=%s for lane %s", runout_lane, current_lane_name)
+                                    else:
+                                        logging.warning("OAMS: Lane %s has no runout_lane configured", current_lane_name)
+                                else:
+                                    logging.warning("OAMS: Could not find lane %s in AFC lanes", current_lane_name)
 
                             if target_lane_name:
-                                logging.info("OAMS: Triggering CHANGE_TOOL to %s for cross-extruder runout", target_lane_name)
+                                logging.info("OAMS: Triggering CHANGE_TOOL to %s for cross-extruder runout from %s", target_lane_name, current_lane_name)
                                 gcode = self.printer.lookup_object("gcode")
                                 # Pause first
                                 gcode.run_script_from_command("PAUSE")
                                 # Then trigger tool change
                                 gcode.run_script_from_command(f"CHANGE_TOOL LANE={target_lane_name}")
+
+                                # Remap the old lane to point to the new lane
+                                # This ensures future references to lane8/T8 actually use lane0/T0
+                                if afc and current_lane_name:
+                                    try:
+                                        source_lane = afc.lanes.get(current_lane_name)
+                                        if source_lane:
+                                            # Set the map attribute to redirect lane8 -> lane0
+                                            # AFC should use this when resolving lane references
+                                            source_lane.map = target_lane_name
+                                            logging.info("OAMS: Remapped %s -> %s (future %s calls will use %s)",
+                                                       current_lane_name, target_lane_name, current_lane_name, target_lane_name)
+                                        else:
+                                            logging.warning("OAMS: Could not find lane %s for remapping", current_lane_name)
+                                    except Exception:
+                                        logging.exception("OAMS: Failed to remap lane %s to %s", current_lane_name, target_lane_name)
                             else:
                                 # No runout lane configured, just pause
-                                logging.warning("OAMS: No runout lane configured for %s, pausing printer", lane_name or fps_name)
+                                logging.warning("OAMS: No runout lane configured for lane %s on %s, pausing printer", current_lane_name or "unknown", fps_name)
                                 gcode = self.printer.lookup_object("gcode")
                                 gcode.run_script_from_command("PAUSE")
 
@@ -248,10 +273,26 @@ class OAMSRunoutMonitor:
                             except Exception:
                                 pass
 
+                        # Update hardware service snapshot to reflect F1S empty (not hub state)
+                        # This ensures AFC sees the lane as empty, not "detect but not loaded"
+                        if self.hardware_service is not None and current_lane_name:
+                            try:
+                                unit_name = getattr(fps_state, "current_oams", None) or self.fps_name
+                                # Update snapshot with F1S state (empty), overriding hub state
+                                self.hardware_service.update_lane_snapshot(
+                                    unit_name,
+                                    spool_idx,
+                                    lane_state=False,  # F1S empty
+                                    hub_state=None     # Don't report hub state to avoid confusion
+                                )
+                                logging.debug("OAMS: Updated hardware service snapshot for %s to F1S empty", current_lane_name)
+                            except Exception:
+                                logging.exception("OAMS: Failed to update hardware service snapshot for %s", current_lane_name)
+
                         self.state = OAMSRunoutState.RELOADING
                         if AMSRunoutCoordinator is not None:
                             try:
-                                AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=lane_name)
+                                AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=current_lane_name)
                             except Exception:
                                 logging.getLogger(__name__).exception("Failed to notify AFC about OpenAMS runout")
                     else:
