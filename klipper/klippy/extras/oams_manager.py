@@ -115,7 +115,8 @@ class OAMSRunoutMonitor:
         self.runout_position: Optional[float] = None
         self.bldc_clear_position: Optional[float] = None
         self.runout_after_position: Optional[float] = None
-        
+        self.is_cross_extruder_runout: bool = False  # Track if runout is cross-extruder
+
         self.reload_before_toolhead_distance = reload_before_toolhead_distance
         self.reload_callback = reload_callback
 
@@ -191,47 +192,42 @@ class OAMSRunoutMonitor:
 
                 if (is_printing and fps_state.state == FPSLoadState.LOADED and
                     fps_state.current_lane is not None and fps_state.current_spool_idx is not None and spool_empty):
-                    # Check if this is a cross-extruder runout by checking the hub sensor
-                    # If hub still has filament (F1S empty but hub not empty), it's likely cross-extruder
-                    # or we're detecting runout early before hub empties
+                    # Check if hub still has filament - if so, this is likely a cross-extruder runout
+                    # where filament is needed by another extruder
                     try:
                         hub_values = oams_obj.hub_hes_value
-                        hub_still_loaded = bool(hub_values[spool_idx]) if spool_idx < len(hub_values) else False
+                        self.is_cross_extruder_runout = bool(hub_values[spool_idx]) if spool_idx < len(hub_values) else False
                     except Exception:
-                        hub_still_loaded = False
+                        self.is_cross_extruder_runout = False
 
-                    # For cross-extruder runouts or when hub is still loaded, trigger reload immediately
-                    # Skip PAUSE_DISTANCE and COASTING phases, keep follower enabled
-                    if hub_still_loaded:
-                        logging.info("OAMS: Runout detected on FPS %s (F1S empty, hub loaded) - triggering immediate reload for cross-extruder", self.fps_name)
-                        self.state = OAMSRunoutState.RELOADING
-                        if AMSRunoutCoordinator is not None:
-                            try:
-                                AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=lane_name)
-                            except Exception:
-                                logging.getLogger(__name__).exception("Failed to notify AFC about OpenAMS runout")
-                        self.reload_callback()
-                    else:
-                        # Traditional runout: F1S and hub both empty, use PAUSE_DISTANCE and COASTING
-                        self.state = OAMSRunoutState.DETECTED
-                        logging.info("OAMS: Runout detected on FPS %s, pausing for %d mm", self.fps_name, PAUSE_DISTANCE)
-                        self.runout_position = fps.extruder.last_position
-                        if AMSRunoutCoordinator is not None:
-                            try:
-                                AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=lane_name)
-                            except Exception:
-                                logging.getLogger(__name__).exception("Failed to notify AFC about OpenAMS runout")
+                    # Runout detected on F1S sensor - start PAUSE_DISTANCE sequence
+                    # This works for both same-extruder and cross-extruder runouts
+                    self.state = OAMSRunoutState.DETECTED
+                    runout_type = "cross-extruder" if self.is_cross_extruder_runout else "same-extruder"
+                    logging.info("OAMS: Runout detected on FPS %s (F1S empty, %s), pausing for %d mm",
+                               self.fps_name, runout_type, PAUSE_DISTANCE)
+                    self.runout_position = fps.extruder.last_position
+                    if AMSRunoutCoordinator is not None:
+                        try:
+                            AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=lane_name)
+                        except Exception:
+                            logging.getLogger(__name__).exception("Failed to notify AFC about OpenAMS runout")
 
             elif self.state == OAMSRunoutState.DETECTED:
                 traveled_distance = fps.extruder.last_position - self.runout_position
                 if traveled_distance >= PAUSE_DISTANCE:
-                    logging.info("OAMS: Pause complete, coasting the follower.")
-                    try:
-                        self.oams[fps_state.current_oams].set_oams_follower(0, 1)
-                    except Exception:
-                        logging.exception("OAMS: Failed to stop follower while coasting on %s", self.fps_name)
-                    finally:
-                        fps_state.following = False
+                    # For cross-extruder runouts, keep follower enabled as hub filament is needed by another extruder
+                    # For same-extruder runouts, disable follower to allow coasting
+                    if self.is_cross_extruder_runout:
+                        logging.info("OAMS: Pause complete for cross-extruder runout, keeping follower enabled")
+                    else:
+                        logging.info("OAMS: Pause complete, disabling follower for coasting")
+                        try:
+                            self.oams[fps_state.current_oams].set_oams_follower(0, 1)
+                        except Exception:
+                            logging.exception("OAMS: Failed to stop follower while coasting on %s", self.fps_name)
+                        finally:
+                            fps_state.following = False
                     self.bldc_clear_position = fps.extruder.last_position
                     self.runout_after_position = 0.0
                     self.state = OAMSRunoutState.COASTING
@@ -270,6 +266,7 @@ class OAMSRunoutMonitor:
         self.state = OAMSRunoutState.RELOADING
         self.runout_position = None
         self.runout_after_position = None
+        self.is_cross_extruder_runout = False
         
     def paused(self) -> None:
         self.state = OAMSRunoutState.PAUSED
@@ -278,6 +275,7 @@ class OAMSRunoutMonitor:
         self.state = OAMSRunoutState.STOPPED
         self.runout_position = None
         self.runout_after_position = None
+        self.is_cross_extruder_runout = False
         if self.timer is not None:
             self.reactor.unregister_timer(self.timer)
             self.timer = None
