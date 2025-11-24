@@ -2718,7 +2718,7 @@ class OAMSManager:
                         except Exception:
                             self.logger.exception("OAMS: Failed to update snapshot for %s", source_lane_name)
 
-                    # Execute box turtle infinite runout sequence
+                    # Execute box turtle infinite runout sequence with tool heating
                     try:
                         self.logger.info("OAMS: Cross-extruder infinite runout: %s -> %s", source_lane_name, target_lane_name)
                         gcode = self.printer.lookup_object("gcode")
@@ -2726,27 +2726,47 @@ class OAMSManager:
                         # 1. Pause printer
                         gcode.run_script("PAUSE")
 
-                        # 2. Save position (AFC will handle this in CHANGE_TOOL)
+                        # 2. Save position
+                        afc.save_pos()
 
-                        # 3. Change tool to new lane (AFC handles tool switch + load)
+                        # 3. Z-hop to lift nozzle off print
+                        gcode.run_script("G91")  # Relative positioning
+                        gcode.run_script("G1 Z5 F600")  # Lift 5mm
+                        gcode.run_script("G90")  # Absolute positioning
+
+                        # 4. Get target tool/extruder and heat it
                         target_lane = afc.lanes.get(target_lane_name)
                         if not target_lane:
                             raise Exception(f"Target lane {target_lane_name} not found in AFC")
 
-                        # Call AFC's CHANGE_TOOL method directly
-                        afc.CHANGE_TOOL(target_lane, restore_pos=False)
+                        # Get the extruder for this lane
+                        target_extruder_name = getattr(target_lane, 'extruder_name', None)
+                        if target_extruder_name:
+                            self.logger.info("OAMS: Heating target extruder %s", target_extruder_name)
+                            # Get target temp from current extruder
+                            try:
+                                current_extruder = self.printer.lookup_object('toolhead').get_extruder()
+                                target_temp = current_extruder.get_heater().target_temp
+                                if target_temp > 0:
+                                    gcode.run_script(f"M109 T{target_lane.tool_num} S{target_temp}")  # Heat and wait
+                                    self.logger.info("OAMS: Target extruder heated to %.1f", target_temp)
+                            except Exception:
+                                self.logger.exception("OAMS: Failed to heat target extruder")
 
-                        # 4. Set mapping so T# references use new lane
+                        # 5. Change tool to new lane (use gcode command for proper heating/loading)
+                        gcode.run_script(f"CHANGE_TOOL LANE={target_lane_name}")
+
+                        # 6. Set mapping so T# references use new lane
                         # Get the current mapping of the empty lane to preserve T# macro
                         empty_lane_map = getattr(source_lane, 'map', None) or source_lane_name
                         gcode.run_script(f"SET_MAP LANE={target_lane_name} MAP={empty_lane_map}")
                         self.logger.info("OAMS: Set mapping %s -> %s", target_lane_name, empty_lane_map)
 
-                        # 5. Unload empty lane from unit
+                        # 7. Unload empty lane from unit
                         if not afc.error_state:
                             gcode.run_script(f"LANE_UNLOAD LANE={source_lane_name}")
 
-                            # 6. Restore position and resume
+                            # 8. Restore position (brings Z back down) and resume
                             afc.restore_pos()
                             gcode.run_script("RESUME")
 
