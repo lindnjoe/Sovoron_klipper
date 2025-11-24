@@ -162,37 +162,29 @@ class OAMSRunoutMonitor:
                 spool_empty = None
                 unit_name = getattr(fps_state, "current_oams", None) or self.fps_name
 
+                # Get lane name from hardware service if available
                 if self.hardware_service is not None:
                     try:
                         lane_name = self.hardware_service.resolve_lane_for_spool(unit_name, spool_idx)
-                        snapshot = self.hardware_service.latest_lane_snapshot_for_spool(unit_name, spool_idx)
                     except Exception:
-                        snapshot = None
-                    if snapshot:
-                        hub_state = snapshot.get("hub_state")
-                        lane_state = snapshot.get("lane_state")
-                        if hub_state is not None:
-                            spool_empty = not bool(hub_state)
-                        elif lane_state is not None:
-                            spool_empty = not bool(lane_state)
+                        pass
 
-                if spool_empty is None:
-                    try:
-                        # For runout detection, check F1S sensor (filament sensor at spool)
-                        # This triggers runout immediately when spool runs out, before hub empties
-                        f1s_values = oams_obj.f1s_hes_value
-                        if spool_idx < 0 or spool_idx >= len(f1s_values):
-                            return eventtime + MONITOR_ENCODER_PERIOD
-                        spool_empty = not bool(f1s_values[spool_idx])
-                    except Exception:
-                        logging.exception("OAMS: Failed to read F1S values for runout detection on %s", self.fps_name)
+                # ALWAYS check F1S sensor for runout detection (not hub sensor)
+                # This triggers runout immediately when spool runs out
+                try:
+                    f1s_values = oams_obj.f1s_hes_value
+                    if spool_idx < 0 or spool_idx >= len(f1s_values):
                         return eventtime + MONITOR_ENCODER_PERIOD
+                    spool_empty = not bool(f1s_values[spool_idx])
+                except Exception:
+                    logging.exception("OAMS: Failed to read F1S values for runout detection on %s", self.fps_name)
+                    return eventtime + MONITOR_ENCODER_PERIOD
 
                 self.latest_lane_name = lane_name
 
                 if (is_printing and fps_state.state == FPSLoadState.LOADED and
                     fps_state.current_lane is not None and fps_state.current_spool_idx is not None and spool_empty):
-                    # Check if hub still has filament - if so, this is likely a cross-extruder runout
+                    # Check if hub still has filament - if so, this is a cross-extruder runout
                     # where filament is needed by another extruder
                     try:
                         hub_values = oams_obj.hub_hes_value
@@ -200,18 +192,30 @@ class OAMSRunoutMonitor:
                     except Exception:
                         self.is_cross_extruder_runout = False
 
-                    # Runout detected on F1S sensor - start PAUSE_DISTANCE sequence
-                    # This works for both same-extruder and cross-extruder runouts
-                    self.state = OAMSRunoutState.DETECTED
-                    runout_type = "cross-extruder" if self.is_cross_extruder_runout else "same-extruder"
-                    logging.info("OAMS: Runout detected on FPS %s (F1S empty, %s), pausing for %d mm",
-                               self.fps_name, runout_type, PAUSE_DISTANCE)
-                    self.runout_position = fps.extruder.last_position
-                    if AMSRunoutCoordinator is not None:
-                        try:
-                            AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=lane_name)
-                        except Exception:
-                            logging.getLogger(__name__).exception("Failed to notify AFC about OpenAMS runout")
+                    # Cross-extruder runouts: Trigger immediate reload (no PAUSE_DISTANCE/COASTING)
+                    # Same-extruder runouts: Use PAUSE_DISTANCE ? COASTING ? reload sequence
+                    if self.is_cross_extruder_runout:
+                        logging.info("OAMS: Cross-extruder runout detected on FPS %s (F1S empty, hub loaded) - triggering immediate reload",
+                                   self.fps_name)
+                        self.state = OAMSRunoutState.RELOADING
+                        if AMSRunoutCoordinator is not None:
+                            try:
+                                AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=lane_name)
+                            except Exception:
+                                logging.getLogger(__name__).exception("Failed to notify AFC about OpenAMS runout")
+                        # Trigger immediate reload via AFC delegation
+                        self.reload_callback()
+                    else:
+                        # Same-extruder runout: Use standard sequence with buffer clearing
+                        self.state = OAMSRunoutState.DETECTED
+                        logging.info("OAMS: Same-extruder runout detected on FPS %s (F1S empty), pausing for %d mm",
+                                   self.fps_name, PAUSE_DISTANCE)
+                        self.runout_position = fps.extruder.last_position
+                        if AMSRunoutCoordinator is not None:
+                            try:
+                                AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=lane_name)
+                            except Exception:
+                                logging.getLogger(__name__).exception("Failed to notify AFC about OpenAMS runout")
 
             elif self.state == OAMSRunoutState.DETECTED:
                 traveled_distance = fps.extruder.last_position - self.runout_position
