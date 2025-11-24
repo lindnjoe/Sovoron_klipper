@@ -1284,12 +1284,14 @@ class OAMSManager:
                 self.logger.error("Failed to notify AFC coordinator about lane %s unload after runout", lane_name)
 
     def _clear_fps_state_after_delegation(self, fps_name: str, fps_state: "FPSState", lane_name: Optional[str]) -> None:
-        """Clear local FPS state when cross-extruder runout is delegated to AFC.
+        """Clear FPS state and mirror the unload when runout is delegated to AFC.
 
-        This avoids sending an AFC lane_unloaded notification that would interfere with
-        shared prep/load lane handling while still preventing repeated runout detection on
-        the emptied source lane.
+        We still avoid double-notifying lane_unloaded during the AFC tool change, but we
+        must mirror the unloaded state so shared prep/load lanes don't remain in a
+        "filament detected" limbo after the source lane is emptied.
         """
+        spool_index = fps_state.current_spool_idx
+        oams_name = fps_state.current_oams
         fps_state.state = FPSLoadState.UNLOADED
         fps_state.following = False
         fps_state.direction = 0
@@ -1303,6 +1305,24 @@ class OAMSManager:
         fps_state.reset_clog_tracker()
         fps_state.reset_runout_positions()
         self._cancel_post_load_pressure_check(fps_state)
+
+        if AMSRunoutCoordinator is not None and lane_name and oams_name:
+            try:
+                AMSRunoutCoordinator.notify_lane_tool_state(
+                    self.printer,
+                    oams_name,
+                    lane_name,
+                    loaded=False,
+                    spool_index=spool_index,
+                    eventtime=fps_state.since,
+                )
+                self.logger.info(
+                    "Mirrored lane %s unload to AFC after delegating runout from %s",
+                    lane_name,
+                    fps_name,
+                )
+            except Exception:
+                self.logger.error("Failed to mirror AFC lane unload for %s after delegation", lane_name)
 
         self.logger.info("Cleared local FPS state for %s after delegating runout from lane %s", fps_name, lane_name)
 
