@@ -195,16 +195,58 @@ class OAMSRunoutMonitor:
                     # Cross-extruder runouts: Trigger immediate reload (no PAUSE_DISTANCE/COASTING)
                     # Same-extruder runouts: Use PAUSE_DISTANCE ? COASTING ? reload sequence
                     if self.is_cross_extruder_runout:
-                        logging.info("OAMS: Cross-extruder runout detected on FPS %s (F1S empty, hub loaded) - triggering immediate reload",
+                        logging.info("OAMS: Cross-extruder runout detected on FPS %s (F1S empty, hub loaded) - triggering immediate tool change",
                                    self.fps_name)
 
-                        # Pause the printer before delegating to AFC for tool change
+                        # For cross-extruder runouts, use AFC's CHANGE_TOOL command directly
+                        # This is more reliable than calling internal methods from timer context
                         try:
-                            gcode = self.printer.lookup_object("gcode")
-                            gcode.run_script_from_command("PAUSE")
-                            logging.info("OAMS: Paused printer for cross-extruder runout on %s", self.fps_name)
+                            # Get the runout lane for this lane
+                            afc = None
+                            target_lane_name = None
+                            if self.hardware_service is not None:
+                                try:
+                                    # Get AFC instance
+                                    from extras.ams_integration import AMSHardwareService
+                                    service = AMSHardwareService.for_printer(self.printer, fps_state.current_oams or self.fps_name)
+                                    afc = service._afc if hasattr(service, '_afc') else None
+                                except Exception:
+                                    pass
+
+                            if afc is None:
+                                try:
+                                    afc = self.printer.lookup_object('AFC')
+                                except Exception:
+                                    pass
+
+                            if afc and lane_name:
+                                lane = afc.lanes.get(lane_name)
+                                if lane:
+                                    runout_lane = getattr(lane, 'runout_lane', None)
+                                    if runout_lane:
+                                        target_lane_name = runout_lane
+
+                            if target_lane_name:
+                                logging.info("OAMS: Triggering CHANGE_TOOL to %s for cross-extruder runout", target_lane_name)
+                                gcode = self.printer.lookup_object("gcode")
+                                # Pause first
+                                gcode.run_script_from_command("PAUSE")
+                                # Then trigger tool change
+                                gcode.run_script_from_command(f"CHANGE_TOOL LANE={target_lane_name}")
+                            else:
+                                # No runout lane configured, just pause
+                                logging.warning("OAMS: No runout lane configured for %s, pausing printer", lane_name or fps_name)
+                                gcode = self.printer.lookup_object("gcode")
+                                gcode.run_script_from_command("PAUSE")
+
                         except Exception:
-                            logging.exception("OAMS: Failed to pause printer for cross-extruder runout on %s", self.fps_name)
+                            logging.exception("OAMS: Failed to trigger cross-extruder tool change for %s", self.fps_name)
+                            # Fall back to pause
+                            try:
+                                gcode = self.printer.lookup_object("gcode")
+                                gcode.run_script_from_command("PAUSE")
+                            except Exception:
+                                pass
 
                         self.state = OAMSRunoutState.RELOADING
                         if AMSRunoutCoordinator is not None:
@@ -212,8 +254,6 @@ class OAMSRunoutMonitor:
                                 AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=lane_name)
                             except Exception:
                                 logging.getLogger(__name__).exception("Failed to notify AFC about OpenAMS runout")
-                        # Trigger immediate reload via AFC delegation
-                        self.reload_callback()
                     else:
                         # Same-extruder runout: Use standard sequence with buffer clearing
                         self.state = OAMSRunoutState.DETECTED
