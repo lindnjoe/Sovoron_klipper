@@ -2361,7 +2361,10 @@ class OAMSManager:
                 # When UNLOADED, periodically check if filament was newly inserted
                 # AFC updates lane_loaded when filament is detected, so we need to check determine_state()
                 # to pick up the new lane_loaded and update current_spool_idx
-                if fps_state.consecutive_idle_polls % 10 == 0:  # Check every 10 polls
+                # Skip auto-detect if there's an active runout in progress to avoid interference
+                monitor = self.runout_monitors.get(fps_name)
+                is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
+                if not is_runout_active and fps_state.consecutive_idle_polls % 10 == 0:  # Check every 10 polls
                     old_lane = fps_state.current_lane
                     old_spool_idx = fps_state.current_spool_idx
                     (
