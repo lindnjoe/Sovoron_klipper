@@ -2357,6 +2357,32 @@ class OAMSManager:
             elif state == FPSLoadState.LOADING and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
                 self._check_load_speed(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
                 state_changed = True
+            elif state == FPSLoadState.UNLOADED:
+                # When UNLOADED, periodically check if filament was newly inserted
+                # AFC updates lane_loaded when filament is detected, so we need to check determine_state()
+                # to pick up the new lane_loaded and update current_spool_idx
+                if fps_state.consecutive_idle_polls % 10 == 0:  # Check every 10 polls
+                    old_lane = fps_state.current_lane
+                    old_spool_idx = fps_state.current_spool_idx
+                    (
+                        fps_state.current_lane,
+                        current_oams,
+                        fps_state.current_spool_idx,
+                    ) = self.determine_current_loaded_lane(fps_name)
+
+                    if current_oams is not None:
+                        fps_state.current_oams = current_oams.name
+
+                    # If lane was newly detected, transition to LOADED
+                    if fps_state.current_lane and fps_state.current_spool_idx is not None:
+                        fps_state.state = FPSLoadState.LOADED
+                        fps_state.since = now
+                        fps_state.reset_stuck_spool_state()
+                        fps_state.reset_clog_tracker()
+                        self._ensure_forward_follower(fps_name, fps_state, "auto-detect new filament")
+                        self.logger.info("Auto-detected newly inserted filament: %s (spool %s)",
+                                       fps_state.current_lane, fps_state.current_spool_idx)
+                        state_changed = True
             elif state == FPSLoadState.LOADED:
                 if is_printing:
                     # Always call stuck spool check (it has its own clearing logic for runout states)
