@@ -2758,7 +2758,8 @@ class OAMSManager:
 
                         # 5. Set target extruder temp before CHANGE_TOOL (so it knows what temp to heat to)
                         self.logger.info("OAMS: Step 5 - Setting target temp for %s to %.1f", target_extruder_name, target_temp)
-                        target_heater = self.printer.lookup_object(f'heater {target_extruder_name}')
+                        target_extruder_obj = self.printer.lookup_object(target_extruder_name)
+                        target_heater = target_extruder_obj.get_heater()
                         target_heater.set_temp(target_temp)
 
                         # 6. Use AFC's CHANGE_TOOL Python method (like box turtle does)
