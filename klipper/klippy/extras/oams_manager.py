@@ -867,8 +867,8 @@ class OAMSManager:
             gcmd.respond_info(f"FPS {fps_name} is currently busy")
             return
 
-        # Prevent manual control during active error conditions
-        if fps_state.clog_active or fps_state.stuck_spool_active:
+        # Prevent manual ENABLE during active error conditions (allow DISABLE for troubleshooting)
+        if enable and (fps_state.clog_active or fps_state.stuck_spool_active):
             gcmd.respond_info(
                 f"FPS {fps_name} has active error condition "
                 f"(clog_active={fps_state.clog_active}, stuck_spool_active={fps_state.stuck_spool_active}). "
