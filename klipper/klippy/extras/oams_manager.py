@@ -263,19 +263,20 @@ class OAMSRunoutMonitor:
                     self.reload_callback()
                 else:
                     # Same-FPS runout: Wait for PAUSE_DISTANCE then enter COASTING
-                    # For AMS same-FPS runouts, DON'T disable follower - keep it enabled
-                    # so new lane can push filament through shared buffer
+                    # COASTING clears old filament from shared PTFE buffer before loading new lane
+                    # Follower STAYS ENABLED - it's in the hub and pushes ALL lanes' filament
+                    # All lanes in an AMS unit feed into ONE hub with ONE follower
                     traveled_distance = fps.extruder.last_position - self.runout_position
                     if traveled_distance >= PAUSE_DISTANCE:
-                        logging.info("OAMS: Pause complete, entering COASTING (follower stays enabled for same-FPS)")
+                        logging.info("OAMS: Pause complete, entering COASTING (follower stays enabled to push old filament out)")
                         self.bldc_clear_position = fps.extruder.last_position
                         self.runout_after_position = 0.0
                         self.state = OAMSRunoutState.COASTING
-                        # Trigger reload now - new lane loads and pushes filament through buffer
-                        self.reload_callback()
 
             elif self.state == OAMSRunoutState.COASTING:
-                # Wait for new filament to travel through buffer and reach extruder
+                # Wait for old filament to be pushed out of shared PTFE buffer by hub follower
+                # Follower in hub pushes old lane8 filament through shared PTFE to extruder
+                # Once old filament clears, reload new lane7 which follower then pushes through
                 traveled_distance_after_bldc_clear = max(fps.extruder.last_position - self.bldc_clear_position, 0.0)
                 self.runout_after_position = traveled_distance_after_bldc_clear
                 try:
@@ -288,11 +289,9 @@ class OAMSRunoutMonitor:
                 consumed_with_margin = (self.runout_after_position + PAUSE_DISTANCE + self.reload_before_toolhead_distance)
 
                 if consumed_with_margin >= effective_path_length:
-                    logging.info("OAMS: New filament reached extruder (%.2f mm consumed)", self.runout_after_position + PAUSE_DISTANCE)
-                    # Reset runout state and resume monitoring
-                    fps_state.reset_runout_positions()
-                    self.reset()
-                    self.start()
+                    logging.info("OAMS: Old filament cleared shared buffer (%.2f mm consumed), loading new lane", self.runout_after_position + PAUSE_DISTANCE)
+                    self.state = OAMSRunoutState.RELOADING
+                    self.reload_callback()
 
             return eventtime + MONITOR_ENCODER_PERIOD
         
@@ -2952,8 +2951,9 @@ class OAMSManager:
                             except Exception:
                                 self.logger.error("Failed to mark lane %s as loaded after infinite runout on %s", target_lane, fps_name)
 
-                    # Re-enable follower after successful reload (was disabled during COASTING)
-                    # Follower should always be enabled if hub sensor shows filament
+                    # Ensure follower is enabled after successful reload
+                    # Follower should stay enabled throughout same-FPS runouts (never disabled)
+                    # This is a safety check to ensure follower is active for new lane
                     if fps_state.current_oams and fps_state.current_spool_idx is not None:
                         oams = self.oams.get(fps_state.current_oams)
                         if oams:
