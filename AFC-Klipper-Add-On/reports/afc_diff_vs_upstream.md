@@ -1,0 +1,572 @@
+# AFC vs upstream multi_extruder differences
+
+Comparison run on 2025-11-25T14:14:33.754846 UTC between `HEAD` and `upstream/multi_extruder`.
+
+## Summary
+- Added: 455 files
+- Modified: 2 files
+- Deleted: 55 files
+- Renamed: 47 files
+
+## Detailed file list
+Status legend: A=Added, M=Modified, D=Deleted, R=Renamed (percentage shows similarity).
+
+- **D (Deleted)** `.github/ISSUE_TEMPLATE/all_others.yml`
+- **D (Deleted)** `.github/ISSUE_TEMPLATE/bug_report.yml`
+- **D (Deleted)** `.github/ISSUE_TEMPLATE/config.yml`
+- **D (Deleted)** `.github/ISSUE_TEMPLATE/feature_request.yml`
+- **D (Deleted)** `.github/pull_request_template.md`
+- **D (Deleted)** `.github/workflows/lint.yaml`
+- **M (Modified)** `.gitignore`
+- **D (Deleted)** `.vscode/settings.json`
+- **R100 (Renamed)** `extras/AFC.py	AFC-Klipper-Add-On/extras/AFC.py`
+- **R100 (Renamed)** `extras/AFC_BoxTurtle.py	AFC-Klipper-Add-On/extras/AFC_BoxTurtle.py`
+- **R100 (Renamed)** `extras/AFC_HTLF.py	AFC-Klipper-Add-On/extras/AFC_HTLF.py`
+- **R100 (Renamed)** `extras/AFC_NightOwl.py	AFC-Klipper-Add-On/extras/AFC_NightOwl.py`
+- **R099 (Renamed)** `extras/AFC_OpenAMS.py	AFC-Klipper-Add-On/extras/AFC_OpenAMS.py`
+- **R100 (Renamed)** `extras/AFC_QuattroBox.py	AFC-Klipper-Add-On/extras/AFC_QuattroBox.py`
+- **R100 (Renamed)** `extras/AFC_assist.py	AFC-Klipper-Add-On/extras/AFC_assist.py`
+- **R100 (Renamed)** `extras/AFC_buffer.py	AFC-Klipper-Add-On/extras/AFC_buffer.py`
+- **R100 (Renamed)** `extras/AFC_button.py	AFC-Klipper-Add-On/extras/AFC_button.py`
+- **R100 (Renamed)** `extras/AFC_error.py	AFC-Klipper-Add-On/extras/AFC_error.py`
+- **R100 (Renamed)** `extras/AFC_extruder.py	AFC-Klipper-Add-On/extras/AFC_extruder.py`
+- **R100 (Renamed)** `extras/AFC_form_tip.py	AFC-Klipper-Add-On/extras/AFC_form_tip.py`
+- **R100 (Renamed)** `extras/AFC_functions.py	AFC-Klipper-Add-On/extras/AFC_functions.py`
+- **R100 (Renamed)** `extras/AFC_hub.py	AFC-Klipper-Add-On/extras/AFC_hub.py`
+- **R100 (Renamed)** `extras/AFC_lane.py	AFC-Klipper-Add-On/extras/AFC_lane.py`
+- **R100 (Renamed)** `extras/AFC_led.py	AFC-Klipper-Add-On/extras/AFC_led.py`
+- **R100 (Renamed)** `extras/AFC_logger.py	AFC-Klipper-Add-On/extras/AFC_logger.py`
+- **R100 (Renamed)** `extras/AFC_poop.py	AFC-Klipper-Add-On/extras/AFC_poop.py`
+- **R100 (Renamed)** `extras/AFC_prep.py	AFC-Klipper-Add-On/extras/AFC_prep.py`
+- **R100 (Renamed)** `extras/AFC_respond.py	AFC-Klipper-Add-On/extras/AFC_respond.py`
+- **R100 (Renamed)** `extras/AFC_spool.py	AFC-Klipper-Add-On/extras/AFC_spool.py`
+- **R100 (Renamed)** `extras/AFC_stats.py	AFC-Klipper-Add-On/extras/AFC_stats.py`
+- **R100 (Renamed)** `extras/AFC_stepper.py	AFC-Klipper-Add-On/extras/AFC_stepper.py`
+- **R100 (Renamed)** `extras/AFC_unit.py	AFC-Klipper-Add-On/extras/AFC_unit.py`
+- **R100 (Renamed)** `extras/AFC_utils.py	AFC-Klipper-Add-On/extras/AFC_utils.py`
+- **R099 (Renamed)** `extras/openams_integration.py	AFC-Klipper-Add-On/extras/openams_integration.py`
+- **D (Deleted)** `CHANGELOG.md`
+- **D (Deleted)** `CONTRIBUTING.md`
+- **D (Deleted)** `LICENSE`
+- **M (Modified)** `README.md`
+- **A (Added)** `afc-spool-scan/usb-qr-scanner-read.sh`
+- **A (Added)** `afc-spool-scan/usb-qr-scanner.service`
+- **D (Deleted)** `community_mods/mcu/AFC-X.cfg`
+- **D (Deleted)** `docs/AFC_buffer.md`
+- **D (Deleted)** `docs/Buffer_Ram_Sensor.md`
+- **D (Deleted)** `docs/CONFIGURATION_OPTIONS.md`
+- **D (Deleted)** `docs/Calibration.md`
+- **D (Deleted)** `docs/Features.md`
+- **D (Deleted)** `docs/command_reference.md`
+- **D (Deleted)** `include/buffer_configurations.sh`
+- **D (Deleted)** `include/check_commands.sh`
+- **D (Deleted)** `include/colors.sh`
+- **D (Deleted)** `include/constants.sh`
+- **D (Deleted)** `include/install_functions.sh`
+- **D (Deleted)** `include/menus/additional_system_menu.sh`
+- **D (Deleted)** `include/menus/install_menu.sh`
+- **D (Deleted)** `include/menus/main_menu.sh`
+- **D (Deleted)** `include/menus/update_menu.sh`
+- **D (Deleted)** `include/menus/utilities_menu.sh`
+- **D (Deleted)** `include/merge_files.sh`
+- **D (Deleted)** `include/uninstall.sh`
+- **D (Deleted)** `include/unit_functions.sh`
+- **D (Deleted)** `include/update_commands.sh`
+- **D (Deleted)** `include/update_functions.sh`
+- **D (Deleted)** `include/utils.sh`
+- **D (Deleted)** `install-afc.sh`
+- **A (Added)** `klipper-toolchanger-easy/examples/README.md`
+- **A (Added)** `klipper-toolchanger-easy/examples/T0.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/calibrate-offsets.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/dock location/fixed/toolchanger.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/dock location/liftbar+flying-gantry/liftbar.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/dock location/liftbar+flying-gantry/toolchanger.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/dock location/litfbar/liftbar.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/dock location/litfbar/toolchanger.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/easy-additions/calibrate-offsets.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/easy-additions/crash-detection.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/easy-additions/homing.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/easy-additions/tool_detection.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/easy-additions/toolchanger-macros.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/easy-additions/toolchanger.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/easy-additions/user-configs/toolchanger-config.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/easy-additions/user-configs/toolchanger-include.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/easy-additions/user-configs/toolchanger-include_scanner.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/easy-additions/user-configs/tools/probe_on_shuttle/example_T0.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/easy-additions/user-configs/tools/probe_on_shuttle/example_T1.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/easy-additions/user-configs/tools/tap_per_tool/example_T0.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/easy-additions/user-configs/tools/tap_per_tool/example_T1.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/printer.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/single-toolhead-multi-extruder.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/tool_paths.md`
+- **A (Added)** `klipper-toolchanger-easy/examples/toolchanger-macros.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/z probe/cartographer_probe_on_shuttle/homing.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/z probe/per tool probe/homing.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/z probe/per tool probe/tool_detection.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/z probe/per tool probe/toolhead_n.cfg`
+- **A (Added)** `klipper-toolchanger-easy/examples/z probe/probe on T0/homing.cfg`
+- **A (Added)** `klipper/klippy/extras/AFC_M109_deadband.py`
+- **A (Added)** `klipper/klippy/extras/README.md`
+- **A (Added)** `klipper/klippy/extras/__init__.py`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_AMS.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_BoxTurtle.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_M109_deadband.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_OpenAMS.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_assist.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_buffer.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_error.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_extruder.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_form_tip.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_functions.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_hub.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_lane.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_led.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_logger.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_prep.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_respond.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_spool.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_stats.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_stepper.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_toolchanger_bridge.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_unit.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/AFC_utils.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/__init__.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/adc_temperature.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/adxl345.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/afc_gpio_alias_pins.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/afc_gpio_input_pins.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/afc_openams.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/afc_sensor.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/afc_sensors.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/afc_switch_sensor.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/afc_virtual_pins.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/aht10.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/ams_chip.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/ams_integration.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/ams_pin.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/ams_pins.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/ams_virtual_pins.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/auto_ams_update.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/autotune_tmc.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/axis_twist_compensation.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/axiscope.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/bed_mesh.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/bme280.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/board_pins.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/bulk_sensor.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/bus.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/buttons.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/canbus_ids.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/canbus_stats.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/cartographer.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/controller_fan.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/delayed_gcode.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/display_status.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/ds18b20.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/duplicate_pin_override.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/dynamicmacros.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/error_mcu.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/exclude_object.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/extruder_stepper.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/fan.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/fan_generic.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/filament_group.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/filament_switch_sensor.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/firmware_retraction.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/force_move.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/fps.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/garbage_collection.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/gcode_arcs.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/gcode_button.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/gcode_macro.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/gcode_move.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/gcode_shell_command.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/hdc1080.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/hdc1080_loader.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/heater_bed.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/heater_fan.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/heaters.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/homing.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/homing_override.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/htu21d.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/idle_timeout.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/input_pins.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/input_shaper.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/ktamv.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/ktamv_utl.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/ldc1612.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/led.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/lm75.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/manual_probe.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/manual_stepper.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/motion_queuing.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/motion_report.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/motor_constants.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/multi_fan.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/multi_pin.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/neopixel.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/oams.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/oams_manager.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/oams_virtual_pins.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/openams_filament_sensors.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/openams_integration.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/openams_output_pin_sensors.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/openams_virtual_endstops.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/openams_virtual_pin_sensor_bridge.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/openams_virtual_pins.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/openams_virtual_pins_updater.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/openams_virtual_sensor.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/output_pin.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/pause_resume.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/pid_calibrate.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/print_stats.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/probe.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/probe_eddy_current.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/probe_pressure.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/pulse_counter.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/quad_gantry_level.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/query_adc.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/query_endstops.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/resonance_tester.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/respond.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/rounded_path.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/safe_z_home.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/save_babies.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/save_variables.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/scanner.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/sensorless_auto_tune.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/servo.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/settling_probe.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/shaper_calibrate.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/shaper_defs.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/sht3x.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/spi_temperature.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/spoolman_led_sync.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/statistics.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/stepper_enable.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/temperature_combined.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/temperature_fan.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/temperature_host.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/temperature_mcu.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/temperature_probe.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/temperature_sensor.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/test_virtual_pins.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/thermistor.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/tmc.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/tmc2130.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/tmc2208.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/tmc2209.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/tmc5160.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/tmc_uart.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/tool.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/tool_crash.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/tool_drop_detection.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/tool_probe.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/tool_probe_endstop.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/toolchanger.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/toolchanger_flow_fix.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/tools_calibrate.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/tuning_tower.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/verify_heater.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/virtual_endstop_pins.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/virtual_filament_sensor.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/virtual_input_pin.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/virtual_mcu.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/virtual_pin.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/virtual_pins.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/virtual_sdcard.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/z_offset_calibration.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/__pycache__/z_tilt.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/ad5206.py`
+- **A (Added)** `klipper/klippy/extras/adc_scaled.py`
+- **A (Added)** `klipper/klippy/extras/adc_temperature.py`
+- **A (Added)** `klipper/klippy/extras/ads1220.py`
+- **A (Added)** `klipper/klippy/extras/ads1x1x.py`
+- **A (Added)** `klipper/klippy/extras/adxl345.py`
+- **A (Added)** `klipper/klippy/extras/aht10.py`
+- **A (Added)** `klipper/klippy/extras/angle.py`
+- **A (Added)** `klipper/klippy/extras/axis_twist_compensation.py`
+- **A (Added)** `klipper/klippy/extras/bed_mesh.py`
+- **A (Added)** `klipper/klippy/extras/bed_screws.py`
+- **A (Added)** `klipper/klippy/extras/bed_tilt.py`
+- **A (Added)** `klipper/klippy/extras/bltouch.py`
+- **A (Added)** `klipper/klippy/extras/bme280.py`
+- **A (Added)** `klipper/klippy/extras/board_pins.py`
+- **A (Added)** `klipper/klippy/extras/bulk_sensor.py`
+- **A (Added)** `klipper/klippy/extras/bus.py`
+- **A (Added)** `klipper/klippy/extras/buttons.py`
+- **A (Added)** `klipper/klippy/extras/canbus_ids.py`
+- **A (Added)** `klipper/klippy/extras/canbus_stats.py`
+- **A (Added)** `klipper/klippy/extras/cartographer.py`
+- **A (Added)** `klipper/klippy/extras/controller_fan.py`
+- **A (Added)** `klipper/klippy/extras/dac084S085.py`
+- **A (Added)** `klipper/klippy/extras/delayed_gcode.py`
+- **A (Added)** `klipper/klippy/extras/delta_calibrate.py`
+- **A (Added)** `klipper/klippy/extras/display.cfg`
+- **A (Added)** `klipper/klippy/extras/display/__init__.py`
+- **A (Added)** `klipper/klippy/extras/display/__pycache__/__init__.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/display/__pycache__/aip31068_spi.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/display/__pycache__/display.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/display/__pycache__/font8x14.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/display/__pycache__/hd44780.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/display/__pycache__/hd44780_spi.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/display/__pycache__/menu.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/display/__pycache__/menu_keys.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/display/__pycache__/st7920.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/display/__pycache__/uc1701.cpython-311.pyc`
+- **A (Added)** `klipper/klippy/extras/display/aip31068_spi.py`
+- **A (Added)** `klipper/klippy/extras/display/display.cfg`
+- **A (Added)** `klipper/klippy/extras/display/display.py`
+- **A (Added)** `klipper/klippy/extras/display/font8x14.py`
+- **A (Added)** `klipper/klippy/extras/display/hd44780.py`
+- **A (Added)** `klipper/klippy/extras/display/hd44780_spi.py`
+- **A (Added)** `klipper/klippy/extras/display/menu.cfg`
+- **A (Added)** `klipper/klippy/extras/display/menu.py`
+- **A (Added)** `klipper/klippy/extras/display/menu_keys.py`
+- **A (Added)** `klipper/klippy/extras/display/st7920.py`
+- **A (Added)** `klipper/klippy/extras/display/uc1701.py`
+- **A (Added)** `klipper/klippy/extras/display_status.py`
+- **A (Added)** `klipper/klippy/extras/dotstar.py`
+- **A (Added)** `klipper/klippy/extras/ds18b20.py`
+- **A (Added)** `klipper/klippy/extras/duplicate_pin_override.py`
+- **A (Added)** `klipper/klippy/extras/endstop_phase.py`
+- **A (Added)** `klipper/klippy/extras/error_mcu.py`
+- **A (Added)** `klipper/klippy/extras/exclude_object.py`
+- **A (Added)** `klipper/klippy/extras/extruder_stepper.py`
+- **A (Added)** `klipper/klippy/extras/fan.py`
+- **A (Added)** `klipper/klippy/extras/fan_generic.py`
+- **A (Added)** `klipper/klippy/extras/filament_group.py`
+- **A (Added)** `klipper/klippy/extras/filament_motion_sensor.py`
+- **A (Added)** `klipper/klippy/extras/filament_switch_sensor.py`
+- **A (Added)** `klipper/klippy/extras/firmware_retraction.py`
+- **A (Added)** `klipper/klippy/extras/force_move.py`
+- **A (Added)** `klipper/klippy/extras/fps.py`
+- **A (Added)** `klipper/klippy/extras/garbage_collection.py`
+- **A (Added)** `klipper/klippy/extras/gcode_arcs.py`
+- **A (Added)** `klipper/klippy/extras/gcode_button.py`
+- **A (Added)** `klipper/klippy/extras/gcode_macro.py`
+- **A (Added)** `klipper/klippy/extras/gcode_move.py`
+- **A (Added)** `klipper/klippy/extras/gcode_shell_command.py`
+- **A (Added)** `klipper/klippy/extras/hall_filament_width_sensor.py`
+- **A (Added)** `klipper/klippy/extras/hdc1080.py`
+- **A (Added)** `klipper/klippy/extras/hdc1080_loader.py`
+- **A (Added)** `klipper/klippy/extras/heater_bed.py`
+- **A (Added)** `klipper/klippy/extras/heater_fan.py`
+- **A (Added)** `klipper/klippy/extras/heater_generic.py`
+- **A (Added)** `klipper/klippy/extras/heaters.py`
+- **A (Added)** `klipper/klippy/extras/homing.py`
+- **A (Added)** `klipper/klippy/extras/homing_heaters.py`
+- **A (Added)** `klipper/klippy/extras/homing_override.py`
+- **A (Added)** `klipper/klippy/extras/htu21d.py`
+- **A (Added)** `klipper/klippy/extras/hx71x.py`
+- **A (Added)** `klipper/klippy/extras/icm20948.py`
+- **A (Added)** `klipper/klippy/extras/idle_timeout.py`
+- **A (Added)** `klipper/klippy/extras/input_shaper.py`
+- **A (Added)** `klipper/klippy/extras/ldc1612.py`
+- **A (Added)** `klipper/klippy/extras/led.py`
+- **A (Added)** `klipper/klippy/extras/lis2dw.py`
+- **A (Added)** `klipper/klippy/extras/lis3dh.py`
+- **A (Added)** `klipper/klippy/extras/lm75.py`
+- **A (Added)** `klipper/klippy/extras/load_cell.py`
+- **A (Added)** `klipper/klippy/extras/load_cell_probe.py`
+- **A (Added)** `klipper/klippy/extras/manual_probe.py`
+- **A (Added)** `klipper/klippy/extras/manual_stepper.py`
+- **A (Added)** `klipper/klippy/extras/mcp4018.py`
+- **A (Added)** `klipper/klippy/extras/mcp4451.py`
+- **A (Added)** `klipper/klippy/extras/mcp4728.py`
+- **A (Added)** `klipper/klippy/extras/menu.cfg`
+- **A (Added)** `klipper/klippy/extras/menu.py`
+- **A (Added)** `klipper/klippy/extras/motion_queuing.py`
+- **A (Added)** `klipper/klippy/extras/motion_report.py`
+- **A (Added)** `klipper/klippy/extras/mpu9250.py`
+- **A (Added)** `klipper/klippy/extras/multi_pin.py`
+- **A (Added)** `klipper/klippy/extras/neopixel.py`
+- **A (Added)** `klipper/klippy/extras/oams.py`
+- **A (Added)** `klipper/klippy/extras/oams_manager.py`
+- **A (Added)** `klipper/klippy/extras/output_pin.py`
+- **A (Added)** `klipper/klippy/extras/palette2.py`
+- **A (Added)** `klipper/klippy/extras/pause_resume.py`
+- **A (Added)** `klipper/klippy/extras/pca9533.py`
+- **A (Added)** `klipper/klippy/extras/pca9632.py`
+- **A (Added)** `klipper/klippy/extras/pid_calibrate.py`
+- **A (Added)** `klipper/klippy/extras/print_stats.py`
+- **A (Added)** `klipper/klippy/extras/probe.py`
+- **A (Added)** `klipper/klippy/extras/probe_eddy_current.py`
+- **A (Added)** `klipper/klippy/extras/probe_pressure.py`
+- **A (Added)** `klipper/klippy/extras/pulse_counter.py`
+- **A (Added)** `klipper/klippy/extras/pwm_cycle_time.py`
+- **A (Added)** `klipper/klippy/extras/pwm_tool.py`
+- **A (Added)** `klipper/klippy/extras/quad_gantry_level.py`
+- **A (Added)** `klipper/klippy/extras/query_adc.py`
+- **A (Added)** `klipper/klippy/extras/query_endstops.py`
+- **A (Added)** `klipper/klippy/extras/replicape.py`
+- **A (Added)** `klipper/klippy/extras/resonance_tester.py`
+- **A (Added)** `klipper/klippy/extras/respond.py`
+- **A (Added)** `klipper/klippy/extras/safe_z_home.py`
+- **A (Added)** `klipper/klippy/extras/samd_sercom.py`
+- **A (Added)** `klipper/klippy/extras/save_variables.py`
+- **A (Added)** `klipper/klippy/extras/screws_tilt_adjust.py`
+- **A (Added)** `klipper/klippy/extras/sdcard_loop.py`
+- **A (Added)** `klipper/klippy/extras/sensorless_auto_tune.py`
+- **A (Added)** `klipper/klippy/extras/servo.py`
+- **A (Added)** `klipper/klippy/extras/shaper_calibrate.py`
+- **A (Added)** `klipper/klippy/extras/shaper_defs.py`
+- **A (Added)** `klipper/klippy/extras/sht3x.py`
+- **A (Added)** `klipper/klippy/extras/skew_correction.py`
+- **A (Added)** `klipper/klippy/extras/smart_effector.py`
+- **A (Added)** `klipper/klippy/extras/sos_filter.py`
+- **A (Added)** `klipper/klippy/extras/spi_temperature.py`
+- **A (Added)** `klipper/klippy/extras/spoolman_led_sync.py`
+- **A (Added)** `klipper/klippy/extras/static_digital_output.py`
+- **A (Added)** `klipper/klippy/extras/statistics.py`
+- **A (Added)** `klipper/klippy/extras/stepper_enable.py`
+- **A (Added)** `klipper/klippy/extras/sx1509.py`
+- **A (Added)** `klipper/klippy/extras/temperature_combined.py`
+- **A (Added)** `klipper/klippy/extras/temperature_fan.py`
+- **A (Added)** `klipper/klippy/extras/temperature_host.py`
+- **A (Added)** `klipper/klippy/extras/temperature_mcu.py`
+- **A (Added)** `klipper/klippy/extras/temperature_probe.py`
+- **A (Added)** `klipper/klippy/extras/temperature_sensor.py`
+- **A (Added)** `klipper/klippy/extras/temperature_sensors.cfg`
+- **A (Added)** `klipper/klippy/extras/thermistor.py`
+- **A (Added)** `klipper/klippy/extras/tmc.py`
+- **A (Added)** `klipper/klippy/extras/tmc2130.py`
+- **A (Added)** `klipper/klippy/extras/tmc2208.py`
+- **A (Added)** `klipper/klippy/extras/tmc2209.py`
+- **A (Added)** `klipper/klippy/extras/tmc2240.py`
+- **A (Added)** `klipper/klippy/extras/tmc2660.py`
+- **A (Added)** `klipper/klippy/extras/tmc5160.py`
+- **A (Added)** `klipper/klippy/extras/tmc_uart.py`
+- **A (Added)** `klipper/klippy/extras/tool_crash.py`
+- **A (Added)** `klipper/klippy/extras/tool_drop_detection.py`
+- **A (Added)** `klipper/klippy/extras/toolchanger_flow_fix.py`
+- **A (Added)** `klipper/klippy/extras/tsl1401cl_filament_width_sensor.py`
+- **A (Added)** `klipper/klippy/extras/tuning_tower.py`
+- **A (Added)** `klipper/klippy/extras/verify_heater.py`
+- **A (Added)** `klipper/klippy/extras/virtual_sdcard.py`
+- **A (Added)** `klipper/klippy/extras/z_thermal_adjust.py`
+- **A (Added)** `klipper/klippy/extras/z_tilt.py`
+- **A (Added)** `klipper_openams/src/fps.py`
+- **A (Added)** `klipper_openams/src/hdc1080.py`
+- **A (Added)** `klipper_openams/src/oams.py`
+- **A (Added)** `klipper_openams/src/oams_manager.py`
+- **R085 (Renamed)** `config/AFC.cfg	printer_data/config/AFC/AFC.cfg`
+- **A (Added)** `printer_data/config/AFC/AFC.var.unit`
+- **R055 (Renamed)** `templates/AFC_AMS_1.cfg	printer_data/config/AFC/AFC_AMS_1.cfg`
+- **A (Added)** `printer_data/config/AFC/AFC_AMS_2.cfg`
+- **A (Added)** `printer_data/config/AFC/AFC_Extra_Macros.cfg`
+- **A (Added)** `printer_data/config/AFC/AFC_Hardware.cfg`
+- **A (Added)** `printer_data/config/AFC/AFC_M109_Override.cfg`
+- **R078 (Renamed)** `config/AFC_Macro_Vars.cfg	printer_data/config/AFC/AFC_Macro_Vars.cfg`
+- **A (Added)** `printer_data/config/AFC/AFC_Pico.cfg`
+- **A (Added)** `printer_data/config/AFC/AFC_Turtle_1.cfg`
+- **A (Added)** `printer_data/config/AFC/AFC_oams.cfg`
+- **A (Added)** `printer_data/config/AFC/AFC_oams_macros.cfg`
+- **A (Added)** `printer_data/config/AFC/Empty_AMS.cfg`
+- **A (Added)** `printer_data/config/AFC/dock_autotune.cfg`
+- **A (Added)** `printer_data/config/AFC/dock_tuner.cfg`
+- **A (Added)** `printer_data/config/AFC/find_afc_data.cfg`
+- **R100 (Renamed)** `config/macros/AFC_macros.cfg	printer_data/config/AFC/macros/AFC_macros.cfg`
+- **R100 (Renamed)** `config/macros/Brush.cfg	printer_data/config/AFC/macros/Brush.cfg`
+- **R100 (Renamed)** `config/macros/Cut.cfg	printer_data/config/AFC/macros/Cut.cfg`
+- **R100 (Renamed)** `config/macros/Kick.cfg	printer_data/config/AFC/macros/Kick.cfg`
+- **R100 (Renamed)** `config/macros/Park.cfg	printer_data/config/AFC/macros/Park.cfg`
+- **R092 (Renamed)** `config/macros/Poop.cfg	printer_data/config/AFC/macros/Poop.cfg`
+- **R100 (Renamed)** `config/mcu/AFC_Lite.cfg	printer_data/config/AFC/mcu/AFC_Lite.cfg`
+- **R097 (Renamed)** `config/mcu/AFC_Pro.cfg	printer_data/config/AFC/mcu/AFC_Pro.cfg`
+- **R100 (Renamed)** `config/mcu/ERB_2.0.cfg	printer_data/config/AFC/mcu/ERB_2.0.cfg`
+- **R094 (Renamed)** `config/mcu/HTLF_ERB.cfg	printer_data/config/AFC/mcu/HTLF_ERB.cfg`
+- **R095 (Renamed)** `config/mcu/HTLF_MMB_1.0.cfg	printer_data/config/AFC/mcu/HTLF_MMB_1.0.cfg`
+- **R095 (Renamed)** `config/mcu/HTLF_MMB_1.1.cfg	printer_data/config/AFC/mcu/HTLF_MMB_1.1.cfg`
+- **R095 (Renamed)** `config/mcu/MMB_1.0.cfg	printer_data/config/AFC/mcu/MMB_1.0.cfg`
+- **R096 (Renamed)** `config/mcu/MMB_1.0_QB.cfg	printer_data/config/AFC/mcu/MMB_1.0_QB.cfg`
+- **R095 (Renamed)** `config/mcu/MMB_1.1.cfg	printer_data/config/AFC/mcu/MMB_1.1.cfg`
+- **R096 (Renamed)** `config/mcu/MMB_1.1_QB.cfg	printer_data/config/AFC/mcu/MMB_1.1_QB.cfg`
+- **R097 (Renamed)** `config/mcu/MMB_2.0_QB.cfg	printer_data/config/AFC/mcu/MMB_2.0_QB.cfg`
+- **R095 (Renamed)** `config/mcu/TurtleNeckv2.cfg	printer_data/config/AFC/mcu/TurtleNeckv2.cfg`
+- **A (Added)** `printer_data/config/AFC/prime_lines.cfg`
+- **A (Added)** `printer_data/config/AFC/resonance_macros.cfg`
+- **A (Added)** `printer_data/config/AFC/toolchanger_recovery.cfg`
+- **A (Added)** `printer_data/config/BTKS_Macros.cfg`
+- **A (Added)** `printer_data/config/KNOMI.cfg`
+- **A (Added)** `printer_data/config/KlipperScreen Menus/toolchanger_main.conf`
+- **A (Added)** `printer_data/config/KlipperScreen.conf`
+- **A (Added)** `printer_data/config/ShakeTune_results/axes_map/axesmap_20250106_222429.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/axes_map/axesmap_20250127_202226.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/belts/beltscomparison_20250221_001455.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/belts/beltscomparison_20250223_092804.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/belts/beltscomparison_20250223_131808.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/belts/beltscomparison_20250223_163814.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/belts/beltscomparison_20250709_152145.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/belts/beltscomparison_20250709_152645.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/belts/beltscomparison_20250709_153123.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/belts/beltscomparison_20250820_181859.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/belts/beltscomparison_20251015_002412.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/belts/beltscomparison_20251024_213304.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/input_shaper/inputshaper_20250702_221305_axis_X.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/input_shaper/inputshaper_20250702_223054_axis_X.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/input_shaper/inputshaper_20250703_073627_axis_Y.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/input_shaper/inputshaper_20250819_162333_axis_X.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/input_shaper/inputshaper_20251003_122008_axis_X.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/input_shaper/inputshaper_20251003_122008_axis_Y.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/input_shaper/inputshaper_20251003_122554_axis_X.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/input_shaper/inputshaper_20251003_122554_axis_Y.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/input_shaper/inputshaper_20251003_125302_axis_X.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/input_shaper/inputshaper_20251003_125302_axis_Y.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/vibrations/vibrationsprofile_20250106_224229.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/vibrations/vibrationsprofile_20250122_203152.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/vibrations/vibrationsprofile_20250127_202402.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/vibrations/vibrationsprofile_20250130_235034.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/vibrations/vibrationsprofile_20250203_212955.png`
+- **A (Added)** `printer_data/config/ShakeTune_results/vibrations/vibrationsprofile_20250901_231155.png`
+- **A (Added)** `printer_data/config/crowsnest.conf`
+- **A (Added)** `printer_data/config/debug.cfg`
+- **A (Added)** `printer_data/config/homing.cfg`
+- **A (Added)** `printer_data/config/moonraker.conf`
+- **A (Added)** `printer_data/config/octoeverywhere-system.cfg`
+- **A (Added)** `printer_data/config/octoeverywhere.conf`
+- **A (Added)** `printer_data/config/printer.cfg`
+- **A (Added)** `printer_data/config/shell_command.cfg`
+- **A (Added)** `printer_data/config/smart_filament_sensor.cfg`
+- **A (Added)** `printer_data/config/sonar.conf`
+- **A (Added)** `printer_data/config/speed.cfg`
+- **A (Added)** `printer_data/config/tool-EBBT0.cfg`
+- **A (Added)** `printer_data/config/tool-EBBT1.cfg`
+- **A (Added)** `printer_data/config/tool-EBBT2.cfg`
+- **A (Added)** `printer_data/config/tool-EBBT3.cfg`
+- **A (Added)** `printer_data/config/tool-EBBT4.cfg`
+- **A (Added)** `printer_data/config/tool-EBBT5.cfg`
+- **A (Added)** `printer_data/config/tool_detection.cfg`
+- **A (Added)** `printer_data/config/toolchanger-backup.cfg`
+- **A (Added)** `printer_data/config/toolchanger-extra-macros.cfg`
+- **A (Added)** `printer_data/config/toolchanger-macros.cfg`
+- **A (Added)** `printer_data/config/toolchanger-usermacros.cfg`
+- **A (Added)** `printer_data/config/toolchanger.cfg`
+- **A (Added)** `printer_data/config/toolchanger/ShaperManagement/shaper_img/shaper_plot__X_2025-11-13_21-12.png`
+- **A (Added)** `printer_data/config/toolchanger/ShaperManagement/shaper_img/shaper_plot__Y_2025-11-13_21-12.png`
+- **A (Added)** `printer_data/config/toolchanger/toolchanger-config.cfg`
+- **A (Added)** `printer_data/config/toolchanger/tools/example_T0.cfg`
+- **A (Added)** `printer_data/config/toolchanger/tools/example_T1.cfg`
+- **A (Added)** `printer_data/config/variables.cfg`
+- **D (Deleted)** `pyproject.toml`
+- **D (Deleted)** `requirements.txt`
+- **D (Deleted)** `templates/AFC_HTLF_1-ERB.cfg`
+- **D (Deleted)** `templates/AFC_HTLF_1-MMB.cfg`
+- **D (Deleted)** `templates/AFC_Hardware-AFC.cfg`
+- **D (Deleted)** `templates/AFC_Hardware-HTLF.cfg`
+- **D (Deleted)** `templates/AFC_Hardware-MMB.cfg`
+- **D (Deleted)** `templates/AFC_Hardware-NightOwl.cfg`
+- **D (Deleted)** `templates/AFC_Hardware-QuattroBox.cfg`
+- **D (Deleted)** `templates/AFC_NightOwl_1.cfg`
+- **D (Deleted)** `templates/AFC_Pro_Turtle_1.cfg`
+- **D (Deleted)** `templates/AFC_QuattroBox_14.cfg`
+- **D (Deleted)** `templates/AFC_QuattroBox_17.cfg`
+- **D (Deleted)** `templates/AFC_Turtle_1.cfg`
+- **D (Deleted)** `templates/qb_macros/Eject_buttons.cfg`
+- **D (Deleted)** `troubleshooting/LICENSE`
+- **D (Deleted)** `troubleshooting/afc-debug.sh`
+- **D (Deleted)** `utilities/README.md`
+- **D (Deleted)** `utilities/generate_config_options.py`
+- **D (Deleted)** `utilities/generate_docs.py`
+- **D (Deleted)** `utilities/requirements.txt`
