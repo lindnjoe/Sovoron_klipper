@@ -262,21 +262,20 @@ class OAMSRunoutMonitor:
                     self.state = OAMSRunoutState.RELOADING
                     self.reload_callback()
                 else:
-                    # Same-extruder runout: Wait for PAUSE_DISTANCE
+                    # Same-FPS runout: Wait for PAUSE_DISTANCE then enter COASTING
+                    # For AMS same-FPS runouts, DON'T disable follower - keep it enabled
+                    # so new lane can push filament through shared buffer
                     traveled_distance = fps.extruder.last_position - self.runout_position
                     if traveled_distance >= PAUSE_DISTANCE:
-                        logging.info("OAMS: Pause complete, disabling follower for coasting")
-                        try:
-                            self.oams[fps_state.current_oams].set_oams_follower(0, 1)
-                        except Exception:
-                            logging.exception("OAMS: Failed to stop follower while coasting on %s", self.fps_name)
-                        finally:
-                            fps_state.following = False
+                        logging.info("OAMS: Pause complete, entering COASTING (follower stays enabled for same-FPS)")
                         self.bldc_clear_position = fps.extruder.last_position
                         self.runout_after_position = 0.0
                         self.state = OAMSRunoutState.COASTING
+                        # Trigger reload now - new lane loads and pushes filament through buffer
+                        self.reload_callback()
 
             elif self.state == OAMSRunoutState.COASTING:
+                # Wait for new filament to travel through buffer and reach extruder
                 traveled_distance_after_bldc_clear = max(fps.extruder.last_position - self.bldc_clear_position, 0.0)
                 self.runout_after_position = traveled_distance_after_bldc_clear
                 try:
@@ -284,15 +283,17 @@ class OAMSRunoutMonitor:
                 except Exception:
                     logging.exception("OAMS: Failed to read filament path length while coasting on %s", self.fps_name)
                     return eventtime + MONITOR_ENCODER_PERIOD
-                
+
                 effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
                 consumed_with_margin = (self.runout_after_position + PAUSE_DISTANCE + self.reload_before_toolhead_distance)
 
                 if consumed_with_margin >= effective_path_length:
-                    logging.info("OAMS: Loading next spool (%.2f mm consumed)", self.runout_after_position + PAUSE_DISTANCE)
-                    self.state = OAMSRunoutState.RELOADING
-                    self.reload_callback()
-            
+                    logging.info("OAMS: New filament reached extruder (%.2f mm consumed)", self.runout_after_position + PAUSE_DISTANCE)
+                    # Reset runout state and resume monitoring
+                    fps_state.reset_runout_positions()
+                    self.reset()
+                    self.start()
+
             return eventtime + MONITOR_ENCODER_PERIOD
         
         self._timer_callback = _monitor_runout
@@ -2363,7 +2364,8 @@ class OAMSManager:
                     self._check_stuck_spool(fps_name, fps_state, fps, oams, pressure, hes_values, now)
 
                     # Skip clog detection during AMS runout DETECTED/COASTING states
-                    # During runout, spool is empty so encoder won't move even with follower on
+                    # DETECTED: Old spool empty, no encoder movement expected
+                    # COASTING: New filament traveling through buffer, may not move encoder immediately
                     monitor = self.runout_monitors.get(fps_name)
                     if monitor and monitor.state in (OAMSRunoutState.DETECTED, OAMSRunoutState.COASTING):
                         # Runout in progress - skip clog detection to prevent false positives
