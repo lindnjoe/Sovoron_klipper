@@ -288,8 +288,22 @@ class OAMSRunoutMonitor:
                 effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
                 consumed_with_margin = (self.runout_after_position + PAUSE_DISTANCE + self.reload_before_toolhead_distance)
 
+                # Log COASTING progress every 100mm
+                if not hasattr(self, '_last_coast_log_position'):
+                    self._last_coast_log_position = 0.0
+                    logging.info("OAMS: COASTING - path_length=%.1f, effective_path_length=%.1f, PAUSE_DISTANCE=%.1f, reload_margin=%.1f",
+                               path_length, effective_path_length, PAUSE_DISTANCE, self.reload_before_toolhead_distance)
+
+                if self.runout_after_position - self._last_coast_log_position >= 100.0:
+                    self._last_coast_log_position = self.runout_after_position
+                    remaining = effective_path_length - consumed_with_margin
+                    logging.info("OAMS: COASTING progress - runout_after=%.1f, consumed_with_margin=%.1f, remaining=%.1f",
+                               self.runout_after_position, consumed_with_margin, remaining)
+
                 if consumed_with_margin >= effective_path_length:
-                    logging.info("OAMS: Old filament cleared shared buffer (%.2f mm consumed), loading new lane", self.runout_after_position + PAUSE_DISTANCE)
+                    logging.info("OAMS: Old filament cleared shared buffer (%.2f mm consumed, %.2f mm effective path), loading new lane",
+                               self.runout_after_position + PAUSE_DISTANCE, effective_path_length)
+                    self._last_coast_log_position = 0.0  # Reset for next runout
                     self.state = OAMSRunoutState.RELOADING
                     self.reload_callback()
 
