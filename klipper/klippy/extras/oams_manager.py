@@ -2357,15 +2357,13 @@ class OAMSManager:
                 state_changed = True
             elif state == FPSLoadState.LOADED:
                 if is_printing:
-                    self._check_stuck_spool(fps_name, fps_state, fps, oams, pressure, hes_values, now)
-
-                    # Skip clog detection during AMS runout handling (DETECTED, COASTING states)
-                    # During runout, spool is empty so encoder won't move even with follower on
+                    # Skip stuck spool and clog detection during AMS runout handling
+                    # During DETECTED/COASTING states, spool is empty so encoder/pressure issues are expected
                     monitor = self.runout_monitors.get(fps_name)
-                    if monitor and monitor.state in (OAMSRunoutState.DETECTED, OAMSRunoutState.COASTING):
-                        # Runout in progress - skip clog detection to prevent false positives
-                        pass
-                    else:
+                    skip_error_detection = (monitor and monitor.state in (OAMSRunoutState.DETECTED, OAMSRunoutState.COASTING))
+
+                    if not skip_error_detection:
+                        self._check_stuck_spool(fps_name, fps_state, fps, oams, pressure, hes_values, now)
                         self._check_clog(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
 
                     state_changed = True
