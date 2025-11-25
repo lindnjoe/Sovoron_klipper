@@ -201,6 +201,18 @@ class OAMSRunoutMonitor:
                     # Store cross-extruder flag in fps_state so reload_callback can access it
                     fps_state.is_cross_extruder_runout = self.is_cross_extruder_runout
 
+                    # Set flag on AFC lane so shared load/prep logic doesn't error on F1S empty + hub loaded
+                    if self.is_cross_extruder_runout and lane_name:
+                        try:
+                            afc = self.printer.lookup_object('AFC')
+                            if afc and hasattr(afc, 'lanes'):
+                                lane_obj = afc.lanes.get(lane_name)
+                                if lane_obj:
+                                    lane_obj._oams_cross_extruder_runout = True
+                                    logging.info("OAMS: Set cross-extruder runout flag on lane %s to bypass shared load/prep validation", lane_name)
+                        except Exception:
+                            logging.exception("OAMS: Failed to set cross-extruder runout flag on lane %s", lane_name)
+
                     if self.is_cross_extruder_runout:
                         logging.info("OAMS: Cross-extruder runout detected on FPS %s (F1S empty, hub loaded) - will trigger immediate tool change",
                                    self.fps_name)
@@ -2705,18 +2717,9 @@ class OAMSManager:
                             monitor.paused()
                         return
 
-                    # Update hardware service snapshot before lane change
-                    if monitor and monitor.hardware_service is not None and fps_state.current_spool_idx is not None:
-                        try:
-                            monitor.hardware_service.update_lane_snapshot(
-                                active_oams,
-                                fps_state.current_spool_idx,
-                                lane_state=False,  # F1S empty
-                                hub_state=None     # Don't report hub to avoid "filament detected but not loaded"
-                            )
-                            self.logger.debug("OAMS: Updated snapshot for %s to F1S empty before tool change", source_lane_name)
-                        except Exception:
-                            self.logger.exception("OAMS: Failed to update snapshot for %s", source_lane_name)
+                    # DON'T update hardware service snapshot for cross-extruder runouts
+                    # Lane0 might share the same AMS bay as lane8, and updating the snapshot
+                    # to "empty" would cause AFC to reject loading lane0 with "filament detected but not loaded"
 
                     # Execute cross-extruder runout sequence: Heat target, then use CHANGE_TOOL (like box turtle)
                     try:
@@ -2753,16 +2756,14 @@ class OAMSManager:
                         if target_temp <= 0:
                             raise Exception(f"Current extruder has no target temp set")
 
-                        # 5. Activate target extruder (makes it the active extruder)
-                        self.logger.info("OAMS: Step 5 - Activating target extruder %s", target_extruder_name)
-                        gcode.run_script(f"ACTIVATE_EXTRUDER EXTRUDER={target_extruder_name}")
+                        # 5. Set target extruder temp before CHANGE_TOOL (so it knows what temp to heat to)
+                        self.logger.info("OAMS: Step 5 - Setting target temp for %s to %.1f", target_extruder_name, target_temp)
+                        target_heater = self.printer.lookup_object(f'heater {target_extruder_name}')
+                        target_heater.set_temp(target_temp)
 
-                        # 6. Heat the now-active extruder BEFORE loading filament
-                        self.logger.info("OAMS: Step 6 - Heating extruder %s to %.1f", target_extruder_name, target_temp)
-                        gcode.run_script(f"M109 S{target_temp}")  # Heat active extruder and wait
-
-                        # 7. Use AFC's CHANGE_TOOL method (like box turtle) to switch and load
-                        self.logger.info("OAMS: Step 7 - Calling CHANGE_TOOL for %s", target_lane_name)
+                        # 6. Use AFC's CHANGE_TOOL Python method (like box turtle does)
+                        # This should handle tool switching, heating, and loading
+                        self.logger.info("OAMS: Step 6 - Calling afc.CHANGE_TOOL for %s", target_lane_name)
                         afc.CHANGE_TOOL(target_lane, restore_pos=False)
 
                         # 8. Update FPS state - this FPS is now UNLOADED (new lane is on different FPS/tool)
@@ -2791,6 +2792,16 @@ class OAMSManager:
                         else:
                             self.logger.error("OAMS: AFC error_state is set, skipping LANE_UNLOAD and RESUME")
 
+                        # Clear cross-extruder flag on source lane
+                        if source_lane_name:
+                            try:
+                                source_lane_obj = afc.lanes.get(source_lane_name)
+                                if source_lane_obj and hasattr(source_lane_obj, '_oams_cross_extruder_runout'):
+                                    source_lane_obj._oams_cross_extruder_runout = False
+                                    self.logger.info("OAMS: Cleared cross-extruder runout flag on lane %s", source_lane_name)
+                            except Exception:
+                                self.logger.exception("OAMS: Failed to clear cross-extruder runout flag on lane %s", source_lane_name)
+
                         # Reset state and restart monitoring
                         fps_state.reset_runout_positions()
                         fps_state.is_cross_extruder_runout = False
@@ -2802,6 +2813,18 @@ class OAMSManager:
 
                     except Exception as e:
                         self.logger.exception("OAMS: Failed to execute cross-extruder runout sequence - Exception: %s", str(e))
+
+                        # Clear cross-extruder flag on error too
+                        if source_lane_name:
+                            try:
+                                afc = self.printer.lookup_object('AFC')
+                                if afc and hasattr(afc, 'lanes'):
+                                    source_lane_obj = afc.lanes.get(source_lane_name)
+                                    if source_lane_obj and hasattr(source_lane_obj, '_oams_cross_extruder_runout'):
+                                        source_lane_obj._oams_cross_extruder_runout = False
+                            except Exception:
+                                pass
+
                         fps_state.reset_runout_positions()
                         fps_state.is_cross_extruder_runout = False
                         self._pause_printer_message(f"Failed to change tool for {source_lane_name or fps_name}: {str(e)}", active_oams)
