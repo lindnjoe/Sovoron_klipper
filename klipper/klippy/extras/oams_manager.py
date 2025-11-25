@@ -746,14 +746,16 @@ class OAMSManager:
                 self.logger.error("Failed to clear errors on %s", getattr(oam, "name", "<unknown>"))
 
         # Clear any lane mappings from cross-extruder runouts
-        # This allows lanes to be used normally in the next print
+        # Only clear lane?lane redirects (e.g., lane0.map="lane8"), not permanent T# mappings
         try:
             afc = self.printer.lookup_object('AFC')
             if afc and hasattr(afc, 'lanes'):
                 for lane_name, lane in afc.lanes.items():
                     if hasattr(lane, 'map') and lane.map is not None:
-                        self.logger.info("Clearing lane mapping: %s -> %s", lane_name, lane.map)
-                        lane.map = None
+                        # Only clear if map is a lane redirect (starts with "lane"), not a T# mapping
+                        if isinstance(lane.map, str) and lane.map.startswith('lane') and lane.map != lane_name:
+                            self.logger.info("Clearing OAMS lane mapping: %s -> %s", lane_name, lane.map)
+                            lane.map = None
         except Exception:
             self.logger.debug("Could not clear lane mappings (AFC not available or no mappings set)")
 
