@@ -910,9 +910,11 @@ class OAMSManager:
         cache_built = False
 
         for lane_name, lane in lanes.items():
-            # Cache unit mapping
+            # Cache unit mapping (normalize to base unit without lane index)
             unit_name = getattr(lane, "unit", None)
-            if unit_name and lane_name not in self._lane_unit_map:
+            if isinstance(unit_name, str) and ':' in unit_name:
+                unit_name = unit_name.split(':')[0]
+            if unit_name:
                 self._lane_unit_map[lane_name] = unit_name
 
             # OPTIMIZATION: Pre-populate lane?FPS cache
