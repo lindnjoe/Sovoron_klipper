@@ -550,6 +550,11 @@ class OAMSManager:
     def determine_state(self) -> None:
         """Analyze hardware state and update FPS state tracking."""
         for fps_name, fps_state in self.current_state.fps_state.items():
+            # Check if there's an active runout for this FPS
+            monitor = self.runout_monitors.get(fps_name)
+            is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
+            was_loaded = (fps_state.state == FPSLoadState.LOADED)
+
             (
                 fps_state.current_lane,
                 current_oams,
@@ -568,12 +573,21 @@ class OAMSManager:
                 fps_state.reset_clog_tracker()
                 self._ensure_forward_follower(fps_name, fps_state, "state detection")
             else:
-                fps_state.state = FPSLoadState.UNLOADED
-                fps_state.reset_stuck_spool_state()
-                fps_state.reset_clog_tracker()
-                fps_state.clog_restore_follower = False
-                fps_state.clog_restore_direction = 1
-                self._cancel_post_load_pressure_check(fps_state)
+                # If there's an active runout, keep FPS as LOADED even if AFC cleared lane_loaded
+                # This allows runout detection to proceed when F1S goes empty
+                # Only applies if this specific FPS was LOADED before (per-lane tracking)
+                if is_runout_active and was_loaded:
+                    self.logger.info("State detection: Keeping %s as LOADED during runout (state=%s, AFC lane_loaded cleared)",
+                                   fps_name, monitor.state if monitor else "unknown")
+                    # Keep current_lane and current_spool_idx from before so runout detection can proceed
+                    # Don't transition to UNLOADED - let runout handling clear the state
+                else:
+                    fps_state.state = FPSLoadState.UNLOADED
+                    fps_state.reset_stuck_spool_state()
+                    fps_state.reset_clog_tracker()
+                    fps_state.clog_restore_follower = False
+                    fps_state.clog_restore_direction = 1
+                    self._cancel_post_load_pressure_check(fps_state)
         
     def handle_ready(self) -> None:
         """Initialize system when printer is ready."""
