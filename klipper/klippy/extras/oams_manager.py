@@ -2372,6 +2372,19 @@ class OAMSManager:
                         self._check_clog(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
 
                     state_changed = True
+                else:
+                    # When idle, auto-enable follower if hub sensor shows filament and no error state
+                    # Follower should always be enabled if hub has filament (maintains FPS pressure)
+                    if (oams and fps_state.current_spool_idx is not None and
+                        not fps_state.stuck_spool_active and not fps_state.clog_active):
+                        try:
+                            if (fps_state.current_spool_idx < len(hes_values) and
+                                hes_values[fps_state.current_spool_idx] and
+                                (not fps_state.following or fps_state.direction != 1)):
+                                self._ensure_forward_follower(fps_name, fps_state, "auto-enable idle (hub loaded)")
+                                state_changed = True
+                        except Exception:
+                            pass
 
             # OPTIMIZATION: Adaptive polling interval with exponential backoff
             if state_changed or is_printing:
@@ -2936,6 +2949,14 @@ class OAMSManager:
                                 self.logger.debug("Marked lane %s as loaded after infinite runout on %s", target_lane, fps_name)
                             except Exception:
                                 self.logger.error("Failed to mark lane %s as loaded after infinite runout on %s", target_lane, fps_name)
+
+                    # Re-enable follower after successful reload (was disabled during COASTING)
+                    # Follower should always be enabled if hub sensor shows filament
+                    if fps_state.current_oams and fps_state.current_spool_idx is not None:
+                        oams = self.oams.get(fps_state.current_oams)
+                        if oams:
+                            self._ensure_forward_follower(fps_name, fps_state, "after infinite runout reload")
+
                     fps_state.reset_runout_positions()
                     if monitor:
                         monitor.reset()
