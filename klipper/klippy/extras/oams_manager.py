@@ -110,12 +110,16 @@ class OAMSRunoutMonitor:
         self.fps_name = fps_name
         self.fps_state = fps_state
         self.fps = fps
-        
+
         self.state = OAMSRunoutState.STOPPED
         self.runout_position: Optional[float] = None
         self.bldc_clear_position: Optional[float] = None
         self.runout_after_position: Optional[float] = None
         self.is_cross_extruder_runout: bool = False  # Track if runout is cross-extruder
+
+        # Track when hub sensor clears during COASTING
+        self.hub_cleared: bool = False
+        self.hub_clear_position: Optional[float] = None
 
         self.reload_before_toolhead_distance = reload_before_toolhead_distance
         self.reload_callback = reload_callback
@@ -268,17 +272,47 @@ class OAMSRunoutMonitor:
                     # All lanes in an AMS unit feed into ONE hub with ONE follower
                     traveled_distance = fps.extruder.last_position - self.runout_position
                     if traveled_distance >= PAUSE_DISTANCE:
-                        logging.info("OAMS: Pause complete, entering COASTING (follower stays enabled to push old filament out)")
+                        logging.info("OAMS: Pause complete, entering COASTING (waiting for hub to clear before counting)")
                         self.bldc_clear_position = fps.extruder.last_position
                         self.runout_after_position = 0.0
+                        self.hub_cleared = False  # Reset hub clear tracking
+                        self.hub_clear_position = None
                         self.state = OAMSRunoutState.COASTING
 
             elif self.state == OAMSRunoutState.COASTING:
                 # Wait for old filament to be pushed out of shared PTFE buffer by hub follower
-                # Follower in hub pushes old lane8 filament through shared PTFE to extruder
-                # Once old filament clears, reload new lane7 which follower then pushes through
-                traveled_distance_after_bldc_clear = max(fps.extruder.last_position - self.bldc_clear_position, 0.0)
-                self.runout_after_position = traveled_distance_after_bldc_clear
+                # Phase 1: Wait for hub sensor to clear (old lane filament leaving hub)
+                # Phase 2: Count distance through shared PTFE after hub clears
+
+                # Check hub sensor for current spool
+                spool_idx = fps_state.current_spool_idx
+                try:
+                    oams_obj = self.oams.get(fps_state.current_oams)
+                    if oams_obj and spool_idx is not None:
+                        hes_values = oams_obj.hub_hes_value
+                        hub_has_filament = bool(hes_values[spool_idx]) if spool_idx < len(hes_values) else True
+
+                        # Detect when hub sensor clears
+                        if not self.hub_cleared and not hub_has_filament:
+                            self.hub_cleared = True
+                            self.hub_clear_position = fps.extruder.last_position
+                            logging.info("OAMS: Hub sensor cleared at position %.1f, starting shared PTFE countdown",
+                                       self.hub_clear_position)
+                except Exception:
+                    logging.exception("OAMS: Failed to read hub sensor during COASTING on %s", self.fps_name)
+                    # If we can't read hub sensor, assume it's cleared and proceed
+                    if not self.hub_cleared:
+                        self.hub_cleared = True
+                        self.hub_clear_position = fps.extruder.last_position
+
+                # Calculate distance traveled through shared PTFE (only after hub clears)
+                if self.hub_cleared and self.hub_clear_position is not None:
+                    traveled_distance_after_hub_clear = max(fps.extruder.last_position - self.hub_clear_position, 0.0)
+                    self.runout_after_position = traveled_distance_after_hub_clear
+                else:
+                    # Still waiting for hub to clear
+                    self.runout_after_position = 0.0
+
                 try:
                     path_length = getattr(self.oams[fps_state.current_oams], "filament_path_length", 0.0)
                 except Exception:
@@ -286,23 +320,24 @@ class OAMSRunoutMonitor:
                     return eventtime + MONITOR_ENCODER_PERIOD
 
                 effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
-                consumed_with_margin = (self.runout_after_position + PAUSE_DISTANCE + self.reload_before_toolhead_distance)
+                # Now consumed only includes distance AFTER hub cleared, plus reload margin
+                consumed_with_margin = (self.runout_after_position + self.reload_before_toolhead_distance)
 
-                # Log COASTING progress every 100mm
+                # Log COASTING progress every 100mm (only after hub clears)
                 if not hasattr(self, '_last_coast_log_position'):
                     self._last_coast_log_position = 0.0
-                    logging.info("OAMS: COASTING - path_length=%.1f, effective_path_length=%.1f, PAUSE_DISTANCE=%.1f, reload_margin=%.1f",
-                               path_length, effective_path_length, PAUSE_DISTANCE, self.reload_before_toolhead_distance)
+                    logging.info("OAMS: COASTING - path_length=%.1f, effective_path_length=%.1f, reload_margin=%.1f",
+                               path_length, effective_path_length, self.reload_before_toolhead_distance)
 
-                if self.runout_after_position - self._last_coast_log_position >= 100.0:
+                if self.hub_cleared and self.runout_after_position - self._last_coast_log_position >= 100.0:
                     self._last_coast_log_position = self.runout_after_position
                     remaining = effective_path_length - consumed_with_margin
-                    logging.info("OAMS: COASTING progress - runout_after=%.1f, consumed_with_margin=%.1f, remaining=%.1f",
+                    logging.info("OAMS: COASTING progress (after hub clear) - runout_after=%.1f, consumed_with_margin=%.1f, remaining=%.1f",
                                self.runout_after_position, consumed_with_margin, remaining)
 
-                if consumed_with_margin >= effective_path_length:
-                    logging.info("OAMS: Old filament cleared shared buffer (%.2f mm consumed, %.2f mm effective path), loading new lane",
-                               self.runout_after_position + PAUSE_DISTANCE, effective_path_length)
+                if self.hub_cleared and consumed_with_margin >= effective_path_length:
+                    logging.info("OAMS: Old filament cleared shared PTFE (%.2f mm after hub clear, %.2f mm effective path), loading new lane",
+                               self.runout_after_position, effective_path_length)
                     self._last_coast_log_position = 0.0  # Reset for next runout
                     self.state = OAMSRunoutState.RELOADING
                     self.reload_callback()
