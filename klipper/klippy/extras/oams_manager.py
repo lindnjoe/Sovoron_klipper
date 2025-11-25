@@ -54,6 +54,7 @@ MONITOR_ENCODER_PERIOD = 2.0
 MONITOR_ENCODER_PERIOD_IDLE = 4.0  # OPTIMIZATION: Longer interval when idle
 MONITOR_ENCODER_SPEED_GRACE = 2.0
 AFC_DELEGATION_TIMEOUT = 30.0
+COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
@@ -120,6 +121,7 @@ class OAMSRunoutMonitor:
         # Track when hub sensor clears during COASTING
         self.hub_cleared: bool = False
         self.hub_clear_position: Optional[float] = None
+        self.coasting_start_time: Optional[float] = None
 
         self.reload_before_toolhead_distance = reload_before_toolhead_distance
         self.reload_callback = reload_callback
@@ -208,11 +210,13 @@ class OAMSRunoutMonitor:
                             current_extruder = getattr(current_lane_obj, 'extruder_name', None)
                             target_extruder = getattr(target_lane_obj, 'extruder_name', None)
 
-                            # Cross-extruder if target is on different extruder AND hub still has filament
+                            # Cross-extruder if target is on different extruder
+                            # Hub sensor state doesn't matter - by the time we detect the runout,
+                            # the hub may have already cleared (F1S goes empty, then hub clears shortly after)
                             if current_extruder and target_extruder and current_extruder != target_extruder:
-                                hub_values = oams_obj.hub_hes_value
-                                hub_has_filament = bool(hub_values[spool_idx]) if spool_idx < len(hub_values) else False
-                                self.is_cross_extruder_runout = hub_has_filament
+                                self.is_cross_extruder_runout = True
+                                logging.info("OAMS: Detected cross-extruder runout: %s (extruder %s) -> %s (extruder %s)",
+                                           lane_name, current_extruder, target_lane_name, target_extruder)
                             else:
                                 # Same extruder = same-FPS runout (even if hub has filament from other lanes)
                                 self.is_cross_extruder_runout = False
@@ -245,7 +249,7 @@ class OAMSRunoutMonitor:
                             logging.exception("OAMS: Failed to set cross-extruder runout flag on lane %s", lane_name)
 
                     if self.is_cross_extruder_runout:
-                        logging.info("OAMS: Cross-extruder runout detected on FPS %s (F1S empty, hub loaded) - will trigger immediate tool change",
+                        logging.info("OAMS: Cross-extruder runout detected on FPS %s (F1S empty, target on different extruder) - will trigger immediate tool change",
                                    self.fps_name)
                     else:
                         logging.info("OAMS: Same-extruder runout detected on FPS %s (F1S empty), pausing for %d mm",
@@ -277,12 +281,29 @@ class OAMSRunoutMonitor:
                         self.runout_after_position = 0.0
                         self.hub_cleared = False  # Reset hub clear tracking
                         self.hub_clear_position = None
+                        self.coasting_start_time = self.reactor.monotonic()
                         self.state = OAMSRunoutState.COASTING
 
             elif self.state == OAMSRunoutState.COASTING:
                 # Wait for old filament to be pushed out of shared PTFE buffer by hub follower
                 # Phase 1: Wait for hub sensor to clear (old lane filament leaving hub)
                 # Phase 2: Count distance through shared PTFE after hub clears
+
+                # Check for COASTING timeout (hardware failure, sensor stuck, etc.)
+                now = self.reactor.monotonic()
+                if self.coasting_start_time and now - self.coasting_start_time > COASTING_TIMEOUT:
+                    logging.error("OAMS: COASTING timeout on %s after %.1f seconds (hub never cleared or distance not reached)",
+                                self.fps_name, now - self.coasting_start_time)
+                    fps_state.reset_runout_positions()
+                    self.state = OAMSRunoutState.PAUSED
+                    # Pause printer with error message
+                    try:
+                        gcode = self.printer.lookup_object("gcode")
+                        gcode.run_script(f"M118 OAMS COASTING timeout on {self.fps_name}")
+                        gcode.run_script("PAUSE")
+                    except Exception:
+                        logging.exception("Failed to pause printer after COASTING timeout")
+                    return eventtime + MONITOR_ENCODER_PERIOD
 
                 # Check hub sensor for current spool
                 spool_idx = fps_state.current_spool_idx
@@ -360,15 +381,23 @@ class OAMSRunoutMonitor:
         self.runout_position = None
         self.runout_after_position = None
         self.is_cross_extruder_runout = False
-        
+        # Clear COASTING state tracking
+        self.hub_cleared = False
+        self.hub_clear_position = None
+        self.coasting_start_time = None
+
     def paused(self) -> None:
         self.state = OAMSRunoutState.PAUSED
-        
+
     def reset(self) -> None:
         self.state = OAMSRunoutState.STOPPED
         self.runout_position = None
         self.runout_after_position = None
         self.is_cross_extruder_runout = False
+        # Clear COASTING state tracking
+        self.hub_cleared = False
+        self.hub_clear_position = None
+        self.coasting_start_time = None
         if self.timer is not None:
             self.reactor.unregister_timer(self.timer)
             self.timer = None
