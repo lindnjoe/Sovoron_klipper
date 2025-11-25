@@ -434,7 +434,22 @@ class afcUnit:
 
     # Functions are below are placeholders so the function exists for all units, override these function in your unit files
     def _print_function_not_defined(self, name):
-        self.afc.gcode("{} function not defined for {}".format(name, self.name))
+        """Report missing AFC unit helpers without calling gcode dispatchers directly."""
+        gcode_obj = getattr(self.afc, "gcode", None)
+        respond_info = getattr(gcode_obj, "respond_info", None)
+
+        if callable(respond_info):
+            respond_info("{} function not defined for {}".format(name, self.name))
+            return
+
+        try:
+            if callable(gcode_obj):
+                gcode_obj("{} function not defined for {}".format(name, self.name))
+                return
+        except Exception:
+            pass
+
+        self.logger.warning("%s function not defined for %s", name, self.name)
 
     # Function that other units can create so that they are specific to the unit
     def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):

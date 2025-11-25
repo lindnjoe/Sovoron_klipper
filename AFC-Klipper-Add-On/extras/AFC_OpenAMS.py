@@ -314,6 +314,24 @@ class afcAMS(afcUnit):
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_PTFE", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_PTFE, desc="calibrate the OpenAMS PTFE length for a specific lane")
         self.gcode.register_mux_command("UNIT_PTFE_CALIBRATION", "UNIT", self.name, self.cmd_UNIT_PTFE_CALIBRATION, desc="show OpenAMS PTFE calibration menu")
 
+    def _print_function_not_defined(self, name):
+        """Report missing AFC unit helpers without calling gcode dispatchers directly."""
+        gcode_obj = getattr(self.afc, "gcode", None)
+        respond_info = getattr(gcode_obj, "respond_info", None)
+
+        if callable(respond_info):
+            respond_info(f"{name} function not defined for {self.name}")
+            return
+
+        try:
+            if callable(gcode_obj):
+                gcode_obj(f"{name} function not defined for {self.name}")
+                return
+        except Exception:
+            pass
+
+        self.logger.warning("%s function not defined for %s", name, self.name)
+
     def _is_openams_unit(self):
         """Check if this unit has OpenAMS hardware available."""
         return self.oams is not None
