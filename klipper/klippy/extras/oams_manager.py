@@ -2844,22 +2844,19 @@ class OAMSManager:
                     oams.set_led_error(fps_state.current_spool_idx, 1)
                 except Exception:
                     self.logger.error("Failed to set clog LED on %s spool %s", fps_name, fps_state.current_spool_idx)
-            direction = fps_state.direction if fps_state.direction in (0, 1) else 1
-            fps_state.clog_restore_follower = True
-            fps_state.clog_restore_direction = direction
-            if oams is not None and fps_state.following:
-                try:
-                    oams.set_oams_follower(0, direction)
-                except Exception:
-                    self.logger.error("Failed to stop follower on %s during clog pause", fps_name)
-            fps_state.following = False
+
+            # Don't disable follower during clog detection - keep it running
+            # User can still manually manipulate filament if needed while paused
+            # Follower doesn't interfere with clog detection (encoder + FPS pressure based)
+            # This ensures follower is always ready when print resumes
+
             pressure_mid = (fps_state.clog_min_pressure + fps_state.clog_max_pressure) / 2.0
             message = (f"Clog suspected on {fps_state.current_lane or fps_name}: "
                       f"extruder advanced {extrusion_delta:.1f}mm while encoder moved {encoder_delta} counts "
                       f"with FPS {pressure_mid:.2f} near {self.clog_pressure_target:.2f}")
             fps_state.clog_active = True
             self._pause_printer_message(message, fps_state.current_oams)
-            self._reactivate_clog_follower(fps_name, fps_state, oams, "clog pause")
+            # No need to call _reactivate_clog_follower - follower never disabled
 
     def start_monitors(self):
         """Start all monitoring timers"""
