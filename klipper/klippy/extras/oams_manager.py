@@ -3281,16 +3281,16 @@ class OAMSManager:
                             try:
                                 handled = AMSRunoutCoordinator.notify_lane_tool_state(self.printer, fps_state.current_oams or active_oams, target_lane, loaded=True, spool_index=fps_state.current_spool_idx, eventtime=fps_state.since)
                                 self.logger.info("Notified AFC that lane %s is loaded (updates virtual sensor state)", target_lane)
-                            except Exception:
-                                self.logger.error("Failed to notify AFC lane %s after infinite runout on %s", target_lane, fps_name)
+                            except Exception as e:
+                                self.logger.error("Failed to notify AFC lane %s after infinite runout on %s: %s", target_lane, fps_name, e)
                                 handled = False
                         if not handled:
                             try:
                                 gcode = self.printer.lookup_object("gcode")
                                 gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
-                                self.logger.debug("Marked lane %s as loaded after infinite runout on %s", target_lane, fps_name)
-                            except Exception:
-                                self.logger.error("Failed to mark lane %s as loaded after infinite runout on %s", target_lane, fps_name)
+                                self.logger.info("Marked lane %s as loaded via SET_LANE_LOADED after infinite runout on %s", target_lane, fps_name)
+                            except Exception as e:
+                                self.logger.error("Failed to mark lane %s as loaded after infinite runout on %s: %s", target_lane, fps_name, e)
 
                     # Ensure follower is enabled after successful reload
                     # Follower should stay enabled throughout same-FPS runouts (never disabled)
