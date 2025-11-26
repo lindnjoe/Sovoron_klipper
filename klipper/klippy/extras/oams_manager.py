@@ -3031,6 +3031,11 @@ class OAMSManager:
             # Pause printer with error message
             self._pause_printer_message(message, fps_state.current_oams)
 
+            # CRITICAL: Keep follower enabled even during clog pause
+            # User needs follower running to manually clear clogs and test extrusion
+            if fps_state.current_oams:
+                self._ensure_forward_follower(fps_name, fps_state, "clog pause - keep follower active")
+
             # Clear error flag immediately after pausing - system is ready for user to fix
             # LED stays red to indicate the issue, but error flag doesn't block other operations
             fps_state.clog_active = False
