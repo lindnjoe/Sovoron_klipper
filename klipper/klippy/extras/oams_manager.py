@@ -175,6 +175,11 @@ class OAMSRunoutMonitor:
                     except Exception:
                         pass
 
+                # Fallback to fps_state.current_lane if hardware_service didn't provide a lane name
+                if lane_name is None and fps_state.current_lane is not None:
+                    lane_name = fps_state.current_lane
+                    logging.debug("OAMS: Using fps_state.current_lane '%s' (hardware_service didn't resolve lane name)", lane_name)
+
                 # ALWAYS check F1S sensor for runout detection (not hub sensor)
                 # This triggers runout immediately when spool runs out
                 try:
@@ -561,6 +566,13 @@ class OAMSManager:
         self.runout_monitors: Dict[str, OAMSRunoutMonitor] = {}
         self.ready: bool = False
 
+        # Follower coast tracking: when all hub sensors go empty, coast 50mm before disabling
+        self.follower_coast_distance = 50.0  # mm to coast after hub empties
+        self.follower_coasting: Dict[str, bool] = {}  # oams_name -> is_coasting
+        self.follower_coast_start_pos: Dict[str, float] = {}  # oams_name -> extruder position when coast started
+        self.follower_had_filament: Dict[str, bool] = {}  # oams_name -> previous state (had filament)
+        self.follower_manual_override: Dict[str, bool] = {}  # oams_name -> manually commanded (skip auto control)
+
         self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
 
         sensitivity = config.get("clog_sensitivity", CLOG_SENSITIVITY_DEFAULT).lower()
@@ -643,6 +655,24 @@ class OAMSManager:
             is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
             was_loaded = (fps_state.state == FPSLoadState.LOADED)
 
+            # Check F1S sensor state if we have OAMS and spool info
+            # This helps detect runout conditions before monitor transitions state
+            f1s_empty = False
+            hub_has_filament = False
+            if fps_state.current_oams and fps_state.current_spool_idx is not None:
+                oams_obj = self.oams.get(fps_state.current_oams)
+                if oams_obj:
+                    try:
+                        f1s_values = getattr(oams_obj, 'f1s_hes_value', None)
+                        if f1s_values and fps_state.current_spool_idx < len(f1s_values):
+                            f1s_empty = not bool(f1s_values[fps_state.current_spool_idx])
+
+                        hub_values = getattr(oams_obj, 'hub_hes_value', None)
+                        if hub_values and fps_state.current_spool_idx < len(hub_values):
+                            hub_has_filament = bool(hub_values[fps_state.current_spool_idx])
+                    except Exception:
+                        pass
+
             # Query what AFC thinks is loaded (don't assign yet!)
             detected_lane, current_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
 
@@ -658,10 +688,16 @@ class OAMSManager:
                 self._ensure_forward_follower(fps_name, fps_state, "state detection")
             else:
                 # AFC says no lane loaded (lane_loaded = None)
-                # If there's an active runout, keep FPS as LOADED with existing lane info
-                # This allows runout detection to proceed when F1S goes empty and AFC clears lane_loaded
-                if is_runout_active and was_loaded:
-                    self.logger.info("State detection: Keeping %s as LOADED during runout (state=%s, AFC lane_loaded cleared)",
+                # CRITICAL: If F1S just went empty but hub still has filament, keep state LOADED
+                # This allows runout detection to trigger before we clear the lane info
+                # Don't wait for monitor.state to change - it won't change until runout is detected
+                if was_loaded and f1s_empty and hub_has_filament:
+                    self.logger.info("State detection: Keeping %s as LOADED (F1S empty, hub has filament, runout about to be detected)",
+                                   fps_name)
+                    # Keep all existing state - runout detection needs this info
+                    pass
+                elif is_runout_active and was_loaded:
+                    self.logger.info("State detection: Keeping %s as LOADED during active runout (state=%s, AFC lane_loaded cleared)",
                                    fps_name, monitor.state if monitor else "unknown")
                     # CRITICAL: Don't overwrite current_lane and current_spool_idx!
                     # Keep the existing values so runout detection can complete
@@ -669,7 +705,7 @@ class OAMSManager:
                     if current_oams is not None:
                         fps_state.current_oams = current_oams.name
                 else:
-                    # No active runout - transition to UNLOADED normally
+                    # No active runout and not about to detect one - transition to UNLOADED normally
                     fps_state.current_lane = None
                     fps_state.current_oams = None
                     fps_state.current_spool_idx = None
@@ -818,6 +854,7 @@ class OAMSManager:
             ("OAMSM_UNLOAD_FILAMENT", self.cmd_UNLOAD_FILAMENT, self.cmd_UNLOAD_FILAMENT_help),
             ("OAMSM_LOAD_FILAMENT", self.cmd_LOAD_FILAMENT, self.cmd_LOAD_FILAMENT_help),
             ("OAMSM_FOLLOWER", self.cmd_FOLLOWER, self.cmd_FOLLOWER_help),
+            ("OAMSM_FOLLOWER_RESET", self.cmd_FOLLOWER_RESET, self.cmd_FOLLOWER_RESET_help),
             ("OAMSM_CLEAR_ERRORS", self.cmd_CLEAR_ERRORS, self.cmd_CLEAR_ERRORS_help),
             ("OAMSM_CLEAR_LANE_MAPPINGS", self.cmd_CLEAR_LANE_MAPPINGS, self.cmd_CLEAR_LANE_MAPPINGS_help),
             ("OAMSM_STATUS", self.cmd_STATUS, self.cmd_STATUS_help),
@@ -880,6 +917,11 @@ class OAMSManager:
 
         # Re-detect state from hardware sensors
         self.determine_state()
+
+        # Clear all manual follower overrides - return to automatic hub sensor control
+        for oams_name in self.oams.keys():
+            self.follower_manual_override[oams_name] = False
+        self.logger.info("Cleared all manual follower overrides, returning to automatic control")
 
         # After clearing errors and detecting state, ensure followers are enabled for any
         # lanes that have filament loaded to the hub (even if not loaded to toolhead)
@@ -995,7 +1037,8 @@ class OAMSManager:
             )
             return
 
-        # When disabling (ENABLE=0), just disable regardless of state
+        # When disabling (ENABLE=0), disable follower and keep manual override
+        # This prevents automatic control from re-enabling it
         if not enable:
             # If already unloaded or no OAMS, just mark as not following and return
             if not fps_state.current_oams:
@@ -1008,7 +1051,10 @@ class OAMSManager:
                 try:
                     oams_obj.set_oams_follower(0, direction)
                     fps_state.following = False
-                    self.logger.info("Disabled follower on %s", fps_name)
+                    # Keep manual override so it stays disabled (use OAMSM_FOLLOWER_RESET to return to automatic)
+                    self.follower_manual_override[fps_state.current_oams] = True
+                    self.logger.info("Disabled follower on %s (manual override - use OAMSM_FOLLOWER_RESET to return to automatic)", fps_name)
+                    gcmd.respond_info(f"Follower disabled on {fps_name} (manual control - use OAMSM_FOLLOWER_RESET to return to automatic)")
                 except Exception:
                     self.logger.error("Failed to disable follower on %s", fps_state.current_oams)
                     gcmd.respond_info(f"Failed to disable follower. Check logs.")
@@ -1025,14 +1071,42 @@ class OAMSManager:
             return
 
         try:
-            self.logger.info("OAMSM_FOLLOWER: enabling follower on %s, direction=%d", fps_name, direction)
+            self.logger.info("OAMSM_FOLLOWER: enabling follower on %s, direction=%d (manual override - will stay enabled regardless of hub sensors)", fps_name, direction)
             oams_obj.set_oams_follower(enable, direction)
             fps_state.following = bool(enable)
             fps_state.direction = direction
-            self.logger.info("OAMSM_FOLLOWER: successfully enabled follower on %s", fps_name)
+            # Set manual override flag - follower stays enabled even if hub sensors are empty
+            self.follower_manual_override[fps_state.current_oams] = True
+            self.logger.info("OAMSM_FOLLOWER: successfully enabled follower on %s (manual override active)", fps_name)
+            gcmd.respond_info(f"Follower enabled on {fps_name} (manual control - use OAMSM_FOLLOWER_RESET to return to automatic)")
         except Exception:
             self.logger.error("Failed to set follower on %s", fps_state.current_oams)
             gcmd.respond_info(f"Failed to set follower. Check logs.")
+
+    cmd_FOLLOWER_RESET_help = "Return follower to automatic control based on hub sensors"
+    def cmd_FOLLOWER_RESET(self, gcmd):
+        fps_name = "fps " + gcmd.get('FPS')
+
+        if fps_name not in self.fpss:
+            gcmd.respond_info(f"FPS {fps_name} does not exist")
+            return
+
+        fps_state = self.current_state.fps_state[fps_name]
+
+        if not fps_state.current_oams:
+            gcmd.respond_info(f"No OAMS associated with {fps_name}")
+            return
+
+        # Clear manual override flag - return to automatic hub sensor control
+        self.follower_manual_override[fps_state.current_oams] = False
+        self.logger.info("Cleared manual follower override for %s, returning to automatic control", fps_name)
+        gcmd.respond_info(f"Follower on {fps_name} returned to automatic control (hub sensor based)")
+
+        # Immediately update follower based on current hub sensor state
+        oams_obj = self.oams.get(fps_state.current_oams)
+        if oams_obj:
+            self._update_follower_for_oams(fps_state.current_oams, oams_obj)
+            gcmd.respond_info(f"Follower state updated based on current hub sensors")
 
     def get_fps_for_afc_lane(self, lane_name: str) -> Optional[str]:
         """Get the FPS name for an AFC lane by querying its unit configuration.
@@ -2141,34 +2215,122 @@ class OAMSManager:
 
     def _update_follower_for_oams(self, oams_name: str, oams: Any) -> None:
         """
-        Update follower state for an OAMS based on hub sensors.
+        Update follower state for an OAMS based on hub sensors with coast support.
 
-        SIMPLE RULE: Follower enabled if ANY hub sensor shows filament, disabled if ALL empty.
-        The follower is a motor in the hub that must run for filament to move through ANY lane.
-        No conditions, no error state checks - just hub sensors.
+        RULE: Follower enabled if ANY hub sensor shows filament, disabled after 50mm coast when ALL empty.
+        When all hub sensors go empty, we coast 50mm to clear filament from shared PTFE before disabling.
+
+        MANUAL OVERRIDE: If follower was manually enabled via OAMSM_FOLLOWER, skip automatic control.
         """
         try:
+            # Skip automatic control if manually commanded
+            if self.follower_manual_override.get(oams_name, False):
+                self.logger.debug("Skipping automatic follower control for %s (manual override active)", oams_name)
+                return
+
             hub_hes_values = getattr(oams, "hub_hes_value", None)
             if hub_hes_values is None:
                 return
 
             # Check if ANY hub sensor shows filament
             any_filament = any(hub_hes_values)
+            was_coasting = self.follower_coasting.get(oams_name, False)
+            had_filament = self.follower_had_filament.get(oams_name, False)
 
             if any_filament:
-                # At least one bay has filament - enable follower in forward direction
+                # At least one bay has filament - enable follower and clear coast state
                 try:
                     oams.set_oams_follower(1, 1)  # 1 = enable, 1 = forward
                     self.logger.debug("Follower enabled for %s (hub sensors: %s)", oams_name, hub_hes_values)
                 except Exception:
                     self.logger.error("Failed to enable follower for %s", oams_name)
+
+                # Clear coast state
+                if was_coasting:
+                    self.logger.info("Follower coast cancelled for %s (filament detected)", oams_name)
+                self.follower_coasting[oams_name] = False
+                self.follower_coast_start_pos[oams_name] = 0.0
+                self.follower_had_filament[oams_name] = True
             else:
-                # All bays empty - disable follower
-                try:
-                    oams.set_oams_follower(0, 1)  # 0 = disable
-                    self.logger.debug("Follower disabled for %s (all hub sensors empty)", oams_name)
-                except Exception:
-                    self.logger.error("Failed to disable follower for %s", oams_name)
+                # All bays empty - start or continue coasting
+                if not was_coasting and had_filament:
+                    # Transition from "had filament" to "all empty" - start coast
+                    # Find any FPS associated with this OAMS to get extruder position
+                    extruder_pos = None
+                    for fps_name, fps_state in self.current_state.fps_state.items():
+                        if fps_state.current_oams == oams_name:
+                            fps = self.fpss.get(fps_name)
+                            if fps and hasattr(fps, 'extruder'):
+                                extruder_pos = fps.extruder.last_position
+                                break
+
+                    if extruder_pos is not None:
+                        self.follower_coasting[oams_name] = True
+                        self.follower_coast_start_pos[oams_name] = extruder_pos
+                        self.logger.info("Follower coast started for %s at position %.1f (all hub sensors empty, will coast %.1f mm)",
+                                       oams_name, extruder_pos, self.follower_coast_distance)
+                        # Keep follower enabled during coast
+                        try:
+                            oams.set_oams_follower(1, 1)
+                        except Exception:
+                            self.logger.error("Failed to keep follower enabled during coast for %s", oams_name)
+                    else:
+                        # Can't find extruder position, just disable immediately
+                        self.logger.warning("Cannot determine extruder position for %s coast, disabling follower immediately", oams_name)
+                        try:
+                            oams.set_oams_follower(0, 1)
+                        except Exception:
+                            self.logger.error("Failed to disable follower for %s", oams_name)
+                        self.follower_had_filament[oams_name] = False
+
+                elif was_coasting:
+                    # Already coasting - check if we've coasted enough
+                    # Find current extruder position
+                    current_pos = None
+                    for fps_name, fps_state in self.current_state.fps_state.items():
+                        if fps_state.current_oams == oams_name:
+                            fps = self.fpss.get(fps_name)
+                            if fps and hasattr(fps, 'extruder'):
+                                current_pos = fps.extruder.last_position
+                                break
+
+                    if current_pos is not None:
+                        coast_start = self.follower_coast_start_pos.get(oams_name, 0.0)
+                        coasted_distance = max(current_pos - coast_start, 0.0)
+
+                        if coasted_distance >= self.follower_coast_distance:
+                            # Coast complete - disable follower
+                            self.logger.info("Follower coast complete for %s (coasted %.1f mm), disabling follower",
+                                           oams_name, coasted_distance)
+                            try:
+                                oams.set_oams_follower(0, 1)
+                            except Exception:
+                                self.logger.error("Failed to disable follower for %s after coast", oams_name)
+                            self.follower_coasting[oams_name] = False
+                            self.follower_coast_start_pos[oams_name] = 0.0
+                            self.follower_had_filament[oams_name] = False
+                        else:
+                            # Still coasting - keep follower enabled
+                            self.logger.debug("Follower coasting for %s: %.1f / %.1f mm",
+                                            oams_name, coasted_distance, self.follower_coast_distance)
+                            try:
+                                oams.set_oams_follower(1, 1)
+                            except Exception:
+                                self.logger.error("Failed to keep follower enabled during coast for %s", oams_name)
+                    else:
+                        # Can't find position, just keep coasting
+                        try:
+                            oams.set_oams_follower(1, 1)
+                        except Exception:
+                            self.logger.error("Failed to keep follower enabled during coast for %s", oams_name)
+                else:
+                    # Was already empty and not coasting - keep disabled
+                    try:
+                        oams.set_oams_follower(0, 1)
+                        self.logger.debug("Follower disabled for %s (all hub sensors empty, not coasting)", oams_name)
+                    except Exception:
+                        self.logger.error("Failed to disable follower for %s", oams_name)
+                    self.follower_had_filament[oams_name] = False
         except Exception:
             self.logger.error("Failed to update follower for %s", oams_name)
 
