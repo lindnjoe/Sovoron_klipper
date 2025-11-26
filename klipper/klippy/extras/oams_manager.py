@@ -2343,6 +2343,11 @@ class OAMSManager:
                         oams.set_led_error(fps_state.current_spool_idx, 0)
                     except Exception:
                         self.logger.error("Failed to clear clog LED on %s after resume", fps_name)
+                # Ensure follower is enabled after clog is cleared
+                # Since we never disable the follower during clog detection, it should already be running
+                # But explicitly ensure it here in case something else disabled it
+                if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
+                    self._ensure_forward_follower(fps_name, fps_state, "clog cleared on resume")
 
             if fps_state.clog_restore_follower:
                 self._enable_follower(
