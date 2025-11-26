@@ -721,6 +721,11 @@ class OAMSManager:
                         fps_state.current_oams = current_oams.name
                 else:
                     # No active runout and not about to detect one - transition to UNLOADED normally
+                    # Save lane info before clearing for AFC notification
+                    old_lane_name = fps_state.current_lane
+                    old_oams_name = fps_state.current_oams
+                    old_spool_idx = fps_state.current_spool_idx
+
                     fps_state.current_lane = None
                     fps_state.current_oams = None
                     fps_state.current_spool_idx = None
@@ -730,6 +735,22 @@ class OAMSManager:
                     fps_state.clog_restore_follower = False
                     fps_state.clog_restore_direction = 1
                     self._cancel_post_load_pressure_check(fps_state)
+
+                    # Notify AFC that lane is unloaded to update virtual sensors (AMS_Extruder#)
+                    # This ensures virtual sensors show correct state when lane becomes empty
+                    if was_loaded and old_lane_name and AMSRunoutCoordinator is not None:
+                        try:
+                            AMSRunoutCoordinator.notify_lane_tool_state(
+                                self.printer,
+                                old_oams_name,
+                                old_lane_name,
+                                loaded=False,
+                                spool_index=old_spool_idx,
+                                eventtime=self.reactor.monotonic()
+                            )
+                            self.logger.debug("Notified AFC that %s unloaded during state detection (clears virtual sensor)", old_lane_name)
+                        except Exception:
+                            self.logger.error("Failed to notify AFC about %s unload during state detection", old_lane_name)
         
     def handle_ready(self) -> None:
         """Initialize system when printer is ready."""
@@ -3213,11 +3234,15 @@ class OAMSManager:
                 load_success, load_message = self._load_filament_for_lane(target_lane)
                 if load_success:
                     self.logger.info("Successfully loaded lane %s on %s%s", target_lane, fps_name, " after infinite runout" if target_lane_map else "")
-                    if target_lane_map and target_lane:
+
+                    # Always notify AFC that target lane is loaded to update virtual sensors
+                    # This ensures AMS_Extruder# sensors show correct state after same-FPS runouts
+                    if target_lane:
                         handled = False
                         if AMSRunoutCoordinator is not None:
                             try:
                                 handled = AMSRunoutCoordinator.notify_lane_tool_state(self.printer, fps_state.current_oams or active_oams, target_lane, loaded=True, spool_index=fps_state.current_spool_idx, eventtime=fps_state.since)
+                                self.logger.info("Notified AFC that lane %s is loaded (updates virtual sensor state)", target_lane)
                             except Exception:
                                 self.logger.error("Failed to notify AFC lane %s after infinite runout on %s", target_lane, fps_name)
                                 handled = False
