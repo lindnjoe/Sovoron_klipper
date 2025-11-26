@@ -3288,7 +3288,26 @@ class OAMSManager:
                                 self.logger.error("Failed to notify AFC lane %s after infinite runout on %s: %s", target_lane, fps_name, e)
                                 handled = False
                         else:
-                            self.logger.warning("AMSRunoutCoordinator not available, using SET_LANE_LOADED fallback for lane %s", target_lane)
+                            # AMSRunoutCoordinator not available - call AFC methods directly
+                            self.logger.info("AMSRunoutCoordinator not available, updating virtual sensor directly for lane %s", target_lane)
+                            try:
+                                afc = self._get_afc()
+                                if afc and hasattr(afc, 'lanes'):
+                                    lane_obj = afc.lanes.get(target_lane)
+                                    if lane_obj:
+                                        # Update virtual sensor using AFC's direct method
+                                        if hasattr(afc, '_mirror_lane_to_virtual_sensor'):
+                                            afc._mirror_lane_to_virtual_sensor(lane_obj, self.reactor.monotonic())
+                                            self.logger.info("Updated virtual sensor for lane %s via AFC._mirror_lane_to_virtual_sensor", target_lane)
+                                            handled = True
+                                        else:
+                                            self.logger.warning("AFC doesn't have _mirror_lane_to_virtual_sensor method")
+                                    else:
+                                        self.logger.warning("Lane object not found for %s in AFC", target_lane)
+                                else:
+                                    self.logger.warning("AFC not available or has no lanes attribute")
+                            except Exception as e:
+                                self.logger.error("Failed to update virtual sensor directly for lane %s: %s", target_lane, e)
 
                         if not handled:
                             try:
