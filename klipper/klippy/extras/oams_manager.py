@@ -215,6 +215,20 @@ class OAMSRunoutMonitor:
                             else:
                                 target_lane_name = getattr(current_lane_obj, 'runout_lane', None)
                                 logging.info("OAMS: Lane '%s' found, runout_lane attribute: %s", lane_name, target_lane_name or "None")
+
+                                # If no runout lane is configured, pause immediately without reload attempt
+                                if target_lane_name is None:
+                                    logging.info("OAMS: No runout_lane configured for %s - pausing without reload", lane_name)
+                                    self.state = OAMSRunoutState.PAUSED
+                                    self.runout_position = fps.extruder.last_position
+                                    fps_state.is_cross_extruder_runout = False
+
+                                    # Pause the printer immediately
+                                    gcode = self.printer.lookup_object('gcode')
+                                    gcode.run_script_from_command(f"PAUSE")
+                                    gcode.respond_info(f"Filament runout detected on {lane_name} with no reload lane configured")
+                                    return eventtime + MONITOR_ENCODER_PERIOD
+
                                 if target_lane_name:
                                     target_lane_obj = afc.lanes.get(target_lane_name)
                                     if not target_lane_obj:
