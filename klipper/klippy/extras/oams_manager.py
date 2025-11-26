@@ -572,6 +572,7 @@ class OAMSManager:
         self.follower_coast_start_pos: Dict[str, float] = {}  # oams_name -> extruder position when coast started
         self.follower_had_filament: Dict[str, bool] = {}  # oams_name -> previous state (had filament)
         self.follower_manual_override: Dict[str, bool] = {}  # oams_name -> manually commanded (skip auto control)
+        self.follower_last_state: Dict[str, Tuple[int, int]] = {}  # oams_name -> (enable, direction) to avoid redundant MCU commands
 
         self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
 
@@ -1051,6 +1052,8 @@ class OAMSManager:
                 try:
                     oams_obj.set_oams_follower(0, direction)
                     fps_state.following = False
+                    # Update state tracker to avoid redundant commands
+                    self.follower_last_state[fps_state.current_oams] = (0, direction)
                     # Keep manual override so it stays disabled (use OAMSM_FOLLOWER_RESET to return to automatic)
                     self.follower_manual_override[fps_state.current_oams] = True
                     self.logger.info("Disabled follower on %s (manual override - use OAMSM_FOLLOWER_RESET to return to automatic)", fps_name)
@@ -1075,6 +1078,8 @@ class OAMSManager:
             oams_obj.set_oams_follower(enable, direction)
             fps_state.following = bool(enable)
             fps_state.direction = direction
+            # Update state tracker to avoid redundant commands
+            self.follower_last_state[fps_state.current_oams] = (enable, direction)
             # Set manual override flag - follower stays enabled even if hub sensors are empty
             self.follower_manual_override[fps_state.current_oams] = True
             self.logger.info("OAMSM_FOLLOWER: successfully enabled follower on %s (manual override active)", fps_name)
@@ -2220,6 +2225,31 @@ class OAMSManager:
         fps_state.direction = 1
         self._enable_follower(fps_name, fps_state, oams, 1, context)
 
+    def _set_follower_if_changed(self, oams_name: str, oams: Any, enable: int, direction: int, context: str = "") -> None:
+        """
+        Send follower command only if state has changed to avoid overwhelming MCU with redundant commands.
+
+        Args:
+            oams_name: Name of the OAMS
+            oams: OAMS object
+            enable: 1 to enable, 0 to disable
+            direction: 0 for reverse, 1 for forward
+            context: Description for logging (optional)
+        """
+        last_state = self.follower_last_state.get(oams_name, None)
+        desired_state = (enable, direction)
+
+        # Only send command if state changed or this is the first command
+        if last_state != desired_state:
+            try:
+                oams.set_oams_follower(enable, direction)
+                self.follower_last_state[oams_name] = desired_state
+                if context:
+                    self.logger.debug("Follower %s for %s (%s)", "enabled" if enable else "disabled", oams_name, context)
+            except Exception:
+                self.logger.error("Failed to %s follower for %s%s", "enable" if enable else "disable",
+                                oams_name, f" ({context})" if context else "")
+
     def _update_follower_for_oams(self, oams_name: str, oams: Any) -> None:
         """
         Update follower state for an OAMS based on hub sensors with coast support.
@@ -2246,11 +2276,7 @@ class OAMSManager:
 
             if any_filament:
                 # At least one bay has filament - enable follower and clear coast state
-                try:
-                    oams.set_oams_follower(1, 1)  # 1 = enable, 1 = forward
-                    self.logger.debug("Follower enabled for %s (hub sensors: %s)", oams_name, hub_hes_values)
-                except Exception:
-                    self.logger.error("Failed to enable follower for %s", oams_name)
+                self._set_follower_if_changed(oams_name, oams, 1, 1, f"hub sensors: {hub_hes_values}")
 
                 # Clear coast state
                 if was_coasting:
@@ -2277,17 +2303,11 @@ class OAMSManager:
                         self.logger.info("Follower coast started for %s at position %.1f (all hub sensors empty, will coast %.1f mm)",
                                        oams_name, extruder_pos, self.follower_coast_distance)
                         # Keep follower enabled during coast
-                        try:
-                            oams.set_oams_follower(1, 1)
-                        except Exception:
-                            self.logger.error("Failed to keep follower enabled during coast for %s", oams_name)
+                        self._set_follower_if_changed(oams_name, oams, 1, 1, "starting coast")
                     else:
                         # Can't find extruder position, just disable immediately
                         self.logger.warning("Cannot determine extruder position for %s coast, disabling follower immediately", oams_name)
-                        try:
-                            oams.set_oams_follower(0, 1)
-                        except Exception:
-                            self.logger.error("Failed to disable follower for %s", oams_name)
+                        self._set_follower_if_changed(oams_name, oams, 0, 1, "no extruder position")
                         self.follower_had_filament[oams_name] = False
 
                 elif was_coasting:
@@ -2309,10 +2329,7 @@ class OAMSManager:
                             # Coast complete - disable follower
                             self.logger.info("Follower coast complete for %s (coasted %.1f mm), disabling follower",
                                            oams_name, coasted_distance)
-                            try:
-                                oams.set_oams_follower(0, 1)
-                            except Exception:
-                                self.logger.error("Failed to disable follower for %s after coast", oams_name)
+                            self._set_follower_if_changed(oams_name, oams, 0, 1, "coast complete")
                             self.follower_coasting[oams_name] = False
                             self.follower_coast_start_pos[oams_name] = 0.0
                             self.follower_had_filament[oams_name] = False
@@ -2320,23 +2337,13 @@ class OAMSManager:
                             # Still coasting - keep follower enabled
                             self.logger.debug("Follower coasting for %s: %.1f / %.1f mm",
                                             oams_name, coasted_distance, self.follower_coast_distance)
-                            try:
-                                oams.set_oams_follower(1, 1)
-                            except Exception:
-                                self.logger.error("Failed to keep follower enabled during coast for %s", oams_name)
+                            self._set_follower_if_changed(oams_name, oams, 1, 1, "still coasting")
                     else:
                         # Can't find position, just keep coasting
-                        try:
-                            oams.set_oams_follower(1, 1)
-                        except Exception:
-                            self.logger.error("Failed to keep follower enabled during coast for %s", oams_name)
+                        self._set_follower_if_changed(oams_name, oams, 1, 1, "coasting without position")
                 else:
                     # Was already empty and not coasting - keep disabled
-                    try:
-                        oams.set_oams_follower(0, 1)
-                        self.logger.debug("Follower disabled for %s (all hub sensors empty, not coasting)", oams_name)
-                    except Exception:
-                        self.logger.error("Failed to disable follower for %s", oams_name)
+                    self._set_follower_if_changed(oams_name, oams, 0, 1, "all hub sensors empty")
                     self.follower_had_filament[oams_name] = False
         except Exception:
             self.logger.error("Failed to update follower for %s", oams_name)
