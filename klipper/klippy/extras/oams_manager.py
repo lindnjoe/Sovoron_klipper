@@ -200,11 +200,23 @@ class OAMSRunoutMonitor:
                         target_lane_name = None
 
                         if afc and hasattr(afc, 'lanes'):
+                            # Log what lane we're looking for and what lanes exist
+                            available_lanes = list(afc.lanes.keys()) if afc.lanes else []
+                            logging.info("OAMS: Looking up lane '%s' in AFC, available lanes: %s", lane_name, available_lanes)
+
                             current_lane_obj = afc.lanes.get(lane_name)
-                            if current_lane_obj:
+                            if not current_lane_obj:
+                                logging.warning("OAMS: Lane '%s' not found in AFC lanes dictionary", lane_name)
+                            else:
                                 target_lane_name = getattr(current_lane_obj, 'runout_lane', None)
+                                logging.info("OAMS: Lane '%s' found, runout_lane attribute: %s", lane_name, target_lane_name or "None")
                                 if target_lane_name:
                                     target_lane_obj = afc.lanes.get(target_lane_name)
+                                    if not target_lane_obj:
+                                        logging.warning("OAMS: Target lane '%s' not found in AFC lanes dictionary", target_lane_name)
+                        else:
+                            logging.warning("OAMS: AFC object missing or has no 'lanes' attribute - afc: %s, has lanes: %s",
+                                          "found" if afc else "None", hasattr(afc, 'lanes') if afc else False)
 
                         # Check if target lane is on a different extruder
                         if current_lane_obj and target_lane_obj:
