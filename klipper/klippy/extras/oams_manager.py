@@ -3280,10 +3280,16 @@ class OAMSManager:
                         if AMSRunoutCoordinator is not None:
                             try:
                                 handled = AMSRunoutCoordinator.notify_lane_tool_state(self.printer, fps_state.current_oams or active_oams, target_lane, loaded=True, spool_index=fps_state.current_spool_idx, eventtime=fps_state.since)
-                                self.logger.info("Notified AFC that lane %s is loaded (updates virtual sensor state)", target_lane)
+                                if handled:
+                                    self.logger.info("Notified AFC that lane %s is loaded via AMSRunoutCoordinator (updates virtual sensor state)", target_lane)
+                                else:
+                                    self.logger.warning("AMSRunoutCoordinator.notify_lane_tool_state returned False for lane %s, trying fallback", target_lane)
                             except Exception as e:
                                 self.logger.error("Failed to notify AFC lane %s after infinite runout on %s: %s", target_lane, fps_name, e)
                                 handled = False
+                        else:
+                            self.logger.warning("AMSRunoutCoordinator not available, using SET_LANE_LOADED fallback for lane %s", target_lane)
+
                         if not handled:
                             try:
                                 gcode = self.printer.lookup_object("gcode")
