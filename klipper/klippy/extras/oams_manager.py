@@ -899,17 +899,8 @@ class OAMSManager:
             fps_state.afc_delegation_until = 0.0
             self._cancel_post_load_pressure_check(fps_state)
 
-            # Clear LED errors for all spools
-            if fps_state.current_oams and fps_state.current_spool_idx is not None:
-                oams = self.oams.get(fps_state.current_oams)
-                if oams:
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 0)
-                    except Exception:
-                        self.logger.error("Failed to clear LED error on %s spool %s",
-                                            fps_state.current_oams, fps_state.current_spool_idx)
-
-        # Clear OAMS hardware errors
+        # Clear OAMS hardware errors (this also clears all LED errors)
+        # Do this in a single pass to minimize MCU commands
         for oam in self.oams.values():
             try:
                 oam.clear_errors()
@@ -933,10 +924,15 @@ class OAMSManager:
         # Re-detect state from hardware sensors
         self.determine_state()
 
-        # Clear all manual follower overrides - return to automatic hub sensor control
+        # Clear all manual follower overrides and coast state - return to automatic hub sensor control
+        # Also clear last state tracking so follower state is refreshed from actual sensors
         for oams_name in self.oams.keys():
             self.follower_manual_override[oams_name] = False
-        self.logger.info("Cleared all manual follower overrides, returning to automatic control")
+            self.follower_last_state[oams_name] = None  # Force state refresh
+            self.follower_coasting[oams_name] = False
+            self.follower_coast_start_pos[oams_name] = 0.0
+            self.follower_had_filament[oams_name] = False
+        self.logger.info("Cleared all manual follower overrides, coast state, and state tracking - returning to automatic control")
 
         # After clearing errors and detecting state, ensure followers are enabled for any
         # lanes that have filament loaded to the hub (even if not loaded to toolhead)
