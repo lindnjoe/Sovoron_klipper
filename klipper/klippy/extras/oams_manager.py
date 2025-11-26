@@ -3237,6 +3237,29 @@ class OAMSManager:
                         if oams:
                             self._ensure_forward_follower(fps_name, fps_state, "after infinite runout reload")
 
+                    # Clear the source lane's state in AFC so it shows as EMPTY and can detect new filament
+                    # FPS state stays LOADED with the new target lane, but old lane needs to be cleared
+                    if source_lane_name:
+                        try:
+                            if AMSRunoutCoordinator is not None:
+                                # Notify AFC that source lane is now unloaded
+                                AMSRunoutCoordinator.notify_lane_tool_state(
+                                    self.printer,
+                                    fps_state.current_oams or active_oams,
+                                    source_lane_name,
+                                    loaded=False,
+                                    spool_index=None,
+                                    eventtime=self.reactor.monotonic()
+                                )
+                                self.logger.info("Cleared source lane %s state in AFC after successful reload to %s", source_lane_name, target_lane)
+                            else:
+                                # Fallback to gcode command if coordinator not available
+                                gcode = self.printer.lookup_object("gcode")
+                                gcode.run_script(f"SET_LANE_UNLOADED LANE={source_lane_name}")
+                                self.logger.info("Cleared source lane %s via SET_LANE_UNLOADED after reload to %s", source_lane_name, target_lane)
+                        except Exception:
+                            self.logger.error("Failed to clear source lane %s state after reload to %s", source_lane_name, target_lane)
+
                     fps_state.reset_runout_positions()
                     if monitor:
                         monitor.reset()
