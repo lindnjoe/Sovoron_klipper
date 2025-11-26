@@ -2226,6 +2226,7 @@ class OAMSManager:
             - Direction defaults to forward (1) if invalid value provided
             - Fails silently if no spool is loaded (current_spool_idx is None)
             - Logs exceptions but doesn't raise them to avoid disrupting workflow
+            - Uses state-tracked helper to avoid redundant MCU commands
         """
         if fps_state.current_spool_idx is None:
             return
@@ -2238,14 +2239,13 @@ class OAMSManager:
 
         direction = direction if direction in (0, 1) else 1
 
-        try:
-            oams.set_oams_follower(1, direction)
-            fps_state.following = True
-            fps_state.direction = direction
-            self.logger.info("Follower enabled for %s spool %s (%s)",
-                           fps_name, fps_state.current_spool_idx, context)
-        except Exception:
-            self.logger.error("Failed to enable follower for %s after %s", fps_name, context)
+        # Use state-tracked helper to avoid overwhelming MCU with redundant commands
+        self._set_follower_if_changed(fps_state.current_oams, oams, 1, direction, context)
+
+        # Update FPS state to reflect follower is now enabled
+        # Note: _set_follower_if_changed updates follower_last_state tracking
+        fps_state.following = True
+        fps_state.direction = direction
 
     def _ensure_forward_follower(self, fps_name: str, fps_state: "FPSState", context: str) -> None:
         """Ensure follower is enabled in forward direction after successful load."""
