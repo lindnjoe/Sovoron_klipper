@@ -3119,6 +3119,9 @@ class OAMSManager:
                         if not target_extruder_name:
                             raise Exception(f"Target lane {target_lane_name} has no extruder_name")
 
+                        # Get source extruder name for turning it off later
+                        source_extruder_name = getattr(source_lane, 'extruder_name', None) if source_lane else None
+
                         # Get current extruder temp to use for target
                         current_extruder = self.printer.lookup_object('toolhead').get_extruder()
                         target_temp = current_extruder.get_heater().target_temp
@@ -3161,14 +3164,17 @@ class OAMSManager:
                             gcode.run_script("RESUME")
 
                             # 12. Turn off the old extruder that ran out (now that we're on the new tool)
-                            try:
-                                self.logger.info("OAMS: Step 12 - Turning off old extruder %s", source_extruder_name)
-                                source_extruder_obj = self.printer.lookup_object(source_extruder_name)
-                                source_heater = source_extruder_obj.get_heater()
-                                source_heater.set_temp(0)
-                                self.logger.info("OAMS: Set %s heater target to 0", source_extruder_name)
-                            except Exception:
-                                self.logger.error("OAMS: Failed to turn off old extruder %s", source_extruder_name)
+                            if source_extruder_name:
+                                try:
+                                    self.logger.info("OAMS: Step 12 - Turning off old extruder %s", source_extruder_name)
+                                    source_extruder_obj = self.printer.lookup_object(source_extruder_name)
+                                    source_heater = source_extruder_obj.get_heater()
+                                    source_heater.set_temp(0)
+                                    self.logger.info("OAMS: Set %s heater target to 0", source_extruder_name)
+                                except Exception as e:
+                                    self.logger.error("OAMS: Failed to turn off old extruder %s: %s", source_extruder_name, e)
+                            else:
+                                self.logger.warning("OAMS: Cannot turn off old extruder - source_extruder_name not available")
                         else:
                             self.logger.error("OAMS: AFC error_state is set, skipping LANE_UNLOAD and RESUME")
 
