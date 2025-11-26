@@ -619,33 +619,36 @@ class OAMSManager:
             is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
             was_loaded = (fps_state.state == FPSLoadState.LOADED)
 
-            (
-                fps_state.current_lane,
-                current_oams,
-                fps_state.current_spool_idx,
-            ) = self.determine_current_loaded_lane(fps_name)
+            # Query what AFC thinks is loaded (don't assign yet!)
+            detected_lane, current_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
 
-            if current_oams is not None:
+            if current_oams is not None and detected_spool_idx is not None:
+                # Lane is detected as loaded - update state normally
+                fps_state.current_lane = detected_lane
                 fps_state.current_oams = current_oams.name
-            else:
-                fps_state.current_oams = None
-
-            if (fps_state.current_oams is not None and fps_state.current_spool_idx is not None):
+                fps_state.current_spool_idx = detected_spool_idx
                 fps_state.state = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
                 self._ensure_forward_follower(fps_name, fps_state, "state detection")
             else:
-                # If there's an active runout, keep FPS as LOADED even if AFC cleared lane_loaded
-                # This allows runout detection to proceed when F1S goes empty
-                # Only applies if this specific FPS was LOADED before (per-lane tracking)
+                # AFC says no lane loaded (lane_loaded = None)
+                # If there's an active runout, keep FPS as LOADED with existing lane info
+                # This allows runout detection to proceed when F1S goes empty and AFC clears lane_loaded
                 if is_runout_active and was_loaded:
                     self.logger.info("State detection: Keeping %s as LOADED during runout (state=%s, AFC lane_loaded cleared)",
                                    fps_name, monitor.state if monitor else "unknown")
-                    # Keep current_lane and current_spool_idx from before so runout detection can proceed
-                    # Don't transition to UNLOADED - let runout handling clear the state
+                    # CRITICAL: Don't overwrite current_lane and current_spool_idx!
+                    # Keep the existing values so runout detection can complete
+                    # Only update current_oams if it was detected (might be None during runout)
+                    if current_oams is not None:
+                        fps_state.current_oams = current_oams.name
                 else:
+                    # No active runout - transition to UNLOADED normally
+                    fps_state.current_lane = None
+                    fps_state.current_oams = None
+                    fps_state.current_spool_idx = None
                     fps_state.state = FPSLoadState.UNLOADED
                     fps_state.reset_stuck_spool_state()
                     fps_state.reset_clog_tracker()
@@ -2535,41 +2538,57 @@ class OAMSManager:
         # Skip check if already handling a stuck spool
         if fps_state.stuck_spool_active:
             return
-            
+
         encoder_diff = fps_state.record_encoder_sample(encoder_value)
         if encoder_diff is None:
             return
-        
+
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug("OAMS[%d] Unload Monitor: Encoder diff %d", getattr(oams, "oams_idx", -1), encoder_diff)
-        
+
         if encoder_diff < MIN_ENCODER_DIFF:
+            # Check if we're actively printing (only set stuck flag during prints)
+            is_printing = False
+            if self._idle_timeout_obj is not None:
+                try:
+                    is_printing = self._idle_timeout_obj.get_status(now)["state"] == "Printing"
+                except Exception:
+                    is_printing = False
+
             group_label = fps_state.current_lane or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
-            
+
             # Abort the current unload operation cleanly
             try:
                 oams.abort_current_action()
                 self.logger.info("Aborted stuck spool unload operation on %s", fps_name)
             except Exception:
                 self.logger.error("Failed to abort unload operation on %s", fps_name)
-            
+
             # Set LED error
             try:
                 oams.set_led_error(fps_state.current_spool_idx, 1)
             except Exception:
                 self.logger.error("Failed to set LED during unload stuck detection on %s", fps_name)
-            
-            # Transition to LOADED state cleanly (unload failed, so still loaded)
-            fps_state.state = FPSLoadState.LOADED
-            fps_state.clear_encoder_samples()
-            
-            # Set the stuck flag but DON'T pause - let the OAMS retry logic handle it
-            # The retry logic will clear this flag if the retry succeeds
-            fps_state.stuck_spool_active = True
-            fps_state.stuck_spool_start_time = None
-            
-            self.logger.info("Spool appears stuck while unloading %s spool %s - letting retry logic handle it", group_label, spool_label)
+
+            # Only set stuck flag and transition to LOADED during active prints
+            # For manual unloads (standby), let OAMS retry logic handle it without setting stuck flag
+            if is_printing:
+                # Transition to LOADED state cleanly (unload failed during print, so still loaded)
+                fps_state.state = FPSLoadState.LOADED
+                fps_state.clear_encoder_samples()
+
+                # Set the stuck flag but DON'T pause - let the OAMS retry logic handle it
+                # The retry logic will clear this flag if the retry succeeds
+                fps_state.stuck_spool_active = True
+                fps_state.stuck_spool_start_time = None
+
+                self.logger.info("Spool appears stuck while unloading %s spool %s - letting retry logic handle it", group_label, spool_label)
+            else:
+                # During standby unload, don't set stuck flag - just let OAMS retry
+                # State stays UNLOADING so retry logic can continue
+                fps_state.clear_encoder_samples()
+                self.logger.info("Spool unload slow/stuck on %s spool %s (standby) - OAMS retry will handle it", group_label, spool_label)
 
     def _check_load_speed(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
         """Check load speed using optimized encoder tracking and FPS pressure monitoring."""
