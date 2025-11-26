@@ -2139,72 +2139,47 @@ class OAMSManager:
         fps_state.direction = 1
         self._enable_follower(fps_name, fps_state, oams, 1, context)
 
+    def _update_follower_for_oams(self, oams_name: str, oams: Any) -> None:
+        """
+        Update follower state for an OAMS based on hub sensors.
+
+        SIMPLE RULE: Follower enabled if ANY hub sensor shows filament, disabled if ALL empty.
+        The follower is a motor in the hub that must run for filament to move through ANY lane.
+        No conditions, no error state checks - just hub sensors.
+        """
+        try:
+            hub_hes_values = getattr(oams, "hub_hes_value", None)
+            if hub_hes_values is None:
+                return
+
+            # Check if ANY hub sensor shows filament
+            any_filament = any(hub_hes_values)
+
+            if any_filament:
+                # At least one bay has filament - enable follower in forward direction
+                try:
+                    oams.set_oams_follower(1, 1)  # 1 = enable, 1 = forward
+                    self.logger.debug("Follower enabled for %s (hub sensors: %s)", oams_name, hub_hes_values)
+                except Exception:
+                    self.logger.error("Failed to enable follower for %s", oams_name)
+            else:
+                # All bays empty - disable follower
+                try:
+                    oams.set_oams_follower(0, 1)  # 0 = disable
+                    self.logger.debug("Follower disabled for %s (all hub sensors empty)", oams_name)
+                except Exception:
+                    self.logger.error("Failed to disable follower for %s", oams_name)
+        except Exception:
+            self.logger.error("Failed to update follower for %s", oams_name)
+
     def _ensure_followers_for_loaded_hubs(self) -> None:
         """
-        Ensure followers are enabled for any bays that have filament loaded to the hub.
-        This is called after OAMSM_CLEAR_ERRORS to re-enable followers for manual operations.
-
-        Follower should be enabled if:
-        - Hub sensor shows filament present
-        - Not in an active error state (stuck_spool_active or clog_active)
-        - Not in infinite runout COASTING state
-        - Not currently loading/unloading
-
-        This enables followers even when not printing to maintain FPS pressure near 0.5
-        for manual operations and troubleshooting.
+        Ensure followers are enabled for any OAMS that has filament in the hub.
+        Called after OAMSM_CLEAR_ERRORS and other state changes.
+        Simple: just check hub sensors and enable/disable accordingly.
         """
         for oams_name, oams in self.oams.items():
-            try:
-                # Get hub sensor values for this OAMS
-                hub_hes_values = getattr(oams, "hub_hes_value", None)
-                if hub_hes_values is None:
-                    continue
-
-                # Check each bay (0-3 for 4-bay AMS)
-                for bay_idx in range(len(hub_hes_values)):
-                    # Check if hub sensor shows filament loaded
-                    if not hub_hes_values[bay_idx]:
-                        continue  # No filament in this bay
-
-                    # Find the FPS that corresponds to this OAMS bay
-                    # Each OAMS bay maps to a specific FPS
-                    fps_name = self._find_fps_for_oams_bay(oams_name, bay_idx)
-                    if fps_name is None:
-                        continue
-
-                    fps_state = self.current_state.fps_state.get(fps_name)
-                    if fps_state is None:
-                        continue
-
-                    # Check if runout monitor is in COASTING state (infinite runout in progress)
-                    monitor = self.runout_monitors.get(fps_name)
-                    if monitor is not None and monitor.state == OAMSRunoutState.COASTING:
-                        self.logger.debug("Skipping follower enable for %s - in infinite runout coast", fps_name)
-                        continue
-
-                    # Don't enable follower if in active error state requiring it to be disabled
-                    # (stuck_spool_active and clog_active should already be cleared by clear_errors)
-                    if fps_state.stuck_spool_active or fps_state.clog_active:
-                        self.logger.debug("Skipping follower enable for %s - error state active", fps_name)
-                        continue
-
-                    # Don't enable if currently loading/unloading
-                    if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
-                        self.logger.debug("Skipping follower enable for %s - loading/unloading", fps_name)
-                        continue
-
-                    # Enable follower if not already enabled in forward direction
-                    # This maintains FPS pressure near 0.5 even when not printing
-                    if not fps_state.following or fps_state.direction != 1:
-                        self.logger.info("Re-enabling follower for %s bay %d after clearing errors (hub sensor shows loaded)",
-                                       oams_name, bay_idx)
-                        fps_state.current_oams = oams_name
-                        fps_state.current_spool_idx = bay_idx
-                        fps_state.direction = 1
-                        self._enable_follower(fps_name, fps_state, oams, 1, "clear errors - hub loaded")
-
-            except Exception:
-                self.logger.error("Failed to enable follower for %s during error clear", oams_name)
+            self._update_follower_for_oams(oams_name, oams)
 
     def _find_fps_for_oams_bay(self, oams_name: str, bay_idx: int) -> Optional[str]:
         """Find the FPS name that corresponds to a specific OAMS bay."""
@@ -2339,44 +2314,32 @@ class OAMSManager:
         
         for fps_name, fps_state in self.current_state.fps_state.items():
             oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
-            
-            # Clear stuck_spool_active on resume to allow follower to restart
+
+            # Clear stuck_spool_active on resume
             if fps_state.stuck_spool_active:
-                fps_state.reset_stuck_spool_state(preserve_restore=True)
+                fps_state.reset_stuck_spool_state()
                 self.logger.info("Cleared stuck spool state for %s on print resume", fps_name)
-            
-            # Clear clog_active on resume and reset tracker (preserve restore flags for follower)
+                # Clear the error LED
+                if oams is not None and fps_state.current_spool_idx is not None:
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 0)
+                    except Exception:
+                        self.logger.error("Failed to clear stuck spool LED on %s after resume", fps_name)
+
+            # Clear clog_active on resume
             if fps_state.clog_active:
-                fps_state.reset_clog_tracker(preserve_restore=True)
+                fps_state.reset_clog_tracker()
                 self.logger.info("Cleared clog state for %s on print resume", fps_name)
-                # Clear the error LED if we have an OAMS and spool index
+                # Clear the error LED
                 if oams is not None and fps_state.current_spool_idx is not None:
                     try:
                         oams.set_led_error(fps_state.current_spool_idx, 0)
                     except Exception:
                         self.logger.error("Failed to clear clog LED on %s after resume", fps_name)
-                # Ensure follower is enabled after clog is cleared
-                # Since we never disable the follower during clog detection, it should already be running
-                # But explicitly ensure it here in case something else disabled it
-                if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
-                    self._ensure_forward_follower(fps_name, fps_state, "clog cleared on resume")
 
-            if fps_state.clog_restore_follower:
-                self._enable_follower(
-                    fps_name,
-                    fps_state,
-                    oams,
-                    fps_state.clog_restore_direction,
-                    "print resume",
-                )
-                if fps_state.following:
-                    fps_state.clog_restore_follower = False
-                    fps_state.clog_restore_direction = 1
-            
-            if fps_state.stuck_spool_restore_follower:
-                self._restore_follower_if_needed(fps_name, fps_state, oams, "print resume")
-            elif (fps_state.current_oams is not None and fps_state.current_spool_idx is not None and not fps_state.following):
-                self._ensure_forward_follower(fps_name, fps_state, "print resume")
+        # Update all followers based on hub sensors
+        # Simple: if hub has filament, enable follower; if all empty, disable
+        self._ensure_followers_for_loaded_hubs()
 
     def _trigger_stuck_spool_pause(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], message: str) -> None:
         if fps_state.stuck_spool_active:
@@ -2386,36 +2349,25 @@ class OAMSManager:
         if oams is None and fps_state.current_oams is not None:
             oams = self.oams.get(fps_state.current_oams)
 
+        # Set LED to red to indicate error
         if oams is not None and spool_idx is not None:
             try:
                 oams.set_led_error(spool_idx, 1)
             except Exception:
                 self.logger.error("Failed to set stuck spool LED on %s spool %s", fps_name, spool_idx)
 
-            direction = fps_state.direction if fps_state.direction in (0, 1) else 1
-            fps_state.direction = direction
-            fps_state.stuck_spool_restore_follower = True
-            fps_state.stuck_spool_restore_direction = direction
-            if fps_state.following:
-                try:
-                    oams.set_oams_follower(0, direction)
-                except Exception:
-                    self.logger.error("Failed to stop follower for %s spool %s during stuck spool pause", fps_name, spool_idx)
-
-            fps_state.following = False
-
+        # Abort current action (unload/load)
         if oams is not None:
             try:
                 oams.abort_current_action()
             except Exception:
                 self.logger.error("Failed to abort active action for %s during stuck spool pause", fps_name)
 
+        # Set stuck spool flag and pause
+        # Don't touch follower - it will be managed by _update_follower_for_oams based on hub sensors
         fps_state.stuck_spool_active = True
         fps_state.stuck_spool_start_time = None
         self._pause_printer_message(message, fps_state.current_oams)
-
-        # Immediately re-enable follower so user can manually fix filament with follower tracking
-        self._restore_follower_if_needed(fps_name, fps_state, oams, "stuck spool pause")
 
     def _unified_monitor_for_fps(self, fps_name):
         """Consolidated monitor handling all FPS checks in a single timer (OPTIMIZED)."""
@@ -2513,19 +2465,10 @@ class OAMSManager:
                         self._check_clog(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
 
                     state_changed = True
-                else:
-                    # When idle, auto-enable follower if hub sensor shows filament and no error state
-                    # Follower should always be enabled if hub has filament (maintains FPS pressure)
-                    if (oams and fps_state.current_spool_idx is not None and
-                        not fps_state.stuck_spool_active and not fps_state.clog_active):
-                        try:
-                            if (fps_state.current_spool_idx < len(hes_values) and
-                                hes_values[fps_state.current_spool_idx] and
-                                (not fps_state.following or fps_state.direction != 1)):
-                                self._ensure_forward_follower(fps_name, fps_state, "auto-enable idle (hub loaded)")
-                                state_changed = True
-                        except Exception:
-                            pass
+            # Update follower based on hub sensors (simple: ANY filament = enabled, ALL empty = disabled)
+            # This runs every monitor cycle to keep follower in sync with actual hub state
+            if oams and fps_state.current_oams:
+                self._update_follower_for_oams(fps_state.current_oams, oams)
 
             # OPTIMIZATION: Adaptive polling interval with exponential backoff
             if state_changed or is_printing:
