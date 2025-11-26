@@ -187,8 +187,8 @@ class OAMSRunoutMonitor:
                     if spool_idx < 0 or spool_idx >= len(f1s_values):
                         return eventtime + MONITOR_ENCODER_PERIOD
                     spool_empty = not bool(f1s_values[spool_idx])
-                except Exception:
-                    logging.exception("OAMS: Failed to read F1S values for runout detection on %s", self.fps_name)
+                except Exception as e:
+                    logging.error("OAMS: Failed to read F1S values for runout detection on %s: %s", self.fps_name, e)
                     return eventtime + MONITOR_ENCODER_PERIOD
 
                 self.latest_lane_name = lane_name
@@ -266,8 +266,8 @@ class OAMSRunoutMonitor:
                             self.is_cross_extruder_runout = False
                             logging.warning("OAMS: Cannot determine runout type (missing lane objects) - current_lane_obj: %s, target_lane_obj: %s, defaulting to same-extruder",
                                           "found" if current_lane_obj else "None", "found" if target_lane_obj else "None")
-                    except Exception:
-                        logging.exception("OAMS: Failed to determine cross-extruder runout status, defaulting to same-FPS")
+                    except Exception as e:
+                        logging.error("OAMS: Failed to determine cross-extruder runout status, defaulting to same-FPS: %s", e)
                         self.is_cross_extruder_runout = False
 
                     # Both cross-extruder and same-extruder runouts start in DETECTED state
@@ -288,8 +288,8 @@ class OAMSRunoutMonitor:
                                 if lane_obj:
                                     lane_obj._oams_cross_extruder_runout = True
                                     logging.info("OAMS: Set cross-extruder runout flag on lane %s to bypass shared load/prep validation", lane_name)
-                        except Exception:
-                            logging.exception("OAMS: Failed to set cross-extruder runout flag on lane %s", lane_name)
+                        except Exception as e:
+                            logging.error("OAMS: Failed to set cross-extruder runout flag on lane %s: %s", lane_name, e)
 
                     if self.is_cross_extruder_runout:
                         logging.info("OAMS: Cross-extruder runout detected on FPS %s (F1S empty, target on different extruder) - will trigger immediate tool change",
@@ -344,8 +344,8 @@ class OAMSRunoutMonitor:
                         gcode = self.printer.lookup_object("gcode")
                         gcode.run_script(f"M118 OAMS COASTING timeout on {self.fps_name}")
                         gcode.run_script("PAUSE")
-                    except Exception:
-                        logging.exception("Failed to pause printer after COASTING timeout")
+                    except Exception as e:
+                        logging.error("Failed to pause printer after COASTING timeout: %s", e)
                     return eventtime + MONITOR_ENCODER_PERIOD
 
                 # Check hub sensor for current spool
@@ -362,8 +362,8 @@ class OAMSRunoutMonitor:
                             self.hub_clear_position = fps.extruder.last_position
                             logging.info("OAMS: Hub sensor cleared at position %.1f, starting shared PTFE countdown",
                                        self.hub_clear_position)
-                except Exception:
-                    logging.exception("OAMS: Failed to read hub sensor during COASTING on %s", self.fps_name)
+                except Exception as e:
+                    logging.error("OAMS: Failed to read hub sensor during COASTING on %s: %s", self.fps_name, e)
                     # If we can't read hub sensor, assume it's cleared and proceed
                     if not self.hub_cleared:
                         self.hub_cleared = True
@@ -379,8 +379,8 @@ class OAMSRunoutMonitor:
 
                 try:
                     path_length = getattr(self.oams[fps_state.current_oams], "filament_path_length", 0.0)
-                except Exception:
-                    logging.exception("OAMS: Failed to read filament path length while coasting on %s", self.fps_name)
+                except Exception as e:
+                    logging.error("OAMS: Failed to read filament path length while coasting on %s: %s", self.fps_name, e)
                     return eventtime + MONITOR_ENCODER_PERIOD
 
                 effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
@@ -3159,6 +3159,16 @@ class OAMSManager:
                             self.logger.info("OAMS: Step 11 - Restoring position and resuming")
                             afc.restore_pos()
                             gcode.run_script("RESUME")
+
+                            # 12. Turn off the old extruder that ran out (now that we're on the new tool)
+                            try:
+                                self.logger.info("OAMS: Step 12 - Turning off old extruder %s", source_extruder_name)
+                                source_extruder_obj = self.printer.lookup_object(source_extruder_name)
+                                source_heater = source_extruder_obj.get_heater()
+                                source_heater.set_temp(0)
+                                self.logger.info("OAMS: Set %s heater target to 0", source_extruder_name)
+                            except Exception:
+                                self.logger.error("OAMS: Failed to turn off old extruder %s", source_extruder_name)
                         else:
                             self.logger.error("OAMS: AFC error_state is set, skipping LANE_UNLOAD and RESUME")
 
@@ -3169,8 +3179,8 @@ class OAMSManager:
                                 if source_lane_obj and hasattr(source_lane_obj, '_oams_cross_extruder_runout'):
                                     source_lane_obj._oams_cross_extruder_runout = False
                                     self.logger.info("OAMS: Cleared cross-extruder runout flag on lane %s", source_lane_name)
-                            except Exception:
-                                self.logger.exception("OAMS: Failed to clear cross-extruder runout flag on lane %s", source_lane_name)
+                            except Exception as e:
+                                self.logger.error("OAMS: Failed to clear cross-extruder runout flag on lane %s: %s", source_lane_name, e)
 
                         # Reset state and restart monitoring
                         fps_state.reset_runout_positions()
@@ -3182,7 +3192,7 @@ class OAMSManager:
                         return
 
                     except Exception as e:
-                        self.logger.exception("OAMS: Failed to execute cross-extruder runout sequence - Exception: %s", str(e))
+                        self.logger.error("OAMS: Failed to execute cross-extruder runout sequence - Exception: %s", str(e))
 
                         # Clear cross-extruder flag on error too
                         if source_lane_name:
