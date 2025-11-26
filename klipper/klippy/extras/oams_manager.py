@@ -588,6 +588,10 @@ class OAMSManager:
         self.follower_manual_override: Dict[str, bool] = {}  # oams_name -> manually commanded (skip auto control)
         self.follower_last_state: Dict[str, Tuple[int, int]] = {}  # oams_name -> (enable, direction) to avoid redundant MCU commands
 
+        # LED state tracking: avoid sending redundant LED commands to MCU
+        # Key format: "oams_name:spool_idx" -> error_state (0 or 1)
+        self.led_error_state: Dict[str, int] = {}  # Track last commanded LED state to avoid redundant MCU commands
+
         self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
 
         sensitivity = config.get("clog_sensitivity", CLOG_SENSITIVITY_DEFAULT).lower()
@@ -953,7 +957,11 @@ class OAMSManager:
             self.follower_coasting[oams_name] = False
             self.follower_coast_start_pos[oams_name] = 0.0
             self.follower_had_filament[oams_name] = False
-        self.logger.info("Cleared all manual follower overrides, coast state, and state tracking - returning to automatic control")
+
+        # Clear LED state tracking so LEDs are refreshed from actual state
+        self.led_error_state.clear()
+
+        self.logger.info("Cleared all manual follower overrides, coast state, LED state, and state tracking - returning to automatic control")
 
         # After clearing errors and detecting state, ensure followers are enabled for any
         # lanes that have filament loaded to the hub (even if not loaded to toolhead)
@@ -2256,6 +2264,31 @@ class OAMSManager:
         fps_state.direction = 1
         self._enable_follower(fps_name, fps_state, oams, 1, context)
 
+    def _set_led_error_if_changed(self, oams: Any, oams_name: str, spool_idx: int, error_state: int, context: str = "") -> None:
+        """
+        Send LED error command only if state has changed to avoid overwhelming MCU with redundant commands.
+
+        Args:
+            oams: OAMS object
+            oams_name: Name of the OAMS
+            spool_idx: Spool index (0-based)
+            error_state: 0 to clear, 1 to set error
+            context: Description for logging (optional)
+        """
+        led_key = f"{oams_name}:{spool_idx}"
+        last_state = self.led_error_state.get(led_key, None)
+
+        # Only send command if state changed or this is the first command
+        if last_state != error_state:
+            try:
+                oams.set_led_error(spool_idx, error_state)
+                self.led_error_state[led_key] = error_state
+                if context and self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug("LED error %s for %s spool %d (%s)", "set" if error_state else "cleared", oams_name, spool_idx, context)
+            except Exception:
+                self.logger.error("Failed to %s LED error for %s spool %d%s", "set" if error_state else "clear",
+                                oams_name, spool_idx, f" ({context})" if context else "")
+
     def _set_follower_if_changed(self, oams_name: str, oams: Any, enable: int, direction: int, context: str = "") -> None:
         """
         Send follower command only if state has changed to avoid overwhelming MCU with redundant commands.
@@ -2824,19 +2857,13 @@ class OAMSManager:
         monitor = self.runout_monitors.get(fps_name)
         if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
             if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
-                try:
-                    oams.set_led_error(fps_state.current_spool_idx, 0)
-                except Exception:
-                    self.logger.error("Failed to clear stuck spool LED while runout monitor inactive on %s", fps_name)
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "runout monitor inactive")
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
             return
 
         if not is_printing:
             if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
-                try:
-                    oams.set_led_error(fps_state.current_spool_idx, 0)
-                except Exception:
-                    self.logger.error("Failed to clear stuck spool LED while idle on %s", fps_name)
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer idle")
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
             return
 
@@ -2845,10 +2872,7 @@ class OAMSManager:
             # Clear stuck spool flag during grace period after successful load
             if fps_state.stuck_spool_active:
                 if oams is not None and fps_state.current_spool_idx is not None:
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 0)
-                    except Exception:
-                        self.logger.error("Failed to clear stuck spool LED during grace period on %s", fps_name)
+                    self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "grace period")
                 fps_state.reset_stuck_spool_state(preserve_restore=True)
             return
 
@@ -2874,10 +2898,7 @@ class OAMSManager:
         elif pressure >= self.stuck_spool_pressure_clear_threshold:
             # Pressure is definitively high - clear stuck spool state
             if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
-                try:
-                    oams.set_led_error(fps_state.current_spool_idx, 0)
-                except Exception:
-                    self.logger.error("Failed to clear stuck spool LED on %s spool %d", fps_name, fps_state.current_spool_idx)
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "pressure restored")
 
                 # Clear the stuck_spool_active flag BEFORE trying to restore follower
                 fps_state.reset_stuck_spool_state(preserve_restore=True)
@@ -2907,19 +2928,13 @@ class OAMSManager:
         monitor = self.runout_monitors.get(fps_name)
         if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
             if fps_state.clog_active and oams is not None and fps_state.current_spool_idx is not None:
-                try:
-                    oams.set_led_error(fps_state.current_spool_idx, 0)
-                except Exception:
-                    self.logger.error("Failed to clear clog LED on %s while runout monitor inactive", fps_name)
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "runout monitor inactive")
             fps_state.reset_clog_tracker()
             return
 
         if not is_printing:
             if fps_state.clog_active and oams is not None and fps_state.current_spool_idx is not None:
-                try:
-                    oams.set_led_error(fps_state.current_spool_idx, 0)
-                except Exception:
-                    self.logger.error("Failed to clear clog LED on %s while printer idle", fps_name)
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer idle")
             fps_state.reset_clog_tracker()
             return
 
@@ -2973,10 +2988,7 @@ class OAMSManager:
 
                 # Clear LED error
                 if oams is not None and fps_state.current_spool_idx is not None:
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 0)
-                    except Exception:
-                        self.logger.error("Failed to clear clog LED on %s after auto-recovery", fps_name)
+                    self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "clog auto-recovery")
 
                 # Clear clog state but preserve restore flags
                 fps_state.reset_clog_tracker(preserve_restore=True)
@@ -2996,10 +3008,7 @@ class OAMSManager:
 
         if not fps_state.clog_active:
             if oams is not None and fps_state.current_spool_idx is not None:
-                try:
-                    oams.set_led_error(fps_state.current_spool_idx, 1)
-                except Exception:
-                    self.logger.error("Failed to set clog LED on %s spool %s", fps_name, fps_state.current_spool_idx)
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 1, "clog detected")
 
             # Don't disable follower during clog detection - keep it running
             # User can still manually manipulate filament if needed while paused
