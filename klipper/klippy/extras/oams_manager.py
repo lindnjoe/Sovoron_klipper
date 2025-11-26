@@ -2754,11 +2754,15 @@ class OAMSManager:
             except Exception:
                 self.logger.error("Failed to abort unload operation on %s", fps_name)
 
-            # Set LED error
-            try:
-                oams.set_led_error(fps_state.current_spool_idx, 1)
-            except Exception:
-                self.logger.error("Failed to set LED during unload stuck detection on %s", fps_name)
+            # Set LED error using state-tracked helper
+            if fps_state.current_spool_idx is not None:
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 1, "unload stuck detected")
+
+            # CRITICAL: Keep follower enabled even during stuck unload
+            # User needs follower running to manually fix issues or re-attempt unload
+            # Follower doesn't interfere with stuck detection (encoder based)
+            if fps_state.current_oams:
+                self._ensure_forward_follower(fps_name, fps_state, "stuck unload - keep follower active")
 
             # Only set stuck flag and transition to LOADED during active prints
             # For manual unloads (standby), let OAMS retry logic handle it without setting stuck flag
@@ -2826,11 +2830,9 @@ class OAMSManager:
             except Exception:
                 self.logger.error("Failed to abort load operation on %s", fps_name)
 
-            # Set LED error
-            try:
-                oams.set_led_error(fps_state.current_spool_idx, 1)
-            except Exception:
-                self.logger.error("Failed to set LED during load stuck detection on %s", fps_name)
+            # Set LED error using state-tracked helper
+            if fps_state.current_spool_idx is not None:
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 1, "load stuck detected")
 
             # Transition to UNLOADED state cleanly
             fps_state.state = FPSLoadState.UNLOADED
@@ -2840,6 +2842,12 @@ class OAMSManager:
             # The retry logic will clear this flag if the retry succeeds
             fps_state.stuck_spool_active = True
             fps_state.stuck_spool_start_time = None
+
+            # CRITICAL: Keep follower enabled even during stuck load
+            # User needs follower running to manually fix clogs or re-attempt load
+            # Follower doesn't interfere with stuck detection (encoder + FPS based)
+            if fps_state.current_oams:
+                self._ensure_forward_follower(fps_name, fps_state, "stuck load - keep follower active")
 
             self.logger.info("Spool appears stuck while loading %s spool %s (%s) - letting retry logic handle it",
                            group_label, spool_label, stuck_reason)
