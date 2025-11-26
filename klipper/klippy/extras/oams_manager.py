@@ -197,6 +197,7 @@ class OAMSRunoutMonitor:
                         afc = self.printer.lookup_object('AFC')
                         current_lane_obj = None
                         target_lane_obj = None
+                        target_lane_name = None
 
                         if afc and hasattr(afc, 'lanes'):
                             current_lane_obj = afc.lanes.get(lane_name)
@@ -210,6 +211,9 @@ class OAMSRunoutMonitor:
                             current_extruder = getattr(current_lane_obj, 'extruder_name', None)
                             target_extruder = getattr(target_lane_obj, 'extruder_name', None)
 
+                            logging.info("OAMS: Runout detection - current lane: %s (extruder: %s), target lane: %s (extruder: %s)",
+                                       lane_name, current_extruder or "None", target_lane_name or "unknown", target_extruder or "None")
+
                             # Cross-extruder if target is on different extruder
                             # Hub sensor state doesn't matter - by the time we detect the runout,
                             # the hub may have already cleared (F1S goes empty, then hub clears shortly after)
@@ -220,9 +224,17 @@ class OAMSRunoutMonitor:
                             else:
                                 # Same extruder = same-FPS runout (even if hub has filament from other lanes)
                                 self.is_cross_extruder_runout = False
+                                if current_extruder == target_extruder:
+                                    logging.info("OAMS: Detected same-extruder runout: %s -> %s (both on extruder %s)",
+                                               lane_name, target_lane_name, current_extruder)
+                                else:
+                                    logging.warning("OAMS: Defaulting to same-extruder runout (missing extruder info): %s (extruder: %s) -> %s (extruder: %s)",
+                                                  lane_name, current_extruder or "None", target_lane_name or "unknown", target_extruder or "None")
                         else:
                             # Fallback: if we can't determine target, assume same-FPS
                             self.is_cross_extruder_runout = False
+                            logging.warning("OAMS: Cannot determine runout type (missing lane objects) - current_lane_obj: %s, target_lane_obj: %s, defaulting to same-extruder",
+                                          "found" if current_lane_obj else "None", "found" if target_lane_obj else "None")
                     except Exception:
                         logging.exception("OAMS: Failed to determine cross-extruder runout status, defaulting to same-FPS")
                         self.is_cross_extruder_runout = False
