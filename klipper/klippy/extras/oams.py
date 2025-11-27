@@ -12,7 +12,7 @@ from math import pi
 from typing import Tuple, List, Optional, Any, Dict
 
 try:  # pragma: no cover - optional dependency during unit tests
-    from extras.ams_integration import AMSHardwareService
+    from extras.openams_integration import AMSHardwareService
 except Exception:  # pragma: no cover - best-effort integration only
     AMSHardwareService = None
 
