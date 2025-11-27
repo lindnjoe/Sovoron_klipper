@@ -143,6 +143,21 @@ class _VirtualFilamentSensor:
     def get_status(self, eventtime):
         return self.runout_helper.get_status(eventtime)
 
+    def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
+        helper = getattr(self, "runout_helper", None)
+        filament_present = bool(getattr(helper, "filament_present", False)) if helper is not None else False
+        if filament_present:
+            msg = f"Filament Sensor {self.name}: filament detected"
+        else:
+            msg = f"Filament Sensor {self.name}: filament not detected"
+        gcmd.respond_info(msg)
+
+    def cmd_SET_FILAMENT_SENSOR(self, gcmd):
+        helper = getattr(self, "runout_helper", None)
+        enable = bool(gcmd.get_int("ENABLE", 1))
+        if helper is not None:
+            helper.sensor_enabled = enable
+
 def _normalize_ams_pin_value(pin_value) -> Optional[str]:
     """Return the cleaned AMS_* token stripped of comments and modifiers."""
     if not isinstance(pin_value, str):
