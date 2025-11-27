@@ -30,7 +30,7 @@ from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 try:
-    from extras.openams_integration import AMSRunoutCoordinator
+    from extras.ams_integration import AMSRunoutCoordinator
 except Exception:
     AMSRunoutCoordinator = None
 
@@ -1727,12 +1727,21 @@ class OAMSManager:
 
         self.logger.info("Cleared FPS state for %s (was lane %s, spool %s)", fps_name, lane_name, spool_index)
 
-        # Notify AFC that lane is unloaded from toolhead
-        # This triggers AFC's _apply_lane_sensor_state() which:
-        # - Handles shared prep/load lanes properly via _update_shared_lane()
-        # - Updates virtual sensor via _mirror_lane_to_virtual_sensor()
-        # - Calls lane.unit_obj.lane_unloaded() for proper cleanup
-        if AMSRunoutCoordinator is not None and oams_name and lane_name:
+        # Notify AFC that lane is unloaded from toolhead unless the lane uses AMS
+        # shared load/prep sensors. Those lanes should keep AFC's native
+        # "Filament detected, but not loaded" presentation instead of forcing an
+        # empty state.
+        should_notify = True
+        if lane_name:
+            try:
+                afc = self._get_afc()
+                lane_obj = afc.lanes.get(lane_name) if afc is not None else None
+                if lane_obj is not None and getattr(lane_obj, "ams_share_prep_load", False):
+                    should_notify = False
+            except Exception:
+                should_notify = True
+
+        if should_notify and AMSRunoutCoordinator is not None and oams_name and lane_name:
             try:
                 AMSRunoutCoordinator.notify_lane_tool_state(
                     self.printer,
