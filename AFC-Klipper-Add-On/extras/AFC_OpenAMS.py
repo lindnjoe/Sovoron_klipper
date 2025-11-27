@@ -142,18 +142,6 @@ class _VirtualFilamentSensor:
 
     def get_status(self, eventtime):
         return self.runout_helper.get_status(eventtime)
-    if not name or not isinstance(name, str):
-        return None
-
-    normalized = name.strip()
-    if not normalized:
-        return None
-
-    lowered = normalized.lower()
-    if lowered.startswith("ams_"):
-        lowered = lowered[4:]
-
-    return lowered or None
 
 def _normalize_ams_pin_value(pin_value) -> Optional[str]:
     """Return the cleaned AMS_* token stripped of comments and modifiers."""
