@@ -30,7 +30,7 @@ from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 try:
-    from extras.ams_integration import AMSRunoutCoordinator
+    from extras.openams_integration import AMSRunoutCoordinator
 except Exception:
     AMSRunoutCoordinator = None
 
