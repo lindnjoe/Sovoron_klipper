@@ -758,7 +758,7 @@ class AFCLane:
         self.prep_active = False
         self.afc.save_vars()
 
-    def handle_prep_runout(self, eventtime, prep_state):
+    def handle_prep_runout(self, eventtime=None, prep_state=None, is_filament_present=None):
         """
         Callback function for prep switch runout, this is different than `prep_callback`
         function as this function can be delayed and is called from filament_switch_sensor class when it detects a runout event.
@@ -769,10 +769,15 @@ class AFCLane:
 
         :param eventtime: Event time from the button press
         """
+        # Normalize inputs so we can be invoked with or without explicit eventtime
+        eventtime = self.reactor.monotonic() if eventtime is None else eventtime
+        if prep_state is None:
+            prep_state = is_filament_present
+
         # Call filament sensor callback so that state is registered
         try:
             self.prep_debounce_button._old_note_filament_present(is_filament_present=prep_state)
-        except:
+        except Exception:
             self.prep_debounce_button._old_note_filament_present(eventtime, prep_state)
 
         if self.printer.state_message == 'Printer is ready' and True == self._afc_prep_done and self.status != AFCLaneState.TOOL_UNLOADING:

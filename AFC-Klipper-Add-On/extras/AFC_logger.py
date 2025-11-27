@@ -14,6 +14,7 @@ from types import CodeType
 from queuelogger import QueueListener, QueueHandler
 from pathlib import Path
 from webhooks import GCodeHelper
+import traceback as tb
 
 class AFC_QueueListener(QueueListener):
     def __init__(self, filename):
@@ -68,6 +69,25 @@ class AFC_logger:
     def _remove_tags(self, message):
         return re.sub("<.*?>", "", message)
 
+    def _format_message_args(self, message, args):
+        if args:
+            try:
+                message = message % args
+            except Exception:
+                try:
+                    message = message.format(*args)
+                except Exception:
+                    message = "{} {}".format(message, " ".join(map(str, args)))
+        return message
+
+    def _include_exc_info(self, traceback_text, exc_info):
+        if traceback_text is None and exc_info:
+            try:
+                traceback_text = tb.format_exc()
+            except Exception:
+                traceback_text = None
+        return traceback_text
+
     def _format(self, message, code: CodeType = None):
         frame_data = ""
         if code is not None:
@@ -83,20 +103,23 @@ class AFC_logger:
         for cb in self.gcode.output_callbacks:
             if isinstance(cb.__self__, GCodeHelper): cb(msg.lstrip())
 
-    def raw(self, message):
+    def raw(self, message, *args):
+        message = self._format_message_args(message, args)
         code = inspect.currentframe().f_back.f_code
         for line in message.lstrip().rstrip().split("\n"):
             self.logger.info(self._format(f"{'RAW:':^7}{line}", code))
         self.send_callback(message)
 
-    def info(self, message, console_only=False):
+    def info(self, message, *args, console_only=False, **kwargs):
+        message = self._format_message_args(message, args)
         code = inspect.currentframe().f_back.f_code
         if not console_only:
             for line in message.lstrip().split("\n"):
                 self.logger.info(self._format(f"{'INFO:':^6}{line}", code))
         self.send_callback(message)
 
-    def warning(self, message):
+    def warning(self, message, *args, **kwargs):
+        message = self._format_message_args(message, args)
         code = inspect.currentframe().f_back.f_code
         for line in message.lstrip().rstrip().split("\n"):
             self.logger.debug(self._format(f"{'WARN:':^6} {line}", code))
@@ -105,7 +128,9 @@ class AFC_logger:
 
         self.afc.message_queue.append((message, "warning"))
 
-    def debug(self, message, only_debug=False, traceback=None):
+    def debug(self, message, *args, only_debug=False, traceback=None, **kwargs):
+        message = self._format_message_args(message, args)
+        traceback = self._include_exc_info(traceback, kwargs.get("exc_info"))
         code = inspect.currentframe().f_back.f_code
         for line in message.lstrip().rstrip().split("\n"):
             self.logger.debug(self._format(f"{'DEBUG:':^6}{line}", code))
@@ -117,7 +142,7 @@ class AFC_logger:
             for line in traceback.lstrip().rstrip().split("\n"):
                 self.logger.debug( self._format(f"{'DEBUG:':^6}{line}",code))
 
-    def error(self, message, traceback=None, stack_name=""):
+    def error(self, message, *args, traceback=None, stack_name="", **kwargs):
         """
         Prints error to console and log, also adds error to message queue when is then displayed
         in mainsail/fluidd guis
@@ -125,6 +150,8 @@ class AFC_logger:
         :param message: Error message to print to console and log
         :param traceback: Trackback to log to AFC.log file
         """
+        message = self._format_message_args(message, args)
+        traceback = self._include_exc_info(traceback, kwargs.get("exc_info"))
         stack_name = f"{stack_name}: " if stack_name else ""
         code = inspect.currentframe().f_back.f_code
         for line in message.lstrip().rstrip().split("\n"):
