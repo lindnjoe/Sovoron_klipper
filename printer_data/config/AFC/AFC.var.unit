@@ -227,6 +227,7 @@
             "td1_data": {}
         }
     },
+    "Tools": {},
     "Turtle_1": {
         "lane0": {
             "name": "lane0",
@@ -234,7 +235,7 @@
             "hub": "direct_load",
             "extruder": "extruder",
             "buffer": "TN",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 1,
             "map": "T0",
             "load": true,
@@ -247,7 +248,7 @@
             "empty_spool_weight": 170.0,
             "spool_id": 42,
             "color": "#ffffff",
-            "weight": 665.8329336775812,
+            "weight": 635.8632452719087,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "In Tool",
@@ -342,8 +343,8 @@
         }
     },
     "system": {
-        "current_load": null,
-        "num_units": 3,
+        "current_load": "lane0",
+        "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
         "extruders": {
