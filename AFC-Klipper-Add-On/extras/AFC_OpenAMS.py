@@ -3065,12 +3065,12 @@ def _patch_prep_runout_handler() -> None:
     def _ams_handle_prep_runout(self, *args, **kwargs):
         unit = getattr(self, "unit_obj", None)
         eventtime = kwargs.pop("eventtime", kwargs.pop("event_time", None))
-        prep_state = kwargs.pop("prep_state", kwargs.pop("is_filament_present", None))
+        kw_prep_state = kwargs.pop("prep_state", kwargs.pop("is_filament_present", None))
 
+        # Positional fallbacks (eventtime, prep_state)
         if eventtime is None and args:
             eventtime = args[0]
-        if prep_state is None and len(args) > 1:
-            prep_state = args[1]
+        arg_prep_state = args[1] if len(args) > 1 else None
 
         if eventtime is None:
             reactor = getattr(self, "reactor", None)
@@ -3079,14 +3079,22 @@ def _patch_prep_runout_handler() -> None:
             except Exception:
                 eventtime = 0.0
 
+        # Non-AMS lanes should retain native prep behavior without forcing
+        # AMS-style shared sensor semantics. Prefer any provided state, then
+        # fall back to the lane's tracked prep_state to avoid emptying the
+        # lane when no state was given.
+        if not isinstance(unit, afcAMS):
+            normalized_state = kw_prep_state
+            if normalized_state is None:
+                normalized_state = arg_prep_state
+            if normalized_state is None:
+                normalized_state = getattr(self, "prep_state", False)
+
+            return _ORIGINAL_HANDLE_PREP_RUNOUT(self, eventtime, normalized_state)
+
+        prep_state = kw_prep_state if kw_prep_state is not None else arg_prep_state
         if prep_state is None:
             prep_state = False
-
-        # Only AMS lanes need the OpenAMS prep behavior; other unit types
-        # should retain their native handling while still tolerating the
-        # keyword-friendly invocation used by debounce hooks.
-        if not isinstance(unit, afcAMS):
-            return _ORIGINAL_HANDLE_PREP_RUNOUT(self, eventtime, prep_state)
 
         try:
             return _ORIGINAL_HANDLE_PREP_RUNOUT(self, eventtime, prep_state)
