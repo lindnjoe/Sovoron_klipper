@@ -3079,16 +3079,17 @@ def _patch_prep_runout_handler() -> None:
             except Exception:
                 eventtime = 0.0
 
-        # Non-AMS lanes should retain native prep behavior without forcing
-        # AMS-style shared sensor semantics. Prefer any provided state, then
-        # fall back to the lane's tracked prep_state to avoid emptying the
-        # lane when no state was given.
+        # Non-AMS lanes retain native behavior. Only normalize arguments so
+        # debounce hooks that pass keyword states still call the original
+        # handler without changing sensor semantics.
         if not isinstance(unit, afcAMS):
             normalized_state = kw_prep_state
             if normalized_state is None:
                 normalized_state = arg_prep_state
             if normalized_state is None:
-                normalized_state = getattr(self, "prep_state", False)
+                normalized_state = getattr(self, "prep_state", None)
+            if normalized_state is None:
+                normalized_state = False
 
             return _ORIGINAL_HANDLE_PREP_RUNOUT(self, eventtime, normalized_state)
 
