@@ -3,6 +3,7 @@
 # Copyright (C) 2024 Armored Turtle
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
 
 import math
 import traceback
@@ -11,6 +12,15 @@ from contextlib import contextmanager
 from configfile import error
 from datetime import datetime
 from enum import Enum
+
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from configfile import ConfigWrapper
+    from extras.AFC_extruder import AFCExtruder
+    from extras.AFC_hub import afc_hub
+    from extras.AFC_buffer import AFCTrigger
+    from extras.AFC_unit import afcUnit
 
 try: from extras.AFC_utils import ERROR_STR, add_filament_switch
 except: raise error("Error when trying to import AFC_utils.ERROR_STR, add_filament_switch\n{trace}".format(trace=traceback.format_exc()))
@@ -51,7 +61,7 @@ VALID_DIRECT_HUB = ['direct', 'direct_load']
 
 class AFCLane:
     UPDATE_WEIGHT_DELAY = 10.0
-    def __init__(self, config):
+    def __init__(self, config: ConfigWrapper) -> None:
         self.printer            = config.get_printer()
         self.afc                = self.printer.lookup_object('AFC')
         self.gcode              = self.printer.lookup_object('gcode')
@@ -62,10 +72,10 @@ class AFCLane:
         self.printer.register_event_handler("afc:moonraker_connect", self.handle_moonraker_connect)
         self.cb_update_weight   = self.reactor.register_timer( self.update_weight_callback )
 
-        self.unit_obj           = None
-        self.hub_obj            = None
-        self.buffer_obj         = None
-        self.extruder_obj       = None
+        self.unit_obj: afcUnit
+        self.hub_obj: Optional[afc_hub|None] = None
+        self.buffer_obj: Optional[AFCTrigger|None] = None
+        self.extruder_obj: AFCExtruder
 
         #stored status variables
         self.fullname           = config.get_name()
@@ -90,6 +100,7 @@ class AFCLane:
         unit                    = config.get('unit')                                    # Unit name(AFC_BoxTurtle/NightOwl/etc) that belongs to this stepper.
         # Overrides buffers set at the unit level
         self.hub                = config.get('hub',None)                                # Hub name(AFC_hub) that belongs to this stepper, overrides hub that is set in unit(AFC_BoxTurtle/NightOwl/etc) section.
+
         # Overrides buffers set at the unit and extruder level
         self.buffer_name        = config.get("buffer", None)                            # Buffer name(AFC_buffer) that belongs to this stepper, overrides buffer that is set in extruder(AFC_extruder) or unit(AFC_BoxTurtle/NightOwl/etc) sections.
         self.unit               = unit.split(':')[0]
@@ -148,7 +159,6 @@ class AFCLane:
 
 
         self.printer.register_event_handler("AFC_unit_{}:connect".format(self.unit),self.handle_unit_connect)
-
         self.config_dist_hub = self.dist_hub
 
         # lane triggers
@@ -162,7 +172,6 @@ class AFCLane:
         self.load_state = False
         if self.load is not None:
             buttons.register_buttons([self.load], self.load_callback)
-        else: self.load_state = True
 
         self.espooler = AFC_assist.Espooler(self.name, config)
         self.lane_load_count = None
@@ -275,14 +284,14 @@ class AFCLane:
             # Update boolean and check to make sure a TD-1 device is detected
             self.td1_when_loaded = self.td1_when_loaded and self.afc.td1_defined
 
-    def handle_unit_connect(self, unit_obj):
+    def handle_unit_connect(self, unit_obj: afcUnit):
         """
         Callback from <unit_name>:connect to verify units/hub/buffer/extruder object. Errors out if user specified names and they do not exist in their configuration
         """
         # Saving reference to unit
-        self.unit_obj = unit_obj
-        self.buffer_obj = self.unit_obj.buffer_obj
-        add_to_other_obj = False
+        self.unit_obj       = unit_obj
+        self.buffer_obj     = self.unit_obj.buffer_obj
+        add_to_other_obj    = False
 
         # Register all lanes if their type is not HTLF or only register lanes that are HTLF and have AFC_lane
         # in the name so that HTLF stepper names do not get added since they are not a lane for this unit type
@@ -340,6 +349,7 @@ class AFCLane:
         self.extruder_name = self.extruder_obj.name
         if add_to_other_obj:
             self.extruder_obj.lanes[self.name] = self
+            self.extruder_obj.check_lanes()
 
         # Use buffer defined in stepper and override buffers that maybe set at the UNIT or extruder levels
         self.buffer_obj = self.unit_obj.buffer_obj
@@ -637,9 +647,7 @@ class AFCLane:
             self.unit_obj.type == "HTLF" and
             True == self._afc_prep_done):
             if load_state:
-                self.status = AFCLaneState.LOADED
-                self.unit_obj.lane_loaded(self)
-                self.afc.spool._set_values(self)
+                self.set_loaded()
 
                 # Check if user wants to get TD-1 data when loading
                 if not self.tool_loaded:
@@ -663,13 +671,7 @@ class AFCLane:
                     else:
                         self._perform_pause_runout()
                 elif self.status != "calibrating":
-                    self.tool_loaded = False
-                    self.afc.function.afc_led(self.led_not_ready, self.led_index)
-                    self.status = AFCLaneState.NONE
-                    self.loaded_to_hub = False
-                    self.td1_data = {}
-                    self.afc.spool.clear_values(self)
-                    self.afc.function.afc_led(self.afc.led_not_ready, self.led_index)
+                    self.set_unloaded()
 
         self.afc.save_vars()
 
@@ -742,9 +744,7 @@ class AFCLane:
 
                     self.do_enable(False)
                     if self.load_state == True and self.prep_state == True:
-                        self.status = AFCLaneState.LOADED
-                        self.unit_obj.lane_loaded(self)
-                        self.afc.spool._set_values(self)
+                        self.set_loaded()
                         # Check if user wants to get TD-1 data when loading
                         # TODO: When implementing multi-extruder this could still happen if a lane is loaded for a
                         # different extruder/hub
@@ -787,12 +787,7 @@ class AFCLane:
                     self._perform_pause_runout()
             elif not prep_state:
                 # Filament is unloaded
-                self.tool_loaded = False
-                self.status = AFCLaneState.NONE
-                self.loaded_to_hub = False
-                self.td1_data = {}
-                self.afc.spool.clear_values(self)
-                self.unit_obj.lane_unloaded(self)
+                self.set_unloaded()
 
         self.afc.save_vars()
 
@@ -948,7 +943,26 @@ class AFCLane:
 
     def set_loaded(self):
         """
-        Helper function for setting multiple variables when lane is loaded
+        Helper function for setting multiple variables when filament in loaded into lane
+        """
+        self.status = AFCLaneState.LOADED
+        self.unit_obj.lane_loaded(self)
+        self.afc.spool._set_values(self)
+
+    def set_unloaded(self):
+        """
+        Helper function for setting multiple variables when filament is unloaded from lane
+        """
+        self.tool_loaded = False
+        self.status = AFCLaneState.NONE
+        self.loaded_to_hub = False
+        self.td1_data = {}
+        self.afc.spool.clear_values(self)
+        self.unit_obj.lane_unloaded(self)
+
+    def set_tool_loaded(self):
+        """
+        Helper function for setting multiple variables when lane is loaded into toolhead
         """
         self.tool_loaded = True
         self.extruder_obj.lane_loaded = self.name
@@ -958,9 +972,9 @@ class AFCLane:
 
         self.unit_obj.lane_tool_loaded(self)
 
-    def set_unloaded(self):
+    def set_tool_unloaded(self):
         """
-        Helper function for setting multiple variables when lane is unloaded
+        Helper function for setting multiple variables when lane is unloaded from toolhead
         """
         self.tool_loaded = False
         self.extruder_obj.lane_loaded = None
@@ -1091,6 +1105,14 @@ class AFCLane:
             self.afc.save_pos()
             self.afc.error.AFC_error(msg)
         # No else: do not trigger infinite runout or pause runout here
+
+    # Toolchanger functions
+    def tool_swap(self):
+        """
+        Helper function for calling extruder's tool_swap function
+        """
+        if self.extruder_obj.tc_unit_obj is not None:
+            self.extruder_obj.tc_unit_obj.tool_swap(self)
 
 
     def send_lane_data(self):
@@ -1267,7 +1289,7 @@ class AFCLane:
         self.afc.function.unset_lane_loaded()
 
         self.afc.function.handle_activate_extruder()
-        self.set_loaded()
+        self.set_tool_loaded()
         self.sync_to_extruder()
         self.afc.save_vars()
         self.unit_obj.select_lane(self)

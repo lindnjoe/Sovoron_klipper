@@ -3,10 +3,22 @@
 # Copyright (C) 2024 Armored Turtle
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+from __future__ import annotations
+
 import traceback
 
 from configfile import error
 from datetime import datetime, timedelta
+
+from typing import Dict, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from configfile import ConfigWrapper
+    from extras.AFC import afc
+    from extras.AFC_lane import AFCLane
+    from extras.AFC_buffer import AFCTrigger
+    from extras.AFC_hub import afc_hub
+    from extras.AFC_extruder import AFCExtruder
 
 try: from extras.AFC_utils import ERROR_STR
 except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
@@ -15,20 +27,23 @@ try: from extras.AFC_respond import AFCprompt
 except: raise error(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
 
 class afcUnit:
-    def __init__(self, config):
+    def __init__(self, config: ConfigWrapper) -> None:
         self.printer        = config.get_printer()
         self.gcode          = self.printer.lookup_object('gcode')
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.printer.register_event_handler("afc:moonraker_connect", self.handle_moonraker_connect)
-        self.afc            = self.printer.lookup_object('AFC')
+        self.afc: afc       = self.printer.lookup_object('AFC')
         self.logger         = self.afc.logger
+        self.type           = None
 
-        self.lanes      = {}
+        self.lanes: Dict[str, AFCLane]      = {}
+        self.logo       = '<span class=success--text>Ready\n</span>'
+        self.logo_error = '<span class=error--text>Not Ready</span>\n'
 
         # Objects
-        self.buffer_obj     = None
-        self.hub_obj        = None
-        self.extruder_obj   = None
+        self.buffer_obj: Optional[AFCTrigger|None]      = None
+        self.hub_obj: Optional[afc_hub|None]            = None
+        self.extruder_obj: Optional[AFCExtruder|None]   = None
 
         # Config get section
         self.full_name                   = config.get_name().split()
@@ -157,7 +172,7 @@ class afcUnit:
         response["buffers"] = []
 
         for lane in self.lanes.values():
-            if lane.hub is not None and lane.hub not in response["hubs"]: response["hubs"].append(lane.hub)
+            if lane.hub is not None and not lane.is_direct_hub() and lane.hub not in response["hubs"]: response["hubs"].append(lane.hub)
             if lane.extruder_name is not None and lane.extruder_name not in response["extruders"]: response["extruders"].append(lane.extruder_name)
             if lane.buffer_name is not None and lane.buffer_name not in response["buffers"]: response["buffers"].append(lane.buffer_name)
 
@@ -434,7 +449,7 @@ class afcUnit:
 
     # Functions are below are placeholders so the function exists for all units, override these function in your unit files
     def _print_function_not_defined(self, name):
-        self.afc.gcode("{} function not defined for {}".format(name, self.name))
+        self.afc.logger.error("{} function not defined for {}".format(name, self.name))
 
     # Function that other units can create so that they are specific to the unit
     def system_Test(self, cur_lane, delay, assignTcmd, enable_movement):
