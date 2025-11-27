@@ -60,7 +60,6 @@ IDLE_POLL_THRESHOLD = 3  # Number of polls before going idle
 
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 _ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
-_ORIGINAL_HANDLE_PREP_RUNOUT = getattr(AFCLane, "handle_prep_runout", None)
 
 class _VirtualRunoutHelper:
     """Minimal runout helper used by AMS-managed virtual sensors."""
@@ -315,25 +314,6 @@ class afcAMS(afcUnit):
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_PTFE", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_PTFE, desc="calibrate the OpenAMS PTFE length for a specific lane")
         self.gcode.register_mux_command("UNIT_PTFE_CALIBRATION", "UNIT", self.name, self.cmd_UNIT_PTFE_CALIBRATION, desc="show OpenAMS PTFE calibration menu")
 
-    def _print_function_not_defined(self, name):
-        """Report missing AFC unit helpers without calling gcode dispatchers directly."""
-        gcode_obj = getattr(self.afc, "gcode", None)
-        respond_info = getattr(gcode_obj, "respond_info", None)
-
-        if callable(respond_info):
-            respond_info(f"{name} function not defined for {self.name}")
-            return
-
-        try:
-            if callable(gcode_obj):
-                gcode_obj(f"{name} function not defined for {self.name}")
-                return
-        except Exception:
-            pass
-
-        self.logger.warning("%s function not defined for %s", name, self.name)
-    
-    
     def _is_openams_unit(self):
         """Check if this unit has OpenAMS hardware available."""
         return self.oams is not None
@@ -1718,36 +1698,33 @@ class afcAMS(afcUnit):
                 lane.afc.spool._set_values(lane)
                 lane._prep_capture_td1()
         else:
-            # Sensor False - filament cleared
+            # Sensor False - filament left spool bay
+            # Update sensor state but don't aggressively clear everything (align with Box Turtle behavior)
             lane.load_callback(eventtime, False)
             lane.prep_callback(eventtime, False)
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
 
-            # Save tool_loaded state BEFORE clearing it
-            was_tool_loaded = getattr(lane, 'tool_loaded', False)
-
+            # Clear tool_loaded since filament can't be in toolhead if not in spool bay
             lane.tool_loaded = False
             lane.loaded_to_hub = False
-            lane.status = AFCLaneState.NONE
-            lane.unit_obj.lane_unloaded(lane)
-            lane.td1_data = {}
-            try:
-                lane.afc.spool.clear_values(lane)
-            except AttributeError:
-                # Moonraker not available - silently continue
-                pass
-            # CRITICAL: For shared lanes (same-FPS runout), unsync and clear extruder.lane_loaded
-            # when sensor goes False, UNLESS it's an active cross-extruder runout
-            # (during cross-extruder runout while printing, filament is still coasting)
+
+            # Let AFC's normal flow (LANE_UNLOAD, etc.) handle status changes and cleanup
+            # Don't aggressively clear: status, lane_unloaded(), td1_data, spool.clear_values()
+            # This matches Box Turtle behavior where lanes show "Filament detected, but not loaded"
+
+            # For same-FPS runouts: blocking mechanism in _should_block_sensor_update_for_runout()
+            # prevents us from reaching here during active runout
+            # For cross-extruder runouts: AFC's LANE_UNLOAD wrapper handles cleanup
+            # For manual unloads: AFC's LANE_UNLOAD command handles cleanup
+
+            # Only unsync from extruder if not in active cross-extruder runout
             try:
                 is_printing = self.afc.function.is_printing()
             except Exception:
                 is_printing = False
             is_cross_extruder_runout = getattr(lane, '_oams_cross_extruder_runout', False) and is_printing
 
-            # Always clear if not in active cross-extruder runout, regardless of was_tool_loaded
-            # (shared lanes may have extruder.lane_loaded set even if tool_loaded flag isn't)
             if not is_cross_extruder_runout:
                 try:
                     if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
@@ -1762,7 +1739,7 @@ class afcAMS(afcUnit):
                         exc_info=True,
                     )
             else:
-                self.logger.info("Skipping early extruder.lane_loaded clear for %s - cross-extruder runout (will clear when AFC calls CHANGE_TOOL)", lane.name)
+                self.logger.info("Skipping extruder unsync for %s - cross-extruder runout (AFC will handle via LANE_UNLOAD)", lane.name)
 
         lane.afc.save_vars()
         self._last_lane_states[lane.name] = lane_val
@@ -1806,15 +1783,11 @@ class afcAMS(afcUnit):
         except Exception:
             self.logger.error("Failed to update prep sensor for lane %s", lane)
 
-        # When sensor goes False (empty), clear tool_loaded like same-FPS runout does
-        # This mimics the behavior in _update_shared_lane() for non-shared lanes
+        # When sensor goes False (empty), only clear tool/hub loaded flags
+        # Let AFC's normal flow handle status and cleanup (align with Box Turtle)
         if not lane_val:
             lane.tool_loaded = False
             lane.loaded_to_hub = False
-            lane.status = AFCLaneState.NONE
-            lane.unit_obj.lane_unloaded(lane)
-            lane.td1_data = {}
-            lane.afc.spool.clear_values(lane)
 
         self._mirror_lane_to_virtual_sensor(lane, eventtime)
         lane_name = getattr(lane, "name", None)
@@ -3053,50 +3026,6 @@ def _patch_lane_pre_sensor_for_ams() -> None:
     AFCLane._ams_pre_sensor_patched = True
 
 
-def _patch_prep_runout_handler() -> None:
-    """Allow prep runout to accept keyword-friendly calls from debounce hooks."""
-
-    if _ORIGINAL_HANDLE_PREP_RUNOUT is None:
-        return
-
-    if getattr(AFCLane, "_ams_prep_runout_patched", False):
-        return
-
-    def _ams_handle_prep_runout(self, *args, **kwargs):
-        unit = getattr(self, "unit_obj", None)
-        eventtime = kwargs.pop("eventtime", kwargs.pop("event_time", None))
-        prep_state = kwargs.pop("prep_state", kwargs.pop("is_filament_present", None))
-
-        if eventtime is None and args:
-            eventtime = args[0]
-        if prep_state is None and len(args) > 1:
-            prep_state = args[1]
-
-        if eventtime is None:
-            reactor = getattr(self, "reactor", None)
-            try:
-                eventtime = reactor.monotonic()
-            except Exception:
-                eventtime = 0.0
-
-        if prep_state is None:
-            prep_state = False
-
-        # Only AMS lanes need the OpenAMS prep behavior; other unit types
-        # should retain their native handling while still tolerating the
-        # keyword-friendly invocation used by debounce hooks.
-        if not isinstance(unit, afcAMS):
-            return _ORIGINAL_HANDLE_PREP_RUNOUT(self, eventtime, prep_state)
-
-        try:
-            return _ORIGINAL_HANDLE_PREP_RUNOUT(self, eventtime, prep_state)
-        except Exception:
-            return _ORIGINAL_HANDLE_PREP_RUNOUT(self, eventtime, prep_state)
-
-    AFCLane.handle_prep_runout = _ams_handle_prep_runout
-    AFCLane._ams_prep_runout_patched = True
-
-
 def _patch_infinite_runout_handler() -> None:
     """Harden AFCLane infinite runout handling without touching AFC_lane.py."""
 
@@ -3108,11 +3037,6 @@ def _patch_infinite_runout_handler() -> None:
 
     def _ams_perform_infinite_runout(self, *args, **kwargs):
         lane_name = getattr(self, "name", "unknown")
-
-        # Only alter the infinite runout flow for AMS lanes; other unit
-        # types delegate straight to their original implementation.
-        if not isinstance(getattr(self, "unit_obj", None), afcAMS):
-            return _ORIGINAL_PERFORM_INFINITE_RUNOUT(self, *args, **kwargs)
 
         afc = getattr(self, "afc", None)
         lanes = getattr(afc, "lanes", {}) if afc is not None else {}
@@ -3175,8 +3099,7 @@ def _patch_infinite_runout_handler() -> None:
         if raw_runout_target != runout_target:
             try:
                 self.runout_lane = runout_target
-                message = f"Normalized runout lane {raw_runout_target} -> {runout_target} for infinite runout"
-                self.logger.info(message)
+                self.logger.info("Normalized runout lane %s -> %s for infinite runout", raw_runout_target, runout_target)
             except Exception:
                 pass
 
@@ -3188,7 +3111,7 @@ def _patch_infinite_runout_handler() -> None:
             try:
                 afc.current = lane_name
                 normalized_current = lane_name
-                self.logger.debug(f"Setting AFC current lane to {lane_name} before infinite runout")
+                self.logger.debug("Setting AFC current lane to %s before infinite runout", lane_name)
             except Exception:
                 normalized_current = normalized_current or lane_name
 
@@ -3196,7 +3119,7 @@ def _patch_infinite_runout_handler() -> None:
         change_lane = lanes.get(runout_target)
 
         self.logger.debug(
-            "Invoking AFC infinite runout from {} (map={}, extruder={}) to {} (map={}, extruder={}) with current={}".format(
+            "Invoking AFC infinite runout from %s (map=%s, extruder=%s) to %s (map=%s, extruder=%s) with current=%s" % (
                 lane_name,
                 getattr(empty_lane, "map", None),
                 getattr(empty_lane, "extruder", None),
@@ -3214,9 +3137,8 @@ def _patch_infinite_runout_handler() -> None:
         try:
             return _ORIGINAL_PERFORM_INFINITE_RUNOUT(self, *args, **kwargs)
         except Exception:
-            error_message = (
-                "Infinite runout failed at step {} for {} -> {} (current={}, empty_map={}, target_map={}, empty_extruder={}, target_extruder={})"
-                .format(
+            self.logger.error(
+                "Infinite runout failed at step %s for %s -> %s (current=%s, empty_map=%s, target_map=%s, empty_extruder=%s, target_extruder=%s)" % (
                     step,
                     lane_name,
                     runout_target,
@@ -3227,10 +3149,6 @@ def _patch_infinite_runout_handler() -> None:
                     getattr(change_lane, "extruder", None),
                 )
             )
-            try:
-                self.logger.error(error_message, traceback=traceback.format_exc())
-            except Exception:
-                pass
             raise
 
     AFCLane._perform_infinite_runout = _ams_perform_infinite_runout
@@ -3264,6 +3182,5 @@ def load_config_prefix(config):
     # The patches will only take effect if OpenAMS hardware is actually present
     _patch_lane_pre_sensor_for_ams()
     _patch_extruder_for_virtual_ams()
-    _patch_prep_runout_handler()
     _patch_infinite_runout_handler()
     return afcAMS(config)
