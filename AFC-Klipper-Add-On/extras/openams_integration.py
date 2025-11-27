@@ -15,6 +15,36 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 
 # ============================================================================
+# Shared Utility Functions
+# ============================================================================
+
+def normalize_extruder_name(name: Optional[str]) -> Optional[str]:
+    """Return a case-insensitive token for comparing extruder aliases.
+
+    Strips whitespace and converts to lowercase. Also removes 'ams_' prefix
+    if present (for AMS virtual extruder names).
+
+    Args:
+        name: Extruder name to normalize (e.g., "extruder", "Extruder4", "ams_extruder")
+
+    Returns:
+        Normalized name (e.g., "extruder", "extruder4") or None if invalid
+    """
+    if not name or not isinstance(name, str):
+        return None
+
+    normalized = name.strip()
+    if not normalized:
+        return None
+
+    lowered = normalized.lower()
+    if lowered.startswith("ams_"):
+        lowered = lowered[4:]
+
+    return lowered or None
+
+
+# ============================================================================
 # PHASE 5: Event System
 # ============================================================================
 

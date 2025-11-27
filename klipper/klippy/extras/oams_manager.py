@@ -30,21 +30,21 @@ from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 try:
-    from extras.openams_integration import AMSRunoutCoordinator
+    from extras.openams_integration import AMSRunoutCoordinator, normalize_extruder_name
 except Exception:
     AMSRunoutCoordinator = None
-
-
-def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
-    """Return a lowercase token for comparing extruder identifiers."""
-    if not name or not isinstance(name, str):
-        return None
-
-    cleaned = name.strip()
-    if not cleaned:
-        return None
-
-    return cleaned.lower()
+    # Fallback if openams_integration not available
+    def normalize_extruder_name(name: Optional[str]) -> Optional[str]:
+        """Return a lowercase token for comparing extruder identifiers."""
+        if not name or not isinstance(name, str):
+            return None
+        cleaned = name.strip()
+        if not cleaned:
+            return None
+        lowered = cleaned.lower()
+        if lowered.startswith("ams_"):
+            lowered = lowered[4:]
+        return lowered or None
 
 # Configuration constants
 PAUSE_DISTANCE = 60
@@ -128,6 +128,11 @@ class OAMSRunoutMonitor:
 
         self.reactor = self.printer.get_reactor()
 
+        # OPTIMIZATION: Cache frequently accessed objects
+        self._afc_obj = None
+        self._gcode_obj = None
+        self._idle_timeout_obj = None
+
         self.hardware_service = None
         self.latest_lane_name: Optional[str] = None
         if AMSRunoutCoordinator is not None:
@@ -139,9 +144,36 @@ class OAMSRunoutMonitor:
                     "Infinite runout and AFC integration will not function. Error: %s", e
                 )
                 self.hardware_service = None
-        
+
+        # OPTIMIZATION: Helper functions for cached object access
+        def _get_afc():
+            if self._afc_obj is None:
+                try:
+                    self._afc_obj = self.printer.lookup_object('AFC')
+                except Exception:
+                    pass
+            return self._afc_obj
+
+        def _get_gcode():
+            if self._gcode_obj is None:
+                try:
+                    self._gcode_obj = self.printer.lookup_object('gcode')
+                except Exception:
+                    pass
+            return self._gcode_obj
+
+        def _get_idle_timeout():
+            if self._idle_timeout_obj is None:
+                try:
+                    self._idle_timeout_obj = self.printer.lookup_object("idle_timeout")
+                except Exception:
+                    pass
+            return self._idle_timeout_obj
+
         def _monitor_runout(eventtime):
-            idle_timeout = self.printer.lookup_object("idle_timeout")
+            idle_timeout = _get_idle_timeout()
+            if idle_timeout is None:
+                return eventtime + MONITOR_ENCODER_PERIOD
             is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
             
             if self.state in (OAMSRunoutState.STOPPED, OAMSRunoutState.PAUSED, OAMSRunoutState.RELOADING):
@@ -199,7 +231,7 @@ class OAMSRunoutMonitor:
                     # Cross-extruder: Target lane is on a different tool/extruder
                     # Same-FPS: Target lane is on the same tool/extruder (e.g., lane8?lane7 on extruder4)
                     try:
-                        afc = self.printer.lookup_object('AFC')
+                        afc = _get_afc()
                         current_lane_obj = None
                         target_lane_obj = None
                         target_lane_name = None
@@ -224,9 +256,10 @@ class OAMSRunoutMonitor:
                                     fps_state.is_cross_extruder_runout = False
 
                                     # Pause the printer immediately
-                                    gcode = self.printer.lookup_object('gcode')
-                                    gcode.run_script_from_command(f"PAUSE")
-                                    gcode.respond_info(f"Filament runout detected on {lane_name} with no reload lane configured")
+                                    gcode = _get_gcode()
+                                    if gcode:
+                                        gcode.run_script_from_command(f"PAUSE")
+                                        gcode.respond_info(f"Filament runout detected on {lane_name} with no reload lane configured")
                                     return eventtime + MONITOR_ENCODER_PERIOD
 
                                 if target_lane_name:
@@ -282,7 +315,7 @@ class OAMSRunoutMonitor:
                     # Set flag on AFC lane so shared load/prep logic doesn't error on F1S empty + hub loaded
                     if self.is_cross_extruder_runout and lane_name:
                         try:
-                            afc = self.printer.lookup_object('AFC')
+                            afc = _get_afc()
                             if afc and hasattr(afc, 'lanes'):
                                 lane_obj = afc.lanes.get(lane_name)
                                 if lane_obj:
@@ -341,9 +374,10 @@ class OAMSRunoutMonitor:
                     self.state = OAMSRunoutState.PAUSED
                     # Pause printer with error message
                     try:
-                        gcode = self.printer.lookup_object("gcode")
-                        gcode.run_script(f"M118 OAMS COASTING timeout on {self.fps_name}")
-                        gcode.run_script("PAUSE")
+                        gcode = _get_gcode()
+                        if gcode:
+                            gcode.run_script(f"M118 OAMS COASTING timeout on {self.fps_name}")
+                            gcode.run_script("PAUSE")
                     except Exception as e:
                         logging.error("Failed to pause printer after COASTING timeout: %s", e)
                     return eventtime + MONITOR_ENCODER_PERIOD
@@ -887,9 +921,12 @@ class OAMSManager:
             return loaded_lane_name, oam, bay_index
 
         return None, None, None
-        
+
     def register_commands(self):
-        gcode = self.printer.lookup_object("gcode")
+        gcode = self._get_gcode()
+        if not gcode:
+            self.logger.error("Cannot register commands: gcode object not available")
+            return
         commands = [
             ("OAMSM_UNLOAD_FILAMENT", self.cmd_UNLOAD_FILAMENT, self.cmd_UNLOAD_FILAMENT_help),
             ("OAMSM_LOAD_FILAMENT", self.cmd_LOAD_FILAMENT, self.cmd_LOAD_FILAMENT_help),
@@ -935,7 +972,7 @@ class OAMSManager:
         # Clear any lane mappings from cross-extruder runouts
         # Only clear lane?lane redirects (e.g., lane0.map="lane8"), not permanent T# mappings
         try:
-            afc = self.printer.lookup_object('AFC')
+            afc = self._get_afc()
             if afc and hasattr(afc, 'lanes'):
                 for lane_name, lane in afc.lanes.items():
                     if hasattr(lane, 'map') and lane.map is not None:
@@ -988,7 +1025,7 @@ class OAMSManager:
         """
         cleared_count = 0
         try:
-            afc = self.printer.lookup_object('AFC')
+            afc = self._get_afc()
             if afc and hasattr(afc, 'lanes'):
                 for lane_name, lane in afc.lanes.items():
                     if hasattr(lane, 'map') and lane.map is not None:
@@ -1393,7 +1430,7 @@ class OAMSManager:
                 self._hardware_service_cache.pop("afc_object", None)
 
         try:
-            afc = self.printer.lookup_object('AFC')
+            afc = self._get_afc()
         except Exception:
             self.afc = None
             return None
@@ -1405,6 +1442,26 @@ class OAMSManager:
             self.logger.info("AFC integration detected; enabling same-FPS infinite runout support.")
             self._afc_logged = True
         return self.afc
+
+    def _get_gcode(self):
+        """OPTIMIZATION: Get cached gcode object."""
+        if self._gcode_obj is not None:
+            return self._gcode_obj
+        try:
+            self._gcode_obj = self.printer.lookup_object("gcode")
+        except Exception:
+            pass
+        return self._gcode_obj
+
+    def _get_toolhead(self):
+        """OPTIMIZATION: Get cached toolhead object."""
+        if self._toolhead_obj is not None:
+            return self._toolhead_obj
+        try:
+            self._toolhead_obj = self.printer.lookup_object("toolhead")
+        except Exception:
+            pass
+        return self._toolhead_obj
 
     def _get_infinite_runout_target_lane(self, fps_name: str, fps_state: 'FPSState') -> Tuple[Optional[str], Optional[str], bool, Optional[str]]:
         """Get target lane for infinite runout.
@@ -1453,8 +1510,8 @@ class OAMSManager:
         # Check if source and target lanes are on the same FPS/extruder
         # If SAME FPS: OpenAMS handles reload internally (coast, PTFE calc, load new spool)
         # If DIFFERENT FPS: AFC handles via CHANGE_TOOL (full runout, then switch tools)
-        source_extruder = _normalize_extruder_name(getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None)
-        target_extruder = _normalize_extruder_name(getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None)
+        source_extruder = normalize_extruder_name(getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None)
+        target_extruder = normalize_extruder_name(getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None)
 
         same_fps = bool(source_extruder and target_extruder and source_extruder == target_extruder)
         delegate_to_afc = not same_fps  # Only delegate if different FPS
@@ -2041,7 +2098,7 @@ class OAMSManager:
         gcode = self._gcode_obj
         if gcode is None:
             try:
-                gcode = self.printer.lookup_object("gcode")
+                gcode = self._get_gcode()
                 self._gcode_obj = gcode
             except Exception:
                 self.logger.error("Failed to look up gcode object for pause message")
@@ -2058,7 +2115,7 @@ class OAMSManager:
         toolhead = self._toolhead_obj
         if toolhead is None:
             try:
-                toolhead = self.printer.lookup_object("toolhead")
+                toolhead = self._get_toolhead()
                 self._toolhead_obj = toolhead
             except Exception:
                 self.logger.error("Failed to query toolhead state during pause handling")
@@ -3098,7 +3155,7 @@ class OAMSManager:
                     # Execute cross-extruder runout sequence: Heat target, then use CHANGE_TOOL (like box turtle)
                     try:
                         self.logger.info("OAMS: Cross-extruder infinite runout: %s -> %s", source_lane_name, target_lane_name)
-                        gcode = self.printer.lookup_object("gcode")
+                        gcode = self._get_gcode()
 
                         # 1. Pause printer
                         self.logger.info("OAMS: Step 1 - Pausing printer")
@@ -3128,7 +3185,7 @@ class OAMSManager:
                         source_extruder_name = getattr(source_lane, 'extruder_name', None) if source_lane else None
 
                         # Get current extruder temp to use for target
-                        current_extruder = self.printer.lookup_object('toolhead').get_extruder()
+                        toolhead = self._get_toolhead(); current_extruder = toolhead.get_extruder() if toolhead else None
                         target_temp = current_extruder.get_heater().target_temp
                         if target_temp <= 0:
                             raise Exception(f"Current extruder has no target temp set")
@@ -3208,7 +3265,7 @@ class OAMSManager:
                         # Clear cross-extruder flag on error too
                         if source_lane_name:
                             try:
-                                afc = self.printer.lookup_object('AFC')
+                                afc = self._get_afc()
                                 if afc and hasattr(afc, 'lanes'):
                                     source_lane_obj = afc.lanes.get(source_lane_name)
                                     if source_lane_obj and hasattr(source_lane_obj, '_oams_cross_extruder_runout'):
@@ -3311,7 +3368,7 @@ class OAMSManager:
 
                         if not handled:
                             try:
-                                gcode = self.printer.lookup_object("gcode")
+                                gcode = self._get_gcode()
                                 gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
                                 self.logger.info("Marked lane %s as loaded via SET_LANE_LOADED after infinite runout on %s", target_lane, fps_name)
                             except Exception as e:
@@ -3342,7 +3399,7 @@ class OAMSManager:
                                 self.logger.info("Cleared source lane %s state in AFC after successful reload to %s", source_lane_name, target_lane)
                             else:
                                 # Fallback to gcode command if coordinator not available
-                                gcode = self.printer.lookup_object("gcode")
+                                gcode = self._get_gcode()
                                 gcode.run_script(f"SET_LANE_UNLOADED LANE={source_lane_name}")
                                 self.logger.info("Cleared source lane %s via SET_LANE_UNLOADED after reload to %s", source_lane_name, target_lane)
                         except Exception:

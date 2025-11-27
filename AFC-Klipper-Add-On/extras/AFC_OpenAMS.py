@@ -46,12 +46,24 @@ try:
         AMSRunoutCoordinator,
         LaneRegistry,
         AMSEventBus,
+        normalize_extruder_name,
     )
 except Exception:
     AMSHardwareService = None
     AMSRunoutCoordinator = None
     LaneRegistry = None
     AMSEventBus = None
+    # Fallback if openams_integration not available
+    def normalize_extruder_name(name):
+        if not name or not isinstance(name, str):
+            return None
+        normalized = name.strip()
+        if not normalized:
+            return None
+        lowered = normalized.lower()
+        if lowered.startswith("ams_"):
+            lowered = lowered[4:]
+        return lowered or None
 
 # OPTIMIZATION: Configurable sync intervals
 SYNC_INTERVAL = 2.0
@@ -130,20 +142,6 @@ class _VirtualFilamentSensor:
 
     def get_status(self, eventtime):
         return self.runout_helper.get_status(eventtime)
-
-    def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
-        status = self.runout_helper.get_status(None)
-        if status["filament_detected"]:
-            msg = f"Filament Sensor {self.name}: filament detected"
-        else:
-            msg = f"Filament Sensor {self.name}: filament not detected"
-        gcmd.respond_info(msg)
-
-    def cmd_SET_FILAMENT_SENSOR(self, gcmd):
-        self.runout_helper.sensor_enabled = bool(gcmd.get_int("ENABLE", 1))
-
-def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
-    """Return a case-insensitive token for comparing extruder aliases."""
     if not name or not isinstance(name, str):
         return None
 
@@ -682,8 +680,8 @@ class afcAMS(afcUnit):
         if lane_extruder == extruder_name:
             return True
 
-        normalized_lane = _normalize_extruder_name(lane_extruder)
-        normalized_unit = _normalize_extruder_name(extruder_name)
+        normalized_lane = normalize_extruder_name(lane_extruder)
+        normalized_unit = normalize_extruder_name(extruder_name)
 
         if normalized_lane and normalized_unit and normalized_lane == normalized_unit:
             return True
@@ -2078,8 +2076,8 @@ class afcAMS(afcUnit):
         target_lane, handoff_trace = self._resolve_lane_reference_with_trace(runout_lane_name) if runout_lane_name else (None, [])
         same_extruder_handoff = False
 
-        source_extruder = _normalize_extruder_name(getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None)
-        target_extruder = _normalize_extruder_name(getattr(target_lane, "extruder_obj", None) if hasattr(target_lane, "extruder_obj") else None) if target_lane else None
+        source_extruder = normalize_extruder_name(getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None)
+        target_extruder = normalize_extruder_name(getattr(target_lane, "extruder_obj", None) if hasattr(target_lane, "extruder_obj") else None) if target_lane else None
 
         self.logger.debug(
             "Runout classification for %s: spool_index=%s, runout_lane=%s -> %s, source_extruder=%s, target_extruder=%s",
@@ -2375,7 +2373,7 @@ class afcAMS(afcUnit):
         except (TypeError, ValueError):
             normalized_index = None
 
-        lane = self._find_lane_by_spool(normalized_index)
+        lane = self._lane_for_spool_index(normalized_index)
         if lane is None:
             return
 
@@ -2436,7 +2434,7 @@ class afcAMS(afcUnit):
         except (TypeError, ValueError):
             normalized_index = None
 
-        lane = self._find_lane_by_spool(normalized_index)
+        lane = self._lane_for_spool_index(normalized_index)
         if lane is None:
             return
 
@@ -2477,7 +2475,7 @@ class afcAMS(afcUnit):
             gcmd.respond_info("SPOOL parameter is required for OpenAMS HUB HES calibration.")
             return
 
-        lane = self._find_lane_by_spool(spool_index)
+        lane = self._lane_for_spool_index(spool_index)
         if lane is None:
             gcmd.respond_info(f"Could not find lane for spool index {spool_index}.")
             return
@@ -2536,7 +2534,7 @@ class afcAMS(afcUnit):
             gcmd.respond_info("SPOOL parameter is required for OpenAMS PTFE calibration.")
             return
 
-        lane = self._find_lane_by_spool(spool_index)
+        lane = self._lane_for_spool_index(spool_index)
         if lane is None:
             gcmd.respond_info(f"Could not find lane for spool index {spool_index}.")
             return
@@ -2842,25 +2840,6 @@ class afcAMS(afcUnit):
                     return lane_name
         return None
 
-    def _find_lane_by_spool(self, spool_index):
-        """Resolve lane by spool index using registry when available."""
-        if spool_index is None:
-            return None
-
-        try:
-            normalized = int(spool_index)
-        except (TypeError, ValueError):
-            return None
-
-        registry_unit = self.oams_name or self.name
-        if self.registry is not None:
-            lane_info = self.registry.get_by_spool(registry_unit, normalized)
-            if lane_info is not None:
-                lane = self.lanes.get(lane_info.lane_name)
-                if lane is not None:
-                    return lane
-
-        return self._lane_by_local_index(normalized)
 
     def _lane_by_local_index(self, normalized: int):
         for candidate in self.lanes.values():
