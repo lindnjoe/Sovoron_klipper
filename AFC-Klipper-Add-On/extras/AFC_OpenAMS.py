@@ -3063,6 +3063,7 @@ def _patch_prep_runout_handler() -> None:
         return
 
     def _ams_handle_prep_runout(self, *args, **kwargs):
+        unit = getattr(self, "unit_obj", None)
         eventtime = kwargs.pop("eventtime", kwargs.pop("event_time", None))
         prep_state = kwargs.pop("prep_state", kwargs.pop("is_filament_present", None))
 
@@ -3080,6 +3081,12 @@ def _patch_prep_runout_handler() -> None:
 
         if prep_state is None:
             prep_state = False
+
+        # Only AMS lanes need the OpenAMS prep behavior; other unit types
+        # should retain their native handling while still tolerating the
+        # keyword-friendly invocation used by debounce hooks.
+        if not isinstance(unit, afcAMS):
+            return _ORIGINAL_HANDLE_PREP_RUNOUT(self, eventtime, prep_state)
 
         try:
             return _ORIGINAL_HANDLE_PREP_RUNOUT(self, eventtime, prep_state)
@@ -3101,6 +3108,11 @@ def _patch_infinite_runout_handler() -> None:
 
     def _ams_perform_infinite_runout(self, *args, **kwargs):
         lane_name = getattr(self, "name", "unknown")
+
+        # Only alter the infinite runout flow for AMS lanes; other unit
+        # types delegate straight to their original implementation.
+        if not isinstance(getattr(self, "unit_obj", None), afcAMS):
+            return _ORIGINAL_PERFORM_INFINITE_RUNOUT(self, *args, **kwargs)
 
         afc = getattr(self, "afc", None)
         lanes = getattr(afc, "lanes", {}) if afc is not None else {}
