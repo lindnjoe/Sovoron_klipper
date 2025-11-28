@@ -40,41 +40,18 @@ except: raise ConfigError(ERROR_STR.format(import_lib="AFC_extruder", trace=trac
 try: from extras.AFC_respond import AFCprompt
 except: raise ConfigError(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
 
-try:
-    from extras.openams_integration import (
-        AMSHardwareService,
-        AMSRunoutCoordinator,
-        LaneRegistry,
-        AMSEventBus,
-        normalize_extruder_name as _normalize_extruder_name,
-        ACTIVE_POLL_INTERVAL,
-        IDLE_POLL_INTERVAL,
-        IDLE_POLL_THRESHOLD as SHARED_IDLE_POLL_THRESHOLD,
-    )
-except Exception:
-    AMSHardwareService = None
-    AMSRunoutCoordinator = None
-    LaneRegistry = None
-    AMSEventBus = None
-    
-    def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
-        """Return a case-insensitive token for comparing extruder aliases."""
-        if not name or not isinstance(name, str):
-            return None
+from extras.openams_integration import load_openams_integration
 
-        normalized = name.strip()
-        if not normalized:
-            return None
+integration = load_openams_integration()
 
-        lowered = normalized.lower()
-        if lowered.startswith("ams_"):
-            lowered = lowered[4:]
-
-        return lowered or None
-
-    ACTIVE_POLL_INTERVAL = 2.0
-    IDLE_POLL_INTERVAL = 4.0
-    SHARED_IDLE_POLL_THRESHOLD = 3
+AMSHardwareService = integration.hardware_service
+AMSRunoutCoordinator = integration.runout_coordinator
+LaneRegistry = integration.lane_registry
+AMSEventBus = integration.event_bus
+_normalize_extruder_name = integration.normalize_extruder_name
+ACTIVE_POLL_INTERVAL = integration.active_poll_interval
+IDLE_POLL_INTERVAL = integration.idle_poll_interval
+SHARED_IDLE_POLL_THRESHOLD = integration.idle_poll_threshold
 
 # OPTIMIZATION: Configurable sync intervals (shared with OpenAMS manager)
 SYNC_INTERVAL = ACTIVE_POLL_INTERVAL
