@@ -929,19 +929,25 @@ class OAMSManager:
                 except Exception:
                     self.logger.error("Failed to clear errors on %s", getattr(oam, "name", "<unknown>"))
 
-            # Clear any lane mappings from cross-extruder runouts
-            # Only clear lane?lane redirects (e.g., lane0.map="lane8"), not permanent T# mappings
+            # Preserve lane mappings during error clearing to avoid losing lane state.
+            # We still surface any active redirects so an operator can clear them explicitly
+            # with OAMSM_CLEAR_LANE_MAPPINGS if desired.
             try:
                 afc = self.printer.lookup_object('AFC')
                 if afc and hasattr(afc, 'lanes'):
+                    retained_maps = []
                     for lane_name, lane in afc.lanes.items():
                         if hasattr(lane, 'map') and lane.map is not None:
-                            # Only clear if map is a lane redirect (starts with "lane"), not a T# mapping
                             if isinstance(lane.map, str) and lane.map.startswith('lane') and lane.map != lane_name:
-                                self.logger.info("Clearing OAMS lane mapping: %s -> %s", lane_name, lane.map)
-                                lane.map = None
+                                retained_maps.append(f"{lane_name}->{lane.map}")
+                    if retained_maps:
+                        self.logger.info(
+                            "Retaining OAMS lane mappings during OAMSM_CLEAR_ERRORS: %s. "
+                            "Use OAMSM_CLEAR_LANE_MAPPINGS to clear these redirects if needed.",
+                            ", ".join(retained_maps),
+                        )
             except Exception:
-                self.logger.debug("Could not clear lane mappings (AFC not available or no mappings set)")
+                self.logger.debug("Could not inspect lane mappings (AFC not available or no mappings set)")
 
             # Re-detect state from hardware sensors
             try:
