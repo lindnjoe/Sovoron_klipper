@@ -494,7 +494,6 @@ class FPSState:
         self.clog_min_pressure: Optional[float] = None
         self.clog_max_pressure: Optional[float] = None
         self.clog_last_extruder: Optional[float] = None
-        self.clog_hold_follower: bool = False
 
         self.post_load_pressure_timer = None
         self.post_load_pressure_start: Optional[float] = None
@@ -537,7 +536,6 @@ class FPSState:
         self.clog_min_pressure = None
         self.clog_max_pressure = None
         self.clog_last_extruder = None
-        self.clog_hold_follower = False
         if not preserve_restore:
             self.clog_restore_follower = False
             self.clog_restore_direction = 1
@@ -1585,17 +1583,6 @@ class OAMSManager:
         if oams is None:
             return False, f"OAMS {fps_state.current_oams} not found for FPS {fps_name}"
 
-        lane_name: Optional[str] = None
-        spool_index = fps_state.current_spool_idx
-        if AMSRunoutCoordinator is not None:
-            try:
-                afc = self._get_afc()
-                if afc is not None:
-                    lane_name, _ = self._resolve_lane_for_state(fps_state, fps_state.current_lane, afc)
-            except Exception:
-                self.logger.error("Failed to resolve AFC lane for unload on %s", fps_name)
-                lane_name = None
-
         if oams.current_spool is None:
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.following = False
@@ -1608,9 +1595,18 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
             self._cancel_post_load_pressure_check(fps_state)
-            if lane_name:
-                self._clear_lane_metadata(lane_name)
             return True, "Spool already unloaded"
+
+        lane_name: Optional[str] = None
+        spool_index = fps_state.current_spool_idx
+        if AMSRunoutCoordinator is not None:
+            try:
+                afc = self._get_afc()
+                if afc is not None:
+                    lane_name, _ = self._resolve_lane_for_state(fps_state, fps_state.current_lane, afc)
+            except Exception:
+                self.logger.error("Failed to resolve AFC lane for unload on %s", fps_name)
+                lane_name = None
 
         # Capture state BEFORE changing fps_state.state to avoid getting stuck
         try:
@@ -1670,8 +1666,6 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
             self._cancel_post_load_pressure_check(fps_state)
-            if lane_name:
-                self._clear_lane_metadata(lane_name)
             return True, message
 
         fps_state.state = FPSLoadState.LOADED
@@ -1760,7 +1754,18 @@ class OAMSManager:
             if lane is None or spool_mgr is None or not hasattr(spool_mgr, "clear_values"):
                 return
 
+            prior_spool_id = getattr(lane, "spool_id", "")
             spool_mgr.clear_values(lane)
+
+            # Only clear a pending next_spool_id if it matches the spool we just removed,
+            # so user-scanned IDs for the next load remain intact.
+            if hasattr(spool_mgr, "next_spool_id") and spool_mgr.next_spool_id:
+                if spool_mgr.next_spool_id == prior_spool_id:
+                    spool_mgr.next_spool_id = ""
+                    self.logger.info(
+                        "Cleared metadata and pending spool ID for %s after runout", lane_name
+                    )
+                    return
 
             self.logger.info("Cleared metadata for %s after runout", lane_name)
         except Exception:
@@ -2212,9 +2217,6 @@ class OAMSManager:
 
             # Clear error flag immediately after pausing - system is ready for user to fix
             # LED stays red to indicate the issue, but error flag doesn't block other operations
-            tracked_state.clog_hold_follower = True
-            if tracked_state.current_oams:
-                self._ensure_forward_follower(fps_name, tracked_state, "post-load clog pause")
             tracked_state.clog_active = False
             tracked_state.reset_clog_tracker()
             self.logger.info("Post-load clog pause triggered for %s, error flag cleared (LED stays red)", fps_name)
@@ -2350,14 +2352,6 @@ class OAMSManager:
             # Skip automatic control if manually commanded
             if self.follower_manual_override.get(oams_name, False):
                 self.logger.debug("Skipping automatic follower control for %s (manual override active)", oams_name)
-                return
-
-            # During clog pauses, force follower to stay enabled so the user can
-            # manipulate filament without the motor being shut off by auto logic
-            fps_state = self.current_state.fps_state.get(self.oams_to_fps.get(oams_name, ""), None)
-            if fps_state is not None and fps_state.clog_hold_follower:
-                self._enable_follower(self.oams_to_fps.get(oams_name, oams_name), fps_state, oams, 1,
-                                      "clog pause - hold follower on")
                 return
 
             hub_hes_values = getattr(oams, "hub_hes_value", None)
@@ -3064,7 +3058,6 @@ class OAMSManager:
 
             # CRITICAL: Keep follower enabled even during clog pause
             # User needs follower running to manually clear clogs and test extrusion
-            fps_state.clog_hold_follower = True
             if fps_state.current_oams:
                 self._ensure_forward_follower(fps_name, fps_state, "clog pause - keep follower active")
 
@@ -3495,10 +3488,6 @@ class OAMSManager:
                 fps_state.current_oams = None
                 fps_state.current_spool_idx = None
                 fps_state.since = self.reactor.monotonic()
-
-                # Clear AFC lane metadata so newly inserted spools don't inherit the
-                # previous Spoolman ID when a lane is manually unloaded.
-                self._clear_lane_metadata(lane_name)
 
                 self.logger.info("Synced OAMS state from AFC: %s unloaded from %s", lane_name, fps_name)
         except Exception:
