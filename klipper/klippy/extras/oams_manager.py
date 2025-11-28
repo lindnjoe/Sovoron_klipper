@@ -494,6 +494,7 @@ class FPSState:
         self.clog_min_pressure: Optional[float] = None
         self.clog_max_pressure: Optional[float] = None
         self.clog_last_extruder: Optional[float] = None
+        self.clog_hold_follower: bool = False
 
         self.post_load_pressure_timer = None
         self.post_load_pressure_start: Optional[float] = None
@@ -536,6 +537,7 @@ class FPSState:
         self.clog_min_pressure = None
         self.clog_max_pressure = None
         self.clog_last_extruder = None
+        self.clog_hold_follower = False
         if not preserve_restore:
             self.clog_restore_follower = False
             self.clog_restore_direction = 1
@@ -1758,18 +1760,7 @@ class OAMSManager:
             if lane is None or spool_mgr is None or not hasattr(spool_mgr, "clear_values"):
                 return
 
-            prior_spool_id = getattr(lane, "spool_id", "")
             spool_mgr.clear_values(lane)
-
-            # Only clear a pending next_spool_id if it matches the spool we just removed,
-            # so user-scanned IDs for the next load remain intact.
-            if hasattr(spool_mgr, "next_spool_id") and spool_mgr.next_spool_id:
-                if spool_mgr.next_spool_id == prior_spool_id:
-                    spool_mgr.next_spool_id = ""
-                    self.logger.info(
-                        "Cleared metadata and pending spool ID for %s after runout", lane_name
-                    )
-                    return
 
             self.logger.info("Cleared metadata for %s after runout", lane_name)
         except Exception:
@@ -2221,6 +2212,9 @@ class OAMSManager:
 
             # Clear error flag immediately after pausing - system is ready for user to fix
             # LED stays red to indicate the issue, but error flag doesn't block other operations
+            tracked_state.clog_hold_follower = True
+            if tracked_state.current_oams:
+                self._ensure_forward_follower(fps_name, tracked_state, "post-load clog pause")
             tracked_state.clog_active = False
             tracked_state.reset_clog_tracker()
             self.logger.info("Post-load clog pause triggered for %s, error flag cleared (LED stays red)", fps_name)
@@ -2356,6 +2350,14 @@ class OAMSManager:
             # Skip automatic control if manually commanded
             if self.follower_manual_override.get(oams_name, False):
                 self.logger.debug("Skipping automatic follower control for %s (manual override active)", oams_name)
+                return
+
+            # During clog pauses, force follower to stay enabled so the user can
+            # manipulate filament without the motor being shut off by auto logic
+            fps_state = self.current_state.fps_state.get(self.oams_to_fps.get(oams_name, ""), None)
+            if fps_state is not None and fps_state.clog_hold_follower:
+                self._enable_follower(self.oams_to_fps.get(oams_name, oams_name), fps_state, oams, 1,
+                                      "clog pause - hold follower on")
                 return
 
             hub_hes_values = getattr(oams, "hub_hes_value", None)
@@ -3062,6 +3064,7 @@ class OAMSManager:
 
             # CRITICAL: Keep follower enabled even during clog pause
             # User needs follower running to manually clear clogs and test extrusion
+            fps_state.clog_hold_follower = True
             if fps_state.current_oams:
                 self._ensure_forward_follower(fps_name, fps_state, "clog pause - keep follower active")
 
