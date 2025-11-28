@@ -618,6 +618,7 @@ class OAMSManager:
         self._idle_timeout_obj = None
         self._gcode_obj = None
         self._toolhead_obj = None
+        self._pause_resume_obj = None
 
         self._initialize_oams()
 
@@ -1348,6 +1349,23 @@ class OAMSManager:
                 return lane_name
 
         return None
+
+    def _is_printer_paused(self) -> bool:
+        """Return True if the printer is currently paused."""
+        pause_resume = self._pause_resume_obj
+        if pause_resume is None:
+            try:
+                pause_resume = self.printer.lookup_object("pause_resume")
+                self._pause_resume_obj = pause_resume
+            except Exception:
+                self._pause_resume_obj = None
+                return False
+
+        try:
+            return bool(getattr(pause_resume, "is_paused", False))
+        except Exception:
+            self._pause_resume_obj = None
+            return False
 
     def _resolve_lane_for_state(self, fps_state: 'FPSState', lane_name: Optional[str], afc) -> Tuple[Optional[str], Optional[str]]:
         """Resolve lane name from FPS state. Returns (lane_name, None) - group support removed."""
@@ -2891,6 +2909,12 @@ class OAMSManager:
                 is_printing = self._idle_timeout_obj.get_status(now)["state"] == "Printing"
             except Exception:
                 is_printing = False
+
+        if self._is_printer_paused():
+            if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer paused")
+            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
+            return
 
         monitor = self.runout_monitors.get(fps_name)
         if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
