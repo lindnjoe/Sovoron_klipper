@@ -13,6 +13,17 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
+# ============================================================================
+# Shared Constants
+# ============================================================================
+
+# Standardized polling intervals used by AFC/OpenAMS integrations. Keeping these
+# in one place prevents drift between managers that make the same "active vs.
+# idle" decisions when the printer is quiet.
+ACTIVE_POLL_INTERVAL = 2.0
+IDLE_POLL_INTERVAL = 4.0
+IDLE_POLL_THRESHOLD = 3
+
 
 # ============================================================================
 # Shared Utility Functions

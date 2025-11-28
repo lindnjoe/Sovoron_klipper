@@ -30,32 +30,45 @@ from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 try:
-    from extras.openams_integration import AMSRunoutCoordinator
+    from extras.openams_integration import (
+        AMSRunoutCoordinator,
+        normalize_extruder_name as _normalize_extruder_name,
+        ACTIVE_POLL_INTERVAL,
+        IDLE_POLL_INTERVAL,
+        IDLE_POLL_THRESHOLD as SHARED_IDLE_POLL_THRESHOLD,
+    )
 except Exception:
     AMSRunoutCoordinator = None
 
+    def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
+        """Return a lowercase token for comparing extruder identifiers."""
+        if not name or not isinstance(name, str):
+            return None
 
-def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
-    """Return a lowercase token for comparing extruder identifiers."""
-    if not name or not isinstance(name, str):
-        return None
+        cleaned = name.strip()
+        if not cleaned:
+            return None
 
-    cleaned = name.strip()
-    if not cleaned:
-        return None
+        normalized = cleaned.lower()
+        if normalized.startswith("ams_"):
+            normalized = normalized[4:]
 
-    return cleaned.lower()
+        return normalized or None
+
+    ACTIVE_POLL_INTERVAL = 2.0
+    IDLE_POLL_INTERVAL = 4.0
+    SHARED_IDLE_POLL_THRESHOLD = 3
 
 # Configuration constants
 PAUSE_DISTANCE = 60
 MIN_ENCODER_DIFF = 1
 FILAMENT_PATH_LENGTH_FACTOR = 1.14
-MONITOR_ENCODER_PERIOD = 2.0
-MONITOR_ENCODER_PERIOD_IDLE = 4.0  # OPTIMIZATION: Longer interval when idle
+MONITOR_ENCODER_PERIOD = ACTIVE_POLL_INTERVAL
+MONITOR_ENCODER_PERIOD_IDLE = IDLE_POLL_INTERVAL  # OPTIMIZATION: Longer interval when idle
 MONITOR_ENCODER_SPEED_GRACE = 2.0
 AFC_DELEGATION_TIMEOUT = 30.0
 COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
-IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
+IDLE_POLL_THRESHOLD = SHARED_IDLE_POLL_THRESHOLD  # OPTIMIZATION: Polls before switching to idle interval
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
 STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
