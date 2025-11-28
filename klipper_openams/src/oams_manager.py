@@ -3493,6 +3493,10 @@ class OAMSManager:
                 fps_state.current_spool_idx = None
                 fps_state.since = self.reactor.monotonic()
 
+                # Clear AFC lane metadata so newly inserted spools don't inherit the
+                # previous Spoolman ID when a lane is manually unloaded.
+                self._clear_lane_metadata(lane_name)
+
                 self.logger.info("Synced OAMS state from AFC: %s unloaded from %s", lane_name, fps_name)
         except Exception:
             self.logger.error("Error processing AFC lane unloaded notification for %s", lane_name)
