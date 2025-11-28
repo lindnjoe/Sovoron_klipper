@@ -2221,6 +2221,11 @@ class OAMSManager:
             tracked_state.reset_clog_tracker()
             self.logger.info("Post-load clog pause triggered for %s, error flag cleared (LED stays red)", fps_name)
 
+            # Keep follower locked on after clog pause so manual purge remains assisted
+            if tracked_state.current_oams:
+                self.follower_manual_override[tracked_state.current_oams] = True
+                self.logger.info("Follower manual override set for %s during post-load clog pause", tracked_state.current_oams)
+
             self._cancel_post_load_pressure_check(tracked_state)
             return self.reactor.NEVER
 
@@ -3014,6 +3019,12 @@ class OAMSManager:
 
         if (encoder_delta > settings["encoder_slack"] or pressure_span > settings["pressure_band"]):
             # Encoder is moving or pressure is varying - filament is flowing
+
+            # Allow automatic follower control again once motion resumes
+            if fps_state.current_oams and self.follower_manual_override.get(fps_state.current_oams, False):
+                self.follower_manual_override[fps_state.current_oams] = False
+                self.logger.info("Cleared follower manual override for %s after clog recovery", fps_state.current_oams)
+
             # If clog was previously active, clear it and restore follower
             if fps_state.clog_active:
                 self.logger.info("Clog cleared on %s - encoder moving normally (delta=%d, pressure_span=%.2f)",
@@ -3060,6 +3071,8 @@ class OAMSManager:
             # User needs follower running to manually clear clogs and test extrusion
             if fps_state.current_oams:
                 self._ensure_forward_follower(fps_name, fps_state, "clog pause - keep follower active")
+                self.follower_manual_override[fps_state.current_oams] = True
+                self.logger.info("Follower manual override set for %s during clog pause", fps_state.current_oams)
 
             # Clear error flag immediately after pausing - system is ready for user to fix
             # LED stays red to indicate the issue, but error flag doesn't block other operations
