@@ -1739,6 +1739,26 @@ class OAMSManager:
             except Exception:
                 self.logger.error("Failed to notify AFC coordinator about lane %s unload after runout", lane_name)
 
+        # Clear lane metadata so a new spool doesn't inherit stale data after runout
+        self._clear_lane_metadata(lane_name)
+
+    def _clear_lane_metadata(self, lane_name: str) -> None:
+        """Reset AFC lane spool metadata to avoid stale info after runout."""
+        try:
+            afc = self._get_afc()
+            if afc is None or not hasattr(afc, "lanes"):
+                return
+
+            lane = afc.lanes.get(lane_name)
+            spool_mgr = getattr(afc, "spool", None)
+            if lane is None or spool_mgr is None or not hasattr(spool_mgr, "clear_values"):
+                return
+
+            spool_mgr.clear_values(lane)
+            self.logger.info("Cleared metadata for %s after runout", lane_name)
+        except Exception:
+            self.logger.error("Failed to clear metadata for %s after runout", lane_name)
+
     def _load_filament_for_lane(self, lane_name: str) -> Tuple[bool, str]:
         """Load filament for a lane by deriving OAMS and bay from the lane's unit configuration.
 
@@ -3340,6 +3360,9 @@ class OAMSManager:
                                 self.logger.info("Cleared source lane %s via SET_LANE_UNLOADED after reload to %s", source_lane_name, target_lane)
                         except Exception:
                             self.logger.error("Failed to clear source lane %s state after reload to %s", source_lane_name, target_lane)
+
+                        # Also clear metadata so a replaced spool starts fresh
+                        self._clear_lane_metadata(source_lane_name)
 
                     fps_state.reset_runout_positions()
                     if monitor:
