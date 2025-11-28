@@ -46,17 +46,40 @@ try:
         AMSRunoutCoordinator,
         LaneRegistry,
         AMSEventBus,
+        normalize_extruder_name as _normalize_extruder_name,
+        ACTIVE_POLL_INTERVAL,
+        IDLE_POLL_INTERVAL,
+        IDLE_POLL_THRESHOLD as SHARED_IDLE_POLL_THRESHOLD,
     )
 except Exception:
     AMSHardwareService = None
     AMSRunoutCoordinator = None
     LaneRegistry = None
     AMSEventBus = None
+    
+    def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
+        """Return a case-insensitive token for comparing extruder aliases."""
+        if not name or not isinstance(name, str):
+            return None
 
-# OPTIMIZATION: Configurable sync intervals
-SYNC_INTERVAL = 2.0
-SYNC_INTERVAL_IDLE = 4.0  # Doubled when idle
-IDLE_POLL_THRESHOLD = 3  # Number of polls before going idle
+        normalized = name.strip()
+        if not normalized:
+            return None
+
+        lowered = normalized.lower()
+        if lowered.startswith("ams_"):
+            lowered = lowered[4:]
+
+        return lowered or None
+
+    ACTIVE_POLL_INTERVAL = 2.0
+    IDLE_POLL_INTERVAL = 4.0
+    SHARED_IDLE_POLL_THRESHOLD = 3
+
+# OPTIMIZATION: Configurable sync intervals (shared with OpenAMS manager)
+SYNC_INTERVAL = ACTIVE_POLL_INTERVAL
+SYNC_INTERVAL_IDLE = IDLE_POLL_INTERVAL  # Doubled when idle
+IDLE_POLL_THRESHOLD = SHARED_IDLE_POLL_THRESHOLD  # Number of polls before going idle
 
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 _ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
@@ -141,21 +164,6 @@ class _VirtualFilamentSensor:
 
     def cmd_SET_FILAMENT_SENSOR(self, gcmd):
         self.runout_helper.sensor_enabled = bool(gcmd.get_int("ENABLE", 1))
-
-def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
-    """Return a case-insensitive token for comparing extruder aliases."""
-    if not name or not isinstance(name, str):
-        return None
-
-    normalized = name.strip()
-    if not normalized:
-        return None
-
-    lowered = normalized.lower()
-    if lowered.startswith("ams_"):
-        lowered = lowered[4:]
-
-    return lowered or None
 
 def _normalize_ams_pin_value(pin_value) -> Optional[str]:
     """Return the cleaned AMS_* token stripped of comments and modifiers."""
