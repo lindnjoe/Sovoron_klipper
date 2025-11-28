@@ -26,6 +26,7 @@
 import logging
 import time
 import traceback
+from contextlib import contextmanager
 from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
@@ -130,6 +131,7 @@ class OAMSRunoutMonitor:
 
         self.hardware_service = None
         self.latest_lane_name: Optional[str] = None
+        self._logged_f1s_error: bool = False
         if AMSRunoutCoordinator is not None:
             try:
                 self.hardware_service = AMSRunoutCoordinator.register_runout_monitor(self)
@@ -187,8 +189,13 @@ class OAMSRunoutMonitor:
                     if spool_idx < 0 or spool_idx >= len(f1s_values):
                         return eventtime + MONITOR_ENCODER_PERIOD
                     spool_empty = not bool(f1s_values[spool_idx])
+                    if self._logged_f1s_error:
+                        logging.debug("OAMS: F1S values recovered for %s", self.fps_name)
+                        self._logged_f1s_error = False
                 except Exception as e:
-                    logging.error("OAMS: Failed to read F1S values for runout detection on %s: %s", self.fps_name, e)
+                    if not self._logged_f1s_error:
+                        logging.error("OAMS: Failed to read F1S values for runout detection on %s: %s", self.fps_name, e)
+                        self._logged_f1s_error = True
                     return eventtime + MONITOR_ENCODER_PERIOD
 
                 self.latest_lane_name = lane_name
@@ -493,8 +500,6 @@ class FPSState:
         self.stuck_spool_restore_direction: int = 1
 
         self.clog_active: bool = False
-        self.clog_restore_follower: bool = False
-        self.clog_restore_direction: int = 1
         self.clog_start_extruder: Optional[float] = None
         self.clog_start_encoder: Optional[int] = None
         self.clog_start_time: Optional[float] = None
@@ -535,7 +540,7 @@ class FPSState:
             self.stuck_spool_restore_follower = False
             self.stuck_spool_restore_direction = 1
 
-    def reset_clog_tracker(self, preserve_restore: bool = False) -> None:
+    def reset_clog_tracker(self) -> None:
         self.clog_active = False
         self.clog_start_extruder = None
         self.clog_start_encoder = None
@@ -543,9 +548,6 @@ class FPSState:
         self.clog_min_pressure = None
         self.clog_max_pressure = None
         self.clog_last_extruder = None
-        if not preserve_restore:
-            self.clog_restore_follower = False
-            self.clog_restore_direction = 1
 
     def prime_clog_tracker(self, extruder_pos: float, encoder_clicks: int, pressure: float, timestamp: float) -> None:
         self.clog_start_extruder = extruder_pos
@@ -736,8 +738,6 @@ class OAMSManager:
                     fps_state.state = FPSLoadState.UNLOADED
                     fps_state.reset_stuck_spool_state()
                     fps_state.reset_clog_tracker()
-                    fps_state.clog_restore_follower = False
-                    fps_state.clog_restore_direction = 1
                     self._cancel_post_load_pressure_check(fps_state)
 
                     # Notify AFC that lane is unloaded to update virtual sensors (AMS_Extruder#)
@@ -901,75 +901,74 @@ class OAMSManager:
         ]
         for cmd_name, handler, help_text in commands:
             gcode.register_command(cmd_name, handler, desc=help_text)
-    
+
     cmd_CLEAR_ERRORS_help = "Clear the error state of the OAMS"
     def cmd_CLEAR_ERRORS(self, gcmd):
-        # Stop all monitors and reset runout states
-        if len(self.monitor_timers) > 0:
-            self.stop_monitors()
+        with self._monitors_suspended("OAMSM_CLEAR_ERRORS"):
+            # Reset all runout monitors to clear COASTING and other states
+            for fps_name, monitor in list(self.runout_monitors.items()):
+                try:
+                    monitor.reset()
+                except Exception:
+                    self.logger.error("Failed to reset runout monitor for %s", fps_name)
 
-        # Reset all runout monitors to clear COASTING and other states
-        for fps_name, monitor in list(self.runout_monitors.items()):
+            # Clear all FPS state error flags and tracking
+            for fps_name, fps_state in self.current_state.fps_state.items():
+                fps_state.clear_encoder_samples()
+                fps_state.reset_stuck_spool_state()
+                fps_state.reset_clog_tracker()
+                fps_state.afc_delegation_active = False
+                fps_state.afc_delegation_until = 0.0
+                self._cancel_post_load_pressure_check(fps_state)
+
+            # Clear OAMS hardware errors (this also clears all LED errors)
+            # Do this in a single pass to minimize MCU commands
+            for oam in self.oams.values():
+                try:
+                    oam.clear_errors()
+                except Exception:
+                    self.logger.error("Failed to clear errors on %s", getattr(oam, "name", "<unknown>"))
+
+            # Clear any lane mappings from cross-extruder runouts
+            # Only clear lane?lane redirects (e.g., lane0.map="lane8"), not permanent T# mappings
             try:
-                monitor.reset()
+                afc = self.printer.lookup_object('AFC')
+                if afc and hasattr(afc, 'lanes'):
+                    for lane_name, lane in afc.lanes.items():
+                        if hasattr(lane, 'map') and lane.map is not None:
+                            # Only clear if map is a lane redirect (starts with "lane"), not a T# mapping
+                            if isinstance(lane.map, str) and lane.map.startswith('lane') and lane.map != lane_name:
+                                self.logger.info("Clearing OAMS lane mapping: %s -> %s", lane_name, lane.map)
+                                lane.map = None
             except Exception:
-                self.logger.error("Failed to reset runout monitor for %s", fps_name)
+                self.logger.debug("Could not clear lane mappings (AFC not available or no mappings set)")
 
-        # Clear all FPS state error flags and tracking
-        for fps_name, fps_state in self.current_state.fps_state.items():
-            fps_state.clear_encoder_samples()
-            fps_state.reset_stuck_spool_state()
-            fps_state.reset_clog_tracker()
-            fps_state.afc_delegation_active = False
-            fps_state.afc_delegation_until = 0.0
-            self._cancel_post_load_pressure_check(fps_state)
-
-        # Clear OAMS hardware errors (this also clears all LED errors)
-        # Do this in a single pass to minimize MCU commands
-        for oam in self.oams.values():
+            # Re-detect state from hardware sensors
             try:
-                oam.clear_errors()
+                self.determine_state()
             except Exception:
-                self.logger.error("Failed to clear errors on %s", getattr(oam, "name", "<unknown>"))
+                self.logger.exception("State detection failed during OAMSM_CLEAR_ERRORS")
 
-        # Clear any lane mappings from cross-extruder runouts
-        # Only clear lane?lane redirects (e.g., lane0.map="lane8"), not permanent T# mappings
-        try:
-            afc = self.printer.lookup_object('AFC')
-            if afc and hasattr(afc, 'lanes'):
-                for lane_name, lane in afc.lanes.items():
-                    if hasattr(lane, 'map') and lane.map is not None:
-                        # Only clear if map is a lane redirect (starts with "lane"), not a T# mapping
-                        if isinstance(lane.map, str) and lane.map.startswith('lane') and lane.map != lane_name:
-                            self.logger.info("Clearing OAMS lane mapping: %s -> %s", lane_name, lane.map)
-                            lane.map = None
-        except Exception:
-            self.logger.debug("Could not clear lane mappings (AFC not available or no mappings set)")
+            # Clear all manual follower overrides and coast state - return to automatic hub sensor control
+            # Also clear last state tracking so follower state is refreshed from actual sensors
+            for oams_name in self.oams.keys():
+                self.follower_manual_override[oams_name] = False
+                self.follower_last_state[oams_name] = None  # Force state refresh
+                self.follower_coasting[oams_name] = False
+                self.follower_coast_start_pos[oams_name] = 0.0
+                self.follower_had_filament[oams_name] = False
 
-        # Re-detect state from hardware sensors
-        self.determine_state()
+            # Clear LED state tracking so LEDs are refreshed from actual state
+            self.led_error_state.clear()
 
-        # Clear all manual follower overrides and coast state - return to automatic hub sensor control
-        # Also clear last state tracking so follower state is refreshed from actual sensors
-        for oams_name in self.oams.keys():
-            self.follower_manual_override[oams_name] = False
-            self.follower_last_state[oams_name] = None  # Force state refresh
-            self.follower_coasting[oams_name] = False
-            self.follower_coast_start_pos[oams_name] = 0.0
-            self.follower_had_filament[oams_name] = False
+            self.logger.info(
+                "Cleared all manual follower overrides, coast state, LED state, and state tracking - returning to automatic control"
+            )
 
-        # Clear LED state tracking so LEDs are refreshed from actual state
-        self.led_error_state.clear()
-
-        self.logger.info("Cleared all manual follower overrides, coast state, LED state, and state tracking - returning to automatic control")
-
-        # After clearing errors and detecting state, ensure followers are enabled for any
-        # lanes that have filament loaded to the hub (even if not loaded to toolhead)
-        # This keeps filament pressure up for manual operations during troubleshooting
-        self._ensure_followers_for_loaded_hubs()
-
-        # Restart all monitors
-        self.start_monitors()
+            # After clearing errors and detecting state, ensure followers are enabled for any
+            # lanes that have filament loaded to the hub (even if not loaded to toolhead)
+            # This keeps filament pressure up for manual operations during troubleshooting
+            self._ensure_followers_for_loaded_hubs()
 
         gcmd.respond_info("OAMS errors cleared and system re-initialized")
 
@@ -1594,8 +1593,6 @@ class OAMSManager:
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.following = False
             fps_state.direction = 0
-            fps_state.clog_restore_follower = False
-            fps_state.clog_restore_direction = 1
             fps_state.current_lane = None
             fps_state.current_spool_idx = None
             fps_state.since = self.reactor.monotonic()
@@ -1648,8 +1645,6 @@ class OAMSManager:
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.following = False
             fps_state.direction = 0
-            fps_state.clog_restore_follower = False
-            fps_state.clog_restore_direction = 1
             fps_state.since = self.reactor.monotonic()
             if lane_name:
                 try:
@@ -1715,8 +1710,6 @@ class OAMSManager:
         fps_state.state = FPSLoadState.UNLOADED
         fps_state.following = False
         fps_state.direction = 0
-        fps_state.clog_restore_follower = False
-        fps_state.clog_restore_direction = 1
         fps_state.since = self.reactor.monotonic()
         fps_state.current_lane = None
         fps_state.current_spool_idx = None
@@ -1836,6 +1829,22 @@ class OAMSManager:
             return False, f"No FPS found for OAMS {oams_name}"
 
         fps_state = self.current_state.fps_state[fps_name]
+
+        # Synchronize with actual loaded lane before deciding how to handle the request
+        detected_lane, detected_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
+        if detected_lane is not None:
+            fps_state.current_lane = detected_lane
+            fps_state.current_oams = detected_oams.name if detected_oams else None
+            fps_state.current_spool_idx = detected_spool_idx
+            fps_state.state = FPSLoadState.LOADED
+            fps_state.since = self.reactor.monotonic()
+            if detected_lane == lane_name:
+                return False, f"Lane {lane_name} is already loaded to {fps_name}"
+
+            unload_success, unload_message = self._unload_filament_for_fps(fps_name)
+            if not unload_success:
+                return False, f"Failed to unload existing lane {detected_lane} from {fps_name}: {unload_message}"
+
         if fps_state.state == FPSLoadState.LOADED:
             return False, f"FPS {fps_name} is already loaded"
 
@@ -2182,19 +2191,12 @@ class OAMSManager:
                 except Exception:
                     self.logger.error("Failed to set clog LED on %s spool %s after loading", fps_name, tracked_state.current_spool_idx)
 
-            # Don't disable follower during post-load clog detection - keep it running
-            # Follower doesn't interfere with clog detection (pressure-based)
-            # This ensures follower is always ready when user clears the clog
             message = f"Possible clog detected after loading {tracked_state.current_lane or fps_name}: FPS pressure {pressure:.2f} remained above {POST_LOAD_PRESSURE_THRESHOLD:.2f}"
 
             # Pause printer with error message
             self._pause_printer_message(message, tracked_state.current_oams)
 
-            # Clear error flag immediately after pausing - system is ready for user to fix
-            # LED stays red to indicate the issue, but error flag doesn't block other operations
-            tracked_state.clog_active = False
-            tracked_state.reset_clog_tracker()
-            self.logger.info("Post-load clog pause triggered for %s, error flag cleared (LED stays red)", fps_name)
+            tracked_state.clog_active = True
 
             self._cancel_post_load_pressure_check(tracked_state)
             return self.reactor.NEVER
@@ -2489,80 +2491,40 @@ class OAMSManager:
             fps_state.stuck_spool_restore_follower = False
             self.logger.info("Restarted follower for %s spool %s after %s.", fps_name, fps_state.current_spool_idx, context)
 
-    def _reactivate_clog_follower(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], context: str) -> None:
-        """
-        Restore follower motor after clog detection pause.
-
-        FOLLOWER RESTORATION STATE MACHINE:
-
-        When a clog is detected (runtime or post-load), the system follows this sequence:
-
-        1. CLOG DETECTION:
-           - Set clog_restore_follower = True
-           - Set clog_restore_direction = current direction
-           - DISABLE follower motor (set_oams_follower(0, direction))
-           - Set fps_state.following = False
-           - Pause printer
-
-        2. IMMEDIATE RE-ENABLE (this method):
-           - Called immediately after pause to allow manual filament manipulation
-           - Attempts to re-enable follower with saved direction
-           - If successful: clears clog_restore_follower flag
-           - If failed: leaves flag set for resume handler to retry
-
-        3. RESUME HANDLING (_handle_printing_resumed):
-           - Clears clog_active flag (with preserve_restore=True)
-           - Checks clog_restore_follower flag
-           - If still set: attempts to restore follower again
-           - Clears flags only after successful restoration
-
-        This two-phase approach ensures:
-        - User can manually adjust filament while paused (immediate re-enable)
-        - System retries restoration on resume if immediate re-enable failed
-        - Follower state is always consistent when printing resumes
-
-        Args:
-            fps_name: Name of the FPS being controlled
-            fps_state: Current state object for the FPS
-            oams: OAMS object (can be None, will be looked up)
-            context: Description of when restoration is happening
-
-        State Machine Flags:
-            - clog_restore_follower: Set when clog detected, cleared after successful restore
-            - clog_restore_direction: Saved direction (0=reverse, 1=forward)
-            - following: Current motor state
-        """
-        if not fps_state.clog_restore_follower:
-            return
-
-        if oams is None and fps_state.current_oams is not None:
-            oams = self.oams.get(fps_state.current_oams)
-        if oams is None:
-            return
-
-        direction = fps_state.clog_restore_direction if fps_state.clog_restore_direction in (0, 1) else 1
-        self._enable_follower(fps_name, fps_state, oams, direction, context)
-        if fps_state.following:
-            fps_state.clog_restore_follower = False
-            fps_state.clog_restore_direction = 1
-
     def _handle_printing_resumed(self, _eventtime):
         # Check if monitors were stopped and need to be restarted
         if not self.monitor_timers:
             self.logger.info("Restarting monitors after pause/intervention")
             self.start_monitors()
-        
+
         # Clear any error LEDs on resume (error flags already cleared when pause was triggered)
         for fps_name, fps_state in self.current_state.fps_state.items():
             oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
 
-            # Clear error LED if set
-            if oams is not None and fps_state.current_spool_idx is not None:
-                try:
-                    oams.set_led_error(fps_state.current_spool_idx, 0)
-                    self.logger.debug("Cleared error LED for %s spool %d on resume", fps_name, fps_state.current_spool_idx)
-                except Exception:
-                    self.logger.error("Failed to clear error LED on %s after resume", fps_name)
+            # Clear stuck_spool_active on resume to allow follower to restart
+            if fps_state.stuck_spool_active:
+                fps_state.reset_stuck_spool_state(preserve_restore=True)
+                self.logger.info("Cleared stuck spool state for %s on print resume", fps_name)
+
+            # Clear clog_active on resume and reset tracker
+            if fps_state.clog_active:
+                fps_state.reset_clog_tracker()
+                self.logger.info("Cleared clog state for %s on print resume", fps_name)
+                # Clear the error LED if we have an OAMS and spool index
+                if oams is not None and fps_state.current_spool_idx is not None:
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 0)
+                    except Exception:
+                        self.logger.error("Failed to clear clog LED on %s after resume", fps_name)
+
+            if fps_state.stuck_spool_restore_follower:
+                self._restore_follower_if_needed(fps_name, fps_state, oams, "print resume")
+            elif (
+                fps_state.current_oams is not None
+                and fps_state.current_spool_idx is not None
+                and not fps_state.following
+            ):
+                self._ensure_forward_follower(fps_name, fps_state, "print resume")
 
         # Update all followers based on hub sensors
         # Simple: if hub has filament, enable follower; if all empty, disable
@@ -2989,24 +2951,21 @@ class OAMSManager:
 
         if (encoder_delta > settings["encoder_slack"] or pressure_span > settings["pressure_band"]):
             # Encoder is moving or pressure is varying - filament is flowing
-            # If clog was previously active, clear it and restore follower
+            # If clog was previously active, clear it and ensure follower keeps up
             if fps_state.clog_active:
-                self.logger.info("Clog cleared on %s - encoder moving normally (delta=%d, pressure_span=%.2f)",
-                                fps_name, encoder_delta, pressure_span)
+                self.logger.info(
+                    "Clog cleared on %s - encoder moving normally (delta=%d, pressure_span=%.2f)",
+                    fps_name,
+                    encoder_delta,
+                    pressure_span,
+                )
 
-                # Clear LED error
                 if oams is not None and fps_state.current_spool_idx is not None:
-                    self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "clog auto-recovery")
+                    self._set_led_error_if_changed(
+                        oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "clog auto-recovery"
+                    )
 
-                # Clear clog state but preserve restore flags
-                fps_state.reset_clog_tracker(preserve_restore=True)
-
-                # Restore follower if it was disabled due to clog
-                if fps_state.clog_restore_follower and is_printing:
-                    self._reactivate_clog_follower(fps_name, fps_state, oams, "clog auto-clear")
-                elif is_printing and not fps_state.following:
-                    # Ensure follower is enabled if printing and not following
-                    self._ensure_forward_follower(fps_name, fps_state, "clog auto-clear")
+                fps_state.reset_clog_tracker()
 
             fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
             return
@@ -3018,29 +2977,17 @@ class OAMSManager:
             if oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 1, "clog detected")
 
-            # Don't disable follower during clog detection - keep it running
-            # User can still manually manipulate filament if needed while paused
-            # Follower doesn't interfere with clog detection (encoder + FPS pressure based)
-            # This ensures follower is always ready when print resumes
-
             pressure_mid = (fps_state.clog_min_pressure + fps_state.clog_max_pressure) / 2.0
-            message = (f"Clog suspected on {fps_state.current_lane or fps_name}: "
-                      f"extruder advanced {extrusion_delta:.1f}mm while encoder moved {encoder_delta} counts "
-                      f"with FPS {pressure_mid:.2f} near {self.clog_pressure_target:.2f}")
+            message = (
+                f"Clog suspected on {fps_state.current_lane or fps_name}: "
+                f"extruder advanced {extrusion_delta:.1f}mm while encoder moved {encoder_delta} counts "
+                f"with FPS {pressure_mid:.2f} near {self.clog_pressure_target:.2f}"
+            )
+
+            fps_state.clog_active = True
 
             # Pause printer with error message
             self._pause_printer_message(message, fps_state.current_oams)
-
-            # CRITICAL: Keep follower enabled even during clog pause
-            # User needs follower running to manually clear clogs and test extrusion
-            if fps_state.current_oams:
-                self._ensure_forward_follower(fps_name, fps_state, "clog pause - keep follower active")
-
-            # Clear error flag immediately after pausing - system is ready for user to fix
-            # LED stays red to indicate the issue, but error flag doesn't block other operations
-            fps_state.clog_active = False
-            fps_state.reset_clog_tracker()
-            self.logger.info("Clog pause triggered for %s, error flag cleared (LED stays red)", fps_name)
 
     def start_monitors(self):
         """Start all monitoring timers"""
@@ -3472,6 +3419,29 @@ class OAMSManager:
         for monitor in self.runout_monitors.values():
             monitor.reset()
         self.runout_monitors = {}
+
+    @contextmanager
+    def _monitors_suspended(self, reason: str = ""):
+        """Pause monitors while performing coordinated reset work."""
+        monitors_were_running = bool(self.monitor_timers)
+        if monitors_were_running:
+            try:
+                self.stop_monitors()
+                if reason:
+                    self.logger.debug("Monitors paused for %s", reason)
+            except Exception:
+                self.logger.exception("Failed to pause monitors%s", f" for {reason}" if reason else "")
+                monitors_were_running = False
+        try:
+            yield
+        finally:
+            if monitors_were_running:
+                try:
+                    self.start_monitors()
+                    if reason:
+                        self.logger.debug("Monitors resumed after %s", reason)
+                except Exception:
+                    self.logger.exception("Failed to resume monitors%s", f" after {reason}" if reason else "")
 
 
 def load_config(config):
