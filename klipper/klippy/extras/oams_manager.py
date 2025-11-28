@@ -29,33 +29,26 @@ import traceback
 from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
-try:
-    from extras.openams_integration import AMSRunoutCoordinator
-except Exception:
-    AMSRunoutCoordinator = None
+from extras.openams_integration import load_openams_integration
 
+integration = load_openams_integration()
 
-def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
-    """Return a lowercase token for comparing extruder identifiers."""
-    if not name or not isinstance(name, str):
-        return None
-
-    cleaned = name.strip()
-    if not cleaned:
-        return None
-
-    return cleaned.lower()
+AMSRunoutCoordinator = integration.runout_coordinator
+_normalize_extruder_name = integration.normalize_extruder_name
+ACTIVE_POLL_INTERVAL = integration.active_poll_interval
+IDLE_POLL_INTERVAL = integration.idle_poll_interval
+SHARED_IDLE_POLL_THRESHOLD = integration.idle_poll_threshold
 
 # Configuration constants
 PAUSE_DISTANCE = 60
 MIN_ENCODER_DIFF = 1
 FILAMENT_PATH_LENGTH_FACTOR = 1.14
-MONITOR_ENCODER_PERIOD = 2.0
-MONITOR_ENCODER_PERIOD_IDLE = 4.0  # OPTIMIZATION: Longer interval when idle
+MONITOR_ENCODER_PERIOD = ACTIVE_POLL_INTERVAL
+MONITOR_ENCODER_PERIOD_IDLE = IDLE_POLL_INTERVAL  # OPTIMIZATION: Longer interval when idle
 MONITOR_ENCODER_SPEED_GRACE = 2.0
 AFC_DELEGATION_TIMEOUT = 30.0
 COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
-IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
+IDLE_POLL_THRESHOLD = SHARED_IDLE_POLL_THRESHOLD  # OPTIMIZATION: Polls before switching to idle interval
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
 STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
