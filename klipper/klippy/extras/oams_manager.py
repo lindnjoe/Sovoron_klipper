@@ -1754,7 +1754,19 @@ class OAMSManager:
             if lane is None or spool_mgr is None or not hasattr(spool_mgr, "clear_values"):
                 return
 
+            prior_spool_id = getattr(lane, "spool_id", "")
             spool_mgr.clear_values(lane)
+
+            # Only clear a pending next_spool_id if it matches the spool we just removed,
+            # so user-scanned IDs for the next load remain intact.
+            if hasattr(spool_mgr, "next_spool_id") and spool_mgr.next_spool_id:
+                if spool_mgr.next_spool_id == prior_spool_id:
+                    spool_mgr.next_spool_id = ""
+                    self.logger.info(
+                        "Cleared metadata and pending spool ID for %s after runout", lane_name
+                    )
+                    return
+
             self.logger.info("Cleared metadata for %s after runout", lane_name)
         except Exception:
             self.logger.error("Failed to clear metadata for %s after runout", lane_name)
