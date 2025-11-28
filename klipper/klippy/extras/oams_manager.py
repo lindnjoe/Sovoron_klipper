@@ -2182,19 +2182,25 @@ class OAMSManager:
                 except Exception:
                     self.logger.error("Failed to set clog LED on %s spool %s after loading", fps_name, tracked_state.current_spool_idx)
 
-            # Don't disable follower during post-load clog detection - keep it running
-            # Follower doesn't interfere with clog detection (pressure-based)
-            # This ensures follower is always ready when user clears the clog
+            direction = tracked_state.direction if tracked_state.direction in (0, 1) else 1
+            tracked_state.clog_restore_follower = True
+            tracked_state.clog_restore_direction = direction
+            if oams_obj is not None and tracked_state.following:
+                try:
+                    oams_obj.set_oams_follower(0, direction)
+                except Exception:
+                    self.logger.error("Failed to stop follower on %s during post-load clog pause", fps_name)
+            tracked_state.following = False
+
             message = f"Possible clog detected after loading {tracked_state.current_lane or fps_name}: FPS pressure {pressure:.2f} remained above {POST_LOAD_PRESSURE_THRESHOLD:.2f}"
 
             # Pause printer with error message
             self._pause_printer_message(message, tracked_state.current_oams)
 
-            # Clear error flag immediately after pausing - system is ready for user to fix
-            # LED stays red to indicate the issue, but error flag doesn't block other operations
-            tracked_state.clog_active = False
-            tracked_state.reset_clog_tracker()
-            self.logger.info("Post-load clog pause triggered for %s, error flag cleared (LED stays red)", fps_name)
+            tracked_state.clog_active = True
+
+            # Immediately try to restore follower so manual extrusion works during pause
+            self._reactivate_clog_follower(fps_name, tracked_state, oams_obj, "post-load clog pause")
 
             self._cancel_post_load_pressure_check(tracked_state)
             return self.reactor.NEVER
@@ -2551,18 +2557,47 @@ class OAMSManager:
         if not self.monitor_timers:
             self.logger.info("Restarting monitors after pause/intervention")
             self.start_monitors()
-        
+
         # Clear any error LEDs on resume (error flags already cleared when pause was triggered)
         for fps_name, fps_state in self.current_state.fps_state.items():
             oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
 
-            # Clear error LED if set
-            if oams is not None and fps_state.current_spool_idx is not None:
-                try:
-                    oams.set_led_error(fps_state.current_spool_idx, 0)
-                    self.logger.debug("Cleared error LED for %s spool %d on resume", fps_name, fps_state.current_spool_idx)
-                except Exception:
-                    self.logger.error("Failed to clear error LED on %s after resume", fps_name)
+            # Clear stuck_spool_active on resume to allow follower to restart
+            if fps_state.stuck_spool_active:
+                fps_state.reset_stuck_spool_state(preserve_restore=True)
+                self.logger.info("Cleared stuck spool state for %s on print resume", fps_name)
+
+            # Clear clog_active on resume and reset tracker (preserve restore flags for follower)
+            if fps_state.clog_active:
+                fps_state.reset_clog_tracker(preserve_restore=True)
+                self.logger.info("Cleared clog state for %s on print resume", fps_name)
+                # Clear the error LED if we have an OAMS and spool index
+                if oams is not None and fps_state.current_spool_idx is not None:
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 0)
+                    except Exception:
+                        self.logger.error("Failed to clear clog LED on %s after resume", fps_name)
+
+            if fps_state.clog_restore_follower:
+                self._enable_follower(
+                    fps_name,
+                    fps_state,
+                    oams,
+                    fps_state.clog_restore_direction,
+                    "print resume",
+                )
+                if fps_state.following:
+                    fps_state.clog_restore_follower = False
+                    fps_state.clog_restore_direction = 1
+
+            if fps_state.stuck_spool_restore_follower:
+                self._restore_follower_if_needed(fps_name, fps_state, oams, "print resume")
+            elif (
+                fps_state.current_oams is not None
+                and fps_state.current_spool_idx is not None
+                and not fps_state.following
+            ):
+                self._ensure_forward_follower(fps_name, fps_state, "print resume")
 
         # Update all followers based on hub sensors
         # Simple: if hub has filament, enable follower; if all empty, disable
@@ -3018,29 +3053,28 @@ class OAMSManager:
             if oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 1, "clog detected")
 
-            # Don't disable follower during clog detection - keep it running
-            # User can still manually manipulate filament if needed while paused
-            # Follower doesn't interfere with clog detection (encoder + FPS pressure based)
-            # This ensures follower is always ready when print resumes
+            direction = fps_state.direction if fps_state.direction in (0, 1) else 1
+            fps_state.clog_restore_follower = True
+            fps_state.clog_restore_direction = direction
+            if oams is not None and fps_state.following:
+                try:
+                    oams.set_oams_follower(0, direction)
+                except Exception:
+                    self.logger.error("Failed to stop follower on %s during clog pause", fps_name)
+            fps_state.following = False
 
             pressure_mid = (fps_state.clog_min_pressure + fps_state.clog_max_pressure) / 2.0
             message = (f"Clog suspected on {fps_state.current_lane or fps_name}: "
                       f"extruder advanced {extrusion_delta:.1f}mm while encoder moved {encoder_delta} counts "
                       f"with FPS {pressure_mid:.2f} near {self.clog_pressure_target:.2f}")
 
+            fps_state.clog_active = True
+
             # Pause printer with error message
             self._pause_printer_message(message, fps_state.current_oams)
 
-            # CRITICAL: Keep follower enabled even during clog pause
-            # User needs follower running to manually clear clogs and test extrusion
-            if fps_state.current_oams:
-                self._ensure_forward_follower(fps_name, fps_state, "clog pause - keep follower active")
-
-            # Clear error flag immediately after pausing - system is ready for user to fix
-            # LED stays red to indicate the issue, but error flag doesn't block other operations
-            fps_state.clog_active = False
-            fps_state.reset_clog_tracker()
-            self.logger.info("Clog pause triggered for %s, error flag cleared (LED stays red)", fps_name)
+            # Immediately try to restore follower so manual extrusion works during pause
+            self._reactivate_clog_follower(fps_name, fps_state, oams, "clog pause")
 
     def start_monitors(self):
         """Start all monitoring timers"""
