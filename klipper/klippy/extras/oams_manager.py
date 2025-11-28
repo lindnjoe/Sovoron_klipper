@@ -131,6 +131,7 @@ class OAMSRunoutMonitor:
 
         self.hardware_service = None
         self.latest_lane_name: Optional[str] = None
+        self._logged_f1s_error: bool = False
         if AMSRunoutCoordinator is not None:
             try:
                 self.hardware_service = AMSRunoutCoordinator.register_runout_monitor(self)
@@ -188,8 +189,13 @@ class OAMSRunoutMonitor:
                     if spool_idx < 0 or spool_idx >= len(f1s_values):
                         return eventtime + MONITOR_ENCODER_PERIOD
                     spool_empty = not bool(f1s_values[spool_idx])
+                    if self._logged_f1s_error:
+                        logging.debug("OAMS: F1S values recovered for %s", self.fps_name)
+                        self._logged_f1s_error = False
                 except Exception as e:
-                    logging.error("OAMS: Failed to read F1S values for runout detection on %s: %s", self.fps_name, e)
+                    if not self._logged_f1s_error:
+                        logging.error("OAMS: Failed to read F1S values for runout detection on %s: %s", self.fps_name, e)
+                        self._logged_f1s_error = True
                     return eventtime + MONITOR_ENCODER_PERIOD
 
                 self.latest_lane_name = lane_name
@@ -1823,6 +1829,22 @@ class OAMSManager:
             return False, f"No FPS found for OAMS {oams_name}"
 
         fps_state = self.current_state.fps_state[fps_name]
+
+        # Synchronize with actual loaded lane before deciding how to handle the request
+        detected_lane, detected_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
+        if detected_lane is not None:
+            fps_state.current_lane = detected_lane
+            fps_state.current_oams = detected_oams.name if detected_oams else None
+            fps_state.current_spool_idx = detected_spool_idx
+            fps_state.state = FPSLoadState.LOADED
+            fps_state.since = self.reactor.monotonic()
+            if detected_lane == lane_name:
+                return False, f"Lane {lane_name} is already loaded to {fps_name}"
+
+            unload_success, unload_message = self._unload_filament_for_fps(fps_name)
+            if not unload_success:
+                return False, f"Failed to unload existing lane {detected_lane} from {fps_name}: {unload_message}"
+
         if fps_state.state == FPSLoadState.LOADED:
             return False, f"FPS {fps_name} is already loaded"
 
