@@ -1583,6 +1583,17 @@ class OAMSManager:
         if oams is None:
             return False, f"OAMS {fps_state.current_oams} not found for FPS {fps_name}"
 
+        lane_name: Optional[str] = None
+        spool_index = fps_state.current_spool_idx
+        if AMSRunoutCoordinator is not None:
+            try:
+                afc = self._get_afc()
+                if afc is not None:
+                    lane_name, _ = self._resolve_lane_for_state(fps_state, fps_state.current_lane, afc)
+            except Exception:
+                self.logger.error("Failed to resolve AFC lane for unload on %s", fps_name)
+                lane_name = None
+
         if oams.current_spool is None:
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.following = False
@@ -1595,18 +1606,9 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
             self._cancel_post_load_pressure_check(fps_state)
+            if lane_name:
+                self._clear_lane_metadata(lane_name)
             return True, "Spool already unloaded"
-
-        lane_name: Optional[str] = None
-        spool_index = fps_state.current_spool_idx
-        if AMSRunoutCoordinator is not None:
-            try:
-                afc = self._get_afc()
-                if afc is not None:
-                    lane_name, _ = self._resolve_lane_for_state(fps_state, fps_state.current_lane, afc)
-            except Exception:
-                self.logger.error("Failed to resolve AFC lane for unload on %s", fps_name)
-                lane_name = None
 
         # Capture state BEFORE changing fps_state.state to avoid getting stuck
         try:
@@ -1666,6 +1668,8 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
             self._cancel_post_load_pressure_check(fps_state)
+            if lane_name:
+                self._clear_lane_metadata(lane_name)
             return True, message
 
         fps_state.state = FPSLoadState.LOADED
