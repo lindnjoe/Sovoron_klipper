@@ -618,6 +618,7 @@ class OAMSManager:
         self._idle_timeout_obj = None
         self._gcode_obj = None
         self._toolhead_obj = None
+        self._pause_resume_obj = None
 
         self._initialize_oams()
 
@@ -1348,6 +1349,23 @@ class OAMSManager:
                 return lane_name
 
         return None
+
+    def _is_printer_paused(self) -> bool:
+        """Return True if the printer is currently paused."""
+        pause_resume = self._pause_resume_obj
+        if pause_resume is None:
+            try:
+                pause_resume = self.printer.lookup_object("pause_resume")
+                self._pause_resume_obj = pause_resume
+            except Exception:
+                self._pause_resume_obj = None
+                return False
+
+        try:
+            return bool(getattr(pause_resume, "is_paused", False))
+        except Exception:
+            self._pause_resume_obj = None
+            return False
 
     def _resolve_lane_for_state(self, fps_state: 'FPSState', lane_name: Optional[str], afc) -> Tuple[Optional[str], Optional[str]]:
         """Resolve lane name from FPS state. Returns (lane_name, None) - group support removed."""
@@ -2221,6 +2239,11 @@ class OAMSManager:
             tracked_state.reset_clog_tracker()
             self.logger.info("Post-load clog pause triggered for %s, error flag cleared (LED stays red)", fps_name)
 
+            # Keep follower locked on after clog pause so manual purge remains assisted
+            if tracked_state.current_oams:
+                self.follower_manual_override[tracked_state.current_oams] = True
+                self.logger.info("Follower manual override set for %s during post-load clog pause", tracked_state.current_oams)
+
             self._cancel_post_load_pressure_check(tracked_state)
             return self.reactor.NEVER
 
@@ -2887,6 +2910,12 @@ class OAMSManager:
             except Exception:
                 is_printing = False
 
+        if self._is_printer_paused():
+            if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer paused")
+            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
+            return
+
         monitor = self.runout_monitors.get(fps_name)
         if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
             if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
@@ -3014,6 +3043,12 @@ class OAMSManager:
 
         if (encoder_delta > settings["encoder_slack"] or pressure_span > settings["pressure_band"]):
             # Encoder is moving or pressure is varying - filament is flowing
+
+            # Allow automatic follower control again once motion resumes
+            if fps_state.current_oams and self.follower_manual_override.get(fps_state.current_oams, False):
+                self.follower_manual_override[fps_state.current_oams] = False
+                self.logger.info("Cleared follower manual override for %s after clog recovery", fps_state.current_oams)
+
             # If clog was previously active, clear it and restore follower
             if fps_state.clog_active:
                 self.logger.info("Clog cleared on %s - encoder moving normally (delta=%d, pressure_span=%.2f)",
@@ -3060,6 +3095,8 @@ class OAMSManager:
             # User needs follower running to manually clear clogs and test extrusion
             if fps_state.current_oams:
                 self._ensure_forward_follower(fps_name, fps_state, "clog pause - keep follower active")
+                self.follower_manual_override[fps_state.current_oams] = True
+                self.logger.info("Follower manual override set for %s during clog pause", fps_state.current_oams)
 
             # Clear error flag immediately after pausing - system is ready for user to fix
             # LED stays red to indicate the issue, but error flag doesn't block other operations
