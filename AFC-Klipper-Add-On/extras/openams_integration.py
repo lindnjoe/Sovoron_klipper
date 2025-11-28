@@ -56,6 +56,42 @@ def normalize_extruder_name(name: Optional[str]) -> Optional[str]:
 
 
 # ============================================================================
+# Integration Loader
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class OpenAMSIntegration:
+    """Structured view of optional OpenAMS integration points."""
+
+    hardware_service: Optional[object]
+    runout_coordinator: Optional[object]
+    lane_registry: Optional[object]
+    event_bus: Optional[object]
+    normalize_extruder_name: Callable[[Optional[str]], Optional[str]]
+    active_poll_interval: float
+    idle_poll_interval: float
+    idle_poll_threshold: int
+
+
+def load_openams_integration() -> OpenAMSIntegration:
+    """Return available OpenAMS integration hooks with safe defaults."""
+
+    return OpenAMSIntegration(
+        hardware_service=globals().get("AMSHardwareService"),
+        runout_coordinator=globals().get("AMSRunoutCoordinator"),
+        lane_registry=globals().get("LaneRegistry"),
+        event_bus=globals().get("AMSEventBus"),
+        normalize_extruder_name=globals().get(
+            "normalize_extruder_name", lambda name: None
+        ),
+        active_poll_interval=float(globals().get("ACTIVE_POLL_INTERVAL", 2.0)),
+        idle_poll_interval=float(globals().get("IDLE_POLL_INTERVAL", 4.0)),
+        idle_poll_threshold=int(globals().get("IDLE_POLL_THRESHOLD", 3)),
+    )
+
+
+# ============================================================================
 # PHASE 5: Event System
 # ============================================================================
 

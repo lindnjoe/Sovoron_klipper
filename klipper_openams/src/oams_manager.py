@@ -29,35 +29,15 @@ import traceback
 from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
-try:
-    from extras.openams_integration import (
-        AMSRunoutCoordinator,
-        normalize_extruder_name as _normalize_extruder_name,
-        ACTIVE_POLL_INTERVAL,
-        IDLE_POLL_INTERVAL,
-        IDLE_POLL_THRESHOLD as SHARED_IDLE_POLL_THRESHOLD,
-    )
-except Exception:
-    AMSRunoutCoordinator = None
+from extras.openams_integration import load_openams_integration
 
-    def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
-        """Return a lowercase token for comparing extruder identifiers."""
-        if not name or not isinstance(name, str):
-            return None
+integration = load_openams_integration()
 
-        cleaned = name.strip()
-        if not cleaned:
-            return None
-
-        normalized = cleaned.lower()
-        if normalized.startswith("ams_"):
-            normalized = normalized[4:]
-
-        return normalized or None
-
-    ACTIVE_POLL_INTERVAL = 2.0
-    IDLE_POLL_INTERVAL = 4.0
-    SHARED_IDLE_POLL_THRESHOLD = 3
+AMSRunoutCoordinator = integration.runout_coordinator
+_normalize_extruder_name = integration.normalize_extruder_name
+ACTIVE_POLL_INTERVAL = integration.active_poll_interval
+IDLE_POLL_INTERVAL = integration.idle_poll_interval
+SHARED_IDLE_POLL_THRESHOLD = integration.idle_poll_threshold
 
 # Configuration constants
 PAUSE_DISTANCE = 60
@@ -1603,6 +1583,17 @@ class OAMSManager:
         if oams is None:
             return False, f"OAMS {fps_state.current_oams} not found for FPS {fps_name}"
 
+        lane_name: Optional[str] = None
+        spool_index = fps_state.current_spool_idx
+        if AMSRunoutCoordinator is not None:
+            try:
+                afc = self._get_afc()
+                if afc is not None:
+                    lane_name, _ = self._resolve_lane_for_state(fps_state, fps_state.current_lane, afc)
+            except Exception:
+                self.logger.error("Failed to resolve AFC lane for unload on %s", fps_name)
+                lane_name = None
+
         if oams.current_spool is None:
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.following = False
@@ -1615,18 +1606,9 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
             self._cancel_post_load_pressure_check(fps_state)
+            if lane_name:
+                self._clear_lane_metadata(lane_name)
             return True, "Spool already unloaded"
-
-        lane_name: Optional[str] = None
-        spool_index = fps_state.current_spool_idx
-        if AMSRunoutCoordinator is not None:
-            try:
-                afc = self._get_afc()
-                if afc is not None:
-                    lane_name, _ = self._resolve_lane_for_state(fps_state, fps_state.current_lane, afc)
-            except Exception:
-                self.logger.error("Failed to resolve AFC lane for unload on %s", fps_name)
-                lane_name = None
 
         # Capture state BEFORE changing fps_state.state to avoid getting stuck
         try:
@@ -1686,6 +1668,8 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
             self._cancel_post_load_pressure_check(fps_state)
+            if lane_name:
+                self._clear_lane_metadata(lane_name)
             return True, message
 
         fps_state.state = FPSLoadState.LOADED
@@ -1758,6 +1742,38 @@ class OAMSManager:
                 self.logger.info("Notified AFC coordinator that lane %s unloaded from toolhead after runout", lane_name)
             except Exception:
                 self.logger.error("Failed to notify AFC coordinator about lane %s unload after runout", lane_name)
+
+        # Clear lane metadata so a new spool doesn't inherit stale data after runout
+        self._clear_lane_metadata(lane_name)
+
+    def _clear_lane_metadata(self, lane_name: str) -> None:
+        """Reset AFC lane spool metadata to avoid stale info after runout."""
+        try:
+            afc = self._get_afc()
+            if afc is None or not hasattr(afc, "lanes"):
+                return
+
+            lane = afc.lanes.get(lane_name)
+            spool_mgr = getattr(afc, "spool", None)
+            if lane is None or spool_mgr is None or not hasattr(spool_mgr, "clear_values"):
+                return
+
+            prior_spool_id = getattr(lane, "spool_id", "")
+            spool_mgr.clear_values(lane)
+
+            # Only clear a pending next_spool_id if it matches the spool we just removed,
+            # so user-scanned IDs for the next load remain intact.
+            if hasattr(spool_mgr, "next_spool_id") and spool_mgr.next_spool_id:
+                if spool_mgr.next_spool_id == prior_spool_id:
+                    spool_mgr.next_spool_id = ""
+                    self.logger.info(
+                        "Cleared metadata and pending spool ID for %s after runout", lane_name
+                    )
+                    return
+
+            self.logger.info("Cleared metadata for %s after runout", lane_name)
+        except Exception:
+            self.logger.error("Failed to clear metadata for %s after runout", lane_name)
 
     def _load_filament_for_lane(self, lane_name: str) -> Tuple[bool, str]:
         """Load filament for a lane by deriving OAMS and bay from the lane's unit configuration.
@@ -3361,6 +3377,9 @@ class OAMSManager:
                         except Exception:
                             self.logger.error("Failed to clear source lane %s state after reload to %s", source_lane_name, target_lane)
 
+                        # Also clear metadata so a replaced spool starts fresh
+                        self._clear_lane_metadata(source_lane_name)
+
                     fps_state.reset_runout_positions()
                     if monitor:
                         monitor.reset()
@@ -3473,6 +3492,10 @@ class OAMSManager:
                 fps_state.current_oams = None
                 fps_state.current_spool_idx = None
                 fps_state.since = self.reactor.monotonic()
+
+                # Clear AFC lane metadata so newly inserted spools don't inherit the
+                # previous Spoolman ID when a lane is manually unloaded.
+                self._clear_lane_metadata(lane_name)
 
                 self.logger.info("Synced OAMS state from AFC: %s unloaded from %s", lane_name, fps_name)
         except Exception:
