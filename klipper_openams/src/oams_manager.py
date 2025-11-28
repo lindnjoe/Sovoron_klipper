@@ -29,35 +29,15 @@ import traceback
 from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
-try:
-    from extras.openams_integration import (
-        AMSRunoutCoordinator,
-        normalize_extruder_name as _normalize_extruder_name,
-        ACTIVE_POLL_INTERVAL,
-        IDLE_POLL_INTERVAL,
-        IDLE_POLL_THRESHOLD as SHARED_IDLE_POLL_THRESHOLD,
-    )
-except Exception:
-    AMSRunoutCoordinator = None
+from extras.openams_integration import load_openams_integration
 
-    def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
-        """Return a lowercase token for comparing extruder identifiers."""
-        if not name or not isinstance(name, str):
-            return None
+integration = load_openams_integration()
 
-        cleaned = name.strip()
-        if not cleaned:
-            return None
-
-        normalized = cleaned.lower()
-        if normalized.startswith("ams_"):
-            normalized = normalized[4:]
-
-        return normalized or None
-
-    ACTIVE_POLL_INTERVAL = 2.0
-    IDLE_POLL_INTERVAL = 4.0
-    SHARED_IDLE_POLL_THRESHOLD = 3
+AMSRunoutCoordinator = integration.runout_coordinator
+_normalize_extruder_name = integration.normalize_extruder_name
+ACTIVE_POLL_INTERVAL = integration.active_poll_interval
+IDLE_POLL_INTERVAL = integration.idle_poll_interval
+SHARED_IDLE_POLL_THRESHOLD = integration.idle_poll_threshold
 
 # Configuration constants
 PAUSE_DISTANCE = 60
