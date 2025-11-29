@@ -1694,22 +1694,16 @@ class afcAMS(afcUnit):
             return
 
         if lane_val_bool:
-            lane.load_state = False
+            # Defer metadata application (material, spoolman IDs, colors, etc.) to
+            # AFC's callbacks instead of duplicating the logic here. The callbacks
+            # will update prep/load state and apply lane data consistently for both
+            # single- and shared-sensor lanes.
             try:
                 lane.prep_callback(eventtime, True)
             finally:
                 lane.load_callback(eventtime, True)
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
-
-            lane.prep_state = lane_val_bool
-            lane.load_state = lane_val_bool
-
-            if (lane.prep_state and lane.load_state and lane.printer.state_message == "Printer is ready" and getattr(lane, "_afc_prep_done", False)):
-                lane.status = AFCLaneState.LOADED
-                lane.unit_obj.lane_loaded(lane)
-                lane.afc.spool._set_values(lane)
-                lane._prep_capture_td1()
         else:
             # Sensor False - filament left spool bay
             # Update sensor state but don't aggressively clear everything (align with Box Turtle behavior)
