@@ -155,6 +155,7 @@ class OAMSRunoutMonitor:
             try:
                 idle_timeout = self.printer.lookup_object("idle_timeout")
                 is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
+                spool_idx = self.fps_state.current_spool_idx
         
                 if self.state in (OAMSRunoutState.STOPPED, OAMSRunoutState.PAUSED, OAMSRunoutState.RELOADING):
                     return eventtime + MONITOR_ENCODER_PERIOD
