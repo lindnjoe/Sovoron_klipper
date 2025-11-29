@@ -979,6 +979,27 @@ class AMSRunoutCoordinator:
         return handled
 
     @classmethod
+    def mark_cross_extruder_runout(cls, printer, name: str, lane_name: str) -> bool:
+        """Ask AFC units to mark a lane as participating in cross-extruder runout."""
+
+        key = cls._key(printer, name)
+        with cls._lock:
+            units = list(cls._units.get(key, ()))
+
+        if not units:
+            return False
+
+        handled = False
+        for unit in units:
+            try:
+                marker = getattr(unit, "mark_cross_extruder_runout", None)
+                if callable(marker) and marker(lane_name):
+                    handled = True
+            except Exception:
+                unit.logger.error("Failed to mark lane %s as cross-extruder runout participant", lane_name)
+        return handled
+
+    @classmethod
     def active_units(cls, printer, name: str) -> Iterable[Any]:
         """Return all AFC units registered for a specific OpenAMS instance."""
         key = cls._key(printer, name)
