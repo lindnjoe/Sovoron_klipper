@@ -709,22 +709,40 @@ class OAMSManager:
                 self._ensure_forward_follower(fps_name, fps_state, "state detection")
             else:
                 # AFC says no lane loaded (lane_loaded = None)
-                # CRITICAL: If F1S just went empty but hub still has filament, keep state LOADED
-                # This allows runout detection to trigger before we clear the lane info
-                # Don't wait for monitor.state to change - it won't change until runout is detected
-                if was_loaded and f1s_empty and hub_has_filament:
-                    self.logger.info("State detection: Keeping %s as LOADED (F1S empty, hub has filament, runout about to be detected)",
-                                   fps_name)
+                if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
+                    self.logger.debug(
+                        "State detection: Ignoring empty lane report while %s is %s",
+                        fps_name,
+                        fps_state.state,
+                    )
+                elif was_loaded and f1s_empty and hub_has_filament:
+                    self.logger.info(
+                        "State detection: Keeping %s as LOADED (F1S empty, hub has filament, runout about to be detected)",
+                        fps_name,
+                    )
                     # Keep all existing state - runout detection needs this info
                     pass
                 elif is_runout_active and was_loaded:
-                    self.logger.info("State detection: Keeping %s as LOADED during active runout (state=%s, AFC lane_loaded cleared)",
-                                   fps_name, monitor.state if monitor else "unknown")
+                    self.logger.info(
+                        "State detection: Keeping %s as LOADED during active runout (state=%s, AFC lane_loaded cleared)",
+                        fps_name,
+                        monitor.state if monitor else "unknown",
+                    )
                     # CRITICAL: Don't overwrite current_lane and current_spool_idx!
                     # Keep the existing values so runout detection can complete
                     # Only update current_oams if it was detected (might be None during runout)
                     if current_oams is not None:
                         fps_state.current_oams = current_oams.name
+                elif was_loaded:
+                    # AFC occasionally clears lane_loaded when tools are parked. Preserve last
+                    # known lane so we always unload the active lane before loading a new one.
+                    if current_oams is not None:
+                        fps_state.current_oams = current_oams.name
+                    self.logger.debug(
+                        "State detection: Retaining last known lane %s on %s while AFC lane_loaded is empty",
+                        fps_state.current_lane,
+                        fps_name,
+                    )
                 else:
                     # No active runout and not about to detect one - transition to UNLOADED normally
                     # Save lane info before clearing for AFC notification
@@ -2997,8 +3015,8 @@ class OAMSManager:
 
     def start_monitors(self):
         """Start all monitoring timers"""
-        # Stop existing monitors first to prevent timer leaks
-        if self.monitor_timers:
+        # Stop existing monitors first to prevent timer leaks or duplicate timers
+        if self.monitor_timers or self.runout_monitors:
             self.stop_monitors()
 
         self.monitor_timers = []
