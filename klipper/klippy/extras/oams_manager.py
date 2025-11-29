@@ -155,6 +155,7 @@ class OAMSRunoutMonitor:
             try:
                 idle_timeout = self.printer.lookup_object("idle_timeout")
                 is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
+                spool_idx = self.fps_state.current_spool_idx
         
                 if self.state in (OAMSRunoutState.STOPPED, OAMSRunoutState.PAUSED, OAMSRunoutState.RELOADING):
                     return eventtime + MONITOR_ENCODER_PERIOD
@@ -278,6 +279,100 @@ class OAMSRunoutMonitor:
 
         self._timer_callback = _monitor_runout
         self.timer = None  # Don't register timer until start() is called
+
+    def _detect_runout(self, oams_obj, lane_name, spool_idx, eventtime):
+        """Handle runout detection when the F1S sensor reports empty."""
+        try:
+            idle_timeout = self.printer.lookup_object("idle_timeout")
+            is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
+        except Exception:
+            is_printing = False
+
+        fps_state = self.fps_state
+        fps = self.fps
+
+        if not (is_printing and fps_state.state == FPSLoadState.LOADED and
+                fps_state.current_lane is not None and fps_state.current_spool_idx is not None):
+            return
+
+        try:
+            afc = self.printer.lookup_object('AFC')
+            current_lane_obj = None
+            target_lane_obj = None
+            target_lane_name = None
+
+            if afc and hasattr(afc, 'lanes'):
+                current_lane_obj = afc.lanes.get(lane_name)
+                if current_lane_obj:
+                    target_lane_name = getattr(current_lane_obj, 'runout_lane', None)
+
+                    # If no runout lane is configured, pause immediately without reload attempt
+                    if target_lane_name is None:
+                        logging.info("OAMS: No runout_lane configured for %s - pausing without reload", lane_name)
+                        self.state = OAMSRunoutState.PAUSED
+                        self.runout_position = fps.extruder.last_position
+                        fps_state.is_cross_extruder_runout = False
+
+                        gcode = self.printer.lookup_object('gcode')
+                        gcode.run_script_from_command("PAUSE")
+                        gcode.respond_info(f"Filament runout detected on {lane_name} with no reload lane configured")
+                        return
+
+                    target_lane_obj = afc.lanes.get(target_lane_name)
+        except Exception as e:
+            logging.error("OAMS: Failed to resolve runout lane mapping for %s: %s", lane_name, e)
+            current_lane_obj = None
+            target_lane_obj = None
+            target_lane_name = None
+
+        try:
+            current_extruder = getattr(current_lane_obj, 'extruder_name', None) if current_lane_obj else None
+            target_extruder = getattr(target_lane_obj, 'extruder_name', None) if target_lane_obj else None
+
+            if current_lane_obj and target_lane_obj and current_extruder and target_extruder and current_extruder != target_extruder:
+                self.is_cross_extruder_runout = True
+                logging.info("OAMS: Detected cross-extruder runout: %s (extruder %s) -> %s (extruder %s)",
+                             lane_name, current_extruder, target_lane_name, target_extruder)
+            else:
+                self.is_cross_extruder_runout = False
+                if current_lane_obj and target_lane_obj and current_extruder == target_extruder:
+                    logging.info("OAMS: Detected same-extruder runout: %s -> %s (both on extruder %s)",
+                                 lane_name, target_lane_name, current_extruder)
+                elif current_lane_obj or target_lane_obj:
+                    logging.warning("OAMS: Defaulting to same-extruder runout (missing extruder info): %s -> %s", lane_name,
+                                    target_lane_name or "unknown")
+        except Exception as e:
+            logging.error("OAMS: Failed to determine cross-extruder runout status, defaulting to same-FPS: %s", e)
+            self.is_cross_extruder_runout = False
+
+        self.state = OAMSRunoutState.DETECTED
+        self.runout_position = fps.extruder.last_position
+        fps_state.is_cross_extruder_runout = self.is_cross_extruder_runout
+
+        if self.is_cross_extruder_runout and lane_name:
+            try:
+                afc = self.printer.lookup_object('AFC')
+                if afc and hasattr(afc, 'lanes'):
+                    lane_obj = afc.lanes.get(lane_name)
+                    if lane_obj:
+                        lane_obj._oams_cross_extruder_runout = True
+                        logging.info("OAMS: Set cross-extruder runout flag on lane %s to bypass shared load/prep validation",
+                                     lane_name)
+            except Exception as e:
+                logging.error("OAMS: Failed to set cross-extruder runout flag on lane %s: %s", lane_name, e)
+
+        if self.is_cross_extruder_runout:
+            logging.info("OAMS: Cross-extruder runout detected on FPS %s (F1S empty, target on different extruder) - will trigger immediate tool change",
+                         self.fps_name)
+        else:
+            logging.info("OAMS: Same-extruder runout detected on FPS %s (F1S empty), pausing for %d mm",
+                         self.fps_name, PAUSE_DISTANCE)
+
+        if AMSRunoutCoordinator is not None:
+            try:
+                AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=lane_name)
+            except Exception:
+                logging.getLogger(__name__).exception("Failed to notify AFC about OpenAMS runout")
 
     def start(self) -> None:
         if self.timer is None:
