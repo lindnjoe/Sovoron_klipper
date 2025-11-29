@@ -250,27 +250,27 @@ class OAMSRunoutMonitor:
                 except Exception as e:
                     logging.error("OAMS: Failed to read filament path length while coasting on %s: %s", self.fps_name, e)
                     return eventtime + MONITOR_ENCODER_PERIOD
-        
-                    effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
-                    consumed_with_margin = (self.runout_after_position + self.reload_before_toolhead_distance)
-        
-                    if not hasattr(self, '_last_coast_log_position'):
-                        self._last_coast_log_position = 0.0
-                        logging.info("OAMS: COASTING - path_length=%.1f, effective_path_length=%.1f, reload_margin=%.1f",
-                                   path_length, effective_path_length, self.reload_before_toolhead_distance)
-        
-                    if self.hub_cleared and self.runout_after_position - self._last_coast_log_position >= 100.0:
-                        self._last_coast_log_position = self.runout_after_position
-                        remaining = effective_path_length - consumed_with_margin
-                        logging.info("OAMS: COASTING progress (after hub clear) - runout_after=%.1f, consumed_with_margin=%.1f, remaining=%.1f",
-                                   self.runout_after_position, consumed_with_margin, remaining)
-        
-                    if self.hub_cleared and consumed_with_margin >= effective_path_length:
-                        logging.info("OAMS: Old filament cleared shared PTFE (%.2f mm after hub clear, %.2f mm effective path), loading new lane",
-                                   self.runout_after_position, effective_path_length)
-                        self._last_coast_log_position = 0.0  # Reset for next runout
-                        self.state = OAMSRunoutState.RELOADING
-                        self.reload_callback()
+
+                effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
+                consumed_with_margin = (self.runout_after_position + self.reload_before_toolhead_distance)
+
+                if not hasattr(self, '_last_coast_log_position'):
+                    self._last_coast_log_position = 0.0
+                    logging.info("OAMS: COASTING - path_length=%.1f, effective_path_length=%.1f, reload_margin=%.1f",
+                               path_length, effective_path_length, self.reload_before_toolhead_distance)
+
+                if self.hub_cleared and self.runout_after_position - self._last_coast_log_position >= 100.0:
+                    self._last_coast_log_position = self.runout_after_position
+                    remaining = effective_path_length - consumed_with_margin
+                    logging.info("OAMS: COASTING progress (after hub clear) - runout_after=%.1f, consumed_with_margin=%.1f, remaining=%.1f",
+                               self.runout_after_position, consumed_with_margin, remaining)
+
+                if self.hub_cleared and consumed_with_margin >= effective_path_length:
+                    logging.info("OAMS: Old filament cleared shared PTFE (%.2f mm after hub clear, %.2f mm effective path), loading new lane",
+                               self.runout_after_position, effective_path_length)
+                    self._last_coast_log_position = 0.0  # Reset for next runout
+                    self.state = OAMSRunoutState.RELOADING
+                    self.reload_callback()
         
                 return eventtime + MONITOR_ENCODER_PERIOD
             except Exception:
