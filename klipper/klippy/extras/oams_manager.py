@@ -214,6 +214,23 @@ class OAMSRunoutMonitor:
                         self._detect_runout(oams_obj, lane_name, spool_idx, eventtime)
         
                 elif self.state == OAMSRunoutState.DETECTED:
+                    # If we have traveled the configured pause distance since F1S
+                    # reported empty, treat the hub as cleared even if the hub
+                    # sensor still reads present. This allows same-FPS runouts to
+                    # continue into the coasting phase when the hub sensor is slow
+                    # or stuck.
+                    if (self.runout_position is not None and not self.hub_cleared and
+                            fps.extruder.last_position - self.runout_position >= PAUSE_DISTANCE):
+                        self.hub_cleared = True
+                        self.hub_clear_position = fps.extruder.last_position
+                        self.runout_after_position = 0.0
+                        self.coasting_start_time = None
+                        self.state = OAMSRunoutState.COASTING
+                        logging.info(
+                            "OAMS: PAUSE distance reached after runout on %s; entering COASTING",
+                            self.fps_name,
+                        )
+
                     try:
                         hub_values = self.oams[fps_state.current_oams].hub_hes_value
                         spool_present = bool(hub_values[spool_idx])
@@ -221,12 +238,12 @@ class OAMSRunoutMonitor:
                         logging.error("OAMS: Failed to read hub HES values during COASTING on %s: %s", self.fps_name, e)
                         return eventtime + MONITOR_ENCODER_PERIOD
         
-                    if spool_present:
+                    if spool_present and not self.hub_cleared:
                         self.hub_cleared = False
                         self.hub_clear_position = None
                         self.runout_after_position = None
                         self.coasting_start_time = None
-        
+
                         if self.coasting_start_time is None:
                             self.coasting_start_time = self.reactor.monotonic()
                         else:
@@ -235,12 +252,12 @@ class OAMSRunoutMonitor:
                                 logging.info("OAMS: COASTING timeout reached (%.1fs) on %s; proceeding to reload", elapsed, self.fps_name)
                                 self.state = OAMSRunoutState.RELOADING
                                 self.reload_callback()
-                else:
-                    if not self.hub_cleared:
-                        self.hub_cleared = True
-                        self.hub_clear_position = fps.extruder.last_position
-                        self.runout_after_position = 0.0
-                        self.coasting_start_time = None
+                    else:
+                        if not self.hub_cleared:
+                            self.hub_cleared = True
+                            self.hub_clear_position = fps.extruder.last_position
+                            self.runout_after_position = 0.0
+                            self.coasting_start_time = None
 
                     traveled_distance_after_hub_clear = max(fps.extruder.last_position - self.hub_clear_position, 0.0)
                     self.runout_after_position = traveled_distance_after_hub_clear
