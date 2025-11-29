@@ -2433,8 +2433,10 @@ class afcAMS(afcUnit):
         try:
             spool_mgr = getattr(self.afc, "spool", None)
             next_id = getattr(spool_mgr, "next_spool_id", "") if spool_mgr else ""
-            if spool_mgr is not None and next_id and not previous_loaded:
-                spool_mgr._set_values(lane)
+            if spool_mgr is not None:
+                spool_data_missing = not getattr(lane, "spool_id", "")
+                if next_id or (not previous_loaded) or spool_data_missing:
+                    spool_mgr._set_values(lane)
         except Exception:
             self.logger.debug("Failed to update spool info for %s after load event", lane.name, exc_info=True)
 
