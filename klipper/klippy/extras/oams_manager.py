@@ -3018,6 +3018,14 @@ class OAMSManager:
             # Pause printer with error message
             self._pause_printer_message(message, fps_state.current_oams)
 
+            # Keep the follower running during clog pauses so manual extrusion
+            # remains available without requiring OAMSM_CLEAR_ERRORS.
+            if oams is not None and not fps_state.following:
+                self._ensure_forward_follower(fps_name, fps_state, "clog pause")
+                # If the follower still can't start, mark it for restore on resume
+                if not fps_state.following:
+                    fps_state.stuck_spool_restore_follower = True
+
     def start_monitors(self):
         """Start all monitoring timers"""
         # Stop existing monitors first to prevent timer leaks or duplicate timers
