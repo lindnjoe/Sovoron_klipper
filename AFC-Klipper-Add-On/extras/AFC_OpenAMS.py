@@ -1680,10 +1680,20 @@ class afcAMS(afcUnit):
                 self._last_lane_states[lane_name] = bool(lane_val)
             return
 
-        if lane_val == self._last_lane_states.get(lane.name):
+        previous = self._last_lane_states.get(lane.name)
+        lane_val_bool = bool(lane_val)
+        prep_state = getattr(lane, "prep_state", None)
+        load_state = getattr(lane, "load_state", None)
+
+        if (
+            previous is not None
+            and bool(previous) == lane_val_bool
+            and (prep_state is None or bool(prep_state) == lane_val_bool)
+            and (load_state is None or bool(load_state) == lane_val_bool)
+        ):
             return
 
-        if lane_val:
+        if lane_val_bool:
             lane.load_state = False
             try:
                 lane.prep_callback(eventtime, True)
@@ -1691,6 +1701,9 @@ class afcAMS(afcUnit):
                 lane.load_callback(eventtime, True)
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
+
+            lane.prep_state = lane_val_bool
+            lane.load_state = lane_val_bool
 
             if (lane.prep_state and lane.load_state and lane.printer.state_message == "Printer is ready" and getattr(lane, "_afc_prep_done", False)):
                 lane.status = AFCLaneState.LOADED
@@ -1709,9 +1722,15 @@ class afcAMS(afcUnit):
             lane.tool_loaded = False
             lane.loaded_to_hub = False
 
-            # Let AFC's normal flow (LANE_UNLOAD, etc.) handle status changes and cleanup
-            # Don't aggressively clear: status, lane_unloaded(), td1_data, spool.clear_values()
-            # This matches Box Turtle behavior where lanes show "Filament detected, but not loaded"
+            # Shared prep/load sensors stay in sync for AMS lanes; treat False as fully unloaded
+            try:
+                lane.set_unloaded()
+                if hasattr(lane, "_afc_prep_done"):
+                    lane._afc_prep_done = False
+                lane.prep_state = lane_val_bool
+                lane.load_state = lane_val_bool
+            except Exception:
+                self.logger.error("Failed to fully clear shared lane %s after sensor cleared", lane.name, exc_info=True)
 
             # For same-FPS runouts: blocking mechanism in _should_block_sensor_update_for_runout()
             # prevents us from reaching here during active runout
@@ -1742,7 +1761,9 @@ class afcAMS(afcUnit):
                 self.logger.info("Skipping extruder unsync for %s - cross-extruder runout (AFC will handle via LANE_UNLOAD)", lane.name)
 
         lane.afc.save_vars()
-        self._last_lane_states[lane.name] = lane_val
+        lane.prep_state = lane_val_bool
+        lane.load_state = lane_val_bool
+        self._last_lane_states[lane.name] = lane_val_bool
 
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
         """Apply a boolean lane sensor value using existing AFC callbacks."""
@@ -2351,6 +2372,31 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.error("Failed to mirror tool sensor state for unloaded lane %s", lane.name)
         return True
+
+    def mark_cross_extruder_runout(self, lane_name: str) -> bool:
+        """Mark a lane as cross-extruder for shared sensor handling."""
+
+        lane = self._resolve_lane_reference(lane_name)
+        if lane is None:
+            self.logger.warning(
+                "Requested cross-extruder runout mark for %s but AFC unit %s cannot resolve it",
+                lane_name,
+                self.name,
+            )
+            return False
+
+        try:
+            if not hasattr(lane, "_oams_runout_detected"):
+                lane._oams_runout_detected = False
+            lane._oams_cross_extruder_runout = True
+            self.logger.info(
+                "Marked lane %s as cross-extruder runout participant for shared sensor bypass",
+                lane.name,
+            )
+            return True
+        except Exception:
+            self.logger.error("Failed to mark lane %s for cross-extruder runout", lane.name, exc_info=True)
+            return False
 
     def _is_event_for_unit(self, unit_name: Optional[str]) -> bool:
         """Check whether an event payload targets this unit."""
