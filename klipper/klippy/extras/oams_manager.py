@@ -288,15 +288,27 @@ class OAMSRunoutMonitor:
 
                     # Set flag on AFC lane so shared load/prep logic doesn't error on F1S empty + hub loaded
                     if self.is_cross_extruder_runout and lane_name:
-                        try:
-                            afc = self.printer.lookup_object('AFC')
-                            if afc and hasattr(afc, 'lanes'):
-                                lane_obj = afc.lanes.get(lane_name)
-                                if lane_obj:
-                                    lane_obj._oams_cross_extruder_runout = True
-                                    logging.info("OAMS: Set cross-extruder runout flag on lane %s to bypass shared load/prep validation", lane_name)
-                        except Exception as e:
-                            logging.error("OAMS: Failed to set cross-extruder runout flag on lane %s: %s", lane_name, e)
+                        if AMSRunoutCoordinator is not None:
+                            try:
+                                handled = AMSRunoutCoordinator.mark_cross_extruder_runout(
+                                    self.printer,
+                                    fps_state.current_oams or self.fps_name,
+                                    lane_name,
+                                )
+                                if not handled:
+                                    logging.debug(
+                                        "OAMS: No AFC unit handled cross-extruder runout mark for lane %s", lane_name
+                                    )
+                            except Exception:
+                                logging.error(
+                                    "OAMS: Failed to notify AFC about cross-extruder runout flag for lane %s", lane_name,
+                                    exc_info=True,
+                                )
+                        else:
+                            logging.debug(
+                                "OAMS: AMSRunoutCoordinator unavailable; skipping cross-extruder runout flag for lane %s",
+                                lane_name,
+                            )
 
                     if self.is_cross_extruder_runout:
                         logging.info("OAMS: Cross-extruder runout detected on FPS %s (F1S empty, target on different extruder) - will trigger immediate tool change",
