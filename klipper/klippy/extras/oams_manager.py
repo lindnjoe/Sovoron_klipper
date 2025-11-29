@@ -627,6 +627,7 @@ class OAMSManager:
         self._idle_timeout_obj = None
         self._gcode_obj = None
         self._toolhead_obj = None
+        self._pause_resume_obj = None
 
         self._initialize_oams()
 
@@ -2883,9 +2884,25 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
             return
 
-        if not is_printing:
+        pause_resume = self._pause_resume_obj
+        if pause_resume is None:
+            try:
+                pause_resume = self.printer.lookup_object("pause_resume")
+                self._pause_resume_obj = pause_resume
+            except Exception:
+                pause_resume = False
+
+        is_paused = False
+        if pause_resume:
+            try:
+                is_paused = bool(getattr(pause_resume, "is_paused", False))
+            except Exception:
+                is_paused = False
+
+        if not is_printing or is_paused:
             if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
-                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer idle")
+                reason = "printer idle" if not is_paused else "printer paused"
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, reason)
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
             return
 
