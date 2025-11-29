@@ -735,14 +735,42 @@ class OAMSManager:
                         fps_state.current_oams = current_oams.name
                 elif was_loaded:
                     # AFC occasionally clears lane_loaded when tools are parked. Preserve last
-                    # known lane so we always unload the active lane before loading a new one.
-                    if current_oams is not None:
-                        fps_state.current_oams = current_oams.name
-                    self.logger.debug(
-                        "State detection: Retaining last known lane %s on %s while AFC lane_loaded is empty",
-                        fps_state.current_lane,
-                        fps_name,
-                    )
+                    # known lane if sensors still see filament so we unload before loading anew.
+                    if hub_has_filament or not f1s_empty:
+                        if current_oams is not None:
+                            fps_state.current_oams = current_oams.name
+                        self.logger.debug(
+                            "State detection: Retaining last known lane %s on %s while AFC lane_loaded is empty (sensors show filament)",
+                            fps_state.current_lane,
+                            fps_name,
+                        )
+                    else:
+                        # Sensors agree the hub is empty and AFC reports nothing loaded; clear state.
+                        old_lane_name = fps_state.current_lane
+                        old_oams_name = fps_state.current_oams
+                        old_spool_idx = fps_state.current_spool_idx
+
+                        fps_state.current_lane = None
+                        fps_state.current_oams = None
+                        fps_state.current_spool_idx = None
+                        fps_state.state = FPSLoadState.UNLOADED
+                        fps_state.reset_stuck_spool_state()
+                        fps_state.reset_clog_tracker()
+                        self._cancel_post_load_pressure_check(fps_state)
+
+                        if old_lane_name and AMSRunoutCoordinator is not None:
+                            try:
+                                AMSRunoutCoordinator.notify_lane_tool_state(
+                                    self.printer,
+                                    old_oams_name,
+                                    old_lane_name,
+                                    loaded=False,
+                                    spool_index=old_spool_idx,
+                                    eventtime=self.reactor.monotonic()
+                                )
+                                self.logger.debug("Notified AFC that %s unloaded during state detection (clears virtual sensor)", old_lane_name)
+                            except Exception:
+                                self.logger.error("Failed to notify AFC about %s unload during state detection", old_lane_name)
                 else:
                     # No active runout and not about to detect one - transition to UNLOADED normally
                     # Save lane info before clearing for AFC notification
