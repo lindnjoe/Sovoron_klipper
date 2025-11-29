@@ -31,13 +31,20 @@ from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 try:
-    from extras.openams_integration import AMSRunoutCoordinator
+    from extras.openams_integration import AMSRunoutCoordinator, normalize_extruder_name
 except Exception:
     AMSRunoutCoordinator = None
+    normalize_extruder_name = None
 
 
 def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
     """Return a lowercase token for comparing extruder identifiers."""
+    if callable(normalize_extruder_name):
+        try:
+            return normalize_extruder_name(name)
+        except Exception:
+            pass
+
     if not name or not isinstance(name, str):
         return None
 

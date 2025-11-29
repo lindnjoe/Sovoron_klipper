@@ -46,12 +46,14 @@ try:
         AMSRunoutCoordinator,
         LaneRegistry,
         AMSEventBus,
+        normalize_extruder_name,
     )
 except Exception:
     AMSHardwareService = None
     AMSRunoutCoordinator = None
     LaneRegistry = None
     AMSEventBus = None
+    normalize_extruder_name = None
 
 # OPTIMIZATION: Configurable sync intervals
 SYNC_INTERVAL = 2.0
@@ -144,6 +146,12 @@ class _VirtualFilamentSensor:
 
 def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
     """Return a case-insensitive token for comparing extruder aliases."""
+    if callable(normalize_extruder_name):
+        try:
+            return normalize_extruder_name(name)
+        except Exception:
+            pass
+
     if not name or not isinstance(name, str):
         return None
 
