@@ -2379,6 +2379,16 @@ class OAMSManager:
                 self.logger.debug("Skipping automatic follower control for %s (manual override active)", oams_name)
                 return
 
+            # Keep follower engaged during clog pauses so manual extrusion stays available
+            for fps_state in self.current_state.fps_state.values():
+                if fps_state.current_oams == oams_name and fps_state.clog_active:
+                    self._set_follower_if_changed(oams_name, oams, 1, 1, "clog pause - keep follower")
+                    # Reset coast bookkeeping to avoid an automatic disable once the clog clears
+                    self.follower_coasting[oams_name] = False
+                    self.follower_coast_start_pos[oams_name] = 0.0
+                    self.follower_had_filament[oams_name] = True
+                    return
+
             hub_hes_values = getattr(oams, "hub_hes_value", None)
             if hub_hes_values is None:
                 return
