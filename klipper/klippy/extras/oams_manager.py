@@ -242,7 +242,6 @@ class OAMSRunoutMonitor:
                         self.hub_cleared = False
                         self.hub_clear_position = None
                         self.runout_after_position = None
-                        self.coasting_start_time = None
 
                         if self.coasting_start_time is None:
                             self.coasting_start_time = self.reactor.monotonic()
@@ -259,8 +258,14 @@ class OAMSRunoutMonitor:
                             self.runout_after_position = 0.0
                             self.coasting_start_time = None
 
-                    traveled_distance_after_hub_clear = max(fps.extruder.last_position - self.hub_clear_position, 0.0)
-                    self.runout_after_position = traveled_distance_after_hub_clear
+                    if self.hub_clear_position is not None:
+                        traveled_distance_after_hub_clear = max(fps.extruder.last_position - self.hub_clear_position, 0.0)
+                        self.runout_after_position = traveled_distance_after_hub_clear
+                    elif self.hub_cleared:
+                        # Hub marked as cleared (pause distance reached) but we
+                        # still don't have a clear position yet; treat distance
+                        # as zero until we record the position on the next pass.
+                        self.runout_after_position = 0.0
 
                 try:
                     path_length = getattr(self.oams[fps_state.current_oams], "filament_path_length", 0.0)
