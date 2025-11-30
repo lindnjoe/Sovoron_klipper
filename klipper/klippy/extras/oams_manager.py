@@ -2514,13 +2514,22 @@ class OAMSManager:
                                 oams_name, spool_idx, f" ({context})" if context else "")
 
     def _is_oams_mcu_ready(self, oams: Any) -> bool:
-        """
-        Check whether the MCU for an OAMS is available before sending commands.
-        """
+        """True when the OAMS MCU is reachable and not shutdown."""
+
+        mcu = getattr(oams, "mcu", None)
         try:
-            mcu = getattr(oams, "mcu", None)
-            if mcu and hasattr(mcu, "is_shutdown"):
-                return not bool(mcu.is_shutdown())
+            if mcu is None:
+                return False
+
+            if hasattr(mcu, "is_shutdown") and mcu.is_shutdown():
+                return False
+
+            if hasattr(mcu, "is_connected"):
+                return bool(mcu.is_connected())
+
+            serial = getattr(mcu, "serial", None)
+            if hasattr(serial, "is_connected"):
+                return bool(serial.is_connected())
         except Exception:
             self.logger.debug("Could not read MCU state for %s", getattr(oams, "name", "<unknown>"))
             return False
