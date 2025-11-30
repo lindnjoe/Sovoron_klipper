@@ -958,12 +958,15 @@ class OAMSManager:
 
     cmd_CLEAR_ERRORS_help = "Clear the error state of the OAMS"
     def cmd_CLEAR_ERRORS(self, gcmd):
-        with self._monitors_suspended("OAMSM_CLEAR_ERRORS"):
+        monitors_were_running = bool(self.monitor_timers)
+        restart_monitors = True
+        with self._monitors_suspended("OAMSM_CLEAR_ERRORS", restart_on_exit=False):
             # Reset all runout monitors to clear COASTING and other states
             for fps_name, monitor in list(self.runout_monitors.items()):
                 try:
                     monitor.reset()
                 except Exception:
+                    restart_monitors = False
                     self.logger.error("Failed to reset runout monitor for %s", fps_name)
 
             # Clear all FPS state error flags and tracking
@@ -977,10 +980,20 @@ class OAMSManager:
 
             # Clear OAMS hardware errors (this also clears all LED errors)
             # Do this in a single pass to minimize MCU commands
-            for oam in self.oams.values():
+            for oams_name, oam in self.oams.items():
                 try:
+                    is_shutdown = False
+                    try:
+                        is_shutdown = bool(getattr(oam.mcu, "is_shutdown", lambda: False)())
+                    except Exception:
+                        self.logger.debug("Could not read MCU shutdown state for %s", getattr(oam, "name", "<unknown>"))
+                    if is_shutdown:
+                        restart_monitors = False
+                        self.logger.warning("Skipping clear_errors on %s because MCU is shutdown", getattr(oam, "name", "<unknown>"))
+                        continue
                     oam.clear_errors()
                 except Exception:
+                    restart_monitors = False
                     self.logger.error("Failed to clear errors on %s", getattr(oam, "name", "<unknown>"))
 
             # Preserve lane mappings during error clearing to avoid losing lane state.
@@ -1007,6 +1020,7 @@ class OAMSManager:
             try:
                 self.determine_state()
             except Exception:
+                restart_monitors = False
                 self.logger.exception("State detection failed during OAMSM_CLEAR_ERRORS")
 
             # Clear all manual follower overrides and coast state - return to automatic hub sensor control
@@ -1028,7 +1042,22 @@ class OAMSManager:
             # After clearing errors and detecting state, ensure followers are enabled for any
             # lanes that have filament loaded to the hub (even if not loaded to toolhead)
             # This keeps filament pressure up for manual operations during troubleshooting
-            self._ensure_followers_for_loaded_hubs()
+            try:
+                self._ensure_followers_for_loaded_hubs()
+            except Exception:
+                restart_monitors = False
+                self.logger.exception("Failed to refresh followers after OAMSM_CLEAR_ERRORS")
+
+        if monitors_were_running:
+            if restart_monitors:
+                try:
+                    self.start_monitors()
+                except Exception:
+                    self.logger.exception("Failed to restart monitors after OAMSM_CLEAR_ERRORS")
+            else:
+                self.logger.warning(
+                    "Leaving monitors paused after OAMSM_CLEAR_ERRORS due to earlier errors; run OAMSM_STATUS once issues are resolved"
+                )
 
         gcmd.respond_info("OAMS errors cleared and system re-initialized")
 
@@ -3457,7 +3486,7 @@ class OAMSManager:
         self.runout_monitors = {}
 
     @contextmanager
-    def _monitors_suspended(self, reason: str = ""):
+    def _monitors_suspended(self, reason: str = "", restart_on_exit: bool = True):
         """Pause monitors while performing coordinated reset work."""
         monitors_were_running = bool(self.monitor_timers)
         if monitors_were_running:
@@ -3471,7 +3500,7 @@ class OAMSManager:
         try:
             yield
         finally:
-            if monitors_were_running:
+            if monitors_were_running and restart_on_exit:
                 try:
                     self.start_monitors()
                     if reason:
