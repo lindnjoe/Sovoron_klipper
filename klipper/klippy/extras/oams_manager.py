@@ -23,6 +23,7 @@
 # - load_fps_stuck_threshold: FPS pressure above which load is considered failed (default: 0.75)
 # - clog_sensitivity: Detection sensitivity level - "low", "medium", "high" (default: "medium")
 
+import json
 import logging
 import time
 import traceback
@@ -1023,6 +1024,14 @@ class OAMSManager:
                 restart_monitors = False
                 self.logger.exception("State detection failed during OAMSM_CLEAR_ERRORS")
 
+            # Rehydrate state from AFC.var.unit so lane/tool status reflects the
+            # latest AFC snapshot after clearing hardware state.
+            try:
+                self._refresh_state_from_afc_snapshot()
+            except Exception:
+                restart_monitors = False
+                self.logger.exception("Failed to refresh state from AFC.var.unit during OAMSM_CLEAR_ERRORS")
+
             # Clear all manual follower overrides and coast state - return to automatic hub sensor control
             # Also clear last state tracking so follower state is refreshed from actual sensors
             for oams_name in self.oams.keys():
@@ -1060,6 +1069,131 @@ class OAMSManager:
                 )
 
         gcmd.respond_info("OAMS errors cleared and system re-initialized")
+
+    def _load_afc_var_unit_snapshot(self) -> Optional[Dict[str, Any]]:
+        """Load the current AFC.var.unit snapshot from the live AFC object."""
+
+        afc = self._get_afc()
+        if afc is None:
+            return None
+
+        try:
+            var_obj = getattr(afc, "var", None)
+            if isinstance(var_obj, dict):
+                snapshot = var_obj.get("unit")
+            else:
+                snapshot = getattr(var_obj, "unit", None)
+
+            if isinstance(snapshot, dict):
+                return snapshot
+        except Exception:
+            self.logger.debug("Failed to read AFC.var.unit from live AFC object", exc_info=True)
+
+        return None
+
+    def _refresh_state_from_afc_snapshot(self) -> None:
+        """Update FPS state from the latest AFC.var.unit snapshot."""
+
+        snapshot = self._load_afc_var_unit_snapshot()
+        if not snapshot:
+            self.logger.debug("No AFC.var.unit snapshot available for state refresh")
+            return
+
+        system_state = snapshot.get("system", {}) if isinstance(snapshot, dict) else {}
+        extruders = system_state.get("extruders", {}) if isinstance(system_state, dict) else {}
+        if not isinstance(extruders, dict):
+            self.logger.debug("AFC.var.unit snapshot missing extruder data")
+            return
+
+        afc = self._get_afc()
+        for extruder_name, extruder_state in extruders.items():
+            if not isinstance(extruder_state, dict):
+                continue
+
+            lane_name = extruder_state.get("lane_loaded")
+            if not lane_name:
+                continue
+
+            fps_name = self.get_fps_for_afc_lane(lane_name)
+            if not fps_name:
+                continue
+
+            fps_state = self.current_state.fps_state.get(fps_name)
+            if fps_state is None:
+                continue
+
+            lane_obj = getattr(afc, "lanes", {}).get(lane_name) if afc else None
+            lane_data = None
+
+            # Find lane data in the snapshot for spool index fallback
+            for unit_name, unit_data in snapshot.items():
+                if not isinstance(unit_data, dict) or unit_name == "system":
+                    continue
+                candidate = unit_data.get(lane_name)
+                if isinstance(candidate, dict):
+                    lane_data = candidate
+                    break
+
+            spool_idx = None
+            if lane_obj is not None:
+                unit_str = getattr(lane_obj, "unit", None)
+                if isinstance(unit_str, str) and ":" in unit_str:
+                    _, slot_str = unit_str.split(":", 1)
+                    try:
+                        spool_idx = int(slot_str) - 1
+                    except ValueError:
+                        spool_idx = None
+                elif hasattr(lane_obj, "index"):
+                    try:
+                        spool_idx = int(getattr(lane_obj, "index")) - 1
+                    except Exception:
+                        spool_idx = None
+
+            if spool_idx is None and isinstance(lane_data, dict):
+                try:
+                    spool_idx = int(lane_data.get("lane", 0)) - 1
+                except Exception:
+                    spool_idx = None
+
+            if spool_idx is None or spool_idx < 0:
+                self.logger.debug("Skipping AFC.var.unit lane %s due to missing spool index", lane_name)
+                continue
+
+            # Resolve the OAMS object backing this lane
+            oams_obj = None
+            oams_name = None
+            if lane_obj is not None:
+                unit_obj = getattr(lane_obj, "unit_obj", None)
+                if unit_obj is None and afc is not None:
+                    unit_obj = getattr(afc, "units", {}).get(getattr(lane_obj, "unit", None))
+                oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
+
+            if not oams_name and isinstance(lane_data, dict):
+                oams_name = lane_data.get("unit")
+
+            if oams_name:
+                oams_obj = self.oams.get(oams_name) or self.oams.get(f"oams {oams_name}")
+
+            if oams_obj is None:
+                self.logger.debug("Could not resolve OAMS for lane %s from AFC.var.unit", lane_name)
+                continue
+
+            fps_state.current_lane = lane_name
+            fps_state.current_oams = getattr(oams_obj, "name", oams_name)
+            fps_state.current_spool_idx = spool_idx
+            fps_state.state = FPSLoadState.LOADED
+            fps_state.since = self.reactor.monotonic()
+            fps_state.reset_stuck_spool_state()
+            fps_state.reset_clog_tracker()
+            self._ensure_forward_follower(fps_name, fps_state, "AFC.var.unit refresh")
+
+            self.logger.info(
+                "OAMSM_CLEAR_ERRORS: refreshed %s from AFC.var.unit (lane %s on %s slot %d)",
+                fps_name,
+                lane_name,
+                fps_state.current_oams,
+                spool_idx,
+            )
 
     cmd_CLEAR_LANE_MAPPINGS_help = "Clear OAMS cross-extruder lane mappings (call after RESET_AFC_MAPPING)"
     def cmd_CLEAR_LANE_MAPPINGS(self, gcmd):
