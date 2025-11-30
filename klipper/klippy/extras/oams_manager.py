@@ -961,6 +961,12 @@ class OAMSManager:
     def cmd_CLEAR_ERRORS(self, gcmd):
         monitors_were_running = bool(self.monitor_timers)
         restart_monitors = True
+        ready_oams = {name: oam for name, oam in self.oams.items() if self._is_oams_mcu_ready(oam)}
+        if not ready_oams:
+            restart_monitors = False
+            self.logger.warning(
+                "No OAMS MCUs ready; skipping hardware clears and leaving monitors paused until connectivity returns"
+            )
         with self._monitors_suspended("OAMSM_CLEAR_ERRORS", restart_on_exit=False):
             # Reset all runout monitors to clear COASTING and other states
             for fps_name, monitor in list(self.runout_monitors.items()):
@@ -981,17 +987,8 @@ class OAMSManager:
 
             # Clear OAMS hardware errors (this also clears all LED errors)
             # Do this in a single pass to minimize MCU commands
-            for oams_name, oam in self.oams.items():
+            for oams_name, oam in ready_oams.items():
                 try:
-                    is_shutdown = False
-                    try:
-                        is_shutdown = bool(getattr(oam.mcu, "is_shutdown", lambda: False)())
-                    except Exception:
-                        self.logger.debug("Could not read MCU shutdown state for %s", getattr(oam, "name", "<unknown>"))
-                    if is_shutdown:
-                        restart_monitors = False
-                        self.logger.warning("Skipping clear_errors on %s because MCU is shutdown", getattr(oam, "name", "<unknown>"))
-                        continue
                     oam.clear_errors()
                 except Exception:
                     restart_monitors = False
@@ -1018,11 +1015,12 @@ class OAMSManager:
                 self.logger.debug("Could not inspect lane mappings (AFC not available or no mappings set)")
 
             # Re-detect state from hardware sensors
-            try:
-                self.determine_state()
-            except Exception:
-                restart_monitors = False
-                self.logger.exception("State detection failed during OAMSM_CLEAR_ERRORS")
+            if ready_oams:
+                try:
+                    self.determine_state()
+                except Exception:
+                    restart_monitors = False
+                    self.logger.exception("State detection failed during OAMSM_CLEAR_ERRORS")
 
             # Rehydrate state from AFC.var.unit so lane/tool status reflects the
             # latest AFC snapshot after clearing hardware state.
@@ -1051,11 +1049,12 @@ class OAMSManager:
             # After clearing errors and detecting state, ensure followers are enabled for any
             # lanes that have filament loaded to the hub (even if not loaded to toolhead)
             # This keeps filament pressure up for manual operations during troubleshooting
-            try:
-                self._ensure_followers_for_loaded_hubs()
-            except Exception:
-                restart_monitors = False
-                self.logger.exception("Failed to refresh followers after OAMSM_CLEAR_ERRORS")
+            if ready_oams:
+                try:
+                    self._ensure_followers_for_loaded_hubs()
+                except Exception:
+                    restart_monitors = False
+                    self.logger.exception("Failed to refresh followers after OAMSM_CLEAR_ERRORS")
 
         if monitors_were_running:
             if restart_monitors:
@@ -2514,6 +2513,20 @@ class OAMSManager:
                 self.logger.error("Failed to %s LED error for %s spool %d%s", "set" if error_state else "clear",
                                 oams_name, spool_idx, f" ({context})" if context else "")
 
+    def _is_oams_mcu_ready(self, oams: Any) -> bool:
+        """
+        Check whether the MCU for an OAMS is available before sending commands.
+        """
+        try:
+            mcu = getattr(oams, "mcu", None)
+            if mcu and hasattr(mcu, "is_shutdown"):
+                return not bool(mcu.is_shutdown())
+        except Exception:
+            self.logger.debug("Could not read MCU state for %s", getattr(oams, "name", "<unknown>"))
+            return False
+
+        return True
+
     def _set_follower_if_changed(self, oams_name: str, oams: Any, enable: int, direction: int, context: str = "") -> None:
         """
         Send follower command only if state has changed to avoid overwhelming MCU with redundant commands.
@@ -2527,6 +2540,10 @@ class OAMSManager:
         """
         last_state = self.follower_last_state.get(oams_name, None)
         desired_state = (enable, direction)
+
+        if not self._is_oams_mcu_ready(oams):
+            self.logger.debug("Skipping follower change for %s (%s) because MCU is not ready", oams_name, context or "no context")
+            return
 
         # Only send command if state changed or this is the first command
         if last_state != desired_state:
@@ -2544,7 +2561,9 @@ class OAMSManager:
         Update follower state for an OAMS based on hub sensors and lane state.
 
         RULE: Enable follower whenever a lane on this OAMS is active or any hub sensor reports filament.
-        Disable only when no filament is present anywhere and no lane is active.
+        Do not automatically disable the follower based on periodic polling; only direct commands
+        or unload flows should turn it off. This prevents clog pauses or transient sensor blips
+        from dropping the follower unexpectedly.
 
         MANUAL OVERRIDE: If follower was manually enabled via OAMSM_FOLLOWER, skip automatic control.
         """
@@ -2552,6 +2571,10 @@ class OAMSManager:
             # Skip automatic control if manually commanded
             if self.follower_manual_override.get(oams_name, False):
                 self.logger.debug("Skipping automatic follower control for %s (manual override active)", oams_name)
+                return
+
+            if not self._is_oams_mcu_ready(oams):
+                self.logger.debug("Skipping automatic follower control for %s (MCU not ready)", oams_name)
                 return
 
             # Keep follower engaged during clog pauses so manual extrusion stays available
@@ -2579,8 +2602,10 @@ class OAMSManager:
                 self._set_follower_if_changed(oams_name, oams, 1, 1, "filament present")
                 self.follower_had_filament[oams_name] = True
             else:
-                self._set_follower_if_changed(oams_name, oams, 0, 1, "no filament present")
-                self.follower_had_filament[oams_name] = False
+                # Leave follower state unchanged when sensors read empty; explicit unloads or
+                # manual commands handle disabling. This avoids unintended shuts offs during
+                # pauses or clog handling.
+                self.logger.debug("Skipping follower disable for %s (no filament reported)", oams_name)
 
             # Coast bookkeeping no longer drives state transitions; keep it reset to avoid stale disables
             self.follower_coasting[oams_name] = False
