@@ -264,7 +264,7 @@ class afcAMS(afcUnit):
         self.timer = self.reactor.register_timer(self._sync_event)
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
-        # PHASE 1: Lane registry integration
+        # Lane registry integration
         self.registry = None
         if LaneRegistry is not None:
             try:
@@ -272,7 +272,7 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.error("Failed to initialize LaneRegistry")
 
-        # PHASE 5: Event bus subscription for spool changes
+        # Event bus subscription for spool changes
         self.event_bus = None
         if AMSEventBus is not None:
             try:
@@ -751,7 +751,7 @@ class afcAMS(afcUnit):
 
         # When a new lane loads to toolhead, clear tool_loaded on any OTHER lanes from this unit
         # that are on the SAME FPS/extruder (each FPS can have its own lane loaded)
-        # This handles cross-FPS runout where AFC switches from OpenAMS lane to different FPS lane
+        # This handles cross-Extruder runout where AFC switches from OpenAMS lane to different Extruder/FPS lane
         lane_extruder = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
         if lane_extruder:
             for other_lane in self.lanes.values():
@@ -759,7 +759,7 @@ class afcAMS(afcUnit):
                     continue
                 if not getattr(other_lane, 'tool_loaded', False):
                     continue
-                # Check if other lane is on same extruder
+                # Check if other lane is on same extruder/FPS
                 other_extruder = getattr(other_lane.extruder_obj, "name", None) if hasattr(other_lane, "extruder_obj") else None
 
                 if other_extruder == lane_extruder:
@@ -1387,7 +1387,7 @@ class afcAMS(afcUnit):
             # Don't start polling if no OAMS hardware
             return
 
-        # PHASE 2: Subscribe to hardware sensor events instead of polling
+        # Subscribe to hardware sensor events instead of polling
         if self.hardware_service is not None:
             # Subscribe to sensor change events
             self.event_bus.subscribe("f1s_changed", self._on_f1s_changed, priority=5)
@@ -1694,8 +1694,7 @@ class afcAMS(afcUnit):
 
         if lane_val_bool:
             # Defer metadata application (material, spoolman IDs, colors, etc.) to
-            # AFC's callbacks instead of duplicating the logic here. The callbacks
-            # will update prep/load state and apply lane data consistently for both
+            # AFC's callbacks. The callbacks will update prep/load state and apply lane data consistently for both
             # single- and shared-sensor lanes.
             try:
                 lane.prep_callback(eventtime, True)
