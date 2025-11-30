@@ -1834,6 +1834,11 @@ class OAMSManager:
                 self.logger.error("Failed to resolve AFC lane for unload on %s", fps_name)
                 lane_name = None
 
+        # Clear any lingering stuck flags so retries can proceed without manual resets
+        if fps_state.stuck_spool_active:
+            fps_state.reset_stuck_spool_state(preserve_restore=True)
+            self.logger.info("Cleared stuck-spool flag before retrying unload on %s", fps_name)
+
         # Capture state BEFORE changing fps_state.state to avoid getting stuck
         try:
             encoder = oams.encoder_clicks
@@ -1861,6 +1866,10 @@ class OAMSManager:
             self.logger.error("Exception while unloading filament on %s", fps_name)
             # Reset state on exception to avoid getting stuck
             fps_state.state = FPSLoadState.LOADED
+            fps_state.since = self.reactor.monotonic()
+            fps_state.reset_stuck_spool_state(preserve_restore=True)
+            if fps_state.current_oams:
+                self._ensure_forward_follower(fps_name, fps_state, "unload retry after exception")
             return False, f"Exception unloading filament on {fps_name}"
 
         if success:
@@ -1892,7 +1901,12 @@ class OAMSManager:
             self._cancel_post_load_pressure_check(fps_state)
             return True, message
 
+        # Failed unload: return to LOADED state so another attempt can be issued
         fps_state.state = FPSLoadState.LOADED
+        fps_state.since = self.reactor.monotonic()
+        fps_state.reset_stuck_spool_state(preserve_restore=True)
+        if fps_state.current_oams:
+            self._ensure_forward_follower(fps_name, fps_state, "unload retry")
         return False, message
 
     def _clear_lane_on_runout(self, fps_name: str, fps_state: "FPSState", lane_name: Optional[str]) -> None:
@@ -2536,7 +2550,15 @@ class OAMSManager:
 
         return True
 
-    def _set_follower_if_changed(self, oams_name: str, oams: Any, enable: int, direction: int, context: str = "") -> None:
+    def _set_follower_if_changed(
+        self,
+        oams_name: str,
+        oams: Any,
+        enable: int,
+        direction: int,
+        context: str = "",
+        force: bool = False,
+    ) -> None:
         """
         Send follower command only if state has changed to avoid overwhelming MCU with redundant commands.
 
@@ -2555,7 +2577,7 @@ class OAMSManager:
             return
 
         # Only send command if state changed or this is the first command
-        if last_state != desired_state:
+        if force or last_state != desired_state:
             try:
                 oams.set_oams_follower(enable, direction)
                 self.follower_last_state[oams_name] = desired_state
@@ -2599,16 +2621,23 @@ class OAMSManager:
             hub_has_filament = any(hub_hes_values) if hub_hes_values is not None else False
 
             lane_loaded = False
+            fps_states_for_oams: List["FPSState"] = []
+            any_following = False
             for fps_state in self.current_state.fps_state.values():
                 if fps_state.current_oams == oams_name:
+                    fps_states_for_oams.append(fps_state)
+                    any_following = any_following or fps_state.following
                     if fps_state.current_spool_idx is not None or fps_state.state != FPSLoadState.UNLOADED:
                         lane_loaded = True
-                        break
 
             has_filament = hub_has_filament or lane_loaded
 
             if has_filament:
-                self._set_follower_if_changed(oams_name, oams, 1, 1, "filament present")
+                force_send = not any_following or self.follower_last_state.get(oams_name) != (1, 1)
+                self._set_follower_if_changed(oams_name, oams, 1, 1, "filament present", force=force_send)
+                for state in fps_states_for_oams:
+                    state.following = True
+                    state.direction = 1
                 self.follower_had_filament[oams_name] = True
             else:
                 # Leave follower state unchanged when sensors read empty; explicit unloads or
