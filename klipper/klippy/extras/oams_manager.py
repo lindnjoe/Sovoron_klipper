@@ -1046,6 +1046,16 @@ class OAMSManager:
                 "Cleared all manual follower overrides, coast state, LED state, and state tracking - returning to automatic control"
             )
 
+            # Force followers on so CLEAR_ERRORS never leaves them disabled, even if sensors
+            # are empty or state is still settling. This keeps manual extrusion available
+            # while the operator recovers from the error condition.
+            if ready_oams:
+                try:
+                    self._force_enable_followers(ready_oams)
+                except Exception:
+                    restart_monitors = False
+                    self.logger.exception("Failed to force followers on during OAMSM_CLEAR_ERRORS")
+
             # After clearing errors and detecting state, ensure followers are enabled for any
             # lanes that have filament loaded to the hub (even if not loaded to toolhead)
             # This keeps filament pressure up for manual operations during troubleshooting
@@ -2588,18 +2598,8 @@ class OAMSManager:
                                 oams_name, f" ({context})" if context else "")
 
     def _update_follower_for_oams(self, oams_name: str, oams: Any) -> None:
-        """
-        Update follower state for an OAMS based on hub sensors and lane state.
-
-        RULE: Enable follower whenever a lane on this OAMS is active or any hub sensor reports filament.
-        Do not automatically disable the follower based on periodic polling; only direct commands
-        or unload flows should turn it off. This prevents clog pauses or transient sensor blips
-        from dropping the follower unexpectedly.
-
-        MANUAL OVERRIDE: If follower was manually enabled via OAMSM_FOLLOWER, skip automatic control.
-        """
+        """Enable the follower whenever the unit has filament available."""
         try:
-            # Skip automatic control if manually commanded
             if self.follower_manual_override.get(oams_name, False):
                 self.logger.debug("Skipping automatic follower control for %s (manual override active)", oams_name)
                 return
@@ -2608,44 +2608,37 @@ class OAMSManager:
                 self.logger.debug("Skipping automatic follower control for %s (MCU not ready)", oams_name)
                 return
 
-            # Keep follower engaged during clog pauses so manual extrusion stays available
-            for fps_state in self.current_state.fps_state.values():
-                if fps_state.current_oams == oams_name and fps_state.clog_active:
-                    self._set_follower_if_changed(oams_name, oams, 1, 1, "clog pause - keep follower")
-                    self.follower_coasting[oams_name] = False
-                    self.follower_coast_start_pos[oams_name] = 0.0
-                    self.follower_had_filament[oams_name] = True
-                    return
-
             hub_hes_values = getattr(oams, "hub_hes_value", None)
             hub_has_filament = any(hub_hes_values) if hub_hes_values is not None else False
 
-            lane_loaded = False
             fps_states_for_oams: List["FPSState"] = []
-            any_following = False
+            lane_loaded = False
+            direction = None
             for fps_state in self.current_state.fps_state.values():
                 if fps_state.current_oams == oams_name:
                     fps_states_for_oams.append(fps_state)
-                    any_following = any_following or fps_state.following
-                    if fps_state.current_spool_idx is not None or fps_state.state != FPSLoadState.UNLOADED:
-                        lane_loaded = True
+                    lane_loaded = lane_loaded or fps_state.current_spool_idx is not None or fps_state.state != FPSLoadState.UNLOADED
+                    if direction is None and fps_state.direction is not None:
+                        direction = fps_state.direction
+
+            # Default to forward when no direction is available
+            if direction is None:
+                last_state = self.follower_last_state.get(oams_name)
+                direction = last_state[1] if last_state else 1
 
             has_filament = hub_has_filament or lane_loaded
-
             if has_filament:
-                force_send = not any_following or self.follower_last_state.get(oams_name) != (1, 1)
-                self._set_follower_if_changed(oams_name, oams, 1, 1, "filament present", force=force_send)
+                self._set_follower_if_changed(oams_name, oams, 1, direction, "filament present", force=True)
                 for state in fps_states_for_oams:
                     state.following = True
-                    state.direction = 1
+                    state.direction = direction
                 self.follower_had_filament[oams_name] = True
             else:
-                # Leave follower state unchanged when sensors read empty; explicit unloads or
-                # manual commands handle disabling. This avoids unintended shuts offs during
-                # pauses or clog handling.
-                self.logger.debug("Skipping follower disable for %s (no filament reported)", oams_name)
+                self._set_follower_if_changed(oams_name, oams, 0, direction, "all hubs empty", force=True)
+                for state in fps_states_for_oams:
+                    state.following = False
+                self.follower_had_filament[oams_name] = False
 
-            # Coast bookkeeping no longer drives state transitions; keep it reset to avoid stale disables
             self.follower_coasting[oams_name] = False
             self.follower_coast_start_pos[oams_name] = 0.0
         except Exception:
@@ -2659,6 +2652,13 @@ class OAMSManager:
         """
         for oams_name, oams in self.oams.items():
             self._update_follower_for_oams(oams_name, oams)
+
+    def _force_enable_followers(self, ready_oams: Dict[str, Any]) -> None:
+        """Force followers on for all ready OAMS controllers."""
+
+        for oams_name, oams in ready_oams.items():
+            self._set_follower_if_changed(oams_name, oams, 1, 1, "OAMSM_CLEAR_ERRORS force-enable", force=True)
+            self.follower_had_filament[oams_name] = True
 
     def _find_fps_for_oams_bay(self, oams_name: str, bay_idx: int) -> Optional[str]:
         """Find the FPS name that corresponds to a specific OAMS bay."""
@@ -3636,10 +3636,9 @@ class OAMSManager:
             lane_name: Name of the lane that was unloaded (e.g., "lane4")
             extruder_name: Optional name of the extruder/tool it was unloaded from
 
-        This allows OAMS to:
-        - Update FPS state immediately
-        - Disable follower motor
-        - Clear monitoring state
+        This allows OAMS to update FPS state immediately while leaving follower
+        control to the hub sensor logic so it only disables when all hubs on the
+        unit are empty.
         """
         try:
             # Get FPS for this lane (uses cache for speed)
@@ -3653,22 +3652,19 @@ class OAMSManager:
 
             # Only update if this lane was actually loaded on this FPS
             if fps_state.state == FPSLoadState.LOADED:
-                # Disable follower
-                if fps_state.current_oams and fps_state.following:
-                    oam = self.oams.get(fps_state.current_oams)
-                    if oam:
-                        try:
-                            oam.set_oams_follower(0, fps_state.direction)
-                            fps_state.following = False
-                        except Exception:
-                            self.logger.error("Failed to disable follower during AFC unload notification")
-
-                # Update state
+                prev_oams_name = fps_state.current_oams
                 fps_state.state = FPSLoadState.UNLOADED
                 fps_state.current_lane = None
                 fps_state.current_oams = None
                 fps_state.current_spool_idx = None
                 fps_state.since = self.reactor.monotonic()
+
+                # Let hub sensor control decide whether follower stays on based on
+                # remaining filament in the unit
+                if prev_oams_name:
+                    oam = self.oams.get(prev_oams_name)
+                    if oam:
+                        self._update_follower_for_oams(prev_oams_name, oam)
 
                 self.logger.info("Synced OAMS state from AFC: %s unloaded from %s", lane_name, fps_name)
         except Exception:
