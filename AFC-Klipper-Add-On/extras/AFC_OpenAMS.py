@@ -46,12 +46,14 @@ try:
         AMSRunoutCoordinator,
         LaneRegistry,
         AMSEventBus,
+        normalize_extruder_name,
     )
 except Exception:
     AMSHardwareService = None
     AMSRunoutCoordinator = None
     LaneRegistry = None
     AMSEventBus = None
+    normalize_extruder_name = None
 
 # OPTIMIZATION: Configurable sync intervals
 SYNC_INTERVAL = 2.0
@@ -144,6 +146,12 @@ class _VirtualFilamentSensor:
 
 def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
     """Return a case-insensitive token for comparing extruder aliases."""
+    if callable(normalize_extruder_name):
+        try:
+            return normalize_extruder_name(name)
+        except Exception:
+            pass
+
     if not name or not isinstance(name, str):
         return None
 
@@ -499,23 +507,14 @@ class afcAMS(afcUnit):
             if idx >= 0 and self.registry is not None:
                 lane_name = getattr(lane, "name", None)
                 unit_name = self.oams_name or self.name
-                group = getattr(lane, "map", None)
-                if not group and lane_name:
-                    lane_num = ''.join(ch for ch in str(lane_name) if ch.isdigit())
-                    if lane_num:
-                        group = f"T{lane_num}"
-                    else:
-                        group = str(lane_name)
-
                 extruder_name = getattr(lane, "extruder_name", None) or getattr(self, "extruder", None)
 
-                if lane_name and group and extruder_name:
+                if lane_name and extruder_name:
                     try:
                         self.registry.register_lane(
                             lane_name=lane_name,
                             unit_name=unit_name,
                             spool_index=idx,
-                            group=group,
                             extruder=extruder_name,
                             fps_name=None,
                             hub_name=getattr(lane, "hub", None),
@@ -892,12 +891,12 @@ class afcAMS(afcUnit):
         parts = normalized.replace("_", " ").replace("-", " ").split()
         return any(part.lower() == self.name.lower() for part in parts)
 
-    def _normalize_group_name(self, group: Optional[str]) -> Optional[str]:
-        """Return a trimmed filament group token for alias comparison."""
-        if not group or not isinstance(group, str):
+    def _normalize_lane_alias(self, alias: Optional[str]) -> Optional[str]:
+        """Return a trimmed lane alias token for comparison."""
+        if not alias or not isinstance(alias, str):
             return None
 
-        normalized = group.strip()
+        normalized = alias.strip()
         if not normalized:
             return None
 
@@ -920,7 +919,7 @@ class afcAMS(afcUnit):
             return lane.name
 
         lowered = lookup.lower()
-        normalized_lookup = self._normalize_group_name(lookup)
+        normalized_lookup = self._normalize_lane_alias(lookup)
         for lane in self.lanes.values():
             if lane.name.lower() == lowered:
                 return lane.name
@@ -929,7 +928,7 @@ class afcAMS(afcUnit):
             if isinstance(lane_map, str) and lane_map.lower() == lowered:
                 return lane.name
 
-            canonical_map = self._normalize_group_name(lane_map)
+            canonical_map = self._normalize_lane_alias(lane_map)
             if (canonical_map is not None and normalized_lookup is not None and canonical_map.lower() == normalized_lookup.lower()):
                 return lane.name
 
@@ -1680,23 +1679,30 @@ class afcAMS(afcUnit):
                 self._last_lane_states[lane_name] = bool(lane_val)
             return
 
-        if lane_val == self._last_lane_states.get(lane.name):
+        previous = self._last_lane_states.get(lane.name)
+        lane_val_bool = bool(lane_val)
+        prep_state = getattr(lane, "prep_state", None)
+        load_state = getattr(lane, "load_state", None)
+
+        if (
+            previous is not None
+            and bool(previous) == lane_val_bool
+            and (prep_state is None or bool(prep_state) == lane_val_bool)
+            and (load_state is None or bool(load_state) == lane_val_bool)
+        ):
             return
 
-        if lane_val:
-            lane.load_state = False
+        if lane_val_bool:
+            # Defer metadata application (material, spoolman IDs, colors, etc.) to
+            # AFC's callbacks instead of duplicating the logic here. The callbacks
+            # will update prep/load state and apply lane data consistently for both
+            # single- and shared-sensor lanes.
             try:
                 lane.prep_callback(eventtime, True)
             finally:
                 lane.load_callback(eventtime, True)
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
-
-            if (lane.prep_state and lane.load_state and lane.printer.state_message == "Printer is ready" and getattr(lane, "_afc_prep_done", False)):
-                lane.status = AFCLaneState.LOADED
-                lane.unit_obj.lane_loaded(lane)
-                lane.afc.spool._set_values(lane)
-                lane._prep_capture_td1()
         else:
             # Sensor False - filament left spool bay
             # Update sensor state but don't aggressively clear everything (align with Box Turtle behavior)
@@ -1709,9 +1715,15 @@ class afcAMS(afcUnit):
             lane.tool_loaded = False
             lane.loaded_to_hub = False
 
-            # Let AFC's normal flow (LANE_UNLOAD, etc.) handle status changes and cleanup
-            # Don't aggressively clear: status, lane_unloaded(), td1_data, spool.clear_values()
-            # This matches Box Turtle behavior where lanes show "Filament detected, but not loaded"
+            # Shared prep/load sensors stay in sync for AMS lanes; treat False as fully unloaded
+            try:
+                lane.set_unloaded()
+                if hasattr(lane, "_afc_prep_done"):
+                    lane._afc_prep_done = False
+                lane.prep_state = lane_val_bool
+                lane.load_state = lane_val_bool
+            except Exception:
+                self.logger.error("Failed to fully clear shared lane %s after sensor cleared", lane.name, exc_info=True)
 
             # For same-FPS runouts: blocking mechanism in _should_block_sensor_update_for_runout()
             # prevents us from reaching here during active runout
@@ -1742,7 +1754,9 @@ class afcAMS(afcUnit):
                 self.logger.info("Skipping extruder unsync for %s - cross-extruder runout (AFC will handle via LANE_UNLOAD)", lane.name)
 
         lane.afc.save_vars()
-        self._last_lane_states[lane.name] = lane_val
+        lane.prep_state = lane_val_bool
+        lane.load_state = lane_val_bool
+        self._last_lane_states[lane.name] = lane_val_bool
 
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
         """Apply a boolean lane sensor value using existing AFC callbacks."""
@@ -2030,17 +2044,17 @@ class afcAMS(afcUnit):
                     return candidate, trace
 
             if registry is not None:
-                group_token = resolved_name if resolved_name.lower().startswith("t") else f"T{normalized_tool}"
-                info = registry.get_by_group(group_token)
+                token = resolved_name if resolved_name.lower().startswith("t") else f"T{normalized_tool}"
+                info = registry.resolve_lane_token(token)
                 if info is not None:
                     lane = self._get_lane_object(info.lane_name)
                     if lane is not None:
                         trace.append(
-                            f"registry group '{group_token}' -> lane {info.lane_name} (unit {info.unit_name})"
+                            f"registry token '{token}' -> lane {info.lane_name} (unit {info.unit_name})"
                         )
                         return lane, trace
                     trace.append(
-                        f"registry group '{group_token}' found lane {info.lane_name} but object missing"
+                        f"registry token '{token}' found lane {info.lane_name} but object missing"
                     )
 
         trace.append("no lane resolved")
@@ -2352,6 +2366,31 @@ class afcAMS(afcUnit):
                 self.logger.error("Failed to mirror tool sensor state for unloaded lane %s", lane.name)
         return True
 
+    def mark_cross_extruder_runout(self, lane_name: str) -> bool:
+        """Mark a lane as cross-extruder for shared sensor handling."""
+
+        lane = self._resolve_lane_reference(lane_name)
+        if lane is None:
+            self.logger.warning(
+                "Requested cross-extruder runout mark for %s but AFC unit %s cannot resolve it",
+                lane_name,
+                self.name,
+            )
+            return False
+
+        try:
+            if not hasattr(lane, "_oams_runout_detected"):
+                lane._oams_runout_detected = False
+            lane._oams_cross_extruder_runout = True
+            self.logger.info(
+                "Marked lane %s as cross-extruder runout participant for shared sensor bypass",
+                lane.name,
+            )
+            return True
+        except Exception:
+            self.logger.error("Failed to mark lane %s for cross-extruder runout", lane.name, exc_info=True)
+            return False
+
     def _is_event_for_unit(self, unit_name: Optional[str]) -> bool:
         """Check whether an event payload targets this unit."""
         if not unit_name:
@@ -2393,8 +2432,10 @@ class afcAMS(afcUnit):
         try:
             spool_mgr = getattr(self.afc, "spool", None)
             next_id = getattr(spool_mgr, "next_spool_id", "") if spool_mgr else ""
-            if spool_mgr is not None and next_id and not previous_loaded:
-                spool_mgr._set_values(lane)
+            if spool_mgr is not None:
+                spool_data_missing = not getattr(lane, "spool_id", "")
+                if next_id or (not previous_loaded) or spool_data_missing:
+                    spool_mgr._set_values(lane)
         except Exception:
             self.logger.debug("Failed to update spool info for %s after load event", lane.name, exc_info=True)
 
