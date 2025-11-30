@@ -45,7 +45,7 @@ def normalize_extruder_name(name: Optional[str]) -> Optional[str]:
 
 
 # ============================================================================
-# PHASE 5: Event System
+# Event System
 # ============================================================================
 
 class AMSEventBus:
@@ -166,7 +166,7 @@ class AMSEventBus:
 
 
 # ============================================================================
-# PHASE 1: Lane Registry
+# Lane Registry
 # ============================================================================
 
 @dataclass
@@ -366,7 +366,7 @@ class LaneRegistry:
 # ============================================================================
 
 # ============================================================================
-# Original AMSHardwareService (Enhanced with Registry)
+# AMSHardwareService (Enhanced with Registry)
 # ============================================================================
 
 class AMSHardwareService:
@@ -377,8 +377,7 @@ class AMSHardwareService:
     the same hardware instance without reimplementing any low level MCU
     messaging.
     
-    PHASE 1 ENHANCEMENT: Now uses LaneRegistry for all lane lookups instead
-    of maintaining separate _lanes_by_spool mapping.
+    Uses LaneRegistry for all lane lookups.
     """
 
     _instances: Dict[Tuple[int, str], "AMSHardwareService"] = {}
@@ -393,14 +392,14 @@ class AMSHardwareService:
         self._lane_snapshots: Dict[str, Dict[str, Any]] = {}
         self._status_callbacks: List[Callable[[Dict[str, Any]], None]] = []
 
-        # PHASE 1: Use registry instead of local _lanes_by_spool
+        # Use registry instead of local _lanes_by_spool
         self.registry = LaneRegistry.for_printer(printer)
         self.event_bus = AMSEventBus.get_instance()
 
         # Cache reactor reference
         self._reactor = None
 
-        # PHASE 2: Unified polling with event publishing
+        # Unified polling with event publishing
         self._polling_timer = None
         self._polling_interval = 2.0  # Active polling interval
         self._polling_interval_idle = 4.0  # Idle polling interval
@@ -743,7 +742,7 @@ class AMSHardwareService:
         if event_spool_index is None:
             event_spool_index = old_snapshot.get("spool_index")
 
-        # PHASE 5: Publish state change events
+        # Publish state change events
         old_lane_state = old_snapshot.get("lane_state")
         new_lane_state = bool(lane_state)
 
@@ -793,7 +792,7 @@ class AMSHardwareService:
     def resolve_lane_for_spool(self, unit_name: str, spool_index: Optional[int]) -> Optional[str]:
         """Map a spool index to its corresponding lane name.
         
-        PHASE 1: Now uses LaneRegistry instead of local mapping.
+        Uses LaneRegistry instead of local mapping.
         """
         if spool_index is None:
             return None
@@ -802,7 +801,7 @@ class AMSHardwareService:
         except (TypeError, ValueError):
             return None
         
-        # PHASE 1: Use registry
+        # Use registry
         return self.registry.resolve_lane_name(unit_name, normalized)
 
     def latest_lane_snapshot_for_spool(self, unit_name: str, spool_index: Optional[int]) -> Optional[Dict[str, Any]]:
