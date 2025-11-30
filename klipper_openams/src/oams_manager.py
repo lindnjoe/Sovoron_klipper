@@ -2700,7 +2700,7 @@ class OAMSManager:
         return partial(_unified_monitor, self)
 
     def _check_unload_speed(self, fps_name, fps_state, oams, encoder_value, now):
-        """Check unload speed using optimized encoder tracking."""
+        """Detect stalled unloads from encoder movement during active prints."""
         # Skip check if already handling a stuck spool
         if fps_state.stuck_spool_active:
             return
@@ -2758,7 +2758,7 @@ class OAMSManager:
             self.logger.info("Spool appears stuck while unloading %s spool %s - letting retry logic handle it", lane_label, spool_label)
 
     def _check_load_speed(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
-        """Check load speed using optimized encoder tracking and FPS pressure monitoring."""
+        """Detect stalled loads by combining encoder deltas with FPS pressure feedback."""
         if fps_state.stuck_spool_active:
             return
 
@@ -3351,7 +3351,7 @@ class OAMSManager:
             self.runout_monitors[fps_name] = monitor
             monitor.start()
 
-        self.logger.info("All monitors started (optimized)")
+        self.logger.info("All monitors started (runout, FPS, and encoder checks active)")
 
     # ============================================================================
     # AFC State Change Notifications (Optional Callbacks)
