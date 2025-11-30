@@ -172,14 +172,13 @@ class AMSEventBus:
 @dataclass
 class LaneInfo:
     """Complete identity information for a single lane.
-    
+
     This is the single source of truth for lane identity across OpenAMS and AFC.
-    All lookups (by name, spool index, group, etc.) route through the registry.
+    All lookups (by name, spool index, lane alias, etc.) route through the registry.
     """
     lane_name: str          # "lane4", "lane5", etc.
     unit_name: str          # "AMS_1", "AMS_2", etc.
     spool_index: int        # 0-3 (zero-indexed position in OAMS unit)
-    group: str              # "T4", "T5", etc. (filament group identifier)
     extruder: str           # "extruder4", "extruder5", etc.
     
     # Optional fields
@@ -195,7 +194,6 @@ class LaneInfo:
             'lane_name': self.lane_name,
             'unit_name': self.unit_name,
             'spool_index': self.spool_index,
-            'group': self.group,
             'extruder': self.extruder,
             'fps_name': self.fps_name,
             'hub_name': self.hub_name,
@@ -209,7 +207,7 @@ class LaneRegistry:
     """Single source of truth for lane identity across OpenAMS and AFC.
     
     This registry eliminates multiple redundant lookups by providing O(1) access
-    to lane information via any identifier (lane name, spool index, group, etc.).
+    to lane information via any identifier (lane name, spool index, etc.).
     
     All lane tracking should go through this registry instead of maintaining
     separate mappings in multiple files.
@@ -228,7 +226,6 @@ class LaneRegistry:
         # Indexed lookups for O(1) access
         self._by_lane_name: Dict[str, LaneInfo] = {}
         self._by_spool: Dict[Tuple[str, int], LaneInfo] = {}
-        self._by_group: Dict[str, LaneInfo] = {}
         self._by_extruder: Dict[str, List[LaneInfo]] = {}
         
         # Subscribe to events
@@ -243,11 +240,10 @@ class LaneRegistry:
                 cls._instances[key] = cls(printer)
             return cls._instances[key]
     
-    def register_lane(self, 
+    def register_lane(self,
                      lane_name: str,
-                     unit_name: str, 
+                     unit_name: str,
                      spool_index: int,
-                     group: str,
                      extruder: str,
                      *,
                      fps_name: Optional[str] = None,
@@ -256,21 +252,20 @@ class LaneRegistry:
                      custom_load_cmd: Optional[str] = None,
                      custom_unload_cmd: Optional[str] = None) -> LaneInfo:
         """Register a lane with all its identifiers.
-        
+
         This is typically called during AFC_lane initialization.
-        
+
         Args:
             lane_name: AFC lane identifier (e.g., "lane4")
             unit_name: AMS unit name (e.g., "AMS_1")
             spool_index: Zero-indexed spool position in OAMS unit (0-3)
-            group: Filament group identifier (e.g., "T4")
             extruder: Klipper extruder name (e.g., "extruder4")
             fps_name: Optional FPS identifier (e.g., "fps1")
             hub_name: Optional hub identifier (e.g., "Hub_1")
             led_index: Optional LED indicator reference
             custom_load_cmd: Optional custom load command
             custom_unload_cmd: Optional custom unload command
-            
+
         Returns:
             The registered LaneInfo object
         """
@@ -280,13 +275,12 @@ class LaneRegistry:
             if existing is not None:
                 self.logger.warning("Lane '%s' already registered, updating", lane_name)
                 self._unregister_lane(existing)
-            
+
             # Create lane info
             info = LaneInfo(
                 lane_name=lane_name,
                 unit_name=unit_name,
                 spool_index=spool_index,
-                group=group,
                 extruder=extruder,
                 fps_name=fps_name,
                 hub_name=hub_name,
@@ -297,18 +291,17 @@ class LaneRegistry:
             
             # Add to storage
             self._lanes.append(info)
-            
+
             # Build indexes
             self._by_lane_name[lane_name] = info
             self._by_spool[(unit_name, spool_index)] = info
-            self._by_group[group] = info
-            
+
             if extruder not in self._by_extruder:
                 self._by_extruder[extruder] = []
             self._by_extruder[extruder].append(info)
-            
-            self.logger.info("Registered lane: %s ? %s[%d] ? %s (extruder=%s, fps=%s)", 
-                           lane_name, unit_name, spool_index, group, extruder, fps_name)
+
+            self.logger.info("Registered lane: %s ? %s[%d] (extruder=%s, fps=%s)",
+                           lane_name, unit_name, spool_index, extruder, fps_name)
             
             return info
     
@@ -319,8 +312,7 @@ class LaneRegistry:
         
         self._by_lane_name.pop(info.lane_name, None)
         self._by_spool.pop((info.unit_name, info.spool_index), None)
-        self._by_group.pop(info.group, None)
-        
+
         extruder_lanes = self._by_extruder.get(info.extruder, [])
         if info in extruder_lanes:
             extruder_lanes.remove(info)
@@ -334,11 +326,16 @@ class LaneRegistry:
         """Get lane info by OAMS unit and spool index (e.g., "AMS_1", 0)."""
         with self._lock:
             return self._by_spool.get((unit_name, spool_index))
-    
-    def get_by_group(self, group: str) -> Optional[LaneInfo]:
-        """Get lane info by filament group (e.g., "T4")."""
+
+    def resolve_lane_token(self, token: str) -> Optional[LaneInfo]:
+        """Resolve a lane by name."""
+        lowered = token.lower()
         with self._lock:
-            return self._by_group.get(group)
+            for lane_name, info in self._by_lane_name.items():
+                if lane_name.lower() == lowered:
+                    return info
+
+            return None
     
     def get_by_extruder(self, extruder: str) -> List[LaneInfo]:
         """Get all lanes for an extruder (e.g., "extruder4")."""
@@ -354,11 +351,6 @@ class LaneRegistry:
         """Helper: Get lane name from unit and spool index."""
         info = self.get_by_spool(unit_name, spool_index)
         return info.lane_name if info else None
-    
-    def resolve_group(self, unit_name: str, spool_index: int) -> Optional[str]:
-        """Helper: Get group from unit and spool index."""
-        info = self.get_by_spool(unit_name, spool_index)
-        return info.group if info else None
     
     def resolve_spool_index(self, lane_name: str) -> Optional[int]:
         """Helper: Get spool index from lane name."""

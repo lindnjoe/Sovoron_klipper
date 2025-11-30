@@ -507,23 +507,14 @@ class afcAMS(afcUnit):
             if idx >= 0 and self.registry is not None:
                 lane_name = getattr(lane, "name", None)
                 unit_name = self.oams_name or self.name
-                group = getattr(lane, "map", None)
-                if not group and lane_name:
-                    lane_num = ''.join(ch for ch in str(lane_name) if ch.isdigit())
-                    if lane_num:
-                        group = f"T{lane_num}"
-                    else:
-                        group = str(lane_name)
-
                 extruder_name = getattr(lane, "extruder_name", None) or getattr(self, "extruder", None)
 
-                if lane_name and group and extruder_name:
+                if lane_name and extruder_name:
                     try:
                         self.registry.register_lane(
                             lane_name=lane_name,
                             unit_name=unit_name,
                             spool_index=idx,
-                            group=group,
                             extruder=extruder_name,
                             fps_name=None,
                             hub_name=getattr(lane, "hub", None),
@@ -900,12 +891,12 @@ class afcAMS(afcUnit):
         parts = normalized.replace("_", " ").replace("-", " ").split()
         return any(part.lower() == self.name.lower() for part in parts)
 
-    def _normalize_group_name(self, group: Optional[str]) -> Optional[str]:
-        """Return a trimmed filament group token for alias comparison."""
-        if not group or not isinstance(group, str):
+    def _normalize_lane_alias(self, alias: Optional[str]) -> Optional[str]:
+        """Return a trimmed lane alias token for comparison."""
+        if not alias or not isinstance(alias, str):
             return None
 
-        normalized = group.strip()
+        normalized = alias.strip()
         if not normalized:
             return None
 
@@ -928,7 +919,7 @@ class afcAMS(afcUnit):
             return lane.name
 
         lowered = lookup.lower()
-        normalized_lookup = self._normalize_group_name(lookup)
+        normalized_lookup = self._normalize_lane_alias(lookup)
         for lane in self.lanes.values():
             if lane.name.lower() == lowered:
                 return lane.name
@@ -937,7 +928,7 @@ class afcAMS(afcUnit):
             if isinstance(lane_map, str) and lane_map.lower() == lowered:
                 return lane.name
 
-            canonical_map = self._normalize_group_name(lane_map)
+            canonical_map = self._normalize_lane_alias(lane_map)
             if (canonical_map is not None and normalized_lookup is not None and canonical_map.lower() == normalized_lookup.lower()):
                 return lane.name
 
@@ -2053,17 +2044,17 @@ class afcAMS(afcUnit):
                     return candidate, trace
 
             if registry is not None:
-                group_token = resolved_name if resolved_name.lower().startswith("t") else f"T{normalized_tool}"
-                info = registry.get_by_group(group_token)
+                token = resolved_name if resolved_name.lower().startswith("t") else f"T{normalized_tool}"
+                info = registry.resolve_lane_token(token)
                 if info is not None:
                     lane = self._get_lane_object(info.lane_name)
                     if lane is not None:
                         trace.append(
-                            f"registry group '{group_token}' -> lane {info.lane_name} (unit {info.unit_name})"
+                            f"registry token '{token}' -> lane {info.lane_name} (unit {info.unit_name})"
                         )
                         return lane, trace
                     trace.append(
-                        f"registry group '{group_token}' found lane {info.lane_name} but object missing"
+                        f"registry token '{token}' found lane {info.lane_name} but object missing"
                     )
 
         trace.append("no lane resolved")

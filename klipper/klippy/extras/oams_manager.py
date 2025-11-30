@@ -124,6 +124,7 @@ class OAMSRunoutMonitor:
         self.runout_position: Optional[float] = None
         self.bldc_clear_position: Optional[float] = None
         self.runout_after_position: Optional[float] = None
+        self.runout_spool_idx: Optional[int] = None
         self.is_cross_extruder_runout: bool = False  # Track if runout is cross-extruder
 
         # Track when hub sensor clears during COASTING
@@ -155,7 +156,7 @@ class OAMSRunoutMonitor:
             try:
                 idle_timeout = self.printer.lookup_object("idle_timeout")
                 is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
-                spool_idx = self.fps_state.current_spool_idx
+                spool_idx = self.fps_state.current_spool_idx or self.runout_spool_idx
         
                 if self.state in (OAMSRunoutState.STOPPED, OAMSRunoutState.PAUSED, OAMSRunoutState.RELOADING):
                     return eventtime + MONITOR_ENCODER_PERIOD
@@ -214,6 +215,14 @@ class OAMSRunoutMonitor:
                         self._detect_runout(oams_obj, lane_name, spool_idx, eventtime)
         
                 elif self.state in (OAMSRunoutState.DETECTED, OAMSRunoutState.COASTING):
+                    # Cross-extruder runouts don't need coasting; trigger the
+                    # reload immediately so only same-FPS runouts use the
+                    # hub/PTFE coasting path.
+                    if self.is_cross_extruder_runout:
+                        self.state = OAMSRunoutState.RELOADING
+                        self.reload_callback()
+                        return eventtime + MONITOR_ENCODER_PERIOD
+
                     # If we have traveled the configured pause distance since F1S
                     # reported empty, treat the hub as cleared even if the hub
                     # sensor still reads present. This allows same-FPS runouts to
@@ -386,6 +395,7 @@ class OAMSRunoutMonitor:
 
         self.state = OAMSRunoutState.DETECTED
         self.runout_position = fps.extruder.last_position
+        self.runout_spool_idx = spool_idx
         fps_state.is_cross_extruder_runout = self.is_cross_extruder_runout
 
         if self.is_cross_extruder_runout and lane_name:
@@ -425,6 +435,7 @@ class OAMSRunoutMonitor:
         self.state = OAMSRunoutState.RELOADING
         self.runout_position = None
         self.runout_after_position = None
+        self.runout_spool_idx = None
         self.is_cross_extruder_runout = False
         # Clear COASTING state tracking
         self.hub_cleared = False
@@ -438,6 +449,7 @@ class OAMSRunoutMonitor:
         self.state = OAMSRunoutState.STOPPED
         self.runout_position = None
         self.runout_after_position = None
+        self.runout_spool_idx = None
         self.is_cross_extruder_runout = False
         # Clear COASTING state tracking
         self.hub_cleared = False
@@ -2366,10 +2378,10 @@ class OAMSManager:
 
     def _update_follower_for_oams(self, oams_name: str, oams: Any) -> None:
         """
-        Update follower state for an OAMS based on hub sensors with coast support.
+        Update follower state for an OAMS based on hub sensors and lane state.
 
-        RULE: Follower enabled if ANY hub sensor shows filament, disabled after 50mm coast when ALL empty.
-        When all hub sensors go empty, we coast 50mm to clear filament from shared PTFE before disabling.
+        RULE: Enable follower whenever a lane on this OAMS is active or any hub sensor reports filament.
+        Disable only when no filament is present anywhere and no lane is active.
 
         MANUAL OVERRIDE: If follower was manually enabled via OAMSM_FOLLOWER, skip automatic control.
         """
@@ -2383,92 +2395,33 @@ class OAMSManager:
             for fps_state in self.current_state.fps_state.values():
                 if fps_state.current_oams == oams_name and fps_state.clog_active:
                     self._set_follower_if_changed(oams_name, oams, 1, 1, "clog pause - keep follower")
-                    # Reset coast bookkeeping to avoid an automatic disable once the clog clears
                     self.follower_coasting[oams_name] = False
                     self.follower_coast_start_pos[oams_name] = 0.0
                     self.follower_had_filament[oams_name] = True
                     return
 
             hub_hes_values = getattr(oams, "hub_hes_value", None)
-            if hub_hes_values is None:
-                return
+            hub_has_filament = any(hub_hes_values) if hub_hes_values is not None else False
 
-            # Check if ANY hub sensor shows filament
-            any_filament = any(hub_hes_values)
-            was_coasting = self.follower_coasting.get(oams_name, False)
-            had_filament = self.follower_had_filament.get(oams_name, False)
+            lane_loaded = False
+            for fps_state in self.current_state.fps_state.values():
+                if fps_state.current_oams == oams_name:
+                    if fps_state.current_spool_idx is not None or fps_state.state != FPSLoadState.UNLOADED:
+                        lane_loaded = True
+                        break
 
-            if any_filament:
-                # At least one bay has filament - enable follower and clear coast state
-                self._set_follower_if_changed(oams_name, oams, 1, 1, f"hub sensors: {hub_hes_values}")
+            has_filament = hub_has_filament or lane_loaded
 
-                # Clear coast state
-                if was_coasting:
-                    self.logger.info("Follower coast cancelled for %s (filament detected)", oams_name)
-                self.follower_coasting[oams_name] = False
-                self.follower_coast_start_pos[oams_name] = 0.0
+            if has_filament:
+                self._set_follower_if_changed(oams_name, oams, 1, 1, "filament present")
                 self.follower_had_filament[oams_name] = True
             else:
-                # All bays empty - start or continue coasting
-                if not was_coasting and had_filament:
-                    # Transition from "had filament" to "all empty" - start coast
-                    # Find any FPS associated with this OAMS to get extruder position
-                    extruder_pos = None
-                    for fps_name, fps_state in self.current_state.fps_state.items():
-                        if fps_state.current_oams == oams_name:
-                            fps = self.fpss.get(fps_name)
-                            if fps and hasattr(fps, 'extruder'):
-                                extruder_pos = fps.extruder.last_position
-                                break
+                self._set_follower_if_changed(oams_name, oams, 0, 1, "no filament present")
+                self.follower_had_filament[oams_name] = False
 
-                    if extruder_pos is not None:
-                        self.follower_coasting[oams_name] = True
-                        self.follower_coast_start_pos[oams_name] = extruder_pos
-                        self.logger.info("Follower coast started for %s at position %.1f (all hub sensors empty, will coast %.1f mm)",
-                                       oams_name, extruder_pos, self.follower_coast_distance)
-                        # Keep follower enabled during coast
-                        self._set_follower_if_changed(oams_name, oams, 1, 1, "starting coast")
-                    else:
-                        # Can't find extruder position, just disable immediately
-                        self.logger.warning("Cannot determine extruder position for %s coast, disabling follower immediately", oams_name)
-                        self._set_follower_if_changed(oams_name, oams, 0, 1, "no extruder position")
-                        self.follower_had_filament[oams_name] = False
-
-                elif was_coasting:
-                    # Already coasting - check if we've coasted enough
-                    # Find current extruder position
-                    current_pos = None
-                    for fps_name, fps_state in self.current_state.fps_state.items():
-                        if fps_state.current_oams == oams_name:
-                            fps = self.fpss.get(fps_name)
-                            if fps and hasattr(fps, 'extruder'):
-                                current_pos = fps.extruder.last_position
-                                break
-
-                    if current_pos is not None:
-                        coast_start = self.follower_coast_start_pos.get(oams_name, 0.0)
-                        coasted_distance = max(current_pos - coast_start, 0.0)
-
-                        if coasted_distance >= self.follower_coast_distance:
-                            # Coast complete - disable follower
-                            self.logger.info("Follower coast complete for %s (coasted %.1f mm), disabling follower",
-                                           oams_name, coasted_distance)
-                            self._set_follower_if_changed(oams_name, oams, 0, 1, "coast complete")
-                            self.follower_coasting[oams_name] = False
-                            self.follower_coast_start_pos[oams_name] = 0.0
-                            self.follower_had_filament[oams_name] = False
-                        else:
-                            # Still coasting - keep follower enabled
-                            self.logger.debug("Follower coasting for %s: %.1f / %.1f mm",
-                                            oams_name, coasted_distance, self.follower_coast_distance)
-                            self._set_follower_if_changed(oams_name, oams, 1, 1, "still coasting")
-                    else:
-                        # Can't find position, just keep coasting
-                        self._set_follower_if_changed(oams_name, oams, 1, 1, "coasting without position")
-                else:
-                    # Was already empty and not coasting - keep disabled
-                    self._set_follower_if_changed(oams_name, oams, 0, 1, "all hub sensors empty")
-                    self.follower_had_filament[oams_name] = False
+            # Coast bookkeeping no longer drives state transitions; keep it reset to avoid stale disables
+            self.follower_coasting[oams_name] = False
+            self.follower_coast_start_pos[oams_name] = 0.0
         except Exception:
             self.logger.error("Failed to update follower for %s", oams_name)
 
@@ -2747,9 +2700,22 @@ class OAMSManager:
         return partial(_unified_monitor, self)
 
     def _check_unload_speed(self, fps_name, fps_state, oams, encoder_value, now):
-        """Check unload speed using optimized encoder tracking."""
+        """Detect stalled unloads from encoder movement during active prints."""
         # Skip check if already handling a stuck spool
         if fps_state.stuck_spool_active:
+            return
+
+        # Only treat slow unloads as stuck during active prints. Standby/manual unloads
+        # can legitimately pause movement, so skip the detection entirely when not printing.
+        is_printing = False
+        if self._idle_timeout_obj is not None:
+            try:
+                is_printing = self._idle_timeout_obj.get_status(now)["state"] == "Printing"
+            except Exception:
+                is_printing = False
+
+        if not is_printing:
+            fps_state.clear_encoder_samples()
             return
 
         encoder_diff = fps_state.record_encoder_sample(encoder_value)
@@ -2760,15 +2726,7 @@ class OAMSManager:
             self.logger.debug("OAMS[%d] Unload Monitor: Encoder diff %d", getattr(oams, "oams_idx", -1), encoder_diff)
 
         if encoder_diff < MIN_ENCODER_DIFF:
-            # Check if we're actively printing (only set stuck flag during prints)
-            is_printing = False
-            if self._idle_timeout_obj is not None:
-                try:
-                    is_printing = self._idle_timeout_obj.get_status(now)["state"] == "Printing"
-                except Exception:
-                    is_printing = False
-
-            group_label = fps_state.current_lane or fps_name
+            lane_label = fps_state.current_lane or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
 
             # Abort the current unload operation cleanly
@@ -2788,27 +2746,19 @@ class OAMSManager:
             if fps_state.current_oams:
                 self._ensure_forward_follower(fps_name, fps_state, "stuck unload - keep follower active")
 
-            # Only set stuck flag and transition to LOADED during active prints
-            # For manual unloads (standby), let OAMS retry logic handle it without setting stuck flag
-            if is_printing:
-                # Transition to LOADED state cleanly (unload failed during print, so still loaded)
-                fps_state.state = FPSLoadState.LOADED
-                fps_state.clear_encoder_samples()
+            # Transition to LOADED state cleanly (unload failed during print, so still loaded)
+            fps_state.state = FPSLoadState.LOADED
+            fps_state.clear_encoder_samples()
 
-                # Set the stuck flag but DON'T pause - let the OAMS retry logic handle it
-                # The retry logic will clear this flag if the retry succeeds
-                fps_state.stuck_spool_active = True
-                fps_state.stuck_spool_start_time = None
+            # Set the stuck flag but DON'T pause - let the OAMS retry logic handle it
+            # The retry logic will clear this flag if the retry succeeds
+            fps_state.stuck_spool_active = True
+            fps_state.stuck_spool_start_time = None
 
-                self.logger.info("Spool appears stuck while unloading %s spool %s - letting retry logic handle it", group_label, spool_label)
-            else:
-                # During standby unload, don't set stuck flag - just let OAMS retry
-                # State stays UNLOADING so retry logic can continue
-                fps_state.clear_encoder_samples()
-                self.logger.info("Spool unload slow/stuck on %s spool %s (standby) - OAMS retry will handle it", group_label, spool_label)
+            self.logger.info("Spool appears stuck while unloading %s spool %s - letting retry logic handle it", lane_label, spool_label)
 
     def _check_load_speed(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
-        """Check load speed using optimized encoder tracking and FPS pressure monitoring."""
+        """Detect stalled loads by combining encoder deltas with FPS pressure feedback."""
         if fps_state.stuck_spool_active:
             return
 
@@ -2844,7 +2794,7 @@ class OAMSManager:
             stuck_reason = f"FPS pressure {pressure:.2f} >= {self.load_fps_stuck_threshold:.2f} (filament not engaging)"
 
         if stuck_detected:
-            group_label = fps_state.current_lane or fps_name
+            lane_label = fps_state.current_lane or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
 
             # Abort the current load operation cleanly
@@ -2874,7 +2824,7 @@ class OAMSManager:
                 self._ensure_forward_follower(fps_name, fps_state, "stuck load - keep follower active")
 
             self.logger.info("Spool appears stuck while loading %s spool %s (%s) - letting retry logic handle it",
-                           group_label, spool_label, stuck_reason)
+                           lane_label, spool_label, stuck_reason)
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, pressure, hes_values, now):
         """Check for stuck spool conditions (OPTIMIZED)."""
@@ -3401,7 +3351,7 @@ class OAMSManager:
             self.runout_monitors[fps_name] = monitor
             monitor.start()
 
-        self.logger.info("All monitors started (optimized)")
+        self.logger.info("All monitors started (runout, FPS, and encoder checks active)")
 
     # ============================================================================
     # AFC State Change Notifications (Optional Callbacks)
