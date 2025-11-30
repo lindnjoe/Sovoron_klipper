@@ -1036,8 +1036,8 @@ class OAMSManager:
     def cmd_CLEAR_LANE_MAPPINGS(self, gcmd):
         """Clear any lane.map redirects created by OAMS cross-extruder runouts.
 
-        This is automatically called by OAMSM_CLEAR_ERRORS, but can also be called
-        manually after RESET_AFC_MAPPING to ensure lane mappings are fully reset.
+        Use this after RESET_AFC_MAPPING or when you explicitly want to clear
+        redirects; OAMSM_CLEAR_ERRORS leaves mappings intact.
 
         Useful to add to your PRINT_END or CANCEL_PRINT macros after RESET_AFC_MAPPING:
 
