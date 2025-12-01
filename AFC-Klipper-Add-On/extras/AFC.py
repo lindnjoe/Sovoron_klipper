@@ -1060,9 +1060,30 @@ class afc:
             return
 
         cur_lane = self.lanes[lane]
+
+        # Check if a lane is already loaded on this extruder
         if cur_lane.extruder_obj.lane_loaded:
-            self.error.AFC_error("Cannot load {}, {} currently loaded".format(lane, cur_lane.extruder_obj.lane_loaded), pause=self.function.in_print())
-            return
+            loaded_lane_name = cur_lane.extruder_obj.lane_loaded
+
+            # If trying to load the same lane that's already loaded, skip
+            if loaded_lane_name == lane:
+                self.logger.info("{} is already loaded on {}".format(lane, cur_lane.extruder_obj.name))
+                return
+
+            # Different lane is loaded - unload it first
+            self.logger.info("Auto-unloading {} before loading {}".format(loaded_lane_name, lane))
+            loaded_lane = self.lanes.get(loaded_lane_name)
+            if loaded_lane:
+                # Set next_lane_load so TOOL_UNLOAD knows what we're loading next
+                self.next_lane_load = lane
+                if not self.TOOL_UNLOAD(loaded_lane):
+                    self.error.AFC_error("Failed to unload {}, cannot load {}".format(loaded_lane_name, lane), pause=self.function.in_print())
+                    self.next_lane_load = None
+                    return
+                self.next_lane_load = None
+            else:
+                self.error.AFC_error("Cannot find loaded lane {} to unload before loading {}".format(loaded_lane_name, lane), pause=self.function.in_print())
+                return
 
         purge_length = gcmd.get('PURGE_LENGTH', None)
 
