@@ -80,7 +80,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -103,12 +103,12 @@
             "empty_spool_weight": 250.0,
             "spool_id": 26,
             "color": "#FF6A13",
-            "weight": 52.437935052844175,
+            "weight": 52.219226001004586,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         }
@@ -343,7 +343,7 @@
         }
     },
     "system": {
-        "current_load": "lane7",
+        "current_load": null,
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
