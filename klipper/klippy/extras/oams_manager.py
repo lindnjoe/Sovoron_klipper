@@ -2659,7 +2659,13 @@ class OAMSManager:
             for fps_state in self.current_state.fps_state.values():
                 if fps_state.current_oams == oams_name:
                     fps_states_for_oams.append(fps_state)
-                    lane_loaded = lane_loaded or fps_state.current_spool_idx is not None or fps_state.state != FPSLoadState.UNLOADED
+                    lane_loaded = (
+                        lane_loaded
+                        or fps_state.current_spool_idx is not None
+                        or fps_state.state != FPSLoadState.UNLOADED
+                        or fps_state.clog_active
+                        or fps_state.stuck_spool_active
+                    )
                     if direction is None and fps_state.direction is not None:
                         direction = fps_state.direction
 
