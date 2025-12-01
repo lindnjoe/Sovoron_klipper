@@ -1896,6 +1896,36 @@ class OAMSManager:
                 except Exception:
                     self.logger.error("Failed to notify AFC that lane %s unloaded on %s", lane_name, fps_name)
 
+            # Ensure AFC extruder/tool tracking clears immediately so subsequent loads
+            # don't think the previous lane is still present.
+            afc = self._get_afc()
+            if afc is not None:
+                try:
+                    afc_lane_name = lane_name
+                    if afc_lane_name is None and fps_state.current_oams and spool_index is not None:
+                        afc_lane_name = self._lane_by_location.get((fps_state.current_oams, spool_index))
+
+                    lane_obj = afc.lanes.get(afc_lane_name) if afc_lane_name else None
+                    if lane_obj is not None:
+                        try:
+                            lane_obj.unsync_to_extruder()
+                        except Exception:
+                            self.logger.error("Failed to unsync lane %s from extruder during unload cleanup", lane_obj.name)
+
+                        try:
+                            lane_obj.set_unloaded()
+                        except Exception:
+                            self.logger.error("Failed to mark lane %s as unloaded during unload cleanup", lane_obj.name)
+
+                        afc_function = getattr(afc, "function", None)
+                        if afc_function is not None:
+                            try:
+                                afc_function.unset_lane_loaded()
+                            except Exception:
+                                self.logger.error("Failed to clear AFC lane_loaded after unloading lane %s", lane_obj.name)
+                except Exception:
+                    self.logger.error("Failed to clear AFC tool tracking during unload cleanup for %s", fps_name)
+
             # Clear LED error state if stuck spool was active before resetting state
             if fps_state.stuck_spool_active and oams is not None and spool_index is not None:
                 try:
