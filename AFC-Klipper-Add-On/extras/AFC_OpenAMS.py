@@ -1729,36 +1729,40 @@ class afcAMS(afcUnit):
             # For cross-extruder runouts: AFC's LANE_UNLOAD wrapper handles cleanup
             # For manual unloads: AFC's LANE_UNLOAD command handles cleanup
 
-            # Only unsync from extruder if not in active cross-extruder runout or tool swap
+            # Only unsync from extruder if not in active cross-extruder runout or tool operation
             try:
                 is_printing = self.afc.function.is_printing()
             except Exception:
                 is_printing = False
             is_cross_extruder_runout = getattr(lane, '_oams_cross_extruder_runout', False) and is_printing
 
-            # Check if we're in the middle of a tool swap - don't clear lane_loaded during tool changes
-            # because filament is still physically in the toolhead, just the tool is being parked/swapped
+            # Check if this is a shared extruder (multiple lanes on same extruder)
+            # For shared extruders, NEVER clear lane_loaded from sensor callback
+            # because sensor can go False during tool parking/swapping without filament leaving toolhead
+            # Only explicit UNLOAD commands should clear lane_loaded for shared extruders
+            is_shared_extruder = False
             try:
-                from extras.AFC import State
-                is_tool_swap = hasattr(self.afc, 'current_state') and self.afc.current_state == State.TOOL_SWAP
+                if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
+                    # no_lanes=True means standalone toolhead, no_lanes=False means shared extruder
+                    is_shared_extruder = not getattr(lane.extruder_obj, 'no_lanes', True)
             except Exception:
-                is_tool_swap = False
+                pass
 
-            if not is_cross_extruder_runout and not is_tool_swap:
+            if not is_cross_extruder_runout and not is_shared_extruder:
                 try:
                     if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
                         if lane.extruder_obj.lane_loaded == lane.name:
                             lane.unsync_to_extruder()
                             lane.extruder_obj.lane_loaded = None
-                            self.logger.debug("Unsynced shared lane %s and cleared extruder.lane_loaded when sensor went False", lane.name)
+                            self.logger.debug("Unsynced lane %s and cleared extruder.lane_loaded when sensor went False", lane.name)
                 except Exception:
                     self.logger.error(
-                        "Failed to unsync shared lane %s from extruder when sensor cleared",
+                        "Failed to unsync lane %s from extruder when sensor cleared",
                         lane.name,
                         exc_info=True,
                     )
-            elif is_tool_swap:
-                self.logger.debug("Skipping extruder unsync for %s - tool swap in progress (lane_loaded preserved)", lane.name)
+            elif is_shared_extruder:
+                self.logger.debug("Skipping lane_loaded clear for %s - shared extruder (only UNLOAD commands should clear)", lane.name)
             else:
                 self.logger.info("Skipping extruder unsync for %s - cross-extruder runout (AFC will handle via LANE_UNLOAD)", lane.name)
 
