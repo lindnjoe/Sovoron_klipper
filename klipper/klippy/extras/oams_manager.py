@@ -1919,11 +1919,7 @@ class OAMSManager:
                         except Exception:
                             self.logger.error("Failed to unsync lane %s from extruder during unload cleanup", lane_obj.name)
 
-                        try:
-                            lane_obj.set_unloaded()
-                        except Exception:
-                            self.logger.error("Failed to mark lane %s as unloaded during unload cleanup", lane_obj.name)
-
+                        # Keep lane filament metadata intact; only clear the toolhead mapping
                         afc_function = getattr(afc, "function", None)
                         if afc_function is not None:
                             try:
