@@ -1064,6 +1064,11 @@ class OAMSManager:
                     continue
                 try:
                     oam.clear_errors()
+                    # Update LED tracking state to match hardware (all LEDs now off)
+                    # This prevents the tracking dict from having stale error states
+                    for bay_idx in range(4):
+                        led_key = f"{oams_name}:{bay_idx}"
+                        self.led_error_state[led_key] = 0
                 except Exception:
                     restart_monitors = False
                     self.logger.error("Failed to clear errors on %s", getattr(oam, "name", "<unknown>"))
