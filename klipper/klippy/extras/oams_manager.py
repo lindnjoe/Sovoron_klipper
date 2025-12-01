@@ -3099,8 +3099,11 @@ class OAMSManager:
             # CRITICAL: Keep follower enabled even during stuck load
             # User needs follower running to manually fix clogs or re-attempt load
             # Follower doesn't interfere with stuck detection (encoder + FPS based)
-            if fps_state.current_oams:
-                self._ensure_forward_follower(fps_name, fps_state, "stuck load - keep follower active")
+            # Enable follower directly during stuck load, bypassing state checks
+            if fps_state.current_oams and fps_state.current_spool_idx is not None:
+                oams_obj = self.oams.get(fps_state.current_oams)
+                if oams_obj is not None:
+                    self._enable_follower(fps_name, fps_state, oams_obj, 1, "stuck load - keep follower active")
 
             self.logger.info("Spool appears stuck while loading %s spool %s (%s) - letting retry logic handle it",
                            lane_label, spool_label, stuck_reason)
@@ -3298,8 +3301,9 @@ class OAMSManager:
 
             # Keep the follower running during clog pauses so manual extrusion
             # remains available without requiring OAMSM_CLEAR_ERRORS.
-            if oams is not None and not fps_state.following:
-                self._ensure_forward_follower(fps_name, fps_state, "clog pause")
+            # Enable follower directly during clog pause, bypassing state checks
+            if oams is not None and fps_state.current_spool_idx is not None:
+                self._enable_follower(fps_name, fps_state, oams, 1, "clog pause - keep follower active")
                 # If the follower still can't start, mark it for restore on resume
                 if not fps_state.following:
                     fps_state.stuck_spool_restore_follower = True
