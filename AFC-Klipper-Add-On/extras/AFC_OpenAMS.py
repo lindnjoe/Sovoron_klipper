@@ -1729,14 +1729,22 @@ class afcAMS(afcUnit):
             # For cross-extruder runouts: AFC's LANE_UNLOAD wrapper handles cleanup
             # For manual unloads: AFC's LANE_UNLOAD command handles cleanup
 
-            # Only unsync from extruder if not in active cross-extruder runout
+            # Only unsync from extruder if not in active cross-extruder runout or tool swap
             try:
                 is_printing = self.afc.function.is_printing()
             except Exception:
                 is_printing = False
             is_cross_extruder_runout = getattr(lane, '_oams_cross_extruder_runout', False) and is_printing
 
-            if not is_cross_extruder_runout:
+            # Check if we're in the middle of a tool swap - don't clear lane_loaded during tool changes
+            # because filament is still physically in the toolhead, just the tool is being parked/swapped
+            try:
+                from extras.AFC import State
+                is_tool_swap = hasattr(self.afc, 'current_state') and self.afc.current_state == State.TOOL_SWAP
+            except Exception:
+                is_tool_swap = False
+
+            if not is_cross_extruder_runout and not is_tool_swap:
                 try:
                     if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
                         if lane.extruder_obj.lane_loaded == lane.name:
@@ -1749,6 +1757,8 @@ class afcAMS(afcUnit):
                         lane.name,
                         exc_info=True,
                     )
+            elif is_tool_swap:
+                self.logger.debug("Skipping extruder unsync for %s - tool swap in progress (lane_loaded preserved)", lane.name)
             else:
                 self.logger.info("Skipping extruder unsync for %s - cross-extruder runout (AFC will handle via LANE_UNLOAD)", lane.name)
 
