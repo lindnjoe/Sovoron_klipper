@@ -988,6 +988,9 @@ class OAMSManager:
             # Clear OAMS hardware errors (this also clears all LED errors)
             # Do this in a single pass to minimize MCU commands
             for oams_name, oam in ready_oams.items():
+                if not self._is_oams_mcu_ready(oam):
+                    restart_monitors = False
+                    continue
                 try:
                     oam.clear_errors()
                 except Exception:
@@ -1897,7 +1900,9 @@ class OAMSManager:
                     self.logger.error("Failed to notify AFC that lane %s unloaded on %s", lane_name, fps_name)
 
             # Ensure AFC extruder/tool tracking clears immediately so subsequent loads
-            # don't think the previous lane is still present.
+            # don't think the previous lane is still present. This only touches AFC's
+            # view of the lane; runout monitors keep their own cached spool index and
+            # lane name so same-FPS runout coasting/reload logic remains unaffected.
             afc = self._get_afc()
             if afc is not None:
                 try:
@@ -2578,10 +2583,17 @@ class OAMSManager:
             if hasattr(mcu, "is_shutdown") and mcu.is_shutdown():
                 return False
 
-            if hasattr(mcu, "is_connected"):
-                return bool(mcu.is_connected())
-
             serial = getattr(mcu, "serial", None)
+            if serial is None:
+                return False
+
+            if hasattr(serial, "is_shutdown") and serial.is_shutdown():
+                return False
+
+            if hasattr(mcu, "is_connected"):
+                if not mcu.is_connected():
+                    return False
+
             if hasattr(serial, "is_connected"):
                 return bool(serial.is_connected())
         except Exception:
