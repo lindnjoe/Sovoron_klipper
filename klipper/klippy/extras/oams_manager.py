@@ -717,6 +717,9 @@ class OAMSManager:
                 fps_state.reset_stuck_spool_state()
                 fps_state.reset_clog_tracker()
                 self._ensure_forward_follower(fps_name, fps_state, "state detection")
+
+                # Sync AFC's lane_loaded with detected state to prevent stale vars file issues
+                self._sync_afc_lane_loaded(fps_name, detected_lane)
             else:
                 # AFC says no lane loaded (lane_loaded = None)
                 if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
@@ -844,6 +847,73 @@ class OAMSManager:
     def _initialize_oams(self) -> None:
         for name, oam in self.printer.lookup_objects(module="oams"):
             self.oams[name] = oam
+
+    def _sync_afc_lane_loaded(self, fps_name: str, detected_lane: Optional[str]) -> None:
+        """Sync AFC's extruder.lane_loaded with OAMS-detected state.
+
+        When OAMS detects a lane is loaded via sensors, update AFC's tracking
+        and persist to vars file. This prevents stale vars from causing issues
+        on bootup where AFC thinks lane8 is loaded but sensors show lane7.
+
+        Args:
+            fps_name: FPS that detected the lane (e.g., "fps fps1")
+            detected_lane: Lane name that was detected (e.g., "lane7")
+        """
+        if not detected_lane:
+            return
+
+        try:
+            afc = self._get_afc()
+            if afc is None:
+                return
+
+            # Find which extruder this lane belongs to
+            if not hasattr(afc, 'lanes'):
+                return
+
+            lane_obj = afc.lanes.get(detected_lane)
+            if lane_obj is None:
+                return
+
+            extruder_obj = getattr(lane_obj, 'extruder_obj', None)
+            if extruder_obj is None:
+                return
+
+            extruder_name = getattr(extruder_obj, 'name', None)
+            if not extruder_name:
+                return
+
+            # Check if AFC's lane_loaded matches what we detected
+            current_lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
+            if current_lane_loaded == detected_lane:
+                return  # Already in sync
+
+            # Update AFC's lane_loaded
+            extruder_obj.lane_loaded = detected_lane
+
+            # Persist to vars file
+            if hasattr(afc, 'save_vars') and callable(afc.save_vars):
+                try:
+                    afc.save_vars()
+                    self.logger.info(
+                        "Synced AFC: %s.lane_loaded = %s (was %s, detected via sensors)",
+                        extruder_name, detected_lane, current_lane_loaded
+                    )
+                except Exception:
+                    self.logger.error(
+                        "Failed to save AFC vars after syncing %s.lane_loaded to %s",
+                        extruder_name, detected_lane
+                    )
+            else:
+                self.logger.debug(
+                    "Updated AFC: %s.lane_loaded = %s (vars not saved - AFC has no save_vars method)",
+                    extruder_name, detected_lane
+                )
+        except Exception:
+            self.logger.error(
+                "Failed to sync AFC lane_loaded for %s detected on %s",
+                detected_lane, fps_name, exc_info=True
+            )
         
     def determine_current_loaded_lane(self, fps_name: str) -> Tuple[Optional[str], Optional[object], Optional[int]]:
         """Determine which lane is currently loaded in the specified FPS."""
