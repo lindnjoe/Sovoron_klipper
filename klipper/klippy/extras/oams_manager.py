@@ -597,6 +597,7 @@ class OAMSManager:
         self.follower_had_filament: Dict[str, bool] = {}  # oams_name -> previous state (had filament)
         self.follower_manual_override: Dict[str, bool] = {}  # oams_name -> manually commanded (skip auto control)
         self.follower_last_state: Dict[str, Tuple[int, int]] = {}  # oams_name -> (enable, direction) to avoid redundant MCU commands
+        self.follower_empty_polls: Dict[str, int] = {}  # oams_name -> consecutive empty checks before disabling
 
         # LED state tracking: avoid sending redundant LED commands to MCU
         # Key format: "oams_name:spool_idx" -> error_state (0 or 1)
@@ -1041,6 +1042,7 @@ class OAMSManager:
                 self.follower_coasting[oams_name] = False
                 self.follower_coast_start_pos[oams_name] = 0.0
                 self.follower_had_filament[oams_name] = False
+                self.follower_empty_polls[oams_name] = 0
 
             # Clear LED state tracking so LEDs are refreshed from actual state
             self.led_error_state.clear()
@@ -2681,11 +2683,18 @@ class OAMSManager:
                     state.following = True
                     state.direction = direction
                 self.follower_had_filament[oams_name] = True
+                self.follower_empty_polls[oams_name] = 0
             else:
-                self._set_follower_if_changed(oams_name, oams, 0, direction, "all hubs empty", force=True)
-                for state in fps_states_for_oams:
-                    state.following = False
-                self.follower_had_filament[oams_name] = False
+                empty_polls = self.follower_empty_polls.get(oams_name, 0) + 1
+                self.follower_empty_polls[oams_name] = empty_polls
+
+                # Require multiple consecutive empty checks before disabling to avoid
+                # transient hub blips (e.g., during clog pauses or brief sensor drops)
+                if empty_polls >= 2:
+                    self._set_follower_if_changed(oams_name, oams, 0, direction, "all hubs empty", force=True)
+                    for state in fps_states_for_oams:
+                        state.following = False
+                    self.follower_had_filament[oams_name] = False
 
             self.follower_coasting[oams_name] = False
             self.follower_coast_start_pos[oams_name] = 0.0
