@@ -1367,6 +1367,34 @@ class OAMSManager:
             gcmd.respond_info(f"  Current Lane: {fps_state.current_lane}")
             gcmd.respond_info(f"  Spool Index: {fps_state.current_spool_idx}")
 
+        # Sync virtual tool sensors based on which lanes are actually loaded
+        # This fixes virtual sensor state after reboot (e.g., extruder4 showing filament when empty)
+        gcmd.respond_info("\n=== Syncing Virtual Tool Sensors ===")
+        if afc is not None:
+            synced_count = 0
+            try:
+                units = getattr(afc, 'units', {})
+                eventtime = self.reactor.monotonic()
+
+                for unit_name, unit_obj in units.items():
+                    # Check if this is an OpenAMS unit with virtual sensor sync capability
+                    if hasattr(unit_obj, '_sync_virtual_tool_sensor'):
+                        try:
+                            unit_obj._sync_virtual_tool_sensor(eventtime)
+                            synced_count += 1
+                            self.logger.info("Synced virtual tool sensor for unit %s", unit_name)
+                        except Exception:
+                            self.logger.error("Failed to sync virtual tool sensor for unit %s", unit_name, exc_info=True)
+                            gcmd.respond_info(f"  Warning: Failed to sync virtual sensor for {unit_name}")
+
+                if synced_count > 0:
+                    gcmd.respond_info(f"Successfully synced {synced_count} virtual tool sensor(s)")
+                else:
+                    gcmd.respond_info("No OpenAMS units found with virtual sensors to sync")
+            except Exception:
+                self.logger.error("Failed to sync virtual tool sensors", exc_info=True)
+                gcmd.respond_info("  Error during virtual sensor sync - check klippy.log")
+
         gcmd.respond_info("\nCheck klippy.log for detailed state detection logs")
 
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
