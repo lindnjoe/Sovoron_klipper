@@ -1380,9 +1380,10 @@ class OAMSManager:
                     # Check if this is an OpenAMS unit with virtual sensor sync capability
                     if hasattr(unit_obj, '_sync_virtual_tool_sensor'):
                         try:
-                            unit_obj._sync_virtual_tool_sensor(eventtime)
+                            # Force update to ensure sensor state is corrected after reboot
+                            unit_obj._sync_virtual_tool_sensor(eventtime, force=True)
                             synced_count += 1
-                            self.logger.info("Synced virtual tool sensor for unit %s", unit_name)
+                            self.logger.info("Synced virtual tool sensor for unit %s (forced update)", unit_name)
                         except Exception:
                             self.logger.error("Failed to sync virtual tool sensor for unit %s", unit_name, exc_info=True)
                             gcmd.respond_info(f"  Warning: Failed to sync virtual sensor for {unit_name}")

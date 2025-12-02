@@ -826,8 +826,14 @@ class afcAMS(afcUnit):
         lane_name = getattr(lane, "name", None)
         self._set_virtual_tool_sensor_state(desired_state, eventtime, lane_name, lane_obj=lane)
 
-    def _sync_virtual_tool_sensor(self, eventtime: float, lane_name: Optional[str] = None) -> None:
-        """Align the AMS virtual tool sensor with the mapped lane state."""
+    def _sync_virtual_tool_sensor(self, eventtime: float, lane_name: Optional[str] = None, force: bool = False) -> None:
+        """Align the AMS virtual tool sensor with the mapped lane state.
+
+        Args:
+            eventtime: Current event time
+            lane_name: Specific lane to check, or None to check all lanes
+            force: If True, update sensor even if state hasn't changed (for post-reboot sync)
+        """
         if not self._ensure_virtual_tool_sensor():
             return
 
@@ -867,7 +873,8 @@ class afcAMS(afcUnit):
             if desired_state is None and pending_false is not None:
                 desired_state, desired_lane, desired_lane_obj = pending_false
 
-        if desired_state is None or desired_state == self._last_virtual_tool_state:
+        # Skip update only if state matches AND not forcing
+        if desired_state is None or (not force and desired_state == self._last_virtual_tool_state):
             return
 
         self._set_virtual_tool_sensor_state(desired_state, eventtime, desired_lane, lane_obj=desired_lane_obj)
