@@ -2456,7 +2456,11 @@ class afcAMS(afcUnit):
             next_id = getattr(spool_mgr, "next_spool_id", "") if spool_mgr else ""
             if spool_mgr is not None:
                 spool_data_missing = not getattr(lane, "spool_id", "")
-                if next_id or (not previous_loaded) or spool_data_missing:
+                # Only call _set_values if:
+                # 1. next_id is set (user wants to apply a specific spool), OR
+                # 2. Lane has no spool data (needs defaults)
+                # Skip if: next_id is empty AND lane already has spool_id (prevents overwrite by AFC's duplicate call)
+                if next_id or spool_data_missing:
                     spool_mgr._set_values(lane)
         except Exception:
             self.logger.debug("Failed to update spool info for %s after load event", lane.name, exc_info=True)
