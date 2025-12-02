@@ -878,24 +878,21 @@ class afcAMS(afcUnit):
             # Debug logging when forcing update
             if force:
                 self.logger.info(
-                    "Virtual sensor sync for unit %s: matching_lanes=%d, desired_state=%s, "
-                    "desired_lane=%s, last_state=%s",
-                    self.name, matching_lanes, desired_state, desired_lane,
-                    self._last_virtual_tool_state
+                    f"Virtual sensor sync for unit {self.name}: matching_lanes={matching_lanes}, "
+                    f"desired_state={desired_state}, desired_lane={desired_lane}, last_state={self._last_virtual_tool_state}"
                 )
 
         # Skip update only if state matches AND not forcing
         if desired_state is None or (not force and desired_state == self._last_virtual_tool_state):
             if force and desired_state is None:
                 self.logger.warning(
-                    "Cannot sync virtual sensor for unit %s: desired_state is None (no matching lanes?)",
-                    self.name
+                    f"Cannot sync virtual sensor for unit {self.name}: desired_state is None (no matching lanes?)"
                 )
             return
 
         self.logger.info(
-            "Updating virtual tool sensor for unit %s: %s -> %s (lane=%s, force=%s)",
-            self.name, self._last_virtual_tool_state, desired_state, desired_lane, force
+            f"Updating virtual tool sensor for unit {self.name}: {self._last_virtual_tool_state} -> {desired_state} "
+            f"(lane={desired_lane}, force={force})"
         )
         self._set_virtual_tool_sensor_state(desired_state, eventtime, desired_lane, lane_obj=desired_lane_obj)
 
