@@ -1264,8 +1264,18 @@ class afcAMS(afcUnit):
 
         if not cur_lane.prep_state:
             if not cur_lane.load_state:
-                self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
-                msg += '<span class=success--text>EMPTY READY FOR SPOOL</span>'
+                # BoxTurtle-style logic: lane isn't truly empty until hub is clear too
+                # Check hub sensor before declaring empty (handles runout buffer scenarios)
+                hub_loaded = cur_lane.hub_obj and cur_lane.hub_obj.state
+                if not hub_loaded:
+                    # Truly empty - both spool (F1S) and hub are clear
+                    self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
+                    msg += '<span class=success--text>EMPTY READY FOR SPOOL</span>'
+                else:
+                    # Hub still has filament (runout in progress, repositioning, or residual)
+                    self.afc.function.afc_led(cur_lane.led_fault, cur_lane.led_index)
+                    msg += '<span class=warning--text>Filament in hub</span>'
+                    succeeded = False
             else:
                 self.afc.function.afc_led(cur_lane.led_fault, cur_lane.led_index)
                 msg += '<span class=error--text> NOT READY</span>'

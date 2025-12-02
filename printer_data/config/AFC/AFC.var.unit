@@ -80,7 +80,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -95,7 +95,7 @@
             "map": "T8",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
+            "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
@@ -106,9 +106,9 @@
             "weight": 10.85680592773815,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "None",
             "dist_hub": 60,
             "td1_data": {}
         }
@@ -263,11 +263,11 @@
             "hub": "direct_load",
             "extruder": "extruder1",
             "buffer": "TN1",
-            "buffer_status": "Unknown",
+            "buffer_status": "Trailing",
             "lane": 2,
             "map": "T1",
             "load": true,
-            "prep": false,
+            "prep": true,
             "tool_loaded": true,
             "loaded_to_hub": true,
             "material": "PLA",
@@ -279,9 +279,9 @@
             "weight": 360.70415758486365,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "Not Ready",
-            "filament_status_led": "#ff0000",
-            "status": "None",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tooled",
             "dist_hub": 2120.0,
             "td1_data": {}
         },
@@ -291,7 +291,7 @@
             "hub": "direct_load",
             "extruder": "extruder2",
             "buffer": "TN2",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 3,
             "map": "T2",
             "load": true,
@@ -343,7 +343,7 @@
         }
     },
     "system": {
-        "current_load": "lane8",
+        "current_load": "lane1",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
@@ -361,7 +361,7 @@
                 "lane_loaded": "lane3"
             },
             "extruder4": {
-                "lane_loaded": "lane8"
+                "lane_loaded": null
             },
             "extruder5": {
                 "lane_loaded": null
