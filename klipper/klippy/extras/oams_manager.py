@@ -2918,7 +2918,11 @@ class OAMSManager:
                 self.logger.error("Failed to abort active action for %s during stuck spool pause", fps_name)
 
         # Pause printer with error message
-        self._pause_printer_message(message, fps_state.current_oams)
+        # SAFETY: Wrap pause in try/except to prevent crash if pause logic fails
+        try:
+            self._pause_printer_message(message, fps_state.current_oams)
+        except Exception:
+            self.logger.exception("Failed to pause printer during stuck spool on %s - continuing with error state", fps_name)
 
         # Clear error flag immediately after pausing - system is ready for user to fix
         # LED stays red to indicate the issue, but error flag doesn't block other operations
@@ -2972,10 +2976,11 @@ class OAMSManager:
                 now = self.reactor.monotonic()
                 state_changed = False
 
-                if state == FPSLoadState.UNLOADING and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
+                # SAFETY: Check fps_state.since is not None before subtraction to prevent crash
+                if state == FPSLoadState.UNLOADING and fps_state.since is not None and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
                     self._check_unload_speed(fps_name, fps_state, oams, encoder_value, now)
                     state_changed = True
-                elif state == FPSLoadState.LOADING and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
+                elif state == FPSLoadState.LOADING and fps_state.since is not None and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
                     self._check_load_speed(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
                     state_changed = True
                 elif state == FPSLoadState.UNLOADED:
@@ -3249,7 +3254,11 @@ class OAMSManager:
                 message = "Spool appears stuck"
                 if fps_state.current_lane is not None:
                     message = f"Spool appears stuck on {fps_state.current_lane} spool {fps_state.current_spool_idx}"
-                self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
+                # SAFETY: Wrap pause trigger in try/except to prevent crash during stuck spool detection
+                try:
+                    self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
+                except Exception:
+                    self.logger.exception("Failed to trigger stuck spool pause for %s - error state may be inconsistent", fps_name)
         elif pressure >= self.stuck_spool_pressure_clear_threshold:
             # Pressure is definitively high - clear stuck spool state
             if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
@@ -3264,10 +3273,14 @@ class OAMSManager:
                 fps_state.stuck_spool_start_time = None
 
             # Now restore/enable follower
-            if fps_state.stuck_spool_restore_follower and is_printing:
-                self._restore_follower_if_needed(fps_name, fps_state, oams, "stuck spool recovery")
-            elif is_printing and not fps_state.following:
-                self._ensure_forward_follower(fps_name, fps_state, "stuck spool recovery")
+            # SAFETY: Wrap follower operations in try/except to prevent crash during recovery
+            try:
+                if fps_state.stuck_spool_restore_follower and is_printing:
+                    self._restore_follower_if_needed(fps_name, fps_state, oams, "stuck spool recovery")
+                elif is_printing and not fps_state.following:
+                    self._ensure_forward_follower(fps_name, fps_state, "stuck spool recovery")
+            except Exception:
+                self.logger.exception("Failed to restore/enable follower during stuck spool recovery for %s", fps_name)
         # else: Pressure is in hysteresis band (between thresholds) - maintain current state
 
     def _check_clog(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
