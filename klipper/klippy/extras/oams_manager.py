@@ -1099,7 +1099,7 @@ class OAMSManager:
                     self.determine_state()
                 except Exception:
                     restart_monitors = False
-                    self.logger.exception("State detection failed during OAMSM_CLEAR_ERRORS")
+                    self.logger.error("State detection failed during OAMSM_CLEAR_ERRORS", exc_info=True)
 
             # Rehydrate state from AFC.var.unit so lane/tool status reflects the
             # latest AFC snapshot after clearing hardware state.
@@ -1107,7 +1107,7 @@ class OAMSManager:
                 self._refresh_state_from_afc_snapshot()
             except Exception:
                 restart_monitors = False
-                self.logger.exception("Failed to refresh state from AFC.var.unit during OAMSM_CLEAR_ERRORS")
+                self.logger.error("Failed to refresh state from AFC.var.unit during OAMSM_CLEAR_ERRORS", exc_info=True)
 
             # Clear all manual follower overrides and coast state - return to automatic hub sensor control
             # Also clear last state tracking so follower state is refreshed from actual sensors
@@ -1134,7 +1134,7 @@ class OAMSManager:
                     self._force_enable_followers(ready_oams)
                 except Exception:
                     restart_monitors = False
-                    self.logger.exception("Failed to force followers on during OAMSM_CLEAR_ERRORS")
+                    self.logger.error("Failed to force followers on during OAMSM_CLEAR_ERRORS", exc_info=True)
 
             # After clearing errors and detecting state, ensure followers are enabled for any
             # lanes that have filament loaded to the hub (even if not loaded to toolhead)
@@ -1144,14 +1144,14 @@ class OAMSManager:
                     self._ensure_followers_for_loaded_hubs()
                 except Exception:
                     restart_monitors = False
-                    self.logger.exception("Failed to refresh followers after OAMSM_CLEAR_ERRORS")
+                    self.logger.error("Failed to refresh followers after OAMSM_CLEAR_ERRORS", exc_info=True)
 
         if monitors_were_running:
             if restart_monitors:
                 try:
                     self.start_monitors()
                 except Exception:
-                    self.logger.exception("Failed to restart monitors after OAMSM_CLEAR_ERRORS")
+                    self.logger.error("Failed to restart monitors after OAMSM_CLEAR_ERRORS", exc_info=True)
             else:
                 self.logger.warning(
                     "Leaving monitors paused after OAMSM_CLEAR_ERRORS due to earlier errors; run OAMSM_STATUS once issues are resolved"
@@ -2922,7 +2922,7 @@ class OAMSManager:
         try:
             self._pause_printer_message(message, fps_state.current_oams)
         except Exception:
-            self.logger.exception("Failed to pause printer during stuck spool on %s - continuing with error state", fps_name)
+            self.logger.error("Failed to pause printer during stuck spool on %s - continuing with error state", fps_name, exc_info=True)
 
         # Clear error flag immediately after pausing - system is ready for user to fix
         # LED stays red to indicate the issue, but error flag doesn't block other operations
@@ -3053,7 +3053,7 @@ class OAMSManager:
 
                 return eventtime + MONITOR_ENCODER_PERIOD
             except Exception:
-                self.logger.exception("Monitor loop crashed for %s; retrying after backoff", fps_name)
+                self.logger.error("Monitor loop crashed for %s; retrying after backoff", fps_name, exc_info=True)
                 return eventtime + MONITOR_ENCODER_PERIOD_IDLE
 
         return partial(_unified_monitor, self)
@@ -3258,7 +3258,7 @@ class OAMSManager:
                 try:
                     self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
                 except Exception:
-                    self.logger.exception("Failed to trigger stuck spool pause for %s - error state may be inconsistent", fps_name)
+                    self.logger.error("Failed to trigger stuck spool pause for %s - error state may be inconsistent", fps_name, exc_info=True)
         elif pressure >= self.stuck_spool_pressure_clear_threshold:
             # Pressure is definitively high - clear stuck spool state
             if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
@@ -3280,7 +3280,7 @@ class OAMSManager:
                 elif is_printing and not fps_state.following:
                     self._ensure_forward_follower(fps_name, fps_state, "stuck spool recovery")
             except Exception:
-                self.logger.exception("Failed to restore/enable follower during stuck spool recovery for %s", fps_name)
+                self.logger.error("Failed to restore/enable follower during stuck spool recovery for %s", fps_name, exc_info=True)
         # else: Pressure is in hysteresis band (between thresholds) - maintain current state
 
     def _check_clog(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
@@ -3833,7 +3833,7 @@ class OAMSManager:
                 if reason:
                     self.logger.debug("Monitors paused for %s", reason)
             except Exception:
-                self.logger.exception("Failed to pause monitors%s", f" for {reason}" if reason else "")
+                self.logger.error("Failed to pause monitors%s", f" for {reason}" if reason else "", exc_info=True)
                 monitors_were_running = False
         try:
             yield
@@ -3844,7 +3844,7 @@ class OAMSManager:
                     if reason:
                         self.logger.debug("Monitors resumed after %s", reason)
                 except Exception:
-                    self.logger.exception("Failed to resume monitors%s", f" after {reason}" if reason else "")
+                    self.logger.error("Failed to resume monitors%s", f" after {reason}" if reason else "", exc_info=True)
 
 
 def load_config(config):
