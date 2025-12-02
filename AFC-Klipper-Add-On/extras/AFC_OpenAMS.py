@@ -834,8 +834,17 @@ class afcAMS(afcUnit):
             lane_name: Specific lane to check, or None to check all lanes
             force: If True, update sensor even if state hasn't changed (for post-reboot sync)
         """
+        # Debug: Always log when called with force
+        if force:
+            self.logger.info(f"_sync_virtual_tool_sensor called for unit {self.name} (force={force})")
+
         if not self._ensure_virtual_tool_sensor():
+            if force:
+                self.logger.info(f"Virtual sensor not available for unit {self.name}, skipping sync")
             return
+
+        if force:
+            self.logger.info(f"Virtual sensor available for unit {self.name}, proceeding with sync")
 
         desired_state: Optional[bool] = None
         desired_lane: Optional[str] = None
