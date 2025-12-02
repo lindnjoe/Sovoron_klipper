@@ -670,13 +670,19 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self.action_status = OAMSStatus.LOADING
         self.oams_load_spool_cmd.send([spool_idx])
         timeout = self.reactor.monotonic() + 30.0  # 30 second timeout
+
+        # Use toolhead dwell for proper blocking even from timer context
+        # reactor.pause() doesn't block in timer callbacks, but toolhead dwell does
+        toolhead = self.printer.lookup_object("toolhead")
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
                 logging.error("OAMS[%d]: Load operation timed out after 30 seconds", self.oams_idx)
                 self.action_status = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS load operation timed out (MCU unresponsive)"
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
+            # Use toolhead dwell instead of reactor.pause to ensure blocking works from timer context
+            toolhead.dwell(0.1)
+
         if self.action_status_code == OAMSOpCode.SUCCESS:
             self.current_spool = spool_idx
             return True, "Spool loaded successfully"
@@ -708,13 +714,19 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self.action_status = OAMSStatus.UNLOADING
         self.oams_unload_spool_cmd.send()
         timeout = self.reactor.monotonic() + 30.0  # 30 second timeout
+
+        # Use toolhead dwell for proper blocking even from timer context
+        # reactor.pause() doesn't block in timer callbacks, but toolhead dwell does
+        toolhead = self.printer.lookup_object("toolhead")
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
                 logging.error("OAMS[%d]: Unload operation timed out after 30 seconds", self.oams_idx)
                 self.action_status = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS unload operation timed out (MCU unresponsive)"
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
+            # Use toolhead dwell instead of reactor.pause to ensure blocking works from timer context
+            toolhead.dwell(0.1)
+
         if self.action_status_code == OAMSOpCode.SUCCESS:
             self.current_spool = None
             return True, "Spool unloaded successfully"
