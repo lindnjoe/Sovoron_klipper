@@ -852,10 +852,12 @@ class afcAMS(afcUnit):
 
         if desired_state is None:
             pending_false = None
+            matching_lanes = 0
             for lane in self.lanes.values():
                 if not self._lane_matches_extruder(lane):
                     continue
 
+                matching_lanes += 1
                 result = self._lane_reports_tool_filament(lane)
                 if result is None:
                     continue
@@ -873,10 +875,28 @@ class afcAMS(afcUnit):
             if desired_state is None and pending_false is not None:
                 desired_state, desired_lane, desired_lane_obj = pending_false
 
+            # Debug logging when forcing update
+            if force:
+                self.logger.info(
+                    "Virtual sensor sync for unit %s: matching_lanes=%d, desired_state=%s, "
+                    "desired_lane=%s, last_state=%s",
+                    self.name, matching_lanes, desired_state, desired_lane,
+                    self._last_virtual_tool_state
+                )
+
         # Skip update only if state matches AND not forcing
         if desired_state is None or (not force and desired_state == self._last_virtual_tool_state):
+            if force and desired_state is None:
+                self.logger.warning(
+                    "Cannot sync virtual sensor for unit %s: desired_state is None (no matching lanes?)",
+                    self.name
+                )
             return
 
+        self.logger.info(
+            "Updating virtual tool sensor for unit %s: %s -> %s (lane=%s, force=%s)",
+            self.name, self._last_virtual_tool_state, desired_state, desired_lane, force
+        )
         self._set_virtual_tool_sensor_state(desired_state, eventtime, desired_lane, lane_obj=desired_lane_obj)
 
     def _unit_matches(self, unit_value: Optional[str]) -> bool:
