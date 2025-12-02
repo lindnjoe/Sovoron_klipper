@@ -2456,18 +2456,10 @@ class afcAMS(afcUnit):
             next_id = getattr(spool_mgr, "next_spool_id", "") if spool_mgr else ""
             if spool_mgr is not None:
                 spool_data_missing = not getattr(lane, "spool_id", "")
-                should_set = next_id or (not previous_loaded) or spool_data_missing
-
-                self.logger.info(
-                    "Spool load event for %s: next_id='%s', previous_loaded=%s, spool_data_missing=%s, will_set_values=%s",
-                    lane.name, next_id, previous_loaded, spool_data_missing, should_set
-                )
-
-                if should_set:
+                if next_id or (not previous_loaded) or spool_data_missing:
                     spool_mgr._set_values(lane)
-                    self.logger.info("Applied spool values to %s (spool_id now: %s)", lane.name, getattr(lane, "spool_id", ""))
         except Exception:
-            self.logger.error("Failed to update spool info for %s after load event", lane.name, exc_info=True)
+            self.logger.debug("Failed to update spool info for %s after load event", lane.name, exc_info=True)
 
         extruder_name = getattr(lane, "extruder_name", None)
         if extruder_name is None and self.registry is not None:
