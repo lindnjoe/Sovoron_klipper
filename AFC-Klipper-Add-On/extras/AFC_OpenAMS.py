@@ -2451,9 +2451,27 @@ class afcAMS(afcUnit):
         except Exception:
             self.logger.debug("Failed to refresh temperature for lane %s", lane.name, exc_info=True)
 
-        # Spool info (_set_values) is handled by AFC's lane.set_loaded() flow
-        # Don't duplicate spool management here - let AFC handle it directly
-        # This event handler just records the load and updates hardware state
+        # Apply spool info for this load event
+        # AFC's lane.set_loaded() also calls _set_values(), but that's only triggered
+        # by direct load commands (LANE_LOAD), not by hardware detection events.
+        # For filament insert events (this handler), we need to call it ourselves.
+        #
+        # Race condition handling: If AFC's lane.set_loaded() gets called first
+        # (consuming next_spool_id), this handler must NOT overwrite with defaults.
+        # Solution: Only call _set_values() if next_id is set OR lane truly has no data yet.
+        try:
+            spool_mgr = getattr(self.afc, "spool", None)
+            if spool_mgr is not None:
+                next_id = getattr(spool_mgr, "next_spool_id", "")
+                has_spool_data = bool(getattr(lane, "spool_id", ""))
+
+                # Call _set_values if:
+                # 1. next_id is set (apply specific spool), OR
+                # 2. Lane has no spool data AND wasn't previously loaded (genuinely new)
+                if next_id or (not has_spool_data and not previous_loaded):
+                    spool_mgr._set_values(lane)
+        except Exception:
+            self.logger.error("Failed to update spool info for %s after load event", lane.name, exc_info=True)
 
         extruder_name = getattr(lane, "extruder_name", None)
         if extruder_name is None and self.registry is not None:
