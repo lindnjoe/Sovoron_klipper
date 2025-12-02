@@ -3252,6 +3252,30 @@ class OAMSManager:
                 fps_state.reset_stuck_spool_state(preserve_restore=True)
             return
 
+        # Skip stuck spool detection if NO lane is synced to extruder/toolhead
+        # This prevents false positives when filament is only in the hub but not loaded to toolhead
+        # (e.g., after manual unload from toolhead but filament still in AMS)
+        # Only skip if lane_loaded is explicitly None - if it has any value (even if different
+        # from current_lane), proceed with detection as we may be mid-load or have an actual issue
+        if fps_state.current_lane is not None:
+            try:
+                afc = self._get_afc()
+                if afc is not None:
+                    extruder_obj = getattr(afc, 'extruder', None)
+                    if extruder_obj is not None:
+                        lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
+                        if lane_loaded is None:
+                            # No lane synced to extruder but filament detected in hub - skip stuck detection
+                            # This is the specific case of manual unload from toolhead with filament still in AMS
+                            fps_state.stuck_spool_start_time = None
+                            if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+                                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "no lane synced to extruder")
+                            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
+                            return
+            except Exception:
+                # If we can't determine sync state, proceed with detection to avoid masking real issues
+                pass
+
         if not fps_state.following or fps_state.direction != 1:
             fps_state.stuck_spool_start_time = None
             # Auto-enable follower if we have a spool loaded but follower is disabled
