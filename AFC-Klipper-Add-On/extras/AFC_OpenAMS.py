@@ -2466,9 +2466,9 @@ class afcAMS(afcUnit):
                 has_spool_data = bool(getattr(lane, "spool_id", ""))
 
                 # Call _set_values if:
-                # 1. next_id is set (apply specific spool), OR
-                # 2. Lane has no spool data AND wasn't previously loaded (genuinely new)
-                if next_id or (not has_spool_data and not previous_loaded):
+                # 1. next_id is set (apply specific spool data from spoolman), OR
+                # 2. Lane has no spool data (set defaults for any new filament)
+                if next_id or not has_spool_data:
                     spool_mgr._set_values(lane)
         except Exception:
             self.logger.error("Failed to update spool info for %s after load event", lane.name, exc_info=True)
