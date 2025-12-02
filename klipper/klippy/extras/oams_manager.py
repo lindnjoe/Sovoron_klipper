@@ -2715,8 +2715,13 @@ class OAMSManager:
             try:
                 oams.set_oams_follower(enable, direction)
                 self.follower_last_state[oams_name] = desired_state
-                if context:
-                    self.logger.debug("Follower %s for %s (%s)", "enabled" if enable else "disabled", oams_name, context)
+                # Log follower disable at INFO level to track what's disabling it during clogs
+                if enable:
+                    self.logger.debug("Follower enabled for %s (%s)", oams_name, context or "no context")
+                else:
+                    self.logger.info("Follower DISABLED for %s (%s) - manual_override=%s",
+                                   oams_name, context or "no context",
+                                   self.follower_manual_override.get(oams_name, False))
             except Exception:
                 self.logger.error("Failed to %s follower for %s%s", "enable" if enable else "disable",
                                 oams_name, f" ({context})" if context else "")
@@ -3374,10 +3379,9 @@ class OAMSManager:
                         oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "clog auto-recovery"
                     )
 
-                # Clear manual follower override on auto-recovery - return to automatic control
-                if fps_state.current_oams:
-                    self.follower_manual_override[fps_state.current_oams] = False
-                    self.logger.debug("Cleared manual follower override on %s after clog auto-recovery", fps_name)
+                # Don't clear manual follower override on auto-recovery
+                # Keep it set so follower stays enabled during manual intervention
+                # User can run CLEAR_ERRORS to return to automatic control
 
                 fps_state.reset_clog_tracker()
 
