@@ -3193,6 +3193,8 @@ class OAMSManager:
                 oams_obj = self.oams.get(fps_state.current_oams)
                 if oams_obj is not None:
                     self._enable_follower(fps_name, fps_state, oams_obj, 1, "stuck load - keep follower active")
+                    # Set manual override to prevent automatic hub-sensor control from disabling it
+                    self.follower_manual_override[fps_state.current_oams] = True
 
             self.logger.info("Spool appears stuck while loading %s spool %s (%s) - letting retry logic handle it",
                            lane_label, spool_label, stuck_reason)
@@ -3372,6 +3374,11 @@ class OAMSManager:
                         oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "clog auto-recovery"
                     )
 
+                # Clear manual follower override on auto-recovery - return to automatic control
+                if fps_state.current_oams:
+                    self.follower_manual_override[fps_state.current_oams] = False
+                    self.logger.debug("Cleared manual follower override on %s after clog auto-recovery", fps_name)
+
                 fps_state.reset_clog_tracker()
 
             fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
@@ -3401,6 +3408,9 @@ class OAMSManager:
             # Enable follower directly during clog pause, bypassing state checks
             if oams is not None and fps_state.current_spool_idx is not None:
                 self._enable_follower(fps_name, fps_state, oams, 1, "clog pause - keep follower active")
+                # Set manual override to prevent automatic hub-sensor control from disabling it
+                # This keeps follower enabled even if hub sensors are empty during clog
+                self.follower_manual_override[fps_state.current_oams] = True
                 # If the follower still can't start, mark it for restore on resume
                 if not fps_state.following:
                     fps_state.stuck_spool_restore_follower = True
