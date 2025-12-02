@@ -1738,17 +1738,26 @@ class afcAMS(afcUnit):
 
             # Check if this is a shared extruder (multiple lanes on same extruder)
             # For shared extruders, NEVER clear lane_loaded from sensor callback
-            # because sensor can go False during tool parking/swapping without filament leaving toolhead
-            # Only explicit UNLOAD commands should clear lane_loaded for shared extruders
+            # EXCEPT during runouts when filament actually left the toolhead
+            # Sensor can go False during tool parking/swapping without filament leaving,
+            # but during runouts the sensor goes False because filament ran out and must be cleared
             is_shared_extruder = False
+            is_same_fps_runout = False
             try:
                 if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
                     # no_lanes=True means standalone toolhead, no_lanes=False means shared extruder
                     is_shared_extruder = not getattr(lane.extruder_obj, 'no_lanes', True)
+
+                    # Check if we're in a same-FPS runout (sensor went False during print, filament actually ran out)
+                    # This is different from tool changes where sensor might briefly go False
+                    if is_shared_extruder and is_printing:
+                        # During runout, the runout monitor sets a flag to indicate filament actually ran out
+                        # We should clear lane_loaded in this case even for shared extruders
+                        is_same_fps_runout = getattr(lane, '_oams_same_fps_runout', False)
             except Exception:
                 pass
 
-            if not is_cross_extruder_runout and not is_shared_extruder:
+            if not is_cross_extruder_runout and not (is_shared_extruder and not is_same_fps_runout):
                 try:
                     if hasattr(lane, 'extruder_obj') and lane.extruder_obj is not None:
                         if lane.extruder_obj.lane_loaded == lane.name:
@@ -1761,8 +1770,8 @@ class afcAMS(afcUnit):
                         lane.name,
                         exc_info=True,
                     )
-            elif is_shared_extruder:
-                self.logger.debug("Skipping lane_loaded clear for %s - shared extruder (only UNLOAD commands should clear)", lane.name)
+            elif is_shared_extruder and not is_same_fps_runout:
+                self.logger.debug("Skipping lane_loaded clear for %s - shared extruder (only UNLOAD/RUNOUT commands should clear)", lane.name)
             else:
                 self.logger.info("Skipping extruder unsync for %s - cross-extruder runout (AFC will handle via LANE_UNLOAD)", lane.name)
 

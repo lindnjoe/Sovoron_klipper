@@ -387,9 +387,18 @@ class OAMSRunoutMonitor:
                 if current_lane_obj and target_lane_obj and current_extruder == target_extruder:
                     logging.info("OAMS: Detected same-extruder runout: %s -> %s (both on extruder %s)",
                                  lane_name, target_lane_name, current_extruder)
+
+                    # Set flag on current lane to allow lane_loaded clearing during sensor callback
+                    # This flag tells AFC_OpenAMS that sensor going False is due to runout, not tool change
+                    if current_lane_obj:
+                        current_lane_obj._oams_same_fps_runout = True
                 elif current_lane_obj or target_lane_obj:
                     logging.warning("OAMS: Defaulting to same-extruder runout (missing extruder info): %s -> %s", lane_name,
                                     target_lane_name or "unknown")
+
+                    # Set flag anyway for default case
+                    if current_lane_obj:
+                        current_lane_obj._oams_same_fps_runout = True
         except Exception as e:
             logging.error("OAMS: Failed to determine cross-extruder runout status, defaulting to same-FPS: %s", e)
             self.is_cross_extruder_runout = False
@@ -3699,8 +3708,16 @@ class OAMSManager:
                                 gcode = self.printer.lookup_object("gcode")
                                 gcode.run_script(f"SET_LANE_UNLOADED LANE={source_lane_name}")
                                 self.logger.info("Cleared source lane %s via SET_LANE_UNLOADED after reload to %s", source_lane_name, target_lane)
+
+                            # Clear the same-FPS runout flag on source lane after successful reload
+                            afc = self._get_afc()
+                            if afc and hasattr(afc, 'lanes'):
+                                source_lane_obj = afc.lanes.get(source_lane_name)
+                                if source_lane_obj and hasattr(source_lane_obj, '_oams_same_fps_runout'):
+                                    source_lane_obj._oams_same_fps_runout = False
+                                    self.logger.info("Cleared same-FPS runout flag on lane %s after successful reload", source_lane_name)
                         except Exception:
-                            self.logger.error("Failed to clear source lane %s state after reload to %s", source_lane_name, target_lane)
+                            self.logger.error("Failed to clear source lane %s state after reload to %s", source_lane_name, target_lane, exc_info=True)
 
                     fps_state.reset_runout_positions()
                     if monitor:
