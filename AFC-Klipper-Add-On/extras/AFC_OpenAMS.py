@@ -696,29 +696,45 @@ class afcAMS(afcUnit):
         lane thinks it's loaded (to avoid stale state after reboot).
         """
         if lane is None:
+            self.logger.info("_lane_reports_tool_filament: lane is None, returning None")
             return None
+
+        lane_name = getattr(lane, "name", None)
 
         # Check if the extruder thinks THIS lane is loaded (authoritative)
         extruder = getattr(lane, "extruder_obj", None)
         if extruder is not None:
             lane_loaded = getattr(extruder, "lane_loaded", None)
-            lane_name = getattr(lane, "name", None)
+            self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: extruder.lane_loaded={lane_loaded}, lane_name={lane_name}")
+
             if lane_loaded == lane_name:
                 # Extruder confirms this lane is loaded
+                self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: extruder confirms loaded, returning True")
                 return True
             elif lane_loaded is not None and lane_loaded != lane_name:
                 # Extruder has a different lane loaded
+                self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: extruder has different lane ({lane_loaded}), returning False")
                 return False
             # else: lane_loaded is None, fall through to other checks
+            self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: extruder.lane_loaded is None, falling through to lane state checks")
+        else:
+            self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: no extruder_obj, falling through to lane state checks")
 
         # Fallback: check lane's own state (may be stale after reboot)
         load_state = getattr(lane, "load_state", None)
+        self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: load_state={load_state}")
         if load_state is not None:
-            return bool(load_state)
+            result = bool(load_state)
+            self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: load_state is not None, returning {result}")
+            return result
 
-        if getattr(lane, "tool_loaded", False):
+        tool_loaded = getattr(lane, "tool_loaded", False)
+        self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: tool_loaded={tool_loaded}")
+        if tool_loaded:
+            self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: tool_loaded is True, returning True")
             return True
 
+        self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: no state found, returning None")
         return None
 
     def _set_virtual_tool_sensor_state(self, filament_present: bool, eventtime: float, lane_name: Optional[str] = None, *, force: bool = False, lane_obj=None) -> None:
