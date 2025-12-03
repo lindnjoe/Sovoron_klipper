@@ -2275,7 +2275,7 @@ class OAMSManager:
         # The OAMS BLDC will push filament through the buffer, and the follower
         # must be tracking it in real-time, not after the load completes
         # Without this, filament gets stuck in the buffer during the load
-        self._enable_follower(fps_name, fps_state, oams, 1, "before load - enable follower for buffer tracking")
+        self._enable_follower(fps_name, fps_state, oam, 1, "before load - enable follower for buffer tracking")
 
         try:
             success, message = oam.load_spool_with_retry(bay_index)
