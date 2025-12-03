@@ -1383,7 +1383,6 @@ class OAMSManager:
                             # Force update to ensure sensor state is corrected after reboot
                             unit_obj._sync_virtual_tool_sensor(eventtime, force=True)
                             synced_count += 1
-                            self.logger.info("Synced virtual tool sensor for unit %s (forced update)", unit_name)
                         except Exception:
                             self.logger.error("Failed to sync virtual tool sensor for unit %s", unit_name, exc_info=True)
                             gcmd.respond_info(f"  Warning: Failed to sync virtual sensor for {unit_name}")
@@ -1395,8 +1394,6 @@ class OAMSManager:
             except Exception:
                 self.logger.error("Failed to sync virtual tool sensors", exc_info=True)
                 gcmd.respond_info("  Error during virtual sensor sync - check klippy.log")
-
-        gcmd.respond_info("\nCheck klippy.log for detailed state detection logs")
 
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
     def cmd_FOLLOWER(self, gcmd):
