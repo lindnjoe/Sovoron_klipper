@@ -689,8 +689,13 @@ class afcAMS(afcUnit):
 
         return False
 
-    def _lane_reports_tool_filament(self, lane) -> Optional[bool]:
+    def _lane_reports_tool_filament(self, lane, sync_only: bool = False) -> Optional[bool]:
         """Return the best-known tool filament state for a lane.
+
+        Args:
+            lane: The lane to check
+            sync_only: If True, only trust extruder.lane_loaded (for post-reboot sync).
+                      If False, fall through to lane state for in-progress loads.
 
         Checks if the EXTRUDER thinks this lane is loaded, not just if the
         lane thinks it's loaded (to avoid stale state after reboot).
@@ -710,12 +715,15 @@ class afcAMS(afcUnit):
             elif lane_loaded is not None and lane_loaded != lane_name:
                 # Extruder has a different lane loaded
                 return False
-            elif lane_loaded is None:
-                # Extruder says nothing is loaded - trust it over potentially stale lane state
+            elif lane_loaded is None and sync_only:
+                # Post-reboot sync: extruder says nothing loaded, trust it over stale lane state
                 return False
+            # else: lane_loaded is None but sync_only=False, fall through to check lane state
+            # This allows in-progress loads to work (lane.load_state changes before lane_loaded)
 
-        # Fallback: check lane's own state (may be stale after reboot)
-        # This path should only be reached for non-tool lanes without an extruder
+        # Fallback: check lane's own state
+        # During normal operation: reflects in-progress loads (hub sensor detects filament)
+        # During sync_only: should not reach here (extruder is not None for AMS lanes)
         load_state = getattr(lane, "load_state", None)
         if load_state is not None:
             return bool(load_state)
@@ -866,7 +874,7 @@ class afcAMS(afcUnit):
         if lane_name:
             lane = self.lanes.get(lane_name)
             if lane is not None and self._lane_matches_extruder(lane):
-                result = self._lane_reports_tool_filament(lane)
+                result = self._lane_reports_tool_filament(lane, sync_only=force)
                 if result is not None:
                     desired_state = result
                     desired_lane = getattr(lane, "name", None)
@@ -880,7 +888,7 @@ class afcAMS(afcUnit):
                     continue
 
                 matching_lanes += 1
-                result = self._lane_reports_tool_filament(lane)
+                result = self._lane_reports_tool_filament(lane, sync_only=force)
                 if result is None:
                     continue
 
