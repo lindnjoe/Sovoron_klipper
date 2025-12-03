@@ -554,6 +554,24 @@ class afcAMS(afcUnit):
             </span>
             """).format(name=self.name)
 
+        # Run full OAMSM_STATUS logic after system prep to sync everything
+        # This runs state detection (FPS state) + virtual sensor sync
+        try:
+            oams_manager = self.printer.lookup_object("oams_manager", None)
+            if oams_manager is not None:
+                # Run state detection to sync FPS state with sensor readings
+                oams_manager.determine_state()
+                self.logger.info("OAMS state detection completed for %s during system prep", self.name)
+        except Exception:
+            self.logger.error("Failed to run OAMS state detection during system prep for %s", self.name, exc_info=True)
+
+        # Sync virtual tool sensor after state detection
+        try:
+            eventtime = self.reactor.monotonic()
+            self._sync_virtual_tool_sensor(eventtime, force=True)
+        except Exception:
+            self.logger.error("Failed to sync virtual tool sensor during system prep for %s", self.name, exc_info=True)
+
     def _ensure_virtual_tool_sensor(self) -> bool:
         """Resolve or create the virtual tool-start sensor for AMS extruders."""
         if self._virtual_tool_sensor is not None:
@@ -1465,21 +1483,6 @@ class afcAMS(afcUnit):
 
         # Hook into AFC's LANE_UNLOAD for cross-extruder runouts
         self._wrap_afc_lane_unload()
-
-        # Run full OAMSM_STATUS logic after boot to sync everything
-        # This runs state detection (FPS state) + virtual sensor sync
-        try:
-            oams_manager = self.printer.lookup_object("oams_manager", None)
-            if oams_manager is not None:
-                # Run state detection to sync FPS state with sensor readings
-                oams_manager.determine_state()
-                self.logger.info("OAMS state detection completed for %s during startup", self.name)
-        except Exception:
-            self.logger.error("Failed to run OAMS state detection during startup for %s", self.name, exc_info=True)
-
-        # Sync virtual tool sensor after state detection
-        eventtime = self.reactor.monotonic()
-        self._sync_virtual_tool_sensor(eventtime, force=True)
 
     def _wrap_afc_lane_unload(self):
         """Wrap AFC's LANE_UNLOAD to handle cross-extruder runout scenarios."""
