@@ -3858,10 +3858,10 @@ class OAMSManager:
                 if target_lane_map:
                     self.logger.info("Infinite runout triggered for %s on %s -> %s", fps_name, source_lane_name, target_lane)
 
-                    # CRITICAL FIX: Defer reload operations to main reactor thread
+                    # CRITICAL FIX: Defer reload operations using one-shot timer
                     # When called from timer context, toolhead.dwell() in load/unload functions
                     # gets queued AFTER pending print moves, causing indefinite blocking until pause.
-                    # reactor.register_callback() moves execution to main thread where blocking works.
+                    # Use one-shot timer to defer execution - safer than register_callback from timer context.
                     def _perform_reload(eventtime):
                         unload_success, unload_message = self._unload_filament_for_fps(fps_name)
                         if not unload_success:
@@ -3870,7 +3870,7 @@ class OAMSManager:
                             self._pause_printer_message(failure_message, fps_state.current_oams or active_oams)
                             if monitor:
                                 monitor.paused()
-                            return
+                            return self.reactor.NEVER  # One-shot timer
 
                         load_success, load_message = self._load_filament_for_lane(target_lane)
                         if not load_success:
@@ -3879,13 +3879,15 @@ class OAMSManager:
                             self._pause_printer_message(failure_message, fps_state.current_oams or active_oams)
                             if monitor:
                                 monitor.paused()
-                            return
+                            return self.reactor.NEVER  # One-shot timer
 
                         # Success - continue with AFC notifications
                         self._handle_successful_reload(fps_name, fps_state, target_lane, target_lane_map, source_lane_name, active_oams, monitor)
+                        return self.reactor.NEVER  # One-shot timer
 
-                    # Schedule reload on main reactor thread (not timer context)
-                    self.reactor.register_callback(_perform_reload)
+                    # Schedule reload via one-shot timer (safe from timer context)
+                    # Use NOW to execute immediately on next reactor cycle
+                    self.reactor.register_timer(_perform_reload, self.reactor.NOW)
                     return
 
                 # This code is now in _handle_successful_reload()
