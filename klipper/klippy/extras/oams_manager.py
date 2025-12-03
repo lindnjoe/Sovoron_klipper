@@ -3093,10 +3093,13 @@ class OAMSManager:
                             self._check_clog(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
 
                         state_changed = True
-                # Update follower based on hub sensors (simple: ANY filament = enabled, ALL empty = disabled)
-                # This runs every monitor cycle to keep follower in sync with actual hub state
+                # Update follower only when state changes or periodically during idle
+                # No need to run every cycle since we never auto-disable anymore
+                # Follower gets enabled when filament detected, stays enabled until manual disable
                 if oams and fps_state.current_oams:
-                    self._update_follower_for_oams(fps_state.current_oams, oams)
+                    # Run on state changes or every 10th idle poll to catch new filament insertions
+                    if state_changed or fps_state.consecutive_idle_polls % 10 == 0:
+                        self._update_follower_for_oams(fps_state.current_oams, oams)
 
                 # OPTIMIZATION: Adaptive polling interval with exponential backoff
                 if state_changed or is_printing:
