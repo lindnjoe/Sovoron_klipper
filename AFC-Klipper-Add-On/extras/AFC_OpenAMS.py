@@ -805,7 +805,7 @@ class afcAMS(afcUnit):
             try:
                 oams_manager = self.printer.lookup_object("oams_manager", None)
                 if oams_manager is not None:
-                    oams_manager.detect_running_state()
+                    oams_manager.determine_state()
                     self.logger.info("Triggered OAMS state detection after manually setting %s as loaded", lane.name)
             except Exception:
                 self.logger.error("Failed to trigger OAMS state detection for %s", lane.name, exc_info=True)
@@ -1466,8 +1466,18 @@ class afcAMS(afcUnit):
         # Hook into AFC's LANE_UNLOAD for cross-extruder runouts
         self._wrap_afc_lane_unload()
 
-        # Sync virtual tool sensor after boot to ensure correct state
-        # This fixes virtual sensor showing stale state after reboot
+        # Run full OAMSM_STATUS logic after boot to sync everything
+        # This runs state detection (FPS state) + virtual sensor sync
+        try:
+            oams_manager = self.printer.lookup_object("oams_manager", None)
+            if oams_manager is not None:
+                # Run state detection to sync FPS state with sensor readings
+                oams_manager.determine_state()
+                self.logger.info("OAMS state detection completed for %s during startup", self.name)
+        except Exception:
+            self.logger.error("Failed to run OAMS state detection during startup for %s", self.name, exc_info=True)
+
+        # Sync virtual tool sensor after state detection
         eventtime = self.reactor.monotonic()
         self._sync_virtual_tool_sensor(eventtime, force=True)
 
