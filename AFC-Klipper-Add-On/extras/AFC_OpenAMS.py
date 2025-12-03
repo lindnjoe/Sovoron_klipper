@@ -690,10 +690,28 @@ class afcAMS(afcUnit):
         return False
 
     def _lane_reports_tool_filament(self, lane) -> Optional[bool]:
-        """Return the best-known tool filament state for a lane."""
+        """Return the best-known tool filament state for a lane.
+
+        Checks if the EXTRUDER thinks this lane is loaded, not just if the
+        lane thinks it's loaded (to avoid stale state after reboot).
+        """
         if lane is None:
             return None
 
+        # Check if the extruder thinks THIS lane is loaded (authoritative)
+        extruder = getattr(lane, "extruder_obj", None)
+        if extruder is not None:
+            lane_loaded = getattr(extruder, "lane_loaded", None)
+            lane_name = getattr(lane, "name", None)
+            if lane_loaded == lane_name:
+                # Extruder confirms this lane is loaded
+                return True
+            elif lane_loaded is not None and lane_loaded != lane_name:
+                # Extruder has a different lane loaded
+                return False
+            # else: lane_loaded is None, fall through to other checks
+
+        # Fallback: check lane's own state (may be stale after reboot)
         load_state = getattr(lane, "load_state", None)
         if load_state is not None:
             return bool(load_state)
