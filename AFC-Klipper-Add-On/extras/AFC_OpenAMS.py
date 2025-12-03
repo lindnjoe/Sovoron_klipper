@@ -812,6 +812,9 @@ class afcAMS(afcUnit):
         """Update the virtual tool sensor when a lane loads into the tool."""
         super().lane_tool_loaded(lane)
 
+        lane_name = getattr(lane, "name", None)
+        self.logger.info("lane_tool_loaded called for %s on unit %s", lane_name, self.name)
+
         # When a new lane loads to toolhead, clear tool_loaded on any OTHER lanes from this unit
         # that are on the SAME FPS/extruder (each FPS can have its own lane loaded)
         # This handles cross-Extruder runout where AFC switches from OpenAMS lane to different Extruder/FPS lane
@@ -839,11 +842,12 @@ class afcAMS(afcUnit):
                 oams_manager = self.printer.lookup_object("oams_manager", None)
                 if oams_manager is not None:
                     oams_manager.determine_state()
-                    self.logger.info("Triggered OAMS state detection after manually setting %s as loaded", lane.name)
+                    self.logger.info("Triggered OAMS state detection after setting %s as loaded", lane_name)
             except Exception:
-                self.logger.error("Failed to trigger OAMS state detection for %s", lane.name, exc_info=True)
+                self.logger.error("Failed to trigger OAMS state detection for %s", lane_name, exc_info=True)
 
         if not self._lane_matches_extruder(lane):
+            self.logger.info("Lane %s does not match unit %s extruder, skipping virtual sensor update", lane_name, self.name)
             return
 
         # Wait for all moves to complete to prevent "Timer too close" errors
@@ -856,8 +860,9 @@ class afcAMS(afcUnit):
             pass
 
         eventtime = self.reactor.monotonic()
-        lane_name = getattr(lane, "name", None)
+        self.logger.info("Setting virtual sensor to TRUE for %s (force=True)", lane_name)
         self._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
+        self.logger.info("Virtual sensor state set complete for %s", lane_name)
 
     def lane_tool_unloaded(self, lane):
         """Update the virtual tool sensor when a lane unloads from the tool."""
