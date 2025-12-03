@@ -3248,12 +3248,22 @@ class OAMSManager:
             except Exception:
                 is_printing = False
 
+        # Skip stuck spool detection if ANY runout is active (not just current FPS)
+        # During cross-FPS runouts, we may be loading a new lane while the old lane is still clearing
         monitor = self.runout_monitors.get(fps_name)
         if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
             if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
-                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "runout monitor inactive")
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "runout active on this FPS")
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
             return
+
+        # Also check if ANY other FPS has an active runout
+        for other_fps_name, other_monitor in self.runout_monitors.items():
+            if other_fps_name != fps_name and other_monitor.state != OAMSRunoutState.MONITORING:
+                if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+                    self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, f"runout active on {other_fps_name}")
+                fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
+                return
 
         pause_resume = self._pause_resume_obj
         if pause_resume is None:
