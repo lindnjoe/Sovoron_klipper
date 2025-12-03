@@ -2776,15 +2776,32 @@ class OAMSManager:
             fps_states_for_oams: List["FPSState"] = []
             lane_loaded = False
             direction = None
+            in_runout_recovery = False  # Track if any FPS for this OAMS is in runout recovery
+            now = self.reactor.monotonic()
+
             for fps_state in self.current_state.fps_state.values():
                 if fps_state.current_oams == oams_name:
                     fps_states_for_oams.append(fps_state)
+
+                    # Check if this FPS is in runout recovery
+                    # 1. Check runout monitor state
+                    for fps_name, monitor in self.runout_monitors.items():
+                        if fps_state == self.current_state.fps_state.get(fps_name):
+                            if monitor.state not in (OAMSRunoutState.MONITORING, OAMSRunoutState.STOPPED):
+                                in_runout_recovery = True
+                                break
+
+                    # 2. Check if within lane transition grace period (30 seconds)
+                    if fps_state.last_lane_change_time is not None and now - fps_state.last_lane_change_time < 30.0:
+                        in_runout_recovery = True
+
                     lane_loaded = (
                         lane_loaded
                         or fps_state.current_spool_idx is not None
                         or fps_state.state != FPSLoadState.UNLOADED
                         or fps_state.clog_active
                         or fps_state.stuck_spool_active
+                        or in_runout_recovery  # Don't disable follower during runout recovery
                     )
                     if direction is None and fps_state.direction is not None:
                         direction = fps_state.direction
