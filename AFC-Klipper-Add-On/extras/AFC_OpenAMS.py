@@ -565,29 +565,26 @@ class afcAMS(afcUnit):
         giving time for all sensors and virtual objects to be fully initialized.
         """
         # Wait 3 seconds to ensure everything is initialized
-        waketime = eventtime + 3.0
+        self.reactor.pause(self.reactor.monotonic() + 3.0)
 
-        def do_sync(eventtime):
-            try:
-                oams_manager = self.printer.lookup_object("oams_manager", None)
-                if oams_manager is not None:
-                    # Run state detection to sync FPS state with sensor readings
-                    oams_manager.determine_state()
-                    self.logger.info("OAMS state detection completed for %s during delayed startup sync", self.name)
-                else:
-                    self.logger.warning("OAMS manager not found for delayed startup sync of %s", self.name)
-            except Exception:
-                self.logger.error("Failed to run OAMS state detection during delayed startup sync for %s", self.name, exc_info=True)
+        try:
+            oams_manager = self.printer.lookup_object("oams_manager", None)
+            if oams_manager is not None:
+                # Run state detection to sync FPS state with sensor readings
+                oams_manager.determine_state()
+                self.logger.info("OAMS state detection completed for %s during delayed startup sync", self.name)
+            else:
+                self.logger.warning("OAMS manager not found for delayed startup sync of %s", self.name)
+        except Exception:
+            self.logger.error("Failed to run OAMS state detection during delayed startup sync for %s", self.name, exc_info=True)
 
-            # Sync virtual tool sensor after state detection
-            try:
-                sync_time = self.reactor.monotonic()
-                self._sync_virtual_tool_sensor(sync_time, force=True)
-                self.logger.info("Virtual tool sensor sync completed for %s during delayed startup sync", self.name)
-            except Exception:
-                self.logger.error("Failed to sync virtual tool sensor during delayed startup sync for %s", self.name, exc_info=True)
-
-        self.reactor.register_timer(do_sync, waketime)
+        # Sync virtual tool sensor after state detection
+        try:
+            sync_time = self.reactor.monotonic()
+            self._sync_virtual_tool_sensor(sync_time, force=True)
+            self.logger.info("Virtual tool sensor sync completed for %s during delayed startup sync", self.name)
+        except Exception:
+            self.logger.error("Failed to sync virtual tool sensor during delayed startup sync for %s", self.name, exc_info=True)
 
     def _ensure_virtual_tool_sensor(self) -> bool:
         """Resolve or create the virtual tool-start sensor for AMS extruders."""
