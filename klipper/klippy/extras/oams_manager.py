@@ -2823,13 +2823,14 @@ class OAMSManager:
                 empty_polls = self.follower_empty_polls.get(oams_name, 0) + 1
                 self.follower_empty_polls[oams_name] = empty_polls
 
-                # Require multiple consecutive empty checks before disabling to avoid
-                # transient hub blips (e.g., during clog pauses or brief sensor drops)
-                if empty_polls >= 2:
-                    self._set_follower_if_changed(oams_name, oams, 0, direction, "all hubs empty", force=True)
-                    for state in fps_states_for_oams:
-                        state.following = False
-                    self.follower_had_filament[oams_name] = False
+                # NEVER automatically disable follower - keep it enabled for manual recovery
+                # Operator can manually disable with OAMSM_FOLLOWER ENABLE=0 if needed
+                # This ensures follower is always available for manual extrusion during error recovery
+                # (clogs, stuck spools, runouts, etc.)
+                # If follower was previously enabled, keep it enabled even if sensors show empty
+                if self.follower_had_filament.get(oams_name, False):
+                    self.logger.debug("Sensors empty on %s but keeping follower enabled for manual recovery (empty_polls=%d)",
+                                     oams_name, empty_polls)
 
             self.follower_coasting[oams_name] = False
             self.follower_coast_start_pos[oams_name] = 0.0
