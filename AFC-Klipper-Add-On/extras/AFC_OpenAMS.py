@@ -1455,6 +1455,11 @@ class afcAMS(afcUnit):
         # Hook into AFC's LANE_UNLOAD for cross-extruder runouts
         self._wrap_afc_lane_unload()
 
+        # Sync virtual tool sensor after boot to ensure correct state
+        # This fixes virtual sensor showing stale state after reboot
+        eventtime = self.reactor.monotonic()
+        self._sync_virtual_tool_sensor(eventtime, force=True)
+
     def _wrap_afc_lane_unload(self):
         """Wrap AFC's LANE_UNLOAD to handle cross-extruder runout scenarios."""
         if not hasattr(self, 'afc') or self.afc is None:
