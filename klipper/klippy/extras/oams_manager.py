@@ -510,6 +510,7 @@ class FPSState:
         self.afc_delegation_until: float = 0.0
 
         self.is_cross_extruder_runout: bool = False  # Track if current runout is cross-extruder
+        self.last_lane_change_time: Optional[float] = None  # Track when current_lane last changed (for runout recovery)
 
         self.stuck_spool_start_time: Optional[float] = None
         self.stuck_spool_active: bool = False
@@ -2283,9 +2284,15 @@ class OAMSManager:
             return False, error_msg
 
         if success:
+            # Track lane transitions for runout recovery protection
+            old_lane = fps_state.current_lane
             fps_state.current_lane = lane_name  # Store lane name (e.g., "lane8") not map (e.g., "T0")
             fps_state.current_oams = oam.name
             fps_state.current_spool_idx = bay_index
+
+            # If lane actually changed (runout recovery), track the time
+            if old_lane is not None and old_lane != lane_name:
+                fps_state.last_lane_change_time = self.reactor.monotonic()
 
             # CRITICAL: Set fps_state.since to the successful load time BEFORE changing state
             successful_load_time = oam.get_last_successful_load_time(bay_index)
@@ -3294,6 +3301,18 @@ class OAMSManager:
             if fps_state.stuck_spool_active:
                 if oams is not None and fps_state.current_spool_idx is not None:
                     self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "grace period")
+                fps_state.reset_stuck_spool_state(preserve_restore=True)
+            return
+
+        # Extended grace period for lane transitions during runout recovery
+        # Same-FPS runouts don't pause - new filament loads while print continues
+        # Give 30 seconds for new filament to position and develop back-pressure
+        if fps_state.last_lane_change_time is not None and now - fps_state.last_lane_change_time < 30.0:
+            fps_state.stuck_spool_start_time = None
+            if fps_state.stuck_spool_active:
+                if oams is not None and fps_state.current_spool_idx is not None:
+                    elapsed = now - fps_state.last_lane_change_time
+                    self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, f"lane transition grace ({elapsed:.1f}s)")
                 fps_state.reset_stuck_spool_state(preserve_restore=True)
             return
 
