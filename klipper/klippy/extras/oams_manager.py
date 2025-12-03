@@ -3232,6 +3232,14 @@ class OAMSManager:
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, pressure, hes_values, now):
         """Check for stuck spool conditions (OPTIMIZED)."""
+        # Skip stuck spool detection if clog is active
+        # Clog detection handles follower control during clog conditions
+        if fps_state.clog_active:
+            if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "clog active - deferred to clog handling")
+            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
+            return
+
         # OPTIMIZATION: Use cached idle_timeout object
         is_printing = False
         if self._idle_timeout_obj is not None:
