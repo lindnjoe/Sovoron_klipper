@@ -799,6 +799,17 @@ class afcAMS(afcUnit):
                         other_lane._oams_runout_detected = False
                     self.logger.debug("Cleared tool_loaded for %s on same FPS (new lane %s loaded)", other_lane.name, lane.name)
 
+        # Trigger OAMS state detection to sync FPS state with sensor readings
+        # This ensures FPS state is updated when manually setting lane as loaded
+        if self.oams is not None:
+            try:
+                oams_manager = self.printer.lookup_object("oams_manager", None)
+                if oams_manager is not None:
+                    oams_manager.detect_running_state()
+                    self.logger.info("Triggered OAMS state detection after manually setting %s as loaded", lane.name)
+            except Exception:
+                self.logger.error("Failed to trigger OAMS state detection for %s", lane.name, exc_info=True)
+
         if not self._lane_matches_extruder(lane):
             return
 
