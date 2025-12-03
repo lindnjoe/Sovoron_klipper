@@ -740,42 +740,30 @@ class afcAMS(afcUnit):
 
         # Check if the extruder thinks THIS lane is loaded (authoritative)
         extruder = getattr(lane, "extruder_obj", None)
-        self.logger.info(f"_lane_reports_tool_filament: lane={lane_name}, extruder={extruder}, sync_only={sync_only}")
         if extruder is not None:
             lane_loaded = getattr(extruder, "lane_loaded", None)
-            self.logger.info(f"_lane_reports_tool_filament: lane={lane_name}, extruder.lane_loaded={lane_loaded}")
             if lane_loaded == lane_name:
                 # Extruder confirms this lane is loaded
-                self.logger.info(f"_lane_reports_tool_filament: lane={lane_name} MATCHED extruder.lane_loaded, returning True")
                 return True
             elif lane_loaded is not None and lane_loaded != lane_name:
                 # Extruder has a different lane loaded
-                self.logger.info(f"_lane_reports_tool_filament: lane={lane_name}, different lane loaded ({lane_loaded}), returning False")
                 return False
             elif lane_loaded is None and sync_only:
                 # Post-reboot sync: extruder says nothing loaded, trust it over stale lane state
-                self.logger.info(f"_lane_reports_tool_filament: lane={lane_name}, lane_loaded is None and sync_only=True, returning False")
                 return False
             # else: lane_loaded is None but sync_only=False, fall through to check lane state
             # This allows in-progress loads to work (lane.load_state changes before lane_loaded)
-            self.logger.info(f"_lane_reports_tool_filament: lane={lane_name}, lane_loaded is None and sync_only=False, falling through")
 
         # Fallback: check lane's own state
         # During normal operation: reflects in-progress loads (hub sensor detects filament)
         # During sync_only: should not reach here (extruder is not None for AMS lanes)
         load_state = getattr(lane, "load_state", None)
-        tool_loaded = getattr(lane, "tool_loaded", False)
-        self.logger.info(f"_lane_reports_tool_filament: lane={lane_name}, load_state={load_state}, tool_loaded={tool_loaded}")
         if load_state is not None:
-            result = bool(load_state)
-            self.logger.info(f"_lane_reports_tool_filament: lane={lane_name}, returning {result} from load_state")
-            return result
+            return bool(load_state)
 
-        if tool_loaded:
-            self.logger.info(f"_lane_reports_tool_filament: lane={lane_name}, returning True from tool_loaded")
+        if getattr(lane, "tool_loaded", False):
             return True
 
-        self.logger.info(f"_lane_reports_tool_filament: lane={lane_name}, returning None (no state found)")
         return None
 
     def _set_virtual_tool_sensor_state(self, filament_present: bool, eventtime: float, lane_name: Optional[str] = None, *, force: bool = False, lane_obj=None) -> None:
@@ -824,9 +812,6 @@ class afcAMS(afcUnit):
         """Update the virtual tool sensor when a lane loads into the tool."""
         super().lane_tool_loaded(lane)
 
-        lane_name = getattr(lane, "name", None)
-        self.logger.info(f"lane_tool_loaded called for {lane_name} on unit {self.name}")
-
         # When a new lane loads to toolhead, clear tool_loaded on any OTHER lanes from this unit
         # that are on the SAME FPS/extruder (each FPS can have its own lane loaded)
         # This handles cross-Extruder runout where AFC switches from OpenAMS lane to different Extruder/FPS lane
@@ -854,12 +839,10 @@ class afcAMS(afcUnit):
                 oams_manager = self.printer.lookup_object("oams_manager", None)
                 if oams_manager is not None:
                     oams_manager.determine_state()
-                    self.logger.info(f"Triggered OAMS state detection after setting {lane_name} as loaded")
             except Exception as e:
-                self.logger.error(f"Failed to trigger OAMS state detection for {lane_name}: {e}")
+                self.logger.error(f"Failed to trigger OAMS state detection for {getattr(lane, 'name', None)}: {e}")
 
         if not self._lane_matches_extruder(lane):
-            self.logger.info(f"Lane {lane_name} does not match unit {self.name} extruder, skipping virtual sensor update")
             return
 
         # Wait for all moves to complete to prevent "Timer too close" errors
@@ -872,9 +855,8 @@ class afcAMS(afcUnit):
             pass
 
         eventtime = self.reactor.monotonic()
-        self.logger.info(f"Setting virtual sensor to TRUE for {lane_name} (force=True)")
+        lane_name = getattr(lane, "name", None)
         self._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
-        self.logger.info(f"Virtual sensor state set complete for {lane_name}")
 
     def lane_tool_unloaded(self, lane):
         """Update the virtual tool sensor when a lane unloads from the tool."""
