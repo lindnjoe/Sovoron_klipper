@@ -715,8 +715,10 @@ class afcAMS(afcUnit):
                 # Extruder has a different lane loaded
                 self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: extruder has different lane ({lane_loaded}), returning False")
                 return False
-            # else: lane_loaded is None, fall through to other checks
-            self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: extruder.lane_loaded is None, falling through to lane state checks")
+            elif lane_loaded is None:
+                # Extruder says nothing is loaded - trust it over potentially stale lane state
+                self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: extruder.lane_loaded is None, returning False")
+                return False
         else:
             self.logger.info(f"_lane_reports_tool_filament: Lane {lane_name}: no extruder_obj, falling through to lane state checks")
 
