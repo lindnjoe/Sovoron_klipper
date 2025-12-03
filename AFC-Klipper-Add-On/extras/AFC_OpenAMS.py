@@ -554,19 +554,17 @@ class afcAMS(afcUnit):
             </span>
             """).format(name=self.name)
 
-        # Schedule delayed sync after Klipper is fully ready (2 seconds after connect)
+        # Schedule delayed sync after Klipper is fully ready
         # This ensures all sensors and objects are properly initialized before sync
-        self.reactor.register_callback(self._delayed_startup_sync)
+        waketime = self.reactor.monotonic() + 3.0
+        self.reactor.register_timer(self._delayed_startup_sync, waketime)
 
     def _delayed_startup_sync(self, eventtime):
         """Run OAMSM_STATUS logic after a delay to ensure all systems are ready.
 
-        This is called via reactor callback after handle_connect() completes,
+        This is called via one-shot timer after handle_connect() completes,
         giving time for all sensors and virtual objects to be fully initialized.
         """
-        # Wait 3 seconds to ensure everything is initialized
-        self.reactor.pause(self.reactor.monotonic() + 3.0)
-
         try:
             oams_manager = self.printer.lookup_object("oams_manager", None)
             if oams_manager is not None:
@@ -585,6 +583,9 @@ class afcAMS(afcUnit):
             self.logger.info("Virtual tool sensor sync completed for %s during delayed startup sync", self.name)
         except Exception:
             self.logger.error("Failed to sync virtual tool sensor during delayed startup sync for %s", self.name, exc_info=True)
+
+        # Return NEVER to make this a one-shot timer (never reschedule)
+        return self.reactor.NEVER
 
     def _ensure_virtual_tool_sensor(self) -> bool:
         """Resolve or create the virtual tool-start sensor for AMS extruders."""
