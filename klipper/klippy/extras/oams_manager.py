@@ -1858,6 +1858,233 @@ class OAMSManager:
             monitor.reset()
             monitor.start()
 
+    def _start_async_reload(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
+                           target_lane_map: str, source_lane_name: Optional[str],
+                           active_oams: str, monitor) -> None:
+        """Start non-blocking reload using OAMS hardware with async completion polling.
+
+        This avoids blocking wait loops that don't work from timer context.
+        Instead, we start the operation and poll for completion with a timer.
+        """
+        # Get OAMS object for unload
+        if fps_name not in self.fpss:
+            self.logger.error("FPS %s not found for async reload", fps_name)
+            self._pause_printer_message(f"FPS {fps_name} not found", active_oams)
+            if monitor:
+                monitor.paused()
+            return
+
+        fps_state_obj = self.current_state.fps_state[fps_name]
+        if fps_state_obj.current_oams is None:
+            self.logger.error("No OAMS loaded on %s for async reload", fps_name)
+            self._pause_printer_message(f"No OAMS on {fps_name}", active_oams)
+            if monitor:
+                monitor.paused()
+            return
+
+        oams_unload = self.oams.get(fps_state_obj.current_oams)
+        if oams_unload is None:
+            self.logger.error("OAMS %s not found for unload", fps_state_obj.current_oams)
+            self._pause_printer_message(f"OAMS {fps_state_obj.current_oams} not found", active_oams)
+            if monitor:
+                monitor.paused()
+            return
+
+        # Start unload operation (non-blocking - just sends MCU command)
+        self.logger.info("Starting async unload for same-FPS reload on %s", fps_name)
+        oams_unload.action_status = OAMSStatus.UNLOADING
+        oams_unload.oams_unload_spool_cmd.send()
+        unload_start_time = self.reactor.monotonic()
+
+        # Create polling timer to check unload completion
+        def _check_unload_complete(eventtime):
+            # Check if unload completed
+            if oams_unload.action_status is None:
+                # Unload finished - check result
+                if oams_unload.action_status_code == OAMSOpCode.SUCCESS:
+                    self.logger.info("Async unload completed successfully, starting load for %s", target_lane)
+                    # Update FPS state
+                    fps_state_obj.state = FPSLoadState.UNLOADED
+                    fps_state_obj.following = False
+                    fps_state_obj.direction = 0
+                    fps_state_obj.since = self.reactor.monotonic()
+                    oams_unload.current_spool = None
+
+                    # Now start load operation
+                    self._start_async_load(fps_name, fps_state, target_lane, target_lane_map,
+                                         source_lane_name, active_oams, monitor)
+                else:
+                    self.logger.error("Async unload failed with code %s", oams_unload.action_status_code)
+                    self._pause_printer_message(f"Failed to unload on {fps_name}", active_oams)
+                    if monitor:
+                        monitor.paused()
+                return self.reactor.NEVER  # Stop polling
+
+            # Check timeout (30 seconds)
+            if eventtime - unload_start_time > 30.0:
+                self.logger.error("Async unload timed out after 30s")
+                oams_unload.action_status = None
+                self._pause_printer_message(f"Unload timeout on {fps_name}", active_oams)
+                if monitor:
+                    monitor.paused()
+                return self.reactor.NEVER  # Stop polling
+
+            # Not done yet - keep polling every 100ms
+            return eventtime + 0.1
+
+        # Start polling timer
+        self.reactor.register_timer(_check_unload_complete, self.reactor.NOW)
+
+    def _start_async_load(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
+                         target_lane_map: str, source_lane_name: Optional[str],
+                         active_oams: str, monitor) -> None:
+        """Start non-blocking load operation with async completion polling."""
+        # Get target lane info to determine OAMS and bay
+        afc = self._get_afc()
+        if afc is None:
+            self.logger.error("AFC not available for async load")
+            self._pause_printer_message("AFC not available", active_oams)
+            if monitor:
+                monitor.paused()
+            return
+
+        lane = afc.lanes.get(target_lane)
+        if lane is None:
+            self.logger.error("Lane %s not found for async load", target_lane)
+            self._pause_printer_message(f"Lane {target_lane} not found", active_oams)
+            if monitor:
+                monitor.paused()
+            return
+
+        # Get unit and slot to find OAMS and bay index
+        unit_str = getattr(lane, "unit", None)
+        if not unit_str:
+            self.logger.error("Lane %s has no unit", target_lane)
+            self._pause_printer_message(f"Lane {target_lane} has no unit", active_oams)
+            if monitor:
+                monitor.paused()
+            return
+
+        # Parse slot number
+        slot_number = None
+        if isinstance(unit_str, str) and ':' in unit_str:
+            base_unit_name, slot_str = unit_str.split(':', 1)
+            try:
+                slot_number = int(slot_str)
+            except ValueError:
+                self.logger.error("Invalid slot in unit %s", unit_str)
+                self._pause_printer_message(f"Invalid slot in {unit_str}", active_oams)
+                if monitor:
+                    monitor.paused()
+                return
+        else:
+            base_unit_name = str(unit_str)
+            slot_number = getattr(lane, "index", None)
+
+        if slot_number is None:
+            self.logger.error("Could not determine slot for lane %s", target_lane)
+            self._pause_printer_message(f"No slot for {target_lane}", active_oams)
+            if monitor:
+                monitor.paused()
+            return
+
+        bay_index = slot_number - 1
+        if bay_index < 0:
+            self.logger.error("Invalid slot %s", slot_number)
+            self._pause_printer_message(f"Invalid slot {slot_number}", active_oams)
+            if monitor:
+                monitor.paused()
+            return
+
+        # Get OAMS object
+        unit_obj = getattr(lane, "unit_obj", None)
+        if unit_obj is None:
+            units = getattr(afc, "units", {})
+            unit_obj = units.get(base_unit_name)
+
+        if unit_obj is None:
+            self.logger.error("Unit %s not found", base_unit_name)
+            self._pause_printer_message(f"Unit {base_unit_name} not found", active_oams)
+            if monitor:
+                monitor.paused()
+            return
+
+        oams_name = getattr(unit_obj, "oams_name", None)
+        if not oams_name:
+            self.logger.error("Unit %s has no oams_name", base_unit_name)
+            self._pause_printer_message(f"Unit {base_unit_name} has no OAMS", active_oams)
+            if monitor:
+                monitor.paused()
+            return
+
+        oam_load = self.oams.get(oams_name)
+        if oam_load is None:
+            oam_load = self.oams.get(f"oams {oams_name}")
+        if oam_load is None:
+            self.logger.error("OAMS %s not found for load", oams_name)
+            self._pause_printer_message(f"OAMS {oams_name} not found", active_oams)
+            if monitor:
+                monitor.paused()
+            return
+
+        # Enable follower before load
+        fps_state_obj = self.current_state.fps_state[fps_name]
+        self._enable_follower(fps_name, fps_state_obj, oam_load, 1, "before async load")
+
+        # Update FPS state for loading
+        fps_state_obj.state = FPSLoadState.LOADING
+        fps_state_obj.encoder = oam_load.encoder_clicks
+        fps_state_obj.current_oams = oam_load.name
+        fps_state_obj.current_spool_idx = bay_index
+        fps_state_obj.since = self.reactor.monotonic()
+        fps_state_obj.clear_encoder_samples()
+
+        # Start load operation (non-blocking - just sends MCU command)
+        self.logger.info("Starting async load for lane %s (bay %s) on %s", target_lane, bay_index, oams_name)
+        oam_load.action_status = OAMSStatus.LOADING
+        oam_load.oams_load_spool_cmd.send([bay_index])
+        load_start_time = self.reactor.monotonic()
+
+        # Create polling timer to check load completion
+        def _check_load_complete(eventtime):
+            # Check if load completed
+            if oam_load.action_status is None:
+                # Load finished - check result
+                if oam_load.action_status_code == OAMSOpCode.SUCCESS:
+                    self.logger.info("Async load completed successfully for lane %s", target_lane)
+                    # Update state
+                    fps_state_obj.state = FPSLoadState.LOADED
+                    fps_state_obj.current_lane = target_lane
+                    fps_state_obj.since = self.reactor.monotonic()
+                    oam_load.current_spool = bay_index
+
+                    # Call success handler with AFC notifications
+                    self._handle_successful_reload(fps_name, fps_state, target_lane, target_lane_map,
+                                                   source_lane_name, active_oams, monitor)
+                else:
+                    self.logger.error("Async load failed with code %s", oam_load.action_status_code)
+                    fps_state_obj.state = FPSLoadState.UNLOADED
+                    self._pause_printer_message(f"Failed to load {target_lane}", active_oams)
+                    if monitor:
+                        monitor.paused()
+                return self.reactor.NEVER  # Stop polling
+
+            # Check timeout (30 seconds)
+            if eventtime - load_start_time > 30.0:
+                self.logger.error("Async load timed out after 30s")
+                oam_load.action_status = None
+                fps_state_obj.state = FPSLoadState.UNLOADED
+                self._pause_printer_message(f"Load timeout for {target_lane}", active_oams)
+                if monitor:
+                    monitor.paused()
+                return self.reactor.NEVER  # Stop polling
+
+            # Not done yet - keep polling every 100ms
+            return eventtime + 0.1
+
+        # Start polling timer
+        self.reactor.register_timer(_check_load_complete, self.reactor.NOW)
+
     def _get_infinite_runout_target_lane(self, fps_name: str, fps_state: 'FPSState') -> Tuple[Optional[str], Optional[str], bool, Optional[str]]:
         """Get target lane for infinite runout.
 
@@ -3858,138 +4085,18 @@ class OAMSManager:
                 if target_lane_map:
                     self.logger.info("Infinite runout triggered for %s on %s -> %s", fps_name, source_lane_name, target_lane)
 
-                    # CRITICAL FIX: Defer reload operations using one-shot timer
-                    # When called from timer context, toolhead.dwell() in load/unload functions
-                    # gets queued AFTER pending print moves, causing indefinite blocking until pause.
-                    # Use one-shot timer to defer execution - safer than register_callback from timer context.
-                    def _perform_reload(eventtime):
-                        unload_success, unload_message = self._unload_filament_for_fps(fps_name)
-                        if not unload_success:
-                            self.logger.error("Failed to unload filament during infinite runout on %s: %s", fps_name, unload_message)
-                            failure_message = unload_message or f"Failed to unload current spool on {fps_name}"
-                            self._pause_printer_message(failure_message, fps_state.current_oams or active_oams)
-                            if monitor:
-                                monitor.paused()
-                            return self.reactor.NEVER  # One-shot timer
-
-                        load_success, load_message = self._load_filament_for_lane(target_lane)
-                        if not load_success:
-                            self.logger.error("Failed to load filament during infinite runout on %s: %s", fps_name, load_message)
-                            failure_message = load_message or f"Failed to load new spool {target_lane} on {fps_name}"
-                            self._pause_printer_message(failure_message, fps_state.current_oams or active_oams)
-                            if monitor:
-                                monitor.paused()
-                            return self.reactor.NEVER  # One-shot timer
-
-                        # Success - continue with AFC notifications
-                        self._handle_successful_reload(fps_name, fps_state, target_lane, target_lane_map, source_lane_name, active_oams, monitor)
-                        return self.reactor.NEVER  # One-shot timer
-
-                    # Schedule reload via one-shot timer (safe from timer context)
-                    # Use NOW to execute immediately on next reactor cycle
-                    self.reactor.register_timer(_perform_reload, self.reactor.NOW)
+                    # CRITICAL FIX: Use async non-blocking reload mechanism
+                    # Blocking waits (toolhead.dwell or reactor.pause) don't work from timer context during printing
+                    # Instead, start the OAMS hardware operation and poll for completion with timers
+                    self._start_async_reload(fps_name, fps_state, target_lane, target_lane_map,
+                                           source_lane_name, active_oams, monitor)
                     return
 
-                # This code is now in _handle_successful_reload()
-                # Keeping old path for non-target_lane_map case
-                load_success, load_message = self._load_filament_for_lane(target_lane)
-                if load_success:
-                    self.logger.info("Successfully loaded lane %s on %s%s", target_lane, fps_name, " after infinite runout" if target_lane_map else "")
-
-                    # Always notify AFC that target lane is loaded to update virtual sensors
-                    # This ensures AMS_Extruder# sensors show correct state after same-FPS runouts
-                    if target_lane:
-                        handled = False
-                        if AMSRunoutCoordinator is not None:
-                            try:
-                                handled = AMSRunoutCoordinator.notify_lane_tool_state(self.printer, fps_state.current_oams or active_oams, target_lane, loaded=True, spool_index=fps_state.current_spool_idx, eventtime=fps_state.since)
-                                if handled:
-                                    self.logger.info("Notified AFC that lane %s is loaded via AMSRunoutCoordinator (updates virtual sensor state)", target_lane)
-                                else:
-                                    self.logger.warning("AMSRunoutCoordinator.notify_lane_tool_state returned False for lane %s, trying fallback", target_lane)
-                            except Exception as e:
-                                self.logger.error("Failed to notify AFC lane %s after infinite runout on %s: %s", target_lane, fps_name, e)
-                                handled = False
-                        else:
-                            # AMSRunoutCoordinator not available - call AFC methods directly
-                            self.logger.info("AMSRunoutCoordinator not available, updating virtual sensor directly for lane %s", target_lane)
-                            try:
-                                afc = self._get_afc()
-                                if afc and hasattr(afc, 'lanes'):
-                                    lane_obj = afc.lanes.get(target_lane)
-                                    if lane_obj:
-                                        # Update virtual sensor using AFC's direct method
-                                        if hasattr(afc, '_mirror_lane_to_virtual_sensor'):
-                                            afc._mirror_lane_to_virtual_sensor(lane_obj, self.reactor.monotonic())
-                                            self.logger.info("Updated virtual sensor for lane %s via AFC._mirror_lane_to_virtual_sensor", target_lane)
-                                            handled = True
-                                        else:
-                                            self.logger.warning("AFC doesn't have _mirror_lane_to_virtual_sensor method")
-                                    else:
-                                        self.logger.warning("Lane object not found for %s in AFC", target_lane)
-                                else:
-                                    self.logger.warning("AFC not available or has no lanes attribute")
-                            except Exception as e:
-                                self.logger.error("Failed to update virtual sensor directly for lane %s: %s", target_lane, e)
-
-                        if not handled:
-                            try:
-                                gcode = self.printer.lookup_object("gcode")
-                                gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
-                                self.logger.info("Marked lane %s as loaded via SET_LANE_LOADED after infinite runout on %s", target_lane, fps_name)
-                            except Exception as e:
-                                self.logger.error("Failed to mark lane %s as loaded after infinite runout on %s: %s", target_lane, fps_name, e)
-
-                    # Ensure follower is enabled after successful reload
-                    # Follower should stay enabled throughout same-FPS runouts (never disabled)
-                    # This is a safety check to ensure follower is active for new lane
-                    if fps_state.current_oams and fps_state.current_spool_idx is not None:
-                        oams = self.oams.get(fps_state.current_oams)
-                        if oams:
-                            self._ensure_forward_follower(fps_name, fps_state, "after infinite runout reload")
-
-                    # Clear the source lane's state in AFC so it shows as EMPTY and can detect new filament
-                    # FPS state stays LOADED with the new target lane, but old lane needs to be cleared
-                    if source_lane_name:
-                        try:
-                            if AMSRunoutCoordinator is not None:
-                                # Notify AFC that source lane is now unloaded
-                                AMSRunoutCoordinator.notify_lane_tool_state(
-                                    self.printer,
-                                    fps_state.current_oams or active_oams,
-                                    source_lane_name,
-                                    loaded=False,
-                                    spool_index=None,
-                                    eventtime=self.reactor.monotonic()
-                                )
-                                self.logger.info("Cleared source lane %s state in AFC after successful reload to %s", source_lane_name, target_lane)
-                            else:
-                                # Fallback to gcode command if coordinator not available
-                                gcode = self.printer.lookup_object("gcode")
-                                gcode.run_script(f"SET_LANE_UNLOADED LANE={source_lane_name}")
-                                self.logger.info("Cleared source lane %s via SET_LANE_UNLOADED after reload to %s", source_lane_name, target_lane)
-
-                            # Clear the same-FPS runout flag on source lane after successful reload
-                            afc = self._get_afc()
-                            if afc and hasattr(afc, 'lanes'):
-                                source_lane_obj = afc.lanes.get(source_lane_name)
-                                if source_lane_obj and hasattr(source_lane_obj, '_oams_same_fps_runout'):
-                                    source_lane_obj._oams_same_fps_runout = False
-                                    self.logger.info("Cleared same-FPS runout flag on lane %s after successful reload", source_lane_name)
-                        except Exception:
-                            self.logger.error("Failed to clear source lane %s state after reload to %s", source_lane_name, target_lane, exc_info=True)
-
-                    fps_state.reset_runout_positions()
-                    if monitor:
-                        monitor.reset()
-                        monitor.start()
-                    return
-
-                self.logger.error("Failed to load lane %s on %s: %s", target_lane, fps_name, load_message)
-                failure_message = load_message or f"No spool available for lane {target_lane}"
-                self._pause_printer_message(failure_message, fps_state.current_oams or active_oams)
-                if monitor:
-                    monitor.paused()
+                # Fallback: If target_lane_map is somehow None, use async path anyway
+                # This shouldn't normally happen, but ensures we always use working async mechanism
+                self.logger.warning("target_lane_map is None for %s -> %s, using async reload anyway", source_lane_name, target_lane)
+                self._start_async_reload(fps_name, fps_state, target_lane, target_lane or "unknown",
+                                       source_lane_name, active_oams, monitor)
 
             fps_reload_margin = getattr(self.fpss[fps_name], "reload_before_toolhead_distance", None)
             if fps_reload_margin is None:
