@@ -4092,106 +4092,11 @@ class OAMSManager:
                                            source_lane_name, active_oams, monitor)
                     return
 
-                # This code is now in _handle_successful_reload()
-                # Keeping old path for non-target_lane_map case
-                load_success, load_message = self._load_filament_for_lane(target_lane)
-                if load_success:
-                    self.logger.info("Successfully loaded lane %s on %s%s", target_lane, fps_name, " after infinite runout" if target_lane_map else "")
-
-                    # Always notify AFC that target lane is loaded to update virtual sensors
-                    # This ensures AMS_Extruder# sensors show correct state after same-FPS runouts
-                    if target_lane:
-                        handled = False
-                        if AMSRunoutCoordinator is not None:
-                            try:
-                                handled = AMSRunoutCoordinator.notify_lane_tool_state(self.printer, fps_state.current_oams or active_oams, target_lane, loaded=True, spool_index=fps_state.current_spool_idx, eventtime=fps_state.since)
-                                if handled:
-                                    self.logger.info("Notified AFC that lane %s is loaded via AMSRunoutCoordinator (updates virtual sensor state)", target_lane)
-                                else:
-                                    self.logger.warning("AMSRunoutCoordinator.notify_lane_tool_state returned False for lane %s, trying fallback", target_lane)
-                            except Exception as e:
-                                self.logger.error("Failed to notify AFC lane %s after infinite runout on %s: %s", target_lane, fps_name, e)
-                                handled = False
-                        else:
-                            # AMSRunoutCoordinator not available - call AFC methods directly
-                            self.logger.info("AMSRunoutCoordinator not available, updating virtual sensor directly for lane %s", target_lane)
-                            try:
-                                afc = self._get_afc()
-                                if afc and hasattr(afc, 'lanes'):
-                                    lane_obj = afc.lanes.get(target_lane)
-                                    if lane_obj:
-                                        # Update virtual sensor using AFC's direct method
-                                        if hasattr(afc, '_mirror_lane_to_virtual_sensor'):
-                                            afc._mirror_lane_to_virtual_sensor(lane_obj, self.reactor.monotonic())
-                                            self.logger.info("Updated virtual sensor for lane %s via AFC._mirror_lane_to_virtual_sensor", target_lane)
-                                            handled = True
-                                        else:
-                                            self.logger.warning("AFC doesn't have _mirror_lane_to_virtual_sensor method")
-                                    else:
-                                        self.logger.warning("Lane object not found for %s in AFC", target_lane)
-                                else:
-                                    self.logger.warning("AFC not available or has no lanes attribute")
-                            except Exception as e:
-                                self.logger.error("Failed to update virtual sensor directly for lane %s: %s", target_lane, e)
-
-                        if not handled:
-                            try:
-                                gcode = self.printer.lookup_object("gcode")
-                                gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
-                                self.logger.info("Marked lane %s as loaded via SET_LANE_LOADED after infinite runout on %s", target_lane, fps_name)
-                            except Exception as e:
-                                self.logger.error("Failed to mark lane %s as loaded after infinite runout on %s: %s", target_lane, fps_name, e)
-
-                    # Ensure follower is enabled after successful reload
-                    # Follower should stay enabled throughout same-FPS runouts (never disabled)
-                    # This is a safety check to ensure follower is active for new lane
-                    if fps_state.current_oams and fps_state.current_spool_idx is not None:
-                        oams = self.oams.get(fps_state.current_oams)
-                        if oams:
-                            self._ensure_forward_follower(fps_name, fps_state, "after infinite runout reload")
-
-                    # Clear the source lane's state in AFC so it shows as EMPTY and can detect new filament
-                    # FPS state stays LOADED with the new target lane, but old lane needs to be cleared
-                    if source_lane_name:
-                        try:
-                            if AMSRunoutCoordinator is not None:
-                                # Notify AFC that source lane is now unloaded
-                                AMSRunoutCoordinator.notify_lane_tool_state(
-                                    self.printer,
-                                    fps_state.current_oams or active_oams,
-                                    source_lane_name,
-                                    loaded=False,
-                                    spool_index=None,
-                                    eventtime=self.reactor.monotonic()
-                                )
-                                self.logger.info("Cleared source lane %s state in AFC after successful reload to %s", source_lane_name, target_lane)
-                            else:
-                                # Fallback to gcode command if coordinator not available
-                                gcode = self.printer.lookup_object("gcode")
-                                gcode.run_script(f"SET_LANE_UNLOADED LANE={source_lane_name}")
-                                self.logger.info("Cleared source lane %s via SET_LANE_UNLOADED after reload to %s", source_lane_name, target_lane)
-
-                            # Clear the same-FPS runout flag on source lane after successful reload
-                            afc = self._get_afc()
-                            if afc and hasattr(afc, 'lanes'):
-                                source_lane_obj = afc.lanes.get(source_lane_name)
-                                if source_lane_obj and hasattr(source_lane_obj, '_oams_same_fps_runout'):
-                                    source_lane_obj._oams_same_fps_runout = False
-                                    self.logger.info("Cleared same-FPS runout flag on lane %s after successful reload", source_lane_name)
-                        except Exception:
-                            self.logger.error("Failed to clear source lane %s state after reload to %s", source_lane_name, target_lane, exc_info=True)
-
-                    fps_state.reset_runout_positions()
-                    if monitor:
-                        monitor.reset()
-                        monitor.start()
-                    return
-
-                self.logger.error("Failed to load lane %s on %s: %s", target_lane, fps_name, load_message)
-                failure_message = load_message or f"No spool available for lane {target_lane}"
-                self._pause_printer_message(failure_message, fps_state.current_oams or active_oams)
-                if monitor:
-                    monitor.paused()
+                # Fallback: If target_lane_map is somehow None, use async path anyway
+                # This shouldn't normally happen, but ensures we always use working async mechanism
+                self.logger.warning("target_lane_map is None for %s -> %s, using async reload anyway", source_lane_name, target_lane)
+                self._start_async_reload(fps_name, fps_state, target_lane, target_lane or "unknown",
+                                       source_lane_name, active_oams, monitor)
 
             fps_reload_margin = getattr(self.fpss[fps_name], "reload_before_toolhead_distance", None)
             if fps_reload_margin is None:
