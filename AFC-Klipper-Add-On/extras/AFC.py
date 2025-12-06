@@ -2028,12 +2028,6 @@ class afc:
         status_msg = ''
 
         for unit in self.units.values():
-            # Skip status rendering if no lanes are registered for the unit
-            if not unit.lanes:
-                status_msg += '<span class=warning--text>{} Status</span>\n'.format(unit.name)
-                status_msg += 'No lanes are currently registered.\n'
-                continue
-            
             # Find the maximum length of lane names to determine the column width
             max_lane_length = max(len(lane) for lane in unit.lanes.keys())
 
