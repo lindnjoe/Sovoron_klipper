@@ -2028,6 +2028,8 @@ class afc:
         status_msg = ''
 
         for unit in self.units.values():
+            if not unit.lanes:
+               continue
             # Find the maximum length of lane names to determine the column width
             max_lane_length = max(len(lane) for lane in unit.lanes.keys())
 
