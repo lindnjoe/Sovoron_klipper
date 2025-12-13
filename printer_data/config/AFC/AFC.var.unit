@@ -319,7 +319,7 @@
             "hub": "direct_load",
             "extruder": "extruder3",
             "buffer": "TN3",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 4,
             "map": "T3",
             "load": true,
@@ -332,7 +332,7 @@
             "empty_spool_weight": 130.0,
             "spool_id": 35,
             "color": "#328169",
-            "weight": 0.0,
+            "weight": 0,
             "extruder_temp": 210,
             "runout_lane": null,
             "filament_status": "In Tool",
@@ -343,7 +343,7 @@
         }
     },
     "system": {
-        "current_load": null,
+        "current_load": "lane3",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
