@@ -2231,13 +2231,15 @@ class afcAMS(afcUnit):
             return
 
         # Same-extruder runout: set the runout flag so shared sensor updates don't bounce the state.
+        # The oams_manager runout monitor will detect the F1S=False via its own polling
+        # and handle the reload sequence.
         try:
             if not hasattr(lane, '_oams_runout_detected'):
                 lane._oams_runout_detected = False
             lane._oams_runout_detected = True
             lane._oams_cross_extruder_runout = False
             self.logger.info(
-                "Same-extruder runout: Marked lane %s for runout (OpenAMS handling reload, sensors sync naturally)",
+                "Same-extruder runout: Marked lane %s for runout (oams_manager monitor will handle reload)",
                 lane.name,
             )
         except Exception:
