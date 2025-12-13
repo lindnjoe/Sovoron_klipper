@@ -28,6 +28,7 @@ import logging
 import time
 import traceback
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
@@ -103,7 +104,50 @@ class FPSLoadState:
     LOADED = 1
     LOADING = 2
     UNLOADING = 3
-    
+
+
+@dataclass
+class FollowerState:
+    """Consolidated state tracking for OAMS follower motor per unit.
+
+    Replaces 5 separate dictionaries with a single cohesive state object.
+    """
+    coasting: bool = False                           # Is follower in coast mode (hub empty, coasting before disable)
+    coast_start_pos: float = 0.0                     # Extruder position when coast started (mm)
+    had_filament: bool = False                       # Previous state - whether follower had filament
+    manual_override: bool = False                    # Manually commanded (skip auto control)
+    last_state: Optional[Tuple[int, int]] = None     # (enable, direction) to avoid redundant MCU commands
+
+
+@dataclass
+class StuckSpoolState:
+    """Tracks stuck spool detection state for a single FPS.
+
+    Stuck spool detection monitors for filament that won't feed properly,
+    typically due to tangles, binding, or mechanical issues.
+    """
+    active: bool = False                        # Is stuck spool currently detected
+    start_time: Optional[float] = None          # When stuck condition was first detected
+    restore_follower: bool = False              # Should follower be re-enabled after clearing
+    restore_direction: int = 1                  # Direction to restore follower to
+
+
+@dataclass
+class ClogState:
+    """Tracks clog detection state for a single FPS.
+
+    Clog detection monitors for blockages in the hotend or nozzle that
+    prevent filament from extruding properly.
+    """
+    active: bool = False                        # Is clog currently detected
+    start_extruder: Optional[float] = None      # Extruder position when clog started
+    start_encoder: Optional[int] = None         # Encoder clicks when clog started
+    start_time: Optional[float] = None          # Timestamp when clog was first detected
+    min_pressure: Optional[float] = None        # Minimum FPS pressure observed during clog
+    max_pressure: Optional[float] = None        # Maximum FPS pressure observed during clog
+    last_extruder: Optional[float] = None       # Last extruder position checked
+
+
 class OAMSRunoutMonitor:
     """Monitors filament runout for a specific FPS."""
     
@@ -480,51 +524,50 @@ class OAMSState:
 
 class FPSState:
     """Tracks the state of a single FPS"""
-    
-    def __init__(self, 
+
+    def __init__(self,
                  state: int = FPSLoadState.UNLOADED,
-                 current_lane: Optional[str] = None, 
-                 current_oams: Optional[str] = None, 
+                 current_lane: Optional[str] = None,
+                 current_oams: Optional[str] = None,
                  current_spool_idx: Optional[int] = None):
-        
+
+        # Core FPS state
         self.state = state
         self.current_lane = current_lane
         self.current_oams = current_oams
         self.current_spool_idx = current_spool_idx
-        
+
+        # Runout tracking
         self.runout_position: Optional[float] = None
         self.runout_after_position: Optional[float] = None
-        
+
+        # Timers
         self.monitor_spool_timer = None
         self.monitor_pause_timer = None
         self.monitor_load_next_spool_timer = None
-        
+
+        # Encoder tracking
         self.encoder_sample_prev: Optional[int] = None
         self.encoder_sample_current: Optional[int] = None
 
+        # Follower state
         self.following: bool = False
         self.direction: int = 0
         self.since: Optional[float] = None
 
+        # AFC delegation
         self.afc_delegation_active: bool = False
         self.afc_delegation_until: float = 0.0
 
-        self.is_cross_extruder_runout: bool = False  # Track if current runout is cross-extruder
-        self.last_lane_change_time: Optional[float] = None  # Track when current_lane last changed (for runout recovery)
+        # Cross-extruder runout tracking
+        self.is_cross_extruder_runout: bool = False
+        self.last_lane_change_time: Optional[float] = None
 
-        self.stuck_spool_start_time: Optional[float] = None
-        self.stuck_spool_active: bool = False
-        self.stuck_spool_restore_follower: bool = False
-        self.stuck_spool_restore_direction: int = 1
+        # Complex sub-system states (now dataclasses for better organization)
+        self.stuck_spool = StuckSpoolState()
+        self.clog = ClogState()
 
-        self.clog_active: bool = False
-        self.clog_start_extruder: Optional[float] = None
-        self.clog_start_encoder: Optional[int] = None
-        self.clog_start_time: Optional[float] = None
-        self.clog_min_pressure: Optional[float] = None
-        self.clog_max_pressure: Optional[float] = None
-        self.clog_last_extruder: Optional[float] = None
-
+        # Post-load pressure monitoring
         self.post_load_pressure_timer = None
         self.post_load_pressure_start: Optional[float] = None
 
@@ -552,28 +595,30 @@ class FPSState:
         self.runout_after_position = None
 
     def reset_stuck_spool_state(self, preserve_restore: bool = False) -> None:
-        self.stuck_spool_start_time = None
-        self.stuck_spool_active = False
+        """Reset stuck spool detection state."""
+        self.stuck_spool.start_time = None
+        self.stuck_spool.active = False
         if not preserve_restore:
-            self.stuck_spool_restore_follower = False
-            self.stuck_spool_restore_direction = 1
+            self.stuck_spool.restore_follower = False
+            self.stuck_spool.restore_direction = 1
 
     def reset_clog_tracker(self) -> None:
-        self.clog_active = False
-        self.clog_start_extruder = None
-        self.clog_start_encoder = None
-        self.clog_start_time = None
-        self.clog_min_pressure = None
-        self.clog_max_pressure = None
-        self.clog_last_extruder = None
+        """Reset clog detection state."""
+        self.clog.active = False
+        self.clog.start_extruder = None
+        self.clog.start_encoder = None
+        self.clog.start_time = None
+        self.clog.min_pressure = None
+        self.clog.max_pressure = None
+        self.clog.last_extruder = None
 
     def prime_clog_tracker(self, extruder_pos: float, encoder_clicks: int, pressure: float, timestamp: float) -> None:
-        self.clog_start_extruder = extruder_pos
-        self.clog_last_extruder = extruder_pos
-        self.clog_start_encoder = encoder_clicks
-        self.clog_start_time = timestamp
-        self.clog_min_pressure = pressure
-        self.clog_max_pressure = pressure
+        self.clog.start_extruder = extruder_pos
+        self.clog.last_extruder = extruder_pos
+        self.clog.start_encoder = encoder_clicks
+        self.clog.start_time = timestamp
+        self.clog.min_pressure = pressure
+        self.clog.max_pressure = pressure
         
     def __repr__(self) -> str:
         state_names = {0: "UNLOADED", 1: "LOADED", 2: "LOADING", 3: "UNLOADING"}
@@ -602,12 +647,7 @@ class OAMSManager:
 
         # Follower coast tracking: when all hub sensors go empty, coast 50mm before disabling
         self.follower_coast_distance = 50.0  # mm to coast after hub empties
-        self.follower_coasting: Dict[str, bool] = {}  # oams_name -> is_coasting
-        self.follower_coast_start_pos: Dict[str, float] = {}  # oams_name -> extruder position when coast started
-        self.follower_had_filament: Dict[str, bool] = {}  # oams_name -> previous state (had filament)
-        self.follower_manual_override: Dict[str, bool] = {}  # oams_name -> manually commanded (skip auto control)
-        self.follower_last_state: Dict[str, Tuple[int, int]] = {}  # oams_name -> (enable, direction) to avoid redundant MCU commands
-        self.follower_empty_polls: Dict[str, int] = {}  # oams_name -> consecutive empty checks before disabling
+        self.follower_state: Dict[str, FollowerState] = {}  # oams_name -> FollowerState (consolidated tracking)
 
         # LED state tracking: avoid sending redundant LED commands to MCU
         # Key format: "oams_name:spool_idx" -> error_state (0 or 1)
@@ -857,6 +897,12 @@ class OAMSManager:
     def _initialize_oams(self) -> None:
         for name, oam in self.printer.lookup_objects(module="oams"):
             self.oams[name] = oam
+
+    def _get_follower_state(self, oams_name: str) -> FollowerState:
+        """Get or create FollowerState for an OAMS unit."""
+        if oams_name not in self.follower_state:
+            self.follower_state[oams_name] = FollowerState()
+        return self.follower_state[oams_name]
 
     def _sync_afc_lane_loaded(self, fps_name: str, detected_lane: Optional[str]) -> None:
         """Sync AFC's extruder.lane_loaded with OAMS-detected state.
@@ -1122,12 +1168,12 @@ class OAMSManager:
             # Clear all manual follower overrides and coast state - return to automatic hub sensor control
             # Also clear last state tracking so follower state is refreshed from actual sensors
             for oams_name in self.oams.keys():
-                self.follower_manual_override[oams_name] = False
-                self.follower_last_state[oams_name] = None  # Force state refresh
-                self.follower_coasting[oams_name] = False
-                self.follower_coast_start_pos[oams_name] = 0.0
-                self.follower_had_filament[oams_name] = False
-                self.follower_empty_polls[oams_name] = 0
+                state = self._get_follower_state(oams_name)
+                state.manual_override = False
+                state.last_state = None  # Force state refresh
+                state.coasting = False
+                state.coast_start_pos = 0.0
+                state.had_filament = False
 
             # Clear LED state tracking so LEDs are refreshed from actual state
             self.led_error_state.clear()
@@ -1416,10 +1462,10 @@ class OAMSManager:
             return
 
         # Prevent manual ENABLE during active error conditions (allow DISABLE for troubleshooting)
-        if enable and (fps_state.clog_active or fps_state.stuck_spool_active):
+        if enable and (fps_state.clog.active or fps_state.stuck_spool.active):
             gcmd.respond_info(
                 f"FPS {fps_name} has active error condition "
-                f"(clog_active={fps_state.clog_active}, stuck_spool_active={fps_state.stuck_spool_active}). "
+                f"(clog_active={fps_state.clog.active}, stuck_spool_active={fps_state.stuck_spool.active}). "
                 f"Use OAMSM_CLEAR_ERRORS first to clear error state."
             )
             return
@@ -1439,9 +1485,10 @@ class OAMSManager:
                     oams_obj.set_oams_follower(0, direction)
                     fps_state.following = False
                     # Update state tracker to avoid redundant commands
-                    self.follower_last_state[fps_state.current_oams] = (0, direction)
+                    state = self._get_follower_state(fps_state.current_oams)
+                    state.last_state = (0, direction)
                     # Keep manual override so it stays disabled (use OAMSM_FOLLOWER_RESET to return to automatic)
-                    self.follower_manual_override[fps_state.current_oams] = True
+                    state.manual_override = True
                     self.logger.info("Disabled follower on %s (manual override - use OAMSM_FOLLOWER_RESET to return to automatic)", fps_name)
                     gcmd.respond_info(f"Follower disabled on {fps_name} (manual control - use OAMSM_FOLLOWER_RESET to return to automatic)")
                 except Exception:
@@ -1465,9 +1512,10 @@ class OAMSManager:
             fps_state.following = bool(enable)
             fps_state.direction = direction
             # Update state tracker to avoid redundant commands
-            self.follower_last_state[fps_state.current_oams] = (enable, direction)
+            state = self._get_follower_state(fps_state.current_oams)
+            state.last_state = (enable, direction)
             # Set manual override flag - follower stays enabled even if hub sensors are empty
-            self.follower_manual_override[fps_state.current_oams] = True
+            state.manual_override = True
             self.logger.info("OAMSM_FOLLOWER: successfully enabled follower on %s (manual override active)", fps_name)
             gcmd.respond_info(f"Follower enabled on {fps_name} (manual control - use OAMSM_FOLLOWER_RESET to return to automatic)")
         except Exception:
@@ -1489,7 +1537,8 @@ class OAMSManager:
             return
 
         # Clear manual override flag - return to automatic hub sensor control
-        self.follower_manual_override[fps_state.current_oams] = False
+        state = self._get_follower_state(fps_state.current_oams)
+        state.manual_override = False
         self.logger.info("Cleared manual follower override for %s, returning to automatic control", fps_name)
         gcmd.respond_info(f"Follower on {fps_name} returned to automatic control (hub sensor based)")
 
@@ -2293,7 +2342,7 @@ class OAMSManager:
                 lane_name = None
 
         # Clear any lingering stuck flags so retries can proceed without manual resets
-        if fps_state.stuck_spool_active:
+        if fps_state.stuck_spool.active:
             fps_state.reset_stuck_spool_state(preserve_restore=True)
             self.logger.info("Cleared stuck-spool flag before retrying unload on %s", fps_name)
 
@@ -2373,7 +2422,7 @@ class OAMSManager:
                     self.logger.error("Failed to clear AFC tool tracking during unload cleanup for %s", fps_name)
 
             # Clear LED error state if stuck spool was active before resetting state
-            if fps_state.stuck_spool_active and oams is not None and spool_index is not None:
+            if fps_state.stuck_spool.active and oams is not None and spool_index is not None:
                 try:
                     oams.set_led_error(spool_index, 0)
                     self.logger.info("Cleared stuck spool LED for %s spool %d after successful unload", fps_name, spool_index)
@@ -2647,7 +2696,7 @@ class OAMSManager:
             self._ensure_forward_follower(fps_name, fps_state, "load filament")
 
             # Clear LED error state if stuck spool was active
-            if fps_state.stuck_spool_active:
+            if fps_state.stuck_spool.active:
                 try:
                     oam.set_led_error(bay_index, 0)
                     self.logger.info("Cleared stuck spool LED for %s spool %d after successful load", fps_name, bay_index)
@@ -2930,7 +2979,7 @@ class OAMSManager:
             # Pause printer with error message
             self._pause_printer_message(message, tracked_state.current_oams)
 
-            tracked_state.clog_active = True
+            tracked_state.clog.active = True
 
             self._cancel_post_load_pressure_check(tracked_state)
             return self.reactor.NEVER
@@ -2986,7 +3035,7 @@ class OAMSManager:
     def _ensure_forward_follower(self, fps_name: str, fps_state: "FPSState", context: str) -> None:
         """Ensure follower is enabled in forward direction after successful load."""
         if (fps_state.current_oams is None or fps_state.current_spool_idx is None or
-            fps_state.stuck_spool_active or fps_state.state != FPSLoadState.LOADED):
+            fps_state.stuck_spool.active or fps_state.state != FPSLoadState.LOADED):
             return
 
         if fps_state.following and fps_state.direction == 1:
@@ -3074,7 +3123,7 @@ class OAMSManager:
             direction: 0 for reverse, 1 for forward
             context: Description for logging (optional)
         """
-        last_state = self.follower_last_state.get(oams_name, None)
+        state = self._get_follower_state(oams_name)
         desired_state = (enable, direction)
 
         if not self._is_oams_mcu_ready(oams):
@@ -3082,17 +3131,17 @@ class OAMSManager:
             return
 
         # Only send command if state changed or this is the first command
-        if force or last_state != desired_state:
+        if force or state.last_state != desired_state:
             try:
                 oams.set_oams_follower(enable, direction)
-                self.follower_last_state[oams_name] = desired_state
+                state.last_state = desired_state
                 # Log follower disable at INFO level to track what's disabling it during clogs
                 if enable:
                     self.logger.debug("Follower enabled for %s (%s)", oams_name, context or "no context")
                 else:
                     self.logger.info("Follower DISABLED for %s (%s) - manual_override=%s",
                                    oams_name, context or "no context",
-                                   self.follower_manual_override.get(oams_name, False))
+                                   state.manual_override)
             except Exception:
                 self.logger.error("Failed to %s follower for %s%s", "enable" if enable else "disable",
                                 oams_name, f" ({context})" if context else "")
@@ -3100,7 +3149,8 @@ class OAMSManager:
     def _update_follower_for_oams(self, oams_name: str, oams: Any) -> None:
         """Enable the follower whenever the unit has filament available."""
         try:
-            if self.follower_manual_override.get(oams_name, False):
+            state = self._get_follower_state(oams_name)
+            if state.manual_override:
                 self.logger.debug("Skipping automatic follower control for %s (manual override active)", oams_name)
                 return
 
@@ -3137,8 +3187,8 @@ class OAMSManager:
                         lane_loaded
                         or fps_state.current_spool_idx is not None
                         or fps_state.state != FPSLoadState.UNLOADED
-                        or fps_state.clog_active
-                        or fps_state.stuck_spool_active
+                        or fps_state.clog.active
+                        or fps_state.stuck_spool.active
                         or in_runout_recovery  # Don't disable follower during runout recovery
                     )
                     if direction is None and fps_state.direction is not None:
@@ -3146,32 +3196,27 @@ class OAMSManager:
 
             # Default to forward when no direction is available
             if direction is None:
-                last_state = self.follower_last_state.get(oams_name)
-                direction = last_state[1] if last_state else 1
+                direction = state.last_state[1] if state.last_state else 1
 
             has_filament = hub_has_filament or lane_loaded
             if has_filament:
                 self._set_follower_if_changed(oams_name, oams, 1, direction, "filament present", force=True)
-                for state in fps_states_for_oams:
-                    state.following = True
-                    state.direction = direction
-                self.follower_had_filament[oams_name] = True
-                self.follower_empty_polls[oams_name] = 0
+                for fps_state in fps_states_for_oams:
+                    fps_state.following = True
+                    fps_state.direction = direction
+                state.had_filament = True
             else:
-                empty_polls = self.follower_empty_polls.get(oams_name, 0) + 1
-                self.follower_empty_polls[oams_name] = empty_polls
-
                 # NEVER automatically disable follower - keep it enabled for manual recovery
                 # Operator can manually disable with OAMSM_FOLLOWER ENABLE=0 if needed
                 # This ensures follower is always available for manual extrusion during error recovery
                 # (clogs, stuck spools, runouts, etc.)
                 # If follower was previously enabled, keep it enabled even if sensors show empty
-                if self.follower_had_filament.get(oams_name, False):
-                    self.logger.debug("Sensors empty on %s but keeping follower enabled for manual recovery (empty_polls=%d)",
-                                     oams_name, empty_polls)
+                if state.had_filament:
+                    self.logger.debug("Sensors empty on %s but keeping follower enabled for manual recovery",
+                                     oams_name)
 
-            self.follower_coasting[oams_name] = False
-            self.follower_coast_start_pos[oams_name] = 0.0
+            state.coasting = False
+            state.coast_start_pos = 0.0
         except Exception:
             self.logger.error("Failed to update follower for %s", oams_name)
 
@@ -3189,7 +3234,8 @@ class OAMSManager:
 
         for oams_name, oams in ready_oams.items():
             self._set_follower_if_changed(oams_name, oams, 1, 1, "OAMSM_CLEAR_ERRORS force-enable", force=True)
-            self.follower_had_filament[oams_name] = True
+            state = self._get_follower_state(oams_name)
+            state.had_filament = True
 
     def _find_fps_for_oams_bay(self, oams_name: str, bay_idx: int) -> Optional[str]:
         """Find the FPS name that corresponds to a specific OAMS bay."""
@@ -3241,11 +3287,11 @@ class OAMSManager:
         return None
 
     def _restore_follower_if_needed(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], context: str) -> None:
-        if not fps_state.stuck_spool_restore_follower:
+        if not fps_state.stuck_spool.restore_follower:
             return
 
         if fps_state.current_oams is None:
-            fps_state.stuck_spool_restore_follower = False
+            fps_state.stuck_spool.restore_follower = False
             return
 
         if oams is None:
@@ -3253,10 +3299,10 @@ class OAMSManager:
         if oams is None:
             return
 
-        direction = fps_state.stuck_spool_restore_direction
+        direction = fps_state.stuck_spool.restore_direction
         self._enable_follower(fps_name, fps_state, oams, direction, context)
         if fps_state.following:
-            fps_state.stuck_spool_restore_follower = False
+            fps_state.stuck_spool.restore_follower = False
             self.logger.info("Restarted follower for %s spool %s after %s.", fps_name, fps_state.current_spool_idx, context)
 
     def _handle_printing_resumed(self, _eventtime):
@@ -3270,12 +3316,12 @@ class OAMSManager:
             oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
 
             # Clear stuck_spool_active on resume to allow follower to restart
-            if fps_state.stuck_spool_active:
+            if fps_state.stuck_spool.active:
                 fps_state.reset_stuck_spool_state(preserve_restore=True)
                 self.logger.info("Cleared stuck spool state for %s on print resume", fps_name)
 
             # Clear clog_active on resume and reset tracker
-            if fps_state.clog_active:
+            if fps_state.clog.active:
                 fps_state.reset_clog_tracker()
                 self.logger.info("Cleared clog state for %s on print resume", fps_name)
                 # Clear the error LED if we have an OAMS and spool index
@@ -3285,7 +3331,7 @@ class OAMSManager:
                     except Exception:
                         self.logger.error("Failed to clear clog LED on %s after resume", fps_name)
 
-            if fps_state.stuck_spool_restore_follower:
+            if fps_state.stuck_spool.restore_follower:
                 self._restore_follower_if_needed(fps_name, fps_state, oams, "print resume")
             elif (
                 fps_state.current_oams is not None
@@ -3299,7 +3345,7 @@ class OAMSManager:
         self._ensure_followers_for_loaded_hubs()
 
     def _trigger_stuck_spool_pause(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], message: str) -> None:
-        if fps_state.stuck_spool_active:
+        if fps_state.stuck_spool.active:
             return
 
         spool_idx = fps_state.current_spool_idx
@@ -3329,8 +3375,8 @@ class OAMSManager:
 
         # Clear error flag immediately after pausing - system is ready for user to fix
         # LED stays red to indicate the issue, but error flag doesn't block other operations
-        fps_state.stuck_spool_active = False
-        fps_state.stuck_spool_start_time = None
+        fps_state.stuck_spool.active = False
+        fps_state.stuck_spool.start_time = None
         self.logger.info("Stuck spool pause triggered for %s, error flag cleared (LED stays red)", fps_name)
 
     def _unified_monitor_for_fps(self, fps_name):
@@ -3467,7 +3513,7 @@ class OAMSManager:
     def _check_unload_speed(self, fps_name, fps_state, oams, encoder_value, now):
         """Detect stalled unloads from encoder movement during active prints."""
         # Skip check if already handling a stuck spool
-        if fps_state.stuck_spool_active:
+        if fps_state.stuck_spool.active:
             return
 
         # Only treat slow unloads as stuck during active prints. Standby/manual unloads
@@ -3517,14 +3563,14 @@ class OAMSManager:
 
             # Set the stuck flag but DON'T pause - let the OAMS retry logic handle it
             # The retry logic will clear this flag if the retry succeeds
-            fps_state.stuck_spool_active = True
-            fps_state.stuck_spool_start_time = None
+            fps_state.stuck_spool.active = True
+            fps_state.stuck_spool.start_time = None
 
             self.logger.info("Spool appears stuck while unloading %s spool %s - letting retry logic handle it", lane_label, spool_label)
 
     def _check_load_speed(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
         """Detect stalled loads by combining encoder deltas with FPS pressure feedback."""
-        if fps_state.stuck_spool_active:
+        if fps_state.stuck_spool.active:
             return
 
         # Skip check if we don't have a valid since timestamp
@@ -3579,8 +3625,8 @@ class OAMSManager:
 
             # Set the stuck flag but DON'T pause - let the OAMS retry logic handle it
             # The retry logic will clear this flag if the retry succeeds
-            fps_state.stuck_spool_active = True
-            fps_state.stuck_spool_start_time = None
+            fps_state.stuck_spool.active = True
+            fps_state.stuck_spool.start_time = None
 
             # CRITICAL: Keep follower enabled even during stuck load
             # User needs follower running to manually fix clogs or re-attempt load
@@ -3591,7 +3637,8 @@ class OAMSManager:
                 if oams_obj is not None:
                     self._enable_follower(fps_name, fps_state, oams_obj, 1, "stuck load - keep follower active")
                     # Set manual override to prevent automatic hub-sensor control from disabling it
-                    self.follower_manual_override[fps_state.current_oams] = True
+                    state = self._get_follower_state(fps_state.current_oams)
+                    state.manual_override = True
 
             self.logger.info("Spool appears stuck while loading %s spool %s (%s) - letting retry logic handle it",
                            lane_label, spool_label, stuck_reason)
@@ -3600,10 +3647,10 @@ class OAMSManager:
         """Check for stuck spool conditions (OPTIMIZED)."""
         # Skip stuck spool detection if clog is active
         # Clog detection handles follower control during clog conditions
-        if fps_state.clog_active:
-            if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+        if fps_state.clog.active:
+            if fps_state.stuck_spool.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "clog active - deferred to clog handling")
-            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
+            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
             return
 
         # OPTIMIZATION: Use cached idle_timeout object
@@ -3619,17 +3666,17 @@ class OAMSManager:
         # and should not interfere with follower control until the swap completes
         monitor = self.runout_monitors.get(fps_name)
         if monitor is not None and monitor.state not in (OAMSRunoutState.MONITORING, OAMSRunoutState.STOPPED):
-            if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+            if fps_state.stuck_spool.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, f"runout active on this FPS ({monitor.state})")
-            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
+            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
             return
 
         # Also check if ANY other FPS has an active runout (for cross-FPS scenarios)
         for other_fps_name, other_monitor in self.runout_monitors.items():
             if other_fps_name != fps_name and other_monitor.state not in (OAMSRunoutState.MONITORING, OAMSRunoutState.STOPPED):
-                if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+                if fps_state.stuck_spool.active and oams is not None and fps_state.current_spool_idx is not None:
                     self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, f"runout active on {other_fps_name} ({other_monitor.state})")
-                fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
+                fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
                 return
 
         pause_resume = self._pause_resume_obj
@@ -3648,16 +3695,16 @@ class OAMSManager:
                 is_paused = False
 
         if not is_printing or is_paused:
-            if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+            if fps_state.stuck_spool.active and oams is not None and fps_state.current_spool_idx is not None:
                 reason = "printer idle" if not is_paused else "printer paused"
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, reason)
-            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
+            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
             return
 
         if fps_state.since is not None and now - fps_state.since < self.stuck_spool_load_grace:
-            fps_state.stuck_spool_start_time = None
+            fps_state.stuck_spool.start_time = None
             # Clear stuck spool flag during grace period after successful load
-            if fps_state.stuck_spool_active:
+            if fps_state.stuck_spool.active:
                 if oams is not None and fps_state.current_spool_idx is not None:
                     self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "grace period")
                 fps_state.reset_stuck_spool_state(preserve_restore=True)
@@ -3667,8 +3714,8 @@ class OAMSManager:
         # Same-FPS runouts don't pause - new filament loads while print continues
         # Give 30 seconds for new filament to position and develop back-pressure
         if fps_state.last_lane_change_time is not None and now - fps_state.last_lane_change_time < 30.0:
-            fps_state.stuck_spool_start_time = None
-            if fps_state.stuck_spool_active:
+            fps_state.stuck_spool.start_time = None
+            if fps_state.stuck_spool.active:
                 if oams is not None and fps_state.current_spool_idx is not None:
                     elapsed = now - fps_state.last_lane_change_time
                     self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, f"lane transition grace ({elapsed:.1f}s)")
@@ -3690,30 +3737,30 @@ class OAMSManager:
                         if lane_loaded is None:
                             # No lane synced to extruder but filament detected in hub - skip stuck detection
                             # This is the specific case of manual unload from toolhead with filament still in AMS
-                            fps_state.stuck_spool_start_time = None
-                            if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+                            fps_state.stuck_spool.start_time = None
+                            if fps_state.stuck_spool.active and oams is not None and fps_state.current_spool_idx is not None:
                                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "no lane synced to extruder")
-                            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
+                            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
                             return
             except Exception:
                 # If we can't determine sync state, proceed with detection to avoid masking real issues
                 pass
 
         if not fps_state.following or fps_state.direction != 1:
-            fps_state.stuck_spool_start_time = None
+            fps_state.stuck_spool.start_time = None
             # Auto-enable follower if we have a spool loaded but follower is disabled
             if is_printing and oams is not None and not fps_state.following:
                 self._ensure_forward_follower(fps_name, fps_state, "auto-enable after manual load")
-            elif fps_state.stuck_spool_restore_follower and is_printing and oams is not None:
+            elif fps_state.stuck_spool.restore_follower and is_printing and oams is not None:
                 self._restore_follower_if_needed(fps_name, fps_state, oams, "stuck spool recovery")
             return
 
         # Hysteresis logic: Use lower threshold to start timer, upper threshold to clear
         if pressure <= self.stuck_spool_pressure_threshold:
             # Pressure is low - start or continue stuck spool timer
-            if fps_state.stuck_spool_start_time is None:
-                fps_state.stuck_spool_start_time = now
-            elif (not fps_state.stuck_spool_active and now - fps_state.stuck_spool_start_time >= STUCK_SPOOL_DWELL):
+            if fps_state.stuck_spool.start_time is None:
+                fps_state.stuck_spool.start_time = now
+            elif (not fps_state.stuck_spool.active and now - fps_state.stuck_spool.start_time >= STUCK_SPOOL_DWELL):
                 message = "Spool appears stuck"
                 if fps_state.current_lane is not None:
                     message = f"Spool appears stuck on {fps_state.current_lane} spool {fps_state.current_spool_idx}"
@@ -3724,7 +3771,7 @@ class OAMSManager:
                     self.logger.error("Failed to trigger stuck spool pause for %s - error state may be inconsistent", fps_name, exc_info=True)
         elif pressure >= self.stuck_spool_pressure_clear_threshold:
             # Pressure is definitively high - clear stuck spool state
-            if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+            if fps_state.stuck_spool.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "pressure restored")
 
                 # Clear the stuck_spool_active flag BEFORE trying to restore follower
@@ -3732,13 +3779,13 @@ class OAMSManager:
                 self.logger.info("Cleared stuck spool state for %s, pressure restored to %.2f", fps_name, pressure)
 
             # Also clear timer if it was running but not yet triggered
-            if fps_state.stuck_spool_start_time is not None and not fps_state.stuck_spool_active:
-                fps_state.stuck_spool_start_time = None
+            if fps_state.stuck_spool.start_time is not None and not fps_state.stuck_spool.active:
+                fps_state.stuck_spool.start_time = None
 
             # Now restore/enable follower
             # SAFETY: Wrap follower operations in try/except to prevent crash during recovery
             try:
-                if fps_state.stuck_spool_restore_follower and is_printing:
+                if fps_state.stuck_spool.restore_follower and is_printing:
                     self._restore_follower_if_needed(fps_name, fps_state, oams, "stuck spool recovery")
                 elif is_printing and not fps_state.following:
                     self._ensure_forward_follower(fps_name, fps_state, "stuck spool recovery")
@@ -3758,13 +3805,13 @@ class OAMSManager:
 
         monitor = self.runout_monitors.get(fps_name)
         if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
-            if fps_state.clog_active and oams is not None and fps_state.current_spool_idx is not None:
+            if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "runout monitor inactive")
             fps_state.reset_clog_tracker()
             return
 
         if not is_printing:
-            if fps_state.clog_active and oams is not None and fps_state.current_spool_idx is not None:
+            if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer idle")
             fps_state.reset_clog_tracker()
             return
@@ -3788,23 +3835,23 @@ class OAMSManager:
             self.logger.error("Failed to read extruder position while monitoring clogs on %s", fps_name)
             return
 
-        if fps_state.clog_start_extruder is None:
+        if fps_state.clog.start_extruder is None:
             fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
             return
 
-        if extruder_pos < (fps_state.clog_last_extruder or extruder_pos):
+        if extruder_pos < (fps_state.clog.last_extruder or extruder_pos):
             fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
             return
 
-        fps_state.clog_last_extruder = extruder_pos
-        if fps_state.clog_min_pressure is None or pressure < fps_state.clog_min_pressure:
-            fps_state.clog_min_pressure = pressure
-        if fps_state.clog_max_pressure is None or pressure > fps_state.clog_max_pressure:
-            fps_state.clog_max_pressure = pressure
+        fps_state.clog.last_extruder = extruder_pos
+        if fps_state.clog.min_pressure is None or pressure < fps_state.clog.min_pressure:
+            fps_state.clog.min_pressure = pressure
+        if fps_state.clog.max_pressure is None or pressure > fps_state.clog.max_pressure:
+            fps_state.clog.max_pressure = pressure
 
-        extrusion_delta = extruder_pos - (fps_state.clog_start_extruder or extruder_pos)
-        encoder_delta = abs(encoder_value - (fps_state.clog_start_encoder or encoder_value))
-        pressure_span = (fps_state.clog_max_pressure or pressure) - (fps_state.clog_min_pressure or pressure)
+        extrusion_delta = extruder_pos - (fps_state.clog.start_extruder or extruder_pos)
+        encoder_delta = abs(encoder_value - (fps_state.clog.start_encoder or encoder_value))
+        pressure_span = (fps_state.clog.max_pressure or pressure) - (fps_state.clog.min_pressure or pressure)
 
         settings = self.clog_settings
         if extrusion_delta < settings["extrusion_window"]:
@@ -3813,7 +3860,7 @@ class OAMSManager:
         if (encoder_delta > settings["encoder_slack"] or pressure_span > settings["pressure_band"]):
             # Encoder is moving or pressure is varying - filament is flowing
             # If clog was previously active, clear it and ensure follower keeps up
-            if fps_state.clog_active:
+            if fps_state.clog.active:
                 self.logger.info(
                     "Clog cleared on %s - encoder moving normally (delta=%d, pressure_span=%.2f)",
                     fps_name,
@@ -3835,21 +3882,21 @@ class OAMSManager:
             fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
             return
 
-        if now - (fps_state.clog_start_time or now) < settings["dwell"]:
+        if now - (fps_state.clog.start_time or now) < settings["dwell"]:
             return
 
-        if not fps_state.clog_active:
+        if not fps_state.clog.active:
             if oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 1, "clog detected")
 
-            pressure_mid = (fps_state.clog_min_pressure + fps_state.clog_max_pressure) / 2.0
+            pressure_mid = (fps_state.clog.min_pressure + fps_state.clog.max_pressure) / 2.0
             message = (
                 f"Clog suspected on {fps_state.current_lane or fps_name}: "
                 f"extruder advanced {extrusion_delta:.1f}mm while encoder moved {encoder_delta} counts "
                 f"with FPS {pressure_mid:.2f} near {self.clog_pressure_target:.2f}"
             )
 
-            fps_state.clog_active = True
+            fps_state.clog.active = True
 
             # Pause printer with error message
             self._pause_printer_message(message, fps_state.current_oams)
@@ -3861,10 +3908,11 @@ class OAMSManager:
                 self._enable_follower(fps_name, fps_state, oams, 1, "clog pause - keep follower active")
                 # Set manual override to prevent automatic hub-sensor control from disabling it
                 # This keeps follower enabled even if hub sensors are empty during clog
-                self.follower_manual_override[fps_state.current_oams] = True
+                state = self._get_follower_state(fps_state.current_oams)
+                state.manual_override = True
                 # If the follower still can't start, mark it for restore on resume
                 if not fps_state.following:
-                    fps_state.stuck_spool_restore_follower = True
+                    fps_state.stuck_spool.restore_follower = True
 
     def start_monitors(self):
         """Start all monitoring timers"""
