@@ -294,6 +294,9 @@ class afcAMS(afcUnit):
         self._last_virtual_tool_state: Optional[bool] = None
         self._lane_tool_latches: Dict[str, bool] = {}
         self._lane_tool_latches_by_lane: Dict[object, bool] = {}
+        self._lane_feed_activity: Dict[str, bool] = {}
+        self._lane_feed_activity_by_lane: Dict[object, bool] = {}
+        self._last_encoder_clicks: Optional[int] = None
         self._last_hub_hes_values: Optional[List[float]] = None
         self._last_ptfe_value: Optional[float] = None
 
@@ -803,6 +806,7 @@ class afcAMS(afcUnit):
 
         if canonical_lane:
             self._lane_tool_latches[canonical_lane] = new_state
+            self._lane_feed_activity[canonical_lane] = new_state
 
     def lane_tool_loaded(self, lane):
         """Update the virtual tool sensor when a lane loads into the tool."""
@@ -1918,21 +1922,139 @@ class afcAMS(afcUnit):
         if lane_name:
             self._last_lane_states[lane_name] = bool(lane_val)
 
-    # NOTE: _sync_event has been removed - sensor updates now happen via event subscriptions
-    # (_on_f1s_changed and _on_hub_changed). The legacy polling timer is only used as a
-    # fallback when AMSHardwareService is unavailable.
-
     def _sync_event(self, eventtime):
-        """This should never be called - AMSHardwareService is required for AFC-OpenAMS integration.
+        """Poll OpenAMS for state updates and propagate to lanes/hubs"""
+        encoder_changed = False
+        try:
+            status = None
+            if self.hardware_service is not None:
+                status = self.hardware_service.poll_status()
+                if status is None:
+                    self.oams = self.hardware_service.resolve_controller()
+            elif self.oams is not None:
+                status = {
+                    "encoder_clicks": getattr(self.oams, "encoder_clicks", None),
+                    "f1s_hes_value": getattr(self.oams, "f1s_hes_value", None),
+                    "hub_hes_value": getattr(self.oams, "hub_hes_value", None),
+                }
 
-        Event-driven updates via _on_f1s_changed and _on_hub_changed have replaced
-        polling logic. If this method is called, it means AMSHardwareService failed
-        to initialize, which indicates a configuration error.
-        """
-        raise self.printer.config_error(
-            "AMSHardwareService unavailable for %s - AFC-OpenAMS integration requires "
-            "openams_integration.py to be loaded. Check your configuration." % self.name
-        )
+            if not status:
+                return eventtime + self.interval_idle
+
+            encoder_clicks = status.get("encoder_clicks")
+            try:
+                encoder_clicks = int(encoder_clicks)
+            except Exception:
+                encoder_clicks = None
+
+            lane_values = status.get("f1s_hes_value")
+            hub_values = status.get("hub_hes_value")
+            ptfe_values = status.get("ptfe_length")
+
+            if isinstance(hub_values, (list, tuple)):
+                try:
+                    parsed_hub_values = [float(value) for value in hub_values]
+                except (TypeError, ValueError):
+                    parsed_hub_values = None
+                if parsed_hub_values:
+                    self._last_hub_hes_values = parsed_hub_values
+
+            new_ptfe_value = None
+            if isinstance(ptfe_values, (list, tuple)):
+                for entry in ptfe_values:
+                    try:
+                        new_ptfe_value = float(entry)
+                        break
+                    except (TypeError, ValueError):
+                        continue
+            elif ptfe_values is not None:
+                try:
+                    new_ptfe_value = float(ptfe_values)
+                except (TypeError, ValueError):
+                    new_ptfe_value = None
+
+            if new_ptfe_value is not None:
+                self._last_ptfe_value = new_ptfe_value
+
+            # OPTIMIZATION: Track encoder changes for adaptive polling
+            encoder_changed = False
+            active_lane_name = None
+            if encoder_clicks is not None:
+                last_clicks = self._last_encoder_clicks
+                if last_clicks is not None and encoder_clicks != last_clicks:
+                    encoder_changed = True
+                    self._last_encoder_change = eventtime
+                    self._consecutive_idle_polls = 0
+                    
+                    current_loading = getattr(self.afc, "current_loading", None)
+                    if current_loading:
+                        lane = self.lanes.get(current_loading)
+                        if lane is not None and self._lane_matches_extruder(lane):
+                            active_lane_name = getattr(lane, "name", None)
+                    if active_lane_name is None:
+                        for lane in self.lanes.values():
+                            if self._lane_matches_extruder(lane) and getattr(lane, "status", None) == AFCLaneState.TOOL_LOADING:
+                                active_lane_name = getattr(lane, "name", None)
+                                break
+                    if active_lane_name:
+                        canonical_lane = self._canonical_lane_name(active_lane_name)
+                        if canonical_lane:
+                            self._lane_feed_activity[canonical_lane] = True
+                self._last_encoder_clicks = encoder_clicks
+            elif encoder_clicks is None:
+                self._last_encoder_clicks = None
+
+            # OPTIMIZATION: Use indexed lane lookup instead of iteration
+            for idx in range(4):  # OAMS supports 4 bays
+                lane = self._lane_for_spool_index(idx)
+                if lane is None:
+                    continue
+
+                if lane_values is None or idx >= len(lane_values):
+                    continue
+
+                lane_val = bool(lane_values[idx])
+                if getattr(lane, "ams_share_prep_load", False):
+                    self._update_shared_lane(lane, lane_val, eventtime)
+                elif lane_val != self._last_lane_states.get(lane.name):
+                    lane.load_callback(eventtime, lane_val)
+                    lane.prep_callback(eventtime, lane_val)
+                    self._mirror_lane_to_virtual_sensor(lane, eventtime)
+                    self._last_lane_states[lane.name] = lane_val
+
+                if self.hardware_service is not None:
+                    hub_state = None
+                    if hub_values is not None and idx < len(hub_values):
+                        hub_state = bool(hub_values[idx])
+                    tool_state = self._lane_reports_tool_filament(lane)
+                    self.hardware_service.update_lane_snapshot(self.oams_name, lane.name, lane_val, hub_state, eventtime, spool_index=idx, tool_state=tool_state)
+
+                hub = getattr(lane, "hub_obj", None)
+                if hub is None or hub_values is None or idx >= len(hub_values):
+                    continue
+
+                hub_val = bool(hub_values[idx])
+                if hub_val != self._last_hub_states.get(hub.name):
+                    hub.switch_pin_callback(eventtime, hub_val)
+                    fila = getattr(hub, "fila", None)
+                    if fila is not None:
+                        fila.runout_helper.note_filament_present(eventtime, hub_val)
+                    self._last_hub_states[hub.name] = hub_val
+            
+            self._sync_virtual_tool_sensor(eventtime)
+        except Exception:
+            self.logger.error("OpenAMS sync failed", exc_info=True)
+            return eventtime + self.interval_active
+
+        #  Adaptive polling interval
+        if encoder_changed:
+            return eventtime + self.interval_active
+        
+        self._consecutive_idle_polls += 1
+        if self._consecutive_idle_polls > IDLE_POLL_THRESHOLD:
+            return eventtime + self.interval_idle
+        
+        return eventtime + self.interval_active
 
     def _lane_for_spool_index(self, spool_index: Optional[int]):
         """Use indexed lookup instead of iteration."""
@@ -3036,10 +3158,14 @@ def _patch_lane_pre_sensor_for_ams() -> None:
             except Exception:
                 eventtime = None
 
-        if eventtime is None:
+        if eventtime is not None:
+            try:
+                unit._sync_event(eventtime)
+            except Exception:
+                pass
+        else:
             eventtime = 0.0
 
-        # Sync virtual tool sensor state (sensor state is kept up-to-date via events)
         try:
             unit._sync_virtual_tool_sensor(eventtime, self.name)
         except Exception:
