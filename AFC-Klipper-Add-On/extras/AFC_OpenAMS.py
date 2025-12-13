@@ -528,7 +528,7 @@ class afcAMS(afcUnit):
             try:
                 self.get_lane_temperature(getattr(lane, "name", None), 240)
             except Exception:
-                self.logger.debug("Unable to seed lane temperature for %s", getattr(lane, "name", None), exc_info=True)
+                self.logger.debug(f"Unable to seed lane temperature for {getattr(lane, 'name', None)}")
 
         first_leg = ("<span class=warning--text>|</span>"
                     "<span class=error--text>_</span>")
@@ -1757,7 +1757,7 @@ class afcAMS(afcUnit):
             else:
                 # Clear the flag - runout handling is complete
                 lane._oams_runout_detected = False
-                self.logger.debug("Clearing runout flag for lane %s - runout handling complete", getattr(lane, "name", "unknown"))
+                self.logger.debug(f"Clearing runout flag for lane {getattr(lane, 'name', 'unknown')} - runout handling complete")
         except Exception:
             # On error, clear the flag to be safe
             lane._oams_runout_detected = False
@@ -1768,7 +1768,7 @@ class afcAMS(afcUnit):
         # Sensor confirms empty - always clear flag
         elif not lane_val:
             lane._oams_runout_detected = False
-            self.logger.debug("Sensor confirmed empty state for lane %s - clearing runout flag", getattr(lane, "name", "unknown"))
+            self.logger.debug(f"Sensor confirmed empty state for lane {getattr(lane, 'name', 'unknown')} - clearing runout flag")
 
         return False
 
@@ -1887,7 +1887,7 @@ class afcAMS(afcUnit):
         """Apply a boolean lane sensor value using existing AFC callbacks."""
         # Check if runout handling requires blocking this sensor update
         if self._should_block_sensor_update_for_runout(lane, lane_val):
-            self.logger.debug("Ignoring sensor update for lane %s - runout in progress", getattr(lane, "name", "unknown"))
+            self.logger.debug(f"Ignoring sensor update for lane {getattr(lane, 'name', 'unknown')} - runout in progress")
             # Update state tracking before returning to prevent duplicate processing
             lane_name = getattr(lane, "name", None)
             if lane_name:
@@ -2230,15 +2230,11 @@ class afcAMS(afcUnit):
             target_extruder,
         )
         if runout_lane_name:
-            self.logger.debug(f"Runout handoff resolution trace for {lane.name}: {" > ".join(handoff_trace}") if handoff_trace else "(no trace)",
-            )
+            self.logger.debug(f"Runout handoff resolution trace for {lane.name}: {' > '.join(handoff_trace)}" if handoff_trace else "(no trace)")
 
         if runout_lane_name and not target_lane and saved_runout_lane and saved_runout_lane != runout_lane_name:
             self.logger.info(
-                "Runout lane %s for %s could not be resolved; falling back to saved AFC state %s",
-                runout_lane_name,
-                lane.name,
-                saved_runout_lane,
+                f"Runout lane {runout_lane_name} for {lane.name} could not be resolved; falling back to saved AFC state {saved_runout_lane}"
             )
             runout_lane_name = saved_runout_lane
             runout_from_saved = True
