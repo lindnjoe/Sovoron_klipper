@@ -1923,16 +1923,24 @@ class afcAMS(afcUnit):
     # fallback when AMSHardwareService is unavailable.
 
     def _sync_event(self, eventtime):
-        """This should never be called - AMSHardwareService is required for AFC-OpenAMS integration.
+        """Minimal fallback polling when AMSHardwareService is unavailable.
 
-        Event-driven updates via _on_f1s_changed and _on_hub_changed have replaced
-        polling logic. If this method is called, it means AMSHardwareService failed
-        to initialize, which indicates a configuration error.
+        Event-driven updates via _on_f1s_changed and _on_hub_changed are preferred.
+        This fallback uses basic direct sensor reads if hardware service isn't available.
         """
-        raise self.printer.config_error(
-            "AMSHardwareService unavailable for %s - AFC-OpenAMS integration requires "
-            "openams_integration.py to be loaded. Check your configuration." % self.name
-        )
+        if self.hardware_service is None:
+            # Fallback: try direct sensor reads if hardware service unavailable
+            try:
+                if self.oams is not None:
+                    self._sync_virtual_tool_sensor(eventtime)
+                    return eventtime + self.interval_idle
+            except Exception:
+                pass
+            # No hardware service and no direct access - disable timer
+            return self.reactor.NEVER
+
+        # Hardware service available - events should be handling updates, disable polling
+        return self.reactor.NEVER
 
     def _lane_for_spool_index(self, spool_index: Optional[int]):
         """Use indexed lookup instead of iteration."""
