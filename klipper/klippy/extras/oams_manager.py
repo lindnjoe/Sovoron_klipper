@@ -3382,6 +3382,9 @@ class OAMSManager:
         if fps_state.stuck_spool.active:
             return
 
+        # Set active flag BEFORE pause to prevent retriggering if pause fails or is slow
+        fps_state.stuck_spool.active = True
+
         spool_idx = fps_state.current_spool_idx
         if oams is None and fps_state.current_oams is not None:
             oams = self.oams.get(fps_state.current_oams)
@@ -3406,12 +3409,10 @@ class OAMSManager:
             self._pause_printer_message(message, fps_state.current_oams)
         except Exception:
             self.logger.error("Failed to pause printer during stuck spool on %s - continuing with error state", fps_name, exc_info=True)
+            # If pause failed, keep active=True to prevent retriggering until user intervention
+            return
 
-        # Clear error flag immediately after pausing - system is ready for user to fix
-        # LED stays red to indicate the issue, but error flag doesn't block other operations
-        fps_state.stuck_spool.active = False
-        fps_state.stuck_spool.start_time = None
-        self.logger.info("Stuck spool pause triggered for %s, error flag cleared (LED stays red)", fps_name)
+        self.logger.info("Stuck spool pause triggered for %s (LED stays red, active flag set)", fps_name)
 
     def _unified_monitor_for_fps(self, fps_name):
         """Consolidated monitor handling all FPS checks in a single timer (OPTIMIZED)."""
@@ -3933,7 +3934,13 @@ class OAMSManager:
             fps_state.clog.active = True
 
             # Pause printer with error message
-            self._pause_printer_message(message, fps_state.current_oams)
+            # SAFETY: Wrap pause in try/except to prevent crash if pause logic fails
+            try:
+                self._pause_printer_message(message, fps_state.current_oams)
+            except Exception:
+                self.logger.error("Failed to pause printer during clog on %s - continuing with error state", fps_name, exc_info=True)
+                # Keep active=True to prevent retriggering until user intervention
+                return
 
             # Keep the follower running during clog pauses so manual extrusion
             # remains available without requiring OAMSM_CLEAR_ERRORS.
