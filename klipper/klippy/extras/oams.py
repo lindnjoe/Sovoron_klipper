@@ -713,14 +713,14 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
     def unload_spool(self):
         self.action_status = OAMSStatus.UNLOADING
         self.oams_unload_spool_cmd.send()
-        timeout = self.reactor.monotonic() + 30.0  # 30 second timeout
+        timeout = self.reactor.monotonic() + 60.0  # 60 second timeout (increased from 30s to handle MCU recovery)
 
         # CRITICAL FIX: Use reactor.pause() to avoid queueing behind print moves
         # toolhead.dwell() queues into move queue and blocks during printing
         # reactor.pause() waits without affecting toolhead command stream
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
-                logging.error("OAMS[%d]: Unload operation timed out after 30 seconds", self.oams_idx)
+                logging.error("OAMS[%d]: Unload operation timed out after 60 seconds", self.oams_idx)
                 self.action_status = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS unload operation timed out (MCU unresponsive)"
