@@ -252,14 +252,8 @@ class afcAMS(afcUnit):
         self.type = "OpenAMS"
 
         self.oams_name = config.get("oams", "oams1")
-        self.interval = config.getfloat("interval", SYNC_INTERVAL, above=0.0)
-        
-        # Adaptive polling intervals
-        self.interval_idle = self.interval * 2.0
-        self.interval_active = self.interval
 
         self.reactor = self.printer.get_reactor()
-        self.timer = self.reactor.register_timer(self._sync_event)
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
         # Lane registry integration
@@ -1422,21 +1416,23 @@ class afcAMS(afcUnit):
             # Don't start polling if no OAMS hardware
             return
 
-        # Subscribe to hardware sensor events instead of polling
-        if self.hardware_service is not None:
-            # Subscribe to sensor change events
-            self.event_bus.subscribe("f1s_changed", self._on_f1s_changed, priority=5)
-            self.event_bus.subscribe("hub_changed", self._on_hub_changed, priority=5)
+        # Subscribe to hardware sensor events (requires AMSHardwareService)
+        if self.hardware_service is None:
+            self.logger.error(
+                "AMSHardwareService not available for %s - OpenAMS requires openams_integration.py. "
+                "Sensor updates will not work!", self.name
+            )
+            return
 
-            # Start unified polling in AMSHardwareService
-            try:
-                self.hardware_service.start_polling()
-            except Exception:
-                self.logger.error("Failed to start unified polling for %s", self.oams_name)
-        else:
-            # Fallback: use legacy polling if hardware_service unavailable
-            self.logger.warning("AMSHardwareService not available, using legacy polling for %s", self.name)
-            self.reactor.update_timer(self.timer, self.reactor.NOW)
+        # Subscribe to sensor change events
+        self.event_bus.subscribe("f1s_changed", self._on_f1s_changed, priority=5)
+        self.event_bus.subscribe("hub_changed", self._on_hub_changed, priority=5)
+
+        # Start unified polling in AMSHardwareService
+        try:
+            self.hardware_service.start_polling()
+        except Exception:
+            self.logger.error("Failed to start unified polling for %s", self.oams_name)
 
         # Hook into AFC's LANE_UNLOAD for cross-extruder runouts
         self._wrap_afc_lane_unload()
@@ -1864,17 +1860,6 @@ class afcAMS(afcUnit):
         lane_name = getattr(lane, "name", None)
         if lane_name:
             self._last_lane_states[lane_name] = bool(lane_val)
-
-    # Sensor updates now happen via event subscriptions (_on_f1s_changed and _on_hub_changed)
-    # from AMSHardwareService. Legacy polling has been fully replaced by event-driven architecture.
-
-    def _sync_event(self, eventtime):
-        """Legacy timer callback - no longer used.
-
-        All sensor updates now happen via event-driven subscriptions from AMSHardwareService.
-        This timer is registered but immediately disabled by returning reactor.NEVER.
-        """
-        return self.reactor.NEVER
 
     def _lane_for_spool_index(self, spool_index: Optional[int]):
         """Use indexed lookup instead of iteration."""
