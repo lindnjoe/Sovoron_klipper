@@ -22,7 +22,7 @@ import re
 import traceback
 from textwrap import dedent
 from types import MethodType
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from configparser import Error as ConfigError
 try: from extras.AFC_utils import ERROR_STR
@@ -1236,56 +1236,6 @@ class afcAMS(afcUnit):
                     self._lane_temp_cache.pop(lookup_name, None)
 
         return fallback
-
-    def prepare_unload(
-        self,
-        extruder: Optional[str] = None,
-        default_temp: int = 240,
-    ) -> Tuple[Optional[str], int]:
-        """Return the lane being unloaded and the purge temperature to use."""
-
-        extruder_name = extruder or getattr(self, "extruder", None)
-        lane_name = self._current_lane_for_extruder(extruder_name)
-
-        old_temp = (
-            self.get_lane_temperature(lane_name, default_temp)
-            if lane_name is not None
-            else int(default_temp)
-        )
-
-        purge_temp = old_temp
-
-        next_lane_name: Optional[str] = None
-        afc_obj = getattr(self, "afc", None)
-        if afc_obj is not None:
-            next_lane_name = getattr(afc_obj, "next_lane_load", None)
-
-        canonical_next = self._canonical_lane_name(next_lane_name)
-        if canonical_next and canonical_next != lane_name:
-            next_temp = self.get_lane_temperature(canonical_next, default_temp)
-            if next_temp > purge_temp:
-                purge_temp = next_temp
-
-        if extruder_name:
-            self._last_loaded_lane_by_extruder[extruder_name] = lane_name
-
-        return lane_name, purge_temp
-
-    def get_purge_temp_for_change(
-        self,
-        old_lane: Optional[str],
-        new_lane: Optional[str],
-        *,
-        extruder: Optional[str] = None,
-        default_temp: int = 240,
-    ) -> int:
-        extruder_name = extruder or getattr(self, "extruder", None)
-        _ = extruder_name  # reserved for future use
-
-        old_temp = self.get_lane_temperature(old_lane, default_temp) if old_lane else int(default_temp)
-        new_temp = self.get_lane_temperature(new_lane, default_temp)
-
-        return old_temp if old_temp >= new_temp else new_temp
 
     def record_load(self, extruder: Optional[str] = None, lane_name: Optional[str] = None) -> Optional[str]:
         extruder_name = extruder or getattr(self, "extruder", None)
