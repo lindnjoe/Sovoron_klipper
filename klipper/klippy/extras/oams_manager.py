@@ -38,6 +38,11 @@ except Exception:
     AMSRunoutCoordinator = None
     normalize_extruder_name = None
 
+try:
+    from extras.oams import OAMSStatus
+except Exception:
+    OAMSStatus = None
+
 
 def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
     """Return a lowercase token for comparing extruder identifiers."""
