@@ -1947,6 +1947,13 @@ class OAMSManager:
 
         # Start unload operation (non-blocking - just sends MCU command)
         self.logger.info("Starting async unload for same-FPS reload on %s", fps_name)
+        if OAMSStatus is None:
+            self.logger.error("CRITICAL: OAMSStatus not available (oams.py import failed)")
+            self._pause_printer_message("OAMS module error", active_oams)
+            if monitor:
+                monitor.paused()
+            return
+
         oams_unload.action_status = OAMSStatus.UNLOADING
         oams_unload.oams_unload_spool_cmd.send()
         unload_start_time = self.reactor.monotonic()
@@ -1956,6 +1963,13 @@ class OAMSManager:
             # Check if unload completed
             if oams_unload.action_status is None:
                 # Unload finished - check result
+                if OAMSOpCode is None:
+                    self.logger.error("CRITICAL: OAMSOpCode not available (oams.py import failed)")
+                    self._pause_printer_message("OAMS module error", active_oams)
+                    if monitor:
+                        monitor.paused()
+                    return self.reactor.NEVER
+
                 if oams_unload.action_status_code == OAMSOpCode.SUCCESS:
                     self.logger.info("Async unload completed successfully, starting load for %s", target_lane)
                     # Update FPS state
@@ -2096,6 +2110,13 @@ class OAMSManager:
 
         # Start load operation (non-blocking - just sends MCU command)
         self.logger.info("Starting async load for lane %s (bay %s) on %s", target_lane, bay_index, oams_name)
+        if OAMSStatus is None:
+            self.logger.error("CRITICAL: OAMSStatus not available (oams.py import failed)")
+            self._pause_printer_message("OAMS module error", active_oams)
+            if monitor:
+                monitor.paused()
+            return
+
         oam_load.action_status = OAMSStatus.LOADING
         oam_load.oams_load_spool_cmd.send([bay_index])
         load_start_time = self.reactor.monotonic()
@@ -2105,6 +2126,13 @@ class OAMSManager:
             # Check if load completed
             if oam_load.action_status is None:
                 # Load finished - check result
+                if OAMSOpCode is None:
+                    self.logger.error("CRITICAL: OAMSOpCode not available (oams.py import failed)")
+                    self._pause_printer_message("OAMS module error", active_oams)
+                    if monitor:
+                        monitor.paused()
+                    return self.reactor.NEVER
+
                 if oam_load.action_status_code == OAMSOpCode.SUCCESS:
                     self.logger.info("Async load completed successfully for lane %s", target_lane)
                     # Update state
