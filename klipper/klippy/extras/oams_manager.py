@@ -39,9 +39,10 @@ except Exception:
     normalize_extruder_name = None
 
 try:
-    from extras.oams import OAMSStatus
+    from extras.oams import OAMSStatus, OAMSOpCode
 except Exception:
     OAMSStatus = None
+    OAMSOpCode = None
 
 
 def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
