@@ -897,6 +897,11 @@ class OAMSManager:
             self._toolhead_obj = None
 
         self.determine_state()
+
+        # WORKAROUND: Fix AFC state restoration after PREP command
+        # AFC's PREP doesn't call set_tool_loaded(), causing state inconsistency after firmware restart
+        self._fix_afc_state_restoration()
+
         self.start_monitors()
         self.ready = True
 
@@ -976,7 +981,113 @@ class OAMSManager:
                 "Failed to sync AFC lane_loaded for %s detected on %s",
                 detected_lane, fps_name, exc_info=True
             )
-        
+
+    def _fix_afc_runout_helper_time(self, lane_name: str) -> None:
+        """Workaround for AFC bug: Update min_event_systime after load operations.
+
+        AFC's handle_load_runout() function has a docstring stating it should update
+        min_event_systime to prevent sensor event queue buildup, but the code is missing.
+        This causes Klipper crashes during manual load operations.
+
+        This is a defensive workaround until AFC fixes the bug in AFC_lane.py:676
+
+        Args:
+            lane_name: AFC lane name (e.g., "lane5")
+        """
+        try:
+            afc = self._get_afc()
+            if afc is None or not hasattr(afc, 'lanes'):
+                return
+
+            lane_obj = afc.lanes.get(lane_name)
+            if lane_obj is None:
+                return
+
+            # Check if lane has fila_load runout helper
+            if not hasattr(lane_obj, 'fila_load'):
+                return
+
+            fila_load = lane_obj.fila_load
+            if not hasattr(fila_load, 'runout_helper'):
+                return
+
+            runout_helper = fila_load.runout_helper
+            if not hasattr(runout_helper, 'min_event_systime') or not hasattr(runout_helper, 'event_delay'):
+                return
+
+            # Update min_event_systime to allow future switch changes to be detected
+            # This mimics how it's done in AFC_extruder.py handle_start_runout()
+            runout_helper.min_event_systime = self.reactor.monotonic() + runout_helper.event_delay
+
+            self.logger.debug(
+                "Fixed min_event_systime for %s load sensor (workaround for AFC bug)",
+                lane_name
+            )
+        except Exception:
+            # Don't crash if this workaround fails - just log it
+            self.logger.debug(
+                "Failed to fix min_event_systime for %s (AFC may not have this lane or sensor)",
+                lane_name, exc_info=False
+            )
+
+    def _fix_afc_state_restoration(self) -> None:
+        """Workaround for AFC bug: Properly restore lane-to-extruder state after firmware restart.
+
+        AFC's PREP command restores lane_loaded and tool_loaded boolean properties but doesn't
+        call set_tool_loaded() to properly synchronize stepper state, LED state, and extruder
+        calibration. This causes the system to lose track of which lane is loaded after restarts.
+
+        This is a defensive workaround until AFC fixes the bug in AFC_prep.py:125
+        """
+        try:
+            afc = self._get_afc()
+            if afc is None:
+                return
+
+            if not hasattr(afc, 'tools') or not hasattr(afc, 'lanes'):
+                return
+
+            # Check each extruder to see if it has lane_loaded but the lane's tool_loaded is False
+            for extruder_name, extruder_obj in afc.tools.items():
+                lane_loaded_name = getattr(extruder_obj, 'lane_loaded', None)
+
+                if not lane_loaded_name:
+                    continue  # No lane should be loaded to this extruder
+
+                lane_obj = afc.lanes.get(lane_loaded_name)
+                if lane_obj is None:
+                    self.logger.warning(
+                        "AFC state inconsistency: %s.lane_loaded=%s but lane doesn't exist",
+                        extruder_name, lane_loaded_name
+                    )
+                    continue
+
+                # Check if lane's tool_loaded matches extruder's lane_loaded
+                tool_loaded = getattr(lane_obj, 'tool_loaded', False)
+
+                if not tool_loaded:
+                    # Bug detected: extruder says lane is loaded but lane says it's not loaded to tool
+                    # Call set_tool_loaded() to properly synchronize state
+                    if hasattr(lane_obj, 'set_tool_loaded') and callable(lane_obj.set_tool_loaded):
+                        lane_obj.set_tool_loaded()
+                        self.logger.info(
+                            "Fixed AFC state restoration: Called %s.set_tool_loaded() to sync with %s.lane_loaded=%s",
+                            lane_loaded_name, extruder_name, lane_loaded_name
+                        )
+                    else:
+                        # Fallback: manually set tool_loaded if set_tool_loaded doesn't exist
+                        lane_obj.tool_loaded = True
+                        self.logger.warning(
+                            "Fixed AFC state restoration (fallback): Set %s.tool_loaded=True (no set_tool_loaded method)",
+                            lane_loaded_name
+                        )
+
+        except Exception:
+            self.logger.error(
+                "Failed to fix AFC state restoration (non-critical, AFC may handle this differently)",
+                exc_info=True
+            )
+
     def determine_current_loaded_lane(self, fps_name: str) -> Tuple[Optional[str], Optional[object], Optional[int]]:
         """Determine which lane is currently loaded in the specified FPS."""
         fps = self.fpss.get(fps_name)
@@ -2728,6 +2839,10 @@ class OAMSManager:
 
             # OPTIMIZATION: Enable follower immediately before cleanup operations
             self._ensure_forward_follower(fps_name, fps_state, "load filament")
+
+            # WORKAROUND: Fix AFC runout helper min_event_systime after load
+            # AFC's handle_load_runout() doesn't update this, causing Klipper crashes during manual loads
+            self._fix_afc_runout_helper_time(lane_name)
 
             # Clear LED error state if stuck spool was active
             if fps_state.stuck_spool.active:
