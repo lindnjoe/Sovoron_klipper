@@ -269,7 +269,6 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.error("Failed to subscribe to AMS events")
 
-        self._lane_temp_cache: Dict[str, int] = {}
         self._last_loaded_lane_by_extruder: Dict[str, Optional[str]] = {}
 
         self._saved_unit_cache: Optional[Dict[str, Any]] = None
@@ -507,11 +506,6 @@ class afcAMS(afcUnit):
                         )
                     except Exception:
                         self.logger.error("Failed to register lane %s with registry", lane_name)
-
-            try:
-                self.get_lane_temperature(getattr(lane, "name", None), 240)
-            except Exception:
-                self.logger.debug("Unable to seed lane temperature for %s", getattr(lane, "name", None), exc_info=True)
 
         first_leg = ("<span class=warning--text>|</span>"
                     "<span class=error--text>_</span>")
@@ -1146,92 +1140,11 @@ class afcAMS(afcUnit):
         """Return the saved runout target for a lane from AFC.var.unit, if available."""
 
         saved_value = self._get_saved_lane_field(lane_name, "runout_lane")
-        if not saved_value:
-            return None
-
-        return self._canonical_lane_name(saved_value)
-
-    def _get_saved_lane_temperature(self, lane_name: Optional[str]) -> Optional[int]:
-        canonical = self._canonical_lane_name(lane_name)
-        if canonical is None:
-            return None
-
-        snapshot = self._load_saved_unit_snapshot()
-        if not snapshot:
-            return None
-
-        unit_key = getattr(self, "name", None)
-        unit_data = snapshot.get(str(unit_key)) if unit_key is not None else None
-        if not isinstance(unit_data, dict):
-            return None
-
-        lane_data = unit_data.get(canonical)
-        if not isinstance(lane_data, dict):
-            return None
-
-        temp_value = lane_data.get("extruder_temp")
-        if temp_value is None:
-            temp_value = lane_data.get("nozzle_temp")
-        if temp_value is None:
-            return None
-
-        try:
-            resolved = int(temp_value)
-        except (TypeError, ValueError):
-            return None
-
-        return resolved
-
-    def get_lane_temperature(self, lane_name: Optional[str], default_temp: int = 240) -> int:
-        fallback = int(default_temp)
-
-        canonical_name = self._canonical_lane_name(lane_name)
-        lookup_name = canonical_name if canonical_name is not None else lane_name
-
-        lane_obj = self._get_lane_object(canonical_name or lane_name)
-        if lane_obj is not None:
-            for attr in ("extruder_temp", "nozzle_temp"):
-                temp_value = getattr(lane_obj, attr, None)
-                if temp_value is None:
-                    continue
-                try:
-                    resolved = int(temp_value)
-                except (TypeError, ValueError):
-                    continue
-                if lookup_name:
-                    self._lane_temp_cache[lookup_name] = resolved
-                return resolved
-
-        saved_temp = self._get_saved_lane_temperature(canonical_name)
-        if saved_temp is not None:
-            try:
-                resolved = int(saved_temp)
-            except (TypeError, ValueError):
-                resolved = fallback
-            else:
-                if lookup_name:
-                    self._lane_temp_cache[lookup_name] = resolved
-                return resolved
-
-        if lookup_name:
-            cached = self._lane_temp_cache.get(lookup_name)
-            if cached is not None:
-                try:
-                    return int(cached)
-                except (TypeError, ValueError):
-                    self._lane_temp_cache.pop(lookup_name, None)
-
-        return fallback
-
     def record_load(self, extruder: Optional[str] = None, lane_name: Optional[str] = None) -> Optional[str]:
         extruder_name = extruder or getattr(self, "extruder", None)
         canonical = self._canonical_lane_name(lane_name)
         if extruder_name:
             self._last_loaded_lane_by_extruder[extruder_name] = canonical
-
-        if canonical:
-            temp = self.get_lane_temperature(canonical, 240)
-            self._lane_temp_cache[canonical] = temp
 
         return canonical
 
@@ -2342,10 +2255,6 @@ class afcAMS(afcUnit):
         self._last_lane_states[lane.name] = True
 
         eventtime = kwargs.get("eventtime", 0.0)
-        try:
-            self.get_lane_temperature(lane.name, 240)
-        except Exception:
-            self.logger.debug("Failed to refresh temperature for lane %s", lane.name, exc_info=True)
 
         # Apply spool info for this load event
         # AFC's lane.set_loaded() also calls _set_values(), but that's only triggered
@@ -2415,11 +2324,6 @@ class afcAMS(afcUnit):
         self._last_lane_states[lane.name] = False
         lane.tool_loaded = False
         lane.loaded_to_hub = False
-
-        try:
-            self.get_lane_temperature(lane.name, 240)
-        except Exception:
-            self.logger.debug("Failed to refresh cached temperature for unloaded lane %s", lane.name, exc_info=True)
 
         extruder_name = getattr(lane, "extruder_name", None)
         if extruder_name and self._last_loaded_lane_by_extruder.get(extruder_name) == lane.name:
