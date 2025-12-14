@@ -512,8 +512,8 @@ class AMSHardwareService:
     def start_polling(self) -> None:
         """Start the unified hardware polling timer.
 
-        PHASE 2: Centralizes all hardware polling in one place.
-        Publishes events when sensor values change.
+        Centralizes all hardware polling in one place and publishes events
+        when sensor values change, allowing subscribers to react without polling.
         """
         if self._polling_timer is not None:
             self._log_warning(f"Polling already started for {self.name}")
@@ -544,7 +544,8 @@ class AMSHardwareService:
     def _polling_callback(self, eventtime: float) -> float:
         """Unified polling callback that detects changes and publishes events.
 
-        PHASE 2: Single source of truth for hardware state changes.
+        Polls OAMS hardware sensors and publishes events to subscribers when
+        state changes are detected. Single source of truth for hardware state.
         """
         if not self._polling_enabled:
             return self._reactor.NEVER
@@ -703,8 +704,9 @@ class AMSHardwareService:
                            tool_state: Optional[bool] = None,
                            emit_spool_event: bool = True) -> None:
         """Update the cached state snapshot for a specific lane.
-        
-        PHASE 5: Now publishes events when state changes.
+
+        Publishes events to subscribers when lane state changes are detected,
+        enabling event-driven updates instead of polling.
         """
         key = f"{unit_name}:{lane_name}"
         
@@ -820,8 +822,9 @@ class AMSHardwareService:
 
     def load_spool(self, spool_index: int) -> None:
         """Command the OAMS to load a specific spool.
-        
-        PHASE 5: Now publishes spool_loaded event.
+
+        Sends load command to hardware and publishes spool_loaded event
+        to notify subscribers of the state change.
         """
         controller = self._require_controller()
         controller.oams_load_spool_cmd.send([spool_index])
@@ -837,8 +840,9 @@ class AMSHardwareService:
 
     def unload_spool(self) -> None:
         """Command the OAMS to unload the current spool.
-        
-        PHASE 5: Now publishes spool_unloaded event.
+
+        Sends unload command to hardware and publishes spool_unloaded event
+        to notify subscribers of the state change.
         """
         controller = self._require_controller()
         current_spool = getattr(controller, "current_spool", None)
