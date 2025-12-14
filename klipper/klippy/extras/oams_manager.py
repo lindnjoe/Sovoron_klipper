@@ -3527,7 +3527,18 @@ class OAMSManager:
             # If pause failed, keep active=True to prevent retriggering until user intervention
             return
 
-        self.logger.info("Stuck spool pause triggered for %s (LED stays red, active flag set)", fps_name)
+        # Keep the follower running during stuck spool pauses so manual extrusion
+        # remains available without requiring OAMSM_CLEAR_ERRORS.
+        # Enable follower directly during stuck spool pause, bypassing state checks
+        if oams is not None and spool_idx is not None:
+            self._enable_follower(fps_name, fps_state, oams, 1, "stuck spool pause - keep follower active")
+            # Set manual override to prevent automatic hub-sensor control from disabling it
+            # This keeps follower enabled even if hub sensors are empty during stuck spool
+            state = self._get_follower_state(fps_state.current_oams)
+            state.manual_override = True
+            self.logger.info("Follower enabled and locked on %s during stuck spool pause (manual override active)", fps_name)
+
+        self.logger.info("Stuck spool pause triggered for %s (LED stays red, active flag set, follower enabled)", fps_name)
 
     def _unified_monitor_for_fps(self, fps_name):
         """Consolidated monitor handling all FPS checks in a single timer (OPTIMIZED)."""
