@@ -1865,28 +1865,15 @@ class afcAMS(afcUnit):
         if lane_name:
             self._last_lane_states[lane_name] = bool(lane_val)
 
-    # NOTE: _sync_event has been removed - sensor updates now happen via event subscriptions
-    # (_on_f1s_changed and _on_hub_changed). The legacy polling timer is only used as a
-    # fallback when AMSHardwareService is unavailable.
+    # Sensor updates now happen via event subscriptions (_on_f1s_changed and _on_hub_changed)
+    # from AMSHardwareService. Legacy polling has been fully replaced by event-driven architecture.
 
     def _sync_event(self, eventtime):
-        """Minimal fallback polling when AMSHardwareService is unavailable.
+        """Legacy timer callback - no longer used.
 
-        Event-driven updates via _on_f1s_changed and _on_hub_changed are preferred.
-        This fallback uses basic direct sensor reads if hardware service isn't available.
+        All sensor updates now happen via event-driven subscriptions from AMSHardwareService.
+        This timer is registered but immediately disabled by returning reactor.NEVER.
         """
-        if self.hardware_service is None:
-            # Fallback: try direct sensor reads if hardware service unavailable
-            try:
-                if self.oams is not None:
-                    self._sync_virtual_tool_sensor(eventtime)
-                    return eventtime + self.interval_idle
-            except Exception:
-                pass
-            # No hardware service and no direct access - disable timer
-            return self.reactor.NEVER
-
-        # Hardware service available - events should be handling updates, disable polling
         return self.reactor.NEVER
 
     def _lane_for_spool_index(self, spool_index: Optional[int]):
