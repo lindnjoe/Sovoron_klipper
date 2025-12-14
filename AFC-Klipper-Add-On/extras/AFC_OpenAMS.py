@@ -257,8 +257,6 @@ class afcAMS(afcUnit):
         # Adaptive polling intervals
         self.interval_idle = self.interval * 2.0
         self.interval_active = self.interval
-        self._consecutive_idle_polls = 0
-        self._last_encoder_change = None
 
         self.reactor = self.printer.get_reactor()
         self.timer = self.reactor.register_timer(self._sync_event)
@@ -295,7 +293,6 @@ class afcAMS(afcUnit):
         self._lane_tool_latches: Dict[str, bool] = {}
         self._lane_tool_latches_by_lane: Dict[object, bool] = {}
         self._last_hub_hes_values: Optional[List[float]] = None
-        self._last_ptfe_value: Optional[float] = None
 
         # OPTIMIZATION: Cache frequently accessed objects
         self._cached_sensor_helper = None
@@ -2659,7 +2656,6 @@ class afcAMS(afcUnit):
             gcmd.respond_info("Failed to update ptfe_length in your cfg; please update it manually.")
             return False
 
-        self._last_ptfe_value = value
         target_name = lane_label
         gcmd.respond_info(f"Stored OpenAMS ptfe_length {formatted_value} for {target_name} in your cfg.")
         return True
