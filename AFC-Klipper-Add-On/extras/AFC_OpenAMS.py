@@ -7,8 +7,8 @@
 # OPTIMIZATIONS APPLIED:
 # 1. Object Caching: Cache frequently accessed objects (gcode, extruder, lane, OAMS index)
 #    to eliminate redundant printer.lookup_object() calls
-# 2. Adaptive Polling: Sync intervals adjust between active (2s) and idle (4s) based on
-#    encoder activity and printer state
+# 2. Event-Driven Architecture: All sensor updates via AMSHardwareService event subscriptions
+#    instead of polling, eliminating unnecessary sensor reads
 # 3. Sensor Helper Caching: Virtual sensor helpers cached to avoid repeated lookups
 # 4. Registry Integration: Uses LaneRegistry for O(1) lane lookups across units
 
@@ -54,11 +54,6 @@ except Exception:
     LaneRegistry = None
     AMSEventBus = None
     normalize_extruder_name = None
-
-# OPTIMIZATION: Configurable sync intervals
-SYNC_INTERVAL = 2.0
-SYNC_INTERVAL_IDLE = 4.0  # Doubled when idle
-IDLE_POLL_THRESHOLD = 3  # Number of polls before going idle
 
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 _ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
@@ -1559,9 +1554,10 @@ class afcAMS(afcUnit):
             self.logger.info("Wrapped AFC.LANE_UNLOAD for cross-extruder runout handling")
 
     def _on_f1s_changed(self, event_type, unit_name, bay, value, eventtime, **kwargs):
-        """Handle f1s sensor change events (PHASE 2: event-driven).
+        """Handle F1S sensor change events from AMSHardwareService.
 
-        This replaces the f1s polling logic from _sync_event.
+        Event-driven architecture: sensor updates published by AMSHardwareService
+        when hardware detects state changes, eliminating need for polling.
         """
         if unit_name != self.oams_name:
             return  # Not our unit
@@ -1622,9 +1618,10 @@ class afcAMS(afcUnit):
         self._sync_virtual_tool_sensor(eventtime)
 
     def _on_hub_changed(self, event_type, unit_name, bay, value, eventtime, **kwargs):
-        """Handle hub sensor change events (PHASE 2: event-driven).
+        """Handle hub sensor change events from AMSHardwareService.
 
-        This replaces the hub polling logic from _sync_event.
+        Event-driven architecture: sensor updates published by AMSHardwareService
+        when hardware detects state changes, eliminating need for polling.
         """
         if unit_name != self.oams_name:
             return  # Not our unit
