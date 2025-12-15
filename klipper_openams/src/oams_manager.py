@@ -2237,6 +2237,24 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             return
 
+        # Skip clog detection if AFC bypass is enabled
+        # User is manually controlling filament, extruder/encoder relationship will be abnormal
+        try:
+            afc = self._get_afc()
+            if afc is not None and hasattr(afc, '_get_bypass_state'):
+                if afc._get_bypass_state():
+                    if fps_state.clog_active and oams is not None and fps_state.current_spool_idx is not None:
+                        try:
+                            oams.set_led_error(fps_state.current_spool_idx, 0)
+                        except Exception:
+                            self.logger.exception("Failed to clear clog LED during bypass on %s", fps_name)
+                    fps_state.reset_clog_tracker()
+                    self.logger.debug("Skipping clog detection on %s - AFC bypass enabled", fps_name)
+                    return
+        except Exception:
+            # Don't crash if bypass check fails, just continue with detection
+            pass
+
         try:
             extruder_pos = float(getattr(fps.extruder, "last_position", 0.0))
         except Exception:
