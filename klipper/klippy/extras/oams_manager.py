@@ -3862,6 +3862,21 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
             return
 
+        # Skip stuck spool detection if AFC bypass is enabled
+        # User is manually controlling filament, FPS pressure will be abnormal
+        try:
+            afc = self._get_afc()
+            if afc is not None and hasattr(afc, '_get_bypass_state'):
+                if afc._get_bypass_state():
+                    if fps_state.stuck_spool.active and oams is not None and fps_state.current_spool_idx is not None:
+                        self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "AFC bypass enabled")
+                    fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
+                    self.logger.debug("Skipping stuck spool detection on %s - AFC bypass enabled", fps_name)
+                    return
+        except Exception:
+            # Don't crash if bypass check fails, just continue with detection
+            pass
+
         if fps_state.since is not None and now - fps_state.since < self.stuck_spool_load_grace:
             fps_state.stuck_spool.start_time = None
             # Clear stuck spool flag during grace period after successful load
@@ -3976,6 +3991,21 @@ class OAMSManager:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer idle")
             fps_state.reset_clog_tracker()
             return
+
+        # Skip clog detection if AFC bypass is enabled
+        # User is manually controlling filament, extruder/encoder relationship will be abnormal
+        try:
+            afc = self._get_afc()
+            if afc is not None and hasattr(afc, '_get_bypass_state'):
+                if afc._get_bypass_state():
+                    if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
+                        self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "AFC bypass enabled")
+                    fps_state.reset_clog_tracker()
+                    self.logger.debug("Skipping clog detection on %s - AFC bypass enabled", fps_name)
+                    return
+        except Exception:
+            # Don't crash if bypass check fails, just continue with detection
+            pass
 
         # Skip clog detection if FPS pressure is very low - indicates stuck spool, not clog
         # During lane loads, stuck spool should trigger retry logic, not clog pause
