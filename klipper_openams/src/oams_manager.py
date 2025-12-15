@@ -2136,6 +2136,24 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
             return
 
+        # Skip stuck spool detection if AFC bypass is enabled
+        # User is manually controlling filament, FPS pressure will be abnormal
+        try:
+            afc = self._get_afc()
+            if afc is not None and hasattr(afc, '_get_bypass_state'):
+                if afc._get_bypass_state():
+                    if fps_state.stuck_spool_active and oams is not None and fps_state.current_spool_idx is not None:
+                        try:
+                            oams.set_led_error(fps_state.current_spool_idx, 0)
+                        except Exception:
+                            self.logger.exception("Failed to clear stuck spool LED during bypass on %s", fps_name)
+                    fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool_restore_follower)
+                    self.logger.debug("Skipping stuck spool detection on %s - AFC bypass enabled", fps_name)
+                    return
+        except Exception:
+            # Don't crash if bypass check fails, just continue with detection
+            pass
+
         if fps_state.since is not None and now - fps_state.since < self.stuck_spool_load_grace:
             fps_state.stuck_spool_start_time = None
             # Clear stuck spool flag during grace period after successful load
