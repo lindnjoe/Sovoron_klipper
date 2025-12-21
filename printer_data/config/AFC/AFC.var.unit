@@ -123,22 +123,22 @@
             "buffer_status": null,
             "lane": 1,
             "map": "T5",
-            "load": true,
-            "prep": true,
+            "load": false,
+            "prep": false,
             "tool_loaded": false,
             "loaded_to_hub": false,
-            "material": "PLA",
+            "material": "",
             "density": 1.24,
             "diameter": 1.75,
             "empty_spool_weight": 250.0,
-            "spool_id": 38,
-            "color": "#F4EE2A",
-            "weight": 832.4603180503784,
-            "extruder_temp": 220,
+            "spool_id": null,
+            "color": "",
+            "weight": 0,
+            "extruder_temp": null,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
-            "status": "Loaded",
+            "filament_status": "Not Ready",
+            "filament_status_led": "#ff0000",
+            "status": "None",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -209,7 +209,7 @@
             "map": "T11",
             "load": true,
             "prep": true,
-            "tool_loaded": false,
+            "tool_loaded": true,
             "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
@@ -220,9 +220,9 @@
             "weight": 248.1627166024058,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
-            "status": "Loaded",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tooled",
             "dist_hub": 60,
             "td1_data": {}
         }
@@ -235,7 +235,7 @@
             "hub": "direct_load",
             "extruder": "extruder",
             "buffer": "TN",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 1,
             "map": "T0",
             "load": true,
@@ -343,7 +343,7 @@
         }
     },
     "system": {
-        "current_load": null,
+        "current_load": "lane0",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
@@ -364,7 +364,7 @@
                 "lane_loaded": null
             },
             "extruder5": {
-                "lane_loaded": null
+                "lane_loaded": "lane11"
             }
         },
         "bypass": {
