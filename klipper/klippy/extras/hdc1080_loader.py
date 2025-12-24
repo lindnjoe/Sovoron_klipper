@@ -1,7 +1,7 @@
 import logging
 
 
-class HDC1080Loader:
+class HDC1080_Loader:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.logger = logging.getLogger("hdc1080_loader")
@@ -21,4 +21,4 @@ class HDC1080Loader:
 
 
 def load_config(config):
-    return HDC1080Loader(config)
+    return HDC1080_Loader(config)
