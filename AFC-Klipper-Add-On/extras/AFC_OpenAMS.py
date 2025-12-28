@@ -2304,6 +2304,12 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.error("Failed to mirror spool load event for %s", lane.name)
 
+        # Keep the AMS virtual sensor aligned even when the spool event pre-populates state
+        try:
+            self._mirror_lane_to_virtual_sensor(lane, eventtime)
+        except Exception:
+            self.logger.error("Failed to mirror virtual sensor state for %s after spool load event", lane.name)
+
     def _handle_spool_unloaded_event(self, *, event_type=None, **kwargs):
         """Update local state in response to a spool_unloaded event."""
         unit_name = kwargs.get("unit_name")
@@ -2344,6 +2350,12 @@ class afcAMS(afcUnit):
                 )
             except Exception:
                 self.logger.error("Failed to mirror spool unload event for %s", lane.name)
+
+        # Clear the AMS virtual sensor state when the spool unload event fires
+        try:
+            self._mirror_lane_to_virtual_sensor(lane, eventtime)
+        except Exception:
+            self.logger.error("Failed to mirror virtual sensor state for %s after spool unload event", lane.name)
 
     def cmd_AFC_OAMS_CALIBRATE_HUB_HES(self, gcmd):
         """Run the OpenAMS HUB HES calibration for a specific lane."""
