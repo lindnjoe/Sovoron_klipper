@@ -2144,6 +2144,17 @@ class afcAMS(afcUnit):
                 lane.set_loaded()
             except Exception:
                 self.logger.error("Failed to mark lane %s as loaded", lane.name)
+            # Ensure tool_loaded is latched even if AFC extruder object is not yet mapped
+            try:
+                lane.set_tool_loaded()
+            except Exception:
+                self.logger.error("Failed to mark lane %s as tool-loaded via set_tool_loaded()", lane.name)
+                try:
+                    lane.tool_loaded = True
+                    if getattr(lane, "extruder_obj", None) is not None:
+                        lane.extruder_obj.lane_loaded = lane.name
+                except Exception:
+                    self.logger.error("Failed to manually latch tool_loaded for %s", lane.name)
             try:
                 lane.set_tool_loaded()
             except Exception:
