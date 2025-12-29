@@ -3909,6 +3909,9 @@ class OAMSManager:
                     state_changed = True
                 elif state == FPSLoadState.LOADING and fps_state.since is not None and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
                     self._check_load_speed(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
+                    # Run clog detection during TOOL_LOADING to break out of stuck BUSY states when
+                    # extruder-side clogs occur during purge
+                    self._check_clog(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
                     state_changed = True
                 elif state == FPSLoadState.UNLOADED:
                     # When UNLOADED, periodically check if filament was newly inserted
