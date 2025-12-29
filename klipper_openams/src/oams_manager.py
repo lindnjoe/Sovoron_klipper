@@ -2066,6 +2066,41 @@ class OAMSManager:
             self._afc_logged = True
         return self.afc
 
+    def _schedule_lane_loaded_notification(
+        self,
+        lane_name: str,
+        oams_name: Optional[str],
+        spool_index: Optional[int],
+        eventtime: Optional[float],
+        *,
+        context: str = "",
+    ) -> None:
+        """Send lane-loaded notification asynchronously to avoid gcode reentrancy."""
+
+        def _do_notify(eventtime_inner):
+            try:
+                self._notify_lane_loaded(
+                    lane_name,
+                    oams_name,
+                    spool_index,
+                    eventtime,
+                    context=context,
+                )
+            finally:
+                return self.reactor.NEVER
+
+        try:
+            self.reactor.register_timer(_do_notify, self.reactor.monotonic() + 0.05)
+        except Exception:
+            # If timer scheduling fails, fall back to immediate notification
+            self._notify_lane_loaded(
+                lane_name,
+                oams_name,
+                spool_index,
+                eventtime,
+                context=context,
+            )
+
     def _notify_lane_loaded(
         self,
         lane_name: str,
@@ -2171,7 +2206,7 @@ class OAMSManager:
         # Always notify AFC that target lane is loaded to update virtual sensors
         # This ensures AMS_Extruder# sensors show correct state after same-FPS runouts
         if target_lane:
-            self._notify_lane_loaded(
+            self._schedule_lane_loaded_notification(
                 target_lane,
                 fps_state.current_oams or active_oams,
                 fps_state.current_spool_idx,
@@ -3054,7 +3089,7 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
 
-            self._notify_lane_loaded(
+            self._schedule_lane_loaded_notification(
                 lane_name,
                 oam.name,
                 bay_index,
