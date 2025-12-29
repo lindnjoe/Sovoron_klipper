@@ -651,6 +651,9 @@ class OAMSManager:
         self.afc = None
         self._afc_logged = False
 
+        # Track recent lane loaded notifications to debounce spurious unload callbacks
+        self._last_lane_loaded_event: Dict[str, float] = {}
+
         self.monitor_timers: List[Any] = []
         self.runout_monitors: Dict[str, OAMSRunoutMonitor] = {}
         self.ready: bool = False
@@ -2190,6 +2193,12 @@ class OAMSManager:
         else:
             self.logger.debug("AFC missing _mirror_lane_to_virtual_sensor; skipping virtual sensor sync for %s", lane_name)
             _gcode_fallback("mirror method unavailable on AFC")
+
+        # Record when we notified AFC so we can ignore immediate unload echoes
+        try:
+            self._last_lane_loaded_event[lane_name] = eventtime if eventtime is not None else self.reactor.monotonic()
+        except Exception:
+            self.logger.debug("Unable to record last lane loaded event for %s", lane_name, exc_info=True)
 
     def _notify_lane_loaded_async(
         self,
@@ -4801,6 +4810,22 @@ class OAMSManager:
             fps_state = self.current_state.fps_state.get(fps_name)
             if fps_state is None:
                 return
+
+            # Debounce unload callbacks that immediately follow a load notification
+            last_loaded = self._last_lane_loaded_event.get(lane_name)
+            if last_loaded is not None:
+                try:
+                    now = self.reactor.monotonic()
+                except Exception:
+                    now = None
+
+                if now is not None and now - last_loaded < 2.0 and fps_state.state == FPSLoadState.LOADED:
+                    self.logger.info(
+                        "Ignoring AFC unload for %s within %.2fs of load notify (state still LOADED)",
+                        lane_name,
+                        now - last_loaded,
+                    )
+                    return
 
             # Only update if this lane was actually loaded on this FPS
             if fps_state.state == FPSLoadState.LOADED:
