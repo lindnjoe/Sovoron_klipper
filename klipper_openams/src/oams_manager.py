@@ -4270,14 +4270,16 @@ class OAMSManager:
 
         monitor = self.runout_monitors.get(fps_name)
         monitor_inactive = monitor is not None and monitor.state != OAMSRunoutState.MONITORING
-        if monitor_inactive and fps_state.state != FPSLoadState.LOADING:
+        if monitor_inactive:
             if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "runout monitor inactive")
             fps_state.reset_clog_tracker()
             return
 
-        loading_state = fps_state.state == FPSLoadState.LOADING
-        if not is_printing and not loading_state:
+        # Only monitor clogs while actively printing. During TOOL_LOADING we rely
+        # on load/unload completion and stuck detection to avoid interrupting
+        # custom load macros.
+        if not is_printing:
             if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer idle")
             fps_state.reset_clog_tracker()
