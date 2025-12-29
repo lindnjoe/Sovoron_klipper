@@ -1678,6 +1678,11 @@ class OAMSManager:
         gcmd.respond_info("\n=== Running State Detection ===")
         self.determine_state()
 
+        try:
+            eventtime = self.reactor.monotonic()
+        except Exception:
+            eventtime = None
+
         # Show state after detection
         for fps_name, fps_state in self.current_state.fps_state.items():
             gcmd.respond_info(f"\nAfter detection - {fps_name}:")
@@ -1685,6 +1690,23 @@ class OAMSManager:
             gcmd.respond_info(f"  Current OAMS: {fps_state.current_oams}")
             gcmd.respond_info(f"  Current Lane: {fps_state.current_lane}")
             gcmd.respond_info(f"  Spool Index: {fps_state.current_spool_idx}")
+
+        # Re-mirror loaded lanes before syncing virtual sensors to keep AFC state aligned
+        mirrored = 0
+        for fps_name, fps_state in self.current_state.fps_state.items():
+            if fps_state.state == FPSLoadState.LOADED and fps_state.current_lane:
+                try:
+                    self._notify_lane_loaded(
+                        fps_state.current_lane,
+                        eventtime=eventtime,
+                        spool_index=fps_state.current_spool_idx,
+                    )
+                    mirrored += 1
+                except Exception:
+                    self.logger.error("Failed to mirror loaded lane %s during OAMSM_STATUS", fps_state.current_lane, exc_info=True)
+
+        if mirrored:
+            gcmd.respond_info(f"\nMirrored {mirrored} loaded lane(s) before virtual sensor sync")
 
         # Sync virtual tool sensors based on which lanes are actually loaded
         # This fixes virtual sensor state after reboot (e.g., extruder4 showing filament when empty)
@@ -4823,18 +4845,11 @@ class OAMSManager:
                     now = None
 
                 if now is not None and now - last_loaded < 2.0:
-                    # Re-assert loaded state to keep AFC indicators consistent
-                    spool_idx_hint = self._last_lane_loaded_spool.get(lane_name, fps_state.current_spool_idx)
                     self.logger.info(
-                        "Ignoring AFC unload for %s within %.2fs of load notify (state=%s) - reasserting loaded",
+                        "Ignoring AFC unload for %s within %.2fs of load notify (state=%s)",
                         lane_name,
                         now - last_loaded,
                         getattr(FPSLoadState, 'LOADED', FPSLoadState.LOADED),
-                    )
-                    self._notify_lane_loaded_async(
-                        lane_name,
-                        eventtime=fps_state.since,
-                        spool_index=spool_idx_hint,
                     )
                     return
 
