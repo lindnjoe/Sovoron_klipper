@@ -1315,6 +1315,7 @@ class OAMSManager:
             ("OAMSM_RESYNC", self.cmd_RESYNC, self.cmd_RESYNC_help),
             ("OAMSM_CLEAR_LANE_MAPPINGS", self.cmd_CLEAR_LANE_MAPPINGS, self.cmd_CLEAR_LANE_MAPPINGS_help),
             ("OAMSM_STATUS", self.cmd_STATUS, self.cmd_STATUS_help),
+            ("OAMSM_DEBUG_STATE", self.cmd_DEBUG_STATE, self.cmd_DEBUG_STATE_help),
         ]
         for cmd_name, handler, help_text in commands:
             gcode.register_command(cmd_name, handler, desc=help_text)
@@ -1682,29 +1683,38 @@ class OAMSManager:
         # This fixes virtual sensor state after reboot (e.g., extruder4 showing filament when empty)
         gcmd.respond_info("\n=== Syncing Virtual Tool Sensors ===")
         if afc is not None:
-            synced_count = 0
-            try:
-                units = getattr(afc, 'units', {})
-                eventtime = self.reactor.monotonic()
+            synced_count = self._sync_virtual_tool_sensors(force=True)
+            if synced_count > 0:
+                gcmd.respond_info(f"Successfully synced {synced_count} virtual tool sensor(s)")
+            else:
+                gcmd.respond_info("No OpenAMS units found with virtual sensors to sync")
+        else:
+            gcmd.respond_info("AFC not available for virtual sensor sync")
 
-                for unit_name, unit_obj in units.items():
-                    # Check if this is an OpenAMS unit with virtual sensor sync capability
-                    if hasattr(unit_obj, '_sync_virtual_tool_sensor'):
-                        try:
-                            # Force update to ensure sensor state is corrected after reboot
-                            unit_obj._sync_virtual_tool_sensor(eventtime, force=True)
-                            synced_count += 1
-                        except Exception:
-                            self.logger.error("Failed to sync virtual tool sensor for unit %s", unit_name, exc_info=True)
-                            gcmd.respond_info(f"  Warning: Failed to sync virtual sensor for {unit_name}")
+    cmd_DEBUG_STATE_help = "Debug OpenAMS state and force-sync virtual tool sensors"
+    def cmd_DEBUG_STATE(self, gcmd):
+        """Mirror loaded lanes and force virtual sensor sync for diagnostics."""
+        try:
+            eventtime = self.reactor.monotonic()
+        except Exception:
+            eventtime = None
 
-                if synced_count > 0:
-                    gcmd.respond_info(f"Successfully synced {synced_count} virtual tool sensor(s)")
-                else:
-                    gcmd.respond_info("No OpenAMS units found with virtual sensors to sync")
-            except Exception:
-                self.logger.error("Failed to sync virtual tool sensors", exc_info=True)
-                gcmd.respond_info("  Error during virtual sensor sync - check klippy.log")
+        mirrored = 0
+        for fps_name, fps_state in self.current_state.fps_state.items():
+            if fps_state.current_lane:
+                self._notify_lane_loaded(fps_state.current_lane, eventtime)
+                mirrored += 1
+                self.logger.info(
+                    "OAMSM_DEBUG_STATE mirrored %s for %s (spool=%s)",
+                    fps_state.current_lane,
+                    fps_name,
+                    fps_state.current_spool_idx,
+                )
+
+        synced = self._sync_virtual_tool_sensors(eventtime=eventtime, force=True)
+        gcmd.respond_info(
+            f"Mirrored {mirrored} loaded lane(s) and synced {synced} virtual tool sensor unit(s)"
+        )
 
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
     def cmd_FOLLOWER(self, gcmd):
@@ -2066,49 +2076,10 @@ class OAMSManager:
             self._afc_logged = True
         return self.afc
 
-    def _schedule_lane_loaded_notification(
-        self,
-        lane_name: str,
-        oams_name: Optional[str],
-        spool_index: Optional[int],
-        eventtime: Optional[float],
-        *,
-        context: str = "",
-    ) -> None:
-        """Send lane-loaded notification asynchronously to avoid gcode reentrancy."""
-
-        def _do_notify(eventtime_inner):
-            try:
-                self._notify_lane_loaded(
-                    lane_name,
-                    oams_name,
-                    spool_index,
-                    eventtime,
-                    context=context,
-                )
-            finally:
-                return self.reactor.NEVER
-
-        try:
-            self.reactor.register_timer(_do_notify, self.reactor.monotonic() + 0.05)
-        except Exception:
-            # If timer scheduling fails, fall back to immediate notification
-            self._notify_lane_loaded(
-                lane_name,
-                oams_name,
-                spool_index,
-                eventtime,
-                context=context,
-            )
-
     def _notify_lane_loaded(
         self,
         lane_name: str,
-        oams_name: Optional[str],
-        spool_index: Optional[int],
-        eventtime: Optional[float],
-        *,
-        context: str = "",
+        eventtime: Optional[float] = None,
     ) -> None:
         """Notify AFC and virtual sensors that a lane is loaded."""
 
@@ -2118,10 +2089,50 @@ class OAMSManager:
             except Exception:
                 eventtime = None
 
-        handled = False
-        if AMSRunoutCoordinator is not None:
+        afc = self._get_afc()
+        if afc is None:
+            # AFC not available; fall back to gcode so AFC can update when it reconnects
             try:
-                handled = AMSRunoutCoordinator.notify_lane_tool_state(
+                gcode = self.printer.lookup_object("gcode")
+                gcode.run_script(f"SET_LANE_LOADED LANE={lane_name}")
+                self.logger.info("Fallback: executed SET_LANE_LOADED for %s (AFC unavailable)", lane_name)
+            except Exception:
+                self.logger.error("Failed to execute SET_LANE_LOADED for lane %s", lane_name, exc_info=True)
+            return
+
+        lane_obj = getattr(afc, "lanes", {}).get(lane_name) if hasattr(afc, "lanes") else None
+        if lane_obj is None:
+            self.logger.warning("Cannot mirror loaded state for %s; lane not found in AFC", lane_name)
+            return
+
+        oams_name = None
+        spool_index = None
+        try:
+            unit_obj = getattr(lane_obj, "unit_obj", None)
+            if unit_obj is None:
+                units = getattr(afc, "units", {})
+                unit_name = getattr(lane_obj, "unit", None)
+                if isinstance(unit_name, str) and ':' in unit_name:
+                    unit_name = unit_name.split(':', 1)[0]
+                unit_obj = units.get(unit_name)
+            oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
+
+            lane_index = getattr(lane_obj, "index", None)
+            if lane_index is None:
+                unit_field = getattr(lane_obj, "unit", None)
+                if isinstance(unit_field, str) and ':' in unit_field:
+                    try:
+                        lane_index = int(unit_field.split(':', 1)[1])
+                    except ValueError:
+                        lane_index = None
+            if lane_index is not None:
+                spool_index = lane_index - 1
+        except Exception:
+            self.logger.debug("Unable to derive lane metadata for %s", lane_name, exc_info=True)
+
+        if AMSRunoutCoordinator is not None and oams_name:
+            try:
+                AMSRunoutCoordinator.notify_lane_tool_state(
                     self.printer,
                     oams_name,
                     lane_name,
@@ -2129,65 +2140,56 @@ class OAMSManager:
                     spool_index=spool_index,
                     eventtime=eventtime,
                 )
-                if handled:
-                    self.logger.info(
-                        "Notified AFC that lane %s is loaded%s",
-                        lane_name,
-                        f" ({context})" if context else "",
-                    )
-                else:
-                    self.logger.debug(
-                        "AMSRunoutCoordinator.notify_lane_tool_state returned False for lane %s%s",
-                        lane_name,
-                        f" ({context})" if context else "",
-                    )
-            except Exception:
-                self.logger.error(
-                    "Failed to notify AFC lane %s as loaded%s",
-                    lane_name,
-                    f" ({context})" if context else "",
-                    exc_info=True,
-                )
-
-        if not handled:
-            # AMSRunoutCoordinator not available or did not handle; update AFC directly
-            try:
-                afc = self._get_afc()
-                if afc and hasattr(afc, "lanes"):
-                    lane_obj = afc.lanes.get(lane_name)
-                    if lane_obj and hasattr(afc, "_mirror_lane_to_virtual_sensor"):
-                        afc._mirror_lane_to_virtual_sensor(lane_obj, eventtime or self.reactor.monotonic())
-                        self.logger.info(
-                            "Updated virtual sensor for lane %s via AFC._mirror_lane_to_virtual_sensor%s",
-                            lane_name,
-                            f" ({context})" if context else "",
-                        )
-                        handled = True
-            except Exception:
-                self.logger.error(
-                    "Failed to update virtual sensor directly for lane %s%s",
-                    lane_name,
-                    f" ({context})" if context else "",
-                    exc_info=True,
-                )
-
-        if not handled:
-            # Final fallback: use SET_LANE_LOADED gcode to align AFC state
-            try:
-                gcode = self.printer.lookup_object("gcode")
-                gcode.run_script(f"SET_LANE_LOADED LANE={lane_name}")
                 self.logger.info(
-                    "Fallback: executed SET_LANE_LOADED for %s%s",
+                    "Notified AFC lane_tool_state for %s (oams=%s, spool_index=%s)",
                     lane_name,
-                    f" ({context})" if context else "",
+                    oams_name,
+                    spool_index if spool_index is not None else "unknown",
                 )
             except Exception:
-                self.logger.error(
-                    "Failed to execute SET_LANE_LOADED for lane %s%s",
-                    lane_name,
-                    f" ({context})" if context else "",
-                    exc_info=True,
+                self.logger.error("Failed to notify AFC lane %s as loaded", lane_name, exc_info=True)
+
+        mirror = getattr(afc, "_mirror_lane_to_virtual_sensor", None)
+        if callable(mirror):
+            try:
+                mirror(lane_obj, eventtime or self.reactor.monotonic())
+                self.logger.info("Mirrored lane %s to virtual sensor", lane_name)
+            except Exception:
+                self.logger.error("Failed to mirror lane %s to virtual sensor", lane_name, exc_info=True)
+        else:
+            self.logger.debug("AFC missing _mirror_lane_to_virtual_sensor; skipping virtual sensor sync for %s", lane_name)
+
+    def _sync_virtual_tool_sensors(self, *, eventtime: Optional[float] = None, force: bool = False) -> int:
+        """Force a sync of virtual tool sensors for all OpenAMS units."""
+        afc = self._get_afc()
+        if afc is None:
+            return 0
+
+        if eventtime is None:
+            try:
+                eventtime = self.reactor.monotonic()
+            except Exception:
+                eventtime = None
+
+        synced_count = 0
+        for unit_name, unit_obj in getattr(afc, "units", {}).items():
+            sync_fn = getattr(unit_obj, "_sync_virtual_tool_sensor", None)
+            if not callable(sync_fn):
+                continue
+
+            try:
+                sync_fn(eventtime or self.reactor.monotonic(), force=force)
+                synced_count += 1
+                self.logger.info(
+                    "Synced virtual tool sensor for %s (force=%s, eventtime=%s)",
+                    unit_name,
+                    force,
+                    f"{eventtime:.3f}" if eventtime is not None else "unknown",
                 )
+            except Exception:
+                self.logger.error("Failed to sync virtual sensor for %s", unit_name, exc_info=True)
+
+        return synced_count
 
     def _handle_successful_reload(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
                                    target_lane_map: str, source_lane_name: Optional[str],
@@ -2206,13 +2208,7 @@ class OAMSManager:
         # Always notify AFC that target lane is loaded to update virtual sensors
         # This ensures AMS_Extruder# sensors show correct state after same-FPS runouts
         if target_lane:
-            self._schedule_lane_loaded_notification(
-                target_lane,
-                fps_state.current_oams or active_oams,
-                fps_state.current_spool_idx,
-                fps_state.since,
-                context="infinite runout reload",
-            )
+            self._notify_lane_loaded(target_lane, fps_state.since)
 
         # Ensure follower is enabled after successful reload
         # Follower should stay enabled throughout same-FPS runouts (never disabled)
@@ -3089,13 +3085,7 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
 
-            self._schedule_lane_loaded_notification(
-                lane_name,
-                oam.name,
-                bay_index,
-                fps_state.since,
-                context="manual load",
-            )
+            self._notify_lane_loaded(lane_name, fps_state.since)
 
             # Monitors are already running globally, no need to restart them
             return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
