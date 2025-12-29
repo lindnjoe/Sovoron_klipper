@@ -1073,6 +1073,27 @@ class OAMSManager:
                         exc_info=True,
                     )
 
+        # Force virtual tool sensor sync after replaying lane loads so AFC mirrors hardware
+        if AMSRunoutCoordinator is not None and handled:
+            try:
+                for service in services:
+                    unit_name = getattr(service, "name", None)
+                    if not unit_name:
+                        continue
+                    for unit in AMSRunoutCoordinator.active_units(self.printer, unit_name):
+                        if hasattr(unit, "_sync_virtual_tool_sensor"):
+                            try:
+                                unit._sync_virtual_tool_sensor(default_eventtime, force=True)
+                            except Exception:
+                                self.logger.error(
+                                    "%s: Failed to force virtual tool sensor sync for %s",
+                                    log_prefix,
+                                    getattr(unit, "name", unit_name),
+                                    exc_info=True,
+                                )
+            except Exception:
+                self.logger.error("%s: Failed to sync virtual tool sensors after resync", log_prefix, exc_info=True)
+
         return handled, attempted
 
     def _fix_afc_runout_helper_time(self, lane_name: str) -> None:
