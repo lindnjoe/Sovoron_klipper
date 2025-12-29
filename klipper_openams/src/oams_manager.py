@@ -1702,7 +1702,11 @@ class OAMSManager:
         mirrored = 0
         for fps_name, fps_state in self.current_state.fps_state.items():
             if fps_state.current_lane:
-                self._notify_lane_loaded(fps_state.current_lane, eventtime)
+                self._notify_lane_loaded(
+                    fps_state.current_lane,
+                    eventtime,
+                    fps_state.current_spool_idx,
+                )
                 mirrored += 1
                 self.logger.info(
                     "OAMSM_DEBUG_STATE mirrored %s for %s (spool=%s)",
@@ -2080,6 +2084,7 @@ class OAMSManager:
         self,
         lane_name: str,
         eventtime: Optional[float] = None,
+        spool_index: Optional[int] = None,
     ) -> None:
         """Notify AFC and virtual sensors that a lane is loaded."""
 
@@ -2106,7 +2111,7 @@ class OAMSManager:
             return
 
         oams_name = None
-        spool_index = None
+        resolved_spool_index = spool_index
         try:
             unit_obj = getattr(lane_obj, "unit_obj", None)
             if unit_obj is None:
@@ -2117,16 +2122,17 @@ class OAMSManager:
                 unit_obj = units.get(unit_name)
             oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
 
-            lane_index = getattr(lane_obj, "index", None)
-            if lane_index is None:
-                unit_field = getattr(lane_obj, "unit", None)
-                if isinstance(unit_field, str) and ':' in unit_field:
-                    try:
-                        lane_index = int(unit_field.split(':', 1)[1])
-                    except ValueError:
-                        lane_index = None
-            if lane_index is not None:
-                spool_index = lane_index - 1
+            if resolved_spool_index is None:
+                lane_index = getattr(lane_obj, "index", None)
+                if lane_index is None:
+                    unit_field = getattr(lane_obj, "unit", None)
+                    if isinstance(unit_field, str) and ':' in unit_field:
+                        try:
+                            lane_index = int(unit_field.split(':', 1)[1])
+                        except ValueError:
+                            lane_index = None
+                if lane_index is not None:
+                    resolved_spool_index = lane_index - 1
         except Exception:
             self.logger.debug("Unable to derive lane metadata for %s", lane_name, exc_info=True)
 
@@ -2137,14 +2143,14 @@ class OAMSManager:
                     oams_name,
                     lane_name,
                     loaded=True,
-                    spool_index=spool_index,
+                    spool_index=resolved_spool_index,
                     eventtime=eventtime,
                 )
                 self.logger.info(
                     "Notified AFC lane_tool_state for %s (oams=%s, spool_index=%s)",
                     lane_name,
                     oams_name,
-                    spool_index if spool_index is not None else "unknown",
+                    resolved_spool_index if resolved_spool_index is not None else "unknown",
                 )
             except Exception:
                 self.logger.error("Failed to notify AFC lane %s as loaded", lane_name, exc_info=True)
@@ -2208,7 +2214,7 @@ class OAMSManager:
         # Always notify AFC that target lane is loaded to update virtual sensors
         # This ensures AMS_Extruder# sensors show correct state after same-FPS runouts
         if target_lane:
-            self._notify_lane_loaded(target_lane, fps_state.since)
+            self._notify_lane_loaded(target_lane, fps_state.since, fps_state.current_spool_idx)
 
         # Ensure follower is enabled after successful reload
         # Follower should stay enabled throughout same-FPS runouts (never disabled)
@@ -3085,7 +3091,7 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
 
-            self._notify_lane_loaded(lane_name, fps_state.since)
+            self._notify_lane_loaded(lane_name, fps_state.since, fps_state.current_spool_idx)
 
             # Monitors are already running globally, no need to restart them
             return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
