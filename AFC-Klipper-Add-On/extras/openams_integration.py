@@ -791,6 +791,17 @@ class AMSHardwareService:
             snapshot = self._lane_snapshots.get(key)
         return dict(snapshot) if snapshot else None
 
+    def lane_snapshots(self, unit_name: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+        """Return all cached lane snapshots, optionally filtered by unit name."""
+        with self._lock:
+            items = list(self._lane_snapshots.items())
+
+        if unit_name is not None:
+            prefix = f"{unit_name}:"
+            items = [(key, value) for key, value in items if key.startswith(prefix)]
+
+        return {key: dict(value) for key, value in items}
+
     def resolve_lane_for_spool(self, unit_name: str, spool_index: Optional[int]) -> Optional[str]:
         """Map a spool index to its corresponding lane name.
         
