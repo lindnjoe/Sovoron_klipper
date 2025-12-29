@@ -4361,6 +4361,24 @@ class OAMSManager:
                 f"with FPS {pressure_mid:.2f} near {self.clog_pressure_target:.2f}"
             )
 
+            # If a load/unload action is still marked active, abort it to avoid the MCU staying BUSY
+            # when clog detection fires mid-operation (e.g., during TOOL_LOADING purge).
+            if oams is not None and getattr(oams, "action_status", None) is not None:
+                try:
+                    oams.abort_current_action()
+                    self.logger.info(
+                        "Aborted in-flight OAMS action on %s during clog detection (state=%s)",
+                        fps_name,
+                        getattr(fps_state.state, "name", fps_state.state),
+                    )
+                except Exception:
+                    self.logger.error("Failed to abort OAMS action during clog detection on %s", fps_name, exc_info=True)
+
+            if fps_state.state == FPSLoadState.LOADING:
+                fps_state.state = FPSLoadState.UNLOADED
+                fps_state.clear_encoder_samples()
+                self.logger.info("Reset FPS %s to UNLOADED after clog detection interrupted loading", fps_name)
+
             fps_state.clog.active = True
 
             # Pause printer with error message
