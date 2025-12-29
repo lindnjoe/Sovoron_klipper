@@ -93,6 +93,9 @@ POST_LOAD_PRESSURE_CHECK_PERIOD = 0.5
 
 # Threshold for detecting failed load - if FPS stays above this during LOADING, filament isn't engaging
 LOAD_FPS_STUCK_THRESHOLD = 0.75
+LOAD_CLOG_EXTRUSION_WINDOW = 8.0
+LOAD_CLOG_PRESSURE_DWELL = 4.0
+LOAD_CLOG_MIN_EXTRUSION = 1.0
 
 
 class OAMSRunoutState:
@@ -2088,6 +2091,31 @@ class OAMSManager:
     ) -> None:
         """Notify AFC and virtual sensors that a lane is loaded."""
 
+        fallback_invoked = False
+
+        def _gcode_fallback(reason: str) -> None:
+            nonlocal fallback_invoked
+            if fallback_invoked:
+                return
+
+            try:
+                gcode = self.printer.lookup_object("gcode")
+                gcode.run_script(f"SET_LANE_LOADED LANE={lane_name}")
+                self.logger.info(
+                    "Fallback: executed SET_LANE_LOADED for %s (%s)",
+                    lane_name,
+                    reason,
+                )
+            except Exception:
+                self.logger.error(
+                    "Failed to execute SET_LANE_LOADED for lane %s (%s)",
+                    lane_name,
+                    reason,
+                    exc_info=True,
+                )
+            finally:
+                fallback_invoked = True
+
         if eventtime is None:
             try:
                 eventtime = self.reactor.monotonic()
@@ -2097,17 +2125,13 @@ class OAMSManager:
         afc = self._get_afc()
         if afc is None:
             # AFC not available; fall back to gcode so AFC can update when it reconnects
-            try:
-                gcode = self.printer.lookup_object("gcode")
-                gcode.run_script(f"SET_LANE_LOADED LANE={lane_name}")
-                self.logger.info("Fallback: executed SET_LANE_LOADED for %s (AFC unavailable)", lane_name)
-            except Exception:
-                self.logger.error("Failed to execute SET_LANE_LOADED for lane %s", lane_name, exc_info=True)
+            _gcode_fallback("AFC unavailable")
             return
 
         lane_obj = getattr(afc, "lanes", {}).get(lane_name) if hasattr(afc, "lanes") else None
         if lane_obj is None:
             self.logger.warning("Cannot mirror loaded state for %s; lane not found in AFC", lane_name)
+            _gcode_fallback("lane not found in AFC")
             return
 
         oams_name = None
@@ -2162,8 +2186,10 @@ class OAMSManager:
                 self.logger.info("Mirrored lane %s to virtual sensor", lane_name)
             except Exception:
                 self.logger.error("Failed to mirror lane %s to virtual sensor", lane_name, exc_info=True)
+                _gcode_fallback("mirror to virtual sensor failed")
         else:
             self.logger.debug("AFC missing _mirror_lane_to_virtual_sensor; skipping virtual sensor sync for %s", lane_name)
+            _gcode_fallback("mirror method unavailable on AFC")
 
     def _sync_virtual_tool_sensors(self, *, eventtime: Optional[float] = None, force: bool = False) -> int:
         """Force a sync of virtual tool sensors for all OpenAMS units."""
@@ -3843,6 +3869,9 @@ class OAMSManager:
                     state_changed = True
                 elif state == FPSLoadState.LOADING and fps_state.since is not None and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
                     self._check_load_speed(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
+                    # Run clog detection during TOOL_LOADING to break out of stuck BUSY states when
+                    # extruder-side clogs occur during purge
+                    self._check_clog(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
                     state_changed = True
                 elif state == FPSLoadState.UNLOADED:
                     # When UNLOADED, periodically check if filament was newly inserted
@@ -4231,13 +4260,15 @@ class OAMSManager:
                 is_printing = False
 
         monitor = self.runout_monitors.get(fps_name)
-        if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
+        monitor_inactive = monitor is not None and monitor.state != OAMSRunoutState.MONITORING
+        if monitor_inactive and fps_state.state != FPSLoadState.LOADING:
             if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "runout monitor inactive")
             fps_state.reset_clog_tracker()
             return
 
-        if not is_printing:
+        loading_state = fps_state.state == FPSLoadState.LOADING
+        if not is_printing and not loading_state:
             if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer idle")
             fps_state.reset_clog_tracker()
@@ -4296,7 +4327,22 @@ class OAMSManager:
         pressure_span = (fps_state.clog.max_pressure or pressure) - (fps_state.clog.min_pressure or pressure)
 
         settings = self.clog_settings
-        if extrusion_delta < settings["extrusion_window"]:
+        extrusion_window = settings["extrusion_window"]
+        dwell = settings["dwell"]
+
+        # During TOOL_LOADING make clog detection more responsive so we can abort
+        # busy states faster when the purge never moves the encoder.
+        if loading_state:
+            extrusion_window = min(extrusion_window, LOAD_CLOG_EXTRUSION_WINDOW)
+            dwell = min(dwell, LOAD_CLOG_PRESSURE_DWELL)
+
+        # Avoid firing clog detection during TOOL_LOADING before the extruder
+        # has actually started moving. Custom load macros often warm up and
+        # stage filament before any extrusion commands are issued.
+        if loading_state and extrusion_delta < LOAD_CLOG_MIN_EXTRUSION:
+            return
+
+        if extrusion_delta < extrusion_window:
             return
 
         if (encoder_delta > settings["encoder_slack"] or pressure_span > settings["pressure_band"]):
@@ -4324,7 +4370,7 @@ class OAMSManager:
             fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
             return
 
-        if now - (fps_state.clog.start_time or now) < settings["dwell"]:
+        if now - (fps_state.clog.start_time or now) < dwell:
             return
 
         if not fps_state.clog.active:
@@ -4337,6 +4383,34 @@ class OAMSManager:
                 f"extruder advanced {extrusion_delta:.1f}mm while encoder moved {encoder_delta} counts "
                 f"with FPS {pressure_mid:.2f} near {self.clog_pressure_target:.2f}"
             )
+
+            # If a load/unload action is still marked active, abort it to avoid the MCU staying BUSY
+            # when clog detection fires mid-operation (e.g., during TOOL_LOADING purge).
+            if oams is not None and getattr(oams, "action_status", None) is not None:
+                try:
+                    oams.abort_current_action()
+                    self.logger.info(
+                        "Aborted in-flight OAMS action on %s during clog detection (state=%s)",
+                        fps_name,
+                        getattr(fps_state.state, "name", fps_state.state),
+                    )
+                except Exception:
+                    self.logger.error("Failed to abort OAMS action during clog detection on %s", fps_name, exc_info=True)
+
+            if fps_state.state == FPSLoadState.LOADING:
+                # Mark the load attempt as failed and clear stale load tracking
+                # so AFC and custom load macros don't stay BUSY after a clog.
+                self._cancel_post_load_pressure_check(fps_state)
+                fps_state.state = FPSLoadState.UNLOADED
+                fps_state.clear_encoder_samples()
+                fps_state.reset_runout_positions()
+                fps_state.since = now
+                # Clear lane/spool so future detections don't misreport stale lane
+                fps_state.current_lane = None
+                fps_state.current_spool_idx = None
+                self.logger.info(
+                    "Reset FPS %s to UNLOADED after clog detection interrupted loading", fps_name
+                )
 
             fps_state.clog.active = True
 
