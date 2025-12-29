@@ -281,6 +281,7 @@ class afcAMS(afcUnit):
         self._lane_tool_latches: Dict[str, bool] = {}
         self._lane_tool_latches_by_lane: Dict[object, bool] = {}
         self._last_hub_hes_values: Optional[List[float]] = None
+        self._last_tool_load_event: Dict[str, float] = {}
 
         # OPTIMIZATION: Cache frequently accessed objects
         self._cached_sensor_helper = None
@@ -2108,13 +2109,32 @@ class afcAMS(afcUnit):
                 self.logger.error("Failed to update shared lane snapshot for %s", lane.name)
 
         afc_function = getattr(self.afc, "function", None)
+        current_loaded_lane = None
+        if afc_function is not None:
+            try:
+                current_loaded_lane = afc_function.get_current_lane_obj()
+            except Exception:
+                current_loaded_lane = None
+
+        self.logger.info(
+            "OpenAMS lane tool state: lane=%s loaded=%s spool_index=%s eventtime=%.3f current_loaded=%s",
+            lane.name,
+            lane_state,
+            spool_index,
+            eventtime if eventtime is not None else -1,
+            getattr(current_loaded_lane, "name", None),
+        )
 
         if lane_state:
-            if afc_function is not None:
+            if afc_function is not None and current_loaded_lane is not None and current_loaded_lane is not lane:
                 try:
                     afc_function.unset_lane_loaded()
                 except Exception:
                     self.logger.error("Failed to unset previously loaded lane")
+            try:
+                self._last_tool_load_event[lane.name] = eventtime
+            except Exception:
+                pass
             try:
                 lane.set_loaded()
             except Exception:
@@ -2159,8 +2179,22 @@ class afcAMS(afcUnit):
             except Exception:
                 current_lane = None
 
+        # Ignore unload echoes that arrive immediately after a load for the same lane
+        try:
+            last_loaded_time = self._last_tool_load_event.get(lane.name)
+            if lane_state is False and last_loaded_time is not None and (eventtime - last_loaded_time) < 2.0:
+                self.logger.info(
+                    "Ignoring OpenAMS unload echo for %s within %.2fs of load",
+                    lane.name,
+                    eventtime - last_loaded_time,
+                )
+                return True
+        except Exception:
+            pass
+
         if current_lane is lane and afc_function is not None:
             try:
+                self.logger.info("Clearing current lane %s on explicit unload request", lane.name)
                 afc_function.unset_lane_loaded()
             except Exception:
                 self.logger.error("Failed to unset currently loaded lane %s", lane.name)
