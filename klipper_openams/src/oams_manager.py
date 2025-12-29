@@ -1073,8 +1073,10 @@ class OAMSManager:
                         exc_info=True,
                     )
 
-        # Force virtual tool sensor sync after replaying lane loads so AFC mirrors hardware
-        if AMSRunoutCoordinator is not None and handled:
+        # Force virtual tool sensor sync after replaying lane loads so AFC mirrors hardware.
+        # Do this whenever we attempted a replay, even if no AFC unit claimed the event, so
+        # the AMS_Extruder# virtual pin is refreshed from current lane state.
+        if AMSRunoutCoordinator is not None and attempted:
             try:
                 for service in services:
                     unit_name = getattr(service, "name", None)
