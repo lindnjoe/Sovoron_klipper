@@ -3866,6 +3866,9 @@ class OAMSManager:
                     state_changed = True
                 elif state == FPSLoadState.LOADING and fps_state.since is not None and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
                     self._check_load_speed(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
+                    # Run clog detection during TOOL_LOADING to break out of stuck BUSY states when
+                    # extruder-side clogs occur during purge
+                    self._check_clog(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
                     state_changed = True
                 elif state == FPSLoadState.UNLOADED:
                     # When UNLOADED, periodically check if filament was newly inserted
@@ -4254,13 +4257,15 @@ class OAMSManager:
                 is_printing = False
 
         monitor = self.runout_monitors.get(fps_name)
-        if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
+        monitor_inactive = monitor is not None and monitor.state != OAMSRunoutState.MONITORING
+        if monitor_inactive and fps_state.state != FPSLoadState.LOADING:
             if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "runout monitor inactive")
             fps_state.reset_clog_tracker()
             return
 
-        if not is_printing:
+        loading_state = fps_state.state == FPSLoadState.LOADING
+        if not is_printing and not loading_state:
             if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer idle")
             fps_state.reset_clog_tracker()
