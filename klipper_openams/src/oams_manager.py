@@ -4250,16 +4250,27 @@ class OAMSManager:
 
             # Keep the follower running during clog pauses so manual extrusion
             # remains available without requiring OAMSM_CLEAR_ERRORS.
-            # Enable follower directly during clog pause, bypassing state checks
-            if oams is not None and fps_state.current_spool_idx is not None:
-                self._enable_follower(fps_name, fps_state, oams, 1, "clog pause - keep follower active")
-                # Set manual override to prevent automatic hub-sensor control from disabling it
-                # This keeps follower enabled even if hub sensors are empty during clog
-                state = self._get_follower_state(fps_state.current_oams)
-                state.manual_override = True
+            # Enable follower directly during clog pause, bypassing state checks.
+            oams_obj = oams
+            if oams_obj is None and fps_state.current_oams:
+                oams_obj = self.oams.get(fps_state.current_oams) or self.oams.get(f"oams {fps_state.current_oams}")
+
+            state = self._get_follower_state(fps_state.current_oams)
+            state.manual_override = True
+            state.had_filament = True
+            fps_state.following = True
+
+            if oams_obj is not None:
+                self._enable_follower(fps_name, fps_state, oams_obj, 1, "clog pause - keep follower active")
                 # If the follower still can't start, mark it for restore on resume
                 if not fps_state.following:
                     fps_state.stuck_spool.restore_follower = True
+            else:
+                self.logger.warning(
+                    "Clog pause on %s but OAMS %s not available to keep follower active",
+                    fps_name,
+                    fps_state.current_oams,
+                )
 
     def start_monitors(self):
         """Start all monitoring timers"""
