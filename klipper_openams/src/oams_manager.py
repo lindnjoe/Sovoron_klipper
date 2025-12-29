@@ -93,6 +93,8 @@ POST_LOAD_PRESSURE_CHECK_PERIOD = 0.5
 
 # Threshold for detecting failed load - if FPS stays above this during LOADING, filament isn't engaging
 LOAD_FPS_STUCK_THRESHOLD = 0.75
+LOAD_CLOG_EXTRUSION_WINDOW = 8.0
+LOAD_CLOG_PRESSURE_DWELL = 4.0
 
 
 class OAMSRunoutState:
@@ -4324,7 +4326,16 @@ class OAMSManager:
         pressure_span = (fps_state.clog.max_pressure or pressure) - (fps_state.clog.min_pressure or pressure)
 
         settings = self.clog_settings
-        if extrusion_delta < settings["extrusion_window"]:
+        extrusion_window = settings["extrusion_window"]
+        dwell = settings["dwell"]
+
+        # During TOOL_LOADING make clog detection more responsive so we can abort
+        # busy states faster when the purge never moves the encoder.
+        if loading_state:
+            extrusion_window = min(extrusion_window, LOAD_CLOG_EXTRUSION_WINDOW)
+            dwell = min(dwell, LOAD_CLOG_PRESSURE_DWELL)
+
+        if extrusion_delta < extrusion_window:
             return
 
         if (encoder_delta > settings["encoder_slack"] or pressure_span > settings["pressure_band"]):
@@ -4352,7 +4363,7 @@ class OAMSManager:
             fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
             return
 
-        if now - (fps_state.clog.start_time or now) < settings["dwell"]:
+        if now - (fps_state.clog.start_time or now) < dwell:
             return
 
         if not fps_state.clog.active:
@@ -4380,9 +4391,19 @@ class OAMSManager:
                     self.logger.error("Failed to abort OAMS action during clog detection on %s", fps_name, exc_info=True)
 
             if fps_state.state == FPSLoadState.LOADING:
+                # Mark the load attempt as failed and clear stale load tracking
+                # so AFC and custom load macros don't stay BUSY after a clog.
+                self._cancel_post_load_pressure_check(fps_state)
                 fps_state.state = FPSLoadState.UNLOADED
                 fps_state.clear_encoder_samples()
-                self.logger.info("Reset FPS %s to UNLOADED after clog detection interrupted loading", fps_name)
+                fps_state.reset_runout_positions()
+                fps_state.since = now
+                # Clear lane/spool so future detections don't misreport stale lane
+                fps_state.current_lane = None
+                fps_state.current_spool_idx = None
+                self.logger.info(
+                    "Reset FPS %s to UNLOADED after clog detection interrupted loading", fps_name
+                )
 
             fps_state.clog.active = True
 
