@@ -2146,11 +2146,8 @@ class afcAMS(afcUnit):
                 self.logger.debug("Unable to select lane %s during OpenAMS load", lane.name)
             if self._lane_matches_extruder(lane):
                 try:
-                    canonical_lane = self._canonical_lane_name(lane.name)
-                    force_update = True
-                    if canonical_lane:
-                        force_update = (self._lane_tool_latches.get(canonical_lane) is not False)
-                    self._set_virtual_tool_sensor_state(True, eventtime, lane.name, force=force_update, lane_obj=lane)
+                    # Force sync so the virtual AMS sensor exactly mirrors the hardware-reported load
+                    self._set_virtual_tool_sensor_state(True, eventtime, lane.name, force=True, lane_obj=lane)
                 except Exception:
                     self.logger.error("Failed to mirror tool sensor state for loaded lane %s", lane.name)
             return True
