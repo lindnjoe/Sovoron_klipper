@@ -4032,18 +4032,27 @@ class OAMSManager:
 
         # Check for stuck spool conditions:
         # 1. Encoder not moving (original check)
-        # 2. FPS pressure staying high (filament not engaging) - NEW CHECK
         stuck_detected = False
         stuck_reason = ""
 
-        if encoder_diff < MIN_ENCODER_DIFF:
+        encoder_stalled = encoder_diff < MIN_ENCODER_DIFF
+        pressure_high = pressure >= self.load_fps_stuck_threshold
+
+        if encoder_stalled:
             stuck_detected = True
             stuck_reason = "encoder not moving"
-        elif pressure >= self.load_fps_stuck_threshold:
-            # FPS pressure is high while loading - filament isn't being pulled in
-            # This catches cases where extruder is turning but filament missed the drive gear
-            stuck_detected = True
-            stuck_reason = f"FPS pressure {pressure:.2f} >= {self.load_fps_stuck_threshold:.2f} (filament not engaging)"
+        elif pressure_high:
+            # Allow custom load macros that intentionally stage filament against the
+            # extruder without immediately turning the encoder to continue without
+            # tripping stuck detection based on pressure alone.
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(
+                    "Load monitor skipped pressure-only stall on %s: pressure %.2f >= %.2f with encoder diff %d",
+                    fps_name,
+                    pressure,
+                    self.load_fps_stuck_threshold,
+                    encoder_diff,
+                )
 
         if stuck_detected:
             lane_label = fps_state.current_lane or fps_name
