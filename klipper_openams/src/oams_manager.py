@@ -689,6 +689,7 @@ class OAMSManager:
         self._lane_to_fps_cache: Dict[str, str] = {}  # OPTIMIZATION: Lane?FPS direct mapping cache
 
         # OPTIMIZATION: Cache hardware service lookups
+        self.hardware_service = None  # Populated by AMSRunoutCoordinator.register_runout_monitor where available
         self._hardware_service_cache: Dict[str, Any] = {}
         self._idle_timeout_obj = None
         self._gcode_obj = None
