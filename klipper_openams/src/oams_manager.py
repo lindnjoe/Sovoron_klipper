@@ -653,6 +653,7 @@ class OAMSManager:
 
         # Track recent lane loaded notifications to debounce spurious unload callbacks
         self._last_lane_loaded_event: Dict[str, float] = {}
+        self._last_lane_loaded_spool: Dict[str, Optional[int]] = {}
 
         self.monitor_timers: List[Any] = []
         self.runout_monitors: Dict[str, OAMSRunoutMonitor] = {}
@@ -2197,6 +2198,7 @@ class OAMSManager:
         # Record when we notified AFC so we can ignore immediate unload echoes
         try:
             self._last_lane_loaded_event[lane_name] = eventtime if eventtime is not None else self.reactor.monotonic()
+            self._last_lane_loaded_spool[lane_name] = resolved_spool_index
         except Exception:
             self.logger.debug("Unable to record last lane loaded event for %s", lane_name, exc_info=True)
 
@@ -4820,11 +4822,19 @@ class OAMSManager:
                 except Exception:
                     now = None
 
-                if now is not None and now - last_loaded < 2.0 and fps_state.state == FPSLoadState.LOADED:
+                if now is not None and now - last_loaded < 2.0:
+                    # Re-assert loaded state to keep AFC indicators consistent
+                    spool_idx_hint = self._last_lane_loaded_spool.get(lane_name, fps_state.current_spool_idx)
                     self.logger.info(
-                        "Ignoring AFC unload for %s within %.2fs of load notify (state still LOADED)",
+                        "Ignoring AFC unload for %s within %.2fs of load notify (state=%s) - reasserting loaded",
                         lane_name,
                         now - last_loaded,
+                        getattr(FPSLoadState, 'LOADED', FPSLoadState.LOADED),
+                    )
+                    self._notify_lane_loaded_async(
+                        lane_name,
+                        eventtime=fps_state.since,
+                        spool_index=spool_idx_hint,
                     )
                     return
 
