@@ -2191,6 +2191,36 @@ class OAMSManager:
             self.logger.debug("AFC missing _mirror_lane_to_virtual_sensor; skipping virtual sensor sync for %s", lane_name)
             _gcode_fallback("mirror method unavailable on AFC")
 
+    def _notify_lane_loaded_async(
+        self,
+        lane_name: str,
+        eventtime: Optional[float] = None,
+        spool_index: Optional[int] = None,
+    ) -> None:
+        """Schedule lane loaded notification without blocking gcode handlers."""
+
+        try:
+            schedule_at = self.reactor.monotonic() + 0.01
+        except Exception:
+            schedule_at = None
+
+        def _deferred_notify(eventtime_param):
+            try:
+                self._notify_lane_loaded(lane_name, eventtime, spool_index)
+            except Exception:
+                self.logger.error("Async notify_lane_loaded failed for %s", lane_name, exc_info=True)
+            return self.reactor.NEVER
+
+        try:
+            self.reactor.register_timer(_deferred_notify, schedule_at or self.reactor.NOW)
+        except Exception:
+            # If scheduling fails, fall back to synchronous notification
+            self.logger.debug("Falling back to immediate lane loaded notify for %s", lane_name, exc_info=True)
+            try:
+                self._notify_lane_loaded(lane_name, eventtime, spool_index)
+            except Exception:
+                self.logger.error("Immediate notify_lane_loaded fallback failed for %s", lane_name, exc_info=True)
+
     def _sync_virtual_tool_sensors(self, *, eventtime: Optional[float] = None, force: bool = False) -> int:
         """Force a sync of virtual tool sensors for all OpenAMS units."""
         afc = self._get_afc()
@@ -3117,7 +3147,8 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
 
-            self._notify_lane_loaded(lane_name, fps_state.since, fps_state.current_spool_idx)
+            # Notify AFC/virtual sensors asynchronously so the gcode command returns promptly
+            self._notify_lane_loaded_async(lane_name, fps_state.since, fps_state.current_spool_idx)
 
             # Monitors are already running globally, no need to restart them
             return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
