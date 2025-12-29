@@ -4302,6 +4302,7 @@ class OAMSManager:
         """Check for clog conditions (OPTIMIZED)."""
         # OPTIMIZATION: Use cached idle_timeout object
         is_printing = False
+        loading_state = fps_state.state == FPSLoadState.LOADING
         if self._idle_timeout_obj is not None:
             try:
                 is_printing = self._idle_timeout_obj.get_status(now)["state"] == "Printing"
@@ -4319,7 +4320,7 @@ class OAMSManager:
         # Only monitor clogs while actively printing. During TOOL_LOADING we rely
         # on load/unload completion and stuck detection to avoid interrupting
         # custom load macros.
-        if not is_printing:
+        if not is_printing and not loading_state:
             if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer idle")
             fps_state.reset_clog_tracker()
