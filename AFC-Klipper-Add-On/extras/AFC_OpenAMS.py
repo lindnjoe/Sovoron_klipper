@@ -2157,6 +2157,18 @@ class afcAMS(afcUnit):
                 except Exception:
                     self.logger.error("Failed to manually latch tool_loaded for %s", lane.name)
             extruder_obj = getattr(lane, "extruder_obj", None)
+            # Attempt to recover extruder mapping if it isn't set (prevents hangs on activator)
+            if extruder_obj is None:
+                try:
+                    for tool_obj in getattr(self.afc, "tools", {}).values():
+                        if getattr(tool_obj, "lane_loaded", None) == lane.name or getattr(tool_obj, "map", None) == lane.map:
+                            lane.extruder_obj = tool_obj
+                            tool_obj.lane_loaded = lane.name
+                            extruder_obj = tool_obj
+                            self.logger.info("Recovered extruder mapping for %s to %s", lane.name, getattr(tool_obj, "name", "<unknown>"))
+                            break
+                except Exception:
+                    self.logger.error("Failed to recover extruder mapping for %s", lane.name)
             if extruder_obj is None:
                 self.logger.info("Loaded %s without mapped extruder_obj; skipping sync/select/virtual sensor updates", lane.name)
                 return True
