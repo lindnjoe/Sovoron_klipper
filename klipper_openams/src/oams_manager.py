@@ -95,6 +95,7 @@ POST_LOAD_PRESSURE_CHECK_PERIOD = 0.5
 LOAD_FPS_STUCK_THRESHOLD = 0.75
 LOAD_CLOG_EXTRUSION_WINDOW = 8.0
 LOAD_CLOG_PRESSURE_DWELL = 4.0
+LOAD_CLOG_MIN_EXTRUSION = 1.0
 
 
 class OAMSRunoutState:
@@ -4335,24 +4336,13 @@ class OAMSManager:
             extrusion_window = min(extrusion_window, LOAD_CLOG_EXTRUSION_WINDOW)
             dwell = min(dwell, LOAD_CLOG_PRESSURE_DWELL)
 
-        fast_load_clog = False
-        if loading_state and pressure >= self.clog_pressure_target:
-            clog_elapsed = now - (fps_state.clog.start_time or now)
-            if (
-                clog_elapsed >= LOAD_CLOG_PRESSURE_DWELL
-                and extrusion_delta < extrusion_window
-                and encoder_delta < settings["encoder_slack"]
-            ):
-                fast_load_clog = True
-                self.logger.info(
-                    "Fast-path clog detection during load on %s: pressure %.2f, extrusion %.2fmm, encoder %d",
-                    fps_name,
-                    pressure,
-                    extrusion_delta,
-                    encoder_delta,
-                )
+        # Avoid firing clog detection during TOOL_LOADING before the extruder
+        # has actually started moving. Custom load macros often warm up and
+        # stage filament before any extrusion commands are issued.
+        if loading_state and extrusion_delta < LOAD_CLOG_MIN_EXTRUSION:
+            return
 
-        if extrusion_delta < extrusion_window and not fast_load_clog:
+        if extrusion_delta < extrusion_window:
             return
 
         if (encoder_delta > settings["encoder_slack"] or pressure_span > settings["pressure_band"]):
@@ -4380,7 +4370,7 @@ class OAMSManager:
             fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
             return
 
-        if now - (fps_state.clog.start_time or now) < dwell and not fast_load_clog:
+        if now - (fps_state.clog.start_time or now) < dwell:
             return
 
         if not fps_state.clog.active:
