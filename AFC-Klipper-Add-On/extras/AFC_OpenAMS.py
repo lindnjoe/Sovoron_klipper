@@ -2108,9 +2108,15 @@ class afcAMS(afcUnit):
                 self.logger.error("Failed to update shared lane snapshot for %s", lane.name)
 
         afc_function = getattr(self.afc, "function", None)
+        current_loaded_lane = None
+        if afc_function is not None:
+            try:
+                current_loaded_lane = afc_function.get_current_lane_obj()
+            except Exception:
+                current_loaded_lane = None
 
         if lane_state:
-            if afc_function is not None:
+            if afc_function is not None and current_loaded_lane is not None and current_loaded_lane is not lane:
                 try:
                     afc_function.unset_lane_loaded()
                 except Exception:
