@@ -33,9 +33,10 @@ from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 try:
-    from extras.openams_integration import AMSRunoutCoordinator, normalize_extruder_name
+    from extras.openams_integration import AMSRunoutCoordinator, AMSHardwareService, normalize_extruder_name
 except Exception:
     AMSRunoutCoordinator = None
+    AMSHardwareService = None
     normalize_extruder_name = None
 
 try:
@@ -982,6 +983,121 @@ class OAMSManager:
                 detected_lane, fps_name, exc_info=True
             )
 
+    def _gather_hardware_services(self) -> List[Any]:
+        """Return all known AMSHardwareService instances for this printer."""
+        services: List[Any] = []
+        if self.hardware_service is not None:
+            services.append(self.hardware_service)
+
+        if AMSHardwareService is None:
+            return services
+
+        for oams_name in self.oams.keys():
+            try:
+                service = AMSHardwareService.for_printer(self.printer, oams_name)
+            except Exception:
+                continue
+            if service not in services:
+                services.append(service)
+
+        return services
+
+    def _resync_afc_from_snapshots(self, *, log_prefix: str = "OAMSM_RESYNC") -> Tuple[int, int]:
+        """Push the latest OpenAMS lane snapshots back into AFC as tool-state events."""
+        if AMSRunoutCoordinator is None:
+            return 0, 0
+
+        services = self._gather_hardware_services()
+        if not services:
+            return 0, 0
+
+        handled = 0
+        attempted = 0
+        default_eventtime = self.reactor.monotonic()
+
+        for service in services:
+            try:
+                snapshots = service.lane_snapshots()
+            except Exception:
+                self.logger.error(
+                    "%s: Failed to read lane snapshots from %s",
+                    log_prefix,
+                    getattr(service, "name", "<unknown>"),
+                    exc_info=True,
+                )
+                continue
+
+            for snapshot in snapshots.values():
+                lane_name = snapshot.get("lane")
+                if not lane_name:
+                    continue
+
+                lane_state = snapshot.get("tool_state")
+                if lane_state is None:
+                    lane_state = snapshot.get("lane_state")
+
+                if not lane_state:
+                    continue
+
+                unit_name = snapshot.get("unit") or getattr(service, "name", None)
+                if not unit_name:
+                    continue
+
+                spool_index = snapshot.get("spool_index")
+                eventtime = snapshot.get("timestamp", default_eventtime)
+
+                attempted += 1
+                try:
+                    if AMSRunoutCoordinator.notify_lane_tool_state(
+                        self.printer,
+                        unit_name,
+                        lane_name,
+                        loaded=True,
+                        spool_index=spool_index,
+                        eventtime=eventtime,
+                    ):
+                        handled += 1
+                    else:
+                        self.logger.debug(
+                            "%s: No AFC units handled resync for %s on %s",
+                            log_prefix,
+                            lane_name,
+                            unit_name,
+                        )
+                except Exception:
+                    self.logger.error(
+                        "%s: Failed to resync lane %s on %s",
+                        log_prefix,
+                        lane_name,
+                        unit_name,
+                        exc_info=True,
+                    )
+
+        # Force virtual tool sensor sync after replaying lane loads so AFC mirrors hardware.
+        # Do this whenever we attempted a replay, even if no AFC unit claimed the event, so
+        # the AMS_Extruder# virtual pin is refreshed from current lane state.
+        if AMSRunoutCoordinator is not None and attempted:
+            try:
+                for service in services:
+                    unit_name = getattr(service, "name", None)
+                    if not unit_name:
+                        continue
+                    for unit in AMSRunoutCoordinator.active_units(self.printer, unit_name):
+                        if hasattr(unit, "_sync_virtual_tool_sensor"):
+                            try:
+                                unit._sync_virtual_tool_sensor(default_eventtime, force=True)
+                            except Exception:
+                                self.logger.error(
+                                    "%s: Failed to force virtual tool sensor sync for %s",
+                                    log_prefix,
+                                    getattr(unit, "name", unit_name),
+                                    exc_info=True,
+                                )
+            except Exception:
+                self.logger.error("%s: Failed to sync virtual tool sensors after resync", log_prefix, exc_info=True)
+
+        return handled, attempted
+
     def _fix_afc_runout_helper_time(self, lane_name: str) -> None:
         """Workaround for AFC bug: Update min_event_systime after load operations.
 
@@ -1195,11 +1311,32 @@ class OAMSManager:
             ("OAMSM_FOLLOWER", self.cmd_FOLLOWER, self.cmd_FOLLOWER_help),
             ("OAMSM_FOLLOWER_RESET", self.cmd_FOLLOWER_RESET, self.cmd_FOLLOWER_RESET_help),
             ("OAMSM_CLEAR_ERRORS", self.cmd_CLEAR_ERRORS, self.cmd_CLEAR_ERRORS_help),
+            ("OAMSM_RESYNC", self.cmd_RESYNC, self.cmd_RESYNC_help),
             ("OAMSM_CLEAR_LANE_MAPPINGS", self.cmd_CLEAR_LANE_MAPPINGS, self.cmd_CLEAR_LANE_MAPPINGS_help),
             ("OAMSM_STATUS", self.cmd_STATUS, self.cmd_STATUS_help),
         ]
         for cmd_name, handler, help_text in commands:
             gcode.register_command(cmd_name, handler, desc=help_text)
+
+    cmd_RESYNC_help = "Force AFC to resync lane/tool state from OpenAMS hardware snapshots"
+    def cmd_RESYNC(self, gcmd):
+        if AMSRunoutCoordinator is None:
+            gcmd.respond_info("OpenAMS coordinator not available; cannot resync")
+            return
+
+        resynced = 0
+        attempted = 0
+        with self._monitors_suspended("OAMSM_RESYNC"):
+            try:
+                self.determine_state()
+            except Exception:
+                self.logger.error("State detection failed during OAMSM_RESYNC", exc_info=True)
+            resynced, attempted = self._resync_afc_from_snapshots()
+
+        if attempted > 0:
+            gcmd.respond_info(f"Resynced {resynced}/{attempted} loaded lane(s) from OpenAMS snapshots")
+        else:
+            gcmd.respond_info("No loaded lanes found in OpenAMS snapshots to resync")
 
     cmd_CLEAR_ERRORS_help = "Clear the error state of the OAMS"
     def cmd_CLEAR_ERRORS(self, gcmd):
@@ -1318,6 +1455,19 @@ class OAMSManager:
                 except Exception:
                     restart_monitors = False
                     self.logger.error("Failed to refresh followers after OAMSM_CLEAR_ERRORS", exc_info=True)
+
+            # Republish lane/tool state from hardware snapshots to keep AFC in sync
+            try:
+                resynced, resync_attempted = self._resync_afc_from_snapshots(log_prefix="OAMSM_CLEAR_ERRORS")
+                if resync_attempted:
+                    self.logger.info(
+                        "OAMSM_CLEAR_ERRORS resynced %s/%s lane(s) from OpenAMS snapshots",
+                        resynced,
+                        resync_attempted,
+                    )
+            except Exception:
+                restart_monitors = False
+                self.logger.error("Failed to resync AFC state during OAMSM_CLEAR_ERRORS", exc_info=True)
 
         if monitors_were_running:
             if restart_monitors:
@@ -4100,16 +4250,27 @@ class OAMSManager:
 
             # Keep the follower running during clog pauses so manual extrusion
             # remains available without requiring OAMSM_CLEAR_ERRORS.
-            # Enable follower directly during clog pause, bypassing state checks
-            if oams is not None and fps_state.current_spool_idx is not None:
-                self._enable_follower(fps_name, fps_state, oams, 1, "clog pause - keep follower active")
-                # Set manual override to prevent automatic hub-sensor control from disabling it
-                # This keeps follower enabled even if hub sensors are empty during clog
-                state = self._get_follower_state(fps_state.current_oams)
-                state.manual_override = True
+            # Enable follower directly during clog pause, bypassing state checks.
+            oams_obj = oams
+            if oams_obj is None and fps_state.current_oams:
+                oams_obj = self.oams.get(fps_state.current_oams) or self.oams.get(f"oams {fps_state.current_oams}")
+
+            state = self._get_follower_state(fps_state.current_oams)
+            state.manual_override = True
+            state.had_filament = True
+            fps_state.following = True
+
+            if oams_obj is not None:
+                self._enable_follower(fps_name, fps_state, oams_obj, 1, "clog pause - keep follower active")
                 # If the follower still can't start, mark it for restore on resume
                 if not fps_state.following:
                     fps_state.stuck_spool.restore_follower = True
+            else:
+                self.logger.warning(
+                    "Clog pause on %s but OAMS %s not available to keep follower active",
+                    fps_name,
+                    fps_state.current_oams,
+                )
 
     def start_monitors(self):
         """Start all monitoring timers"""
