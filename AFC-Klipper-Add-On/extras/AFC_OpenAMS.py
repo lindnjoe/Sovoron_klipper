@@ -2116,6 +2116,15 @@ class afcAMS(afcUnit):
             except Exception:
                 current_loaded_lane = None
 
+        self.logger.info(
+            "OpenAMS lane tool state: lane=%s loaded=%s spool_index=%s eventtime=%.3f current_loaded=%s",
+            lane.name,
+            lane_state,
+            spool_index,
+            eventtime if eventtime is not None else -1,
+            getattr(current_loaded_lane, "name", None),
+        )
+
         if lane_state:
             if afc_function is not None and current_loaded_lane is not None and current_loaded_lane is not lane:
                 try:
@@ -2185,6 +2194,7 @@ class afcAMS(afcUnit):
 
         if current_lane is lane and afc_function is not None:
             try:
+                self.logger.info("Clearing current lane %s on explicit unload request", lane.name)
                 afc_function.unset_lane_loaded()
             except Exception:
                 self.logger.error("Failed to unset currently loaded lane %s", lane.name)
