@@ -1374,11 +1374,7 @@ class OAMSManager:
                     continue
                 try:
                     oam.clear_errors()
-                    # Update LED tracking state to match hardware (all LEDs now off)
-                    # This prevents the tracking dict from having stale error states
-                    for bay_idx in range(4):
-                        led_key = f"{oams_name}:{bay_idx}"
-                        self.led_error_state[led_key] = 0
+                    self._clear_led_error_indicators(oams_name, oam)
                 except Exception:
                     restart_monitors = False
                     self.logger.error("Failed to clear errors on %s", getattr(oam, "name", "<unknown>"))
@@ -3372,6 +3368,19 @@ class OAMSManager:
             except Exception:
                 self.logger.error("Failed to %s LED error for %s spool %d%s", "set" if error_state else "clear",
                                 oams_name, spool_idx, f" ({context})" if context else "")
+
+    def _clear_led_error_indicators(self, oams_name: str, oams: Any) -> None:
+        """Force-clear LED error indicators for all bays on an OAMS unit.
+
+        Uses the LED helper to guarantee hardware commands are issued and
+        tracking is only updated when the command succeeds. This keeps the
+        lane LEDs from remaining red after transient faults (for example,
+        clog detection during a load) when OAMSM_CLEAR_ERRORS is invoked.
+        """
+
+        for bay_idx in range(4):
+            self.led_error_state.pop(f"{oams_name}:{bay_idx}", None)
+            self._set_led_error_if_changed(oams, oams_name, bay_idx, 0, "OAMSM_CLEAR_ERRORS")
 
     def _is_oams_mcu_ready(self, oams: Any) -> bool:
         """True when the OAMS MCU is reachable and not shutdown."""
