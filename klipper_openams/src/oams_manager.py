@@ -2088,6 +2088,31 @@ class OAMSManager:
     ) -> None:
         """Notify AFC and virtual sensors that a lane is loaded."""
 
+        fallback_invoked = False
+
+        def _gcode_fallback(reason: str) -> None:
+            nonlocal fallback_invoked
+            if fallback_invoked:
+                return
+
+            try:
+                gcode = self.printer.lookup_object("gcode")
+                gcode.run_script(f"SET_LANE_LOADED LANE={lane_name}")
+                self.logger.info(
+                    "Fallback: executed SET_LANE_LOADED for %s (%s)",
+                    lane_name,
+                    reason,
+                )
+            except Exception:
+                self.logger.error(
+                    "Failed to execute SET_LANE_LOADED for lane %s (%s)",
+                    lane_name,
+                    reason,
+                    exc_info=True,
+                )
+            finally:
+                fallback_invoked = True
+
         if eventtime is None:
             try:
                 eventtime = self.reactor.monotonic()
@@ -2097,17 +2122,13 @@ class OAMSManager:
         afc = self._get_afc()
         if afc is None:
             # AFC not available; fall back to gcode so AFC can update when it reconnects
-            try:
-                gcode = self.printer.lookup_object("gcode")
-                gcode.run_script(f"SET_LANE_LOADED LANE={lane_name}")
-                self.logger.info("Fallback: executed SET_LANE_LOADED for %s (AFC unavailable)", lane_name)
-            except Exception:
-                self.logger.error("Failed to execute SET_LANE_LOADED for lane %s", lane_name, exc_info=True)
+            _gcode_fallback("AFC unavailable")
             return
 
         lane_obj = getattr(afc, "lanes", {}).get(lane_name) if hasattr(afc, "lanes") else None
         if lane_obj is None:
             self.logger.warning("Cannot mirror loaded state for %s; lane not found in AFC", lane_name)
+            _gcode_fallback("lane not found in AFC")
             return
 
         oams_name = None
@@ -2162,8 +2183,10 @@ class OAMSManager:
                 self.logger.info("Mirrored lane %s to virtual sensor", lane_name)
             except Exception:
                 self.logger.error("Failed to mirror lane %s to virtual sensor", lane_name, exc_info=True)
+                _gcode_fallback("mirror to virtual sensor failed")
         else:
             self.logger.debug("AFC missing _mirror_lane_to_virtual_sensor; skipping virtual sensor sync for %s", lane_name)
+            _gcode_fallback("mirror method unavailable on AFC")
 
     def _sync_virtual_tool_sensors(self, *, eventtime: Optional[float] = None, force: bool = False) -> int:
         """Force a sync of virtual tool sensors for all OpenAMS units."""
