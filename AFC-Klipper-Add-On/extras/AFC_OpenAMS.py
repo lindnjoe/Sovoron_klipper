@@ -2151,14 +2151,15 @@ class afcAMS(afcUnit):
                 self.logger.error("Failed to mark lane %s as tool-loaded via set_tool_loaded()", lane.name)
                 try:
                     lane.tool_loaded = True
-                    if getattr(lane, "extruder_obj", None) is not None:
-                        lane.extruder_obj.lane_loaded = lane.name
+                    extruder_obj = getattr(lane, "extruder_obj", None)
+                    if extruder_obj is not None:
+                        extruder_obj.lane_loaded = lane.name
                 except Exception:
                     self.logger.error("Failed to manually latch tool_loaded for %s", lane.name)
-            try:
-                lane.set_tool_loaded()
-            except Exception:
-                self.logger.error("Failed to mark lane %s as tool-loaded", lane.name)
+            extruder_obj = getattr(lane, "extruder_obj", None)
+            if extruder_obj is None:
+                self.logger.info("Loaded %s without mapped extruder_obj; skipping sync/select/virtual sensor updates", lane.name)
+                return True
             try:
                 lane.sync_to_extruder()
                 # Wait for all moves to complete to prevent "Timer too close" errors
