@@ -689,6 +689,7 @@ class OAMSManager:
         self._lane_to_fps_cache: Dict[str, str] = {}  # OPTIMIZATION: Lane?FPS direct mapping cache
 
         # OPTIMIZATION: Cache hardware service lookups
+        self.hardware_service = None  # Populated by AMSRunoutCoordinator.register_runout_monitor where available
         self._hardware_service_cache: Dict[str, Any] = {}
         self._idle_timeout_obj = None
         self._gcode_obj = None
@@ -1374,11 +1375,7 @@ class OAMSManager:
                     continue
                 try:
                     oam.clear_errors()
-                    # Update LED tracking state to match hardware (all LEDs now off)
-                    # This prevents the tracking dict from having stale error states
-                    for bay_idx in range(4):
-                        led_key = f"{oams_name}:{bay_idx}"
-                        self.led_error_state[led_key] = 0
+                    self._clear_led_error_indicators(oams_name, oam)
                 except Exception:
                     restart_monitors = False
                     self.logger.error("Failed to clear errors on %s", getattr(oam, "name", "<unknown>"))
@@ -2069,6 +2066,94 @@ class OAMSManager:
             self._afc_logged = True
         return self.afc
 
+    def _notify_lane_loaded(
+        self,
+        lane_name: str,
+        oams_name: Optional[str],
+        spool_index: Optional[int],
+        eventtime: Optional[float],
+        *,
+        context: str = "",
+    ) -> None:
+        """Notify AFC and virtual sensors that a lane is loaded."""
+
+        if eventtime is None:
+            try:
+                eventtime = self.reactor.monotonic()
+            except Exception:
+                eventtime = None
+
+        handled = False
+        if AMSRunoutCoordinator is not None:
+            try:
+                handled = AMSRunoutCoordinator.notify_lane_tool_state(
+                    self.printer,
+                    oams_name,
+                    lane_name,
+                    loaded=True,
+                    spool_index=spool_index,
+                    eventtime=eventtime,
+                )
+                if handled:
+                    self.logger.info(
+                        "Notified AFC that lane %s is loaded%s",
+                        lane_name,
+                        f" ({context})" if context else "",
+                    )
+                else:
+                    self.logger.debug(
+                        "AMSRunoutCoordinator.notify_lane_tool_state returned False for lane %s%s",
+                        lane_name,
+                        f" ({context})" if context else "",
+                    )
+            except Exception:
+                self.logger.error(
+                    "Failed to notify AFC lane %s as loaded%s",
+                    lane_name,
+                    f" ({context})" if context else "",
+                    exc_info=True,
+                )
+
+        if not handled:
+            # AMSRunoutCoordinator not available or did not handle; update AFC directly
+            try:
+                afc = self._get_afc()
+                if afc and hasattr(afc, "lanes"):
+                    lane_obj = afc.lanes.get(lane_name)
+                    if lane_obj and hasattr(afc, "_mirror_lane_to_virtual_sensor"):
+                        afc._mirror_lane_to_virtual_sensor(lane_obj, eventtime or self.reactor.monotonic())
+                        self.logger.info(
+                            "Updated virtual sensor for lane %s via AFC._mirror_lane_to_virtual_sensor%s",
+                            lane_name,
+                            f" ({context})" if context else "",
+                        )
+                        handled = True
+            except Exception:
+                self.logger.error(
+                    "Failed to update virtual sensor directly for lane %s%s",
+                    lane_name,
+                    f" ({context})" if context else "",
+                    exc_info=True,
+                )
+
+        if not handled:
+            # Final fallback: use SET_LANE_LOADED gcode to align AFC state
+            try:
+                gcode = self.printer.lookup_object("gcode")
+                gcode.run_script(f"SET_LANE_LOADED LANE={lane_name}")
+                self.logger.info(
+                    "Fallback: executed SET_LANE_LOADED for %s%s",
+                    lane_name,
+                    f" ({context})" if context else "",
+                )
+            except Exception:
+                self.logger.error(
+                    "Failed to execute SET_LANE_LOADED for lane %s%s",
+                    lane_name,
+                    f" ({context})" if context else "",
+                    exc_info=True,
+                )
+
     def _handle_successful_reload(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
                                    target_lane_map: str, source_lane_name: Optional[str],
                                    active_oams: str, monitor) -> None:
@@ -2086,49 +2171,13 @@ class OAMSManager:
         # Always notify AFC that target lane is loaded to update virtual sensors
         # This ensures AMS_Extruder# sensors show correct state after same-FPS runouts
         if target_lane:
-            handled = False
-            if AMSRunoutCoordinator is not None:
-                try:
-                    handled = AMSRunoutCoordinator.notify_lane_tool_state(
-                        self.printer, fps_state.current_oams or active_oams, target_lane,
-                        loaded=True, spool_index=fps_state.current_spool_idx, eventtime=fps_state.since
-                    )
-                    if handled:
-                        self.logger.info("Notified AFC that lane %s is loaded via AMSRunoutCoordinator (updates virtual sensor state)", target_lane)
-                    else:
-                        self.logger.warning("AMSRunoutCoordinator.notify_lane_tool_state returned False for lane %s, trying fallback", target_lane)
-                except Exception as e:
-                    self.logger.error("Failed to notify AFC lane %s after infinite runout on %s: %s", target_lane, fps_name, e)
-                    handled = False
-            else:
-                # AMSRunoutCoordinator not available - call AFC methods directly
-                self.logger.info("AMSRunoutCoordinator not available, updating virtual sensor directly for lane %s", target_lane)
-                try:
-                    afc = self._get_afc()
-                    if afc and hasattr(afc, 'lanes'):
-                        lane_obj = afc.lanes.get(target_lane)
-                        if lane_obj:
-                            # Update virtual sensor using AFC's direct method
-                            if hasattr(afc, '_mirror_lane_to_virtual_sensor'):
-                                afc._mirror_lane_to_virtual_sensor(lane_obj, self.reactor.monotonic())
-                                self.logger.info("Updated virtual sensor for lane %s via AFC._mirror_lane_to_virtual_sensor", target_lane)
-                                handled = True
-                            else:
-                                self.logger.warning("AFC doesn't have _mirror_lane_to_virtual_sensor method")
-                        else:
-                            self.logger.warning("Lane object not found for %s in AFC", target_lane)
-                    else:
-                        self.logger.warning("AFC not available or has no lanes attribute")
-                except Exception as e:
-                    self.logger.error("Failed to update virtual sensor directly for lane %s: %s", target_lane, e)
-
-            if not handled:
-                try:
-                    gcode = self.printer.lookup_object("gcode")
-                    gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
-                    self.logger.info("Marked lane %s as loaded via SET_LANE_LOADED after infinite runout on %s", target_lane, fps_name)
-                except Exception as e:
-                    self.logger.error("Failed to mark lane %s as loaded after infinite runout on %s: %s", target_lane, fps_name, e)
+            self._notify_lane_loaded(
+                target_lane,
+                fps_state.current_oams or active_oams,
+                fps_state.current_spool_idx,
+                fps_state.since,
+                context="infinite runout reload",
+            )
 
         # Ensure follower is enabled after successful reload
         # Follower should stay enabled throughout same-FPS runouts (never disabled)
@@ -3005,6 +3054,14 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
 
+            self._notify_lane_loaded(
+                lane_name,
+                oam.name,
+                bay_index,
+                fps_state.since,
+                context="manual load",
+            )
+
             # Monitors are already running globally, no need to restart them
             return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
         else:
@@ -3372,6 +3429,19 @@ class OAMSManager:
             except Exception:
                 self.logger.error("Failed to %s LED error for %s spool %d%s", "set" if error_state else "clear",
                                 oams_name, spool_idx, f" ({context})" if context else "")
+
+    def _clear_led_error_indicators(self, oams_name: str, oams: Any) -> None:
+        """Force-clear LED error indicators for all bays on an OAMS unit.
+
+        Uses the LED helper to guarantee hardware commands are issued and
+        tracking is only updated when the command succeeds. This keeps the
+        lane LEDs from remaining red after transient faults (for example,
+        clog detection during a load) when OAMSM_CLEAR_ERRORS is invoked.
+        """
+
+        for bay_idx in range(4):
+            self.led_error_state.pop(f"{oams_name}:{bay_idx}", None)
+            self._set_led_error_if_changed(oams, oams_name, bay_idx, 0, "OAMSM_CLEAR_ERRORS")
 
     def _is_oams_mcu_ready(self, oams: Any) -> bool:
         """True when the OAMS MCU is reachable and not shutdown."""
