@@ -282,6 +282,11 @@ class afcAMS(afcUnit):
         self._lane_tool_latches_by_lane: Dict[object, bool] = {}
         self._last_hub_hes_values: Optional[List[float]] = None
         self._last_tool_load_event: Dict[str, float] = {}
+        # Share last tool load events with AFC_functions for debounce/activation guards
+        try:
+            setattr(self.afc, "_last_oams_tool_load_event", self._last_tool_load_event)
+        except Exception:
+            pass
 
         # OPTIMIZATION: Cache frequently accessed objects
         self._cached_sensor_helper = None
@@ -2139,6 +2144,10 @@ class afcAMS(afcUnit):
                 lane.set_loaded()
             except Exception:
                 self.logger.error("Failed to mark lane %s as loaded", lane.name)
+            try:
+                lane.set_tool_loaded()
+            except Exception:
+                self.logger.error("Failed to mark lane %s as tool-loaded", lane.name)
             try:
                 lane.sync_to_extruder()
                 # Wait for all moves to complete to prevent "Timer too close" errors
