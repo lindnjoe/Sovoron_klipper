@@ -896,6 +896,18 @@ class OAMSManager:
         except Exception:
             self._toolhead_obj = None
 
+        # Use AFC's logger for consistent formatting with AFC error messages
+        # Falls back to Python logging if AFC not available
+        try:
+            afc = self.printer.lookup_object('AFC')
+            if afc and hasattr(afc, 'logger'):
+                self.logger = afc.logger
+                self.logger.info("OAMS using AFC logger for consistent error formatting")
+            else:
+                self.logger.warning("AFC found but has no logger, using Python logging")
+        except Exception:
+            self.logger.debug("AFC not available, using Python logging")
+
         self.determine_state()
         self.start_monitors()
         self.ready = True
