@@ -3403,13 +3403,13 @@ class OAMSManager:
             try:
                 oams.set_oams_follower(enable, direction)
                 state.last_state = desired_state
-                # Log follower disable at INFO level to track what's disabling it during clogs
+                # Log follower commands at ERROR level to track hardware commands during error recovery
                 if enable:
-                    self.logger.debug("Follower enabled for %s (%s)", oams_name, context or "no context")
+                    self.logger.error("FOLLOWER HW CMD: Sent ENABLE to %s (direction=%s, context=%s, manual_override=%s)",
+                                    oams_name, "forward" if direction == 1 else "reverse", context or "no context", state.manual_override)
                 else:
-                    self.logger.info("Follower DISABLED for %s (%s) - manual_override=%s",
-                                   oams_name, context or "no context",
-                                   state.manual_override)
+                    self.logger.error("FOLLOWER HW CMD: Sent DISABLE to %s (context=%s, manual_override=%s)",
+                                   oams_name, context or "no context", state.manual_override)
             except Exception:
                 self.logger.error("Failed to %s follower for %s%s", "enable" if enable else "disable",
                                 oams_name, f" ({context})" if context else "")
@@ -3419,7 +3419,7 @@ class OAMSManager:
         try:
             state = self._get_follower_state(oams_name)
             if state.manual_override:
-                self.logger.debug("Skipping automatic follower control for %s (manual override active)", oams_name)
+                self.logger.error("FOLLOWER UPDATE SKIPPED: manual_override=True for %s (automatic follower control disabled)", oams_name)
                 return
 
             if not self._is_oams_mcu_ready(oams):
