@@ -3599,6 +3599,30 @@ class OAMSManager:
             except Exception:
                 self.logger.error("Failed to set stuck spool LED on %s spool %s", fps_name, spool_idx)
 
+        # CRITICAL: Enable follower and set manual override BEFORE pausing
+        # This ensures follower stays running for manual recovery/extrusion
+        self.logger.error("STUCK SPOOL PAUSE: Attempting follower enable for %s (oams=%s, spool=%s)",
+                        fps_name, fps_state.current_oams, spool_idx)
+        if fps_state.current_oams and spool_idx is not None:
+            if oams is not None:
+                # Set manual override FIRST to prevent automatic control from interfering
+                state = self._get_follower_state(fps_state.current_oams)
+                state.manual_override = True
+                self.logger.error("STUCK SPOOL PAUSE: Set manual_override=True for %s", fps_state.current_oams)
+
+                self._enable_follower(fps_name, fps_state, oams, 1, "stuck spool pause - keep follower active")
+
+                if not fps_state.following:
+                    fps_state.stuck_spool.restore_follower = True
+                    self.logger.error("STUCK SPOOL PAUSE: Follower FAILED to enable for %s (following=%s)", fps_name, fps_state.following)
+                else:
+                    self.logger.error("STUCK SPOOL PAUSE: Follower SUCCESSFULLY enabled for %s (following=%s)", fps_name, fps_state.following)
+            else:
+                self.logger.error("STUCK SPOOL PAUSE: Cannot enable follower - oams is None")
+        else:
+            self.logger.error("STUCK SPOOL PAUSE: Cannot enable follower - current_oams=%s, spool_idx=%s",
+                            fps_state.current_oams, spool_idx)
+
         # Abort current action (unload/load)
         if oams is not None:
             try:
