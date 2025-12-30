@@ -3905,14 +3905,18 @@ class OAMSManager:
             if fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 1, "load stuck detected")
 
-            # Transition to UNLOADED state cleanly
-            fps_state.state = FPSLoadState.UNLOADED
+            # Clear encoder samples but DON'T change state to UNLOADED
+            # The OAMS load function will handle state transition on failure
+            # If we set UNLOADED here, auto_unload_on_failed_load will try to unload
+            # from UNLOADED state and fail, aborting all retries
             fps_state.clear_encoder_samples()
 
             # Set the stuck flag but DON'T pause - let the OAMS retry logic handle it
             # The retry logic will clear this flag if the retry succeeds
             fps_state.stuck_spool.active = True
             fps_state.stuck_spool.start_time = None
+
+            self.logger.error("STUCK LOAD: Aborted load, allowing OAMS retry logic to handle state transition")
 
             # CRITICAL: Keep follower enabled even during stuck load
             # User needs follower running to manually fix clogs or re-attempt load
