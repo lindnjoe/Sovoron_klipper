@@ -2601,6 +2601,56 @@ class OAMSManager:
                         fps_name, lane_name, oams_name, bay_index)
         return True
 
+    def _fix_afc_runout_helper_time(self, lane_name: str) -> bool:
+        """Fix AFC runout helper min_event_systime after manual lane load.
+
+        When filament is loaded to the toolhead, we need to update the runout helper's
+        min_event_systime to prevent false runout detections immediately after loading.
+        This mimics what AFC does in its own event handlers.
+
+        Args:
+            lane_name: AFC lane name (e.g., "lane4")
+
+        Returns:
+            True if successfully updated, False otherwise.
+        """
+        try:
+            afc = self._get_afc()
+            if afc is None:
+                return False
+
+            lane = afc.lanes.get(lane_name)
+            if lane is None:
+                return False
+
+            # Get the extruder object for this lane
+            extruder_obj = getattr(lane, "extruder_obj", None)
+            if extruder_obj is None:
+                return False
+
+            # Get the virtual tool sensor (fila_tool_start)
+            virtual_sensor = getattr(extruder_obj, "fila_tool_start", None)
+            if virtual_sensor is None:
+                return False
+
+            # Get the runout helper from the virtual sensor
+            runout_helper = getattr(virtual_sensor, "runout_helper", None)
+            if runout_helper is None:
+                return False
+
+            # Update min_event_systime to prevent immediate runout events
+            # Use reactor.monotonic() + event_delay (similar to AFC's pattern)
+            event_delay = getattr(runout_helper, "event_delay", 3.0)  # Default 3 seconds
+            runout_helper.min_event_systime = self.reactor.monotonic() + event_delay
+
+            self.logger.debug("Updated runout helper min_event_systime for lane %s (delay: %.1fs)",
+                             lane_name, event_delay)
+            return True
+
+        except Exception as e:
+            self.logger.warning("Failed to fix runout helper time for lane %s: %s", lane_name, e)
+            return False
+
     def _notify_lane_loaded_to_afc(self, lane_name: str, oams_name: str, bay_index: int, eventtime: float) -> bool:
         """Notify AFC that a lane has been loaded (updates virtual sensors and lane state).
 
