@@ -1197,6 +1197,49 @@ class OAMSManager:
         fps_state.state = FPSLoadState.LOADED
         return False, message
 
+    def _notify_lane_loaded_to_afc(self, lane_name: str, oams_name: str, bay_index: int, eventtime: float) -> bool:
+        """Notify AFC that a lane has been loaded (updates virtual sensors and lane state).
+
+        This should be called after ANY successful lane load operation to ensure
+        AFC state stays synchronized with OpenAMS hardware state.
+
+        Args:
+            lane_name: AFC lane name (e.g., "lane4")
+            oams_name: OAMS unit name (e.g., "oams1")
+            bay_index: Spool bay index (0-3)
+            eventtime: Event timestamp for state update
+
+        Returns:
+            True if notification succeeded, False otherwise.
+        """
+        if not lane_name or AMSRunoutCoordinator is None:
+            self.logger.warning("Cannot notify AFC: lane_name=%s, AMSRunoutCoordinator=%s", lane_name, AMSRunoutCoordinator)
+            return False
+
+        try:
+            handled = AMSRunoutCoordinator.notify_lane_tool_state(
+                self.printer, oams_name, lane_name,
+                loaded=True, spool_index=bay_index,
+                eventtime=eventtime
+            )
+            if handled:
+                self.logger.info("Notified AFC that lane %s is loaded (virtual sensor updated)", lane_name)
+                return True
+            else:
+                self.logger.warning("AFC notification returned False for lane %s, trying fallback", lane_name)
+                # Try fallback gcode command
+                try:
+                    gcode = self.printer.lookup_object("gcode")
+                    gcode.run_script(f"SET_LANE_LOADED LANE={lane_name}")
+                    self.logger.info("Marked lane %s as loaded via SET_LANE_LOADED fallback", lane_name)
+                    return True
+                except Exception as e:
+                    self.logger.error("Fallback SET_LANE_LOADED failed for lane %s: %s", lane_name, e)
+                    return False
+        except Exception as e:
+            self.logger.error("Failed to notify AFC after loading lane %s: %s", lane_name, e)
+            return False
+
     def _load_filament_for_lane(self, lane_name: str) -> Tuple[bool, str]:
         """Load filament for a lane by deriving OAMS and bay from the lane's unit configuration.
 
@@ -1348,6 +1391,20 @@ class OAMSManager:
 
             # OPTIMIZATION: Enable follower immediately before cleanup operations
             self._ensure_forward_follower(fps_name, fps_state, "load filament")
+
+            # WORKAROUND: Fix AFC runout helper min_event_systime after load
+            self._fix_afc_runout_helper_time(lane_name)
+
+            # Notify AFC that lane is loaded (updates virtual sensor and lane state)
+            # This ensures AMS virtual toolhead sensors (e.g., AMS_Extruder4) show correct state
+            self._notify_lane_loaded_to_afc(lane_name, oams_name, bay_index, fps_state.since)
+
+            self.logger.info(
+                "Lane load complete: %s → FPS state: LOADED, current_lane=%s, "
+                "current_oams=%s, current_spool_idx=%d, since=%.3f",
+                lane_name, fps_state.current_lane, fps_state.current_oams,
+                fps_state.current_spool_idx, fps_state.since
+            )
 
             # Clear LED error state if stuck spool was active
             if fps_state.stuck_spool_active:

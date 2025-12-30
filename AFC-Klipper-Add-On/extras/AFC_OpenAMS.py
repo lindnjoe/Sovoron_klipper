@@ -2240,6 +2240,15 @@ class afcAMS(afcUnit):
                     self._set_virtual_tool_sensor_state(True, eventtime, lane.name, force=force_update, lane_obj=lane)
                 except Exception:
                     self.logger.error("Failed to mirror tool sensor state for loaded lane %s", lane.name)
+
+            # Ensure virtual tool sensor is fully synced after lane load
+            # This guarantees AMS virtual toolhead sensors show correct state
+            try:
+                self._sync_virtual_tool_sensor(eventtime, lane.name, force=True)
+                self.logger.debug("Synced virtual tool sensor for lane %s after OpenAMS load notification", lane.name)
+            except Exception:
+                self.logger.error("Failed to sync virtual tool sensor for lane %s after load", lane.name)
+
             return True
 
         current_lane = None
