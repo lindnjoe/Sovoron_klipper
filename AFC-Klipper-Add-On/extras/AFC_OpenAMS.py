@@ -2190,9 +2190,8 @@ class afcAMS(afcUnit):
                     return True
                 # Ensure AFC tool object reflects the loaded lane so activator sees it
                 try:
-                    extruder_obj.lane_loaded = lane.name
-                    if hasattr(extruder_obj, "detect_state"):
-                        extruder_obj.detect_state = 1
+                    setattr(extruder_obj, "lane_loaded", lane.name)
+                    setattr(extruder_obj, "detect_state", 1)
                     tool_obj = getattr(extruder_obj, "tool_obj", None)
                     if tool_obj is not None:
                         setattr(tool_obj, "detect_state", 1)
@@ -2206,6 +2205,25 @@ class afcAMS(afcUnit):
                 except Exception as exc:
                     tb = traceback.format_exc()
                     self.logger.error(f"Failed to stamp extruder object state for {lane.name}: {exc}\n{tb}")
+
+                # Reinforce tool state shortly after load to survive late activator checks
+                try:
+                    def _reinforce_tool_state(eventtime):
+                        try:
+                            setattr(extruder_obj, "lane_loaded", lane.name)
+                            setattr(extruder_obj, "detect_state", 1)
+                            tool_obj_inner = getattr(extruder_obj, "tool_obj", None)
+                            if tool_obj_inner is not None:
+                                setattr(tool_obj_inner, "detect_state", 1)
+                                setattr(tool_obj_inner, "lane_loaded", lane.name)
+                        except Exception:
+                            pass
+                        return self.reactor.NEVER
+
+                    reinforce_time = (eventtime or self.reactor.monotonic()) + 0.5
+                    self.reactor.register_timer(_reinforce_tool_state, reinforce_time)
+                except Exception:
+                    pass
                 try:
                     lane.sync_to_extruder()
                     # Wait for all moves to complete to prevent "Timer too close" errors
