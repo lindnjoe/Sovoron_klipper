@@ -2187,6 +2187,13 @@ class afcAMS(afcUnit):
                     if tool_obj is not None:
                         setattr(tool_obj, "detect_state", 1)
                         setattr(tool_obj, "lane_loaded", lane.name)
+                    self.logger.info(
+                        "AFC tool snapshot after load: tool=%s lane_loaded=%s detect_state=%s tool_obj_detect_state=%s",
+                        getattr(extruder_obj, "name", None),
+                        getattr(extruder_obj, "lane_loaded", None),
+                        getattr(extruder_obj, "detect_state", None),
+                        getattr(tool_obj, "detect_state", None) if tool_obj is not None else None,
+                    )
                 except Exception:
                     self.logger.error("Failed to stamp extruder object state for %s", lane.name)
                 try:
