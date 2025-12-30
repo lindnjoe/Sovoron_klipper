@@ -3177,10 +3177,23 @@ class OAMSManager:
 
             message = f"Possible clog detected after loading {tracked_state.current_lane or fps_name}: FPS pressure {pressure:.2f} remained above {POST_LOAD_PRESSURE_THRESHOLD:.2f}"
 
+            tracked_state.clog.active = True
+
+            # CRITICAL: Enable follower FIRST before pausing
+            # This ensures follower stays running even if pause fails
+            # Manual extrusion remains available without requiring OAMSM_CLEAR_ERRORS
+            if oams_obj is not None and tracked_state.current_spool_idx is not None:
+                self._enable_follower(fps_name, tracked_state, oams_obj, 1, "post-load clog detected - keep follower active")
+                # Set manual override to prevent automatic hub-sensor control from disabling it
+                # This keeps follower enabled even if hub sensors are empty during clog
+                state = self._get_follower_state(tracked_state.current_oams)
+                state.manual_override = True
+                # If the follower still can't start, mark it for restore on resume
+                if not tracked_state.following:
+                    tracked_state.stuck_spool.restore_follower = True
+
             # Pause printer with error message
             self._pause_printer_message(message, tracked_state.current_oams)
-
-            tracked_state.clog.active = True
 
             self._cancel_post_load_pressure_check(tracked_state)
             return self.reactor.NEVER
