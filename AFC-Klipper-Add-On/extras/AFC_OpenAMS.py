@@ -2376,7 +2376,18 @@ class afcAMS(afcUnit):
                 # 1. next_id is set (apply specific spool data from spoolman), OR
                 # 2. Lane has no spool data (set defaults for any new filament)
                 if next_id or not has_spool_data:
+                    # Preserve existing weight before calling _set_values
+                    # _set_values resets weight to 1000g, but we want to keep actual spool weight
+                    existing_weight = getattr(lane, "weight", 0)
+
                     spool_mgr._set_values(lane)
+
+                    # If lane had an existing weight and _set_values didn't get it from Spoolman,
+                    # restore the original weight (don't let it default to 1000g)
+                    if existing_weight and existing_weight != 0:
+                        # Only restore if weight is still the default 1000 (meaning Spoolman didn't update it)
+                        if getattr(lane, "weight", 0) == 1000:
+                            lane.weight = existing_weight
         except Exception:
             self.logger.error("Failed to update spool info for %s after load event", lane.name, exc_info=True)
 
