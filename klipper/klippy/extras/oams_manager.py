@@ -68,7 +68,7 @@ MIN_ENCODER_DIFF = 1
 FILAMENT_PATH_LENGTH_FACTOR = 1.14
 MONITOR_ENCODER_PERIOD = 2.0
 MONITOR_ENCODER_PERIOD_IDLE = 4.0  # OPTIMIZATION: Longer interval when idle
-MONITOR_ENCODER_SPEED_GRACE = 2.0
+MONITOR_ENCODER_SPEED_GRACE = 0.5  # Reduced from 2.0 for faster stuck spool detection
 AFC_DELEGATION_TIMEOUT = 30.0
 COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
@@ -3783,6 +3783,9 @@ class OAMSManager:
                     fps_state.consecutive_idle_polls = 0
                     fps_state.idle_backoff_level = 0
                     fps_state.last_state_change = now
+                    # Use faster interval during LOADING/UNLOADING for quick stuck spool detection
+                    if state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
+                        return eventtime + 0.5  # Check every 0.5s during load/unload operations
                     return eventtime + MONITOR_ENCODER_PERIOD
 
                 fps_state.consecutive_idle_polls += 1
