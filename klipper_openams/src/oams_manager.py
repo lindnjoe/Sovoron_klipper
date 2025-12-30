@@ -1943,6 +1943,7 @@ class OAMSManager:
                     self.logger.info("Async unload completed successfully, starting load for %s", target_lane)
                     # Update FPS state
                     fps_state_obj.state = FPSLoadState.UNLOADED
+                    self.logger.error("FOLLOWER STATE CHANGE: Setting following=False after async unload completion for %s", fps_name)
                     fps_state_obj.following = False
                     fps_state_obj.direction = 0
                     fps_state_obj.since = self.reactor.monotonic()
@@ -2123,9 +2124,12 @@ class OAMSManager:
 
             # Check timeout (30 seconds)
             if eventtime - load_start_time > 30.0:
-                self.logger.error("Async load timed out after 30s")
+                self.logger.error("LOAD TIMEOUT: Async load timed out after 30s for %s (fps=%s, state before timeout: following=%s, manual_override=%s)",
+                                target_lane, fps_name, fps_state_obj.following,
+                                self._get_follower_state(fps_state_obj.current_oams).manual_override if fps_state_obj.current_oams else "N/A")
                 oam_load.action_status = None
                 fps_state_obj.state = FPSLoadState.UNLOADED
+                self.logger.error("LOAD TIMEOUT: Set state=UNLOADED for %s (follower NOT explicitly disabled - should remain active for manual recovery)", fps_name)
                 self._pause_printer_message(f"Load timeout for {target_lane}", active_oams)
                 if monitor:
                     monitor.paused()
@@ -2326,6 +2330,7 @@ class OAMSManager:
 
         if oams.current_spool is None:
             fps_state.state = FPSLoadState.UNLOADED
+            self.logger.error("FOLLOWER STATE CHANGE: Setting following=False because oams.current_spool is None for %s (OAMS reports no spool loaded)", fps_name)
             fps_state.following = False
             fps_state.direction = 0
             fps_state.current_lane = None
@@ -2387,6 +2392,7 @@ class OAMSManager:
 
         if success:
             fps_state.state = FPSLoadState.UNLOADED
+            self.logger.error("FOLLOWER STATE CHANGE: Setting following=False after successful unload for %s", fps_name)
             fps_state.following = False
             fps_state.direction = 0
             fps_state.since = self.reactor.monotonic()
@@ -2485,6 +2491,7 @@ class OAMSManager:
 
         # Clear FPS state (matching _unload_filament_for_fps and cross-extruder clear logic)
         fps_state.state = FPSLoadState.UNLOADED
+        self.logger.error("FOLLOWER STATE CHANGE: Setting following=False during infinite runout lane clear for %s (lane=%s)", fps_name, lane_name)
         fps_state.following = False
         fps_state.direction = 0
         fps_state.since = self.reactor.monotonic()
@@ -3396,13 +3403,13 @@ class OAMSManager:
             try:
                 oams.set_oams_follower(enable, direction)
                 state.last_state = desired_state
-                # Log follower disable at INFO level to track what's disabling it during clogs
+                # Log follower commands at ERROR level to track hardware commands during error recovery
                 if enable:
-                    self.logger.debug("Follower enabled for %s (%s)", oams_name, context or "no context")
+                    self.logger.error("FOLLOWER HW CMD: Sent ENABLE to %s (direction=%s, context=%s, manual_override=%s)",
+                                    oams_name, "forward" if direction == 1 else "reverse", context or "no context", state.manual_override)
                 else:
-                    self.logger.info("Follower DISABLED for %s (%s) - manual_override=%s",
-                                   oams_name, context or "no context",
-                                   state.manual_override)
+                    self.logger.error("FOLLOWER HW CMD: Sent DISABLE to %s (context=%s, manual_override=%s)",
+                                   oams_name, context or "no context", state.manual_override)
             except Exception:
                 self.logger.error("Failed to %s follower for %s%s", "enable" if enable else "disable",
                                 oams_name, f" ({context})" if context else "")
@@ -3412,7 +3419,7 @@ class OAMSManager:
         try:
             state = self._get_follower_state(oams_name)
             if state.manual_override:
-                self.logger.debug("Skipping automatic follower control for %s (manual override active)", oams_name)
+                self.logger.error("FOLLOWER UPDATE SKIPPED: manual_override=True for %s (automatic follower control disabled)", oams_name)
                 return
 
             if not self._is_oams_mcu_ready(oams):
