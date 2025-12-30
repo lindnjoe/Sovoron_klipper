@@ -57,6 +57,7 @@ except Exception:
 
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 _ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
+_ORIGINAL_SET_LANE_LOADED = getattr(AFCLane, "cmd_SET_LANE_LOADED", None)
 
 class _VirtualRunoutHelper:
     """Minimal runout helper used by AMS-managed virtual sensors."""
@@ -3129,6 +3130,50 @@ def _patch_infinite_runout_handler() -> None:
     AFCLane._perform_infinite_runout = _ams_perform_infinite_runout
     AFCLane._ams_infinite_runout_patched = True
 
+def _patch_set_lane_loaded_for_fps_sync() -> None:
+    """Patch AFCLane.cmd_SET_LANE_LOADED to update OAMS FPS state.
+
+    This prevents critical state desync where AFC thinks a lane is loaded to toolhead
+    but OAMS FPS state thinks nothing is loaded, preventing unload operations.
+    """
+    if _ORIGINAL_SET_LANE_LOADED is None:
+        return
+
+    if getattr(AFCLane, "_ams_set_lane_loaded_patched", False):
+        return
+
+    def _ams_cmd_SET_LANE_LOADED(self, gcmd):
+        """Wrapped SET_LANE_LOADED that also updates OAMS FPS state."""
+        # Call the original SET_LANE_LOADED command first
+        if callable(_ORIGINAL_SET_LANE_LOADED):
+            _ORIGINAL_SET_LANE_LOADED(self, gcmd)
+
+        # Now update OAMS FPS state to prevent state desync
+        # Only applies to OpenAMS lanes, gracefully skips for other unit types
+        try:
+            afc = getattr(self, "afc", None)
+            if afc is None:
+                return
+
+            printer = getattr(afc, "printer", None)
+            if printer is None:
+                return
+
+            oams_manager = printer.lookup_object("oams_manager", None)
+            if oams_manager and hasattr(oams_manager, 'update_fps_state_for_lane'):
+                # Update FPS state so OAMS knows filament is loaded
+                if oams_manager.update_fps_state_for_lane(self.name):
+                    self.logger.info("OpenAMS FPS state updated for SET_LANE_LOADED: lane %s", self.name)
+                else:
+                    self.logger.debug("SET_LANE_LOADED: Not an OpenAMS lane, skipping FPS state update")
+        except Exception as e:
+            # Don't fail the command if OAMS update fails
+            # AFC state is already set correctly, OAMS update is supplementary
+            self.logger.warning("Failed to update OpenAMS FPS state for %s: %s", self.name, e)
+
+    AFCLane.cmd_SET_LANE_LOADED = _ams_cmd_SET_LANE_LOADED
+    AFCLane._ams_set_lane_loaded_patched = True
+
 def _has_openams_hardware(printer):
     """Check if any OpenAMS hardware is configured in the system.
 
@@ -3158,4 +3203,5 @@ def load_config_prefix(config):
     _patch_lane_pre_sensor_for_ams()
     _patch_extruder_for_virtual_ams()
     _patch_infinite_runout_handler()
+    _patch_set_lane_loaded_for_fps_sync()
     return afcAMS(config)

@@ -2507,6 +2507,91 @@ class OAMSManager:
             except Exception:
                 self.logger.error("Failed to notify AFC coordinator about lane %s unload after runout", lane_name)
 
+    def update_fps_state_for_lane(self, lane_name: str) -> bool:
+        """Update FPS state when SET_LANE_LOADED is called manually.
+
+        This prevents state desync where AFC thinks a lane is loaded to toolhead
+        but OAMS FPS state thinks nothing is loaded, which would prevent unloading.
+
+        Args:
+            lane_name: AFC lane name (e.g., "lane4")
+
+        Returns:
+            True if FPS state was updated successfully, False otherwise
+        """
+        afc = self._get_afc()
+        if afc is None:
+            self.logger.warning("AFC not available for updating FPS state for lane %s", lane_name)
+            return False
+
+        # Get the lane object to find its OAMS unit and bay index
+        lane = afc.lanes.get(lane_name)
+        if lane is None:
+            self.logger.warning("Lane %s not found in AFC", lane_name)
+            return False
+
+        # Get unit object and OAMS name
+        unit_obj = getattr(lane, "unit_obj", None)
+        if unit_obj is None:
+            self.logger.debug("Lane %s has no unit_obj (not an OpenAMS lane)", lane_name)
+            return False
+
+        oams_name = getattr(unit_obj, "oams_name", None)
+        if not oams_name:
+            self.logger.debug("Lane %s unit has no oams_name (not an OpenAMS lane)", lane_name)
+            return False
+
+        # Get bay index (spool slot) from lane index
+        bay_index = None
+        if hasattr(lane, 'index'):
+            try:
+                bay_index = int(lane.index) - 1  # Convert to 0-indexed
+            except (ValueError, TypeError):
+                pass
+
+        if bay_index is None or bay_index < 0:
+            self.logger.warning("Could not determine bay index for lane %s", lane_name)
+            return False
+
+        # Find the OAMS object
+        oam = self.oams.get(oams_name)
+        if oam is None:
+            oam = self.oams.get(f"oams {oams_name}")
+        if oam is None:
+            self.logger.warning("OAMS %s not found for lane %s", oams_name, lane_name)
+            return False
+
+        # Find which FPS has this OAMS
+        fps_name = None
+        for fps_name_candidate, fps in self.fpss.items():
+            if hasattr(fps, "oams"):
+                fps_oams = fps.oams
+                if isinstance(fps_oams, list):
+                    if oam in fps_oams:
+                        fps_name = fps_name_candidate
+                        break
+                else:
+                    if fps_oams == oam:
+                        fps_name = fps_name_candidate
+                        break
+
+        if not fps_name or fps_name not in self.current_state.fps_state:
+            self.logger.warning("Could not find FPS for OAMS %s (lane %s)", oams_name, lane_name)
+            return False
+
+        # Update FPS state to show lane is loaded
+        fps_state = self.current_state.fps_state[fps_name]
+        fps_state.state = FPSLoadState.LOADED
+        fps_state.current_lane = lane_name
+        fps_state.current_oams = oams_name
+        fps_state.current_spool_idx = bay_index
+        fps_state.since = self.reactor.monotonic()
+        fps_state.direction = 1
+
+        self.logger.info("Updated FPS state for SET_LANE_LOADED: %s ? lane=%s, oams=%s, bay=%d",
+                        fps_name, lane_name, oams_name, bay_index)
+        return True
+
     def _notify_lane_loaded_to_afc(self, lane_name: str, oams_name: str, bay_index: int, eventtime: float) -> bool:
         """Notify AFC that a lane has been loaded (updates virtual sensors and lane state).
 

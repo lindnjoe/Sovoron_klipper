@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import traceback
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -792,17 +791,6 @@ class AMSHardwareService:
             snapshot = self._lane_snapshots.get(key)
         return dict(snapshot) if snapshot else None
 
-    def lane_snapshots(self, unit_name: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
-        """Return all cached lane snapshots, optionally filtered by unit name."""
-        with self._lock:
-            items = list(self._lane_snapshots.items())
-
-        if unit_name is not None:
-            prefix = f"{unit_name}:"
-            items = [(key, value) for key, value in items if key.startswith(prefix)]
-
-        return {key: dict(value) for key, value in items}
-
     def resolve_lane_for_spool(self, unit_name: str, spool_index: Optional[int]) -> Optional[str]:
         """Map a spool index to its corresponding lane name.
         
@@ -981,9 +969,8 @@ class AMSRunoutCoordinator:
             try:
                 if unit.handle_openams_lane_tool_state(lane_name, loaded, spool_index=spool_index, eventtime=eventtime):
                     handled = True
-            except Exception as exc:
-                tb = "".join(traceback.format_exception(exc))
-                unit.logger.error(f"Failed to update AFC lane {lane_name} from OpenAMS tool state: {exc}\n{tb}")
+            except Exception:
+                unit.logger.error("Failed to update AFC lane %s from OpenAMS tool state", lane_name)
         return handled
 
     @classmethod
