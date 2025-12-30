@@ -2997,6 +2997,30 @@ class OAMSManager:
         if is_printing:
             # Critical: printer is trying to print without filament loaded
             self.logger.error("CRITICAL FAILURE during printing: %s - PAUSING PRINTER", error_message)
+
+            # CRITICAL: Enable follower BEFORE pausing so manual extrusion is available
+            # Find the FPS state for this OAMS and enable its follower
+            if oams_name:
+                for fps_name, fps_state in self.current_state.fps_state.items():
+                    if fps_state.current_oams == oams_name and fps_state.current_spool_idx is not None:
+                        oams_obj = self.oams.get(oams_name)
+                        if oams_obj is not None:
+                            # Set manual override FIRST to prevent auto-control from interfering
+                            state = self._get_follower_state(oams_name)
+                            state.manual_override = True
+                            self.logger.error("CRITICAL FAILURE: Set manual_override=True for %s", oams_name)
+
+                            self._enable_follower(fps_name, fps_state, oams_obj, 1, "critical failure - keep follower active")
+
+                            if not fps_state.following:
+                                fps_state.stuck_spool.restore_follower = True
+                                self.logger.error("CRITICAL FAILURE: Follower FAILED to enable for %s (following=%s)",
+                                                fps_name, fps_state.following)
+                            else:
+                                self.logger.error("CRITICAL FAILURE: Follower SUCCESSFULLY enabled for %s (following=%s)",
+                                                fps_name, fps_state.following)
+                        break
+
             # Schedule pause asynchronously to avoid deadlock when called from gcode command
             self._schedule_async_pause(error_message, oams_name)
         else:
@@ -3599,6 +3623,30 @@ class OAMSManager:
             except Exception:
                 self.logger.error("Failed to set stuck spool LED on %s spool %s", fps_name, spool_idx)
 
+        # CRITICAL: Enable follower and set manual override BEFORE pausing
+        # This ensures follower stays running for manual recovery/extrusion
+        self.logger.error("STUCK SPOOL PAUSE: Attempting follower enable for %s (oams=%s, spool=%s)",
+                        fps_name, fps_state.current_oams, spool_idx)
+        if fps_state.current_oams and spool_idx is not None:
+            if oams is not None:
+                # Set manual override FIRST to prevent automatic control from interfering
+                state = self._get_follower_state(fps_state.current_oams)
+                state.manual_override = True
+                self.logger.error("STUCK SPOOL PAUSE: Set manual_override=True for %s", fps_state.current_oams)
+
+                self._enable_follower(fps_name, fps_state, oams, 1, "stuck spool pause - keep follower active")
+
+                if not fps_state.following:
+                    fps_state.stuck_spool.restore_follower = True
+                    self.logger.error("STUCK SPOOL PAUSE: Follower FAILED to enable for %s (following=%s)", fps_name, fps_state.following)
+                else:
+                    self.logger.error("STUCK SPOOL PAUSE: Follower SUCCESSFULLY enabled for %s (following=%s)", fps_name, fps_state.following)
+            else:
+                self.logger.error("STUCK SPOOL PAUSE: Cannot enable follower - oams is None")
+        else:
+            self.logger.error("STUCK SPOOL PAUSE: Cannot enable follower - current_oams=%s, spool_idx=%s",
+                            fps_state.current_oams, spool_idx)
+
         # Abort current action (unload/load)
         if oams is not None:
             try:
@@ -3857,14 +3905,18 @@ class OAMSManager:
             if fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 1, "load stuck detected")
 
-            # Transition to UNLOADED state cleanly
-            fps_state.state = FPSLoadState.UNLOADED
+            # Clear encoder samples but DON'T change state to UNLOADED
+            # The OAMS load function will handle state transition on failure
+            # If we set UNLOADED here, auto_unload_on_failed_load will try to unload
+            # from UNLOADED state and fail, aborting all retries
             fps_state.clear_encoder_samples()
 
             # Set the stuck flag but DON'T pause - let the OAMS retry logic handle it
             # The retry logic will clear this flag if the retry succeeds
             fps_state.stuck_spool.active = True
             fps_state.stuck_spool.start_time = None
+
+            self.logger.error("STUCK LOAD: Aborted load, allowing OAMS retry logic to handle state transition")
 
             # CRITICAL: Keep follower enabled even during stuck load
             # User needs follower running to manually fix clogs or re-attempt load
