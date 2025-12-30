@@ -68,7 +68,7 @@ MIN_ENCODER_DIFF = 1
 FILAMENT_PATH_LENGTH_FACTOR = 1.14
 MONITOR_ENCODER_PERIOD = 2.0
 MONITOR_ENCODER_PERIOD_IDLE = 4.0  # OPTIMIZATION: Longer interval when idle
-MONITOR_ENCODER_SPEED_GRACE = 0.5  # Reduced from 2.0 for faster stuck spool detection
+MONITOR_ENCODER_SPEED_GRACE = 2.0
 AFC_DELEGATION_TIMEOUT = 30.0
 COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
@@ -3783,10 +3783,6 @@ class OAMSManager:
                     fps_state.consecutive_idle_polls = 0
                     fps_state.idle_backoff_level = 0
                     fps_state.last_state_change = now
-                    # Use faster 0.5s interval during LOADING for quick stuck spool detection (low FPS check)
-                    # Normal 2.0s interval is too slow - stuck spool can chew filament in that time
-                    if state == FPSLoadState.LOADING:
-                        return eventtime + 0.5  # Check every 0.5s during load operations
                     return eventtime + MONITOR_ENCODER_PERIOD
 
                 fps_state.consecutive_idle_polls += 1
@@ -3876,45 +3872,6 @@ class OAMSManager:
 
         # Skip check if we're still in grace period
         if now - fps_state.since <= MONITOR_ENCODER_SPEED_GRACE:
-            return
-
-        # Quick low FPS check - spool stuck/can't feed from AMS
-        # If FPS pressure drops near zero during load, follower is feeding but spool isn't unwinding
-        # This catches stuck spools in AMS immediately without waiting for encoder samples
-        if pressure < 0.15:
-            lane_label = fps_state.current_lane or fps_name
-            spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
-
-            self.logger.error("STUCK LOAD: Low FPS pressure %.2f detected - spool stuck/can't feed from AMS", pressure)
-
-            # Abort the current load operation cleanly
-            try:
-                oams.abort_current_action()
-                self.logger.info("Aborted stuck spool load operation on %s: low FPS pressure", fps_name)
-            except Exception:
-                self.logger.error("Failed to abort load operation on %s", fps_name)
-
-            # Set LED error and stuck flag
-            if fps_state.current_spool_idx is not None:
-                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 1, "load stuck detected (low FPS)")
-
-            fps_state.clear_encoder_samples()
-            fps_state.stuck_spool.active = True
-            fps_state.stuck_spool.start_time = None
-
-            # Enable follower with manual override for recovery
-            self.logger.error("STUCK LOAD: Attempting follower enable for %s (oams=%s, spool=%s)",
-                            fps_name, fps_state.current_oams, fps_state.current_spool_idx)
-            if fps_state.current_oams and fps_state.current_spool_idx is not None:
-                oams_obj = self.oams.get(fps_state.current_oams)
-                if oams_obj is not None:
-                    state = self._get_follower_state(fps_state.current_oams)
-                    state.manual_override = True
-                    self.logger.error("STUCK LOAD: Set manual_override=True for %s", fps_state.current_oams)
-                    self._enable_follower(fps_name, fps_state, oams_obj, 1, "stuck load (low FPS) - keep follower active")
-
-            self.logger.info("Spool appears stuck while loading %s spool %s (low FPS %.2f) - letting retry logic handle it",
-                           lane_label, spool_label, pressure)
             return
 
         encoder_diff = fps_state.record_encoder_sample(encoder_value)
