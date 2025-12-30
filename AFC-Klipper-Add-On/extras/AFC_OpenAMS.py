@@ -2248,12 +2248,11 @@ class afcAMS(afcUnit):
             # Ensure virtual tool sensor is fully synced after lane load
             # This guarantees AMS virtual toolhead sensors show correct state
             try:
-                self.logger.info("DEBUG: About to sync virtual sensor - lane_name=%s, lane.name=%s, eventtime=%s",
-                                lane_name, getattr(lane, 'name', 'NO_NAME_ATTR'), eventtime)
+                self.logger.debug(f"About to sync virtual sensor - lane_name={lane_name}, lane.name={getattr(lane, 'name', 'NO_NAME_ATTR')}, eventtime={eventtime}")
                 self._sync_virtual_tool_sensor(eventtime, lane.name, force=True)
-                self.logger.info("Synced virtual tool sensor for lane %s after OpenAMS load notification", lane.name)
+                self.logger.info(f"Synced virtual tool sensor for lane {lane.name} after OpenAMS load notification")
             except Exception as e:
-                self.logger.error("Failed to sync virtual tool sensor for lane %s after load: %s", lane.name, e)
+                self.logger.error(f"Failed to sync virtual tool sensor for lane {lane.name} after load: {e}")
 
             return True
 
