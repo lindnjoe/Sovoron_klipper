@@ -4203,18 +4203,32 @@ class OAMSManager:
 
             fps_state.clog.active = True
 
-            # CRITICAL: Enable follower FIRST before pausing
-            # This ensures follower stays running even if pause fails
-            # Manual extrusion remains available without requiring OAMSM_CLEAR_ERRORS
-            if oams is not None and fps_state.current_spool_idx is not None:
-                self._enable_follower(fps_name, fps_state, oams, 1, "clog detected - keep follower active")
-                # Set manual override to prevent automatic hub-sensor control from disabling it
-                # This keeps follower enabled even if hub sensors are empty during clog
+            # CRITICAL: Set manual override FIRST to prevent automatic follower control from interfering
+            # Then enable follower before pausing to ensure it's available for manual extrusion
+            self.logger.error("CLOG DETECTED: Attempting follower enable for %s (oams=%s, spool=%s)",
+                            fps_name, fps_state.current_oams, fps_state.current_spool_idx)
+            if fps_state.current_oams and fps_state.current_spool_idx is not None:
+                # Set manual override FIRST to prevent automatic control from interfering
                 state = self._get_follower_state(fps_state.current_oams)
                 state.manual_override = True
-                # If the follower still can't start, mark it for restore on resume
-                if not fps_state.following:
-                    fps_state.stuck_spool.restore_follower = True
+                self.logger.error("CLOG DETECTED: Set manual_override=True for %s", fps_state.current_oams)
+
+                if oams is not None:
+                    self._enable_follower(fps_name, fps_state, oams, 1, "clog detected - keep follower active")
+
+                    # If the follower still can't start, mark it for restore on resume
+                    if not fps_state.following:
+                        fps_state.stuck_spool.restore_follower = True
+                        self.logger.error("CLOG DETECTED: Follower FAILED to enable for %s (following=%s)",
+                                        fps_name, fps_state.following)
+                    else:
+                        self.logger.error("CLOG DETECTED: Follower SUCCESSFULLY enabled for %s (following=%s)",
+                                        fps_name, fps_state.following)
+                else:
+                    self.logger.error("CLOG DETECTED: Cannot enable follower - oams is None")
+            else:
+                self.logger.error("CLOG DETECTED: Cannot enable follower - current_oams=%s, current_spool_idx=%s",
+                                fps_state.current_oams, fps_state.current_spool_idx)
 
             # Pause printer with error message
             # SAFETY: Wrap pause in try/except to prevent crash if pause logic fails
