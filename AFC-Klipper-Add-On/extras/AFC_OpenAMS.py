@@ -2198,19 +2198,14 @@ class afcAMS(afcUnit):
                         setattr(tool_obj, "detect_state", 1)
                         setattr(tool_obj, "lane_loaded", lane.name)
                     self.logger.info(
-                        "AFC tool snapshot after load: tool=%s lane_loaded=%s detect_state=%s tool_obj_detect_state=%s",
-                        getattr(extruder_obj, "name", None),
-                        getattr(extruder_obj, "lane_loaded", None),
-                        getattr(extruder_obj, "detect_state", None),
-                        getattr(tool_obj, "detect_state", None) if tool_obj is not None else None,
+                        f"AFC tool snapshot after load: tool={getattr(extruder_obj, 'name', None)} "
+                        f"lane_loaded={getattr(extruder_obj, 'lane_loaded', None)} "
+                        f"detect_state={getattr(extruder_obj, 'detect_state', None)} "
+                        f"tool_obj_detect_state={getattr(tool_obj, 'detect_state', None) if tool_obj is not None else None}"
                     )
                 except Exception as exc:
-                    self.logger.error(
-                        "Failed to stamp extruder object state for %s: %s\n%s",
-                        lane.name,
-                        exc,
-                        traceback.format_exc(),
-                    )
+                    tb = traceback.format_exc()
+                    self.logger.error(f"Failed to stamp extruder object state for {lane.name}: {exc}\n{tb}")
                 try:
                     lane.sync_to_extruder()
                     # Wait for all moves to complete to prevent "Timer too close" errors
@@ -2299,8 +2294,9 @@ class afcAMS(afcUnit):
                 except Exception:
                     self.logger.error("Failed to mirror tool sensor state for unloaded lane %s", lane.name)
             return True
-        except Exception:
-            self.logger.error("Unhandled error updating lane %s from OpenAMS tool state", lane_name, exc_info=True)
+        except Exception as exc:
+            tb = traceback.format_exc()
+            self.logger.error(f"Unhandled error updating lane {lane_name} from OpenAMS tool state: {exc}\n{tb}")
             return False
 
     def mark_cross_extruder_runout(self, lane_name: str) -> bool:
