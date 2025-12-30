@@ -3186,23 +3186,27 @@ class OAMSManager:
                 if tracked_state.current_oams is not None:
                     state = self._get_follower_state(tracked_state.current_oams)
                     state.manual_override = True
-                    self.logger.info("Set manual_override=True for %s to prevent auto-disable during post-load clog", tracked_state.current_oams)
+                    self.logger.error("POST-LOAD CLOG: Set manual_override=True for %s to prevent auto-disable", tracked_state.current_oams)
 
                 # Only attempt follower enable if MCU is ready and responding
                 if oams_obj is not None and tracked_state.current_spool_idx is not None:
                     if self._is_oams_mcu_ready(oams_obj):
+                        self.logger.error("POST-LOAD CLOG: Attempting to enable follower for %s (oams=%s, spool=%s)",
+                                        fps_name, tracked_state.current_oams, tracked_state.current_spool_idx)
                         self._enable_follower(fps_name, tracked_state, oams_obj, 1, "post-load clog detected - keep follower active")
                         # If the follower still can't start, mark it for restore on resume
                         if not tracked_state.following:
                             tracked_state.stuck_spool.restore_follower = True
-                            self.logger.warning("Follower failed to enable for %s during post-load clog - marked for restore", fps_name)
+                            self.logger.error("POST-LOAD CLOG: Follower FAILED to enable for %s (following=%s) - marked for restore",
+                                            fps_name, tracked_state.following)
                         else:
-                            self.logger.info("Follower successfully enabled for %s during post-load clog", fps_name)
+                            self.logger.error("POST-LOAD CLOG: Follower SUCCESSFULLY enabled for %s (following=%s, direction=%s)",
+                                            fps_name, tracked_state.following, tracked_state.direction)
                     else:
-                        self.logger.warning("MCU not ready for %s during post-load clog - skipping follower enable", fps_name)
+                        self.logger.error("POST-LOAD CLOG: MCU NOT READY for %s - skipping follower enable", fps_name)
                         tracked_state.stuck_spool.restore_follower = True
                 else:
-                    self.logger.error("Cannot enable follower during post-load clog: oams_obj=%s, current_spool_idx=%s",
+                    self.logger.error("POST-LOAD CLOG: Cannot enable follower - oams_obj=%s, current_spool_idx=%s",
                                     oams_obj is not None, tracked_state.current_spool_idx)
 
                 # Pause printer with error message
@@ -3866,13 +3870,28 @@ class OAMSManager:
             # User needs follower running to manually fix clogs or re-attempt load
             # Follower doesn't interfere with stuck detection (encoder + FPS based)
             # Enable follower directly during stuck load, bypassing state checks
+            self.logger.error("STUCK LOAD: Attempting follower enable for %s (oams=%s, spool=%s)",
+                            fps_name, fps_state.current_oams, fps_state.current_spool_idx)
             if fps_state.current_oams and fps_state.current_spool_idx is not None:
                 oams_obj = self.oams.get(fps_state.current_oams)
                 if oams_obj is not None:
-                    self._enable_follower(fps_name, fps_state, oams_obj, 1, "stuck load - keep follower active")
-                    # Set manual override to prevent automatic hub-sensor control from disabling it
+                    # Set manual override FIRST to prevent automatic control from interfering
                     state = self._get_follower_state(fps_state.current_oams)
                     state.manual_override = True
+                    self.logger.error("STUCK LOAD: Set manual_override=True for %s", fps_state.current_oams)
+
+                    self._enable_follower(fps_name, fps_state, oams_obj, 1, "stuck load - keep follower active")
+
+                    if not fps_state.following:
+                        fps_state.stuck_spool.restore_follower = True
+                        self.logger.error("STUCK LOAD: Follower FAILED to enable for %s (following=%s)", fps_name, fps_state.following)
+                    else:
+                        self.logger.error("STUCK LOAD: Follower SUCCESSFULLY enabled for %s (following=%s)", fps_name, fps_state.following)
+                else:
+                    self.logger.error("STUCK LOAD: Cannot enable follower - oams_obj is None for %s", fps_state.current_oams)
+            else:
+                self.logger.error("STUCK LOAD: Cannot enable follower - current_oams=%s, current_spool_idx=%s",
+                                fps_state.current_oams, fps_state.current_spool_idx)
 
             self.logger.info("Spool appears stuck while loading %s spool %s (%s) - letting retry logic handle it",
                            lane_label, spool_label, stuck_reason)
