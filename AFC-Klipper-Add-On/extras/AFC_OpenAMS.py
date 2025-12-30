@@ -2183,6 +2183,10 @@ class afcAMS(afcUnit):
                     extruder_obj.lane_loaded = lane.name
                     if hasattr(extruder_obj, "detect_state"):
                         extruder_obj.detect_state = 1
+                    tool_obj = getattr(extruder_obj, "tool_obj", None)
+                    if tool_obj is not None:
+                        setattr(tool_obj, "detect_state", 1)
+                        setattr(tool_obj, "lane_loaded", lane.name)
                 except Exception:
                     self.logger.error("Failed to stamp extruder object state for %s", lane.name)
                 try:
