@@ -890,7 +890,10 @@ class afcAMS(afcUnit):
             lane_name: Specific lane to check, or None to check all lanes
             force: If True, update sensor even if state hasn't changed (for post-reboot sync)
         """
+        self.logger.info(f"_sync_virtual_tool_sensor called: lane_name={lane_name}, force={force}, eventtime={eventtime}")
+
         if not self._ensure_virtual_tool_sensor():
+            self.logger.warning(f"_sync_virtual_tool_sensor: _ensure_virtual_tool_sensor returned False, aborting")
             return
 
         desired_state: Optional[bool] = None
@@ -899,14 +902,21 @@ class afcAMS(afcUnit):
 
         if lane_name:
             lane = self.lanes.get(lane_name)
+            self.logger.info(f"_sync_virtual_tool_sensor: lane={lane}, lane_name={lane_name}")
             if lane is not None and self._lane_matches_extruder(lane):
+                self.logger.info(f"_sync_virtual_tool_sensor: lane matches extruder, calling _lane_reports_tool_filament")
                 result = self._lane_reports_tool_filament(lane, sync_only=force)
+                self.logger.info(f"_sync_virtual_tool_sensor: _lane_reports_tool_filament returned {result}")
                 if result is not None:
                     desired_state = result
                     desired_lane = getattr(lane, "name", None)
                     desired_lane_obj = lane
+                    self.logger.info(f"_sync_virtual_tool_sensor: set desired_state={desired_state}, desired_lane={desired_lane}")
+            else:
+                self.logger.warning(f"_sync_virtual_tool_sensor: lane is None or doesn't match extruder - lane={lane}, matches={self._lane_matches_extruder(lane) if lane else 'N/A'}")
 
         if desired_state is None:
+            self.logger.info(f"_sync_virtual_tool_sensor: desired_state is None, searching all lanes")
             pending_false = None
             matching_lanes = 0
             for lane in self.lanes.values():
@@ -931,11 +941,15 @@ class afcAMS(afcUnit):
             if desired_state is None and pending_false is not None:
                 desired_state, desired_lane, desired_lane_obj = pending_false
 
+            self.logger.info(f"_sync_virtual_tool_sensor: after searching, desired_state={desired_state}, matching_lanes={matching_lanes}")
+
         # Skip update only if state matches AND not forcing
         if desired_state is None or (not force and desired_state == self._last_virtual_tool_state):
+            self.logger.warning(f"_sync_virtual_tool_sensor: SKIPPING update - desired_state={desired_state}, force={force}, _last_virtual_tool_state={self._last_virtual_tool_state}")
             return
 
         # Pass force flag down to ensure sensor updates when explicitly requested
+        self.logger.info(f"_sync_virtual_tool_sensor: calling _set_virtual_tool_sensor_state with desired_state={desired_state}, force={force}")
         self._set_virtual_tool_sensor_state(desired_state, eventtime, desired_lane, force=force, lane_obj=desired_lane_obj)
 
     def _unit_matches(self, unit_value: Optional[str]) -> bool:
