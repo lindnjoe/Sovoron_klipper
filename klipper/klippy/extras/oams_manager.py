@@ -3144,12 +3144,8 @@ class OAMSManager:
         if printer_state_text:
             lowered_state = printer_state_text.lower()
             if "lost communication" in lowered_state or "mcu" in lowered_state:
-                self.logger.warning(
-                    "Printer reported an error state during pause handling: {Pause notification may fail because printer reported: {printer_state_text}"}",
-                    printer_state_text,
-                )
-                gcode.respond_info(
-                    f")
+                self.logger.warning(f"Printer reported an error state during pause handling: {printer_state_text}")
+                gcode.respond_info(f"Pause notification may fail because printer reported: {printer_state_text}")
 
         already_paused = False
         try:
@@ -3367,7 +3363,7 @@ class OAMSManager:
                 oams.set_led_error(spool_idx, error_state)
                 self.led_error_state[led_key] = error_state
                 if context and self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug("LED error {"set" if error_state else "cleared"} for {oams_name} spool {spool_idx} ({context})")
+                    self.logger.debug(f"LED error {'set' if error_state else 'cleared'} for {oams_name} spool {spool_idx} ({context})")
             except Exception:
                 action = "set" if error_state else "clear"
                 context_str = f" ({context})" if context else ""
@@ -3426,7 +3422,7 @@ class OAMSManager:
         desired_state = (enable, direction)
 
         if not self._is_oams_mcu_ready(oams):
-            self.logger.debug(f"Skipping follower change for {oams_name} ({context or "no context"}) because MCU is not ready")
+            self.logger.debug(f"Skipping follower change for {oams_name} ({context or 'no context'}) because MCU is not ready")
             return
 
         # Only send command if state changed or this is the first command
@@ -3436,9 +3432,9 @@ class OAMSManager:
                 state.last_state = desired_state
                 # Log follower commands at ERROR level to track hardware commands during error recovery
                 if enable:
-                    self.logger.error(f"Follower hardware: sent ENABLE to {oams_name} (direction={"forward" if direction == 1 else "reverse"}, context={context or "no context"}, manual_override={state.manual_override})")
+                    self.logger.error(f"Follower hardware: sent ENABLE to {oams_name} (direction={'forward' if direction == 1 else 'reverse'}, context={context or 'no context'}, manual_override={state.manual_override})")
                 else:
-                    self.logger.error(f"Follower hardware: sent DISABLE to {oams_name} (context={context or "no context"}, manual_override={state.manual_override})")
+                    self.logger.error(f"Follower hardware: sent DISABLE to {oams_name} (context={context or 'no context'}, manual_override={state.manual_override})")
             except Exception:
                 action = "enable" if enable else "disable"
                 context_str = f" ({context})" if context else ""
@@ -4425,7 +4421,7 @@ class OAMSManager:
                         return
 
                     except Exception as e:
-                        self.logger.error(f"Failed to execute cross-extruder runout sequence - Exception: {str(e}"))
+                        self.logger.error(f"Failed to execute cross-extruder runout sequence - Exception: {str(e)}")
 
                         # Clear cross-extruder flag on error too
                         if source_lane_name:
@@ -4458,7 +4454,7 @@ class OAMSManager:
                             monitor.start()
                         return
 
-                    self.logger.error(f"Failed to delegate infinite runout for {fps_name} on {source_lane_name or "<unknown>"} via AFC")
+                    self.logger.error(f"Failed to delegate infinite runout for {fps_name} on {source_lane_name or '<unknown>'} via AFC")
                     fps_state.reset_runout_positions()
                     self._pause_printer_message(f"Unable to delegate infinite runout for {source_lane_name or fps_name}", fps_state.current_oams or active_oams)
                     if monitor:
@@ -4613,7 +4609,8 @@ class OAMSManager:
                 if reason:
                     self.logger.debug(f"Monitors paused for {reason}")
             except Exception:
-                self.logger.error(f"Failed to pause monitors{f" for {reason}" if reason else ""}", exc_info=True)
+                reason_str = f" for {reason}" if reason else ""
+                self.logger.error(f"Failed to pause monitors{reason_str}", exc_info=True)
                 monitors_were_running = False
         try:
             yield
@@ -4624,7 +4621,8 @@ class OAMSManager:
                     if reason:
                         self.logger.debug(f"Monitors resumed after {reason}")
                 except Exception:
-                    self.logger.error(f"Failed to resume monitors{f" after {reason}" if reason else ""}", exc_info=True)
+                    reason_str = f" after {reason}" if reason else ""
+                    self.logger.error(f"Failed to resume monitors{reason_str}", exc_info=True)
 
 
 def load_config(config):
