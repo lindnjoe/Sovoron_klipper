@@ -2370,12 +2370,20 @@ class afcAMS(afcUnit):
             spool_mgr = getattr(self.afc, "spool", None)
             if spool_mgr is not None:
                 next_id = getattr(spool_mgr, "next_spool_id", "")
-                has_spool_data = bool(getattr(lane, "spool_id", ""))
+                existing_spool_id = getattr(lane, "spool_id", "")
+                has_spool_data = bool(existing_spool_id)
 
+                # If lane already has a spool_id, refresh data from Spoolman to get current weight
+                if has_spool_data and not next_id and self.afc.spoolman is not None:
+                    try:
+                        # Directly fetch current spool data from Spoolman to preserve weight
+                        spool_mgr.set_spoolID(lane, existing_spool_id, save_vars=False)
+                    except Exception as e:
+                        self.logger.debug(f"Could not refresh Spoolman data for {lane.name} spool {existing_spool_id}: {e}")
                 # Call _set_values if:
                 # 1. next_id is set (apply specific spool data from spoolman), OR
                 # 2. Lane has no spool data (set defaults for any new filament)
-                if next_id or not has_spool_data:
+                elif next_id or not has_spool_data:
                     # Preserve existing weight before calling _set_values
                     # _set_values resets weight to 1000g, but we want to keep actual spool weight
                     existing_weight = getattr(lane, "weight", 0)
@@ -2388,8 +2396,8 @@ class afcAMS(afcUnit):
                         # Only restore if weight is still the default 1000 (meaning Spoolman didn't update it)
                         if getattr(lane, "weight", 0) == 1000:
                             lane.weight = existing_weight
-        except Exception:
-            self.logger.error("Failed to update spool info for %s after load event", lane.name, exc_info=True)
+        except Exception as e:
+            self.logger.error(f"Failed to update spool info for {lane.name} after load event: {e}")
 
         extruder_name = getattr(lane, "extruder_name", None)
         if extruder_name is None and self.registry is not None:
