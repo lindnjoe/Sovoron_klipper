@@ -2178,6 +2178,13 @@ class afcAMS(afcUnit):
                 if extruder_obj is None:
                     self.logger.info("Loaded %s without mapped extruder_obj; skipping sync/select/virtual sensor updates", lane.name)
                     return True
+                # Ensure AFC tool object reflects the loaded lane so activator sees it
+                try:
+                    extruder_obj.lane_loaded = lane.name
+                    if hasattr(extruder_obj, "detect_state"):
+                        extruder_obj.detect_state = 1
+                except Exception:
+                    self.logger.error("Failed to stamp extruder object state for %s", lane.name)
                 try:
                     lane.sync_to_extruder()
                     # Wait for all moves to complete to prevent "Timer too close" errors
