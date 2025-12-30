@@ -1528,7 +1528,7 @@ class OAMSManager:
             return
 
         try:
-            self.logger.info(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={direction} (manual override - will stay enabled regardless of hub sensors)")
+            self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={direction} (manual override - will stay enabled regardless of hub sensors)")
             oams_obj.set_oams_follower(enable, direction)
             fps_state.following = bool(enable)
             fps_state.direction = direction
@@ -1537,7 +1537,7 @@ class OAMSManager:
             state.last_state = (enable, direction)
             # Set manual override flag - follower stays enabled even if hub sensors are empty
             state.manual_override = True
-            self.logger.info(f"OAMSM_FOLLOWER: successfully enabled follower on {fps_name} (manual override active)")
+            self.logger.debug(f"OAMSM_FOLLOWER: successfully enabled follower on {fps_name} (manual override active)")
             gcmd.respond_info(f"Follower enabled on {fps_name} (manual control - use OAMSM_FOLLOWER_RESET to return to automatic)")
         except Exception:
             self.logger.error(f"Failed to set follower on {fps_state.current_oams}")
