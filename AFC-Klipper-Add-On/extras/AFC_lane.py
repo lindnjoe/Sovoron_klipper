@@ -1293,6 +1293,26 @@ class AFCLane:
         self.sync_to_extruder()
         self.afc.save_vars()
         self.unit_obj.select_lane(self)
+
+        # CRITICAL FIX: Update OpenAMS FPS state when manually setting lane loaded
+        # This prevents state desync where AFC thinks lane is loaded but OAMS FPS thinks it isn't
+        # Without this, you can get stuck unable to unload because FPS state is wrong
+        try:
+            # Try to get OAMS manager to update FPS state
+            oams_manager = self.afc.printer.lookup_object("oams_manager", None)
+            if oams_manager and hasattr(oams_manager, 'update_fps_state_for_lane'):
+                # Update FPS state directly so OAMS knows filament is loaded
+                if oams_manager.update_fps_state_for_lane(self.name):
+                    self.logger.info("Updated OpenAMS FPS state for SET_LANE_LOADED: lane %s", self.name)
+                else:
+                    self.logger.debug("SET_LANE_LOADED: Not an OpenAMS lane or FPS state update not needed")
+            else:
+                self.logger.debug("SET_LANE_LOADED: OAMS manager not available, skipping FPS state update")
+        except Exception as e:
+            # Don't fail the command if OAMS update fails
+            # AFC state is already set correctly, OAMS is supplementary
+            self.logger.warning("Failed to update OpenAMS FPS state for %s: %s", self.name, e)
+
         self.logger.info("Manually set {} loaded to toolhead".format(self.name))
 
     cmd_SET_LONG_MOVE_SPEED_help = "Gives ability to set long_moves_speed or rev_long_moves_speed_factor values without having to update config and restart"

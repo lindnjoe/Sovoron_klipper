@@ -12,7 +12,7 @@ from math import pi
 from typing import Tuple, List, Optional, Any, Dict
 
 try:  # pragma: no cover - optional dependency during unit tests
-    from extras.ams_integration import AMSHardwareService
+    from extras.openams_integration import AMSHardwareService
 except Exception:  # pragma: no cover - best-effort integration only
     AMSHardwareService = None
 
@@ -170,10 +170,11 @@ class OAMS:
                 )
                 service.attach_controller(self)
             except Exception:
-                logging.getLogger(__name__).exception(
+                logging.getLogger(__name__).error(
                     "Failed to register OAMS controller with AMSHardwareService"
                 )
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
+        self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
     def get_status(self, eventtime: float) -> dict:
         """Return current hardware status for monitoring."""
@@ -254,12 +255,34 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         except Exception as e:
             logging.error("Failed to initialize OAMS commands: %s", e)
 
+    def handle_ready(self):
+        """Clear software error states when klippy is ready.
+
+        This ensures that any stale action_status states from previous sessions
+        don't prevent the follower from enabling when it should be enabled.
+        Hardware error clearing (LED errors) was already done in handle_connect().
+        """
+        # Clear any stale action status from previous operations
+        # Don't send MCU commands here to avoid interfering with manager initialization
+        self.action_status = None
+        self.action_status_code = None
+        self.action_status_value = None
+        logging.info("OAMS[%d]: Cleared software error states on ready", self.oams_idx)
+
     def get_spool_status(self, bay_index):
         return self.f1s_hes_value[bay_index]
             
     def clear_errors(self):
+        """Clear all error states including LED errors and action status."""
         for i in range(4):
             self.set_led_error(i, 0)
+
+        # Clear any stale action status from previous operations
+        self.action_status = None
+        self.action_status_code = None
+        self.action_status_value = None
+
+        # Re-determine current spool to ensure state is accurate
         self.current_spool = self.determine_current_spool()
             
     def set_led_error(self, idx, value):
@@ -647,13 +670,19 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self.action_status = OAMSStatus.LOADING
         self.oams_load_spool_cmd.send([spool_idx])
         timeout = self.reactor.monotonic() + 30.0  # 30 second timeout
+
+        # CRITICAL FIX: Use reactor.pause() to avoid queueing behind print moves
+        # toolhead.dwell() queues into move queue and blocks during printing
+        # reactor.pause() waits without affecting toolhead command stream
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
                 logging.error("OAMS[%d]: Load operation timed out after 30 seconds", self.oams_idx)
                 self.action_status = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS load operation timed out (MCU unresponsive)"
+            # Use reactor.pause to wait without queueing into toolhead
             self.reactor.pause(self.reactor.monotonic() + 0.1)
+
         if self.action_status_code == OAMSOpCode.SUCCESS:
             self.current_spool = spool_idx
             return True, "Spool loaded successfully"
@@ -685,13 +714,19 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self.action_status = OAMSStatus.UNLOADING
         self.oams_unload_spool_cmd.send()
         timeout = self.reactor.monotonic() + 30.0  # 30 second timeout
+
+        # CRITICAL FIX: Use reactor.pause() to avoid queueing behind print moves
+        # toolhead.dwell() queues into move queue and blocks during printing
+        # reactor.pause() waits without affecting toolhead command stream
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
                 logging.error("OAMS[%d]: Unload operation timed out after 30 seconds", self.oams_idx)
                 self.action_status = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS unload operation timed out (MCU unresponsive)"
+            # Use reactor.pause to wait without queueing into toolhead
             self.reactor.pause(self.reactor.monotonic() + 0.1)
+
         if self.action_status_code == OAMSOpCode.SUCCESS:
             self.current_spool = None
             return True, "Spool unloaded successfully"
