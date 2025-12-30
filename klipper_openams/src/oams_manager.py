@@ -4103,20 +4103,11 @@ class OAMSManager:
 
             fps_state.clog.active = True
 
-            # Pause printer with error message
-            # SAFETY: Wrap pause in try/except to prevent crash if pause logic fails
-            try:
-                self._pause_printer_message(message, fps_state.current_oams)
-            except Exception:
-                self.logger.error("Failed to pause printer during clog on %s - continuing with error state", fps_name, exc_info=True)
-                # Keep active=True to prevent retriggering until user intervention
-                return
-
-            # Keep the follower running during clog pauses so manual extrusion
-            # remains available without requiring OAMSM_CLEAR_ERRORS.
-            # Enable follower directly during clog pause, bypassing state checks
+            # CRITICAL: Enable follower FIRST before pausing
+            # This ensures follower stays running even if pause fails
+            # Manual extrusion remains available without requiring OAMSM_CLEAR_ERRORS
             if oams is not None and fps_state.current_spool_idx is not None:
-                self._enable_follower(fps_name, fps_state, oams, 1, "clog pause - keep follower active")
+                self._enable_follower(fps_name, fps_state, oams, 1, "clog detected - keep follower active")
                 # Set manual override to prevent automatic hub-sensor control from disabling it
                 # This keeps follower enabled even if hub sensors are empty during clog
                 state = self._get_follower_state(fps_state.current_oams)
@@ -4124,6 +4115,15 @@ class OAMSManager:
                 # If the follower still can't start, mark it for restore on resume
                 if not fps_state.following:
                     fps_state.stuck_spool.restore_follower = True
+
+            # Pause printer with error message
+            # SAFETY: Wrap pause in try/except to prevent crash if pause logic fails
+            try:
+                self._pause_printer_message(message, fps_state.current_oams)
+            except Exception:
+                self.logger.error("Failed to pause printer during clog on %s - continuing with error state", fps_name, exc_info=True)
+                # Follower was already enabled above, so just return
+                return
 
     def start_monitors(self):
         """Start all monitoring timers"""
