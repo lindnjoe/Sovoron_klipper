@@ -1836,7 +1836,10 @@ class OAMSManager:
         # Follower should stay enabled throughout same-FPS runouts (never disabled)
         # This is a safety check to ensure follower is active for new lane
         if fps_state.current_oams and fps_state.current_spool_idx is not None:
+            # Try OAMS lookup with fallback (handle both "oams1" and "oams oams1" formats)
             oams = self.oams.get(fps_state.current_oams)
+            if oams is None:
+                oams = self.oams.get(f"oams {fps_state.current_oams}")
             if oams:
                 self._ensure_forward_follower(fps_name, fps_state, "after infinite runout reload")
 
@@ -1900,7 +1903,10 @@ class OAMSManager:
                 monitor.paused()
             return
 
+        # Try OAMS lookup with fallback (handle both "oams1" and "oams oams1" formats)
         oams_unload = self.oams.get(fps_state_obj.current_oams)
+        if oams_unload is None:
+            oams_unload = self.oams.get(f"oams {fps_state_obj.current_oams}")
         if oams_unload is None:
             self.logger.error("OAMS %s not found for unload", fps_state_obj.current_oams)
             self._pause_printer_message(f"OAMS {fps_state_obj.current_oams} not found", active_oams)
@@ -2311,7 +2317,10 @@ class OAMSManager:
         if fps_state.current_oams is None:
             return False, f"FPS {fps_name} has no OAMS loaded"
 
+        # Try OAMS lookup with fallback (handle both "oams1" and "oams oams1" formats)
         oams = self.oams.get(fps_state.current_oams)
+        if oams is None:
+            oams = self.oams.get(f"oams {fps_state.current_oams}")
         if oams is None:
             return False, f"OAMS {fps_state.current_oams} not found for FPS {fps_name}"
 
@@ -3183,7 +3192,10 @@ class OAMSManager:
         if fps_state.following and fps_state.direction == 1:
             return  # Already following in correct direction
 
+        # Try OAMS lookup with fallback (handle both "oams1" and "oams oams1" formats)
         oams = self.oams.get(fps_state.current_oams)
+        if oams is None:
+            oams = self.oams.get(f"oams {fps_state.current_oams}")
         if oams is None:
             self.logger.warning("Cannot enable follower: OAMS %s not found", fps_state.current_oams)
             return
