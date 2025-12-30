@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import traceback
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -981,13 +982,8 @@ class AMSRunoutCoordinator:
                 if unit.handle_openams_lane_tool_state(lane_name, loaded, spool_index=spool_index, eventtime=eventtime):
                     handled = True
             except Exception as exc:
-                # Log full exception details so upstream errors are visible
-                unit.logger.error(
-                    "Failed to update AFC lane %s from OpenAMS tool state: %s",
-                    lane_name,
-                    exc,
-                    exc_info=True,
-                )
+                tb = "".join(traceback.format_exception(exc))
+                unit.logger.error(f"Failed to update AFC lane {lane_name} from OpenAMS tool state: {exc}\n{tb}")
         return handled
 
     @classmethod

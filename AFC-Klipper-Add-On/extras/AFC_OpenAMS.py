@@ -2131,12 +2131,9 @@ class afcAMS(afcUnit):
                     current_loaded_lane = None
 
             self.logger.info(
-                "OpenAMS lane tool state: lane=%s loaded=%s spool_index=%s eventtime=%.3f current_loaded=%s",
-                lane.name,
-                lane_state,
-                spool_index,
-                eventtime if eventtime is not None else -1,
-                getattr(current_loaded_lane, "name", None),
+                f"OpenAMS lane tool state: lane={lane.name} loaded={lane_state} "
+                f"spool_index={spool_index} eventtime={eventtime if eventtime is not None else -1:.3f} "
+                f"current_loaded={getattr(current_loaded_lane, 'name', None)}"
             )
 
             if lane_state:
