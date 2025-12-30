@@ -1715,10 +1715,10 @@ class OAMSManager:
                 issues.append(f"Lane {lane_name} references non-existent AFC unit '{base_unit_name}'")
                 continue
 
-            # Check unit has OAMS name
+            # Check unit has OAMS name (skip Box Turtle units without OAMS)
             oams_name = getattr(unit_obj, "oams_name", None)
             if not oams_name:
-                issues.append(f"AFC unit {base_unit_name} has no oams_name defined")
+                # This is a Box Turtle unit without OAMS - skip silently
                 continue
 
             # Check OAMS exists in OAMS manager
