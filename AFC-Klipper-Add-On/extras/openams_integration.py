@@ -980,8 +980,14 @@ class AMSRunoutCoordinator:
             try:
                 if unit.handle_openams_lane_tool_state(lane_name, loaded, spool_index=spool_index, eventtime=eventtime):
                     handled = True
-            except Exception:
-                unit.logger.error("Failed to update AFC lane %s from OpenAMS tool state", lane_name)
+            except Exception as exc:
+                # Log full exception details so upstream errors are visible
+                unit.logger.error(
+                    "Failed to update AFC lane %s from OpenAMS tool state: %s",
+                    lane_name,
+                    exc,
+                    exc_info=True,
+                )
         return handled
 
     @classmethod
