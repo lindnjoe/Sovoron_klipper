@@ -935,7 +935,8 @@ class afcAMS(afcUnit):
         if desired_state is None or (not force and desired_state == self._last_virtual_tool_state):
             return
 
-        self._set_virtual_tool_sensor_state(desired_state, eventtime, desired_lane, lane_obj=desired_lane_obj)
+        # Pass force flag down to ensure sensor updates when explicitly requested
+        self._set_virtual_tool_sensor_state(desired_state, eventtime, desired_lane, force=force, lane_obj=desired_lane_obj)
 
     def _unit_matches(self, unit_value: Optional[str]) -> bool:
         """Return True when a mux UNIT value targets this AMS instance."""
@@ -2234,11 +2235,9 @@ class afcAMS(afcUnit):
                 self.logger.debug("Unable to select lane %s during OpenAMS load", lane.name)
             if self._lane_matches_extruder(lane):
                 try:
-                    canonical_lane = self._canonical_lane_name(lane.name)
-                    force_update = True
-                    if canonical_lane:
-                        force_update = (self._lane_tool_latches.get(canonical_lane) is not False)
-                    self._set_virtual_tool_sensor_state(True, eventtime, lane.name, force=force_update, lane_obj=lane)
+                    # ALWAYS force update after load notification - don't check lane_tool_latches
+                    # The lane was just loaded, so the sensor MUST be updated regardless of previous state
+                    self._set_virtual_tool_sensor_state(True, eventtime, lane.name, force=True, lane_obj=lane)
                 except Exception:
                     self.logger.error("Failed to mirror tool sensor state for loaded lane %s", lane.name)
 
