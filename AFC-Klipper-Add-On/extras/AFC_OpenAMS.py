@@ -2220,6 +2220,14 @@ class afcAMS(afcUnit):
                     pass
             except Exception:
                 self.logger.error("Failed to sync lane %s to extruder", lane.name)
+
+            # CRITICAL: Select lane BEFORE activating extruder so handle_activate_extruder()
+            # can find the current lane via get_current_lane_obj()
+            try:
+                self.select_lane(lane)
+            except Exception:
+                self.logger.debug("Unable to select lane %s during OpenAMS load", lane.name)
+
             if afc_function is not None:
                 try:
                     afc_function.handle_activate_extruder()
@@ -2229,10 +2237,6 @@ class afcAMS(afcUnit):
                 self.afc.save_vars()
             except Exception:
                 self.logger.error("Failed to persist AFC state after lane load")
-            try:
-                self.select_lane(lane)
-            except Exception:
-                self.logger.debug("Unable to select lane %s during OpenAMS load", lane.name)
             if self._lane_matches_extruder(lane):
                 try:
                     # ALWAYS force update after load notification - don't check lane_tool_latches
