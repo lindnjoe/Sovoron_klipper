@@ -2256,17 +2256,14 @@ class afcAMS(afcUnit):
                     # ALWAYS force update after load notification - don't check lane_tool_latches
                     # The lane was just loaded, so the sensor MUST be updated regardless of previous state
                     self._set_virtual_tool_sensor_state(True, eventtime, lane.name, force=True, lane_obj=lane)
-                except Exception:
-                    self.logger.error("Failed to mirror tool sensor state for loaded lane %s", lane.name)
+                    self.logger.info(f"Set virtual tool sensor to LOADED for lane {lane.name} after OpenAMS load notification")
+                except Exception as e:
+                    self.logger.error(f"Failed to set virtual tool sensor state for loaded lane {lane.name}: {e}")
 
-            # Ensure virtual tool sensor is fully synced after lane load
-            # This guarantees AMS virtual toolhead sensors show correct state
-            try:
-                self.logger.debug(f"About to sync virtual sensor - lane_name={lane_name}, lane.name={getattr(lane, 'name', 'NO_NAME_ATTR')}, eventtime={eventtime}")
-                self._sync_virtual_tool_sensor(eventtime, lane.name, force=True)
-                self.logger.info(f"Synced virtual tool sensor for lane {lane.name} after OpenAMS load notification")
-            except Exception as e:
-                self.logger.error(f"Failed to sync virtual tool sensor for lane {lane.name} after load: {e}")
+            # NOTE: Don't call _sync_virtual_tool_sensor here - it would override the state we just set!
+            # We already set the sensor to True above. Syncing would check extruder state which
+            # hasn't been updated yet, causing it to incorrectly set the sensor back to False.
+            # The sensor will sync naturally on the next state check after extruder updates.
 
             return True
 
