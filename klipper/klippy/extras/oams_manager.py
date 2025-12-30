@@ -2997,6 +2997,30 @@ class OAMSManager:
         if is_printing:
             # Critical: printer is trying to print without filament loaded
             self.logger.error("CRITICAL FAILURE during printing: %s - PAUSING PRINTER", error_message)
+
+            # CRITICAL: Enable follower BEFORE pausing so manual extrusion is available
+            # Find the FPS state for this OAMS and enable its follower
+            if oams_name:
+                for fps_name, fps_state in self.current_state.fps_state.items():
+                    if fps_state.current_oams == oams_name and fps_state.current_spool_idx is not None:
+                        oams_obj = self.oams.get(oams_name)
+                        if oams_obj is not None:
+                            # Set manual override FIRST to prevent auto-control from interfering
+                            state = self._get_follower_state(oams_name)
+                            state.manual_override = True
+                            self.logger.error("CRITICAL FAILURE: Set manual_override=True for %s", oams_name)
+
+                            self._enable_follower(fps_name, fps_state, oams_obj, 1, "critical failure - keep follower active")
+
+                            if not fps_state.following:
+                                fps_state.stuck_spool.restore_follower = True
+                                self.logger.error("CRITICAL FAILURE: Follower FAILED to enable for %s (following=%s)",
+                                                fps_name, fps_state.following)
+                            else:
+                                self.logger.error("CRITICAL FAILURE: Follower SUCCESSFULLY enabled for %s (following=%s)",
+                                                fps_name, fps_state.following)
+                        break
+
             # Schedule pause asynchronously to avoid deadlock when called from gcode command
             self._schedule_async_pause(error_message, oams_name)
         else:
