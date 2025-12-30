@@ -3783,10 +3783,6 @@ class OAMSManager:
                     fps_state.consecutive_idle_polls = 0
                     fps_state.idle_backoff_level = 0
                     fps_state.last_state_change = now
-                    # Use faster 0.5s interval during LOADING for quick stuck spool detection (low FPS check)
-                    # Normal 2.0s interval is too slow - stuck spool can chew filament in that time
-                    if state == FPSLoadState.LOADING:
-                        return eventtime + 0.5  # Check every 0.5s during load operations
                     return eventtime + MONITOR_ENCODER_PERIOD
 
                 fps_state.consecutive_idle_polls += 1
