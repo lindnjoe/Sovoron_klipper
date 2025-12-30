@@ -2205,7 +2205,28 @@ class afcAMS(afcUnit):
                 except Exception:
                     self.logger.error("Failed to unset previously loaded lane")
             try:
+                # Preserve weight before set_loaded() calls _set_values() which resets to 1000g
+                existing_spool_id = getattr(lane, "spool_id", "")
+                existing_weight = getattr(lane, "weight", 0)
+
                 lane.set_loaded()
+
+                # If lane had spool data, refresh from Spoolman to get correct weight
+                if existing_spool_id and self.afc.spoolman is not None:
+                    try:
+                        spool_mgr = getattr(self.afc, "spool", None)
+                        if spool_mgr is not None:
+                            spool_mgr.set_spoolID(lane, existing_spool_id, save_vars=False)
+                            self.logger.debug(f"Refreshed weight for {lane.name} from Spoolman: {lane.weight}g")
+                    except Exception as e:
+                        # If Spoolman refresh fails, restore the original weight
+                        if existing_weight and existing_weight != 0 and existing_weight != 1000:
+                            lane.weight = existing_weight
+                            self.logger.debug(f"Restored weight {existing_weight}g for {lane.name} (Spoolman refresh failed: {e})")
+                # If no spool_id but had a weight, restore it
+                elif existing_weight and existing_weight != 0 and existing_weight != 1000:
+                    lane.weight = existing_weight
+                    self.logger.debug(f"Restored weight {existing_weight}g for {lane.name}")
             except Exception:
                 self.logger.error("Failed to mark lane %s as loaded", lane.name)
             try:
@@ -2371,22 +2392,27 @@ class afcAMS(afcUnit):
             if spool_mgr is not None:
                 next_id = getattr(spool_mgr, "next_spool_id", "")
                 existing_spool_id = getattr(lane, "spool_id", "")
+                existing_weight = getattr(lane, "weight", 0)
                 has_spool_data = bool(existing_spool_id)
+
+                self.logger.debug(f"Load event for {lane.name}: spool_id={existing_spool_id}, weight={existing_weight}, next_id={next_id}, has_data={has_spool_data}")
 
                 # If lane already has a spool_id, refresh data from Spoolman to get current weight
                 if has_spool_data and not next_id and self.afc.spoolman is not None:
                     try:
+                        self.logger.debug(f"Refreshing Spoolman data for {lane.name} spool {existing_spool_id}")
                         # Directly fetch current spool data from Spoolman to preserve weight
                         spool_mgr.set_spoolID(lane, existing_spool_id, save_vars=False)
+                        self.logger.debug(f"After Spoolman refresh: {lane.name} weight={lane.weight}")
                     except Exception as e:
                         self.logger.debug(f"Could not refresh Spoolman data for {lane.name} spool {existing_spool_id}: {e}")
                 # Call _set_values if:
                 # 1. next_id is set (apply specific spool data from spoolman), OR
                 # 2. Lane has no spool data (set defaults for any new filament)
                 elif next_id or not has_spool_data:
+                    self.logger.debug(f"Calling _set_values for {lane.name} (next_id={next_id}, has_data={has_spool_data})")
                     # Preserve existing weight before calling _set_values
                     # _set_values resets weight to 1000g, but we want to keep actual spool weight
-                    existing_weight = getattr(lane, "weight", 0)
 
                     spool_mgr._set_values(lane)
 
@@ -2395,7 +2421,11 @@ class afcAMS(afcUnit):
                     if existing_weight and existing_weight != 0:
                         # Only restore if weight is still the default 1000 (meaning Spoolman didn't update it)
                         if getattr(lane, "weight", 0) == 1000:
+                            self.logger.debug(f"Restoring original weight {existing_weight} for {lane.name}")
                             lane.weight = existing_weight
+                    self.logger.debug(f"After _set_values: {lane.name} weight={lane.weight}")
+                else:
+                    self.logger.debug(f"Skipping spool data update for {lane.name} (already has data, no changes needed)")
         except Exception as e:
             self.logger.error(f"Failed to update spool info for {lane.name} after load event: {e}")
 
