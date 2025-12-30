@@ -3166,43 +3166,53 @@ class OAMSManager:
             if now - tracked_state.post_load_pressure_start < self.post_load_pressure_dwell:
                 return eventtime + POST_LOAD_PRESSURE_CHECK_PERIOD
 
-            oams_obj = None
-            if tracked_state.current_oams is not None:
-                oams_obj = self.oams.get(tracked_state.current_oams)
-            if (oams_obj is not None and tracked_state.current_spool_idx is not None):
-                try:
-                    oams_obj.set_led_error(tracked_state.current_spool_idx, 1)
-                except Exception:
-                    self.logger.error("Failed to set clog LED on %s spool %s after loading", fps_name, tracked_state.current_spool_idx)
+            # Wrap entire clog handling in try/except to prevent reactor crashes
+            try:
+                oams_obj = None
+                if tracked_state.current_oams is not None:
+                    oams_obj = self.oams.get(tracked_state.current_oams)
+                if (oams_obj is not None and tracked_state.current_spool_idx is not None):
+                    try:
+                        oams_obj.set_led_error(tracked_state.current_spool_idx, 1)
+                    except Exception:
+                        self.logger.error("Failed to set clog LED on %s spool %s after loading", fps_name, tracked_state.current_spool_idx)
 
-            message = f"Possible clog detected after loading {tracked_state.current_lane or fps_name}: FPS pressure {pressure:.2f} remained above {POST_LOAD_PRESSURE_THRESHOLD:.2f}"
+                message = f"Possible clog detected after loading {tracked_state.current_lane or fps_name}: FPS pressure {pressure:.2f} remained above {POST_LOAD_PRESSURE_THRESHOLD:.2f}"
 
-            tracked_state.clog.active = True
+                tracked_state.clog.active = True
 
-            # CRITICAL: Set manual override FIRST to prevent automatic follower control from interfering
-            # Then enable follower before pausing to ensure it's available for manual extrusion
-            if tracked_state.current_oams is not None:
-                state = self._get_follower_state(tracked_state.current_oams)
-                state.manual_override = True
-                self.logger.info("Set manual_override=True for %s to prevent auto-disable during post-load clog", tracked_state.current_oams)
+                # CRITICAL: Set manual override FIRST to prevent automatic follower control from interfering
+                # Then enable follower before pausing to ensure it's available for manual extrusion
+                if tracked_state.current_oams is not None:
+                    state = self._get_follower_state(tracked_state.current_oams)
+                    state.manual_override = True
+                    self.logger.info("Set manual_override=True for %s to prevent auto-disable during post-load clog", tracked_state.current_oams)
 
-            if oams_obj is not None and tracked_state.current_spool_idx is not None:
-                self._enable_follower(fps_name, tracked_state, oams_obj, 1, "post-load clog detected - keep follower active")
-                # If the follower still can't start, mark it for restore on resume
-                if not tracked_state.following:
-                    tracked_state.stuck_spool.restore_follower = True
-                    self.logger.warning("Follower failed to enable for %s during post-load clog - marked for restore", fps_name)
+                # Only attempt follower enable if MCU is ready and responding
+                if oams_obj is not None and tracked_state.current_spool_idx is not None:
+                    if self._is_oams_mcu_ready(oams_obj):
+                        self._enable_follower(fps_name, tracked_state, oams_obj, 1, "post-load clog detected - keep follower active")
+                        # If the follower still can't start, mark it for restore on resume
+                        if not tracked_state.following:
+                            tracked_state.stuck_spool.restore_follower = True
+                            self.logger.warning("Follower failed to enable for %s during post-load clog - marked for restore", fps_name)
+                        else:
+                            self.logger.info("Follower successfully enabled for %s during post-load clog", fps_name)
+                    else:
+                        self.logger.warning("MCU not ready for %s during post-load clog - skipping follower enable", fps_name)
+                        tracked_state.stuck_spool.restore_follower = True
                 else:
-                    self.logger.info("Follower successfully enabled for %s during post-load clog", fps_name)
-            else:
-                self.logger.error("Cannot enable follower during post-load clog: oams_obj=%s, current_spool_idx=%s",
-                                oams_obj is not None, tracked_state.current_spool_idx)
+                    self.logger.error("Cannot enable follower during post-load clog: oams_obj=%s, current_spool_idx=%s",
+                                    oams_obj is not None, tracked_state.current_spool_idx)
 
-            # Pause printer with error message
-            self._pause_printer_message(message, tracked_state.current_oams)
+                # Pause printer with error message
+                self._pause_printer_message(message, tracked_state.current_oams)
 
-            self._cancel_post_load_pressure_check(tracked_state)
-            return self.reactor.NEVER
+            except Exception:
+                self.logger.error("Failed to handle post-load clog on %s - continuing with error state", fps_name, exc_info=True)
+            finally:
+                self._cancel_post_load_pressure_check(tracked_state)
+                return self.reactor.NEVER
 
         timer = self.reactor.register_timer(partial(_monitor_pressure, self), self.reactor.NOW)
         fps_state.post_load_pressure_timer = timer
