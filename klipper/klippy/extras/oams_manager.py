@@ -1958,7 +1958,7 @@ class OAMSManager:
                     self.logger.info(f"Async unload completed successfully, starting load for {target_lane}")
                     # Update FPS state
                     fps_state_obj.state = FPSLoadState.UNLOADED
-                    self.logger.error(f"Follower state change: setting following=False after async unload completion for {fps_name}")
+                    self.logger.debug(f"Follower state change: setting following=False after async unload completion for {fps_name}")
                     fps_state_obj.following = False
                     fps_state_obj.direction = 0
                     fps_state_obj.since = self.reactor.monotonic()
@@ -2311,7 +2311,7 @@ class OAMSManager:
 
         if oams.current_spool is None:
             fps_state.state = FPSLoadState.UNLOADED
-            self.logger.error(f"Follower state change: setting following=False because oams.current_spool is None for {fps_name} (OAMS reports no spool loaded)")
+            self.logger.debug(f"Follower state change: setting following=False because oams.current_spool is None for {fps_name} (OAMS reports no spool loaded)")
             fps_state.following = False
             fps_state.direction = 0
             fps_state.current_lane = None
@@ -2373,7 +2373,7 @@ class OAMSManager:
 
         if success:
             fps_state.state = FPSLoadState.UNLOADED
-            self.logger.error(f"Follower state change: setting following=False after successful unload for {fps_name}")
+            self.logger.debug(f"Follower state change: setting following=False after successful unload for {fps_name}")
             fps_state.following = False
             fps_state.direction = 0
             fps_state.since = self.reactor.monotonic()
@@ -2472,7 +2472,7 @@ class OAMSManager:
 
         # Clear FPS state (matching _unload_filament_for_fps and cross-extruder clear logic)
         fps_state.state = FPSLoadState.UNLOADED
-        self.logger.error(f"Follower state change: setting following=False during infinite runout lane clear for {fps_name} (lane={lane_name})")
+        self.logger.debug(f"Follower state change: setting following=False during infinite runout lane clear for {fps_name} (lane={lane_name})")
         fps_state.following = False
         fps_state.direction = 0
         fps_state.since = self.reactor.monotonic()
@@ -3368,9 +3368,9 @@ class OAMSManager:
                 state.last_state = desired_state
                 # Log follower commands at ERROR level to track hardware commands during error recovery
                 if enable:
-                    self.logger.error(f"Follower hardware: sent ENABLE to {oams_name} (direction={'forward' if direction == 1 else 'reverse'}, context={context or 'no context'}, manual_override={state.manual_override})")
+                    self.logger.debug(f"Follower hardware: sent ENABLE to {oams_name} (direction={'forward' if direction == 1 else 'reverse'}, context={context or 'no context'}, manual_override={state.manual_override})")
                 else:
-                    self.logger.error(f"Follower hardware: sent DISABLE to {oams_name} (context={context or 'no context'}, manual_override={state.manual_override})")
+                    self.logger.debug(f"Follower hardware: sent DISABLE to {oams_name} (context={context or 'no context'}, manual_override={state.manual_override})")
             except Exception:
                 action = "enable" if enable else "disable"
                 context_str = f" ({context})" if context else ""
