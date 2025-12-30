@@ -1482,7 +1482,7 @@ class OAMSManager:
             # If already unloaded or no OAMS, just mark as not following and return
             if not fps_state.current_oams:
                 fps_state.following = False
-                self.logger.info("Follower disable requested on %s but no OAMS loaded, marking as not following", fps_name)
+                self.logger.error("FOLLOWER DISABLE REQUESTED: No OAMS loaded on %s, marking as not following", fps_name)
                 return
 
             oams_obj = self.oams.get(fps_state.current_oams)
@@ -1495,15 +1495,15 @@ class OAMSManager:
                     state.last_state = (0, direction)
                     # Keep manual override so it stays disabled (use OAMSM_FOLLOWER_RESET to return to automatic)
                     state.manual_override = True
-                    self.logger.info("Disabled follower on %s (manual override - use OAMSM_FOLLOWER_RESET to return to automatic)", fps_name)
+                    self.logger.error("FOLLOWER DISABLE REQUESTED: Disabled follower on %s (manual override - use OAMSM_FOLLOWER_RESET to return to automatic)", fps_name)
                     gcmd.respond_info(f"Follower disabled on {fps_name} (manual control - use OAMSM_FOLLOWER_RESET to return to automatic)")
                 except Exception:
-                    self.logger.error("Failed to disable follower on %s", fps_state.current_oams)
+                    self.logger.error("FOLLOWER DISABLE REQUESTED: Failed to disable follower on %s", fps_state.current_oams)
                     gcmd.respond_info(f"Failed to disable follower. Check logs.")
             else:
                 # OAMS not found but mark as not following anyway
                 fps_state.following = False
-                self.logger.info("Follower disable: OAMS %s not found, marking as not following", fps_state.current_oams)
+                self.logger.error("FOLLOWER DISABLE REQUESTED: OAMS %s not found, marking as not following", fps_state.current_oams)
             return
 
         # When enabling, we need a valid OAMS
