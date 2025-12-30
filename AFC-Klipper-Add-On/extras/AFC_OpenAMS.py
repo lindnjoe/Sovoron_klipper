@@ -2220,8 +2220,9 @@ class afcAMS(afcUnit):
                             pass
                         return self.reactor.NEVER
 
-                    reinforce_time = (eventtime or self.reactor.monotonic()) + 0.5
-                    self.reactor.register_timer(_reinforce_tool_state, reinforce_time)
+                    base_time = eventtime or self.reactor.monotonic()
+                    for offset in (0.1, 0.5, 1.0):
+                        self.reactor.register_timer(_reinforce_tool_state, base_time + offset)
                 except Exception:
                     pass
                 try:
