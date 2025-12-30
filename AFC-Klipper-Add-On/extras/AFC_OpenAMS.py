@@ -2176,6 +2176,16 @@ class afcAMS(afcUnit):
                     except Exception:
                         self.logger.error("Failed to recover extruder mapping for %s", lane.name)
                 if extruder_obj is None:
+                    extruder_name = getattr(lane, "extruder", None)
+                    if extruder_name and hasattr(self.afc, "tools") and extruder_name in self.afc.tools:
+                        try:
+                            extruder_obj = self.afc.tools[extruder_name]
+                            lane.extruder_obj = extruder_obj
+                            extruder_obj.lane_loaded = lane.name
+                            self.logger.info("Recovered extruder mapping for %s via lane.extruder=%s", lane.name, extruder_name)
+                        except Exception:
+                            self.logger.error("Failed to recover extruder mapping via lane.extruder for %s", lane.name)
+                if extruder_obj is None:
                     self.logger.info("Loaded %s without mapped extruder_obj; skipping sync/select/virtual sensor updates", lane.name)
                     return True
                 # Ensure AFC tool object reflects the loaded lane so activator sees it
@@ -2194,8 +2204,13 @@ class afcAMS(afcUnit):
                         getattr(extruder_obj, "detect_state", None),
                         getattr(tool_obj, "detect_state", None) if tool_obj is not None else None,
                     )
-                except Exception:
-                    self.logger.error("Failed to stamp extruder object state for %s", lane.name)
+                except Exception as exc:
+                    self.logger.error(
+                        "Failed to stamp extruder object state for %s: %s\n%s",
+                        lane.name,
+                        exc,
+                        traceback.format_exc(),
+                    )
                 try:
                     lane.sync_to_extruder()
                     # Wait for all moves to complete to prevent "Timer too close" errors
