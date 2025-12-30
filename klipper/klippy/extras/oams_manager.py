@@ -3188,14 +3188,19 @@ class OAMSManager:
                     state.manual_override = True
                     self.logger.info("Set manual_override=True for %s to prevent auto-disable during post-load clog", tracked_state.current_oams)
 
+                # Only attempt follower enable if MCU is ready and responding
                 if oams_obj is not None and tracked_state.current_spool_idx is not None:
-                    self._enable_follower(fps_name, tracked_state, oams_obj, 1, "post-load clog detected - keep follower active")
-                    # If the follower still can't start, mark it for restore on resume
-                    if not tracked_state.following:
-                        tracked_state.stuck_spool.restore_follower = True
-                        self.logger.warning("Follower failed to enable for %s during post-load clog - marked for restore", fps_name)
+                    if self._is_oams_mcu_ready(oams_obj):
+                        self._enable_follower(fps_name, tracked_state, oams_obj, 1, "post-load clog detected - keep follower active")
+                        # If the follower still can't start, mark it for restore on resume
+                        if not tracked_state.following:
+                            tracked_state.stuck_spool.restore_follower = True
+                            self.logger.warning("Follower failed to enable for %s during post-load clog - marked for restore", fps_name)
+                        else:
+                            self.logger.info("Follower successfully enabled for %s during post-load clog", fps_name)
                     else:
-                        self.logger.info("Follower successfully enabled for %s during post-load clog", fps_name)
+                        self.logger.warning("MCU not ready for %s during post-load clog - skipping follower enable", fps_name)
+                        tracked_state.stuck_spool.restore_follower = True
                 else:
                     self.logger.error("Cannot enable follower during post-load clog: oams_obj=%s, current_spool_idx=%s",
                                     oams_obj is not None, tracked_state.current_spool_idx)
