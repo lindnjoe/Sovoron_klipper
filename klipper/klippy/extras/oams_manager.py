@@ -3381,7 +3381,7 @@ class OAMSManager:
         try:
             state = self._get_follower_state(oams_name)
             if state.manual_override:
-                self.logger.error(f"Follower update skipped: manual override active for {oams_name} (automatic control disabled)")
+                self.logger.debug(f"Follower update skipped: manual override active for {oams_name} (automatic control disabled)")
                 return
 
             if not self._is_oams_mcu_ready(oams):
