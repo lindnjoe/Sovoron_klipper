@@ -301,10 +301,18 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             return None
 
         spool_val = params["spool"]
+
+        # Valid spool indices are 0-3
         if 0 <= spool_val <= 3:
             return spool_val
 
-        logging.error("OAMS[%d]: Hardware reported invalid spool index %d (expected 0-3)", self.oams_idx, spool_val)
+        # 255 (0xFF) indicates no spool loaded - this is normal, not an error
+        if spool_val == 255:
+            logging.debug("OAMS[%d]: No spool currently loaded (hardware returned 255)", self.oams_idx)
+            return None
+
+        # Any other value is genuinely unexpected
+        logging.warning("OAMS[%d]: Hardware reported unexpected spool index %d (expected 0-3 or 255)", self.oams_idx, spool_val)
         return None
         
 
