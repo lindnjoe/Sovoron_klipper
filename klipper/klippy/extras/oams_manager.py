@@ -124,6 +124,7 @@ class FollowerState:
     manual_override: bool = False                    # Manually commanded (skip auto control)
     last_state: Optional[Tuple[int, int]] = None     # (enable, direction) to avoid redundant MCU commands
     mcu_not_ready_logged: bool = False               # Track if we've logged MCU not ready to avoid spam
+    manual_override_logged: bool = False             # Track if we've logged manual override to avoid spam
 
 
 @dataclass
@@ -3395,8 +3396,14 @@ class OAMSManager:
         try:
             state = self._get_follower_state(oams_name)
             if state.manual_override:
-                self.logger.debug(f"Follower update skipped: manual override active for {oams_name} (automatic control disabled)")
+                # Only log once when manual override becomes active, not every update cycle
+                if not state.manual_override_logged:
+                    self.logger.debug(f"Follower update skipped: manual override active for {oams_name} (automatic control disabled)")
+                    state.manual_override_logged = True
                 return
+
+            # Manual override is not active - reset the flag so we'll log again if it becomes active
+            state.manual_override_logged = False
 
             if not self._is_oams_mcu_ready(oams):
                 # Only log once when MCU becomes not ready, not every update cycle
