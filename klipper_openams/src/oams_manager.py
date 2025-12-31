@@ -2616,7 +2616,7 @@ class OAMSManager:
         fps_state.since = self.reactor.monotonic()
         fps_state.direction = 1
 
-        self.logger.info(f"Updated FPS state for SET_LANE_LOADED: {fps_name} ? lane={lane_name}, oams={oams_name}, bay={bay_index}")
+        self.logger.info(f"Updated FPS state for SET_LANE_LOADED: {fps_name} -> lane={lane_name}, oams={oams_name}, bay={bay_index}")
         return True
 
     def _fix_afc_runout_helper_time(self, lane_name: str) -> bool:
@@ -2907,7 +2907,7 @@ class OAMSManager:
             self._notify_lane_loaded_to_afc(lane_name, oams_name, bay_index, fps_state.since)
 
             self.logger.info(
-                f"Lane load complete: {lane_name} ? FPS state: LOADED, current_lane={fps_state.current_lane}, "
+                f"Lane load complete: {lane_name} -> FPS state: LOADED, current_lane={fps_state.current_lane}, "
                 f"current_oams={fps_state.current_oams}, current_spool_idx={fps_state.current_spool_idx}, since={fps_state.since:.3f}"
             )
 
