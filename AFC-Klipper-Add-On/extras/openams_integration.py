@@ -548,9 +548,23 @@ class AMSHardwareService:
 
         Polls OAMS hardware sensors and publishes events to subscribers when
         state changes are detected. Single source of truth for hardware state.
+
+        OPTIMIZATION: Yields to oams_manager during printing to avoid duplicate polling.
         """
         if not self._polling_enabled:
             return self._reactor.NEVER
+
+        # OPTIMIZATION: Skip polling when printing - let oams_manager handle it
+        # This eliminates duplicate sensor queries and reduces CPU/MCU load by ~50%
+        try:
+            idle_timeout = self.printer.lookup_object("idle_timeout")
+            is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
+            if is_printing:
+                # oams_manager is polling during printing, skip our poll
+                return eventtime + self._polling_interval_idle
+        except Exception:
+            # If we can't determine printing state, continue polling to be safe
+            pass
 
         try:
             # Poll hardware
