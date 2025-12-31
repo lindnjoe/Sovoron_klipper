@@ -3498,7 +3498,8 @@ class OAMSManager:
 
             has_filament = hub_has_filament or lane_loaded
             if has_filament:
-                self._set_follower_if_changed(oams_name, oams, 1, direction, "filament present", force=True)
+                # Don't use force=True - trust state tracking to avoid redundant commands and log spam
+                self._set_follower_if_changed(oams_name, oams, 1, direction, "filament present")
                 for fps_state in fps_states_for_oams:
                     fps_state.following = True
                     fps_state.direction = direction
