@@ -25,6 +25,7 @@
 
 import json
 import logging
+import os
 import time
 import traceback
 from contextlib import contextmanager
@@ -1242,23 +1243,34 @@ class OAMSManager:
         gcmd.respond_info("OAMS errors cleared and system re-initialized")
 
     def _load_afc_var_unit_snapshot(self) -> Optional[Dict[str, Any]]:
-        """Load the current AFC.var.unit snapshot from the live AFC object."""
+        """Load the current AFC.var.unit snapshot from disk.
+
+        AFC.var.unit is a JSON file on disk, not an in-memory object attribute.
+        This reads the file directly like AFC_OpenAMS.py does.
+        """
 
         afc = self._get_afc()
         if afc is None:
             return None
 
-        try:
-            var_obj = getattr(afc, "var", None)
-            if isinstance(var_obj, dict):
-                snapshot = var_obj.get("unit")
-            else:
-                snapshot = getattr(var_obj, "unit", None)
+        # Get the base VarFile path from AFC (e.g., "/home/user/printer_data/config/AFC.var")
+        base_path = getattr(afc, "VarFile", None)
+        if not base_path:
+            return None
 
-            if isinstance(snapshot, dict):
-                return snapshot
-        except Exception:
-            self.logger.debug("Failed to read AFC.var.unit from live AFC object")
+        # The unit file is base_path + ".unit"
+        unit_file = os.path.expanduser(str(base_path) + ".unit")
+
+        try:
+            with open(unit_file, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+                if isinstance(data, dict):
+                    return data
+        except FileNotFoundError:
+            # File doesn't exist yet - this is normal on first run
+            return None
+        except Exception as e:
+            self.logger.debug(f"Failed to read AFC.var.unit from {unit_file}: {e}")
 
         return None
 
@@ -3373,8 +3385,7 @@ class OAMSManager:
                         self.logger.debug(f"MCU ready check for {oams_name}: FAILED - serial.is_connected() returned False")
                         return False
 
-            # All checks passed (or serial doesn't exist, which is OK for OAMS MCUs)
-            self.logger.debug(f"MCU ready check for {oams_name}: PASSED")
+            # All checks passed - don't log success to avoid spam (called frequently)
             return True
         except Exception as e:
             self.logger.debug(f"MCU ready check for {oams_name}: FAILED - Exception: {e}")
