@@ -675,6 +675,18 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             gcmd.error("Calibration of PTFE length failed")
 
     def load_spool(self, spool_idx):
+        # Safety check: refuse to load if a spool is already loaded
+        # This prevents MCU crashes from physically impossible operations
+        if self.current_spool is not None:
+            logging.error(
+                "OAMS[%d]: Refusing to load spool %d - spool %d is already loaded. "
+                "Unload first to prevent hardware damage and MCU crashes.",
+                self.oams_idx,
+                spool_idx,
+                self.current_spool
+            )
+            return False, f"Spool {self.current_spool} already loaded - unload first"
+
         self.action_status = OAMSStatus.LOADING
         self.oams_load_spool_cmd.send([spool_idx])
         timeout = self.reactor.monotonic() + 30.0  # 30 second timeout
