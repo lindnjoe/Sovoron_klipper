@@ -1542,7 +1542,10 @@ class OAMSManager:
             return
 
         # When enabling, we need a valid OAMS
+        # Try OAMS lookup with fallback (handle both "oams1" and "oams oams1" formats)
         oams_obj = self.oams.get(fps_state.current_oams)
+        if oams_obj is None:
+            oams_obj = self.oams.get(f"oams {fps_state.current_oams}")
         if oams_obj is None:
             gcmd.respond_info(f"OAMS {fps_state.current_oams} is not available")
             return
