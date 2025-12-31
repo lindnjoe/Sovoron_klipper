@@ -1100,20 +1100,26 @@ class OAMSManager:
     def cmd_CLEAR_ERRORS(self, gcmd):
         monitors_were_running = bool(self.monitor_timers)
         restart_monitors = True
-        ready_oams = {name: oam for name, oam in self.oams.items() if self._is_oams_mcu_ready(oam)}
+
+        # Check OAMS availability with diagnostic logging
+        all_oams = list(self.oams.items())
+        self.logger.info(f"OAMSM_CLEAR_ERRORS: Found {len(all_oams)} OAMS objects: {[name for name, _ in all_oams]}")
+
+        ready_oams = {name: oam for name, oam in all_oams if self._is_oams_mcu_ready(oam)}
         if not ready_oams:
             restart_monitors = False
+            not_ready = [name for name, oam in all_oams if not self._is_oams_mcu_ready(oam)]
             self.logger.warning(
-                "No OAMS MCUs ready; skipping hardware clears and leaving monitors paused until connectivity returns"
+                f"No OAMS MCUs ready (not ready: {not_ready}); skipping hardware clears and leaving monitors paused until connectivity returns"
             )
         with self._monitors_suspended("OAMSM_CLEAR_ERRORS", restart_on_exit=False):
             # Reset all runout monitors to clear COASTING and other states
             for fps_name, monitor in list(self.runout_monitors.items()):
                 try:
                     monitor.reset()
-                except Exception:
+                except Exception as e:
                     restart_monitors = False
-                    self.logger.error(f"Failed to reset runout monitor for {fps_name}")
+                    self.logger.error(f"Failed to reset runout monitor for {fps_name}: {e}")
 
             # Clear all FPS state error flags and tracking
             for fps_name, fps_state in self.current_state.fps_state.items():
@@ -1129,6 +1135,7 @@ class OAMSManager:
             for oams_name, oam in ready_oams.items():
                 if not self._is_oams_mcu_ready(oam):
                     restart_monitors = False
+                    self.logger.warning(f"OAMS {oams_name} became not ready during CLEAR_ERRORS")
                     continue
                 try:
                     oam.clear_errors()
@@ -1137,9 +1144,10 @@ class OAMSManager:
                     for bay_idx in range(4):
                         led_key = f"{oams_name}:{bay_idx}"
                         self.led_error_state[led_key] = 0
-                except Exception:
+                    self.logger.debug(f"Successfully cleared errors on {oams_name}")
+                except Exception as e:
                     restart_monitors = False
-                    self.logger.error(f"Failed to clear errors on {getattr(oam, 'name', '<unknown>')}")
+                    self.logger.error(f"Failed to clear errors on {oams_name}: {e}")
 
             # Preserve lane mappings during error clearing to avoid losing lane state.
             # We still surface any active redirects so an operator can clear them explicitly
@@ -1162,9 +1170,10 @@ class OAMSManager:
             if ready_oams:
                 try:
                     self.determine_state()
-                except Exception:
+                    self.logger.debug("Successfully re-detected state from hardware sensors")
+                except Exception as e:
                     restart_monitors = False
-                    self.logger.error("State detection failed during OAMSM_CLEAR_ERRORS")
+                    self.logger.error(f"State detection failed during OAMSM_CLEAR_ERRORS: {e}")
 
             # Rehydrate state from AFC.var.unit so lane/tool status reflects the
             # latest AFC snapshot after clearing hardware state.
@@ -1542,7 +1551,10 @@ class OAMSManager:
             return
 
         # When enabling, we need a valid OAMS
+        # Try OAMS lookup with fallback (handle both "oams1" and "oams oams1" formats)
         oams_obj = self.oams.get(fps_state.current_oams)
+        if oams_obj is None:
+            oams_obj = self.oams.get(f"oams {fps_state.current_oams}")
         if oams_obj is None:
             gcmd.respond_info(f"OAMS {fps_state.current_oams} is not available")
             return
