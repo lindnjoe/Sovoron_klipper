@@ -3373,8 +3373,7 @@ class OAMSManager:
                         self.logger.debug(f"MCU ready check for {oams_name}: FAILED - serial.is_connected() returned False")
                         return False
 
-            # All checks passed (or serial doesn't exist, which is OK for OAMS MCUs)
-            self.logger.debug(f"MCU ready check for {oams_name}: PASSED")
+            # All checks passed - don't log success to avoid spam (called frequently)
             return True
         except Exception as e:
             self.logger.debug(f"MCU ready check for {oams_name}: FAILED - Exception: {e}")
