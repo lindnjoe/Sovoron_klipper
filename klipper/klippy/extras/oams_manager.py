@@ -3338,32 +3338,54 @@ class OAMSManager:
 
     def _is_oams_mcu_ready(self, oams: Any) -> bool:
         """True when the OAMS MCU is reachable and not shutdown."""
+        oams_name = getattr(oams, 'name', '<unknown>')
 
         mcu = getattr(oams, "mcu", None)
         try:
             if mcu is None:
+                self.logger.info(f"MCU ready check for {oams_name}: FAILED - mcu attribute is None")
                 return False
 
-            if hasattr(mcu, "is_shutdown") and mcu.is_shutdown():
-                return False
+            if hasattr(mcu, "is_shutdown"):
+                if mcu.is_shutdown():
+                    self.logger.info(f"MCU ready check for {oams_name}: FAILED - mcu.is_shutdown() returned True")
+                    return False
+            else:
+                self.logger.debug(f"MCU ready check for {oams_name}: mcu has no is_shutdown method")
 
             serial = getattr(mcu, "serial", None)
             if serial is None:
+                self.logger.info(f"MCU ready check for {oams_name}: FAILED - mcu.serial is None")
                 return False
 
-            if hasattr(serial, "is_shutdown") and serial.is_shutdown():
-                return False
+            if hasattr(serial, "is_shutdown"):
+                if serial.is_shutdown():
+                    self.logger.info(f"MCU ready check for {oams_name}: FAILED - serial.is_shutdown() returned True")
+                    return False
+            else:
+                self.logger.debug(f"MCU ready check for {oams_name}: serial has no is_shutdown method")
 
             if hasattr(mcu, "is_connected"):
                 if not mcu.is_connected():
+                    self.logger.info(f"MCU ready check for {oams_name}: FAILED - mcu.is_connected() returned False")
                     return False
+            else:
+                self.logger.debug(f"MCU ready check for {oams_name}: mcu has no is_connected method")
 
             if hasattr(serial, "is_connected"):
-                return bool(serial.is_connected())
-        except Exception:
-            self.logger.debug(f"Could not read MCU state for {getattr(oams, 'name', '<unknown>')}")
+                is_conn = serial.is_connected()
+                if not is_conn:
+                    self.logger.info(f"MCU ready check for {oams_name}: FAILED - serial.is_connected() returned False")
+                    return False
+                self.logger.info(f"MCU ready check for {oams_name}: PASSED - all checks OK")
+                return bool(is_conn)
+            else:
+                self.logger.debug(f"MCU ready check for {oams_name}: serial has no is_connected method, returning True")
+        except Exception as e:
+            self.logger.info(f"MCU ready check for {oams_name}: FAILED - Exception: {e}")
             return False
 
+        self.logger.info(f"MCU ready check for {oams_name}: PASSED - all checks OK (no is_connected check)")
         return True
 
     def _set_follower_if_changed(
