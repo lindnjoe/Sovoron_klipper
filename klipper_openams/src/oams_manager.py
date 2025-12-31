@@ -123,6 +123,7 @@ class FollowerState:
     had_filament: bool = False                       # Previous state - whether follower had filament
     manual_override: bool = False                    # Manually commanded (skip auto control)
     last_state: Optional[Tuple[int, int]] = None     # (enable, direction) to avoid redundant MCU commands
+    mcu_not_ready_logged: bool = False               # Track if we've logged MCU not ready to avoid spam
 
 
 @dataclass
@@ -1510,8 +1511,7 @@ class OAMSManager:
                     state.last_state = (0, direction)
                     # Keep manual override so it stays disabled (use OAMSM_FOLLOWER_RESET to return to automatic)
                     state.manual_override = True
-                    self.logger.error("Follower disabled on {fps_name} (manual override - use OAMSM_FOLLOWER_RESET to return to automatic)")
-                    gcmd.respond_info(f"Follower disabled on {fps_name} (manual control - use OAMSM_FOLLOWER_RESET to return to automatic)")
+                    self.logger.debug(f"Follower disabled on {fps_name} (manual override - use OAMSM_FOLLOWER_RESET to return to automatic)")
                 except Exception:
                     self.logger.error(f"Failed to disable follower on {fps_state.current_oams}")
                     gcmd.respond_info(f"Failed to disable follower. Check logs.")
@@ -1537,8 +1537,7 @@ class OAMSManager:
             state.last_state = (enable, direction)
             # Set manual override flag - follower stays enabled even if hub sensors are empty
             state.manual_override = True
-            self.logger.debug(f"OAMSM_FOLLOWER: successfully enabled follower on {fps_name} (manual override active)")
-            gcmd.respond_info(f"Follower enabled on {fps_name} (manual control - use OAMSM_FOLLOWER_RESET to return to automatic)")
+            self.logger.debug(f"OAMSM_FOLLOWER: successfully enabled follower on {fps_name} (manual override active - use OAMSM_FOLLOWER_RESET to return to automatic)")
         except Exception:
             self.logger.error(f"Failed to set follower on {fps_state.current_oams}")
             gcmd.respond_info(f"Failed to set follower. Check logs.")
@@ -3385,8 +3384,14 @@ class OAMSManager:
                 return
 
             if not self._is_oams_mcu_ready(oams):
-                self.logger.debug(f"Skipping automatic follower control for {oams_name} (MCU not ready)")
+                # Only log once when MCU becomes not ready, not every update cycle
+                if not state.mcu_not_ready_logged:
+                    self.logger.debug(f"Skipping automatic follower control for {oams_name} (MCU not ready)")
+                    state.mcu_not_ready_logged = True
                 return
+
+            # MCU is ready - reset the flag so we'll log again if it becomes not ready
+            state.mcu_not_ready_logged = False
 
             hub_hes_values = getattr(oams, "hub_hes_value", None)
             hub_has_filament = any(hub_hes_values) if hub_hes_values is not None else False
