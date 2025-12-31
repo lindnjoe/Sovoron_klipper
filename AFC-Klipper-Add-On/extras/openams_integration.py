@@ -527,11 +527,13 @@ class AMSHardwareService:
             return
 
         self._polling_enabled = True
+        # Offset timer by 1 second to avoid CPU spike when both polling callbacks run simultaneously
+        # This spreads the load: oams_manager runs at 0s,2s,4s... and this runs at 1s,3s,5s...
         self._polling_timer = self._reactor.register_timer(
             self._polling_callback,
-            self._reactor.NOW
+            self._reactor.NOW + 1.0
         )
-        self._log_info(f"Started unified hardware polling for {self.name}")
+        self._log_info(f"Started unified hardware polling for {self.name} (offset by 1s)")
 
     def stop_polling(self) -> None:
         """Stop the unified hardware polling timer."""
