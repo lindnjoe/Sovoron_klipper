@@ -4608,6 +4608,37 @@ class OAMSManager:
                     reason_str = f" after {reason}" if reason else ""
                     self.logger.error(f"Failed to resume monitors{reason_str}")
 
+    def get_loaded_lane_for_extruder(self, extruder_name: str) -> Optional[str]:
+        """
+        Query which AFC lane is currently loaded to a specific extruder.
+
+        This is critical for toolchanger setups where AFC's current_lane may be None
+        (all tools docked) but an OAMS unit still has filament loaded from a previous tool.
+
+        Args:
+            extruder_name: Name of the extruder (e.g., "extruder4")
+
+        Returns:
+            Lane name if loaded (e.g., "lane4"), None if no lane loaded
+        """
+        # Map extruder to FPS
+        fps_name = None
+        for fps, extruder in self.fps_to_extruder.items():
+            if extruder == extruder_name:
+                fps_name = fps
+                break
+
+        if not fps_name:
+            return None
+
+        # Check FPS state
+        fps_state = self.current_state.fps_state.get(fps_name)
+        if not fps_state or fps_state.state == FPSLoadState.UNLOADED:
+            return None
+
+        # Return the currently loaded lane
+        return fps_state.current_lane
+
 
 def load_config(config):
     return OAMSManager(config)
