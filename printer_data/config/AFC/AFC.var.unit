@@ -343,7 +343,7 @@
         }
     },
     "system": {
-        "current_load": null,
+        "current_load": "lane4",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
