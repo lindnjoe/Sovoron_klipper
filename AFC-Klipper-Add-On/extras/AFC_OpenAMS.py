@@ -278,6 +278,7 @@ class afcAMS(afcUnit):
 
         self._last_lane_states: Dict[str, bool] = {}
         self._last_hub_states: Dict[str, bool] = {}
+        self._last_spool_event_time: Dict[str, float] = {}  # Track last event time per lane for deduplication
         self._virtual_tool_sensor = None
         self._last_virtual_tool_state: Optional[bool] = None
         self._lane_tool_latches: Dict[str, bool] = {}
@@ -2368,12 +2369,23 @@ class afcAMS(afcUnit):
         if lane is None:
             return
 
+        # Deduplication: Skip if we just processed this lane (within 0.5s)
+        # This prevents duplicate processing when multiple events fire for the same load
+        eventtime = kwargs.get("eventtime", 0.0)
+        if eventtime == 0.0:
+            eventtime = self.reactor.monotonic()
+
+        last_event_time = self._last_spool_event_time.get(lane.name, 0.0)
+        if eventtime - last_event_time < 0.5:
+            self.logger.debug(f"Skipping duplicate spool_loaded event for {lane.name} (processed {eventtime - last_event_time:.3f}s ago)")
+            return
+
+        self._last_spool_event_time[lane.name] = eventtime
+
         previous_loaded = bool(self._last_lane_states.get(lane.name))
 
         lane.load_state = True
         self._last_lane_states[lane.name] = True
-
-        eventtime = kwargs.get("eventtime", 0.0)
         try:
             self.get_lane_temperature(lane.name, 240)
         except Exception:
