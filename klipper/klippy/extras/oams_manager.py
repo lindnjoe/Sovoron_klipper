@@ -388,8 +388,12 @@ class OAMSRunoutMonitor:
 
     def _detect_runout(self, oams_obj, lane_name, spool_idx, eventtime):
         """Handle runout detection when the F1S sensor reports empty."""
-        # Use cached printing state to avoid MCU query
-        is_printing = self._is_printing
+        # Get printing state directly (runout monitor doesn't have manager reference)
+        try:
+            idle_timeout = self.printer.lookup_object("idle_timeout")
+            is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
+        except Exception:
+            is_printing = False
 
         fps_state = self.fps_state
         fps = self.fps
