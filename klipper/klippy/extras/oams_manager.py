@@ -88,7 +88,7 @@ CLOG_SENSITIVITY_DEFAULT = "medium"
 
 POST_LOAD_PRESSURE_THRESHOLD = 0.65
 POST_LOAD_PRESSURE_DWELL = 15.0
-POST_LOAD_PRESSURE_CHECK_PERIOD = 0.5
+POST_LOAD_PRESSURE_CHECK_PERIOD = 1.0  # Reduced from 0.5s to lower MCU load
 
 # Threshold for detecting failed load - if FPS stays above this during LOADING, filament isn't engaging
 LOAD_FPS_STUCK_THRESHOLD = 0.75
@@ -206,8 +206,8 @@ class OAMSRunoutMonitor:
         
         def _monitor_runout(eventtime):
             try:
-                idle_timeout = self.printer.lookup_object("idle_timeout")
-                is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
+                # Use cached printing state to avoid MCU query
+                is_printing = self._is_printing
                 spool_idx = self.fps_state.current_spool_idx or self.runout_spool_idx
         
                 if self.state in (OAMSRunoutState.STOPPED, OAMSRunoutState.PAUSED, OAMSRunoutState.RELOADING):
@@ -382,11 +382,8 @@ class OAMSRunoutMonitor:
 
     def _detect_runout(self, oams_obj, lane_name, spool_idx, eventtime):
         """Handle runout detection when the F1S sensor reports empty."""
-        try:
-            idle_timeout = self.printer.lookup_object("idle_timeout")
-            is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
-        except Exception:
-            is_printing = False
+        # Use cached printing state to avoid MCU query
+        is_printing = self._is_printing
 
         fps_state = self.fps_state
         fps = self.fps
@@ -873,6 +870,12 @@ class OAMSManager:
         except Exception:
             self._idle_timeout_obj = None
 
+        # Cache printing state to avoid repeated get_status() MCU queries
+        self._is_printing = False
+        self.printer.register_event_handler("idle_timeout:printing", self._handle_printing_event)
+        self.printer.register_event_handler("idle_timeout:ready", self._handle_ready_event)
+        self.printer.register_event_handler("idle_timeout:idle", self._handle_idle_event)
+
         try:
             self._gcode_obj = self.printer.lookup_object("gcode")
         except Exception:
@@ -898,6 +901,18 @@ class OAMSManager:
         self.determine_state()
         self.start_monitors()
         self.ready = True
+
+    def _handle_printing_event(self, eventtime):
+        """Update cached printing state when printer starts printing."""
+        self._is_printing = True
+
+    def _handle_ready_event(self, eventtime):
+        """Update cached printing state when printer becomes ready."""
+        self._is_printing = False
+
+    def _handle_idle_event(self, eventtime):
+        """Update cached printing state when printer goes idle."""
+        self._is_printing = False
 
     def _initialize_oams(self) -> None:
         for name, oam in self.printer.lookup_objects(module="oams"):
@@ -1982,8 +1997,8 @@ class OAMSManager:
                     monitor.paused()
                 return self.reactor.NEVER  # Stop polling
 
-            # Not done yet - keep polling every 100ms
-            return eventtime + 0.1
+            # Not done yet - keep polling every 500ms (reduced from 100ms to lower MCU load)
+            return eventtime + 0.5
 
         # Start polling timer
         self.reactor.register_timer(_check_unload_complete, self.reactor.NOW)
@@ -2148,8 +2163,8 @@ class OAMSManager:
                     monitor.paused()
                 return self.reactor.NEVER  # Stop polling
 
-            # Not done yet - keep polling every 100ms
-            return eventtime + 0.1
+            # Not done yet - keep polling every 500ms (reduced from 100ms to lower MCU load)
+            return eventtime + 0.5
 
         # Start polling timer
         self.reactor.register_timer(_check_load_complete, self.reactor.NOW)
@@ -3648,13 +3663,8 @@ class OAMSManager:
 
                 oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
 
-                # OPTIMIZATION: Use cached idle_timeout object
-                is_printing = False
-                if self._idle_timeout_obj is not None:
-                    try:
-                        is_printing = self._idle_timeout_obj.get_status(eventtime)["state"] == "Printing"
-                    except Exception:
-                        is_printing = False
+                # Use cached printing state to avoid MCU query
+                is_printing = self._is_printing
 
                 # OPTIMIZATION: Skip sensor reads if idle and no state changes
                 state = fps_state.state
@@ -3775,11 +3785,8 @@ class OAMSManager:
         # Only treat slow unloads as stuck during active prints. Standby/manual unloads
         # can legitimately pause movement, so skip the detection entirely when not printing.
         is_printing = False
-        if self._idle_timeout_obj is not None:
-            try:
-                is_printing = self._idle_timeout_obj.get_status(now)["state"] == "Printing"
-            except Exception:
-                is_printing = False
+        # Use cached printing state to avoid MCU query
+        is_printing = self._is_printing
 
         if not is_printing:
             fps_state.clear_encoder_samples()
@@ -3924,11 +3931,8 @@ class OAMSManager:
 
         # OPTIMIZATION: Use cached idle_timeout object
         is_printing = False
-        if self._idle_timeout_obj is not None:
-            try:
-                is_printing = self._idle_timeout_obj.get_status(now)["state"] == "Printing"
-            except Exception:
-                is_printing = False
+        # Use cached printing state to avoid MCU query
+        is_printing = self._is_printing
 
         # Skip stuck spool detection if ANY runout is active
         # During runout recovery (same-FPS or cross-FPS), we're actively swapping lanes
@@ -4066,11 +4070,8 @@ class OAMSManager:
         """Check for clog conditions (OPTIMIZED)."""
         # OPTIMIZATION: Use cached idle_timeout object
         is_printing = False
-        if self._idle_timeout_obj is not None:
-            try:
-                is_printing = self._idle_timeout_obj.get_status(now)["state"] == "Printing"
-            except Exception:
-                is_printing = False
+        # Use cached printing state to avoid MCU query
+        is_printing = self._is_printing
 
         monitor = self.runout_monitors.get(fps_name)
         if monitor is not None and monitor.state != OAMSRunoutState.MONITORING:
