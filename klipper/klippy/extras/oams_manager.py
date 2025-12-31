@@ -123,6 +123,7 @@ class FollowerState:
     had_filament: bool = False                       # Previous state - whether follower had filament
     manual_override: bool = False                    # Manually commanded (skip auto control)
     last_state: Optional[Tuple[int, int]] = None     # (enable, direction) to avoid redundant MCU commands
+    mcu_not_ready_logged: bool = False               # Track if we've logged MCU not ready to avoid spam
 
 
 @dataclass
@@ -3383,8 +3384,14 @@ class OAMSManager:
                 return
 
             if not self._is_oams_mcu_ready(oams):
-                self.logger.debug(f"Skipping automatic follower control for {oams_name} (MCU not ready)")
+                # Only log once when MCU becomes not ready, not every update cycle
+                if not state.mcu_not_ready_logged:
+                    self.logger.debug(f"Skipping automatic follower control for {oams_name} (MCU not ready)")
+                    state.mcu_not_ready_logged = True
                 return
+
+            # MCU is ready - reset the flag so we'll log again if it becomes not ready
+            state.mcu_not_ready_logged = False
 
             hub_hes_values = getattr(oams, "hub_hes_value", None)
             hub_has_filament = any(hub_hes_values) if hub_hes_values is not None else False
