@@ -1243,34 +1243,23 @@ class OAMSManager:
         gcmd.respond_info("OAMS errors cleared and system re-initialized")
 
     def _load_afc_var_unit_snapshot(self) -> Optional[Dict[str, Any]]:
-        """Load the current AFC.var.unit snapshot from disk.
-
-        AFC.var.unit is a JSON file on disk, not an in-memory object attribute.
-        This reads the file directly like AFC_OpenAMS.py does.
-        """
+        """Load the current AFC.var.unit snapshot from the live AFC object."""
 
         afc = self._get_afc()
         if afc is None:
             return None
 
-        # Get the base VarFile path from AFC (e.g., "/home/user/printer_data/config/AFC.var")
-        base_path = getattr(afc, "VarFile", None)
-        if not base_path:
-            return None
-
-        # The unit file is base_path + ".unit"
-        unit_file = os.path.expanduser(str(base_path) + ".unit")
-
         try:
-            with open(unit_file, "r", encoding="utf-8") as handle:
-                data = json.load(handle)
-                if isinstance(data, dict):
-                    return data
-        except FileNotFoundError:
-            # File doesn't exist yet - this is normal on first run
-            return None
-        except Exception as e:
-            self.logger.debug(f"Failed to read AFC.var.unit from {unit_file}: {e}")
+            var_obj = getattr(afc, "var", None)
+            if isinstance(var_obj, dict):
+                snapshot = var_obj.get("unit")
+            else:
+                snapshot = getattr(var_obj, "unit", None)
+
+            if isinstance(snapshot, dict):
+                return snapshot
+        except Exception:
+            pass
 
         return None
 
@@ -4607,6 +4596,37 @@ class OAMSManager:
                 except Exception:
                     reason_str = f" after {reason}" if reason else ""
                     self.logger.error(f"Failed to resume monitors{reason_str}")
+
+    def get_loaded_lane_for_extruder(self, extruder_name: str) -> Optional[str]:
+        """
+        Query which AFC lane is currently loaded to a specific extruder.
+
+        This is critical for toolchanger setups where AFC's current_lane may be None
+        (all tools docked) but an OAMS unit still has filament loaded from a previous tool.
+
+        Args:
+            extruder_name: Name of the extruder (e.g., "extruder4")
+
+        Returns:
+            Lane name if loaded (e.g., "lane4"), None if no lane loaded
+        """
+        # Map extruder to FPS
+        fps_name = None
+        for fps, extruder in self.fps_to_extruder.items():
+            if extruder == extruder_name:
+                fps_name = fps
+                break
+
+        if not fps_name:
+            return None
+
+        # Check FPS state
+        fps_state = self.current_state.fps_state.get(fps_name)
+        if not fps_state or fps_state.state == FPSLoadState.UNLOADED:
+            return None
+
+        # Return the currently loaded lane
+        return fps_state.current_lane
 
 
 def load_config(config):
