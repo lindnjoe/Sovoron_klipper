@@ -207,8 +207,12 @@ class OAMSRunoutMonitor:
         
         def _monitor_runout(eventtime):
             try:
-                # Use cached printing state to avoid MCU query
-                is_printing = self._is_printing
+                # Get printing state directly (runout monitor doesn't have manager reference)
+                try:
+                    idle_timeout = self.printer.lookup_object("idle_timeout")
+                    is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
+                except Exception:
+                    is_printing = False
                 spool_idx = self.fps_state.current_spool_idx or self.runout_spool_idx
         
                 if self.state in (OAMSRunoutState.STOPPED, OAMSRunoutState.PAUSED, OAMSRunoutState.RELOADING):
