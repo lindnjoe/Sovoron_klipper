@@ -1495,8 +1495,7 @@ class afcAMS(afcUnit):
 
                                                     # Clear FPS state (matching _unload_filament_for_fps logic)
                                                     fps_state.state = 0  # FPSLoadState.UNLOADED
-                                                    fps_state.following = False
-                                                    fps_state.direction = 0
+                                                    # Don't disable follower - let manual commands or automatic control handle it
                                                     fps_state.clog_restore_follower = False
                                                     fps_state.clog_restore_direction = 1
                                                     fps_state.since = self.reactor.monotonic()
