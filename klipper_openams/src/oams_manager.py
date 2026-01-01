@@ -1370,32 +1370,53 @@ class OAMSManager:
     def _force_sync_from_afc_lanes(self) -> None:
         """Force-sync OAMS state from AFC's current lane.tool_loaded states.
 
-        This catches manual SET_LANE_LOADED calls that might not be in the AFC.var.unit
-        snapshot yet. Prevents state desync where AFC thinks a lane is loaded but
-        OAMS thinks it's unloaded (which would prevent unload commands from working).
+        Synchronizes both loaded and unloaded states to handle manual commands like
+        SET_LANE_LOADED and UNSET_LANE_LOADED that might not be in the AFC.var.unit
+        snapshot yet. Prevents state desync in both directions.
         """
         afc = self._get_afc()
         if afc is None or not hasattr(afc, 'lanes'):
             self.logger.debug(f"AFC not available for force-sync")
             return
 
-        synced_count = 0
+        synced_loaded = 0
+        synced_unloaded = 0
+
         for lane_name, lane in afc.lanes.items():
-            # Check if lane is marked as loaded to toolhead in AFC
+            # Get the lane's current tool_loaded state
             tool_loaded = getattr(lane, 'tool_loaded', False)
-            if not tool_loaded:
-                continue
 
-            # Try to update OAMS FPS state for this lane
-            try:
-                if self.update_fps_state_for_lane(lane_name):
-                    synced_count += 1
-                    self.logger.info("OAMSM_CLEAR_ERRORS: force-synced {lane_name} from AFC (tool_loaded=True)")
-            except Exception:
-                self.logger.error(f"Failed to force-sync lane {lane_name} from AFC")
+            if tool_loaded:
+                # Lane is loaded in AFC - sync OAMS to match
+                try:
+                    if self.update_fps_state_for_lane(lane_name):
+                        synced_loaded += 1
+                        self.logger.info(f"OAMSM_CLEAR_ERRORS: synced {lane_name} to loaded state from AFC")
+                except Exception:
+                    self.logger.error(f"Failed to sync loaded state for lane {lane_name} from AFC")
+            else:
+                # Lane is NOT loaded in AFC - clear OAMS FPS state if it thinks this lane is loaded
+                try:
+                    # Find the FPS for this lane
+                    fps_name = self.get_fps_for_afc_lane(lane_name)
+                    if fps_name and fps_name in self.current_state.fps_state:
+                        fps_state = self.current_state.fps_state[fps_name]
 
-        if synced_count > 0:
-            self.logger.info(f"Force-synced {synced_count} lane(s) from AFC current state")
+                        # Check if OAMS thinks this lane is loaded
+                        if (fps_state.state == FPSLoadState.LOADED and
+                            fps_state.current_lane == lane_name):
+                            # Clear the FPS state to match AFC's unloaded state
+                            fps_state.state = FPSLoadState.UNLOADED
+                            fps_state.current_lane = None
+                            fps_state.current_oams = None
+                            fps_state.current_spool_idx = None
+                            synced_unloaded += 1
+                            self.logger.info(f"OAMSM_CLEAR_ERRORS: cleared FPS {fps_name} state to match AFC (lane {lane_name} not loaded)")
+                except Exception:
+                    self.logger.error(f"Failed to clear FPS state for unloaded lane {lane_name}")
+
+        if synced_loaded > 0 or synced_unloaded > 0:
+            self.logger.info(f"Force-synced from AFC: {synced_loaded} loaded, {synced_unloaded} unloaded")
 
     cmd_CLEAR_LANE_MAPPINGS_help = "Clear OAMS cross-extruder lane mappings (call after RESET_AFC_MAPPING)"
     def cmd_CLEAR_LANE_MAPPINGS(self, gcmd):
