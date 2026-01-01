@@ -1548,18 +1548,16 @@ class OAMSManager:
             gcmd.respond_info(f"FPS {fps_name} is currently busy")
             return
 
-        # Prevent manual ENABLE during active error conditions (allow DISABLE for troubleshooting)
-        if enable and (fps_state.clog.active or fps_state.stuck_spool.active):
-            gcmd.respond_info(
-                f"FPS {fps_name} has active error condition "
-                f"(clog_active={fps_state.clog.active}, stuck_spool_active={fps_state.stuck_spool.active}). "
-                f"Use OAMSM_CLEAR_ERRORS first to clear error state."
-            )
-            return
-
-        # When disabling (ENABLE=0), disable follower and keep manual override
-        # This prevents automatic control from re-enabling it
+        # When disabling (ENABLE=0), check for active errors and block the disable
+        # This keeps follower running during clog recovery so user can manually extrude
         if not enable:
+            if fps_state.clog.active or fps_state.stuck_spool.active:
+                gcmd.respond_info(
+                    f"Cannot disable follower on {fps_name}: active error condition "
+                    f"(clog_active={fps_state.clog.active}, stuck_spool_active={fps_state.stuck_spool.active}). "
+                    f"Follower must stay enabled for manual recovery. Use OAMSM_CLEAR_ERRORS to clear error state first."
+                )
+                return
             # If already unloaded or no OAMS, just mark as not following and return
             if not fps_state.current_oams:
                 fps_state.following = False
@@ -2025,9 +2023,7 @@ class OAMSManager:
                     self.logger.info(f"Async unload completed successfully, starting load for {target_lane}")
                     # Update FPS state
                     fps_state_obj.state = FPSLoadState.UNLOADED
-                    self.logger.debug(f"Follower state change: setting following=False after async unload completion for {fps_name}")
-                    fps_state_obj.following = False
-                    fps_state_obj.direction = 0
+                    # Don't disable follower - let manual commands or automatic control handle it
                     fps_state_obj.since = self.reactor.monotonic()
                     oams_unload.current_spool = None
 
@@ -2440,9 +2436,7 @@ class OAMSManager:
 
         if success:
             fps_state.state = FPSLoadState.UNLOADED
-            self.logger.debug(f"Follower state change: setting following=False after successful unload for {fps_name}")
-            fps_state.following = False
-            fps_state.direction = 0
+            # Don't disable follower - let manual commands or automatic control handle it
             fps_state.since = self.reactor.monotonic()
             if lane_name:
                 try:
@@ -2539,9 +2533,7 @@ class OAMSManager:
 
         # Clear FPS state (matching _unload_filament_for_fps and cross-extruder clear logic)
         fps_state.state = FPSLoadState.UNLOADED
-        self.logger.debug(f"Follower state change: setting following=False during infinite runout lane clear for {fps_name} (lane={lane_name})")
-        fps_state.following = False
-        fps_state.direction = 0
+        # Don't disable follower - let manual commands or automatic control handle it
         fps_state.since = self.reactor.monotonic()
         fps_state.current_lane = None
         fps_state.current_spool_idx = None
