@@ -878,10 +878,9 @@ class afcAMS(afcUnit):
                 if fps_name and hasattr(oams_mgr, 'current_state'):
                     fps_state = oams_mgr.current_state.fps_state.get(fps_name)
                     if fps_state and fps_state.current_lane == lane_name:
-                        # Import the enum from oams_manager
-                        FPSLoadState = oams_mgr.current_state.FPSLoadState
                         # Clear the FPS state to match AFC's unloaded state
-                        fps_state.state = FPSLoadState.UNLOADED
+                        # FPSLoadState.UNLOADED = 0 (from oams_manager.py)
+                        fps_state.state = 0
                         fps_state.current_lane = None
                         fps_state.current_oams = None
                         fps_state.current_spool_idx = None
