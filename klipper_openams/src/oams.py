@@ -263,7 +263,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         Hardware error clearing (LED errors) was already done in handle_connect().
         """
         # Clear any stale action status from previous operations
-        # Don't send MCU commands here to avoid interfering with manager initialization
+        # Status is cleared in software only - no MCU commands sent during initialization
         self.action_status = None
         self.action_status_code = None
         self.action_status_value = None

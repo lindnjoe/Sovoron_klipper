@@ -1202,8 +1202,7 @@ class OAMSManager:
                 "Cleared all manual follower overrides, coast state, LED state, and state tracking - returning to automatic control"
             )
 
-            # Ensure followers are enabled for any OAMS that has filament
-            # Automatic control keeps them enabled - no need to force
+            # Update follower states based on current sensor readings
             if ready_oams:
                 try:
                     self._ensure_followers_for_loaded_hubs()
@@ -1543,7 +1542,7 @@ class OAMSManager:
                     # Update state tracker to avoid redundant commands
                     state = self._get_follower_state(fps_state.current_oams)
                     state.last_state = (0, direction)
-                    # Keep manual override so it stays disabled (use OAMSM_FOLLOWER_RESET to return to automatic)
+                    # Set manual override to prevent automatic re-enable
                     state.manual_override = True
                     self.logger.debug(f"Follower disabled on {fps_name} (manual override - use OAMSM_FOLLOWER_RESET to return to automatic)")
                 except Exception:
@@ -1572,7 +1571,7 @@ class OAMSManager:
             # Update state tracker to avoid redundant commands
             state = self._get_follower_state(fps_state.current_oams)
             state.last_state = (enable, direction)
-            # Set manual override flag - follower stays enabled even if hub sensors are empty
+            # Set manual override to prevent automatic control from changing follower state
             state.manual_override = True
             self.logger.debug(f"OAMSM_FOLLOWER: successfully enabled follower on {fps_name} (manual override active - use OAMSM_FOLLOWER_RESET to return to automatic)")
         except Exception:
@@ -1883,9 +1882,8 @@ class OAMSManager:
                 fps_state.since
             )
 
-        # Ensure follower is enabled after successful reload
-        # Follower should stay enabled throughout same-FPS runouts (never disabled)
-        # This is a safety check to ensure follower is active for new lane
+        # Ensure follower is enabled after successful runout reload
+        # The follower motor drives filament from the hub to the toolhead
         if fps_state.current_oams and fps_state.current_spool_idx is not None:
             # Try OAMS lookup with fallback (handle both "oams1" and "oams oams1" formats)
             oams = self.oams.get(fps_state.current_oams)
@@ -1994,7 +1992,7 @@ class OAMSManager:
                     self.logger.info(f"Async unload completed successfully, starting load for {target_lane}")
                     # Update FPS state
                     fps_state_obj.state = FPSLoadState.UNLOADED
-                    # Don't disable follower - let manual commands or automatic control handle it
+                    # Follower state is managed by automatic control based on sensor state
                     fps_state_obj.since = self.reactor.monotonic()
                     oams_unload.current_spool = None
 
@@ -2407,7 +2405,7 @@ class OAMSManager:
 
         if success:
             fps_state.state = FPSLoadState.UNLOADED
-            # Don't disable follower - let manual commands or automatic control handle it
+            # Follower state is managed by automatic control based on sensor state
             fps_state.since = self.reactor.monotonic()
             if lane_name:
                 try:
@@ -2504,7 +2502,7 @@ class OAMSManager:
 
         # Clear FPS state (matching _unload_filament_for_fps and cross-extruder clear logic)
         fps_state.state = FPSLoadState.UNLOADED
-        # Don't disable follower - let manual commands or automatic control handle it
+        # Follower state is managed by automatic control based on sensor state
         fps_state.since = self.reactor.monotonic()
         fps_state.current_lane = None
         fps_state.current_spool_idx = None
@@ -3433,7 +3431,7 @@ class OAMSManager:
                         or fps_state.state != FPSLoadState.UNLOADED
                         or fps_state.clog.active
                         or fps_state.stuck_spool.active
-                        or in_runout_recovery  # Don't disable follower during runout recovery
+                        or in_runout_recovery  # Keep follower active during filament swap
                     )
                     if direction is None and fps_state.direction is not None:
                         direction = fps_state.direction
@@ -3579,7 +3577,7 @@ class OAMSManager:
                 self.logger.error(f"Failed to set stuck spool LED on {fps_name} spool {spool_idx}")
 
         # Abort current action (unload/load)
-        # Follower will stay enabled automatically (automatic control checks stuck_spool.active)
+        # Follower remains enabled during error states (automatic control checks stuck_spool.active)
         if oams is not None:
             try:
                 oams.abort_current_action()
@@ -3838,7 +3836,7 @@ class OAMSManager:
 
             self.logger.error(f"Stuck spool detected during load, aborting to allow OAMS retry logic")
 
-            # Follower will stay enabled automatically (automatic control checks stuck_spool.active)
+            # Follower remains enabled during error states (automatic control checks stuck_spool.active)
             self.logger.info(f"Spool appears stuck while loading {lane_label} spool {spool_label} ({stuck_reason}) - letting retry logic handle it")
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, pressure, hes_values, now):
@@ -4077,10 +4075,8 @@ class OAMSManager:
                         oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "clog auto-recovery"
                     )
 
-                # Don't clear manual follower override on auto-recovery
-                # Keep it set so follower stays enabled during manual intervention
-                # User can run CLEAR_ERRORS to return to automatic control
-
+                # Reset clog detection state after auto-recovery
+                # Manual follower override (if set) is preserved for user control
                 fps_state.reset_clog_tracker()
 
             fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
@@ -4102,8 +4098,8 @@ class OAMSManager:
 
             fps_state.clog.active = True
 
-            # Pause printer with error message
-            # Follower will stay enabled automatically (automatic control checks clog.active)
+            # Pause printer to allow user intervention
+            # The follower motor remains active for manual filament manipulation
             # SAFETY: Wrap pause in try/except to prevent crash if pause logic fails
             try:
                 self._pause_printer_message(message, fps_state.current_oams)

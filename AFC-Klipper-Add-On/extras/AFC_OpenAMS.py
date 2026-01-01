@@ -1411,7 +1411,7 @@ class afcAMS(afcUnit):
                 "remove the '[afc_openams %s]' section from your config.",
                 self.oams_name, self.name, self.name
             )
-            # Don't start polling if no OAMS hardware
+            # Exit early - OAMS hardware not initialized
             return
 
         # Subscribe to hardware sensor events (requires AMSHardwareService)
@@ -1493,9 +1493,9 @@ class afcAMS(afcUnit):
                                                 if fps_state is not None:
                                                     spool_index = fps_state.current_spool_idx
 
-                                                    # Clear FPS state (matching _unload_filament_for_fps logic)
+                                                    # Clear FPS state after cross-extruder lane unload
                                                     fps_state.state = 0  # FPSLoadState.UNLOADED
-                                                    # Don't disable follower - let manual commands or automatic control handle it
+                                                    # Follower control is handled automatically by OAMS manager
                                                     fps_state.since = self.reactor.monotonic()
                                                     fps_state.current_lane = None
                                                     fps_state.current_spool_idx = None
@@ -3210,7 +3210,7 @@ def _patch_set_lane_loaded_for_fps_sync() -> None:
         if callable(_ORIGINAL_SET_LANE_LOADED):
             _ORIGINAL_SET_LANE_LOADED(self, gcmd)
 
-        # Now update OAMS FPS state to prevent state desync
+        # Update OAMS FPS state to keep it synchronized with AFC lane state
         # Only applies to OpenAMS lanes, gracefully skips for other unit types
         try:
             afc = getattr(self, "afc", None)
@@ -3229,8 +3229,8 @@ def _patch_set_lane_loaded_for_fps_sync() -> None:
                 else:
                     self.logger.debug("SET_LANE_LOADED: Not an OpenAMS lane, skipping FPS state update")
         except Exception as e:
-            # Don't fail the command if OAMS update fails
-            # AFC state is already set correctly, OAMS update is supplementary
+            # Graceful error handling - OAMS update is supplementary to AFC state
+            # AFC state is already set correctly, command succeeds even if OAMS sync fails
             self.logger.warning("Failed to update OpenAMS FPS state for %s: %s", self.name, e)
 
     AFCLane.cmd_SET_LANE_LOADED = _ams_cmd_SET_LANE_LOADED
