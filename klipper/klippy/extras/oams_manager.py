@@ -365,18 +365,15 @@ class OAMSRunoutMonitor:
 
                 if not hasattr(self, '_last_coast_log_position'):
                     self._last_coast_log_position = 0.0
-                    self.logger.info("OAMS: COASTING - path_length=%.1f, effective_path_length=%.1f, reload_margin=%.1f",
-                               path_length, effective_path_length, self.reload_before_toolhead_distance)
+                    self.logger.info(f"OAMS: COASTING - path_length={path_length:.1f}, effective_path_length={effective_path_length:.1f}, reload_margin={self.reload_before_toolhead_distance:.1f}")
 
                 if self.hub_cleared and runout_after_position - self._last_coast_log_position >= 100.0:
                     self._last_coast_log_position = runout_after_position
                     remaining = effective_path_length - consumed_with_margin
-                    self.logger.info("OAMS: COASTING progress (after hub clear) - runout_after=%.1f, consumed_with_margin=%.1f, remaining=%.1f",
-                               runout_after_position, consumed_with_margin, remaining)
+                    self.logger.info(f"OAMS: COASTING progress (after hub clear) - runout_after={runout_after_position:.1f}, consumed_with_margin={consumed_with_margin:.1f}, remaining={remaining:.1f}")
 
                 if self.hub_cleared and consumed_with_margin >= effective_path_length:
-                    self.logger.info("OAMS: Old filament cleared shared PTFE (%.2f mm after hub clear, %.2f mm effective path), loading new lane",
-                               runout_after_position, effective_path_length)
+                    self.logger.info(f"OAMS: Old filament cleared shared PTFE ({runout_after_position:.2f} mm after hub clear, {effective_path_length:.2f} mm effective path), loading new lane")
                     self._last_coast_log_position = 0.0  # Reset for next runout
                     self.state = OAMSRunoutState.RELOADING
                     self.reload_callback()
