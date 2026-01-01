@@ -388,8 +388,12 @@ class OAMSRunoutMonitor:
 
     def _detect_runout(self, oams_obj, lane_name, spool_idx, eventtime):
         """Handle runout detection when the F1S sensor reports empty."""
-        # Use cached printing state to avoid MCU query
-        is_printing = self._is_printing
+        # Get printing state directly (runout monitor doesn't have manager reference)
+        try:
+            idle_timeout = self.printer.lookup_object("idle_timeout")
+            is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
+        except Exception:
+            is_printing = False
 
         fps_state = self.fps_state
         fps = self.fps
@@ -4065,6 +4069,27 @@ class OAMSManager:
             elif fps_state.stuck_spool.restore_follower and is_printing and oams is not None:
                 self._restore_follower_if_needed(fps_name, fps_state, oams, "stuck spool recovery")
             return
+
+        # Check hub sensor - if empty, skip stuck spool detection
+        # Empty hub with low FPS pressure is normal during runout coasting
+        # This prevents false positives when hub clears before F1S detects runout
+        if hes_values is not None and fps_state.current_spool_idx is not None:
+            try:
+                if fps_state.current_spool_idx < len(hes_values):
+                    hub_has_filament = bool(hes_values[fps_state.current_spool_idx])
+                    if not hub_has_filament:
+                        # Hub is empty - this is normal during runout/coasting
+                        # Clear stuck spool timer and exit
+                        fps_state.stuck_spool.start_time = None
+                        if fps_state.stuck_spool.active:
+                            if oams is not None:
+                                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "hub empty - runout in progress")
+                            fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
+                            self.logger.info(f"Cleared stuck spool state for {fps_name} - hub empty indicates runout")
+                        return
+            except Exception:
+                # If we can't read hub sensor, continue with normal stuck detection
+                pass
 
         # Hysteresis logic: Use lower threshold to start timer, upper threshold to clear
         if pressure <= self.stuck_spool_pressure_threshold:
