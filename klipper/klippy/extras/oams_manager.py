@@ -1207,19 +1207,8 @@ class OAMSManager:
                 "Cleared all manual follower overrides, coast state, LED state, and state tracking - returning to automatic control"
             )
 
-            # Force followers on so CLEAR_ERRORS never leaves them disabled, even if sensors
-            # are empty or state is still settling. This keeps manual extrusion available
-            # while the operator recovers from the error condition.
-            if ready_oams:
-                try:
-                    self._force_enable_followers(ready_oams)
-                except Exception:
-                    restart_monitors = False
-                    self.logger.error("Failed to force followers on during OAMSM_CLEAR_ERRORS")
-
-            # After clearing errors and detecting state, ensure followers are enabled for any
-            # lanes that have filament loaded to the hub (even if not loaded to toolhead)
-            # This keeps filament pressure up for manual operations during troubleshooting
+            # Ensure followers are enabled for any OAMS that has filament
+            # Automatic control keeps them enabled - no need to force
             if ready_oams:
                 try:
                     self._ensure_followers_for_loaded_hubs()
@@ -3488,14 +3477,6 @@ class OAMSManager:
         """
         for oams_name, oams in self.oams.items():
             self._update_follower_for_oams(oams_name, oams)
-
-    def _force_enable_followers(self, ready_oams: Dict[str, Any]) -> None:
-        """Force followers on for all ready OAMS controllers."""
-
-        for oams_name, oams in ready_oams.items():
-            self._set_follower_if_changed(oams_name, oams, 1, 1, "OAMSM_CLEAR_ERRORS force-enable", force=True)
-            state = self._get_follower_state(oams_name)
-            state.had_filament = True
 
     def _find_fps_for_oams_bay(self, oams_name: str, bay_idx: int) -> Optional[str]:
         """Find the FPS name that corresponds to a specific OAMS bay."""
