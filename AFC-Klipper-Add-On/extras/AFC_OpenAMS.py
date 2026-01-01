@@ -868,6 +868,27 @@ class afcAMS(afcUnit):
         lane_name = getattr(lane, "name", None)
         self._set_virtual_tool_sensor_state(False, eventtime, lane_name, lane_obj=lane)
 
+        # Clear OAMS FPS state to keep it synchronized with AFC state
+        # This ensures UNSET_LANE_LOADED properly clears both AFC and OAMS states
+        try:
+            oams_mgr = self.printer.lookup_object('oams_manager', None)
+            if oams_mgr is not None and lane_name:
+                # Find the FPS for this lane and clear its state if it matches this lane
+                fps_name = oams_mgr.get_fps_for_afc_lane(lane_name)
+                if fps_name and hasattr(oams_mgr, 'current_state'):
+                    fps_state = oams_mgr.current_state.fps_state.get(fps_name)
+                    if fps_state and fps_state.current_lane == lane_name:
+                        # Import the enum from oams_manager
+                        FPSLoadState = oams_mgr.current_state.FPSLoadState
+                        # Clear the FPS state to match AFC's unloaded state
+                        fps_state.state = FPSLoadState.UNLOADED
+                        fps_state.current_lane = None
+                        fps_state.current_oams = None
+                        fps_state.current_spool_idx = None
+                        self.logger.info(f"Cleared OAMS FPS {fps_name} state during UNSET_LANE_LOADED for lane {lane_name}")
+        except Exception as e:
+            self.logger.warning(f"Failed to clear OAMS FPS state for lane {lane_name}: {e}")
+
     def _mirror_lane_to_virtual_sensor(self, lane, eventtime: float) -> None:
         """Mirror a lane's load state into the AMS virtual tool sensor."""
         if not self._lane_matches_extruder(lane):
