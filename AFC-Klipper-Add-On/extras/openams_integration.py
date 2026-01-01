@@ -549,25 +549,25 @@ class AMSHardwareService:
         Polls OAMS hardware sensors and publishes events to subscribers when
         state changes are detected. Single source of truth for hardware state.
 
-        OPTIMIZATION: Yields to oams_manager during printing to avoid duplicate polling.
+        OPTIMIZATION: Keep polling during printing to maintain fresh sensor cache,
+        but skip event publishing since oams_manager handles printing logic directly.
         """
         if not self._polling_enabled:
             return self._reactor.NEVER
 
-        # OPTIMIZATION: Skip polling when printing - let oams_manager handle it
-        # This eliminates duplicate sensor queries and reduces CPU/MCU load by ~50%
+        # Check printing state to determine whether to publish events
+        # We always poll to keep sensor cache fresh, but skip event publishing during printing
+        is_printing = False
         try:
             idle_timeout = self.printer.lookup_object("idle_timeout")
             is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
-            if is_printing:
-                # oams_manager is polling during printing, skip our poll
-                return eventtime + self._polling_interval_idle
         except Exception:
-            # If we can't determine printing state, continue polling to be safe
+            # If we can't determine printing state, assume not printing to be safe
             pass
 
         try:
-            # Poll hardware
+            # Always poll hardware to keep sensor cache fresh
+            # This ensures oams_manager reads fresh data from oams.hub_hes_value, etc.
             status = self.poll_status()
             if not status:
                 return eventtime + self._polling_interval_idle
@@ -590,14 +590,16 @@ class AMSHardwareService:
 
                 # Publish on first detection (old_val is None) OR when value changes
                 if old_val is None or new_val != old_val:
-                    # Publish sensor change event
-                    self.event_bus.publish(
-                        "f1s_changed",
-                        unit_name=self.name,
-                        bay=bay,
-                        value=new_val,
-                        eventtime=eventtime
-                    )
+                    # Skip event publishing during printing - oams_manager handles directly
+                    # But still update internal state to track changes
+                    if not is_printing:
+                        self.event_bus.publish(
+                            "f1s_changed",
+                            unit_name=self.name,
+                            bay=bay,
+                            value=new_val,
+                            eventtime=eventtime
+                        )
                     if old_val is None:
                         self._log_info(f"f1s[{bay}] initial state: {new_val}")
                     else:
@@ -613,14 +615,16 @@ class AMSHardwareService:
 
                 # Publish on first detection (old_val is None) OR when value changes
                 if old_val is None or new_val != old_val:
-                    # Publish sensor change event
-                    self.event_bus.publish(
-                        "hub_changed",
-                        unit_name=self.name,
-                        bay=bay,
-                        value=new_val,
-                        eventtime=eventtime
-                    )
+                    # Skip event publishing during printing - oams_manager handles directly
+                    # But still update internal state to track changes
+                    if not is_printing:
+                        self.event_bus.publish(
+                            "hub_changed",
+                            unit_name=self.name,
+                            bay=bay,
+                            value=new_val,
+                            eventtime=eventtime
+                        )
                     if old_val is None:
                         self._log_info(f"hub[{bay}] initial state: {new_val}")
                     else:

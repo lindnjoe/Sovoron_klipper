@@ -2259,14 +2259,17 @@ class afcAMS(afcUnit):
                 self.afc.save_vars()
             except Exception:
                 self.logger.error("Failed to persist AFC state after lane load")
-            if self._lane_matches_extruder(lane):
-                try:
-                    # ALWAYS force update after load notification - don't check lane_tool_latches
-                    # The lane was just loaded, so the sensor MUST be updated regardless of previous state
-                    self._set_virtual_tool_sensor_state(True, eventtime, lane.name, force=True, lane_obj=lane)
-                    self.logger.debug(f"Set virtual tool sensor to LOADED for lane {lane.name}")
-                except Exception as e:
-                    self.logger.error(f"Failed to set virtual tool sensor state for loaded lane {lane.name}: {e}")
+
+            # ALWAYS update virtual sensor on explicit load notifications from OpenAMS
+            # During same-FPS runouts, _lane_matches_extruder might temporarily fail
+            # even though the lane IS on this extruder, so force update regardless
+            try:
+                # ALWAYS force update after load notification - don't check lane_tool_latches
+                # The lane was just loaded, so the sensor MUST be updated regardless of previous state
+                self._set_virtual_tool_sensor_state(True, eventtime, lane.name, force=True, lane_obj=lane)
+                self.logger.info(f"Set virtual tool sensor to LOADED for lane {lane.name} after OpenAMS load")
+            except Exception as e:
+                self.logger.error(f"Failed to set virtual tool sensor state for loaded lane {lane.name}: {e}")
 
             # NOTE: Don't call _sync_virtual_tool_sensor here - it would override the state we just set!
             # We already set the sensor to True above. Syncing would check extruder state which
