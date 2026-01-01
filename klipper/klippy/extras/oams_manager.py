@@ -2696,7 +2696,7 @@ class OAMSManager:
                 self.logger.info(f"Notified AFC that lane {lane_name} is loaded (virtual sensor updated)")
                 return True
             else:
-                self.logger.warning(f"AFC notification returned False for lane {lane_name}, trying fallback")
+                self.logger.debug(f"AFC notification returned False for lane {lane_name}, trying fallback")
                 # Try fallback gcode command
                 try:
                     gcode = self._gcode_obj
