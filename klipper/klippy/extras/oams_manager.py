@@ -250,7 +250,8 @@ class OAMSRunoutMonitor:
         
                     if lane_name is None and fps_state.current_lane is not None:
                         lane_name = fps_state.current_lane
-                        self.logger.debug(f"OAMS: Using fps_state.current_lane '{lane_name}' (hardware_service didn't resolve lane name)")
+                        # Fallback to fps_state.current_lane when hardware_service doesn't resolve lane name
+                        # This is normal operation - no need to log
         
                     try:
                         f1s_values = oams_obj.f1s_hes_value
