@@ -1493,9 +1493,9 @@ class afcAMS(afcUnit):
                                                 if fps_state is not None:
                                                     spool_index = fps_state.current_spool_idx
 
-                                                    # Clear FPS state (matching _unload_filament_for_fps logic)
+                                                    # Clear FPS state after cross-extruder lane unload
                                                     fps_state.state = 0  # FPSLoadState.UNLOADED
-                                                    # Don't disable follower - let manual commands or automatic control handle it
+                                                    # Follower control is handled automatically by OAMS manager
                                                     fps_state.since = self.reactor.monotonic()
                                                     fps_state.current_lane = None
                                                     fps_state.current_spool_idx = None
