@@ -1190,11 +1190,24 @@ class OAMSManager:
                 restart_monitors = False
                 self.logger.error("Failed to force-sync from AFC lanes during OAMSM_CLEAR_ERRORS")
 
-            # Clear all manual follower overrides and coast state - return to automatic hub sensor control
+            # Clear manual follower overrides and coast state - return to automatic hub sensor control
+            # EXCEPT for FPS with active clogs - keep those with manual override so user can manually extrude
             # Also clear last state tracking so follower state is refreshed from actual sensors
             for oams_name in self.oams.keys():
                 state = self._get_follower_state(oams_name)
-                state.manual_override = False
+
+                # Check if any FPS using this OAMS has an active clog
+                has_active_clog = False
+                for fps_name, fps_state in self.current_state.fps_state.items():
+                    if fps_state.current_oams == oams_name and fps_state.clog.active:
+                        has_active_clog = True
+                        self.logger.info(f"Keeping manual override for {oams_name} due to active clog on {fps_name} (allows manual extrusion for recovery)")
+                        break
+
+                # Only clear manual override if there's no active clog
+                if not has_active_clog:
+                    state.manual_override = False
+
                 state.last_state = None  # Force state refresh
                 state.coasting = False
                 state.coast_start_pos = 0.0
@@ -1226,6 +1239,30 @@ class OAMSManager:
                 except Exception:
                     restart_monitors = False
                     self.logger.error("Failed to refresh followers after OAMSM_CLEAR_ERRORS")
+
+            # Sync virtual tool sensors to ensure they match actual hardware state
+            # This fixes virtual sensor state after error recovery (e.g., sensor showing loaded when actually empty)
+            synced_count = 0
+            try:
+                afc = self._get_afc()
+                if afc is not None:
+                    units = getattr(afc, 'units', {})
+                    eventtime = self.reactor.monotonic()
+
+                    for unit_name, unit_obj in units.items():
+                        # Check if this is an OpenAMS unit with virtual sensor sync capability
+                        if hasattr(unit_obj, '_sync_virtual_tool_sensor'):
+                            try:
+                                # Force update to ensure sensor state is corrected after error clearing
+                                unit_obj._sync_virtual_tool_sensor(eventtime, force=True)
+                                synced_count += 1
+                            except Exception:
+                                self.logger.error(f"Failed to sync virtual tool sensor for unit {unit_name}")
+
+                    if synced_count > 0:
+                        self.logger.info(f"Synced {synced_count} virtual tool sensor(s) after clearing errors")
+            except Exception:
+                self.logger.error("Failed to sync virtual tool sensors during OAMSM_CLEAR_ERRORS")
 
         if monitors_were_running:
             if restart_monitors:
