@@ -1191,23 +1191,10 @@ class OAMSManager:
                 self.logger.error("Failed to force-sync from AFC lanes during OAMSM_CLEAR_ERRORS")
 
             # Clear manual follower overrides and coast state - return to automatic hub sensor control
-            # EXCEPT for FPS with active clogs - keep those with manual override so user can manually extrude
-            # Also clear last state tracking so follower state is refreshed from actual sensors
+            # Automatic control will keep followers enabled during clogs/stuck spools
             for oams_name in self.oams.keys():
                 state = self._get_follower_state(oams_name)
-
-                # Check if any FPS using this OAMS has an active clog
-                has_active_clog = False
-                for fps_name, fps_state in self.current_state.fps_state.items():
-                    if fps_state.current_oams == oams_name and fps_state.clog.active:
-                        has_active_clog = True
-                        self.logger.info(f"Keeping manual override for {oams_name} due to active clog on {fps_name} (allows manual extrusion for recovery)")
-                        break
-
-                # Only clear manual override if there's no active clog
-                if not has_active_clog:
-                    state.manual_override = False
-
+                state.manual_override = False
                 state.last_state = None  # Force state refresh
                 state.coasting = False
                 state.coast_start_pos = 0.0
@@ -3041,21 +3028,7 @@ class OAMSManager:
             # Critical: printer is trying to print without filament loaded
             self.logger.error(f"Critical failure during printing: {error_message} - pausing printer")
 
-            # CRITICAL: Enable follower BEFORE pausing so manual extrusion is available
-            # Find the FPS state for this OAMS and enable its follower
-            if oams_name:
-                for fps_name, fps_state in self.current_state.fps_state.items():
-                    if fps_state.current_oams == oams_name and fps_state.current_spool_idx is not None:
-                        oams_obj = self.oams.get(oams_name)
-                        if oams_obj is not None:
-                            # Set manual override FIRST to prevent auto-control from interfering
-                            state = self._get_follower_state(oams_name)
-                            state.manual_override = True
-                            self.logger.error(f"Critical failure: enabled manual override for {oams_name}")
-
-                            self._enable_follower(fps_name, fps_state, oams_obj, 1, "critical failure - ensure follower active")
-                        break
-
+            # Follower stays enabled automatically (automatic control sees error state)
             # Schedule pause asynchronously to avoid deadlock when called from gcode command
             self._schedule_async_pause(error_message, oams_name)
         else:
@@ -3233,20 +3206,7 @@ class OAMSManager:
 
                 # CRITICAL: Set manual override FIRST to prevent automatic follower control from interfering
                 # Then enable follower before pausing to ensure it's available for manual extrusion
-                if tracked_state.current_oams is not None:
-                    state = self._get_follower_state(tracked_state.current_oams)
-                    state.manual_override = True
-                    self.logger.error(f"Post-load clog: enabled manual override for {tracked_state.current_oams} to prevent auto-disable")
-
-                # Ensure follower is enabled (should already be enabled)
-                if oams_obj is not None and tracked_state.current_spool_idx is not None:
-                    if self._is_oams_mcu_ready(oams_obj):
-                        self._enable_follower(fps_name, tracked_state, oams_obj, 1, "post-load clog - ensure follower active")
-                    else:
-                        self.logger.warning(f"Post-load clog: MCU not ready for {fps_name}")
-                else:
-                    self.logger.warning(f"Post-load clog but no OAMS/spool loaded on {fps_name}")
-
+                # Follower stays enabled automatically (automatic control checks clog.active)
                 # Pause printer with error message
                 self._pause_printer_message(message, tracked_state.current_oams)
 
@@ -3662,20 +3622,8 @@ class OAMSManager:
             except Exception:
                 self.logger.error(f"Failed to set stuck spool LED on {fps_name} spool {spool_idx}")
 
-        # Set manual override to prevent automatic follower control from interfering
-        # Follower should already be enabled (we don't disable during unload)
-        if fps_state.current_oams and spool_idx is not None:
-            state = self._get_follower_state(fps_state.current_oams)
-            state.manual_override = True
-            self.logger.info(f"Stuck spool detected: set manual override for {fps_state.current_oams} (follower will stay enabled for manual recovery)")
-
-            # Ensure follower is enabled in forward direction (should already be enabled)
-            if oams is not None:
-                self._enable_follower(fps_name, fps_state, oams, 1, "stuck spool pause - ensure follower active")
-        else:
-            self.logger.warning(f"Stuck spool detected but no OAMS/spool loaded on {fps_name} (oams={fps_state.current_oams}, spool={spool_idx})")
-
         # Abort current action (unload/load)
+        # Follower will stay enabled automatically (automatic control checks stuck_spool.active)
         if oams is not None:
             try:
                 oams.abort_current_action()
@@ -3934,23 +3882,7 @@ class OAMSManager:
 
             self.logger.error(f"Stuck spool detected during load, aborting to allow OAMS retry logic")
 
-            # CRITICAL: Keep follower enabled even during stuck load
-            # User needs follower running to manually fix clogs or re-attempt load
-            # Follower doesn't interfere with stuck detection (encoder + FPS based)
-            # Set manual override to prevent automatic follower control from interfering
-            # Follower should already be enabled (we don't disable during unload)
-            if fps_state.current_oams and fps_state.current_spool_idx is not None:
-                oams_obj = self.oams.get(fps_state.current_oams)
-                if oams_obj is not None:
-                    state = self._get_follower_state(fps_state.current_oams)
-                    state.manual_override = True
-                    self.logger.info(f"Stuck spool detected: set manual override for {fps_state.current_oams} (follower will stay enabled for recovery)")
-                    self._enable_follower(fps_name, fps_state, oams_obj, 1, "stuck load - ensure follower active")
-                else:
-                    self.logger.warning(f"Stuck spool: OAMS {fps_state.current_oams} not found")
-            else:
-                self.logger.warning(f"Stuck spool detected but no OAMS/spool loaded on {fps_name}")
-
+            # Follower will stay enabled automatically (automatic control checks stuck_spool.active)
             self.logger.info(f"Spool appears stuck while loading {lane_label} spool {spool_label} ({stuck_reason}) - letting retry logic handle it")
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, pressure, hes_values, now):
@@ -4218,20 +4150,8 @@ class OAMSManager:
 
             fps_state.clog.active = True
 
-            # Set manual override to prevent automatic follower control from interfering
-            # Follower should already be enabled (we don't disable during unload)
-            if fps_state.current_oams and fps_state.current_spool_idx is not None:
-                state = self._get_follower_state(fps_state.current_oams)
-                state.manual_override = True
-                self.logger.info(f"Clog detected: set manual override for {fps_state.current_oams} (follower will stay enabled for manual recovery)")
-
-                # Ensure follower is enabled in forward direction (should already be enabled)
-                if oams is not None:
-                    self._enable_follower(fps_name, fps_state, oams, 1, "clog detected - ensure follower active")
-            else:
-                self.logger.warning(f"Clog detected but no OAMS/spool loaded on {fps_name} (oams={fps_state.current_oams}, spool={fps_state.current_spool_idx})")
-
             # Pause printer with error message
+            # Follower will stay enabled automatically (automatic control checks clog.active)
             # SAFETY: Wrap pause in try/except to prevent crash if pause logic fails
             try:
                 self._pause_printer_message(message, fps_state.current_oams)
