@@ -1411,7 +1411,7 @@ class afcAMS(afcUnit):
                 "remove the '[afc_openams %s]' section from your config.",
                 self.oams_name, self.name, self.name
             )
-            # Don't start polling if no OAMS hardware
+            # Exit early - OAMS hardware not initialized
             return
 
         # Subscribe to hardware sensor events (requires AMSHardwareService)
