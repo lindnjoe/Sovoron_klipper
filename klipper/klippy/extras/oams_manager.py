@@ -1227,6 +1227,30 @@ class OAMSManager:
                     restart_monitors = False
                     self.logger.error("Failed to refresh followers after OAMSM_CLEAR_ERRORS")
 
+            # Sync virtual tool sensors to ensure they match actual hardware state
+            # This fixes virtual sensor state after error recovery (e.g., sensor showing loaded when actually empty)
+            synced_count = 0
+            try:
+                afc = self._get_afc()
+                if afc is not None:
+                    units = getattr(afc, 'units', {})
+                    eventtime = self.reactor.monotonic()
+
+                    for unit_name, unit_obj in units.items():
+                        # Check if this is an OpenAMS unit with virtual sensor sync capability
+                        if hasattr(unit_obj, '_sync_virtual_tool_sensor'):
+                            try:
+                                # Force update to ensure sensor state is corrected after error clearing
+                                unit_obj._sync_virtual_tool_sensor(eventtime, force=True)
+                                synced_count += 1
+                            except Exception:
+                                self.logger.error(f"Failed to sync virtual tool sensor for unit {unit_name}")
+
+                    if synced_count > 0:
+                        self.logger.info(f"Synced {synced_count} virtual tool sensor(s) after clearing errors")
+            except Exception:
+                self.logger.error("Failed to sync virtual tool sensors during OAMSM_CLEAR_ERRORS")
+
         if monitors_were_running:
             if restart_monitors:
                 try:
