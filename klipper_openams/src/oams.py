@@ -263,7 +263,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         Hardware error clearing (LED errors) was already done in handle_connect().
         """
         # Clear any stale action status from previous operations
-        # Status is cleared in software only - no MCU commands sent during initialization
+        # Don't send MCU commands here to avoid interfering with manager initialization
         self.action_status = None
         self.action_status_code = None
         self.action_status_value = None
@@ -301,18 +301,10 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             return None
 
         spool_val = params["spool"]
-
-        # Valid spool indices are 0-3
         if 0 <= spool_val <= 3:
             return spool_val
 
-        # 255 (0xFF) indicates no spool loaded - this is normal, not an error
-        if spool_val == 255:
-            logging.debug("OAMS[%d]: No spool currently loaded (hardware returned 255)", self.oams_idx)
-            return None
-
-        # Any other value is genuinely unexpected
-        logging.warning("OAMS[%d]: Hardware reported unexpected spool index %d (expected 0-3 or 255)", self.oams_idx, spool_val)
+        logging.error("OAMS[%d]: Hardware reported invalid spool index %d (expected 0-3)", self.oams_idx, spool_val)
         return None
         
 
@@ -675,18 +667,6 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             gcmd.error("Calibration of PTFE length failed")
 
     def load_spool(self, spool_idx):
-        # Safety check: refuse to load if a spool is already loaded
-        # This prevents MCU crashes from physically impossible operations
-        if self.current_spool is not None:
-            logging.error(
-                "OAMS[%d]: Refusing to load spool %d - spool %d is already loaded. "
-                "Unload first to prevent hardware damage and MCU crashes.",
-                self.oams_idx,
-                spool_idx,
-                self.current_spool
-            )
-            return False, f"Spool {self.current_spool} already loaded - unload first"
-
         self.action_status = OAMSStatus.LOADING
         self.oams_load_spool_cmd.send([spool_idx])
         timeout = self.reactor.monotonic() + 30.0  # 30 second timeout
@@ -733,14 +713,14 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
     def unload_spool(self):
         self.action_status = OAMSStatus.UNLOADING
         self.oams_unload_spool_cmd.send()
-        timeout = self.reactor.monotonic() + 30.0  # 30 second timeout
+        timeout = self.reactor.monotonic() + 60.0  # 60 second timeout (increased from 30s to handle MCU recovery)
 
         # CRITICAL FIX: Use reactor.pause() to avoid queueing behind print moves
         # toolhead.dwell() queues into move queue and blocks during printing
         # reactor.pause() waits without affecting toolhead command stream
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
-                logging.error("OAMS[%d]: Unload operation timed out after 30 seconds", self.oams_idx)
+                logging.error("OAMS[%d]: Unload operation timed out after 60 seconds", self.oams_idx)
                 self.action_status = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS unload operation timed out (MCU unresponsive)"
@@ -769,19 +749,39 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self.oams_follower_cmd.send([enable, direction])
 
     def abort_current_action(self, code: int = OAMSOpCode.ERROR_KLIPPER_CALL) -> None:
-        """Abort any in-flight hardware action initiated by Klipper helpers."""
+        """Abort any in-flight hardware action initiated by Klipper helpers.
+
+        IMPORTANT: This waits for the MCU to finish the current operation before
+        clearing the action status. Simply clearing action_status without waiting
+        creates a desync where Klipper thinks the operation is done but the MCU
+        is still busy, causing "OAMS is busy" errors on subsequent operations.
+        """
         if self.action_status is None:
             return
 
         logging.warning(
-            "OAMS[%d]: Aborting current action %s with code %d",
+            "OAMS[%d]: Aborting current action %s with code %d - waiting for MCU to complete",
             self.oams_idx,
             self.action_status,
             code,
         )
+
+        # Wait for MCU to finish the current operation (max 5 seconds)
+        # The MCU will send an oams_action_status response when done
+        timeout = self.reactor.monotonic() + 5.0
+        while self.action_status is not None:
+            if self.reactor.monotonic() > timeout:
+                logging.error("OAMS[%d]: Abort timeout - MCU did not respond, forcing clear", self.oams_idx)
+                break
+            # Use reactor.pause to wait without queueing into toolhead
+            self.reactor.pause(self.reactor.monotonic() + 0.05)
+
+        # Now clear the status (may already be None if MCU responded)
         self.action_status_code = code
         self.action_status_value = None
         self.action_status = None
+
+        logging.info("OAMS[%d]: Abort complete - ready for new operations", self.oams_idx)
 
     cmd_OAMS_FOLLOWER_help = "Enable or disable follower and set its direction"
     def cmd_OAMS_FOLLOWER(self, gcmd):
