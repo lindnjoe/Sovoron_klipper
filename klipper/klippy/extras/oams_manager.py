@@ -165,7 +165,7 @@ class OAMSRunoutMonitor:
                  oams: Dict[str, Any],
                  reload_callback: Callable,
                  reload_before_toolhead_distance: float = 0.0,
-                 runout_debounce: float = 0.0):
+                 debounce_delay: float = 0.0):
         self.oams = oams
         self.printer = printer
         self.fps_name = fps_name
@@ -189,8 +189,8 @@ class OAMSRunoutMonitor:
 
         self.reactor = self.printer.get_reactor()
 
-        # F1S sensor debounce tracking
-        self.runout_debounce = runout_debounce
+        # F1S sensor debounce tracking (uses AFC's global debounce_delay)
+        self.debounce_delay = debounce_delay
         self.f1s_empty_start: Optional[float] = None
 
         self.hardware_service = None
@@ -273,10 +273,10 @@ class OAMSRunoutMonitor:
                         if self.f1s_empty_start is None:
                             # First time seeing empty, start debounce timer
                             self.f1s_empty_start = current_time
-                            if self.runout_debounce > 0.0:
+                            if self.debounce_delay > 0.0:
                                 logging.debug("OAMS: F1S reports empty on %s spool %d, starting %.1fs debounce timer",
-                                            self.fps_name, spool_idx, self.runout_debounce)
-                        elif current_time - self.f1s_empty_start >= self.runout_debounce:
+                                            self.fps_name, spool_idx, self.debounce_delay)
+                        elif current_time - self.f1s_empty_start >= self.debounce_delay:
                             # Debounce duration elapsed, trigger runout
                             self._detect_runout(oams_obj, lane_name, spool_idx, eventtime)
                             # Keep f1s_empty_start set so we don't re-trigger during the same runout
@@ -284,7 +284,7 @@ class OAMSRunoutMonitor:
                     else:
                         # F1S shows filament present, reset debounce timer
                         if self.f1s_empty_start is not None:
-                            if self.runout_debounce > 0.0:
+                            if self.debounce_delay > 0.0:
                                 logging.debug("OAMS: F1S shows filament present again on %s spool %d, resetting debounce timer",
                                             self.fps_name, spool_idx)
                             self.f1s_empty_start = None
@@ -690,10 +690,15 @@ class OAMSManager:
 
         self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
 
-        # F1S sensor debounce: prevent false runouts from momentary sensor flutter
-        # Similar to AFC's debounce_delay, this requires the F1S to read empty for
-        # this duration before triggering a runout
-        self.runout_debounce = config.getfloat("runout_debounce", 0.0, minval=0.0, maxval=5.0)
+        # F1S sensor debounce: Use AFC's global debounce_delay to prevent false runouts
+        # from momentary sensor flutter. This requires the F1S to read empty for
+        # this duration before triggering a runout.
+        try:
+            afc_obj = self.printer.lookup_object('AFC')
+            default_debounce = getattr(afc_obj, 'debounce_delay', 0.0)
+        except Exception:
+            default_debounce = 0.0
+        self.debounce_delay = config.getfloat("debounce_delay", default_debounce, minval=0.0, maxval=5.0)
 
         sensitivity = config.get("clog_sensitivity", CLOG_SENSITIVITY_DEFAULT).lower()
         if sensitivity not in CLOG_SENSITIVITY_LEVELS:
@@ -4433,7 +4438,7 @@ class OAMSManager:
             if fps_reload_margin is None:
                 fps_reload_margin = self.reload_before_toolhead_distance
 
-            monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], self.current_state.fps_state[fps_name], self.oams, _reload_callback, reload_before_toolhead_distance=fps_reload_margin, runout_debounce=self.runout_debounce)
+            monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], self.current_state.fps_state[fps_name], self.oams, _reload_callback, reload_before_toolhead_distance=fps_reload_margin, debounce_delay=self.debounce_delay)
             self.runout_monitors[fps_name] = monitor
             monitor.start()
 
