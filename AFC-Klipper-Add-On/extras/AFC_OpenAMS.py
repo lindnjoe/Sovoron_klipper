@@ -3257,14 +3257,19 @@ def _patch_set_lane_loaded_for_fps_sync() -> None:
             # This ensures the virtual tool sensor state matches the lane load state
             unit_obj = getattr(self, "unit_obj", None)
             if unit_obj and hasattr(unit_obj, '_set_virtual_tool_sensor_state'):
-                # This is an OpenAMS unit - directly update the virtual sensor
-                try:
-                    eventtime = unit_obj.reactor.monotonic()
-                    # Call the method directly on the afcAMS instance
-                    unit_obj._set_virtual_tool_sensor_state(True, eventtime, self.name, force=True, lane_obj=self)
-                    self.logger.info(f"SET_LANE_LOADED: Updated virtual tool sensor to LOADED for {self.name}")
-                except Exception as sensor_error:
-                    self.logger.warning(f"Failed to update virtual tool sensor for {self.name}: {sensor_error}")
+                # Check if lane's extruder matches the unit's extruder
+                # Each AMS unit manages the virtual sensor for ONE extruder only
+                if hasattr(unit_obj, '_lane_matches_extruder') and not unit_obj._lane_matches_extruder(self):
+                    self.logger.debug(f"SET_LANE_LOADED: Skipping virtual sensor update for {self.name} - extruder mismatch")
+                else:
+                    # This is an OpenAMS unit - directly update the virtual sensor
+                    try:
+                        eventtime = unit_obj.reactor.monotonic()
+                        # Call the method directly on the afcAMS instance
+                        unit_obj._set_virtual_tool_sensor_state(True, eventtime, self.name, force=True, lane_obj=self)
+                        self.logger.info(f"SET_LANE_LOADED: Updated virtual tool sensor to LOADED for {self.name}")
+                    except Exception as sensor_error:
+                        self.logger.warning(f"Failed to update virtual tool sensor for {self.name}: {sensor_error}")
         except Exception as e:
             # Graceful error handling - OAMS update is supplementary to AFC state
             # AFC state is already set correctly, command succeeds even if OAMS sync fails
