@@ -2284,7 +2284,7 @@ class afcAMS(afcUnit):
                 # ALWAYS force update after load notification - don't check lane_tool_latches
                 # The lane was just loaded, so the sensor MUST be updated regardless of previous state
                 self._set_virtual_tool_sensor_state(True, eventtime, lane.name, force=True, lane_obj=lane)
-                self.logger.info(f"Set virtual tool sensor to LOADED for lane {lane.name} after OpenAMS load")
+                self.logger.debug(f"Set virtual tool sensor to LOADED for lane {lane.name} after OpenAMS load")
             except Exception as e:
                 self.logger.error(f"Failed to set virtual tool sensor state for loaded lane {lane.name}: {e}")
 

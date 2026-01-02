@@ -363,12 +363,12 @@ class OAMSRunoutMonitor:
 
                 if not hasattr(self, '_last_coast_log_position'):
                     self._last_coast_log_position = 0.0
-                    self.logger.info(f"OAMS: COASTING - path_length={path_length:.1f}, effective_path_length={effective_path_length:.1f}, reload_margin={self.reload_before_toolhead_distance:.1f}")
+                    self.logger.debug(f"OAMS: COASTING - path_length={path_length:.1f}, effective_path_length={effective_path_length:.1f}, reload_margin={self.reload_before_toolhead_distance:.1f}")
 
                 if self.hub_cleared and runout_after_position - self._last_coast_log_position >= 100.0:
                     self._last_coast_log_position = runout_after_position
                     remaining = effective_path_length - consumed_with_margin
-                    self.logger.info(f"OAMS: COASTING progress (after hub clear) - runout_after={runout_after_position:.1f}, consumed_with_margin={consumed_with_margin:.1f}, remaining={remaining:.1f}")
+                    self.logger.debug(f"OAMS: COASTING progress (after hub clear) - runout_after={runout_after_position:.1f}, consumed_with_margin={consumed_with_margin:.1f}, remaining={remaining:.1f}")
 
                 if self.hub_cleared and consumed_with_margin >= effective_path_length:
                     self.logger.info(f"OAMS: Old filament cleared shared PTFE ({runout_after_position:.2f} mm after hub clear, {effective_path_length:.2f} mm effective path), loading new lane")
@@ -2712,7 +2712,7 @@ class OAMSManager:
                 eventtime=eventtime
             )
             if handled:
-                self.logger.info(f"Notified AFC that lane {lane_name} is loaded (virtual sensor updated)")
+                self.logger.debug(f"Notified AFC that lane {lane_name} is loaded (virtual sensor updated)")
                 return True
             else:
                 self.logger.debug(f"AFC notification returned False for lane {lane_name}, trying fallback")
@@ -2924,7 +2924,7 @@ class OAMSManager:
             # This ensures AMS virtual toolhead sensors (e.g., AMS_Extruder4) show correct state
             self._notify_lane_loaded_to_afc(lane_name, oams_name, bay_index, fps_state.since)
 
-            self.logger.info(
+            self.logger.debug(
                 f"Lane load complete: {lane_name} -> FPS state: LOADED, current_lane={fps_state.current_lane}, "
                 f"current_oams={fps_state.current_oams}, current_spool_idx={fps_state.current_spool_idx}, since={fps_state.since:.3f}"
             )
