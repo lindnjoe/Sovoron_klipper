@@ -1606,8 +1606,7 @@ class OAMSManager:
                     state.last_state = (0, direction)
                     # Keep manual override so it stays disabled (use OAMSM_FOLLOWER_RESET to return to automatic)
                     state.manual_override = True
-                    self.logger.info("Disabled follower on %s (manual override - use OAMSM_FOLLOWER_RESET to return to automatic)", fps_name)
-                    gcmd.respond_info(f"Follower disabled on {fps_name} (manual control - use OAMSM_FOLLOWER_RESET to return to automatic)")
+                    self.logger.debug("Disabled follower on %s (manual override - use OAMSM_FOLLOWER_RESET to return to automatic)", fps_name)
                 except Exception:
                     self.logger.error("Failed to disable follower on %s", fps_state.current_oams)
                     gcmd.respond_info(f"Failed to disable follower. Check logs.")
@@ -1624,7 +1623,7 @@ class OAMSManager:
             return
 
         try:
-            self.logger.info("OAMSM_FOLLOWER: enabling follower on %s, direction=%d (manual override - will stay enabled regardless of hub sensors)", fps_name, direction)
+            self.logger.debug("OAMSM_FOLLOWER: enabling follower on %s, direction=%d (manual override - will stay enabled regardless of hub sensors)", fps_name, direction)
             oams_obj.set_oams_follower(enable, direction)
             fps_state.following = bool(enable)
             fps_state.direction = direction
@@ -1633,8 +1632,7 @@ class OAMSManager:
             state.last_state = (enable, direction)
             # Set manual override flag - follower stays enabled even if hub sensors are empty
             state.manual_override = True
-            self.logger.info("OAMSM_FOLLOWER: successfully enabled follower on %s (manual override active)", fps_name)
-            gcmd.respond_info(f"Follower enabled on {fps_name} (manual control - use OAMSM_FOLLOWER_RESET to return to automatic)")
+            self.logger.debug("OAMSM_FOLLOWER: successfully enabled follower on %s (manual override active)", fps_name)
         except Exception:
             self.logger.error("Failed to set follower on %s", fps_state.current_oams)
             gcmd.respond_info(f"Failed to set follower. Check logs.")
