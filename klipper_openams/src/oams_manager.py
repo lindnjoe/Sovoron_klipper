@@ -164,7 +164,8 @@ class OAMSRunoutMonitor:
                  fps_state,
                  oams: Dict[str, Any],
                  reload_callback: Callable,
-                 reload_before_toolhead_distance: float = 0.0):
+                 reload_before_toolhead_distance: float = 0.0,
+                 debounce_delay: float = 0.0):
         self.oams = oams
         self.printer = printer
         self.fps_name = fps_name
@@ -187,6 +188,10 @@ class OAMSRunoutMonitor:
         self.reload_callback = reload_callback
 
         self.reactor = self.printer.get_reactor()
+
+        # F1S sensor debounce tracking (uses AFC's global debounce_delay)
+        self.debounce_delay = debounce_delay
+        self.f1s_empty_start: Optional[float] = None
 
         self.hardware_service = None
         self.latest_lane_name: Optional[str] = None
@@ -259,11 +264,30 @@ class OAMSRunoutMonitor:
         
                     if lane_name is None:
                         lane_name = self.latest_lane_name
-        
+
                     self.latest_lane_name = lane_name
-        
+
+                    # F1S debounce: only trigger runout if sensor has been empty for the configured duration
                     if spool_empty:
-                        self._detect_runout(oams_obj, lane_name, spool_idx, eventtime)
+                        current_time = self.reactor.monotonic()
+                        if self.f1s_empty_start is None:
+                            # First time seeing empty, start debounce timer
+                            self.f1s_empty_start = current_time
+                            if self.debounce_delay > 0.0:
+                                logging.debug("OAMS: F1S reports empty on %s spool %d, starting %.1fs debounce timer",
+                                            self.fps_name, spool_idx, self.debounce_delay)
+                        elif current_time - self.f1s_empty_start >= self.debounce_delay:
+                            # Debounce duration elapsed, trigger runout
+                            self._detect_runout(oams_obj, lane_name, spool_idx, eventtime)
+                            # Keep f1s_empty_start set so we don't re-trigger during the same runout
+                        # else: still debouncing, wait for next check
+                    else:
+                        # F1S shows filament present, reset debounce timer
+                        if self.f1s_empty_start is not None:
+                            if self.debounce_delay > 0.0:
+                                logging.debug("OAMS: F1S shows filament present again on %s spool %d, resetting debounce timer",
+                                            self.fps_name, spool_idx)
+                            self.f1s_empty_start = None
         
                 elif self.state in (OAMSRunoutState.DETECTED, OAMSRunoutState.COASTING):
                     # Cross-extruder runouts don't need coasting; trigger the
@@ -487,10 +511,12 @@ class OAMSRunoutMonitor:
         if self.timer is None:
             self.timer = self.reactor.register_timer(self._timer_callback, self.reactor.NOW)
         self.state = OAMSRunoutState.MONITORING
-    
+        self.f1s_empty_start = None  # Reset debounce timer on start
+
     def stop(self) -> None:
         self.state = OAMSRunoutState.STOPPED
-        
+        self.f1s_empty_start = None  # Reset debounce timer on stop
+
     def reloading(self) -> None:
         self.state = OAMSRunoutState.RELOADING
         self.runout_position = None
@@ -499,14 +525,17 @@ class OAMSRunoutMonitor:
         self.is_cross_extruder_runout = False
         # Clear COASTING state tracking
         self.hub_cleared = False
+        self.f1s_empty_start = None  # Reset debounce timer on reload
         self.hub_clear_position = None
         self.coasting_start_time = None
 
     def paused(self) -> None:
         self.state = OAMSRunoutState.PAUSED
+        self.f1s_empty_start = None  # Reset debounce timer on pause
 
     def reset(self) -> None:
         self.state = OAMSRunoutState.STOPPED
+        self.f1s_empty_start = None  # Reset debounce timer on reset
         self.runout_position = None
         self.runout_after_position = None
         self.runout_spool_idx = None
@@ -660,6 +689,16 @@ class OAMSManager:
         self.led_error_state: Dict[str, int] = {}  # Track last commanded LED state to avoid redundant MCU commands
 
         self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
+
+        # F1S sensor debounce: Use AFC's global debounce_delay to prevent false runouts
+        # from momentary sensor flutter. This requires the F1S to read empty for
+        # this duration before triggering a runout.
+        try:
+            afc_obj = self.printer.lookup_object('AFC')
+            default_debounce = getattr(afc_obj, 'debounce_delay', 0.0)
+        except Exception:
+            default_debounce = 0.0
+        self.debounce_delay = config.getfloat("debounce_delay", default_debounce, minval=0.0, maxval=5.0)
 
         sensitivity = config.get("clog_sensitivity", CLOG_SENSITIVITY_DEFAULT).lower()
         if sensitivity not in CLOG_SENSITIVITY_LEVELS:
@@ -4399,7 +4438,7 @@ class OAMSManager:
             if fps_reload_margin is None:
                 fps_reload_margin = self.reload_before_toolhead_distance
 
-            monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], self.current_state.fps_state[fps_name], self.oams, _reload_callback, reload_before_toolhead_distance=fps_reload_margin)
+            monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], self.current_state.fps_state[fps_name], self.oams, _reload_callback, reload_before_toolhead_distance=fps_reload_margin, debounce_delay=self.debounce_delay)
             self.runout_monitors[fps_name] = monitor
             monitor.start()
 
