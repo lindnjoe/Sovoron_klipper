@@ -826,7 +826,9 @@ class afcAMS(afcUnit):
             except Exception as e:
                 self.logger.error(f"Failed to trigger OAMS state detection for {getattr(lane, 'name', None)}: {e}")
 
+        lane_name = getattr(lane, "name", None)
         if not self._lane_matches_extruder(lane):
+            self.logger.debug(f"Skipping virtual sensor update for {lane_name} - lane extruder doesn't match unit extruder")
             return
 
         # Wait for all moves to complete to prevent "Timer too close" errors
@@ -839,8 +841,8 @@ class afcAMS(afcUnit):
             pass
 
         eventtime = self.reactor.monotonic()
-        lane_name = getattr(lane, "name", None)
         self._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
+        self.logger.info(f"Set virtual tool sensor to LOADED for {lane_name} in SET_LANE_LOADED")
 
     def lane_tool_unloaded(self, lane):
         """Update the virtual tool sensor when a lane unloads from the tool."""
