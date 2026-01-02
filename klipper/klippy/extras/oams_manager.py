@@ -2634,7 +2634,7 @@ class OAMSManager:
         fps_state.reset_clog_tracker()
         fps_state.reset_runout_positions()
 
-        self.logger.info("Cleared FPS state for %s (was lane %s, spool %s)", fps_name, lane_name, spool_index)
+        self.logger.debug("Cleared FPS state for %s (was lane %s, spool %s)", fps_name, lane_name, spool_index)
 
         # Notify AFC that lane is unloaded from toolhead
         # This triggers AFC's _apply_lane_sensor_state() which:

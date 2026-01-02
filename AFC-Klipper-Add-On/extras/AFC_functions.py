@@ -533,7 +533,7 @@ class afcFunction:
             cur_lane_loaded.set_tool_unloaded()
             cur_lane_loaded.unit_obj.return_to_home()
             self.afc.function.handle_activate_extruder()
-            self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
+            self.logger.debug("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
             self.afc.save_vars()
 
     def select_loaded_lane(self):
