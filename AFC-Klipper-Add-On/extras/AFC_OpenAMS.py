@@ -3245,13 +3245,13 @@ def _patch_set_lane_loaded_for_fps_sync() -> None:
             if oams_manager and hasattr(oams_manager, 'update_fps_state_for_lane'):
                 # Update FPS state so OAMS knows filament is loaded
                 if oams_manager.update_fps_state_for_lane(self.name):
-                    self.logger.info("OpenAMS FPS state updated for SET_LANE_LOADED: lane %s", self.name)
+                    self.logger.info(f"OpenAMS FPS state updated for SET_LANE_LOADED: lane {self.name}")
                 else:
                     self.logger.debug("SET_LANE_LOADED: Not an OpenAMS lane, skipping FPS state update")
         except Exception as e:
             # Graceful error handling - OAMS update is supplementary to AFC state
             # AFC state is already set correctly, command succeeds even if OAMS sync fails
-            self.logger.warning("Failed to update OpenAMS FPS state for %s: %s", self.name, e)
+            self.logger.warning(f"Failed to update OpenAMS FPS state for {self.name}: {e}")
 
     AFCLane.cmd_SET_LANE_LOADED = _ams_cmd_SET_LANE_LOADED
     AFCLane._ams_set_lane_loaded_patched = True
