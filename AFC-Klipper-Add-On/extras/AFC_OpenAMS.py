@@ -3256,10 +3256,12 @@ def _patch_set_lane_loaded_for_fps_sync() -> None:
             # Update virtual sensor for OpenAMS lanes
             # This ensures the virtual tool sensor state matches the lane load state
             unit_obj = getattr(self, "unit_obj", None)
+            self.logger.info(f"unit_obj type: {type(unit_obj).__name__ if unit_obj else 'None'}, has lane_tool_loaded: {hasattr(unit_obj, 'lane_tool_loaded') if unit_obj else False}, has _set_virtual_tool_sensor_state: {hasattr(unit_obj, '_set_virtual_tool_sensor_state') if unit_obj else False}")
             if unit_obj and hasattr(unit_obj, 'lane_tool_loaded') and hasattr(unit_obj, '_set_virtual_tool_sensor_state'):
                 # This is an OpenAMS unit - call lane_tool_loaded to update virtual sensor
+                self.logger.info(f"ABOUT TO CALL unit_obj.lane_tool_loaded() for {self.name}")
                 unit_obj.lane_tool_loaded(self)
-                self.logger.debug(f"Called lane_tool_loaded() for {self.name} to update virtual sensor")
+                self.logger.info(f"RETURNED FROM unit_obj.lane_tool_loaded() for {self.name}")
         except Exception as e:
             # Graceful error handling - OAMS update is supplementary to AFC state
             # AFC state is already set correctly, command succeeds even if OAMS sync fails
