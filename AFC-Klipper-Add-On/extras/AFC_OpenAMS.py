@@ -795,7 +795,7 @@ class afcAMS(afcUnit):
     def lane_tool_loaded(self, lane):
         """Update the virtual tool sensor when a lane loads into the tool."""
         lane_name = getattr(lane, "name", None)
-        self.logger.info(f"lane_tool_loaded() called for {lane_name}")
+        self.logger.debug(f"lane_tool_loaded() called for {lane_name}")
         super().lane_tool_loaded(lane)
 
         # When a new lane loads to toolhead, clear tool_loaded on any OTHER lanes from this unit
@@ -844,7 +844,7 @@ class afcAMS(afcUnit):
 
         eventtime = self.reactor.monotonic()
         self._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
-        self.logger.info(f"Set virtual tool sensor to LOADED for {lane_name} in SET_LANE_LOADED")
+        self.logger.debug(f"Set virtual tool sensor to LOADED for {lane_name} in SET_LANE_LOADED")
 
     def lane_tool_unloaded(self, lane):
         """Update the virtual tool sensor when a lane unloads from the tool."""
@@ -3249,7 +3249,7 @@ def _patch_set_lane_loaded_for_fps_sync() -> None:
             if oams_manager and hasattr(oams_manager, 'update_fps_state_for_lane'):
                 # Update FPS state so OAMS knows filament is loaded
                 if oams_manager.update_fps_state_for_lane(self.name):
-                    self.logger.info(f"OpenAMS FPS state updated for SET_LANE_LOADED: lane {self.name}")
+                    self.logger.debug(f"OpenAMS FPS state updated for SET_LANE_LOADED: lane {self.name}")
                 else:
                     self.logger.debug("SET_LANE_LOADED: Not an OpenAMS lane, skipping FPS state update")
 
@@ -3259,7 +3259,7 @@ def _patch_set_lane_loaded_for_fps_sync() -> None:
             if unit_obj and hasattr(unit_obj, 'lane_tool_loaded') and hasattr(unit_obj, '_set_virtual_tool_sensor_state'):
                 # This is an OpenAMS unit - call lane_tool_loaded to update virtual sensor
                 unit_obj.lane_tool_loaded(self)
-                self.logger.info(f"Called lane_tool_loaded() for {self.name} to update virtual sensor")
+                self.logger.debug(f"Called lane_tool_loaded() for {self.name} to update virtual sensor")
         except Exception as e:
             # Graceful error handling - OAMS update is supplementary to AFC state
             # AFC state is already set correctly, command succeeds even if OAMS sync fails
