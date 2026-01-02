@@ -749,19 +749,39 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self.oams_follower_cmd.send([enable, direction])
 
     def abort_current_action(self, code: int = OAMSOpCode.ERROR_KLIPPER_CALL) -> None:
-        """Abort any in-flight hardware action initiated by Klipper helpers."""
+        """Abort any in-flight hardware action initiated by Klipper helpers.
+
+        IMPORTANT: This waits for the MCU to finish the current operation before
+        clearing the action status. Simply clearing action_status without waiting
+        creates a desync where Klipper thinks the operation is done but the MCU
+        is still busy, causing "OAMS is busy" errors on subsequent operations.
+        """
         if self.action_status is None:
             return
 
         logging.warning(
-            "OAMS[%d]: Aborting current action %s with code %d",
+            "OAMS[%d]: Aborting current action %s with code %d - waiting for MCU to complete",
             self.oams_idx,
             self.action_status,
             code,
         )
+
+        # Wait for MCU to finish the current operation (max 5 seconds)
+        # The MCU will send an oams_action_status response when done
+        timeout = self.reactor.monotonic() + 5.0
+        while self.action_status is not None:
+            if self.reactor.monotonic() > timeout:
+                logging.error("OAMS[%d]: Abort timeout - MCU did not respond, forcing clear", self.oams_idx)
+                break
+            # Use reactor.pause to wait without queueing into toolhead
+            self.reactor.pause(self.reactor.monotonic() + 0.05)
+
+        # Now clear the status (may already be None if MCU responded)
         self.action_status_code = code
         self.action_status_value = None
         self.action_status = None
+
+        logging.info("OAMS[%d]: Abort complete - ready for new operations", self.oams_idx)
 
     cmd_OAMS_FOLLOWER_help = "Enable or disable follower and set its direction"
     def cmd_OAMS_FOLLOWER(self, gcmd):

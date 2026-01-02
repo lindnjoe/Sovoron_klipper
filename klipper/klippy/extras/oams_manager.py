@@ -2855,6 +2855,28 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
 
+            # Update virtual tool sensor state after successful load
+            # This ensures the virtual sensor reflects that filament is loaded at the toolhead
+            try:
+                afc = self._get_afc()
+                if afc is not None:
+                    lane = afc.lanes.get(lane_name)
+                    if lane is not None:
+                        unit_obj = getattr(lane, "unit_obj", None)
+                        if unit_obj is None:
+                            base_unit_name = getattr(lane, "unit", "").split(":")[0] if getattr(lane, "unit", None) else None
+                            units = getattr(afc, "units", {})
+                            unit_obj = units.get(base_unit_name)
+
+                        if unit_obj is not None and hasattr(unit_obj, '_sync_virtual_tool_sensor'):
+                            eventtime = self.reactor.monotonic()
+                            unit_obj._sync_virtual_tool_sensor(eventtime, force=True)
+                            self.logger.info("Updated virtual tool sensor for %s after successful load", lane_name)
+                        else:
+                            self.logger.debug("Virtual tool sensor update not available for %s", lane_name)
+            except Exception:
+                self.logger.warning("Failed to update virtual tool sensor for %s after load", lane_name, exc_info=True)
+
             # Monitors are already running globally, no need to restart them
             return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
         else:
