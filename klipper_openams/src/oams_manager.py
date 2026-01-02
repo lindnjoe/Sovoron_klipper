@@ -2551,18 +2551,26 @@ class OAMSManager:
 
                     lane_obj = afc.lanes.get(afc_lane_name) if afc_lane_name else None
                     if lane_obj is not None:
-                        try:
-                            lane_obj.unsync_to_extruder()
-                        except Exception:
-                            self.logger.error("Failed to unsync lane %s from extruder during unload cleanup", lane_obj.name)
-
-                        # Keep lane filament metadata intact; only clear the toolhead mapping
-                        afc_function = getattr(afc, "function", None)
-                        if afc_function is not None:
+                        # Notify AFC that lane is unloaded from toolhead using the normal AFC process
+                        # This triggers AFC's _apply_lane_sensor_state() which handles everything properly:
+                        # - Unsyncs lane from extruder
+                        # - Handles shared prep/load lanes via _update_shared_lane()
+                        # - Updates virtual sensor via _mirror_lane_to_virtual_sensor()
+                        # - Calls lane.unit_obj.lane_unloaded() for proper cleanup
+                        # This avoids the "Manually removing..." message from unset_lane_loaded()
+                        if AMSRunoutCoordinator is not None:
                             try:
-                                afc_function.unset_lane_loaded()
+                                AMSRunoutCoordinator.notify_lane_tool_state(
+                                    self.printer,
+                                    fps_state.current_oams,
+                                    afc_lane_name,
+                                    loaded=False,
+                                    spool_index=spool_index,
+                                    eventtime=fps_state.since
+                                )
+                                self.logger.debug("Notified AFC coordinator that lane %s unloaded from toolhead", afc_lane_name)
                             except Exception:
-                                self.logger.error("Failed to clear AFC lane_loaded after unloading lane %s", lane_obj.name)
+                                self.logger.error("Failed to notify AFC coordinator about lane %s unload", afc_lane_name, exc_info=True)
                 except Exception:
                     self.logger.error("Failed to clear AFC tool tracking during unload cleanup for %s", fps_name)
 
@@ -2634,7 +2642,7 @@ class OAMSManager:
         fps_state.reset_clog_tracker()
         fps_state.reset_runout_positions()
 
-        self.logger.info("Cleared FPS state for %s (was lane %s, spool %s)", fps_name, lane_name, spool_index)
+        self.logger.debug("Cleared FPS state for %s (was lane %s, spool %s)", fps_name, lane_name, spool_index)
 
         # Notify AFC that lane is unloaded from toolhead
         # This triggers AFC's _apply_lane_sensor_state() which:
