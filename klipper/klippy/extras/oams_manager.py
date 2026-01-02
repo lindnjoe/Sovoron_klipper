@@ -2868,10 +2868,12 @@ class OAMSManager:
                             units = getattr(afc, "units", {})
                             unit_obj = units.get(base_unit_name)
 
-                        if unit_obj is not None and hasattr(unit_obj, '_sync_virtual_tool_sensor'):
+                        if unit_obj is not None and hasattr(unit_obj, '_set_virtual_tool_sensor_state'):
                             eventtime = self.reactor.monotonic()
-                            unit_obj._sync_virtual_tool_sensor(eventtime, force=True)
-                            self.logger.info("Updated virtual tool sensor for %s after successful load", lane_name)
+                            # Call _set_virtual_tool_sensor_state directly with force=True
+                            # This is the same approach used in SET_LANE_LOADED wrapper
+                            unit_obj._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
+                            self.logger.info("Updated virtual tool sensor to LOADED for %s after successful load", lane_name)
                         else:
                             self.logger.debug("Virtual tool sensor update not available for %s", lane_name)
             except Exception:
