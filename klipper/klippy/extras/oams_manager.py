@@ -3468,6 +3468,12 @@ class OAMSManager:
             if fps_state.stuck_spool.active:
                 fps_state.reset_stuck_spool_state(preserve_restore=True)
                 self.logger.info("Cleared stuck spool state for %s on print resume", fps_name)
+                # Clear the error LED if we have an OAMS and spool index
+                if oams is not None and fps_state.current_spool_idx is not None:
+                    try:
+                        oams.set_led_error(fps_state.current_spool_idx, 0)
+                    except Exception:
+                        self.logger.error("Failed to clear stuck spool LED on %s after resume", fps_name)
 
             # Clear clog_active on resume and reset tracker
             if fps_state.clog.active:
@@ -3482,6 +3488,11 @@ class OAMSManager:
 
             if fps_state.stuck_spool.restore_follower:
                 self._restore_follower_if_needed(fps_name, fps_state, oams, "print resume")
+                # Clear manual override after restoring follower to return to automatic control
+                if fps_state.current_oams is not None:
+                    state = self._get_follower_state(fps_state.current_oams)
+                    state.manual_override = False
+                    self.logger.info("Cleared manual override for %s on print resume - returning to automatic follower control", fps_name)
             elif (
                 fps_state.current_oams is not None
                 and fps_state.current_spool_idx is not None
@@ -3531,12 +3542,17 @@ class OAMSManager:
         # remains available without requiring OAMSM_CLEAR_ERRORS.
         # Enable follower directly during stuck spool pause, bypassing state checks
         if oams is not None and spool_idx is not None:
-            self._enable_follower(fps_name, fps_state, oams, 1, "stuck spool pause - keep follower active")
+            # Save the current direction for restore on RESUME
+            current_direction = fps_state.direction if fps_state.following else 1
+            fps_state.stuck_spool.restore_follower = True
+            fps_state.stuck_spool.restore_direction = current_direction
+
+            self._enable_follower(fps_name, fps_state, oams, current_direction, "stuck spool pause - keep follower active")
             # Set manual override to prevent automatic hub-sensor control from disabling it
             # This keeps follower enabled even if hub sensors are empty during stuck spool
             state = self._get_follower_state(fps_state.current_oams)
             state.manual_override = True
-            self.logger.info("Follower enabled and locked on %s during stuck spool pause (manual override active)", fps_name)
+            self.logger.info("Follower enabled and locked on %s during stuck spool pause (manual override active, will restore on RESUME)", fps_name)
 
         self.logger.info("Stuck spool pause triggered for %s (LED stays red, active flag set, follower enabled)", fps_name)
 
