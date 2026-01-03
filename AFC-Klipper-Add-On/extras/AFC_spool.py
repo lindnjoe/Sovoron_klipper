@@ -212,12 +212,8 @@ class AFCSpool:
             args = {'spool_id' : id }
             try:
                 webhooks.call_remote_method("spoolman_set_active_spool", **args)
-            except Exception as e:
-                # Spoolman integration not available - this is OK, just log at debug level
-                if "not registered" in str(e):
-                    self.logger.debug(f"Spoolman integration not available: {e}")
-                else:
-                    self.logger.error(f"Error trying to set active spool: {e}")
+            except self.printer.command_error as e:
+                self.logger.error("Error trying to set active spool \n{}".format(e))
 
     cmd_SET_SPOOL_ID_help = "Set lanes spoolman ID"
     def cmd_SET_SPOOL_ID(self, gcmd):
