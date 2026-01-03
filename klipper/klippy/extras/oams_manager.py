@@ -2010,11 +2010,11 @@ class OAMSManager:
             self.logger.error("Failed to get reload params for %s", lane_name, exc_info=True)
             return None, None
 
-    def _verify_engagement_with_purge(self, fps_name: str, fps_state: 'FPSState', fps,
+    def _verify_engagement_with_extrude(self, fps_name: str, fps_state: 'FPSState', fps,
                                       lane_name: str, oams) -> bool:
-        """Verify filament engaged extruder by running purge and monitoring FPS pressure.
+        """Verify filament engaged extruder by extruding reload length and monitoring FPS pressure.
 
-        After OAMS pushes filament to extruder, run the configured reload purge
+        After OAMS pushes filament to extruder, extrude the configured reload length
         and monitor FPS pressure. If pressure drops below threshold, filament
         engaged successfully. If pressure stays high, filament didn't engage.
 
@@ -2035,7 +2035,7 @@ class OAMSManager:
                 self.logger.error("Failed to get reload params for %s, cannot verify engagement", lane_name)
                 return True  # Assume success to avoid false failures
 
-            self.logger.info("Verifying filament engagement for %s: purging %.1fmm at %.0fmm/min",
+            self.logger.info("Verifying filament engagement for %s: extruding %.1fmm at %.0fmm/min",
                            lane_name, reload_length, reload_speed)
 
             # Get extruder object
@@ -2047,14 +2047,14 @@ class OAMSManager:
             # Get gcode object for running extrusion command
             gcode = self.printer.lookup_object('gcode')
 
-            # Run the engagement purge using gcode command
+            # Run the engagement extrusion using gcode command
             # M83: relative extrusion, G92 E0: reset position, G1: extrude
             gcode.run_script_from_command("M83")  # Relative extrusion mode
             gcode.run_script_from_command("G92 E0")  # Reset extruder position
-            gcode.run_script_from_command(f"G1 E{reload_length:.2f} F{reload_speed:.0f}")  # Purge
+            gcode.run_script_from_command(f"G1 E{reload_length:.2f} F{reload_speed:.0f}")  # Extrude to nozzle tip
             gcode.run_script_from_command("M400")  # Wait for moves to complete
 
-            # Wait a moment for pressure to stabilize after purge
+            # Wait a moment for pressure to stabilize after extrusion
             self.reactor.pause(self.reactor.monotonic() + 0.5)
 
             # Check FPS pressure - if it dropped below threshold, filament engaged
@@ -2988,8 +2988,8 @@ class OAMSManager:
 
         if success:
             # OAMS load succeeded - now verify filament engaged extruder
-            # Run the configured reload purge and check FPS pressure drop
-            engagement_ok = self._verify_engagement_with_purge(fps_name, fps_state, fps, lane_name, oam)
+            # Extrude the configured reload length and check FPS pressure drop
+            engagement_ok = self._verify_engagement_with_extrude(fps_name, fps_state, fps, lane_name, oam)
             if not engagement_ok:
                 # Filament reached extruder but didn't engage - return failure to trigger retry
                 fps_state.state = FPSLoadState.UNLOADED
