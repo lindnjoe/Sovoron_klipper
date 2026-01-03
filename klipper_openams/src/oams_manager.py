@@ -72,6 +72,8 @@ MONITOR_ENCODER_SPEED_GRACE = 2.0
 AFC_DELEGATION_TIMEOUT = 30.0
 COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
+MIN_EXTRUDER_ENGAGEMENT_DELTA = 0.5  # Minimum extruder advance (mm) to consider engagement progressing
+ENGAGEMENT_SUPPRESSION_WINDOW = 6.0  # Time after an engagement check to ignore pressure-only stuck triggers
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
 STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
@@ -581,9 +583,6 @@ class FPSState:
         self.runout_position: Optional[float] = None
         self.runout_after_position: Optional[float] = None
 
-        # Engagement tracking
-        self.extruder_engaged_since: Optional[float] = None
-
         # Timers
         self.monitor_spool_timer = None
         self.monitor_pause_timer = None
@@ -618,6 +617,16 @@ class FPSState:
         self.consecutive_idle_polls: int = 0
         self.idle_backoff_level: int = 0  # 0-3 for exponential backoff (1x, 2x, 4x, 8x)
         self.last_state_change: Optional[float] = None
+
+        # Extruder engagement tracking
+        self.engaged_with_extruder: bool = False
+        self.engagement_checked_at: Optional[float] = None
+        self.engagement_extruder_pos: Optional[float] = None
+
+    def reset_engagement_tracking(self) -> None:
+        self.engaged_with_extruder = False
+        self.engagement_checked_at = None
+        self.engagement_extruder_pos = None
 
     def record_encoder_sample(self, value: int) -> Optional[int]:
         """Record encoder sample and return diff if we have 2 samples."""
@@ -2118,6 +2127,12 @@ class OAMSManager:
                 self.logger.error(f"Failed to get reload params for {lane_name}, cannot verify engagement")
                 return True  # Assume success to avoid false failures
 
+            # Capture extruder position before the verification purge (best-effort)
+            try:
+                pre_extrude_pos = float(getattr(fps.extruder, "last_position", 0.0))
+            except Exception:
+                pre_extrude_pos = None
+
             self.logger.info(f"Verifying filament engagement for {lane_name}: extruding {reload_length:.1f}mm at {reload_speed:.0f}mm/min")
 
             # CRITICAL: Ensure follower is enabled for the engagement extrusion
@@ -2162,13 +2177,21 @@ class OAMSManager:
                 # Use average pressure to reduce noise from single high reading
                 avg_pressure = sum(pressure_readings) / len(pressure_readings)
                 max_pressure = max(pressure_readings)
+                engagement_time = self.reactor.monotonic()
 
                 # Note: manual_override will be cleared by load operation on completion
                 if avg_pressure < self.engagement_pressure_threshold:
                     self.logger.info(f"Filament engagement verified for {lane_name} (avg FPS pressure {avg_pressure:.2f} < {self.engagement_pressure_threshold:.2f}, readings: {[f'{p:.2f}' for p in pressure_readings]})")
+                    fps_state.engaged_with_extruder = True
+                    fps_state.engagement_checked_at = engagement_time
+                    if pre_extrude_pos is not None:
+                        fps_state.engagement_extruder_pos = pre_extrude_pos
                     return True
                 else:
                     self.logger.warning(f"Filament failed to engage extruder for {lane_name} (avg FPS pressure {avg_pressure:.2f} >= {self.engagement_pressure_threshold:.2f}, max {max_pressure:.2f}, readings: {[f'{p:.2f}' for p in pressure_readings]})")
+                    fps_state.engaged_with_extruder = False
+                    fps_state.engagement_checked_at = engagement_time
+                    fps_state.engagement_extruder_pos = pre_extrude_pos
                     return False
             except Exception:
                 self.logger.error(f"Failed to read FPS pressure for engagement check on {fps_name}")
@@ -3093,12 +3116,12 @@ class OAMSManager:
             return False, f"Failed to capture load state for lane {lane_name}"
 
         # Only set state after all preliminary operations succeed
+        fps_state.reset_engagement_tracking()
         fps_state.state = FPSLoadState.LOADING
         fps_state.encoder = encoder
         fps_state.current_oams = oam_name
         fps_state.current_spool_idx = bay_index
         fps_state.current_lane = lane_name  # Set lane name at start of load attempt for error reporting
-        fps_state.extruder_engaged_since = None  # Reset engagement tracker for this attempt
         # Set since to now for THIS load attempt (will be updated on success)
         fps_state.since = current_time
         fps_state.clear_encoder_samples()
@@ -3139,6 +3162,7 @@ class OAMSManager:
                     self.logger.error(f"Exception during unload after engagement failure for {lane_name}")
 
                 # Clear fps_state so retry starts fresh
+                fps_state.reset_engagement_tracking()
                 fps_state.state = FPSLoadState.UNLOADED
                 fps_state.current_spool_idx = None
                 fps_state.current_oams = None
@@ -4151,6 +4175,32 @@ class OAMSManager:
         if now - fps_state.since <= MONITOR_ENCODER_SPEED_GRACE:
             return
 
+        extruder_obj = getattr(fps, "extruder", None)
+        try:
+            extruder_pos = float(getattr(extruder_obj, "last_position", 0.0)) if extruder_obj is not None else None
+        except Exception:
+            extruder_pos = None
+
+        extruder_lane_loaded = None
+        if extruder_obj is not None:
+            try:
+                extruder_lane_loaded = getattr(extruder_obj, "lane_loaded", None)
+            except Exception:
+                extruder_lane_loaded = None
+
+        lane_match = fps_state.current_lane is not None and extruder_lane_loaded == fps_state.current_lane
+
+        # Seed engagement baseline if the extruder reports the lane as loaded but we don't have a baseline yet
+        if lane_match and extruder_pos is not None and fps_state.engagement_extruder_pos is None:
+            fps_state.engagement_extruder_pos = extruder_pos
+
+        engaged_signal = fps_state.engaged_with_extruder or lane_match
+        engagement_age = (now - fps_state.engagement_checked_at) if fps_state.engagement_checked_at is not None else None
+        suppression_active = engagement_age is not None and engagement_age <= ENGAGEMENT_SUPPRESSION_WINDOW
+        extruder_delta = None
+        if extruder_pos is not None and fps_state.engagement_extruder_pos is not None:
+            extruder_delta = extruder_pos - fps_state.engagement_extruder_pos
+
         encoder_diff = fps_state.record_encoder_sample(encoder_value)
         if encoder_diff is None:
             return
@@ -4158,13 +4208,6 @@ class OAMSManager:
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(f"OAMS[{getattr(oams, 'oams_idx', -1)}] Load Monitor: Encoder diff {encoder_diff}, FPS pressure {pressure:.2f}")
 
-        # Track when the extruder reports the target lane as loaded so we can provide
-        # a grace window before declaring the load stuck.
-        if self._extruder_reports_engagement(fps_state):
-            if fps_state.extruder_engaged_since is None:
-                fps_state.extruder_engaged_since = now
-        else:
-            fps_state.extruder_engaged_since = None
 
         # Check for stuck spool conditions:
         # 1. Encoder not moving (original check)
@@ -4178,22 +4221,13 @@ class OAMSManager:
         elif pressure >= self.load_fps_stuck_threshold:
             # FPS pressure is high while loading - filament isn't being pulled in
             # This catches cases where extruder is turning but filament missed the drive gear
-            stuck_detected = True
-            stuck_reason = f"FPS pressure {pressure:.2f} >= {self.load_fps_stuck_threshold:.2f} (filament not engaging)"
-
-        # If the extruder already reports the lane as loaded (or recently did), allow
-        # extra time for the load to finish before forcing an unload. This protects
-        # against false positives once the filament has actually reached the extruder.
-        if stuck_detected and fps_state.extruder_engaged_since is not None:
-            engaged_age = now - fps_state.extruder_engaged_since
-            if engaged_age < self.stuck_spool_load_grace:
-                if self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug(
-                        f"OAMS[{getattr(oams, 'oams_idx', -1)}] Load Monitor: "
-                        f"Skipping stuck abort, extruder reports {fps_state.current_lane} engaged "
-                        f"for {engaged_age:.2f}s (pressure {pressure:.2f})"
-                    )
-                return
+            extruder_advancing = extruder_delta is not None and extruder_delta >= MIN_EXTRUDER_ENGAGEMENT_DELTA
+            if engaged_signal and (suppression_active or extruder_advancing):
+                # Extruder is already synced/engaged and appears to be advancing; don't false-trigger
+                stuck_detected = False
+            else:
+                stuck_detected = True
+                stuck_reason = f"FPS pressure {pressure:.2f} >= {self.load_fps_stuck_threshold:.2f} (filament not engaging)"
 
         if stuck_detected:
             lane_label = fps_state.current_lane or fps_name
@@ -4212,6 +4246,7 @@ class OAMSManager:
 
 
             # Transition to UNLOADED state cleanly
+            fps_state.reset_engagement_tracking()
             fps_state.state = FPSLoadState.UNLOADED
             fps_state.clear_encoder_samples()
 
@@ -4234,25 +4269,6 @@ class OAMSManager:
                     state.manual_override = True
 
             self.logger.info(f"Spool appears stuck while loading {lane_label} spool {spool_label} ({stuck_reason}) - letting retry logic handle it")
-    def _extruder_reports_engagement(self, fps_state: "FPSState") -> bool:
-        """Return True if AFC reports the current lane is already at the extruder."""
-        lane_name = fps_state.current_lane
-        if not lane_name:
-            return False
-
-        try:
-            afc = self._get_afc()
-            if afc is None or not hasattr(afc, "tools"):
-                return False
-
-            for tool_obj in afc.tools.values():
-                if getattr(tool_obj, "lane_loaded", None) == lane_name:
-                    return True
-        except Exception:
-            # Don't block load monitoring on AFC state errors
-            self.logger.debug("Unable to read AFC tools while checking engagement", exc_info=True)
-
-        return False
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, pressure, hes_values, now):
         """Check for stuck spool conditions (OPTIMIZED)."""
