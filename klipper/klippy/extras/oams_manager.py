@@ -3167,6 +3167,21 @@ class OAMSManager:
                 # Filament reached extruder but didn't engage - unload and return failure to trigger retry
                 self.logger.warning(f"Filament engagement failed for {lane_name}, unloading before retry")
 
+                # Retract extruder by reload distance to back out the filament that was extruded during engagement
+                # This ensures filament position is correct for the next load attempt
+                try:
+                    reload_length, reload_speed = self._get_reload_params(lane_name)
+                    if reload_length is not None and reload_speed is not None:
+                        self.logger.info(f"Retracting extruder {reload_length:.1f}mm to reverse engagement extrusion for {lane_name}")
+                        gcode = self.printer.lookup_object('gcode')
+                        gcode.run_script_from_command("M83")  # Relative extrusion mode
+                        gcode.run_script_from_command(f"G1 E-{reload_length:.2f} F{reload_speed:.0f}")  # Retract
+                        gcode.run_script_from_command("M400")  # Wait for moves to complete
+                    else:
+                        self.logger.warning(f"Could not get reload params for {lane_name}, skipping extruder retraction")
+                except Exception:
+                    self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}")
+
                 # Unload the filament since it didn't engage properly
                 try:
                     unload_success, unload_msg = oam.unload_spool_with_retry()
