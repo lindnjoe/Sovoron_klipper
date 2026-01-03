@@ -2102,7 +2102,9 @@ class afcAMS(afcUnit):
                 except Exception:
                     self.logger.error("Failed to unset previously loaded lane")
             try:
-                lane.set_loaded()
+                # Call set_tool_loaded() instead of set_loaded() since filament is loaded to toolhead
+                # This properly sets extruder.lane_loaded which is needed for lane tracking
+                lane.set_tool_loaded()
             except Exception:
                 self.logger.error(f"Failed to mark lane {lane.name} as loaded")
             try:
