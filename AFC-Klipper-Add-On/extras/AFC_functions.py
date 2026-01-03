@@ -8,6 +8,7 @@
 # Originally authored by Félix Boisselier and licensed under the GNU General Public License v3.0.
 #
 # Full license text available at: https://www.gnu.org/licenses/gpl-3.0.html
+from __future__ import annotations
 
 import os
 import random
@@ -18,6 +19,12 @@ import configparser
 from configfile import error
 from datetime import datetime
 from pathlib import Path
+
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from extras.AFC_lane import AFCLane
+    from extras.AFC_extruder import AFCExtruder
 
 try: from extras.AFC_utils import ERROR_STR
 except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
@@ -342,21 +349,21 @@ class afcFunction:
         pause_resume = self.printer.lookup_object("pause_resume")
         return bool(pause_resume.get_status(eventtime)["is_paused"])
 
-    def get_lane_by_map(self, map_name):
+    def get_lane_by_map(self, map_name) -> Optional[AFCLane]:
         """
         Helper function to lookup lane by map name
 
         :param map_name: Name of lane map to lookup
-        :return object: Lane object if found, None if not found
+        :return AFCLane: Lane object if found, None if not found
         """
-        lane_name = None
-        for lane in self.afc.lanes:
-            lane_obj = self.afc.lanes[lane]
-            if lane_obj.map == map_name:
-                lane_name = lane_obj
+        lane_obj: Optional[AFCLane] = None
+        lane_name: Optional[str] = self.afc.tool_cmds.get(map_name, None)
+
         if lane_name is None:
             self.logger.info("Lane map {} not found".format(map_name))
-        return lane_name
+        else:
+            lane_obj = self.afc.lanes.get(lane_name, None)
+        return lane_obj
 
     def get_current_lane(self):
         """
@@ -382,7 +389,7 @@ class afcFunction:
             curr_lane_obj = self.afc.lanes[curr_lane]
         return curr_lane_obj
 
-    def get_current_extruder_obj(self):
+    def get_current_extruder_obj(self) -> Optional[AFCExtruder]:
         """
         Helper function to lookup current extruder object loaded into active toolhead
 
@@ -390,20 +397,19 @@ class afcFunction:
         """
         extruder_name = self.get_current_extruder()
         if extruder_name:
-            return self.afc.tools[extruder_name]
+            return self.afc.tools.get(extruder_name, None)
         return None
 
-    def get_current_extruder(self):
+    def get_current_extruder(self) -> Optional[str]:
         """
         Helper function to lookup current extruder name loaded into active toolhead
 
         :return string: Name of current extruder/tool, None if no extruder/tool
         """
-        current_extruder = self.afc.toolhead.get_extruder().name
-        if current_extruder in self.afc.tools:
-            tool_obj = self.afc.tools[current_extruder].tool_obj
-            detected_state = tool_obj.detect_state if hasattr(tool_obj, "detect_state") else 1
-            return current_extruder if detected_state else None
+        current_extruder: str = self.afc.toolhead.get_extruder().name
+        tool_obj: Optional[AFCExtruder] = self.afc.tools.get(current_extruder, None)
+        if tool_obj:
+            return current_extruder if tool_obj.on_shuttle() else None
         else:
             return None
 
@@ -483,25 +489,27 @@ class afcFunction:
         cur_lane_loaded = self.get_current_lane_obj()
         self.logger.debug("Activating extruder lane: {}".format(cur_lane_loaded.name if cur_lane_loaded else "None"))
 
+        self.afc.spool.set_active_spool('')
         # Disable extruder steppers for non active lanes
         for key, obj in self.afc.lanes.items():
             if cur_lane_loaded is None or key != cur_lane_loaded.name:
                 obj.do_enable(False)
                 obj.disable_buffer()
-                obj.unit_obj.return_to_home()
+                if (cur_lane_loaded is None
+                    or (obj.unit_obj.name != cur_lane_loaded.unit_obj.name)):
+                    obj.unit_obj.return_to_home()
                 obj.unsync_to_extruder()
                 if obj.prep_state and obj.load_state:
                     if obj.tool_loaded:
                         # If tool is loaded, set led to tool loaded color
-                        self.afc_led(obj.led_tool_loaded_idle, obj.led_index)
+                        obj.unit_obj.lane_tool_loaded_idle(obj)
                     else:
-                        self.afc_led(obj.led_ready, obj.led_index)
+                        obj.unit_obj.lane_loaded(obj)
                 else:
-                    self.afc_led(obj.led_not_ready, obj.led_index)
+                    obj.unit_obj.lane_unloaded(obj)
 
         # Exit early if lane is None
         if cur_lane_loaded is None:
-            self.afc.spool.set_active_spool('')
             return
 
         # Switch spoolman ID
@@ -1189,6 +1197,12 @@ class afcFunction:
         if td1 is not None:
             title = "TD-1 Calibration"
             td1_lane = self.afc.lanes[td1]
+            if (td1_lane.is_direct_hub()
+                and td1_lane.tool_loaded):
+                msg = f"{td1_lane.name} loaded to toolhead, unload from toolhead before "
+                msg += "trying to calibrate td1_bowden_length."
+                self.afc.error.AFC_error(msg, pause=False)
+                return
             if td1_lane.hub_obj.state:
                 msg = f"{td1_lane.hub_obj.name} hub is triggered, make sure hub is clear before trying to calibrate TD-1 bowden length"
                 self.afc.error.AFC_error(msg, pause=False)
@@ -1197,7 +1211,7 @@ class afcFunction:
 
             checked, msg, pos = td1_lane.unit_obj.calibrate_td1( td1_lane, dis, tol)
             if not checked:
-                fail_string = f"{td1} failed to calibrate bowden length {msg}"
+                fail_string = f"{td1} failed to calibrate TD-1 bowden length, {msg}"
                 self.afc.error.AFC_error(fail_string, pause=False)
                 self.afc.gcode.run_script_from_command(f"AFC_CALI_FAIL TITLE='{title} Failed' FAIL={td1} DISTANCE={pos} msg='{fail_string}' RESET=1")
                 return
@@ -1486,7 +1500,7 @@ class afcFunction:
 
         # Create buttons for each lane and group every 4 lanes together
         for lane in self.afc.lanes.values():
-            if lane.load_state:
+            if lane.td1_device_id and lane.load_state:
                 button_label = "{}".format(lane)
                 button_command = "AFC_GET_TD_ONE_LANE_DATA LANE={}".format(lane)
                 button_style = "primary" if index % 2 == 0 else "secondary"
@@ -1537,7 +1551,9 @@ class afcFunction:
         if lane.lower() == "all":
             self.logger.info("Capturing TD-1 data for all lanes")
             for cur_lane in self.afc.lanes.values():
-                if cur_lane.load_state and cur_lane.prep_state:
+                if (cur_lane.td1_device_id
+                    and cur_lane.load_state
+                    and cur_lane.prep_state):
                     success, msg = cur_lane.get_td1_data()
                     if not success:
                         self.afc.gcode.run_script_from_command(f"AFC_CALI_FAIL TITLE='Get TD-1 data Failed' FAIL={cur_lane} DISTANCE=0 msg='{msg}' RESET=0")

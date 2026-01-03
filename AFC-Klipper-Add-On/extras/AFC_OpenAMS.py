@@ -1195,32 +1195,32 @@ class afcAMS(afcUnit):
                 hub_loaded = cur_lane.hub_obj and cur_lane.hub_obj.state
                 if not hub_loaded:
                     # Truly empty - both spool (F1S) and hub are clear
-                    self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
+                    self.lane_not_ready(cur_lane)
                     msg += '<span class=success--text>EMPTY READY FOR SPOOL</span>'
                 else:
                     # Hub still has filament (runout in progress, repositioning, or residual)
-                    self.afc.function.afc_led(cur_lane.led_fault, cur_lane.led_index)
+                    self.lane_fault(cur_lane)
                     msg += '<span class=warning--text>Filament in hub</span>'
                     succeeded = False
             else:
-                self.afc.function.afc_led(cur_lane.led_fault, cur_lane.led_index)
+                self.lane_fault(cur_lane)
                 msg += '<span class=error--text> NOT READY</span>'
                 cur_lane.do_enable(False)
                 cur_lane.disable_buffer()
                 msg = '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
                 succeeded = False
         else:
-            self.afc.function.afc_led(cur_lane.led_ready, cur_lane.led_index)
+            self.lane_loaded(cur_lane)
             msg += '<span class=success--text>LOCKED</span>'
             if not cur_lane.load_state:
                 msg += '<span class=error--text> NOT LOADED</span>'
-                self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
+                self.lane_not_ready(cur_lane)
                 cur_lane.disable_buffer()
                 succeeded = False
             else:
                 cur_lane.status = AFCLaneState.LOADED
                 msg += '<span class=success--text> AND LOADED</span>'
-                self.afc.function.afc_led(cur_lane.led_spool_illum, cur_lane.led_spool_index)
+                self.lane_illuminate_spool(cur_lane)
 
                 # Enable buffer if: (prep AND hub sensor) OR tool_loaded
                 # Check hub sensor to distinguish loaded lanes from lanes with just filament present
