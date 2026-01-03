@@ -714,6 +714,7 @@ class OAMSManager:
         self.clog_pressure_target = config.getfloat("clog_pressure_target", CLOG_PRESSURE_TARGET, minval=0.0, maxval=1.0)
         self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL, minval=0.0, maxval=60.0)
         self.load_fps_stuck_threshold = config.getfloat("load_fps_stuck_threshold", LOAD_FPS_STUCK_THRESHOLD, minval=0.0, maxval=1.0)
+        self.engagement_pressure_threshold = config.getfloat("engagement_pressure_threshold", 0.6, minval=0.0, maxval=1.0)
 
         # Validate hysteresis: clear threshold must be > trigger threshold
         if self.stuck_spool_pressure_clear_threshold <= self.stuck_spool_pressure_threshold:
@@ -1956,6 +1957,125 @@ class OAMSManager:
             self._afc_logged = True
         return self.afc
 
+    def _get_reload_params(self, lane_name: str) -> Tuple[Optional[float], Optional[float]]:
+        """Get reload length and speed from AFC extruder config.
+
+        Returns:
+            (reload_length, reload_speed) tuple, or (None, None) if not available
+        """
+        try:
+            afc = self._get_afc()
+            if afc is None:
+                return None, None
+
+            lane = afc.lanes.get(lane_name)
+            if lane is None:
+                return None, None
+
+            # Get extruder name from lane
+            extruder_name = getattr(lane, 'extruder_name', None)
+            if not extruder_name:
+                return None, None
+
+            # Look up AFC_extruder object
+            afc_extruder_name = f'AFC_extruder {extruder_name}'
+            afc_extruder = self.printer.lookup_object(afc_extruder_name, None)
+            if afc_extruder is None:
+                return None, None
+
+            # Get reload parameters from AFC_extruder
+            # RELOAD_LENGTH = tool_stn + tool_sensor_after_extruder + retract_length + hotend_meltzone_compensation
+            tool_stn = getattr(afc_extruder, 'tool_stn', 0.0)
+            tool_sensor_after = getattr(afc_extruder, 'tool_sensor_after_extruder', 0.0)
+            tool_load_speed = getattr(afc_extruder, 'tool_load_speed', 25.0)
+
+            # Get additional components from macro variables
+            try:
+                macro_vars = self.printer.lookup_object('gcode_macro _oams_macro_variables', None)
+                hotend_compensation = getattr(macro_vars, 'hotend_meltzone_compensation', 0.0) if macro_vars else 0.0
+
+                cut_tip_vars = self.printer.lookup_object('gcode_macro _AFC_CUT_TIP_VARS', None)
+                retract_length = getattr(cut_tip_vars, 'retract_length', 0.0) if cut_tip_vars else 0.0
+            except Exception:
+                hotend_compensation = 0.0
+                retract_length = 0.0
+
+            # Calculate total reload length (same formula as macro)
+            reload_length = tool_stn + tool_sensor_after + retract_length + hotend_compensation
+            reload_speed = tool_load_speed * 60.0  # Convert to mm/min
+
+            return reload_length, reload_speed
+
+        except Exception:
+            self.logger.error("Failed to get reload params for %s", lane_name, exc_info=True)
+            return None, None
+
+    def _verify_engagement_with_purge(self, fps_name: str, fps_state: 'FPSState', fps,
+                                      lane_name: str, oams) -> bool:
+        """Verify filament engaged extruder by running purge and monitoring FPS pressure.
+
+        After OAMS pushes filament to extruder, run the configured reload purge
+        and monitor FPS pressure. If pressure drops below threshold, filament
+        engaged successfully. If pressure stays high, filament didn't engage.
+
+        Args:
+            fps_name: FPS name (e.g., "fps1")
+            fps_state: FPS state object
+            fps: FPS object
+            lane_name: Lane name (e.g., "lane1")
+            oams: OAMS object
+
+        Returns:
+            True if filament engaged (pressure dropped), False otherwise
+        """
+        try:
+            # Get reload parameters from AFC config
+            reload_length, reload_speed = self._get_reload_params(lane_name)
+            if reload_length is None or reload_speed is None:
+                self.logger.error("Failed to get reload params for %s, cannot verify engagement", lane_name)
+                return True  # Assume success to avoid false failures
+
+            self.logger.info("Verifying filament engagement for %s: purging %.1fmm at %.0fmm/min",
+                           lane_name, reload_length, reload_speed)
+
+            # Get extruder object
+            extruder = getattr(fps, 'extruder', None)
+            if extruder is None:
+                self.logger.error("No extruder found for %s", fps_name)
+                return True  # Assume success
+
+            # Get gcode object for running extrusion command
+            gcode = self.printer.lookup_object('gcode')
+
+            # Run the engagement purge using gcode command
+            # M83: relative extrusion, G92 E0: reset position, G1: extrude
+            gcode.run_script_from_command("M83")  # Relative extrusion mode
+            gcode.run_script_from_command("G92 E0")  # Reset extruder position
+            gcode.run_script_from_command(f"G1 E{reload_length:.2f} F{reload_speed:.0f}")  # Purge
+            gcode.run_script_from_command("M400")  # Wait for moves to complete
+
+            # Wait a moment for pressure to stabilize after purge
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
+
+            # Check FPS pressure - if it dropped below threshold, filament engaged
+            try:
+                current_pressure = oams.fps_value
+                if current_pressure < self.engagement_pressure_threshold:
+                    self.logger.info("Filament engagement verified for %s (FPS pressure %.2f < %.2f)",
+                                   lane_name, current_pressure, self.engagement_pressure_threshold)
+                    return True
+                else:
+                    self.logger.warning("Filament failed to engage extruder for %s (FPS pressure %.2f >= %.2f)",
+                                      lane_name, current_pressure, self.engagement_pressure_threshold)
+                    return False
+            except Exception:
+                self.logger.error("Failed to read FPS pressure for engagement check on %s", fps_name)
+                return True  # Assume success to avoid false failures
+
+        except Exception:
+            self.logger.error("Failed to verify engagement for %s", lane_name, exc_info=True)
+            return True  # Assume success to avoid false failures
+
     def _handle_successful_reload(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
                                    target_lane_map: str, source_lane_name: Optional[str],
                                    active_oams: str, monitor) -> None:
@@ -2867,7 +2987,17 @@ class OAMSManager:
             return False, error_msg
 
         if success:
-            # Track lane transitions for runout recovery protection
+            # OAMS load succeeded - now verify filament engaged extruder
+            # Run the configured reload purge and check FPS pressure drop
+            engagement_ok = self._verify_engagement_with_purge(fps_name, fps_state, fps, lane_name, oam)
+            if not engagement_ok:
+                # Filament reached extruder but didn't engage - return failure to trigger retry
+                fps_state.state = FPSLoadState.UNLOADED
+                fps_state.since = self.reactor.monotonic()
+                self.logger.warning("Filament engagement failed for %s - will retry", lane_name)
+                return False, f"Filament failed to engage extruder for {lane_name}"
+
+            # Engagement verified! Track lane transitions for runout recovery protection
             old_lane = fps_state.current_lane
             fps_state.current_lane = lane_name  # Store lane name (e.g., "lane8") not map (e.g., "T0")
             fps_state.current_oams = oam.name
