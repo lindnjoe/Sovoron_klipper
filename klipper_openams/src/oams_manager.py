@@ -3103,13 +3103,8 @@ class OAMSManager:
         # The OAMS BLDC will push filament through the buffer, and the follower
         # must be tracking it in real-time, not after the load completes
         # Without this, filament gets stuck in the buffer during the load
+        # NOTE: Trusting automatic follower control to keep it enabled during LOADING state
         self._enable_follower(fps_name, fps_state, oam, 1, "before load - enable follower for buffer tracking")
-
-        # Set manual override to prevent automatic follower control from disabling it
-        # during the OAMS load operation (background monitor could interfere)
-        follower_state = self._get_follower_state(oam_name)
-        follower_state.manual_override = True
-        self.logger.debug(f"Enabled follower with manual override for {lane_name} load operation")
 
         try:
             success, message = oam.load_spool_with_retry(bay_index)
@@ -3117,10 +3112,6 @@ class OAMSManager:
             self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
             fps_state.state = FPSLoadState.UNLOADED
             error_msg = f"Failed to load bay {bay_index} on {oams_name}"
-
-            # Clear manual override on load failure
-            follower_state = self._get_follower_state(oam_name)
-            follower_state.manual_override = False
 
             # CRITICAL: Pause printer if load fails during printing
             # This prevents printing without filament loaded
@@ -3230,19 +3221,11 @@ class OAMSManager:
             except Exception:
                 self.logger.warning(f"Failed to update virtual tool sensor for {lane_name} after load")
 
-            # Clear manual override after successful load - restore automatic follower control
-            follower_state = self._get_follower_state(oam_name)
-            follower_state.manual_override = False
-
             # Monitors are already running globally, no need to restart them
             return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
         else:
             fps_state.state = FPSLoadState.UNLOADED
             error_msg = message if message else f"Failed to load lane {lane_name}"
-
-            # Clear manual override on load failure
-            follower_state = self._get_follower_state(oam_name)
-            follower_state.manual_override = False
 
             # CRITICAL: Pause printer if load fails during printing
             # This prevents printing without filament loaded, which would cause:
