@@ -2117,6 +2117,9 @@ class OAMSManager:
 
             self.logger.info(f"Verifying filament engagement for {lane_name}: extruding {reload_length:.1f}mm at {reload_speed:.0f}mm/min")
 
+            # CRITICAL: Ensure follower is enabled for the engagement extrusion
+            # The follower must track filament movement through buffer during extrusion
+            self._ensure_forward_follower(fps_name, fps_state, "engagement verification extrusion")
 
             # Get extruder object
             extruder = getattr(fps, 'extruder', None)
