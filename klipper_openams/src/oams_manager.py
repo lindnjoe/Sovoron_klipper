@@ -4210,10 +4210,11 @@ class OAMSManager:
         # Track whether FPS pressure ever fell below the stuck threshold during this load.
         if pressure < self.load_fps_stuck_threshold:
             fps_state.load_pressure_dropped = True
+            # Treat a pressure dip as proof of engagement to avoid false unloads
+            fps_state.engaged_with_extruder = True
 
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(f"OAMS[{getattr(oams, 'oams_idx', -1)}] Load Monitor: Encoder diff {encoder_diff}, FPS pressure {pressure:.2f}")
-
 
         # Check for stuck spool conditions:
         # 1. Encoder not moving (original check)
@@ -4222,22 +4223,10 @@ class OAMSManager:
         stuck_reason = ""
 
         if encoder_diff < MIN_ENCODER_DIFF:
-            stuck_detected = True
-            stuck_reason = "encoder not moving"
-        elif pressure >= self.load_fps_stuck_threshold:
-            # FPS pressure is high while loading - filament isn't being pulled in
-            # This catches cases where extruder is turning but filament missed the drive gear
-            extruder_advancing = extruder_delta is not None and extruder_delta >= MIN_EXTRUDER_ENGAGEMENT_DELTA
-            pressure_never_dropped = not fps_state.load_pressure_dropped
-            if engaged_signal and (suppression_active or extruder_advancing):
-                # Extruder is already synced/engaged and appears to be advancing; don't false-trigger
-                stuck_detected = False
-            elif not pressure_never_dropped:
-                # Filament already pulled FPS below threshold once; avoid unload retries on rebounds
-                stuck_detected = False
-            else:
+            # Only treat as stuck if we never saw pressure drop, meaning filament likely never engaged
+            if not fps_state.load_pressure_dropped:
                 stuck_detected = True
-                stuck_reason = f"FPS pressure {pressure:.2f} >= {self.load_fps_stuck_threshold:.2f} (filament not engaging)"
+                stuck_reason = "encoder not moving and pressure never dropped during load"
 
         if stuck_detected:
             lane_label = fps_state.current_lane or fps_name
