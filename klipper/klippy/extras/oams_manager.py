@@ -3122,10 +3122,24 @@ class OAMSManager:
             # Extrude the configured reload length and check FPS pressure drop
             engagement_ok = self._verify_engagement_with_extrude(fps_name, fps_state, fps, lane_name, oam)
             if not engagement_ok:
-                # Filament reached extruder but didn't engage - return failure to trigger retry
+                # Filament reached extruder but didn't engage - unload and return failure to trigger retry
+                self.logger.warning(f"Filament engagement failed for {lane_name}, unloading before retry")
+
+                # Unload the filament since it didn't engage properly
+                try:
+                    unload_success, unload_msg = oam.unload_spool_with_retry()
+                    if not unload_success:
+                        self.logger.error(f"Failed to unload after engagement failure for {lane_name}: {unload_msg}")
+                except Exception:
+                    self.logger.error(f"Exception during unload after engagement failure for {lane_name}")
+
+                # Clear fps_state so retry starts fresh
                 fps_state.state = FPSLoadState.UNLOADED
+                fps_state.current_spool_idx = None
+                fps_state.current_oams = None
+                fps_state.current_lane = None
                 fps_state.since = self.reactor.monotonic()
-                self.logger.warning(f"Filament engagement failed for {lane_name} - will retry")
+
                 return False, f"Filament failed to engage extruder for {lane_name}"
 
             # Engagement verified! Track lane transitions for runout recovery protection
