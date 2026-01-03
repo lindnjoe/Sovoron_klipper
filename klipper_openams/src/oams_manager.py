@@ -622,11 +622,13 @@ class FPSState:
         self.engaged_with_extruder: bool = False
         self.engagement_checked_at: Optional[float] = None
         self.engagement_extruder_pos: Optional[float] = None
+        self.load_pressure_dropped: bool = False
 
     def reset_engagement_tracking(self) -> None:
         self.engaged_with_extruder = False
         self.engagement_checked_at = None
         self.engagement_extruder_pos = None
+        self.load_pressure_dropped = False
 
     def record_encoder_sample(self, value: int) -> Optional[int]:
         """Record encoder sample and return diff if we have 2 samples."""
@@ -4205,6 +4207,10 @@ class OAMSManager:
         if encoder_diff is None:
             return
 
+        # Track whether FPS pressure ever fell below the stuck threshold during this load.
+        if pressure < self.load_fps_stuck_threshold:
+            fps_state.load_pressure_dropped = True
+
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(f"OAMS[{getattr(oams, 'oams_idx', -1)}] Load Monitor: Encoder diff {encoder_diff}, FPS pressure {pressure:.2f}")
 
@@ -4222,8 +4228,12 @@ class OAMSManager:
             # FPS pressure is high while loading - filament isn't being pulled in
             # This catches cases where extruder is turning but filament missed the drive gear
             extruder_advancing = extruder_delta is not None and extruder_delta >= MIN_EXTRUDER_ENGAGEMENT_DELTA
+            pressure_never_dropped = not fps_state.load_pressure_dropped
             if engaged_signal and (suppression_active or extruder_advancing):
                 # Extruder is already synced/engaged and appears to be advancing; don't false-trigger
+                stuck_detected = False
+            elif not pressure_never_dropped:
+                # Filament already pulled FPS below threshold once; avoid unload retries on rebounds
                 stuck_detected = False
             else:
                 stuck_detected = True
