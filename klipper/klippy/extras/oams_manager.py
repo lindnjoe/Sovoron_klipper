@@ -2119,18 +2119,12 @@ class OAMSManager:
 
             # CRITICAL: Ensure follower is enabled for the engagement extrusion
             # The follower must track filament movement through buffer during extrusion
-            # Use _enable_follower directly since fps_state.state is still LOADING
-            # (_ensure_forward_follower would skip due to state check)
+            # Note: manual_override is already set by the load operation at line 3129
+            # We don't need to set or clear it here
             if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
                 oams_obj = self.oams.get(fps_state.current_oams)
                 if oams_obj is not None:
                     self._enable_follower(fps_name, fps_state, oams_obj, 1, "engagement verification extrusion")
-
-                    # Set manual override to prevent automatic follower control from interfering
-                    # during the engagement extrusion (will be cleared after verification completes)
-                    follower_state = self._get_follower_state(fps_state.current_oams)
-                    follower_state.manual_override = True
-                    self.logger.debug(f"Enabled follower with manual override for {lane_name} engagement verification")
 
             # Get extruder object
             extruder = getattr(fps, 'extruder', None)
@@ -2166,11 +2160,7 @@ class OAMSManager:
                 avg_pressure = sum(pressure_readings) / len(pressure_readings)
                 max_pressure = max(pressure_readings)
 
-                # Clear manual override before returning
-                if fps_state.current_oams:
-                    follower_state = self._get_follower_state(fps_state.current_oams)
-                    follower_state.manual_override = False
-
+                # Note: manual_override will be cleared by load operation on completion
                 if avg_pressure < self.engagement_pressure_threshold:
                     self.logger.info(f"Filament engagement verified for {lane_name} (avg FPS pressure {avg_pressure:.2f} < {self.engagement_pressure_threshold:.2f}, readings: {[f'{p:.2f}' for p in pressure_readings]})")
                     return True
@@ -2179,18 +2169,10 @@ class OAMSManager:
                     return False
             except Exception:
                 self.logger.error(f"Failed to read FPS pressure for engagement check on {fps_name}")
-                # Clear manual override before returning
-                if fps_state.current_oams:
-                    follower_state = self._get_follower_state(fps_state.current_oams)
-                    follower_state.manual_override = False
                 return True  # Assume success to avoid false failures
 
         except Exception:
             self.logger.error(f"Failed to verify engagement for {lane_name}")
-            # Clear manual override before returning
-            if fps_state.current_oams:
-                follower_state = self._get_follower_state(fps_state.current_oams)
-                follower_state.manual_override = False
             return True  # Assume success to avoid false failures
 
     def _handle_successful_reload(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
@@ -3247,6 +3229,10 @@ class OAMSManager:
                             self.logger.debug(f"Virtual tool sensor update not available for {lane_name}")
             except Exception:
                 self.logger.warning(f"Failed to update virtual tool sensor for {lane_name} after load")
+
+            # Clear manual override after successful load - restore automatic follower control
+            follower_state = self._get_follower_state(oam_name)
+            follower_state.manual_override = False
 
             # Monitors are already running globally, no need to restart them
             return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
