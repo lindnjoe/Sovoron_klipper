@@ -246,7 +246,12 @@ class afcAMS(afcUnit):
         super().__init__(config)
         self.type = "OpenAMS"
 
-        # Ensure led_tool_unloaded is set (inherited from AFC_unit but may not be set if AFC base is missing)
+        # Ensure LED attributes are set (inherited from AFC_unit but may not be set if AFC base is missing)
+        # These are needed by AFC_lane.py handle_unit_connect (lines 391-393)
+        if not hasattr(self, 'led_tool_loaded'):
+            self.led_tool_loaded = config.get('led_tool_loaded', '0,0,1,0')
+        if not hasattr(self, 'led_tool_loaded_idle'):
+            self.led_tool_loaded_idle = config.get('led_tool_loaded_idle', '0.4,0.4,0,0')
         if not hasattr(self, 'led_tool_unloaded'):
             self.led_tool_unloaded = config.get('led_tool_unloaded', '1,0,0,0')
 
