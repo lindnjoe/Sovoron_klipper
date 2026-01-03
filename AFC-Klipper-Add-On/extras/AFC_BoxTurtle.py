@@ -62,39 +62,45 @@ class afcBoxTurtle(afcUnit):
 
         if not cur_lane.prep_state:
             if not cur_lane.load_state:
-                self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
+                self.lane_not_ready(cur_lane)
                 msg += 'EMPTY READY FOR SPOOL'
             else:
-                self.afc.function.afc_led(cur_lane.led_fault, cur_lane.led_index)
+                self.lane_fault(cur_lane)
                 msg +="<span class=error--text> NOT READY</span>"
                 cur_lane.do_enable(False)
                 msg = '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
                 succeeded = False
 
         else:
-            self.afc.function.afc_led(cur_lane.led_ready, cur_lane.led_index)
+            self.lane_loaded(cur_lane)
             msg +="<span class=success--text>LOCKED</span>"
             if not cur_lane.load_state:
                 msg +="<span class=error--text> NOT LOADED</span>"
-                self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
+                self.lane_not_ready(cur_lane)
                 succeeded = False
             else:
                 cur_lane.status = AFCLaneState.LOADED
                 msg +="<span class=success--text> AND LOADED</span>"
-                self.afc.function.afc_led(cur_lane.led_spool_illum, cur_lane.led_spool_index)
+                self.lane_illuminate_spool(cur_lane)
 
                 if cur_lane.tool_loaded:
                     if cur_lane.get_toolhead_pre_sensor_state() == True or cur_lane.extruder_obj.tool_start == "buffer" or cur_lane.extruder_obj.tool_end_state:
                         if cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                             cur_lane.sync_to_extruder()
-                            msg +="<span class=primary--text> in ToolHead</span>"
+                            on_shuttle = ""
+                            if (cur_lane.extruder_obj.tool_obj
+                                and cur_lane.extruder_obj.tc_unit_name):
+                                on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
+                            msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
                             if cur_lane.extruder_obj.tool_start == "buffer":
                                 msg += "<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>"
 
                             if self.afc.current == cur_lane.name:
                                 self.afc.spool.set_active_spool(cur_lane.spool_id)
-                                self.afc.function.afc_led(cur_lane.led_tool_loaded, cur_lane.led_index)
+                                self.lane_tool_loaded(cur_lane)
                                 cur_lane.status = AFCLaneState.TOOLED
+                            else:
+                                self.lane_tool_loaded_idle(cur_lane)
 
                             cur_lane.enable_buffer()
                         else:
@@ -212,6 +218,7 @@ class afcBoxTurtle(afcUnit):
                 cur_lane.loaded_to_hub  = True
 
             cur_lane.do_enable(False)
+            cur_lane.unit_obj.return_to_home()
             self.afc.save_vars()
             return True, f"{variable_name} successful", bowden_dist
         else:
@@ -231,31 +238,42 @@ class afcBoxTurtle(afcUnit):
         """
         bow_pos = 0
         cur_hub = cur_lane.hub_obj
-        #TODO: Add calibration support for direct loads
 
-        # Verify TD-1 is still connected before trying to get data
-        if not self.afc.td1_present:
-            msg = "TD-1 device not detected anymore, please check before continuing to calibrate TD-1 bowden length"
+        if cur_lane.td1_device_id is None:
+            msg = f"Cannot calibrate TD-1 for {cur_lane.name}, td1_device_id is a required "
+            msg += "field in AFC_hub or per AFC_lane"
             return False, msg, 0
 
-        if cur_lane.td1_device_id:
-            valid, msg = self.afc.function.check_for_td1_id(cur_lane.td1_device_id)
-            if not valid:
-                return valid, msg, 0
+        # Verify TD-1 is still connected before trying to get data
+        valid, msg = self.afc.function.check_for_td1_id(cur_lane.td1_device_id)
+        if not valid:
+            msg = f"TD-1 device(SN: {cur_lane.td1_device_id}) not detected anymore, "
+            msg += "please check before continuing to calibrate TD-1 bowden length"
+            return valid, msg, 0
 
         self.logger.raw(f"Calibrating bowden length to TD-1 device with {cur_lane.name}")
-        hub_pos, checkpoint, success = self.move_until_state(cur_lane, lambda: cur_hub.state, cur_hub.move_dis, tol,
-                                                             cur_lane.short_move_dis, 0, cur_lane.dist_hub + cur_lane.hub_obj.move_dis + 200, "Moving to hub")
+        if not cur_lane.is_direct_hub():
+            fault_dis = cur_lane.dist_hub + cur_lane.hub_obj.move_dis + 200
+            hub_pos, checkpoint, success = self.move_until_state(cur_lane, lambda: cur_hub.state,
+                                                                 cur_hub.move_dis, tol,
+                                                                 cur_lane.short_move_dis, 0,
+                                                                 fault_dis,
+                                                                 "Moving to hub")
 
-        if not success:
-            # if movement does not succeed fault and return values to calibration macro
-            msg = 'Failed {} after {}mm'.format(checkpoint, hub_pos)
-            cur_lane.do_enable(False)
-            return False, msg, hub_pos
+            if not success:
+                # if movement does not succeed fault and return values to calibration macro
+                msg = 'Failed {} after {}mm'.format(checkpoint, hub_pos)
+                cur_lane.do_enable(False)
+                return False, msg, hub_pos
 
         compare_time = datetime.now()
+        max_bowden_length = 0
+        if cur_lane.is_direct_hub():
+            max_bowden_length = cur_lane.dist_hub
+        else:
+            max_bowden_length = cur_hub.afc_bowden_length
         while not self.get_td1_data(cur_lane, compare_time):
-            if bow_pos > cur_hub.afc_bowden_length:
+            if bow_pos > max_bowden_length:
                 # fault if move to TD-1 is not detected
                 msg = 'TD-1 failed to detect filament after moving {}mm'.format(bow_pos)
                 cur_lane.do_enable(False)
@@ -269,19 +287,26 @@ class afcBoxTurtle(afcUnit):
 
         cur_lane.move(bow_pos * -1, cur_lane.long_moves_speed, cur_lane.long_moves_accel, True)
 
-        # Reset to hub
-        self.calc_position(cur_lane, lambda: cur_lane.hub_obj.state, 0,
-                           cur_lane.short_move_dis, tol, 200, checkpoint)
+        if not cur_lane.is_direct_hub():
+            # Reset to hub
+            self.calc_position(cur_lane, lambda: cur_lane.hub_obj.state, 0,
+                                cur_lane.short_move_dis, tol, 200, checkpoint)
 
-        cur_lane.move(cur_hub.hub_clear_move_dis * -1, cur_lane.short_moves_speed, cur_lane.short_moves_accel, True)
+            cur_lane.move(cur_hub.hub_clear_move_dis * -1, cur_lane.short_moves_speed, cur_lane.short_moves_accel, True)
 
-        cal_msg = f"\n td1_bowden_length: New: {bow_pos} Old: {cur_hub.td1_bowden_length}"
-        cur_hub.td1_bowden_length = bow_pos
-        self.afc.function.ConfigRewrite(cur_hub.fullname, "td1_bowden_length", bow_pos, cal_msg)
+        cal_msg = f"\n td1_bowden_length: New: {bow_pos} Old: {cur_lane.td1_bowden_length}"
 
+        if cur_lane.is_direct_hub():
+            cur_lane.td1_bowden_length = bow_pos
+            fullname = cur_lane.fullname
+        else:
+            cur_hub.td1_bowden_length = bow_pos
+            fullname = cur_hub.fullname
+
+        self.afc.function.ConfigRewrite(fullname, "td1_bowden_length", bow_pos, cal_msg)
         cur_lane.do_enable(False)
+        cur_lane.unit_obj.return_to_home()
         self.afc.save_vars()
-        # self.logger.info(f"td1_bowden_length: {bow_pos}")
         return True, "td1_bowden_length calibration successful", bow_pos
 
     # Helper functions for movement and calibration
