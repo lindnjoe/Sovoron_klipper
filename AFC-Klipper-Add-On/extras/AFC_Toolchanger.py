@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 # Toolchanging code is inspired and based off klipper-toolchanger project https://github.com/viesturz/klipper-toolchanger
-# Originally authored by Viesturs Zariņš and licensed under the GNU General Public License v3.0.
+# Originally authored by Viesturs Zarin� and licensed under the GNU General Public License v3.0.
 #
 # Full license text available at: https://www.gnu.org/licenses/gpl-3.0.html
 

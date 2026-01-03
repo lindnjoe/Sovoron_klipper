@@ -63,6 +63,7 @@ class afcUnit:
         self.led_unloading               = config.get('led_unloading', self.afc.led_unloading)               # LED color to set when lane is unloading
         self.led_tool_loaded             = config.get('led_tool_loaded', self.afc.led_tool_loaded)           # LED color to set when lane is loaded into tool
         self.led_tool_loaded_idle        = config.get('led_tool_loaded_idle', self.afc.led_tool_loaded_idle) # LED color to set when lane is loaded into tool and idle
+        self.led_tool_unloaded           = config.get('led_tool_unloaded', self.afc.led_tool_unloaded)       # LED color to set when lanes extruder is unloaded
         self.led_spool_illum             = config.get('led_spool_illuminate', self.afc.led_spool_illum)      # LED color to illuminate under spool
         self.led_logo_index              = config.get('led_logo_index', None)                                # LED Logo index
         self.led_logo_color              = self.afc.function.HexConvert(config.get('led_logo_color', '0,0,0,0'))# Default logo color when nothing is loaded
@@ -207,12 +208,13 @@ class afcUnit:
 
         direct_hubs = any( lane.is_direct_hub() for lane in self.afc.lanes.values())
         lanes_loaded = any( lane.load_state and not lane.is_direct_hub() for lane in self.afc.lanes.values())
+        any_lane_has_td1_ids = any( lane.td1_device_id for lane in self.afc.lanes.values())
 
         if not direct_hubs or lanes_loaded:
             buttons.append(("Calibrate afc_bowden_length", "UNIT_BOW_CALIBRATION UNIT={}".format(self.name), "secondary"))
 
         # Add button for TD-1 calibration if user has one connected and defined
-        if self.afc.td1_defined:
+        if self.afc.td1_defined and any_lane_has_td1_ids:
             buttons.append(("Calibrate TD-1 Length", "AFC_UNIT_TD_ONE_CALIBRATION UNIT={}".format(self.name), "primary"))
 
         # Button back to previous step
@@ -357,7 +359,8 @@ class afcUnit:
                 'Config option: td1_bowden_length').format(self.name)
 
         for lane in self.lanes.values():
-            if lane.load_state:
+            if (lane.td1_device_id
+                and lane.load_state):
                 # Create a button for each lane
                 button_label = "{}".format(lane)
                 button_command = "CALIBRATE_AFC TD1={} DISTANCE=50".format(lane)
@@ -392,6 +395,14 @@ class afcUnit:
             led_color = self.afc.function.HexToLedString(color.replace("#", ""))
             self.afc.function.afc_led( led_color, self.led_logo_index )
 
+    def lane_not_ready(self, lane):
+        """
+        Common function for setting a lanes led when a lane is not ready
+
+        :param lane: Lane object to set led
+        """
+        self.afc.function.afc_led(lane.led_not_ready, lane.led_index)
+
     def lane_loaded(self, lane):
         """
         Common function for setting a lanes led when lane is loaded
@@ -400,13 +411,21 @@ class afcUnit:
         """
         self.afc.function.afc_led(lane.led_ready, lane.led_index)
 
+    def lane_unloading(self, lane):
+        """
+        Common function for setting a lanes led when lane is unloading
+
+        :param lane: Lane object to set led
+        """
+        self.afc.function.afc_led(lane.led_unloading, lane.led_index)
+
     def lane_unloaded(self, lane):
         """
         Common function for setting a lanes led when lane is unloaded
 
         :param lane: Lane object to set led
         """
-        self.afc.function.afc_led(lane.led_not_ready, lane.led_index)
+        self.lane_not_ready(lane)
 
     def lane_loading(self, lane):
         """
@@ -418,34 +437,64 @@ class afcUnit:
 
     def lane_tool_loaded(self, lane):
         """
-        Common function for setting a lanes led when lane is tool loaded
+        Common function for setting a lanes led when lane is tool loaded,
+        also sets toolheads led status color
 
         :param lane: Lane object to set led
         """
         self.afc.function.afc_led(lane.led_tool_loaded, lane.led_index)
+        lane.extruder_obj.set_status_led(lane.led_tool_loaded)
 
     def lane_tool_unloaded(self, lane):
         """
-        Common function for setting a lanes led when lane is tool unloaded
+        Common function for setting a lanes led when lane is tool unloaded,
+        also sets toolheads led status color
 
         :param lane: Lane object to set led
         """
         self.afc.function.afc_led(lane.led_ready, lane.led_index)
-        return
+        lane.extruder_obj.set_status_led(lane.led_tool_unloaded)
 
-    def select_lane( self, lane ):
+    def lane_tool_loaded_idle(self, lane):
+        """
+        Common function for setting a lanes led when its loaded into a tool
+        and tool is docked(for toolchangers). Function also sets toolheads led
+        status color.
+
+        :param lane: Lane object to set led
+        """
+        self.afc.function.afc_led(lane.led_tool_loaded_idle, lane.led_index)
+        lane.extruder_obj.set_status_led(lane.led_tool_loaded_idle)
+
+    def lane_illuminate_spool(self, lane):
+        """
+        Common function for setting lane illumination leds
+
+        :param lane: Lane object to set led
+        """
+        self.afc.function.afc_led(lane.led_spool_illum, lane.led_spool_index)
+
+    def lane_fault(self, lane):
+        """
+        Common function for setting a lanes led when a fault happens
+
+        :param lane: Lane object to set led
+        """
+        self.afc.function.afc_led(lane.led_fault, lane.led_index)
+
+    def select_lane( self, lane, disable_selector: bool=False ):
         """
         Function to select lane
         """
         return
 
-    def return_to_home(self):
+    def return_to_home(self, prep=False):
         """
         Function to home unit if unit has homing sensor
         """
         return
 
-    def check_runout(self):
+    def check_runout(self, cur_lane):
         """
         Function to check if runout logic should be triggered, override in specific unit
         """
@@ -477,7 +526,8 @@ class afcUnit:
     def calibrate_lane(self, cur_lane, tol):
         self._print_function_not_defined(self.calibrate_lane.__name__)
 
-    def get_td1_data(self, cur_lane, compare_time):
+    def get_td1_data(self, cur_lane: AFCLane, compare_time: datetime,
+                     ignore_time: bool=False) -> bool:
         """
         Queries moonrakers endpoint to get td1 data and check to see if data is valid and time
         in data is greater than passed in time as this is how determination is made that filament
@@ -487,6 +537,8 @@ class afcUnit:
                          assigned to the lane.
         :param compare_time: Time to compare returned data to, which helps verify that the data is valid and
                              filament has reached TD-1 device
+        :param ignore_time: Override to just capture TD-1 data anyways, useful when loading filament to toolhead
+                            and want to capture data once loaded.
 
         :return boolean: True once filament is detected in TD-1 device
         """
@@ -496,14 +548,12 @@ class afcUnit:
 
         if len(td1_data) > 0:
             self.logger.debug(f"Data: {td1_data}, Compare_time: {compare_time}")
-            data = list(td1_data.values())[0]
 
-            if cur_lane.td1_device_id is not None:
-                if cur_lane.td1_device_id in td1_data:
-                    data = td1_data[cur_lane.td1_device_id]
-                else:
-                    self.afc.error.AFC_error(f"TD-1 Device ID ({cur_lane.td1_device_id}) supplied, but ID not found.", pause=False)
-                    return False
+            if cur_lane.td1_device_id in td1_data:
+                data = td1_data[cur_lane.td1_device_id]
+            else:
+                self.afc.error.AFC_error(f"TD-1 Device ID ({cur_lane.td1_device_id}) supplied, but ID not found.", pause=False)
+                return False
 
             if data["scan_time"] is None:
                 return False
@@ -518,13 +568,14 @@ class afcUnit:
                 self.afc.logger.error("Error trying to format TD-1 scan time, check AFC.log for more information", f"{e}")
                 return False
 
-
             if scan_time > compare_time.astimezone():
                 valid_data = True
             elif ( compare_time.astimezone() - scan_time ) < t_delta:
                 valid_data = True
 
-            if valid_data and data['td'] is not None and data['color'] is not None:
+            if ( (valid_data or ignore_time)
+                 and data['td'] is not None
+                 and data['color'] is not None ):
                 cur_lane.td1_data = data
                 self.logger.info(f"{cur_lane.name} TD-1 data captured")
                 self.afc.save_vars()
