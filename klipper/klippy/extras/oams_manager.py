@@ -69,6 +69,8 @@ FILAMENT_PATH_LENGTH_FACTOR = 1.14
 MONITOR_ENCODER_PERIOD = 2.0
 MONITOR_ENCODER_PERIOD_IDLE = 4.0  # OPTIMIZATION: Longer interval when idle
 MONITOR_ENCODER_SPEED_GRACE = 2.0
+MIN_EXTRUDER_ENGAGEMENT_DELTA = 0.5  # Minimum extruder movement to confirm engagement
+ENGAGEMENT_SUPPRESSION_WINDOW = 6.0  # Time after engagement check to suppress stuck triggers
 AFC_DELEGATION_TIMEOUT = 30.0
 COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
@@ -616,6 +618,12 @@ class FPSState:
         self.idle_backoff_level: int = 0  # 0-3 for exponential backoff (1x, 2x, 4x, 8x)
         self.last_state_change: Optional[float] = None
 
+        # Engagement tracking - prevents false stuck spool detection after successful engagement
+        self.engaged_with_extruder: bool = False
+        self.engagement_checked_at: Optional[float] = None
+        self.engagement_extruder_pos: Optional[float] = None
+        self.load_pressure_dropped: bool = False
+
     def record_encoder_sample(self, value: int) -> Optional[int]:
         """Record encoder sample and return diff if we have 2 samples."""
         self.encoder_sample_prev = self.encoder_sample_current
@@ -651,6 +659,13 @@ class FPSState:
         self.clog.min_pressure = None
         self.clog.max_pressure = None
         self.clog.last_extruder = None
+
+    def reset_engagement_tracking(self) -> None:
+        """Reset engagement tracking state for clean retry attempts."""
+        self.engaged_with_extruder = False
+        self.engagement_checked_at = None
+        self.engagement_extruder_pos = None
+        self.load_pressure_dropped = False
 
     def prime_clog_tracker(self, extruder_pos: float, encoder_clicks: int, pressure: float, timestamp: float) -> None:
         self.clog.start_extruder = extruder_pos
@@ -2132,6 +2147,15 @@ class OAMSManager:
                 self.logger.error(f"No extruder found for {fps_name}")
                 return True  # Assume success
 
+            # Capture extruder position before engagement extrusion for tracking
+            try:
+                toolhead = self.printer.lookup_object('toolhead')
+                extruder_pos = toolhead.get_position()[3]  # E axis position
+                fps_state.engagement_extruder_pos = extruder_pos
+            except Exception:
+                self.logger.warning(f"Could not capture extruder position before engagement for {lane_name}")
+                fps_state.engagement_extruder_pos = None
+
             # Get gcode object for running extrusion command
             gcode = self.printer.lookup_object('gcode')
 
@@ -2160,11 +2184,18 @@ class OAMSManager:
                 avg_pressure = sum(pressure_readings) / len(pressure_readings)
                 max_pressure = max(pressure_readings)
 
-                # Note: manual_override will be cleared by load operation on completion
+                # Record engagement result and timestamp for stuck spool suppression
+                now = self.reactor.monotonic()
+                fps_state.engagement_checked_at = now
+
                 if avg_pressure < self.engagement_pressure_threshold:
+                    # Engagement successful - record for stuck spool suppression
+                    fps_state.engaged_with_extruder = True
                     self.logger.info(f"Filament engagement verified for {lane_name} (avg FPS pressure {avg_pressure:.2f} < {self.engagement_pressure_threshold:.2f}, readings: {[f'{p:.2f}' for p in pressure_readings]})")
                     return True
                 else:
+                    # Engagement failed - don't suppress stuck spool detection
+                    fps_state.engaged_with_extruder = False
                     self.logger.warning(f"Filament failed to engage extruder for {lane_name} (avg FPS pressure {avg_pressure:.2f} >= {self.engagement_pressure_threshold:.2f}, max {max_pressure:.2f}, readings: {[f'{p:.2f}' for p in pressure_readings]})")
                     return False
             except Exception:
@@ -3098,6 +3129,7 @@ class OAMSManager:
         # Set since to now for THIS load attempt (will be updated on success)
         fps_state.since = current_time
         fps_state.clear_encoder_samples()
+        fps_state.reset_engagement_tracking()  # Reset engagement state for clean load attempt
 
         # CRITICAL: Enable follower BEFORE starting the OAMS load command
         # The OAMS BLDC will push filament through the buffer, and the follower
@@ -4154,16 +4186,35 @@ class OAMSManager:
         if self.logger.isEnabledFor(logging.DEBUG):
             self.logger.debug(f"OAMS[{getattr(oams, 'oams_idx', -1)}] Load Monitor: Encoder diff {encoder_diff}, FPS pressure {pressure:.2f}")
 
+        # Track if pressure has dropped during load - proves filament is moving
+        if pressure < self.load_fps_stuck_threshold and not fps_state.load_pressure_dropped:
+            fps_state.load_pressure_dropped = True
+            self.logger.debug(f"FPS pressure dropped to {pressure:.2f} during load - filament moving through buffer")
+
+        # Suppress stuck detection after successful engagement verification
+        # Prevents false triggers when filament is actually loaded correctly
+        if fps_state.engaged_with_extruder and fps_state.engagement_checked_at is not None:
+            time_since_engagement = now - fps_state.engagement_checked_at
+            if time_since_engagement < ENGAGEMENT_SUPPRESSION_WINDOW:
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(f"Suppressing stuck detection for {ENGAGEMENT_SUPPRESSION_WINDOW - time_since_engagement:.1f}s after successful engagement")
+                return
 
         # Check for stuck spool conditions:
         # 1. Encoder not moving (original check)
-        # 2. FPS pressure staying high (filament not engaging) - NEW CHECK
+        # 2. FPS pressure staying high (filament not engaging) - only if pressure never dropped
         stuck_detected = False
         stuck_reason = ""
 
         if encoder_diff < MIN_ENCODER_DIFF:
-            stuck_detected = True
-            stuck_reason = "encoder not moving"
+            # Only trigger stuck if encoder stalled AND pressure never dropped during load
+            # If pressure dropped, filament was moving - encoder issue is likely transient
+            if not fps_state.load_pressure_dropped:
+                stuck_detected = True
+                stuck_reason = "encoder not moving and pressure never dropped"
+            else:
+                if self.logger.isEnabledFor(logging.DEBUG):
+                    self.logger.debug(f"Encoder stalled but pressure dropped during load - likely transient, not stuck")
         elif pressure >= self.load_fps_stuck_threshold:
             # FPS pressure is high while loading - filament isn't being pulled in
             # This catches cases where extruder is turning but filament missed the drive gear
