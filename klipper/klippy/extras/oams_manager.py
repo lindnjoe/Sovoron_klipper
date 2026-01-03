@@ -2119,7 +2119,12 @@ class OAMSManager:
 
             # CRITICAL: Ensure follower is enabled for the engagement extrusion
             # The follower must track filament movement through buffer during extrusion
-            self._ensure_forward_follower(fps_name, fps_state, "engagement verification extrusion")
+            # Use _enable_follower directly since fps_state.state is still LOADING
+            # (_ensure_forward_follower would skip due to state check)
+            if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
+                oams_obj = self.oams.get(fps_state.current_oams)
+                if oams_obj is not None:
+                    self._enable_follower(fps_name, fps_state, oams_obj, 1, "engagement verification extrusion")
 
             # Get extruder object
             extruder = getattr(fps, 'extruder', None)
@@ -3078,6 +3083,7 @@ class OAMSManager:
         fps_state.encoder = encoder
         fps_state.current_oams = oam_name
         fps_state.current_spool_idx = bay_index
+        fps_state.current_lane = lane_name  # Set lane name at start of load attempt for error reporting
         # Set since to now for THIS load attempt (will be updated on success)
         fps_state.since = current_time
         fps_state.clear_encoder_samples()
