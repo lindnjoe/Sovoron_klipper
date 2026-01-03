@@ -3172,6 +3172,19 @@ class OAMSManager:
                             # This is the same approach used in SET_LANE_LOADED wrapper
                             unit_obj._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
                             self.logger.info(f"Updated virtual tool sensor to LOADED for {lane_name} after successful load")
+
+                            # CRITICAL: Notify AFC that lane is loaded to toolhead
+                            # This calls handle_openams_lane_tool_state which sets extruder.lane_loaded
+                            # Without this, determine_current_loaded_lane() can't detect what's loaded
+                            if AMSRunoutCoordinator is not None:
+                                try:
+                                    AMSRunoutCoordinator.notify_lane_tool_state(
+                                        self.printer, oam_name, lane_name,
+                                        loaded=True, spool_index=bay_index, eventtime=eventtime
+                                    )
+                                    self.logger.debug(f"Notified AFC that lane {lane_name} is loaded to toolhead")
+                                except Exception:
+                                    self.logger.error(f"Failed to notify AFC that lane {lane_name} loaded")
                         else:
                             self.logger.debug(f"Virtual tool sensor update not available for {lane_name}")
             except Exception:
