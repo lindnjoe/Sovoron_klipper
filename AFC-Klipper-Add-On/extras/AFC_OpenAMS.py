@@ -1651,13 +1651,17 @@ class afcAMS(afcUnit):
 
             # Shared prep/load sensors stay in sync for AMS lanes; treat False as fully unloaded
             try:
-                lane.set_unloaded()
+                # Only call set_unloaded if lane isn't already in NONE state
+                # This prevents errors when sensor reports empty for an already-empty lane
+                if lane.status != AFCLaneState.NONE:
+                    lane.set_unloaded()
                 if hasattr(lane, "_afc_prep_done"):
                     lane._afc_prep_done = False
                 lane.prep_state = lane_val_bool
                 lane.load_state = lane_val_bool
-            except Exception:
-                self.logger.error(f"Failed to fully clear shared lane {lane.name} after sensor cleared")
+            except Exception as e:
+                # This is often benign (lane already cleared), log at debug level
+                self.logger.debug(f"Could not fully clear shared lane {lane.name} after sensor cleared (lane may already be empty): {e}")
             # For same-FPS runouts: blocking mechanism in _should_block_sensor_update_for_runout()
             # prevents us from reaching here during active runout
             # For cross-extruder runouts: AFC's LANE_UNLOAD wrapper handles cleanup
