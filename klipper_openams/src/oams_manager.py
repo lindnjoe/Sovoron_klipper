@@ -2153,14 +2153,13 @@ class OAMSManager:
                 self.logger.error(f"No extruder found for {fps_name}")
                 return True  # Assume success
 
-            # Capture extruder position before engagement extrusion for tracking
+            # Record encoder position BEFORE engagement extrusion
+            # Encoder movement during extrusion proves filament engaged successfully
             try:
-                toolhead = self.printer.lookup_object('toolhead')
-                extruder_pos = toolhead.get_position()[3]  # E axis position
-                fps_state.engagement_extruder_pos = extruder_pos
+                encoder_before = oams.encoder_clicks
             except Exception:
-                self.logger.warning(f"Could not capture extruder position before engagement for {lane_name}")
-                fps_state.engagement_extruder_pos = None
+                self.logger.warning(f"Could not read encoder before engagement for {lane_name}")
+                encoder_before = None
 
             # Get gcode object for running extrusion command
             gcode = self.printer.lookup_object('gcode')
@@ -2172,42 +2171,50 @@ class OAMSManager:
             gcode.run_script_from_command(f"G1 E{reload_length:.2f} F{reload_speed:.0f}")  # Extrude to nozzle tip
             gcode.run_script_from_command("M400")  # Wait for moves to complete
 
-            # Wait for FPS pressure to stabilize after extrusion
-            # Need sufficient time for filament movement to stop and sensor to settle
-            # Increased from 0.5s to 2.0s to prevent false failures
-            self.reactor.pause(self.reactor.monotonic() + 2.0)
+            # Small pause to let encoder reading settle
+            self.reactor.pause(self.reactor.monotonic() + 0.2)
 
-            # Check FPS pressure - if it dropped below threshold, filament engaged
-            # Take multiple readings over 1 second to ensure stable low pressure
+            # Check encoder movement - most reliable indicator of successful engagement
+            # If encoder moved, follower tracked filament being pulled through buffer ? engaged!
             try:
-                pressure_readings = []
-                for i in range(3):
-                    pressure_readings.append(oams.fps_value)
-                    if i < 2:  # Don't wait after last reading
-                        self.reactor.pause(self.reactor.monotonic() + 0.5)
-
-                # Use average pressure to reduce noise from single high reading
-                avg_pressure = sum(pressure_readings) / len(pressure_readings)
-                max_pressure = max(pressure_readings)
+                encoder_after = oams.encoder_clicks
 
                 # Record engagement result and timestamp for stuck spool suppression
                 now = self.reactor.monotonic()
                 fps_state.engagement_checked_at = now
                 fps_state.engagement_in_progress = False  # Clear flag now that verification is complete
 
-                if avg_pressure < self.engagement_pressure_threshold:
-                    # Engagement successful - record for stuck spool suppression
-                    fps_state.engaged_with_extruder = True
-                    self.logger.info(f"Filament engagement verified for {lane_name} (avg FPS pressure {avg_pressure:.2f} < {self.engagement_pressure_threshold:.2f}, readings: {[f'{p:.2f}' for p in pressure_readings]})")
-                    return True
+                if encoder_before is not None:
+                    encoder_delta = abs(encoder_after - encoder_before)
+                    # Expect significant encoder movement for reload_length (typically 50-100mm)
+                    # Minimum threshold: at least 10 encoder clicks
+                    min_encoder_movement = 10
+
+                    if encoder_delta >= min_encoder_movement:
+                        # Encoder moved - filament engaged successfully!
+                        fps_state.engaged_with_extruder = True
+                        self.logger.info(f"Filament engagement verified for {lane_name} (encoder moved {encoder_delta} clicks during {reload_length:.1f}mm extrusion)")
+                        return True
+                    else:
+                        # Encoder didn't move - filament not engaged
+                        fps_state.engaged_with_extruder = False
+                        self.logger.warning(f"Filament failed to engage extruder for {lane_name} (encoder only moved {encoder_delta} clicks, expected >={min_encoder_movement})")
+                        return False
                 else:
-                    # Engagement failed - don't suppress stuck spool detection
-                    fps_state.engaged_with_extruder = False
-                    self.logger.warning(f"Filament failed to engage extruder for {lane_name} (avg FPS pressure {avg_pressure:.2f} >= {self.engagement_pressure_threshold:.2f}, max {max_pressure:.2f}, readings: {[f'{p:.2f}' for p in pressure_readings]})")
-                    return False
+                    # Couldn't read encoder before - fall back to pressure check
+                    fps_pressure = oams.fps_value
+                    if fps_pressure < self.engagement_pressure_threshold:
+                        fps_state.engaged_with_extruder = True
+                        self.logger.info(f"Filament engagement verified for {lane_name} (FPS pressure {fps_pressure:.2f}, encoder unavailable)")
+                        return True
+                    else:
+                        fps_state.engaged_with_extruder = False
+                        self.logger.warning(f"Filament failed to engage for {lane_name} (FPS pressure {fps_pressure:.2f}, encoder unavailable)")
+                        return False
+
             except Exception:
                 fps_state.engagement_in_progress = False  # Clear flag on error
-                self.logger.error(f"Failed to read FPS pressure for engagement check on {fps_name}")
+                self.logger.error(f"Failed to check encoder for engagement verification on {fps_name}")
                 return True  # Assume success to avoid false failures
 
         except Exception:
@@ -3166,6 +3173,21 @@ class OAMSManager:
             if not engagement_ok:
                 # Filament reached extruder but didn't engage - unload and return failure to trigger retry
                 self.logger.warning(f"Filament engagement failed for {lane_name}, unloading before retry")
+
+                # Retract extruder by reload distance to back out the filament that was extruded during engagement
+                # This ensures filament position is correct for the next load attempt
+                try:
+                    reload_length, reload_speed = self._get_reload_params(lane_name)
+                    if reload_length is not None and reload_speed is not None:
+                        self.logger.info(f"Retracting extruder {reload_length:.1f}mm to reverse engagement extrusion for {lane_name}")
+                        gcode = self.printer.lookup_object('gcode')
+                        gcode.run_script_from_command("M83")  # Relative extrusion mode
+                        gcode.run_script_from_command(f"G1 E-{reload_length:.2f} F{reload_speed:.0f}")  # Retract
+                        gcode.run_script_from_command("M400")  # Wait for moves to complete
+                    else:
+                        self.logger.warning(f"Could not get reload params for {lane_name}, skipping extruder retraction")
+                except Exception:
+                    self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}")
 
                 # Unload the filament since it didn't engage properly
                 try:
