@@ -2142,19 +2142,29 @@ class OAMSManager:
             gcode.run_script_from_command(f"G1 E{reload_length:.2f} F{reload_speed:.0f}")  # Extrude to nozzle tip
             gcode.run_script_from_command("M400")  # Wait for moves to complete
 
-            # Wait a moment for pressure to stabilize after extrusion
-            self.reactor.pause(self.reactor.monotonic() + 0.5)
+            # Wait for FPS pressure to stabilize after extrusion
+            # Need sufficient time for filament movement to stop and sensor to settle
+            # Increased from 0.5s to 2.0s to prevent false failures
+            self.reactor.pause(self.reactor.monotonic() + 2.0)
 
             # Check FPS pressure - if it dropped below threshold, filament engaged
+            # Take multiple readings over 1 second to ensure stable low pressure
             try:
-                current_pressure = oams.fps_value
-                if current_pressure < self.engagement_pressure_threshold:
-                    self.logger.info(f"Filament engagement verified for {lane_name} (FPS pressure {current_pressure:.2f} < {self.engagement_pressure_threshold:.2f})")
+                pressure_readings = []
+                for i in range(3):
+                    pressure_readings.append(oams.fps_value)
+                    if i < 2:  # Don't wait after last reading
+                        self.reactor.pause(self.reactor.monotonic() + 0.5)
 
+                # Use average pressure to reduce noise from single high reading
+                avg_pressure = sum(pressure_readings) / len(pressure_readings)
+                max_pressure = max(pressure_readings)
+
+                if avg_pressure < self.engagement_pressure_threshold:
+                    self.logger.info(f"Filament engagement verified for {lane_name} (avg FPS pressure {avg_pressure:.2f} < {self.engagement_pressure_threshold:.2f}, readings: {[f'{p:.2f}' for p in pressure_readings]})")
                     return True
                 else:
-                    self.logger.warning(f"Filament failed to engage extruder for {lane_name} (FPS pressure {current_pressure:.2f} >= {self.engagement_pressure_threshold:.2f})")
-
+                    self.logger.warning(f"Filament failed to engage extruder for {lane_name} (avg FPS pressure {avg_pressure:.2f} >= {self.engagement_pressure_threshold:.2f}, max {max_pressure:.2f}, readings: {[f'{p:.2f}' for p in pressure_readings]})")
                     return False
             except Exception:
                 self.logger.error(f"Failed to read FPS pressure for engagement check on {fps_name}")
