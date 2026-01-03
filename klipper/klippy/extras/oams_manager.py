@@ -623,6 +623,7 @@ class FPSState:
         self.engagement_checked_at: Optional[float] = None
         self.engagement_extruder_pos: Optional[float] = None
         self.load_pressure_dropped: bool = False
+        self.engagement_in_progress: bool = False  # Set during engagement verification to suppress stuck detection
 
     def record_encoder_sample(self, value: int) -> Optional[int]:
         """Record encoder sample and return diff if we have 2 samples."""
@@ -666,6 +667,7 @@ class FPSState:
         self.engagement_checked_at = None
         self.engagement_extruder_pos = None
         self.load_pressure_dropped = False
+        self.engagement_in_progress = False
 
     def prime_clog_tracker(self, extruder_pos: float, encoder_clicks: int, pressure: float, timestamp: float) -> None:
         self.clog.start_extruder = extruder_pos
@@ -2132,6 +2134,10 @@ class OAMSManager:
 
             self.logger.info(f"Verifying filament engagement for {lane_name}: extruding {reload_length:.1f}mm at {reload_speed:.0f}mm/min")
 
+            # Set flag to suppress stuck spool detection during engagement verification
+            # High FPS pressure during engagement extrusion is NORMAL and expected
+            fps_state.engagement_in_progress = True
+
             # CRITICAL: Ensure follower is enabled for the engagement extrusion
             # The follower must track filament movement through buffer during extrusion
             # Note: manual_override is already set by the load operation at line 3129
@@ -2187,6 +2193,7 @@ class OAMSManager:
                 # Record engagement result and timestamp for stuck spool suppression
                 now = self.reactor.monotonic()
                 fps_state.engagement_checked_at = now
+                fps_state.engagement_in_progress = False  # Clear flag now that verification is complete
 
                 if avg_pressure < self.engagement_pressure_threshold:
                     # Engagement successful - record for stuck spool suppression
@@ -2199,10 +2206,12 @@ class OAMSManager:
                     self.logger.warning(f"Filament failed to engage extruder for {lane_name} (avg FPS pressure {avg_pressure:.2f} >= {self.engagement_pressure_threshold:.2f}, max {max_pressure:.2f}, readings: {[f'{p:.2f}' for p in pressure_readings]})")
                     return False
             except Exception:
+                fps_state.engagement_in_progress = False  # Clear flag on error
                 self.logger.error(f"Failed to read FPS pressure for engagement check on {fps_name}")
                 return True  # Assume success to avoid false failures
 
         except Exception:
+            fps_state.engagement_in_progress = False  # Clear flag on error
             self.logger.error(f"Failed to verify engagement for {lane_name}")
             return True  # Assume success to avoid false failures
 
@@ -4190,6 +4199,13 @@ class OAMSManager:
         if pressure < self.load_fps_stuck_threshold and not fps_state.load_pressure_dropped:
             fps_state.load_pressure_dropped = True
             self.logger.debug(f"FPS pressure dropped to {pressure:.2f} during load - filament moving through buffer")
+
+        # Suppress stuck detection DURING engagement verification
+        # High FPS pressure during engagement extrusion is NORMAL and expected
+        if fps_state.engagement_in_progress:
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(f"Suppressing stuck detection during engagement verification (high pressure is normal)")
+            return
 
         # Suppress stuck detection after successful engagement verification
         # Prevents false triggers when filament is actually loaded correctly
