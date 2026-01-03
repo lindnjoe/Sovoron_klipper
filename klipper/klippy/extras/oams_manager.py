@@ -1066,8 +1066,7 @@ class OAMSManager:
         except Exception:
             # Don't crash if this workaround fails - just log it
             self.logger.debug(
-                "Failed to fix min_event_systime for %s (AFC may not have this lane or sensor)",
-                lane_name, exc_info=False
+                f"Failed to fix min_event_systime for {lane_name} (AFC may not have this lane or sensor)"
             )
 
     def _fix_afc_state_restoration(self) -> None:
