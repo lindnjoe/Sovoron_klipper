@@ -246,6 +246,10 @@ class afcAMS(afcUnit):
         super().__init__(config)
         self.type = "OpenAMS"
 
+        # Ensure led_tool_unloaded is set (inherited from AFC_unit but may not be set if AFC base is missing)
+        if not hasattr(self, 'led_tool_unloaded'):
+            self.led_tool_unloaded = config.get('led_tool_unloaded', '1,0,0,0')
+
         self.oams_name = config.get("oams", "oams1")
 
         self.reactor = self.printer.get_reactor()
