@@ -4217,25 +4217,30 @@ class OAMSManager:
                 return
 
         # Check for stuck spool conditions:
-        # 1. Encoder not moving (original check)
-        # 2. FPS pressure staying high (filament not engaging) - only if pressure never dropped
+        # Both conditions require encoder not moving + high pressure
+        # If encoder IS moving, filament is flowing regardless of pressure spikes
         stuck_detected = False
         stuck_reason = ""
 
         if encoder_diff < MIN_ENCODER_DIFF:
-            # Only trigger stuck if encoder stalled AND pressure never dropped during load
-            # If pressure dropped, filament was moving - encoder issue is likely transient
+            # Encoder not moving - check pressure to determine if truly stuck
             if not fps_state.load_pressure_dropped:
+                # Encoder stalled AND pressure never dropped = stuck
                 stuck_detected = True
                 stuck_reason = "encoder not moving and pressure never dropped"
+            elif pressure >= self.load_fps_stuck_threshold:
+                # Encoder stalled AND pressure high now (even though it dropped earlier)
+                # This catches cases where pressure dropped briefly then rose back up
+                stuck_detected = True
+                stuck_reason = f"encoder not moving and FPS pressure {pressure:.2f} >= {self.load_fps_stuck_threshold:.2f}"
             else:
                 if self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug(f"Encoder stalled but pressure dropped during load - likely transient, not stuck")
-        elif pressure >= self.load_fps_stuck_threshold:
-            # FPS pressure is high while loading - filament isn't being pulled in
-            # This catches cases where extruder is turning but filament missed the drive gear
-            stuck_detected = True
-            stuck_reason = f"FPS pressure {pressure:.2f} >= {self.load_fps_stuck_threshold:.2f} (filament not engaging)"
+                    self.logger.debug(f"Encoder stalled but pressure is low ({pressure:.2f}) - likely transient, not stuck")
+        else:
+            # Encoder IS moving - filament is flowing, not stuck
+            # Pressure spikes during engagement extrusion are normal when filament is moving
+            if self.logger.isEnabledFor(logging.DEBUG) and pressure >= self.load_fps_stuck_threshold:
+                self.logger.debug(f"High pressure ({pressure:.2f}) but encoder moving ({encoder_diff}) - filament flowing correctly")
 
         if stuck_detected:
             lane_label = fps_state.current_lane or fps_name
