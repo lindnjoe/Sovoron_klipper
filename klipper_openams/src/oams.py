@@ -73,8 +73,11 @@ class OAMS:
         
         # Hardware configuration - Pressure sensor thresholds
         self.fps_upper_threshold: float = config.getfloat("fps_upper_threshold")
-        self.fps_lower_threshold: float = config.getfloat("fps_lower_threshold") 
+
+        self.fps_lower_threshold: float = config.getfloat("fps_lower_threshold")
+ 
         self.fps_is_reversed: bool = config.getboolean("fps_is_reversed")
+
         
         # Current state variables
         self.current_spool: Optional[int] = None
@@ -86,14 +89,18 @@ class OAMS:
             map(lambda x: float(x.strip()), config.get("f1s_hes_on").split(","))
         )
         self.f1s_hes_is_above: bool = config.getboolean("f1s_hes_is_above")
+
         self.hub_hes_on: List[float] = list(
             map(lambda x: float(x.strip()), config.get("hub_hes_on").split(","))
         )
         self.hub_hes_is_above: bool = config.getboolean("hub_hes_is_above")
+
         
         # Physical configuration
         self.filament_path_length: float = config.getfloat("ptfe_length")
+
         self.oams_idx: int = config.getint("oams_idx")
+
 
         # PID control parameters for pressure
         self.kd: float = config.getfloat("kd", 0.0)
@@ -130,8 +137,11 @@ class OAMS:
         
         # Setup MCU communication
         self.mcu.register_response(self._oams_action_status, "oams_action_status")
+
         self.mcu.register_response(self._oams_cmd_stats, "oams_cmd_stats")
+
         self.mcu.register_response(self._oams_cmd_current_stats, "oams_cmd_current_status")
+
         self.mcu.register_config_callback(self._build_config)
         
         # Register commands and event handlers
@@ -285,22 +295,26 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             
     def set_led_error(self, idx, value):
         if logging.getLogger(__name__).isEnabledFor(logging.DEBUG):
-            logging.debug(f"Setting LED {idx} to {value}")        self.oams_set_led_error_cmd.send([idx, value])
+            logging.debug(f"Setting LED {idx} to {value}")
+        self.oams_set_led_error_cmd.send([idx, value])
         
     def determine_current_spool(self):
         params = self.oams_spool_query_spool_cmd.send()
         if params is None:
-            logging.warning(f"OAMS[{self.oams_idx}]: Failed to query current spool - no response from MCU")            return None
+            logging.warning(f"OAMS[{self.oams_idx}]: Failed to query current spool - no response from MCU")
+            return None
 
         if "spool" not in params:
             logging.warning(f"OAMS[{self.oams_idx}]: Spool query response missing 'spool' field")
+
             return None
 
         spool_val = params["spool"]
         if 0 <= spool_val <= 3:
             return spool_val
 
-        logging.error(f"OAMS[{self.oams_idx}]: Hardware reported invalid spool index {spool_val} (expected 0-3)")        return None
+        logging.error(f"OAMS[{self.oams_idx}]: Hardware reported invalid spool index {spool_val} (expected 0-3)")
+        return None
         
 
     def register_commands(self, name):
@@ -308,6 +322,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         # OPTIMIZATION: Cache gcode object lookup
         if self._cached_gcode is None:
             self._cached_gcode = self.printer.lookup_object("gcode")
+
         gcode = self._cached_gcode
 
         # Register all mux commands
@@ -345,12 +360,14 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
         if self._load_retry_count:
             msg_lines.append("  Load retry counts:")
+
             for spool_idx, count in sorted(self._load_retry_count.items()):
                 msg_lines.append(
                     f"    Spool {spool_idx}: {count}/{self.load_retry_max}"
                 )
         else:
             msg_lines.append("  No active load retries")
+
 
         gcmd.respond_info("\n".join(msg_lines))
 
@@ -419,13 +436,15 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             # Load failed - record attempt in history
             attempt_history.append(f"Attempt {retry_count + 1}: {message}")
 
+
             if retry_count + 1 < self.load_retry_max:
                 logging.warning(
                     f"OAMS[{self.oams_idx}]: Load failed for spool {spool_idx}: {message}. Attempt {retry_count + 1}/{self.load_retry_max}"
                 )
 
                 if self.auto_unload_on_failed_load:
-                    logging.info(f"OAMS[{self.oams_idx}]: Auto-unloading before retry")                    unload_success, unload_msg = self.unload_spool_with_retry()
+                    logging.info(f"OAMS[{self.oams_idx}]: Auto-unloading before retry")
+                    unload_success, unload_msg = self.unload_spool_with_retry()
                     if not unload_success:
                         logging.error(
                             f"OAMS[{self.oams_idx}]: Failed to unload before retry: {unload_msg}"
@@ -506,6 +525,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             # Unload failed - record attempt in history
             attempt_history.append(f"Attempt {self._unload_retry_count}: {message}")
 
+
             if self._unload_retry_count < self.unload_retry_max:
                 logging.warning(
                     f"OAMS[{self.oams_idx}]: Unload failed: {message}. Attempt {self._unload_retry_count}/{self.unload_retry_max}"
@@ -535,10 +555,13 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         t = gcmd.get_float("TARGET", None)
         if p is None:
             raise gcmd.error("P value is required")
+
         if i is None:
             raise gcmd.error("I value is required")
+
         if d is None:
             raise gcmd.error("D value is required")
+
         if t is None:
             t = self.current_target
         kp = self.float_to_u32(p)
@@ -562,10 +585,13 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         t = gcmd.get_float("TARGET", None)
         if p is None:
             raise gcmd.error("P value is required")
+
         if i is None:
             raise gcmd.error("I value is required")
+
         if d is None:
             raise gcmd.error("D value is required")
+
         if t is None:
             t = self.fps_target
         kp = self.float_to_u32(p)
@@ -586,13 +612,16 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
         if target_flow is None:
             raise gcmd.error("TARGET flowrate in mm^3/s is required")
+
         if target_temp is None:
             raise gcmd.error("TARGET temperature in degrees C is required")
+
 
         extrusion_speed_per_min = (60 * target_flow / (pi * (1.75 / 2) ** 2))
         extrusion_length = (extrusion_speed_per_min / 60 * 30)
 
         gcode = self.printer.lookup_object("gcode")
+
         gcode.send("M104 S%f" % target_temp)
         gcode.send("G1 E%f F%f" % (extrusion_length, extrusion_speed_per_min))
 
@@ -602,8 +631,10 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         spool_idx = gcmd.get_int("SPOOL", None)
         if spool_idx is None:
             raise gcmd.error("SPOOL index is required")
+
         if spool_idx < 0 or spool_idx > 3:
             raise gcmd.error("Invalid SPOOL index")
+
         self.oams_calibrate_hub_hes_cmd.send([spool_idx])
         while self.action_status is not None:
             self.reactor.pause(self.reactor.monotonic() + 0.1)
@@ -611,6 +642,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             value = self.u32_to_float(self.action_status_value)
             gcmd.respond_info("Calibrated HES %d to %f threshold" % (spool_idx, value))
             configfile = self.printer.lookup_object("configfile")
+
             self.hub_hes_on[spool_idx] = value
             values = ",".join(map(str, self.hub_hes_on))
             configfile.set(self.name, "hub_hes_on", "%s" % (values,))
@@ -624,14 +656,17 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         spool = gcmd.get_int("SPOOL", None)
         if spool is None:
             raise gcmd.error("SPOOL index is required")
+
         self.oams_calibrate_ptfe_length_cmd.send([spool])
         while self.action_status is not None:
             self.reactor.pause(self.reactor.monotonic() + 0.1)
         if self.action_status_code == OAMSOpCode.SUCCESS:
             gcmd.respond_info("Calibrated PTFE length to %d" % self.action_status_value)
             configfile = self.printer.lookup_object("configfile")
+
             configfile.set(self.name, "ptfe_length", "%d" % (self.action_status_value,))
             gcmd.respond_info("Done calibrating clicks, please note this value and update parameter ptfe_length in the configuration")
+
         else:
             gcmd.error("Calibration of PTFE length failed")
 
@@ -645,7 +680,8 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         # reactor.pause() waits without affecting toolhead command stream
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
-                logging.error(f"OAMS[{self.oams_idx}]: Load operation timed out after 30 seconds")                self.action_status = None
+                logging.error(f"OAMS[{self.oams_idx}]: Load operation timed out after 30 seconds")
+                self.action_status = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS load operation timed out (MCU unresponsive)"
             # Use reactor.pause to wait without queueing into toolhead
@@ -668,8 +704,10 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         spool_idx = gcmd.get_int("SPOOL", None)
         if spool_idx is None:
             raise gcmd.error("SPOOL index is required")
+
         if spool_idx < 0 or spool_idx > 3:
             raise gcmd.error("Invalid SPOOL index")
+
         
         success, message = self.load_spool_with_retry(spool_idx)
         
@@ -688,7 +726,8 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         # reactor.pause() waits without affecting toolhead command stream
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
-                logging.error(f"OAMS[{self.oams_idx}]: Unload operation timed out after 60 seconds")                self.action_status = None
+                logging.error(f"OAMS[{self.oams_idx}]: Unload operation timed out after 60 seconds")
+                self.action_status = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS unload operation timed out (MCU unresponsive)"
             # Use reactor.pause to wait without queueing into toolhead
@@ -735,7 +774,8 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         timeout = self.reactor.monotonic() + 5.0
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
-                logging.error(f"OAMS[{self.oams_idx}]: Abort timeout - MCU did not respond, forcing clear")                break
+                logging.error(f"OAMS[{self.oams_idx}]: Abort timeout - MCU did not respond, forcing clear")
+                break
             # Use reactor.pause to wait without queueing into toolhead
             self.reactor.pause(self.reactor.monotonic() + 0.05)
 
@@ -750,14 +790,18 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         enable = gcmd.get_int("ENABLE", None)
         if enable is None:
             raise gcmd.error("ENABLE is required")
+
         direction = gcmd.get_int("DIRECTION", None)
         if direction is None:
             raise gcmd.error("DIRECTION is required")
+
         self.oams_follower_cmd.send([enable, direction])
         if enable == 1 and direction == 0:
             gcmd.respond_info("Follower enable in reverse direction")
+
         elif enable == 1 and direction == 1:
             gcmd.respond_info("Follower enable in forward direction")
+
         elif enable == 0:
             gcmd.respond_info("Follower disabled")
 
@@ -782,6 +826,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
     def _oams_action_status(self, params):
         if logging.getLogger(__name__).isEnabledFor(logging.DEBUG):
             logging.debug("OAMS status received")
+
         
         action = params["action"]
         code = params["code"]
