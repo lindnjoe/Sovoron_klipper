@@ -2126,6 +2126,12 @@ class OAMSManager:
                 if oams_obj is not None:
                     self._enable_follower(fps_name, fps_state, oams_obj, 1, "engagement verification extrusion")
 
+                    # Set manual override to prevent automatic follower control from interfering
+                    # during the engagement extrusion (will be cleared after verification completes)
+                    follower_state = self._get_follower_state(fps_state.current_oams)
+                    follower_state.manual_override = True
+                    self.logger.debug(f"Enabled follower with manual override for {lane_name} engagement verification")
+
             # Get extruder object
             extruder = getattr(fps, 'extruder', None)
             if extruder is None:
@@ -2160,6 +2166,11 @@ class OAMSManager:
                 avg_pressure = sum(pressure_readings) / len(pressure_readings)
                 max_pressure = max(pressure_readings)
 
+                # Clear manual override before returning
+                if fps_state.current_oams:
+                    follower_state = self._get_follower_state(fps_state.current_oams)
+                    follower_state.manual_override = False
+
                 if avg_pressure < self.engagement_pressure_threshold:
                     self.logger.info(f"Filament engagement verified for {lane_name} (avg FPS pressure {avg_pressure:.2f} < {self.engagement_pressure_threshold:.2f}, readings: {[f'{p:.2f}' for p in pressure_readings]})")
                     return True
@@ -2168,10 +2179,18 @@ class OAMSManager:
                     return False
             except Exception:
                 self.logger.error(f"Failed to read FPS pressure for engagement check on {fps_name}")
+                # Clear manual override before returning
+                if fps_state.current_oams:
+                    follower_state = self._get_follower_state(fps_state.current_oams)
+                    follower_state.manual_override = False
                 return True  # Assume success to avoid false failures
 
         except Exception:
             self.logger.error(f"Failed to verify engagement for {lane_name}")
+            # Clear manual override before returning
+            if fps_state.current_oams:
+                follower_state = self._get_follower_state(fps_state.current_oams)
+                follower_state.manual_override = False
             return True  # Assume success to avoid false failures
 
     def _handle_successful_reload(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
