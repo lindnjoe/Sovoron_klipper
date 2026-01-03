@@ -3036,6 +3036,15 @@ class OAMSManager:
             unload_success, unload_message = self._unload_filament_for_fps(fps_name)
             if not unload_success:
                 return False, f"Failed to unload existing lane {detected_lane} from {fps_name}: {unload_message}"
+        else:
+            # No lane detected as loaded - clear fps_state if it thinks it's loaded
+            # This handles cases where fps_state is stale (e.g., load failed with clog)
+            if fps_state.state == FPSLoadState.LOADED:
+                self.logger.info(f"Clearing stale LOADED state for {fps_name} - no lane detected by AFC")
+                fps_state.state = FPSLoadState.UNLOADED
+                fps_state.current_lane = None
+                fps_state.current_oams = None
+                fps_state.current_spool_idx = None
 
         if fps_state.state == FPSLoadState.LOADED:
             return False, f"FPS {fps_name} is already loaded"
