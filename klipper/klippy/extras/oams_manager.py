@@ -3123,6 +3123,11 @@ class OAMSManager:
         # Without this, filament gets stuck in the buffer during the load
         self._enable_follower(fps_name, fps_state, oam, 1, "before load - enable follower for buffer tracking")
 
+        # Set manual override to prevent automatic follower control from disabling it
+        # during the OAMS load operation (background monitor could interfere)
+        follower_state = self._get_follower_state(oam_name)
+        follower_state.manual_override = True
+        self.logger.debug(f"Enabled follower with manual override for {lane_name} load operation")
 
         try:
             success, message = oam.load_spool_with_retry(bay_index)
@@ -3130,6 +3135,10 @@ class OAMSManager:
             self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
             fps_state.state = FPSLoadState.UNLOADED
             error_msg = f"Failed to load bay {bay_index} on {oams_name}"
+
+            # Clear manual override on load failure
+            follower_state = self._get_follower_state(oam_name)
+            follower_state.manual_override = False
 
             # CRITICAL: Pause printer if load fails during printing
             # This prevents printing without filament loaded
@@ -3244,6 +3253,10 @@ class OAMSManager:
         else:
             fps_state.state = FPSLoadState.UNLOADED
             error_msg = message if message else f"Failed to load lane {lane_name}"
+
+            # Clear manual override on load failure
+            follower_state = self._get_follower_state(oam_name)
+            follower_state.manual_override = False
 
             # CRITICAL: Pause printer if load fails during printing
             # This prevents printing without filament loaded, which would cause:
