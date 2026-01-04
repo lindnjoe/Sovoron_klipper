@@ -2423,6 +2423,22 @@ class afcAMS(afcUnit):
                 self.afc.save_vars()
             except Exception:
                 self.logger.error(f"Failed to persist AFC state after unloading lane {lane.name}")
+
+        # Ensure extruder tracking is cleared even if lane.tool_loaded was already false
+        extruder_obj = getattr(lane, "extruder_obj", None)
+        try:
+            extruder_lane = getattr(extruder_obj, "lane_loaded", None)
+        except Exception:
+            extruder_lane = None
+        if extruder_obj is not None and extruder_lane == getattr(lane, "name", None):
+            try:
+                extruder_obj.lane_loaded = None
+                extruder_name = getattr(extruder_obj, "name", None)
+                if extruder_name:
+                    self._last_loaded_lane_by_extruder[extruder_name] = None
+                self.logger.debug(f"Cleared extruder.lane_loaded for {getattr(lane, 'name', None)} during unload cleanup")
+            except Exception:
+                self.logger.debug(f"Failed to clear extruder tracking for {getattr(lane, 'name', None)} during unload cleanup")
         if self._lane_matches_extruder(lane):
             try:
                 self._set_virtual_tool_sensor_state(False, eventtime, lane.name, lane_obj=lane)
