@@ -564,9 +564,8 @@ class afcAMS(afcUnit):
         # Sync virtual tool sensor after state detection
         try:
             sync_time = self.reactor.monotonic()
-            # Run without forcing so we respect actual lane/hub state when PREP hasn't restored lane_loaded yet
-            self._sync_virtual_tool_sensor(sync_time, force=False)
-            self.logger.info(f"Virtual tool sensor sync completed for {self.name} during delayed startup sync (non-forced)")
+            self._sync_virtual_tool_sensor(sync_time, force=True)
+            self.logger.info(f"Virtual tool sensor sync completed for {self.name} during delayed startup sync")
         except Exception as e:
             self.logger.error(f"Failed to sync virtual tool sensor during delayed startup sync for {self.name}: {e}")
 
