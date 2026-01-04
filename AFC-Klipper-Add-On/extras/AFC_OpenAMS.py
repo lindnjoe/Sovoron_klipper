@@ -550,25 +550,9 @@ class afcAMS(afcUnit):
         """Perform startup sync steps once PREP has restored lane state."""
         # Hydrate extruder.lane_loaded from persisted state only when sensors agree
         self._hydrate_from_saved_state()
-        try:
-            oams_manager = self.printer.lookup_object("oams_manager", None)
-            if oams_manager is not None:
-                # Run state detection to sync FPS state with sensor readings
-                oams_manager.determine_state()
-                self.logger.info(f"OAMS state detection completed for {self.name} during delayed startup sync")
-            else:
-                self.logger.warning(f"OAMS manager not found for delayed startup sync of {self.name}")
-        except Exception as e:
-            self.logger.error(f"Failed to run OAMS state detection during delayed startup sync for {self.name}: {e}")
-
-        # Sync virtual tool sensor after state detection
-        try:
-            sync_time = self.reactor.monotonic()
-            # Run a non-forced sync so we only mirror current sensor state without toggling toolhead LEDs
-            self._sync_virtual_tool_sensor(sync_time, force=False)
-            self.logger.info(f"Virtual tool sensor sync completed for {self.name} during delayed startup sync (non-forced)")
-        except Exception as e:
-            self.logger.error(f"Failed to sync virtual tool sensor during delayed startup sync for {self.name}: {e}")
+        # Disable delayed state detection and virtual sensor sync during startup to
+        # test whether they are contributing to incorrect toolhead state.
+        self.logger.info(f"Skipping delayed state detection and virtual sensor sync for {self.name} during startup")
 
         self._startup_sync_complete = True
         return self.reactor.NEVER
