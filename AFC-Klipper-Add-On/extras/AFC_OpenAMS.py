@@ -547,6 +547,8 @@ class afcAMS(afcUnit):
 
     def _run_startup_sync(self):
         """Perform startup sync steps once PREP has restored lane state."""
+        # Hydrate extruder.lane_loaded from persisted state only when sensors agree
+        self._hydrate_from_saved_state()
         try:
             oams_manager = self.printer.lookup_object("oams_manager", None)
             if oams_manager is not None:
@@ -764,7 +766,7 @@ class afcAMS(afcUnit):
                 return False
             elif lane_loaded is None:
                 # Extruder lost track (e.g., during BT_PREP system test). Rehydrate from saved state, then lane state
-                lane_has_filament = bool(getattr(lane, "tool_loaded", False))
+                lane_has_filament = bool(getattr(lane, "tool_loaded", False) and getattr(lane, "load_state", False))
 
                 saved_lane_loaded = self._get_saved_extruder_lane_loaded(getattr(extruder, "name", None))
                 canonical_saved = self._canonical_lane_name(saved_lane_loaded)
@@ -1225,6 +1227,40 @@ class afcAMS(afcUnit):
 
         return data.get("lane_loaded")
 
+    def _hydrate_from_saved_state(self) -> None:
+        """Restore extruder.lane_loaded from saved state when sensors confirm filament at toolhead."""
+        if getattr(self, "_hydrated_from_saved", False):
+            return
+
+        afc = getattr(self, "afc", None)
+        if afc is None or not getattr(afc, "prep_done", False):
+            return
+
+        lanes = getattr(afc, "lanes", {})
+        tools = getattr(afc, "tools", {})
+
+        for extruder_name, extruder_obj in tools.items():
+            saved_lane = self._get_saved_extruder_lane_loaded(extruder_name)
+            canonical_saved = self._canonical_lane_name(saved_lane)
+            if not canonical_saved:
+                continue
+
+            lane_obj = lanes.get(saved_lane) or lanes.get(canonical_saved)
+            if lane_obj is None:
+                continue
+
+            # Only hydrate when both tool_loaded and load_state indicate filament at toolhead
+            if not (getattr(lane_obj, "tool_loaded", False) and getattr(lane_obj, "load_state", False)):
+                continue
+
+            try:
+                extruder_obj.lane_loaded = getattr(lane_obj, "name", None) or canonical_saved
+                self._last_loaded_lane_by_extruder[extruder_name] = canonical_saved
+                self.logger.debug(f"Hydrated {extruder_name}.lane_loaded from saved state: {canonical_saved}")
+            except Exception:
+                self.logger.debug(f"Failed to hydrate {extruder_name} lane from saved state")
+
+        self._hydrated_from_saved = True
     def _get_saved_lane_runout_target(self, lane_name: Optional[str]) -> Optional[str]:
         """Return the saved runout target for a lane from AFC.var.unit, if available."""
 
