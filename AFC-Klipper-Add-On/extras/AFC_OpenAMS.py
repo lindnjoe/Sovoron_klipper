@@ -765,10 +765,6 @@ class afcAMS(afcUnit):
             elif lane_loaded is None:
                 # Extruder lost track (e.g., during BT_PREP system test). Rehydrate from saved state, then lane state
                 lane_has_filament = bool(getattr(lane, "tool_loaded", False))
-                if not lane_has_filament:
-                    hub_obj = getattr(lane, "hub_obj", None)
-                    hub_state = getattr(hub_obj, "state", False) if hub_obj is not None else False
-                    lane_has_filament = hub_state and bool(getattr(lane, "load_state", False))
 
                 saved_lane_loaded = self._get_saved_extruder_lane_loaded(getattr(extruder, "name", None))
                 canonical_saved = self._canonical_lane_name(saved_lane_loaded)

@@ -4421,6 +4421,24 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
             return
 
+        # Skip stuck spool detection if the mapped extruder is not active/on the shuttle
+        try:
+            afc = self._get_afc()
+            active_extruder = None
+            lane_extruder = None
+            if afc is not None and hasattr(afc, "function"):
+                active_extruder = afc.function.get_current_extruder()
+            if fps_state.current_lane and afc is not None:
+                lane_obj = afc.lanes.get(fps_state.current_lane)
+                lane_extruder = getattr(lane_obj, "extruder_name", None)
+            if active_extruder is None or (lane_extruder and lane_extruder != active_extruder):
+                if fps_state.stuck_spool.active and oams is not None and fps_state.current_spool_idx is not None:
+                    self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "extruder inactive")
+                fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
+                return
+        except Exception:
+            pass
+
         # Skip stuck spool detection if AFC bypass is enabled
         # User is manually controlling filament, FPS pressure will be abnormal
         try:
