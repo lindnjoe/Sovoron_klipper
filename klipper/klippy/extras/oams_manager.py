@@ -4245,19 +4245,18 @@ class OAMSManager:
         stuck_reason = ""
 
         if encoder_diff < MIN_ENCODER_DIFF:
-            # Encoder not moving - check pressure to determine if truly stuck
+            # Encoder not moving during load = stuck spool (follower not tracking)
+            # Pressure level tells us WHY it's stuck, but it's stuck regardless
+            stuck_detected = True
             if not fps_state.load_pressure_dropped:
-                # Encoder stalled AND pressure never dropped = stuck
-                stuck_detected = True
+                # Pressure never dropped - spool never engaged buffer
                 stuck_reason = "encoder not moving and pressure never dropped"
             elif pressure >= self.load_fps_stuck_threshold:
-                # Encoder stalled AND pressure high now (even though it dropped earlier)
-                # This catches cases where pressure dropped briefly then rose back up
-                stuck_detected = True
+                # Pressure high - filament not flowing through buffer
                 stuck_reason = f"encoder not moving and FPS pressure {pressure:.2f} >= {self.load_fps_stuck_threshold:.2f}"
             else:
-                if self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug(f"Encoder stalled but pressure is low ({pressure:.2f}) - likely transient, not stuck")
+                # Pressure low but encoder still not moving - spool not feeding filament
+                stuck_reason = f"encoder not moving (only {encoder_diff} clicks) and FPS pressure low ({pressure:.2f})"
         else:
             # Encoder IS moving - filament is flowing, not stuck
             # Pressure spikes during engagement extrusion are normal when filament is moving
