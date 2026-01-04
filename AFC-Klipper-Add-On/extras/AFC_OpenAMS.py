@@ -771,8 +771,8 @@ class afcAMS(afcUnit):
                 if not lane_has_filament:
                     # Fall back to live OAMS sensors for this lane to avoid toolchanger prep clearing LEDs
                     try:
-                        sensor_snapshot = self._get_oams_sensor_snapshot({lane_name: lane})
-                        lane_has_filament = bool(sensor_snapshot.get(lane_name, False))
+                        sensor_snapshot = self._get_oams_sensor_snapshot({lane_name: lane}, require_hub=True)
+                        lane_has_filament = bool(sensor_snapshot.get(lane_name, False) and getattr(lane, "tool_loaded", False))
                     except Exception:
                         lane_has_filament = False
 
@@ -1371,9 +1371,14 @@ class afcAMS(afcUnit):
             if unit_obj is not None and not isinstance(unit_obj, afcAMS):
                 continue
 
-            lane_filament_present = bool(sensor_snapshot.get(canonical_lane, False))
-            if lane_filament_present and lane_obj is not None:
-                lane_filament_present = bool(getattr(lane_obj, "tool_loaded", False) and getattr(lane_obj, "load_state", False)) or lane_filament_present
+            hub_reports_filament = bool(sensor_snapshot.get(canonical_lane, False))
+            lane_filament_present = False
+            if lane_obj is not None:
+                lane_filament_present = bool(getattr(lane_obj, "tool_loaded", False) and getattr(lane_obj, "load_state", False) and hub_reports_filament)
+            else:
+                saved_tool_loaded = bool(self._get_saved_lane_field(canonical_lane, "tool_loaded"))
+                saved_load_state = bool(self._get_saved_lane_field(canonical_lane, "load_state"))
+                lane_filament_present = bool(hub_reports_filament and saved_tool_loaded and saved_load_state)
 
             # Only hydrate when sensors (virtual or hardware) indicate filament at toolhead
             if not lane_filament_present:
