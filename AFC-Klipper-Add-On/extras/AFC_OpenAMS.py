@@ -2140,14 +2140,21 @@ class afcAMS(afcUnit):
                     else:
                         self.logger.error(f"Failed to activate extruder after loading lane {lane.name}: {e}")
 
-            # Activate the lane's extruder if not already active (for toolchangers)
-            # This ensures the correct extruder is active when a lane is detected on shuttle
-            # Matches the PREP logic pattern (AFC_prep.py:122-126)
+            # Initialize toolchanger to sync with detected tool on shuttle
+            # This uses klipper-toolchanger's INITIALIZE_TOOLCHANGER to properly
+            # activate the extruder and set up toolchanger state
+            # Matches pattern from tool_detection.cfg:18 and homing.cfg:108
             try:
-                lane.activate_toolhead_extruder()
-                self.logger.info(f"Activated extruder {lane.extruder_obj.name} for loaded lane {lane.name}")
+                # Determine tool number from extruder name (e.g., "extruder5" -> 5)
+                extruder_name = lane.extruder_obj.name
+                tool_number = 0 if extruder_name == "extruder" else int(extruder_name.replace("extruder", ""))
+
+                # Call INITIALIZE_TOOLCHANGER to sync toolchanger with detected tool
+                gcode = self.printer.lookup_object('gcode')
+                gcode.run_script_from_command(f"INITIALIZE_TOOLCHANGER T={tool_number}")
+                self.logger.info(f"Initialized toolchanger for T{tool_number} ({extruder_name}) with loaded lane {lane.name}")
             except Exception as e:
-                self.logger.error(f"Failed to activate extruder for lane {lane.name}: {e}")
+                self.logger.error(f"Failed to initialize toolchanger for lane {lane.name}: {e}")
 
             # Set lane LEDs even if activate_extruder failed (e.g., during startup with non-T0 lanes)
             # This ensures proper LED state regardless of Spoolman availability or extruder mismatch
