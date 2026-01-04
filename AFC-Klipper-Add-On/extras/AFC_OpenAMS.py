@@ -2131,8 +2131,36 @@ class afcAMS(afcUnit):
             if afc_function is not None:
                 try:
                     afc_function.handle_activate_extruder()
-                except Exception:
-                    self.logger.error(f"Failed to activate extruder after loading lane {lane.name}")
+                except Exception as e:
+                    # During startup, Spoolman might not be initialized yet or lane might not match active extruder
+                    # Log at debug level if it's just a Spoolman registration issue during early startup
+                    error_msg = str(e)
+                    if "not registered" in error_msg or "spoolman" in error_msg.lower():
+                        self.logger.debug(f"Spoolman not ready during lane {lane.name} activation (normal during startup): {e}")
+                    else:
+                        self.logger.error(f"Failed to activate extruder after loading lane {lane.name}: {e}")
+
+            # Activate the lane's extruder if not already active (for toolchangers)
+            # This ensures the correct extruder is active when a lane is detected on shuttle
+            # Matches the PREP logic pattern (AFC_prep.py:122-126)
+            try:
+                lane.activate_toolhead_extruder()
+                self.logger.info(f"Activated extruder {lane.extruder_obj.name} for loaded lane {lane.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to activate extruder for lane {lane.name}: {e}")
+
+            # Set lane LEDs even if activate_extruder failed (e.g., during startup with non-T0 lanes)
+            # This ensures proper LED state regardless of Spoolman availability or extruder mismatch
+            try:
+                if self._lane_matches_extruder(lane):
+                    # Lane matches active extruder - set as active tool loaded
+                    lane.unit_obj.lane_tool_loaded(lane)
+                else:
+                    # Lane doesn't match active extruder - set as idle/loaded
+                    lane.unit_obj.lane_tool_loaded_idle(lane)
+            except Exception as e:
+                self.logger.error(f"Failed to set LED for loaded lane {lane.name}: {e}")
+
             try:
                 self.afc.save_vars()
             except Exception:
