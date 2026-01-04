@@ -4094,8 +4094,10 @@ class OAMSManager:
                             state_changed = True
                 elif state == FPSLoadState.LOADED:
                     if is_printing:
-                        # Always call stuck spool check (it has its own clearing logic for runout states)
-                        self._check_stuck_spool(fps_name, fps_state, fps, oams, pressure, hes_values, now)
+                        # DISABLED: Stuck spool detection during active printing causes false positives
+                        # During print stalls (print_stall>0), pressure fluctuates naturally which triggers
+                        # false stuck detection. Stuck detection should only run during load/unload operations.
+                        # self._check_stuck_spool(fps_name, fps_state, fps, oams, pressure, hes_values, now)
 
                         # Skip clog detection during AMS runout DETECTED/COASTING states
                         # DETECTED: Old spool empty, no encoder movement expected
