@@ -473,7 +473,6 @@ class afcAMS(afcUnit):
     def handle_connect(self):
         """Initialise the AMS unit and configure custom logos."""
         super().handle_connect()
-        self._startup_sync_complete = False
 
         # OPTIMIZATION: Pre-warm object caches for faster runtime access
         if self._cached_gcode is None:
@@ -545,8 +544,12 @@ class afcAMS(afcUnit):
         waketime = self.reactor.monotonic() + 3.0
         self.reactor.register_timer(self._delayed_startup_sync, waketime)
 
-    def _run_startup_sync(self):
-        """Perform startup sync steps once PREP has restored lane state."""
+    def _delayed_startup_sync(self, eventtime):
+        """Run OAMSM_STATUS logic after a delay to ensure all systems are ready.
+
+        This is called via one-shot timer after handle_connect() completes,
+        giving time for all sensors and virtual objects to be fully initialized.
+        """
         try:
             oams_manager = self.printer.lookup_object("oams_manager", None)
             if oams_manager is not None:
@@ -567,30 +570,8 @@ class afcAMS(afcUnit):
         except Exception as e:
             self.logger.error(f"Failed to sync virtual tool sensor during delayed startup sync for {self.name}: {e}")
 
-        self._startup_sync_complete = True
+        # Return NEVER to make this a one-shot timer (never reschedule)
         return self.reactor.NEVER
-
-    def run_post_prep_sync(self):
-        """Public hook to run the startup sync after PREP completes."""
-        if self._startup_sync_complete:
-            return
-        self._run_startup_sync()
-
-    def _delayed_startup_sync(self, eventtime):
-        """Run OAMSM_STATUS logic after a delay to ensure all systems are ready.
-
-        This is called via one-shot timer after handle_connect() completes,
-        giving time for all sensors and virtual objects to be fully initialized.
-        """
-        if self._startup_sync_complete:
-            return self.reactor.NEVER
-
-        # Wait for PREP to complete so lane_loaded is restored before syncing
-        if not getattr(self.afc, "prep_done", False):
-            return eventtime + 1.0
-
-        # Run sync now that PREP has finished
-        return self._run_startup_sync()
 
     def _ensure_virtual_tool_sensor(self) -> bool:
         """Resolve or create the virtual tool-start sensor for AMS extruders."""
