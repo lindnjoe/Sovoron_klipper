@@ -22,7 +22,7 @@ import re
 import traceback
 from textwrap import dedent
 from types import MethodType
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from configparser import Error as ConfigError
 try: from extras.AFC_utils import ERROR_STR
@@ -241,6 +241,7 @@ class afcAMS(afcUnit):
 
     _sync_command_registered = False
     _sync_instances: Dict[str, "afcAMS"] = {}
+    _hydrated_extruders: Set[str] = set()
 
     def __init__(self, config):
         super().__init__(config)
@@ -473,6 +474,7 @@ class afcAMS(afcUnit):
     def handle_connect(self):
         """Initialise the AMS unit and configure custom logos."""
         super().handle_connect()
+        self._startup_sync_complete = False
 
         # OPTIMIZATION: Pre-warm object caches for faster runtime access
         if self._cached_gcode is None:
@@ -544,12 +546,10 @@ class afcAMS(afcUnit):
         waketime = self.reactor.monotonic() + 3.0
         self.reactor.register_timer(self._delayed_startup_sync, waketime)
 
-    def _delayed_startup_sync(self, eventtime):
-        """Run OAMSM_STATUS logic after a delay to ensure all systems are ready.
-
-        This is called via one-shot timer after handle_connect() completes,
-        giving time for all sensors and virtual objects to be fully initialized.
-        """
+    def _run_startup_sync(self):
+        """Perform startup sync steps once PREP has restored lane state."""
+        # Hydrate extruder.lane_loaded from persisted state only when sensors agree
+        self._hydrate_from_saved_state()
         try:
             oams_manager = self.printer.lookup_object("oams_manager", None)
             if oams_manager is not None:
@@ -564,13 +564,36 @@ class afcAMS(afcUnit):
         # Sync virtual tool sensor after state detection
         try:
             sync_time = self.reactor.monotonic()
+            # Force once after hydration so virtual sensors align immediately with detected state
             self._sync_virtual_tool_sensor(sync_time, force=True)
-            self.logger.info(f"Virtual tool sensor sync completed for {self.name} during delayed startup sync")
+            self.logger.info(f"Virtual tool sensor sync completed for {self.name} during delayed startup sync (forced)")
         except Exception as e:
             self.logger.error(f"Failed to sync virtual tool sensor during delayed startup sync for {self.name}: {e}")
 
-        # Return NEVER to make this a one-shot timer (never reschedule)
+        self._startup_sync_complete = True
         return self.reactor.NEVER
+
+    def run_post_prep_sync(self):
+        """Public hook to run the startup sync after PREP completes."""
+        if self._startup_sync_complete:
+            return
+        self._run_startup_sync()
+
+    def _delayed_startup_sync(self, eventtime):
+        """Run OAMSM_STATUS logic after a delay to ensure all systems are ready.
+
+        This is called via one-shot timer after handle_connect() completes,
+        giving time for all sensors and virtual objects to be fully initialized.
+        """
+        if self._startup_sync_complete:
+            return self.reactor.NEVER
+
+        # Wait for PREP to complete so lane_loaded is restored before syncing
+        if not getattr(self.afc, "prep_done", False):
+            return eventtime + 1.0
+
+        # Run sync now that PREP has finished
+        return self._run_startup_sync()
 
     def _ensure_virtual_tool_sensor(self) -> bool:
         """Resolve or create the virtual tool-start sensor for AMS extruders."""
@@ -722,6 +745,15 @@ class afcAMS(afcUnit):
             return None
 
         lane_name = getattr(lane, "name", None)
+        lane_unit = getattr(lane, "unit", None)
+
+        # Only apply AMS virtual sensor logic to lanes that belong to any OpenAMS unit
+        if lane_unit:
+            sync_units = self.__class__._sync_instances
+            if lane_unit not in sync_units:
+                return None
+            if lane_unit != getattr(self, "name", None):
+                return None
 
         # Check if the extruder thinks THIS lane is loaded (authoritative)
         extruder = getattr(lane, "extruder_obj", None)
@@ -733,9 +765,41 @@ class afcAMS(afcUnit):
             elif lane_loaded is not None and lane_loaded != lane_name:
                 # Extruder has a different lane loaded
                 return False
-            elif lane_loaded is None and sync_only:
-                # Post-reboot sync: extruder says nothing loaded, trust it over stale lane state
-                return False
+            elif lane_loaded is None:
+                # Extruder lost track (e.g., during BT_PREP system test). Rehydrate from saved state, then lane state
+                lane_has_filament = bool(getattr(lane, "tool_loaded", False) and getattr(lane, "load_state", False))
+
+                saved_lane_loaded = self._get_saved_extruder_lane_loaded(getattr(extruder, "name", None))
+                canonical_saved = self._canonical_lane_name(saved_lane_loaded)
+                canonical_lane = self._canonical_lane_name(lane_name)
+
+                if lane_has_filament and canonical_saved is not None:
+                    if canonical_saved == canonical_lane:
+                        try:
+                            extruder.lane_loaded = lane_name
+                            if canonical_lane:
+                                self._last_loaded_lane_by_extruder[getattr(extruder, "name", "")] = canonical_lane
+                            self.logger.debug(f"Restored extruder.lane_loaded to {lane_name} from AFC.var.unit during sync")
+                            return True
+                        except Exception:
+                            self.logger.debug("Failed to restore extruder.lane_loaded from AFC.var.unit during sync")
+                    else:
+                        return False
+
+                if lane_has_filament:
+                    try:
+                        extruder.lane_loaded = lane_name
+                        canonical = self._canonical_lane_name(lane_name)
+                        extruder_name = getattr(extruder, "name", None) or getattr(extruder, "extruder_name", None)
+                        if extruder_name and canonical:
+                            self._last_loaded_lane_by_extruder[extruder_name] = canonical
+                        self.logger.debug(f"Restored extruder.lane_loaded to {lane_name} based on lane state during sync")
+                        return True
+                    except Exception:
+                        self.logger.debug("Failed to restore extruder.lane_loaded during sync")
+                if sync_only:
+                    # Post-reboot sync: extruder says nothing loaded, trust it over stale lane state
+                    return False
             # else: lane_loaded is None but sync_only=False, fall through to check lane state
             # This allows in-progress loads to work (lane.load_state changes before lane_loaded)
 
@@ -1143,6 +1207,105 @@ class afcAMS(afcUnit):
             return None
 
         return lane_data.get(field)
+
+    def _get_saved_extruder_lane_loaded(self, extruder_name: Optional[str]) -> Optional[str]:
+        """Return the persisted lane_loaded value for an extruder from AFC.var.unit."""
+        if not extruder_name:
+            return None
+
+        snapshot = self._load_saved_unit_snapshot()
+        system = snapshot.get("system") if isinstance(snapshot, dict) else None
+        if not isinstance(system, dict):
+            return None
+
+        extruders = system.get("extruders")
+        if not isinstance(extruders, dict):
+            return None
+
+        data = extruders.get(extruder_name)
+        if not isinstance(data, dict):
+            return None
+
+        return data.get("lane_loaded")
+
+    def _get_openams_unit_names(self) -> Set[str]:
+        """Return the set of unit names that correspond to OpenAMS units."""
+        units: Set[str] = set(self.__class__._sync_instances.keys())
+
+        afc = getattr(self, "afc", None)
+        afc_units = getattr(afc, "units", {}) if afc else {}
+        for unit_name, unit_obj in afc_units.items():
+            if isinstance(unit_obj, afcAMS) or getattr(unit_obj, "type", "") == "OpenAMS":
+                units.add(getattr(unit_obj, "name", unit_name))
+
+        return {unit for unit in units if unit}
+
+    def _hydrate_from_saved_state(self) -> None:
+        """Restore extruder.lane_loaded from saved state when sensors confirm filament at toolhead."""
+        if getattr(self, "_hydrated_from_saved", False):
+            return
+
+        afc = getattr(self, "afc", None)
+        if afc is None or not getattr(afc, "prep_done", False):
+            return
+
+        lanes = getattr(afc, "lanes", {})
+        tools = getattr(afc, "tools", {})
+
+        openams_units = self._get_openams_unit_names()
+        if not openams_units:
+            return
+
+        for extruder_name, extruder_obj in tools.items():
+            if extruder_name in self.__class__._hydrated_extruders:
+                continue
+
+            saved_lane = self._get_saved_extruder_lane_loaded(extruder_name)
+            current_lane = getattr(extruder_obj, "lane_loaded", None)
+
+            lane_obj = None
+            canonical_lane = None
+            lane_unit = None
+
+            for candidate in (current_lane, saved_lane):
+                canonical = self._canonical_lane_name(candidate)
+                if not canonical:
+                    continue
+
+                lane_obj = lanes.get(candidate) or lanes.get(canonical)
+                if lane_obj is not None:
+                    lane_unit = getattr(lane_obj, "unit", None) or self._get_saved_lane_field(canonical, "unit")
+                    canonical_lane = getattr(lane_obj, "name", None) or canonical
+                    break
+
+                lane_unit = self._get_saved_lane_field(canonical, "unit")
+                if lane_unit:
+                    canonical_lane = canonical
+                    break
+
+            if not canonical_lane:
+                continue
+
+            if lane_unit and lane_unit not in openams_units:
+                continue
+
+            unit_obj = getattr(lane_obj, "unit_obj", None)
+            if unit_obj is not None and not isinstance(unit_obj, afcAMS):
+                continue
+
+            # Only hydrate when both tool_loaded and load_state indicate filament at toolhead
+            if lane_obj is None or not (getattr(lane_obj, "tool_loaded", False) and getattr(lane_obj, "load_state", False)):
+                continue
+
+            try:
+                extruder_obj.lane_loaded = canonical_lane
+                self._last_loaded_lane_by_extruder[extruder_name] = canonical_lane
+                self.__class__._hydrated_extruders.add(extruder_name)
+                self.logger.debug(f"Hydrated {extruder_name}.lane_loaded from saved state: {canonical_lane}")
+            except Exception:
+                self.logger.debug(f"Failed to hydrate {extruder_name} lane from saved state")
+
+        self._hydrated_from_saved = True
 
     def _get_saved_lane_runout_target(self, lane_name: Optional[str]) -> Optional[str]:
         """Return the saved runout target for a lane from AFC.var.unit, if available."""
