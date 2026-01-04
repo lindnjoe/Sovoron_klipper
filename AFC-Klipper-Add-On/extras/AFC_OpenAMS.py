@@ -1437,14 +1437,14 @@ class afcAMS(afcUnit):
                     tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.tool_start == "buffer" or cur_lane.extruder_obj.tool_end_state)
                     if tool_ready and cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                         cur_lane.sync_to_extruder()
-                        msg += '<span class=primary--text> in ToolHead</span>'
+                        on_shuttle = ""
                         try:
-                            if hasattr(cur_lane.extruder_obj, "on_shuttle") and callable(cur_lane.extruder_obj.on_shuttle):
-                                if bool(cur_lane.extruder_obj.on_shuttle()):
-                                    msg += '<span class=info--text> and toolhead on shuttle</span>'
+                            if cur_lane.extruder_obj.tool_obj and cur_lane.extruder_obj.tc_unit_name:
+                                on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
                         except Exception:
                             pass
 
+                        msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
                         if cur_lane.extruder_obj.tool_start == "buffer":
                             msg += '<span class=warning--text> Ram sensor enabled, confirm tool is loaded</span>'
                         if self.afc.function.get_current_lane() == cur_lane.name:
