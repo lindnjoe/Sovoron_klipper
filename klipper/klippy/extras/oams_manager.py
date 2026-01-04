@@ -4040,17 +4040,26 @@ class OAMSManager:
                         backoff_multiplier = 2 ** fps_state.idle_backoff_level
                         return eventtime + (MONITOR_ENCODER_PERIOD_IDLE * backoff_multiplier)
 
-                # Read sensors
-                try:
-                    if oams:
-                        encoder_value = oams.encoder_clicks
-                        pressure = float(getattr(fps, "fps_value", 0.0))
-                        hes_values = oams.hub_hes_value
-                    else:
+                # OPTIMIZATION: Skip sensor reads in UNLOADED state (only needed every 10 polls for auto-detect)
+                # This reduces MCU communication by 90% when UNLOADED
+                skip_sensor_read = (state == FPSLoadState.UNLOADED and fps_state.consecutive_idle_polls % 10 != 0)
+
+                # Read sensors (skip if UNLOADED and not on 10-poll boundary)
+                encoder_value = None
+                pressure = None
+                hes_values = None
+
+                if not skip_sensor_read:
+                    try:
+                        if oams:
+                            encoder_value = oams.encoder_clicks
+                            pressure = float(getattr(fps, "fps_value", 0.0))
+                            hes_values = oams.hub_hes_value
+                        else:
+                            return eventtime + MONITOR_ENCODER_PERIOD_IDLE
+                    except Exception:
+                        self.logger.error(f"Failed to read sensors for {fps_name}")
                         return eventtime + MONITOR_ENCODER_PERIOD_IDLE
-                except Exception:
-                    self.logger.error(f"Failed to read sensors for {fps_name}")
-                    return eventtime + MONITOR_ENCODER_PERIOD_IDLE
 
                 now = self.reactor.monotonic()
                 state_changed = False
