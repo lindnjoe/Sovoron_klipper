@@ -564,9 +564,9 @@ class afcAMS(afcUnit):
         # Sync virtual tool sensor after state detection
         try:
             sync_time = self.reactor.monotonic()
-            # Force once after hydration so virtual sensors align immediately with detected state
-            self._sync_virtual_tool_sensor(sync_time, force=True)
-            self.logger.info(f"Virtual tool sensor sync completed for {self.name} during delayed startup sync (forced)")
+            # Run a non-forced sync so we only mirror current sensor state without toggling toolhead LEDs
+            self._sync_virtual_tool_sensor(sync_time, force=False)
+            self.logger.info(f"Virtual tool sensor sync completed for {self.name} during delayed startup sync (non-forced)")
         except Exception as e:
             self.logger.error(f"Failed to sync virtual tool sensor during delayed startup sync for {self.name}: {e}")
 
