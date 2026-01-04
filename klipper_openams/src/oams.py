@@ -637,7 +637,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
         self.oams_calibrate_hub_hes_cmd.send([spool_idx])
         while self.action_status is not None:
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
+            # Increased from 0.1s to 0.5s to reduce reactor pressure
+            # Calibration is manual operation, 0.5s interval is perfectly acceptable
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
         if self.action_status_code == OAMSOpCode.SUCCESS:
             value = self.u32_to_float(self.action_status_value)
             gcmd.respond_info("Calibrated HES %d to %f threshold" % (spool_idx, value))
@@ -659,7 +661,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
         self.oams_calibrate_ptfe_length_cmd.send([spool])
         while self.action_status is not None:
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
+            # Increased from 0.1s to 0.5s to reduce reactor pressure
+            # Calibration is manual operation, 0.5s interval is perfectly acceptable
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
         if self.action_status_code == OAMSOpCode.SUCCESS:
             gcmd.respond_info("Calibrated PTFE length to %d" % self.action_status_value)
             configfile = self.printer.lookup_object("configfile")
@@ -685,7 +689,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS load operation timed out (MCU unresponsive)"
             # Use reactor.pause to wait without queueing into toolhead
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
+            # Increased from 0.1s to 1.0s to significantly reduce reactor pressure
+            # 1 second interval is imperceptible for long operations, reduces iterations by 96%
+            self.reactor.pause(self.reactor.monotonic() + 1.0)
 
         if self.action_status_code == OAMSOpCode.SUCCESS:
             self.current_spool = spool_idx
@@ -731,7 +737,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS unload operation timed out (MCU unresponsive)"
             # Use reactor.pause to wait without queueing into toolhead
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
+            # Increased from 0.1s to 1.0s to significantly reduce reactor pressure
+            # 1 second interval is imperceptible for long operations, reduces iterations by 96%
+            self.reactor.pause(self.reactor.monotonic() + 1.0)
 
         if self.action_status_code == OAMSOpCode.SUCCESS:
             self.current_spool = None
@@ -777,7 +785,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 logging.error(f"OAMS[{self.oams_idx}]: Abort timeout - MCU did not respond, forcing clear")
                 break
             # Use reactor.pause to wait without queueing into toolhead
-            self.reactor.pause(self.reactor.monotonic() + 0.05)
+            # Increased from 0.05s to 0.5s to reduce reactor pressure during MCU communication issues
+            # Using 0.5s provides good balance between responsiveness and reducing MCU load
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
 
         # Now clear the status (may already be None if MCU responded)
         self.action_status_code = code
