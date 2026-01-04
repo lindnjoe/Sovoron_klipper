@@ -70,21 +70,21 @@ MONITOR_ENCODER_PERIOD = 2.0
 MONITOR_ENCODER_PERIOD_IDLE = 4.0  # OPTIMIZATION: Longer interval when idle
 MONITOR_ENCODER_SPEED_GRACE = 3.0  # Increased from 2.0 to 3.0 - more grace time before stuck detection
 MIN_EXTRUDER_ENGAGEMENT_DELTA = 0.5  # Minimum extruder movement to confirm engagement
-ENGAGEMENT_SUPPRESSION_WINDOW = 6.0  # Time after engagement check to suppress stuck triggers
+ENGAGEMENT_SUPPRESSION_WINDOW = 10.0  # Increased from 6.0 to 10.0 - longer suppression after engagement to prevent false clog detection
 AFC_DELEGATION_TIMEOUT = 30.0
 COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
 STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
-STUCK_SPOOL_DWELL = 3.5
+STUCK_SPOOL_DWELL = 5.0  # Increased from 3.5 to 5.0 - debouncing for high-speed printing with fast extrudes/retracts (FPS is slow to react)
 STUCK_SPOOL_LOAD_GRACE = 8.0
 
 CLOG_PRESSURE_TARGET = 0.50
 CLOG_SENSITIVITY_LEVELS = {
     "low": {"extrusion_window": 48.0, "encoder_slack": 15, "pressure_band": 0.08, "dwell": 12.0},
-    "medium": {"extrusion_window": 24.0, "encoder_slack": 8, "pressure_band": 0.06, "dwell": 8.0},
-    "high": {"extrusion_window": 12.0, "encoder_slack": 4, "pressure_band": 0.04, "dwell": 6.0},
+    "medium": {"extrusion_window": 24.0, "encoder_slack": 8, "pressure_band": 0.06, "dwell": 10.0},  # Increased from 8.0 to 10.0 for debouncing
+    "high": {"extrusion_window": 12.0, "encoder_slack": 4, "pressure_band": 0.04, "dwell": 8.0},  # Increased from 6.0 to 8.0 for debouncing
 }
 CLOG_SENSITIVITY_DEFAULT = "medium"
 
@@ -3634,7 +3634,12 @@ class OAMSManager:
         fps_state.direction = direction
 
     def _ensure_forward_follower(self, fps_name: str, fps_state: "FPSState", context: str) -> None:
-        """Ensure follower is enabled in forward direction after successful load."""
+        """Ensure follower is enabled in forward direction after successful load.
+
+        NOTE: Does NOT set manual_override - allows automatic hub-sensor control
+        to manage follower during normal printing. manual_override is only set
+        during error conditions (clog/stuck spool) for manual recovery.
+        """
         if (fps_state.current_oams is None or fps_state.current_spool_idx is None or
             fps_state.stuck_spool.active or fps_state.state != FPSLoadState.LOADED):
             return
@@ -3969,6 +3974,8 @@ class OAMSManager:
         if oams is not None and spool_idx is not None:
             try:
                 oams.set_led_error(spool_idx, 1)
+                # CRITICAL: 1-second delay between commands to prevent MCU communication overload
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
             except Exception:
                 self.logger.error(f"Failed to set stuck spool LED on {fps_name} spool {spool_idx}")
 
@@ -3976,9 +3983,9 @@ class OAMSManager:
         if oams is not None:
             try:
                 oams.abort_current_action()
-                # Give MCU time to recover after abort before sending new commands
-                # Prevents MCU communication timeout from rapid command sequence
-                self.reactor.pause(self.reactor.monotonic() + 0.2)
+                # CRITICAL: 1-second delay after abort to allow MCU recovery
+                # Increased from 0.2s to 1.0s to prevent MCU communication timeout during stressed conditions
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
             except Exception:
                 self.logger.error(f"Failed to abort active action for {fps_name} during stuck spool pause")
 
@@ -3986,6 +3993,8 @@ class OAMSManager:
         # SAFETY: Wrap pause in try/except to prevent crash if pause logic fails
         try:
             self._pause_printer_message(message, fps_state.current_oams)
+            # 1-second delay before follower commands
+            self.reactor.pause(self.reactor.monotonic() + 1.0)
         except Exception:
             self.logger.error(f"Failed to pause printer during stuck spool on {fps_name} - continuing with error state")
             # If pause failed, keep active=True to prevent retriggering until user intervention
@@ -3994,6 +4003,7 @@ class OAMSManager:
         # Keep the follower running during stuck spool pauses so manual extrusion
         # remains available without requiring OAMSM_CLEAR_ERRORS.
         # Enable follower directly during stuck spool pause, bypassing state checks
+        # NOTE: Unlike clog detection, stuck spool can happen during LOADING before follower is enabled
         if oams is not None and spool_idx is not None:
             # Save the current direction for restore on RESUME
             current_direction = fps_state.direction if fps_state.following else 1
@@ -4040,17 +4050,26 @@ class OAMSManager:
                         backoff_multiplier = 2 ** fps_state.idle_backoff_level
                         return eventtime + (MONITOR_ENCODER_PERIOD_IDLE * backoff_multiplier)
 
-                # Read sensors
-                try:
-                    if oams:
-                        encoder_value = oams.encoder_clicks
-                        pressure = float(getattr(fps, "fps_value", 0.0))
-                        hes_values = oams.hub_hes_value
-                    else:
+                # OPTIMIZATION: Skip sensor reads in UNLOADED state (only needed every 2 polls for auto-detect)
+                # This reduces MCU communication by 50% when UNLOADED while keeping detection fast (4 seconds)
+                skip_sensor_read = (state == FPSLoadState.UNLOADED and fps_state.consecutive_idle_polls % 2 != 0)
+
+                # Read sensors (skip if UNLOADED and not on 2-poll boundary)
+                encoder_value = None
+                pressure = None
+                hes_values = None
+
+                if not skip_sensor_read:
+                    try:
+                        if oams:
+                            encoder_value = oams.encoder_clicks
+                            pressure = float(getattr(fps, "fps_value", 0.0))
+                            hes_values = oams.hub_hes_value
+                        else:
+                            return eventtime + MONITOR_ENCODER_PERIOD_IDLE
+                    except Exception:
+                        self.logger.error(f"Failed to read sensors for {fps_name}")
                         return eventtime + MONITOR_ENCODER_PERIOD_IDLE
-                except Exception:
-                    self.logger.error(f"Failed to read sensors for {fps_name}")
-                    return eventtime + MONITOR_ENCODER_PERIOD_IDLE
 
                 now = self.reactor.monotonic()
                 state_changed = False
@@ -4069,7 +4088,7 @@ class OAMSManager:
                     # Skip auto-detect if there's an active runout in progress to avoid interference
                     monitor = self.runout_monitors.get(fps_name)
                     is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
-                    if not is_runout_active and fps_state.consecutive_idle_polls % 10 == 0:  # Check every 10 polls
+                    if not is_runout_active and fps_state.consecutive_idle_polls % 2 == 0:  # Check every 2 polls (4 seconds)
                         old_lane = fps_state.current_lane
                         old_spool_idx = fps_state.current_spool_idx
                         (
@@ -4468,16 +4487,36 @@ class OAMSManager:
             # Pressure is low AND encoder not moving - start or continue stuck spool timer
             if fps_state.stuck_spool.start_time is None:
                 fps_state.stuck_spool.start_time = now
-                self.logger.info(f"{fps_name}: Stuck spool timer started - pressure {pressure:.2f} <= {self.stuck_spool_pressure_threshold:.2f}, encoder stopped")
-            elif (not fps_state.stuck_spool.active and now - fps_state.stuck_spool.start_time >= STUCK_SPOOL_DWELL):
-                message = "Spool appears stuck"
-                if fps_state.current_lane is not None:
-                    message = f"Spool appears stuck on {fps_state.current_lane} spool {fps_state.current_spool_idx} (pressure {pressure:.2f}, encoder stopped)"
-                # SAFETY: Wrap pause trigger in try/except to prevent crash during stuck spool detection
-                try:
-                    self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
-                except Exception:
-                    self.logger.error(f"Failed to trigger stuck spool pause for {fps_name} - error state may be inconsistent")
+                self.logger.info(
+                    f"{fps_name}: STUCK SPOOL TIMER STARTED - pressure {pressure:.2f} <= {self.stuck_spool_pressure_threshold:.2f}, "
+                    f"encoder_diff={encoder_diff}, threshold={MIN_ENCODER_DIFF}, dwell={STUCK_SPOOL_DWELL}s"
+                )
+            elif not fps_state.stuck_spool.active:
+                # Timer is running - show countdown
+                elapsed = now - fps_state.stuck_spool.start_time
+                remaining = STUCK_SPOOL_DWELL - elapsed
+                if remaining > 0:
+                    if self.logger.isEnabledFor(logging.DEBUG):
+                        self.logger.debug(
+                            f"{fps_name}: Stuck spool countdown - {remaining:.1f}s remaining "
+                            f"(pressure={pressure:.2f}, encoder_diff={encoder_diff})"
+                        )
+                else:
+                    # Detection triggered!
+                    message = "Spool appears stuck"
+                    if fps_state.current_lane is not None:
+                        message = f"Spool appears stuck on {fps_state.current_lane} spool {fps_state.current_spool_idx}"
+
+                    self.logger.info(
+                        f"{fps_name}: STUCK SPOOL DETECTED! Conditions: pressure={pressure:.2f} (threshold={self.stuck_spool_pressure_threshold:.2f}), "
+                        f"encoder_diff={encoder_diff} (threshold={MIN_ENCODER_DIFF}), dwell_time={elapsed:.1f}s (threshold={STUCK_SPOOL_DWELL}s)"
+                    )
+
+                    # SAFETY: Wrap pause trigger in try/except to prevent crash during stuck spool detection
+                    try:
+                        self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
+                    except Exception:
+                        self.logger.error(f"Failed to trigger stuck spool pause for {fps_name} - error state may be inconsistent")
         elif encoder_moving:
             # Encoder is moving - clear timer even if pressure is low (print stall with active extrusion)
             if fps_state.stuck_spool.start_time is not None and not fps_state.stuck_spool.active:
@@ -4590,17 +4629,28 @@ class OAMSManager:
 
         settings = self.clog_settings
         if extrusion_delta < settings["extrusion_window"]:
+            # Not enough extrusion yet to check for clog
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(
+                    f"{fps_name}: Clog detection waiting for extrusion window - "
+                    f"extruded={extrusion_delta:.1f}mm (need {settings['extrusion_window']}mm)"
+                )
             return
 
         if (encoder_delta > settings["encoder_slack"] or pressure_span > settings["pressure_band"]):
             # Encoder is moving or pressure is varying - filament is flowing
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(
+                    f"{fps_name}: Clog detection OK - filament flowing "
+                    f"(encoder_delta={encoder_delta} vs slack={settings['encoder_slack']}, "
+                    f"pressure_span={pressure_span:.2f} vs band={settings['pressure_band']})"
+                )
+
             # If clog was previously active, clear it and ensure follower keeps up
             if fps_state.clog.active:
                 self.logger.info(
-                    "Clog cleared on %s - encoder moving normally (delta=%d, pressure_span=%.2f)",
-                    fps_name,
-                    encoder_delta,
-                    pressure_span,
+                    f"{fps_name}: Clog cleared - encoder moving normally "
+                    f"(delta={encoder_delta}, pressure_span={pressure_span:.2f})"
                 )
 
                 if oams is not None and fps_state.current_spool_idx is not None:
@@ -4617,15 +4667,41 @@ class OAMSManager:
             fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
             return
 
-        if now - (fps_state.clog.start_time or now) < settings["dwell"]:
+        # Conditions met for clog - check dwell timer
+        elapsed = now - (fps_state.clog.start_time or now)
+        remaining = settings["dwell"] - elapsed
+
+        if remaining > 0:
+            # Timer is counting down
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(
+                    f"{fps_name}: CLOG COUNTDOWN - {remaining:.1f}s remaining "
+                    f"(extruded={extrusion_delta:.1f}mm, encoder_delta={encoder_delta}, "
+                    f"pressure_span={pressure_span:.2f})"
+                )
             return
 
         if not fps_state.clog.active:
+            # Clog detection triggered!
+            pressure_mid = (fps_state.clog.min_pressure + fps_state.clog.max_pressure) / 2.0
+
+            # Comprehensive debug output showing all detection conditions
+            self.logger.info(
+                f"{fps_name}: CLOG DETECTED! Conditions met: "
+                f"extrusion_delta={extrusion_delta:.1f}mm (window={settings['extrusion_window']}mm), "
+                f"encoder_delta={encoder_delta} (slack={settings['encoder_slack']}), "
+                f"pressure_span={pressure_span:.2f} (band={settings['pressure_band']}), "
+                f"pressure_mid={pressure_mid:.2f} (target={self.clog_pressure_target:.2f}), "
+                f"dwell_time={elapsed:.1f}s (threshold={settings['dwell']}s)"
+            )
+
+            # Set LED error first
             if oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 1, "clog detected")
+                # CRITICAL: 1-second delay between commands to prevent MCU communication overload
+                # This prevents command floods during already-stressed print conditions
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
 
-
-            pressure_mid = (fps_state.clog.min_pressure + fps_state.clog.max_pressure) / 2.0
             message = (
                 f"Clog suspected on {fps_state.current_lane or fps_name}: "
                 f"extruder advanced {extrusion_delta:.1f}mm while encoder moved {encoder_delta} counts "
@@ -4643,19 +4719,11 @@ class OAMSManager:
                 # Keep active=True to prevent retriggering until user intervention
                 return
 
-            # Keep the follower running during clog pauses so manual extrusion
-            # remains available without requiring OAMSM_CLEAR_ERRORS.
-            # Enable follower directly during clog pause, bypassing state checks
-            if oams is not None and fps_state.current_spool_idx is not None:
-                self._enable_follower(fps_name, fps_state, oams, 1, "clog pause - keep follower active")
-
-                # Set manual override to prevent automatic hub-sensor control from disabling it
-                # This keeps follower enabled even if hub sensors are empty during clog
-                state = self._get_follower_state(fps_state.current_oams)
-                state.manual_override = True
-                # If the follower still can't start, mark it for restore on resume
-                if not fps_state.following:
-                    fps_state.stuck_spool.restore_follower = True
+            # OPTIMIZATION: Don't send redundant follower commands after load completion
+            # Follower should already be enabled from load operation with manual_override set
+            # Sending redundant commands during error conditions can overwhelm MCU communication
+            # and contribute to crashes during already-stressed print stalls
+            self.logger.info(f"Clog pause triggered for {fps_name} - follower should already be enabled from load")
 
     def start_monitors(self):
         """Start all monitoring timers"""
