@@ -738,6 +738,8 @@ class OAMSManager:
         self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL, minval=0.0, maxval=60.0)
         self.load_fps_stuck_threshold = config.getfloat("load_fps_stuck_threshold", LOAD_FPS_STUCK_THRESHOLD, minval=0.0, maxval=1.0)
         self.engagement_pressure_threshold = config.getfloat("engagement_pressure_threshold", 0.6, minval=0.0, maxval=1.0)
+        # Optional AFC PREP restore workaround guard
+        self.enable_afc_restore_fix = config.getboolean("enable_afc_restore_fix", True)
 
         # Validate hysteresis: clear threshold must be > trigger threshold
         if self.stuck_spool_pressure_clear_threshold <= self.stuck_spool_pressure_threshold:
@@ -968,7 +970,10 @@ class OAMSManager:
 
         # WORKAROUND: Fix AFC state restoration after PREP command
         # AFC's PREP doesn't call set_tool_loaded(), causing state inconsistency after firmware restart
-        self._fix_afc_state_restoration()
+        if self.enable_afc_restore_fix:
+            self._fix_afc_state_restoration()
+        else:
+            self.logger.info("Skipping AFC state restoration fix (enable_afc_restore_fix=False)")
 
         self.start_monitors()
         self.ready = True
@@ -1106,6 +1111,8 @@ class OAMSManager:
         AFC's PREP command restores lane_loaded and tool_loaded boolean properties but doesn't
         call set_tool_loaded() to properly synchronize stepper state, LED state, and extruder
         calibration. This causes the system to lose track of which lane is loaded after restarts.
+        As of the current AFC_prep.py (PREP restores booleans only), we still need this guard
+        to realign state until upstream adds the missing set_tool_loaded() call.
 
         This is a defensive workaround until AFC fixes the bug in AFC_prep.py:125
         """
@@ -1129,6 +1136,24 @@ class OAMSManager:
                     self.logger.warning(
                         "AFC state inconsistency: %s.lane_loaded=%s but lane doesn't exist",
                         extruder_name, lane_loaded_name
+                    )
+                    continue
+
+                # Only restore tool-loaded state for the tool currently on the shuttle
+                # to avoid overriding toolchanger detection during PREP.
+                is_on_shuttle = True
+                try:
+                    shuttle_check = getattr(extruder_obj, 'on_shuttle', None)
+                    if callable(shuttle_check):
+                        is_on_shuttle = bool(shuttle_check())
+                except Exception:
+                    is_on_shuttle = True
+
+                if not is_on_shuttle:
+                    self.logger.debug(
+                        "Skipping tool restore for %s; extruder %s not on shuttle",
+                        lane_loaded_name,
+                        extruder_name,
                     )
                     continue
 
@@ -3127,64 +3152,55 @@ class OAMSManager:
         # Load the filament
         self.logger.info(f"Loading lane {lane_name}: {oams_name} bay {bay_index} via {fps_name}")
 
-        max_retries = getattr(oam, "load_retry_max", 1) or 1
-        backoff_base = getattr(oam, "retry_backoff_base", 1.0) or 1.0
-        backoff_max = getattr(oam, "retry_backoff_max", 5.0) or 5.0
+        # Capture state BEFORE changing fps_state.state to avoid getting stuck
+        try:
+            encoder = oam.encoder_clicks
+            current_time = self.reactor.monotonic()
+            oam_name = oam.name
+        except Exception:
+            self.logger.error(f"Failed to capture load state for lane {lane_name} bay {bay_index}")
+            return False, f"Failed to capture load state for lane {lane_name}"
 
-        for attempt in range(max_retries):
-            # Capture state BEFORE changing fps_state.state to avoid getting stuck
-            try:
-                encoder = oam.encoder_clicks
-                current_time = self.reactor.monotonic()
-                oam_name = oam.name
-            except Exception:
-                self.logger.error(f"Failed to capture load state for lane {lane_name} bay {bay_index}")
-                return False, f"Failed to capture load state for lane {lane_name}"
+        # Only set state after all preliminary operations succeed
+        fps_state.state = FPSLoadState.LOADING
+        fps_state.encoder = encoder
+        fps_state.current_oams = oam_name
+        fps_state.current_spool_idx = bay_index
+        fps_state.current_lane = lane_name  # Set lane name at start of load attempt for error reporting
+        # Set since to now for THIS load attempt (will be updated on success)
+        fps_state.since = current_time
+        fps_state.clear_encoder_samples()
+        fps_state.reset_engagement_tracking()  # Reset engagement state for clean load attempt
 
-            # Only set state after all preliminary operations succeed
-            fps_state.state = FPSLoadState.LOADING
-            fps_state.encoder = encoder
-            fps_state.current_oams = oam_name
-            fps_state.current_spool_idx = bay_index
-            fps_state.current_lane = lane_name  # Set lane name at start of load attempt for error reporting
-            # Set since to now for THIS load attempt (will be updated on success)
-            fps_state.since = current_time
-            fps_state.clear_encoder_samples()
-            fps_state.reset_engagement_tracking()  # Reset engagement state for clean load attempt
+        # CRITICAL: Enable follower BEFORE starting the OAMS load command
+        # The OAMS BLDC will push filament through the buffer, and the follower
+        # must be tracking it in real-time, not after the load completes
+        # Without this, filament gets stuck in the buffer during the load
+        # NOTE: Trusting automatic follower control to keep it enabled during LOADING state
+        self._enable_follower(fps_name, fps_state, oam, 1, "before load - enable follower for buffer tracking")
 
-            # CRITICAL: Enable follower BEFORE starting the OAMS load command
-            self._enable_follower(fps_name, fps_state, oam, 1, "before load - enable follower for buffer tracking")
+        try:
+            success, message = oam.load_spool_with_retry(bay_index)
+        except Exception:
+            self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
+            fps_state.state = FPSLoadState.UNLOADED
+            error_msg = f"Failed to load bay {bay_index} on {oams_name}"
 
-            try:
-                success, message = oam.load_spool_with_retry(bay_index)
-            except Exception:
-                self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
-                fps_state.state = FPSLoadState.UNLOADED
-                error_msg = f"Failed to load bay {bay_index} on {oams_name}"
+            # CRITICAL: Pause printer if load fails during printing
+            # This prevents printing without filament loaded
+            self._pause_on_critical_failure(error_msg, oams_name)
+            return False, error_msg
 
-                # CRITICAL: Pause printer if load fails during printing
-                self._pause_on_critical_failure(error_msg, oams_name)
-                return False, error_msg
-
-            if not success:
-                fps_state.state = FPSLoadState.UNLOADED
-                error_msg = f"Failed to load bay {bay_index} on {oams_name}: {message}"
-                if attempt + 1 >= max_retries:
-                    self._pause_on_critical_failure(error_msg, oams_name)
-                    return False, error_msg
-
-                delay = min(backoff_base * (2 ** attempt), backoff_max)
-                self.logger.info(f"Retrying load for {lane_name} after failure (attempt {attempt + 1}/{max_retries}), waiting {delay:.1f}s")
-                self.reactor.pause(self.reactor.monotonic() + delay)
-                continue
-
+        if success:
             # OAMS load succeeded - now verify filament engaged extruder
+            # Extrude the configured reload length and check FPS pressure drop
             engagement_ok = self._verify_engagement_with_extrude(fps_name, fps_state, fps, lane_name, oam)
             if not engagement_ok:
-                # Filament reached extruder but didn't engage - unload and retry
+                # Filament reached extruder but didn't engage - unload and return failure to trigger retry
                 self.logger.warning(f"Filament engagement failed for {lane_name}, unloading before retry")
 
                 # Retract extruder by reload distance to back out the filament that was extruded during engagement
+                # This ensures filament position is correct for the next load attempt
                 try:
                     reload_length, reload_speed = self._get_reload_params(lane_name)
                     if reload_length is not None and reload_speed is not None:
@@ -3213,15 +3229,7 @@ class OAMSManager:
                 fps_state.current_lane = None
                 fps_state.since = self.reactor.monotonic()
 
-                if attempt + 1 >= max_retries:
-                    error_msg = f"Filament failed to engage extruder for {lane_name} after {max_retries} attempts"
-                    self._pause_on_critical_failure(error_msg, oams_name)
-                    return False, error_msg
-
-                delay = min(backoff_base * (2 ** attempt), backoff_max)
-                self.logger.info(f"Retrying load after engagement failure for {lane_name} (attempt {attempt + 1}/{max_retries}), waiting {delay:.1f}s")
-                self.reactor.pause(self.reactor.monotonic() + delay)
-                continue
+                return False, f"Filament failed to engage extruder for {lane_name}"
 
             # Engagement verified! Track lane transitions for runout recovery protection
             old_lane = fps_state.current_lane
@@ -4419,24 +4427,6 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
             return
 
-        # Skip stuck spool detection if the mapped extruder is not active/on the shuttle
-        try:
-            afc = self._get_afc()
-            active_extruder = None
-            lane_extruder = None
-            if afc is not None and hasattr(afc, "function"):
-                active_extruder = afc.function.get_current_extruder()
-            if fps_state.current_lane and afc is not None:
-                lane_obj = afc.lanes.get(fps_state.current_lane)
-                lane_extruder = getattr(lane_obj, "extruder_name", None)
-            if active_extruder is None or (lane_extruder and lane_extruder != active_extruder):
-                if fps_state.stuck_spool.active and oams is not None and fps_state.current_spool_idx is not None:
-                    self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "extruder inactive")
-                fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
-                return
-        except Exception:
-            pass
-
         # Skip stuck spool detection if AFC bypass is enabled
         # User is manually controlling filament, FPS pressure will be abnormal
         try:
@@ -4605,23 +4595,6 @@ class OAMSManager:
         if not is_printing:
             if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer idle")
-
-            fps_state.reset_clog_tracker()
-            return
-
-        # Skip clog detection when no lane is synced to the toolhead.
-        # This covers manual unloads (e.g., UNSET_LANE_LOADED) and startup states where
-        # AFC/OpenAMS haven't selected a lane yet, preventing idle false positives.
-        try:
-            afc = self._get_afc()
-            extruder_obj = getattr(afc, "extruder", None) if afc is not None else None
-            extruder_lane = getattr(extruder_obj, "lane_loaded", None)
-        except Exception:
-            extruder_lane = None
-
-        if fps_state.current_lane is None or extruder_lane is None:
-            if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
-                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "no lane synced")
 
             fps_state.reset_clog_tracker()
             return
