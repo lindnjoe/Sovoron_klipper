@@ -474,7 +474,8 @@ class afcAMS(afcUnit):
     def handle_connect(self):
         """Initialise the AMS unit and configure custom logos."""
         super().handle_connect()
-        self._startup_sync_complete = False
+        # Disable OpenAMS startup sync: mark complete up front so no delayed sync runs
+        self._startup_sync_complete = True
 
         # OPTIMIZATION: Pre-warm object caches for faster runtime access
         if self._cached_gcode is None:
@@ -541,10 +542,7 @@ class afcAMS(afcUnit):
             </span>
             """).format(name=self.name)
 
-        # Schedule delayed sync after Klipper is fully ready
-        # This ensures all sensors and objects are properly initialized before sync
-        waketime = self.reactor.monotonic() + 3.0
-        self.reactor.register_timer(self._delayed_startup_sync, waketime)
+        # Startup sync disabled to isolate toolhead state issues
 
     def _run_startup_sync(self):
         """Perform startup sync steps once PREP has restored lane state."""
