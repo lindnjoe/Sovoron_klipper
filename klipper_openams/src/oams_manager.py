@@ -1132,24 +1132,6 @@ class OAMSManager:
                     )
                     continue
 
-                # Only restore tool-loaded state for the tool currently on the shuttle
-                # to avoid overriding toolchanger detection during PREP.
-                is_on_shuttle = True
-                try:
-                    shuttle_check = getattr(extruder_obj, 'on_shuttle', None)
-                    if callable(shuttle_check):
-                        is_on_shuttle = bool(shuttle_check())
-                except Exception:
-                    is_on_shuttle = True
-
-                if not is_on_shuttle:
-                    self.logger.debug(
-                        "Skipping tool restore for %s; extruder %s not on shuttle",
-                        lane_loaded_name,
-                        extruder_name,
-                    )
-                    continue
-
                 # Check if lane's tool_loaded matches extruder's lane_loaded
                 tool_loaded = getattr(lane_obj, 'tool_loaded', False)
 
