@@ -1436,29 +1436,23 @@ class afcAMS(afcUnit):
                 if cur_lane.tool_loaded:
                     tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.tool_start == "buffer" or cur_lane.extruder_obj.tool_end_state)
                     if tool_ready and cur_lane.extruder_obj.lane_loaded == cur_lane.name:
-                        on_shuttle = True
+                        cur_lane.sync_to_extruder()
+                        msg += '<span class=primary--text> in ToolHead</span>'
                         try:
                             if hasattr(cur_lane.extruder_obj, "on_shuttle") and callable(cur_lane.extruder_obj.on_shuttle):
-                                on_shuttle = bool(cur_lane.extruder_obj.on_shuttle())
+                                if bool(cur_lane.extruder_obj.on_shuttle()):
+                                    msg += '<span class=info--text> and toolhead on shuttle</span>'
                         except Exception:
-                            on_shuttle = True
+                            pass
 
-                        if not on_shuttle:
-                            msg += '<span class=error--text> Tool not on shuttle</span>'
-                            self.lane_not_ready(cur_lane)
-                            cur_lane.disable_buffer()
-                            succeeded = False
+                        if cur_lane.extruder_obj.tool_start == "buffer":
+                            msg += '<span class=warning--text> Ram sensor enabled, confirm tool is loaded</span>'
+                        if self.afc.function.get_current_lane() == cur_lane.name:
+                            self.afc.spool.set_active_spool(cur_lane.spool_id)
+                            cur_lane.unit_obj.lane_tool_loaded(cur_lane)
+                            cur_lane.status = AFCLaneState.TOOLED
                         else:
-                            cur_lane.sync_to_extruder()
-                            msg += '<span class=primary--text> in ToolHead</span>'
-                            if cur_lane.extruder_obj.tool_start == "buffer":
-                                msg += '<span class=warning--text> Ram sensor enabled, confirm tool is loaded</span>'
-                            if self.afc.function.get_current_lane() == cur_lane.name:
-                                self.afc.spool.set_active_spool(cur_lane.spool_id)
-                                cur_lane.unit_obj.lane_tool_loaded(cur_lane)
-                                cur_lane.status = AFCLaneState.TOOLED
-                            else:
-                                cur_lane.unit_obj.lane_tool_loaded_idle(cur_lane)
+                            cur_lane.unit_obj.lane_tool_loaded_idle(cur_lane)
                     elif tool_ready:
                         msg += '<span class=error--text> error in ToolHead. Lane identified as loaded but not identified as loaded in extruder</span>'
                         succeeded = False
