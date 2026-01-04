@@ -213,19 +213,49 @@ class SpoolmanLEDSync:
             self.logger.error("Failed to hook into AFC units: %s", e)
 
     def _make_wrapped_lane_tool_loaded(self, original_func):
-        """Wrapper for lane_tool_loaded - active tool with Spoolman color or default"""
+        """Wrapper for lane_tool_loaded - active tool with Spoolman color or default
+
+        IMPORTANT: Only override the LED color when in a stable/idle state.
+        Do NOT override status-indicating colors (loading, unloading, fault, etc.)
+        to allow proper status visualization.
+        """
         def wrapped(lane):
             # Only apply Spoolman color if this lane is for the ACTIVE extruder
+            # AND the lane is in a stable state (not loading/unloading/fault)
             if self._is_active_extruder(lane):
-                hex_color = self._get_lane_color(lane)
-                if hex_color and hex_color != self.default_color:
-                    # Use Spoolman color for active tool
-                    led_color_str = self._hex_to_led_string(hex_color)
-                    self.logger.info("Setting active tool %s LED to Spoolman color %s", lane.name, hex_color)
-                    self.afc.function.afc_led(led_color_str, lane.led_index)
-                    return
+                # Check if lane is in a transient/error state - if so, don't override
+                is_stable_state = True
 
-            # Not active extruder, or no Spoolman color - use default behavior
+                # Check lane status if available
+                if hasattr(lane, 'status'):
+                    from AFC_Klipper_Add_On.extras.AFC_Helpers import AFCLaneState
+                    transient_states = [
+                        AFCLaneState.TOOL_LOADING,
+                        AFCLaneState.TOOL_UNLOADING,
+                        AFCLaneState.HUB_LOADING,
+                        AFCLaneState.HUB_UNLOADING,
+                        AFCLaneState.LANE_LOADING,
+                        AFCLaneState.LANE_UNLOADING,
+                        AFCLaneState.ERROR,
+                        AFCLaneState.FAULT
+                    ]
+                    if lane.status in transient_states:
+                        is_stable_state = False
+                        self.logger.debug("Skipping Spoolman color override for %s - lane in transient state: %s",
+                                        lane.name, lane.status)
+
+                # Only apply Spoolman color when stable
+                if is_stable_state:
+                    hex_color = self._get_lane_color(lane)
+                    if hex_color and hex_color != self.default_color:
+                        # Use Spoolman color for active tool in stable state
+                        led_color_str = self._hex_to_led_string(hex_color)
+                        self.logger.debug("Setting active tool %s LED to Spoolman color %s (stable state)",
+                                        lane.name, hex_color)
+                        self.afc.function.afc_led(led_color_str, lane.led_index)
+                        return
+
+            # Not active extruder, no Spoolman color, or transient state - use default behavior
             original_func(lane)
         return wrapped
 
