@@ -768,6 +768,13 @@ class afcAMS(afcUnit):
             elif lane_loaded is None:
                 # Extruder lost track (e.g., during BT_PREP system test). Rehydrate from saved state, then lane state
                 lane_has_filament = bool(getattr(lane, "tool_loaded", False) and getattr(lane, "load_state", False))
+                if not lane_has_filament:
+                    # Fall back to live OAMS sensors for this lane to avoid toolchanger prep clearing LEDs
+                    try:
+                        sensor_snapshot = self._get_oams_sensor_snapshot({lane_name: lane})
+                        lane_has_filament = bool(sensor_snapshot.get(lane_name, False))
+                    except Exception:
+                        lane_has_filament = False
 
                 saved_lane_loaded = self._get_saved_extruder_lane_loaded(getattr(extruder, "name", None))
                 canonical_saved = self._canonical_lane_name(saved_lane_loaded)
