@@ -1240,13 +1240,70 @@ class afcAMS(afcUnit):
 
         return {unit for unit in units if unit}
 
+    def _get_oams_sensor_snapshot(self, lanes: Dict[str, Any]) -> Dict[str, bool]:
+        """Return a lane->filament-present map using live OAMS sensor data."""
+        snapshot: Dict[str, bool] = {}
+        try:
+            oams_manager = self.printer.lookup_object("oams_manager", None)
+        except Exception:
+            oams_manager = None
+
+        if oams_manager is None:
+            return snapshot
+
+        oams_map = getattr(oams_manager, "oams", {}) if oams_manager else {}
+        for lane_obj in lanes.values():
+            lane_name = getattr(lane_obj, "name", None)
+            lane_index = getattr(lane_obj, "index", None)
+            lane_unit = getattr(lane_obj, "unit", None)
+            if lane_name is None or lane_index is None or lane_unit is None:
+                continue
+
+            base_unit_name = lane_unit.split(":", 1)[0]
+            unit_obj = getattr(lane_obj, "unit_obj", None)
+            if unit_obj is None:
+                afc = getattr(self, "afc", None)
+                units = getattr(afc, "units", {}) if afc else {}
+                unit_obj = units.get(base_unit_name)
+
+            if unit_obj is None or (not isinstance(unit_obj, afcAMS) and getattr(unit_obj, "type", "") != "OpenAMS"):
+                continue
+
+            oams_name = getattr(unit_obj, "oams_name", None)
+            if not oams_name:
+                continue
+
+            oam = oams_map.get(oams_name) or oams_map.get(f"oams {oams_name}")
+            if oam is None:
+                continue
+
+            bay_index = int(lane_index) - 1
+            if bay_index < 0:
+                continue
+
+            f1s_values = getattr(oam, "f1s_hes_value", None)
+            hub_values = getattr(oam, "hub_hes_value", None)
+
+            has_filament = False
+            try:
+                if hub_values and bay_index < len(hub_values):
+                    has_filament = has_filament or bool(hub_values[bay_index])
+                if f1s_values and bay_index < len(f1s_values):
+                    has_filament = has_filament or bool(f1s_values[bay_index])
+            except Exception:
+                pass
+
+            snapshot[lane_name] = has_filament
+
+        return snapshot
+
     def _hydrate_from_saved_state(self) -> None:
         """Restore extruder.lane_loaded from saved state when sensors confirm filament at toolhead."""
         if getattr(self, "_hydrated_from_saved", False):
             return
 
         afc = getattr(self, "afc", None)
-        if afc is None or not getattr(afc, "prep_done", False):
+        if afc is None:
             return
 
         lanes = getattr(afc, "lanes", {})
@@ -1255,6 +1312,8 @@ class afcAMS(afcUnit):
         openams_units = self._get_openams_unit_names()
         if not openams_units:
             return
+
+        sensor_snapshot = self._get_oams_sensor_snapshot(lanes)
 
         for extruder_name, extruder_obj in tools.items():
             if extruder_name in self.__class__._hydrated_extruders:
@@ -1293,8 +1352,15 @@ class afcAMS(afcUnit):
             if unit_obj is not None and not isinstance(unit_obj, afcAMS):
                 continue
 
-            # Only hydrate when both tool_loaded and load_state indicate filament at toolhead
-            if lane_obj is None or not (getattr(lane_obj, "tool_loaded", False) and getattr(lane_obj, "load_state", False)):
+            lane_filament_present = False
+            if lane_obj is not None:
+                lane_filament_present = bool(getattr(lane_obj, "tool_loaded", False) and getattr(lane_obj, "load_state", False))
+
+            if not lane_filament_present:
+                lane_filament_present = bool(sensor_snapshot.get(canonical_lane, False))
+
+            # Only hydrate when sensors (virtual or hardware) indicate filament at toolhead
+            if not lane_filament_present:
                 continue
 
             try:
