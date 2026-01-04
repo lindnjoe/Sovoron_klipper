@@ -815,7 +815,11 @@ class afcAMS(afcUnit):
         # During sync_only: should not reach here (extruder is not None for AMS lanes)
         load_state = getattr(lane, "load_state", None)
         if load_state is not None:
-            return bool(load_state)
+            # Only trust load_state when lane.tool_loaded is also True.
+            # Prevents stale saved load_state from re-marking lanes as loaded at startup.
+            if getattr(lane, "tool_loaded", False):
+                return bool(load_state)
+            return False if sync_only else None
 
         if getattr(lane, "tool_loaded", False):
             return True
@@ -1247,8 +1251,14 @@ class afcAMS(afcUnit):
 
         return {unit for unit in units if unit}
 
-    def _get_oams_sensor_snapshot(self, lanes: Dict[str, Any]) -> Dict[str, bool]:
-        """Return a lane->filament-present map using live OAMS sensor data."""
+    def _get_oams_sensor_snapshot(self, lanes: Dict[str, Any], *, require_hub: bool = False) -> Dict[str, bool]:
+        """Return a lane->filament-present map using live OAMS sensor data.
+
+        Args:
+            lanes: Lane objects keyed by lane name.
+            require_hub: If True, only report filament present when the hub sensor is high.
+                         Otherwise, hub or f1s sensors may assert filament presence.
+        """
         snapshot: Dict[str, bool] = {}
         try:
             oams_manager = self.printer.lookup_object("oams_manager", None)
@@ -1291,15 +1301,17 @@ class afcAMS(afcUnit):
             f1s_values = getattr(oam, "f1s_hes_value", None)
             hub_values = getattr(oam, "hub_hes_value", None)
 
-            has_filament = False
+            hub_present = False
+            f1s_present = False
             try:
                 if hub_values and bay_index < len(hub_values):
-                    has_filament = has_filament or bool(hub_values[bay_index])
+                    hub_present = bool(hub_values[bay_index])
                 if f1s_values and bay_index < len(f1s_values):
-                    has_filament = has_filament or bool(f1s_values[bay_index])
+                    f1s_present = bool(f1s_values[bay_index])
             except Exception:
                 pass
 
+            has_filament = bool(hub_present or (f1s_present and not require_hub))
             snapshot[lane_name] = has_filament
 
         return snapshot
@@ -1320,7 +1332,7 @@ class afcAMS(afcUnit):
         if not openams_units:
             return
 
-        sensor_snapshot = self._get_oams_sensor_snapshot(lanes)
+        sensor_snapshot = self._get_oams_sensor_snapshot(lanes, require_hub=True)
 
         for extruder_name, extruder_obj in tools.items():
             if extruder_name in self.__class__._hydrated_extruders:
@@ -1359,12 +1371,9 @@ class afcAMS(afcUnit):
             if unit_obj is not None and not isinstance(unit_obj, afcAMS):
                 continue
 
-            lane_filament_present = False
-            if lane_obj is not None:
-                lane_filament_present = bool(getattr(lane_obj, "tool_loaded", False) and getattr(lane_obj, "load_state", False))
-
-            if not lane_filament_present:
-                lane_filament_present = bool(sensor_snapshot.get(canonical_lane, False))
+            lane_filament_present = bool(sensor_snapshot.get(canonical_lane, False))
+            if lane_filament_present and lane_obj is not None:
+                lane_filament_present = bool(getattr(lane_obj, "tool_loaded", False) and getattr(lane_obj, "load_state", False)) or lane_filament_present
 
             # Only hydrate when sensors (virtual or hardware) indicate filament at toolhead
             if not lane_filament_present:
