@@ -474,9 +474,6 @@ class afcAMS(afcUnit):
     def handle_connect(self):
         """Initialise the AMS unit and configure custom logos."""
         super().handle_connect()
-        # Disable OpenAMS startup sync: mark complete up front so no delayed sync runs
-        self._startup_sync_complete = True
-
         # OPTIMIZATION: Pre-warm object caches for faster runtime access
         if self._cached_gcode is None:
             try:
@@ -541,41 +538,6 @@ class afcAMS(afcUnit):
               {name}
             </span>
             """).format(name=self.name)
-
-        # Startup sync disabled to isolate toolhead state issues
-
-    def _run_startup_sync(self):
-        """Perform startup sync steps once PREP has restored lane state."""
-        # Hydrate extruder.lane_loaded from persisted state only when sensors agree
-        self._hydrate_from_saved_state()
-        # Disable delayed state detection and virtual sensor sync during startup to
-        # test whether they are contributing to incorrect toolhead state.
-        self.logger.info(f"Skipping delayed state detection and virtual sensor sync for {self.name} during startup")
-
-        self._startup_sync_complete = True
-        return self.reactor.NEVER
-
-    def run_post_prep_sync(self):
-        """Public hook to run the startup sync after PREP completes."""
-        if self._startup_sync_complete:
-            return
-        self._run_startup_sync()
-
-    def _delayed_startup_sync(self, eventtime):
-        """Run OAMSM_STATUS logic after a delay to ensure all systems are ready.
-
-        This is called via one-shot timer after handle_connect() completes,
-        giving time for all sensors and virtual objects to be fully initialized.
-        """
-        if self._startup_sync_complete:
-            return self.reactor.NEVER
-
-        # Wait for PREP to complete so lane_loaded is restored before syncing
-        if not getattr(self.afc, "prep_done", False):
-            return eventtime + 1.0
-
-        # Run sync now that PREP has finished
-        return self._run_startup_sync()
 
     def _ensure_virtual_tool_sensor(self) -> bool:
         """Resolve or create the virtual tool-start sensor for AMS extruders."""
