@@ -742,6 +742,15 @@ class afcAMS(afcUnit):
             return None
 
         lane_name = getattr(lane, "name", None)
+        lane_unit = getattr(lane, "unit", None)
+
+        # Only apply AMS virtual sensor logic to lanes that belong to any OpenAMS unit
+        if lane_unit:
+            sync_units = self.__class__._sync_instances
+            if lane_unit not in sync_units:
+                return None
+            if lane_unit != getattr(self, "name", None):
+                return None
 
         # Check if the extruder thinks THIS lane is loaded (authoritative)
         extruder = getattr(lane, "extruder_obj", None)
@@ -754,7 +763,24 @@ class afcAMS(afcUnit):
                 # Extruder has a different lane loaded
                 return False
             elif lane_loaded is None:
-                # Extruder lost track (e.g., during BT_PREP system test). Rehydrate from lane state
+                # Extruder lost track (e.g., during BT_PREP system test). Rehydrate from saved state, then lane state
+                saved_lane_loaded = self._get_saved_extruder_lane_loaded(getattr(extruder, "name", None))
+                canonical_saved = self._canonical_lane_name(saved_lane_loaded)
+                canonical_lane = self._canonical_lane_name(lane_name)
+
+                if canonical_saved is not None:
+                    if canonical_saved == canonical_lane:
+                        try:
+                            extruder.lane_loaded = lane_name
+                            if canonical_lane:
+                                self._last_loaded_lane_by_extruder[getattr(extruder, "name", "")] = canonical_lane
+                            self.logger.debug(f"Restored extruder.lane_loaded to {lane_name} from AFC.var.unit during sync")
+                            return True
+                        except Exception:
+                            self.logger.debug("Failed to restore extruder.lane_loaded from AFC.var.unit during sync")
+                    else:
+                        return False
+
                 lane_has_filament = getattr(lane, "tool_loaded", False) or bool(getattr(lane, "load_state", False))
                 if lane_has_filament:
                     try:
@@ -1177,6 +1203,26 @@ class afcAMS(afcUnit):
             return None
 
         return lane_data.get(field)
+
+    def _get_saved_extruder_lane_loaded(self, extruder_name: Optional[str]) -> Optional[str]:
+        """Return the persisted lane_loaded value for an extruder from AFC.var.unit."""
+        if not extruder_name:
+            return None
+
+        snapshot = self._load_saved_unit_snapshot()
+        system = snapshot.get("system") if isinstance(snapshot, dict) else None
+        if not isinstance(system, dict):
+            return None
+
+        extruders = system.get("extruders")
+        if not isinstance(extruders, dict):
+            return None
+
+        data = extruders.get(extruder_name)
+        if not isinstance(data, dict):
+            return None
+
+        return data.get("lane_loaded")
 
     def _get_saved_lane_runout_target(self, lane_name: Optional[str]) -> Optional[str]:
         """Return the saved runout target for a lane from AFC.var.unit, if available."""
