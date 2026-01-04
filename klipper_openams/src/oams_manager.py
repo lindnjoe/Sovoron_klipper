@@ -3180,50 +3180,48 @@ class OAMSManager:
 
             # OAMS load succeeded - now verify filament engaged extruder
             engagement_ok = self._verify_engagement_with_extrude(fps_name, fps_state, fps, lane_name, oam)
-            if engagement_ok:
-                break
+            if not engagement_ok:
+                # Filament reached extruder but didn't engage - unload and retry
+                self.logger.warning(f"Filament engagement failed for {lane_name}, unloading before retry")
 
-            # Filament reached extruder but didn't engage - unload and retry
-            self.logger.warning(f"Filament engagement failed for {lane_name}, unloading before retry")
+                # Retract extruder by reload distance to back out the filament that was extruded during engagement
+                try:
+                    reload_length, reload_speed = self._get_reload_params(lane_name)
+                    if reload_length is not None and reload_speed is not None:
+                        self.logger.info(f"Retracting extruder {reload_length:.1f}mm to reverse engagement extrusion for {lane_name}")
+                        gcode = self.printer.lookup_object('gcode')
+                        gcode.run_script_from_command("M83")  # Relative extrusion mode
+                        gcode.run_script_from_command(f"G1 E-{reload_length:.2f} F{reload_speed:.0f}")  # Retract
+                        gcode.run_script_from_command("M400")  # Wait for moves to complete
+                    else:
+                        self.logger.warning(f"Could not get reload params for {lane_name}, skipping extruder retraction")
+                except Exception:
+                    self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}")
 
-            # Retract extruder by reload distance to back out the filament that was extruded during engagement
-            try:
-                reload_length, reload_speed = self._get_reload_params(lane_name)
-                if reload_length is not None and reload_speed is not None:
-                    self.logger.info(f"Retracting extruder {reload_length:.1f}mm to reverse engagement extrusion for {lane_name}")
-                    gcode = self.printer.lookup_object('gcode')
-                    gcode.run_script_from_command("M83")  # Relative extrusion mode
-                    gcode.run_script_from_command(f"G1 E-{reload_length:.2f} F{reload_speed:.0f}")  # Retract
-                    gcode.run_script_from_command("M400")  # Wait for moves to complete
-                else:
-                    self.logger.warning(f"Could not get reload params for {lane_name}, skipping extruder retraction")
-            except Exception:
-                self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}")
+                # Unload the filament since it didn't engage properly
+                try:
+                    unload_success, unload_msg = oam.unload_spool_with_retry()
+                    if not unload_success:
+                        self.logger.error(f"Failed to unload after engagement failure for {lane_name}: {unload_msg}")
+                except Exception:
+                    self.logger.error(f"Exception during unload after engagement failure for {lane_name}")
 
-            # Unload the filament since it didn't engage properly
-            try:
-                unload_success, unload_msg = oam.unload_spool_with_retry()
-                if not unload_success:
-                    self.logger.error(f"Failed to unload after engagement failure for {lane_name}: {unload_msg}")
-            except Exception:
-                self.logger.error(f"Exception during unload after engagement failure for {lane_name}")
+                # Clear fps_state so retry starts fresh
+                fps_state.state = FPSLoadState.UNLOADED
+                fps_state.current_spool_idx = None
+                fps_state.current_oams = None
+                fps_state.current_lane = None
+                fps_state.since = self.reactor.monotonic()
 
-            # Clear fps_state so retry starts fresh
-            fps_state.state = FPSLoadState.UNLOADED
-            fps_state.current_spool_idx = None
-            fps_state.current_oams = None
-            fps_state.current_lane = None
-            fps_state.since = self.reactor.monotonic()
+                if attempt + 1 >= max_retries:
+                    error_msg = f"Filament failed to engage extruder for {lane_name} after {max_retries} attempts"
+                    self._pause_on_critical_failure(error_msg, oams_name)
+                    return False, error_msg
 
-            if attempt + 1 >= max_retries:
-                error_msg = f"Filament failed to engage extruder for {lane_name} after {max_retries} attempts"
-                self._pause_on_critical_failure(error_msg, oams_name)
-                return False, error_msg
-
-            delay = min(backoff_base * (2 ** attempt), backoff_max)
-            self.logger.info(f"Retrying load after engagement failure for {lane_name} (attempt {attempt + 1}/{max_retries}), waiting {delay:.1f}s")
-            self.reactor.pause(self.reactor.monotonic() + delay)
-            continue
+                delay = min(backoff_base * (2 ** attempt), backoff_max)
+                self.logger.info(f"Retrying load after engagement failure for {lane_name} (attempt {attempt + 1}/{max_retries}), waiting {delay:.1f}s")
+                self.reactor.pause(self.reactor.monotonic() + delay)
+                continue
 
             # Engagement verified! Track lane transitions for runout recovery protection
             old_lane = fps_state.current_lane
