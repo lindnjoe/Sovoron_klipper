@@ -2131,43 +2131,8 @@ class afcAMS(afcUnit):
             if afc_function is not None:
                 try:
                     afc_function.handle_activate_extruder()
-                except Exception as e:
-                    # During startup, Spoolman might not be initialized yet or lane might not match active extruder
-                    # Log at debug level if it's just a Spoolman registration issue during early startup
-                    error_msg = str(e)
-                    if "not registered" in error_msg or "spoolman" in error_msg.lower():
-                        self.logger.debug(f"Spoolman not ready during lane {lane.name} activation (normal during startup): {e}")
-                    else:
-                        self.logger.error(f"Failed to activate extruder after loading lane {lane.name}: {e}")
-
-            # Initialize toolchanger to sync with detected tool on shuttle
-            # This uses klipper-toolchanger's INITIALIZE_TOOLCHANGER to properly
-            # activate the extruder and set up toolchanger state
-            # Matches pattern from tool_detection.cfg:18 and homing.cfg:108
-            try:
-                # Determine tool number from extruder name (e.g., "extruder5" -> 5)
-                extruder_name = lane.extruder_obj.name
-                tool_number = 0 if extruder_name == "extruder" else int(extruder_name.replace("extruder", ""))
-
-                # Call INITIALIZE_TOOLCHANGER to sync toolchanger with detected tool
-                gcode = self.printer.lookup_object('gcode')
-                gcode.run_script_from_command(f"INITIALIZE_TOOLCHANGER T={tool_number}")
-                self.logger.info(f"Initialized toolchanger for T{tool_number} ({extruder_name}) with loaded lane {lane.name}")
-            except Exception as e:
-                self.logger.error(f"Failed to initialize toolchanger for lane {lane.name}: {e}")
-
-            # Set lane LEDs even if activate_extruder failed (e.g., during startup with non-T0 lanes)
-            # This ensures proper LED state regardless of Spoolman availability or extruder mismatch
-            try:
-                if self._lane_matches_extruder(lane):
-                    # Lane matches active extruder - set as active tool loaded
-                    lane.unit_obj.lane_tool_loaded(lane)
-                else:
-                    # Lane doesn't match active extruder - set as idle/loaded
-                    lane.unit_obj.lane_tool_loaded_idle(lane)
-            except Exception as e:
-                self.logger.error(f"Failed to set LED for loaded lane {lane.name}: {e}")
-
+                except Exception:
+                    self.logger.error(f"Failed to activate extruder after loading lane {lane.name}")
             try:
                 self.afc.save_vars()
             except Exception:
