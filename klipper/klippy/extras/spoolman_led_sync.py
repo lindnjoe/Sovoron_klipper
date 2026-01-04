@@ -227,17 +227,18 @@ class SpoolmanLEDSync:
                 is_stable_state = True
 
                 # Check lane status if available
+                # AFCLaneState uses string values, so we compare directly to avoid import issues
                 if hasattr(lane, 'status'):
-                    from AFC_Klipper_Add_On.extras.AFC_Helpers import AFCLaneState
                     transient_states = [
-                        AFCLaneState.TOOL_LOADING,
-                        AFCLaneState.TOOL_UNLOADING,
-                        AFCLaneState.HUB_LOADING,
-                        AFCLaneState.HUB_UNLOADING,
-                        AFCLaneState.LANE_LOADING,
-                        AFCLaneState.LANE_UNLOADING,
-                        AFCLaneState.ERROR,
-                        AFCLaneState.FAULT
+                        "Tool Loading",
+                        "Tool Unloading",
+                        "HUB Loading",
+                        "HUB Unloading",
+                        "Lane Loading",
+                        "Lane Unloading",
+                        "Error",
+                        "Fault",
+                        "Ejecting"
                     ]
                     if lane.status in transient_states:
                         is_stable_state = False

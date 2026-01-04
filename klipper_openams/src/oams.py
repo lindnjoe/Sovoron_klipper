@@ -282,8 +282,13 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             
     def clear_errors(self):
         """Clear all error states including LED errors and action status."""
+        # Clear all LED errors with individual try/except to ensure all LEDs are attempted
+        # even if one fails. This prevents partial clearing if MCU communication is flaky.
         for i in range(4):
-            self.set_led_error(i, 0)
+            try:
+                self.set_led_error(i, 0)
+            except Exception as e:
+                logging.error(f"Failed to clear LED error for bay {i} on {getattr(self, 'name', 'unknown')}: {e}")
 
         # Clear any stale action status from previous operations
         self.action_status = None
@@ -291,7 +296,10 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self.action_status_value = None
 
         # Re-determine current spool to ensure state is accurate
-        self.current_spool = self.determine_current_spool()
+        try:
+            self.current_spool = self.determine_current_spool()
+        except Exception as e:
+            logging.error(f"Failed to determine current spool during clear_errors on {getattr(self, 'name', 'unknown')}: {e}")
             
     def set_led_error(self, idx, value):
         if logging.getLogger(__name__).isEnabledFor(logging.DEBUG):

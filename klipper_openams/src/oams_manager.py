@@ -4714,16 +4714,32 @@ class OAMSManager:
             # SAFETY: Wrap pause in try/except to prevent crash if pause logic fails
             try:
                 self._pause_printer_message(message, fps_state.current_oams)
+                # CRITICAL: 1-second delay after pause to allow system to settle
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
             except Exception:
                 self.logger.error(f"Failed to pause printer during clog on {fps_name} - continuing with error state")
                 # Keep active=True to prevent retriggering until user intervention
                 return
 
-            # OPTIMIZATION: Don't send redundant follower commands after load completion
-            # Follower should already be enabled from load operation with manual_override set
-            # Sending redundant commands during error conditions can overwhelm MCU communication
-            # and contribute to crashes during already-stressed print stalls
-            self.logger.info(f"Clog pause triggered for {fps_name} - follower should already be enabled from load")
+            # CRITICAL: Explicitly enable follower forward and set manual_override
+            # During clog, automatic follower control (_update_follower_for_oams) keeps running
+            # and can disable/reverse follower based on hub sensors. We must:
+            # 1. Explicitly enable follower forward for manual extrusion during troubleshooting
+            # 2. Set manual_override=True to prevent automatic control from changing it
+            # This keeps follower active and in correct direction for user recovery
+            if fps_state.current_oams and fps_state.current_spool_idx is not None:
+                oams_obj = self.oams.get(fps_state.current_oams)
+                if oams_obj is not None:
+                    self._enable_follower(fps_name, fps_state, oams_obj, 1, "clog detected - keep follower forward for recovery")
+
+                    # Set manual override to prevent automatic hub-sensor control from changing it
+                    state = self._get_follower_state(fps_state.current_oams)
+                    state.manual_override = True
+                    self.logger.info(f"Set manual follower override for {fps_name} during clog - prevents automatic control")
+                else:
+                    self.logger.warning(f"Cannot enable follower during clog on {fps_name} - OAMS {fps_state.current_oams} not found")
+            else:
+                self.logger.warning(f"Cannot enable follower during clog on {fps_name} - no OAMS or spool loaded")
 
     def start_monitors(self):
         """Start all monitoring timers"""
