@@ -561,14 +561,6 @@ class afcAMS(afcUnit):
         except Exception as e:
             self.logger.error(f"Failed to run OAMS state detection during delayed startup sync for {self.name}: {e}")
 
-        # Sync virtual tool sensor after state detection
-        try:
-            sync_time = self.reactor.monotonic()
-            self._sync_virtual_tool_sensor(sync_time, force=True)
-            self.logger.info(f"Virtual tool sensor sync completed for {self.name} during delayed startup sync")
-        except Exception as e:
-            self.logger.error(f"Failed to sync virtual tool sensor during delayed startup sync for {self.name}: {e}")
-
         # Return NEVER to make this a one-shot timer (never reschedule)
         return self.reactor.NEVER
 
