@@ -4094,10 +4094,9 @@ class OAMSManager:
                             state_changed = True
                 elif state == FPSLoadState.LOADED:
                     if is_printing:
-                        # DISABLED: Stuck spool detection during active printing causes false positives
-                        # During print stalls (print_stall>0), pressure fluctuates naturally which triggers
-                        # false stuck detection. Stuck detection should only run during load/unload operations.
-                        # self._check_stuck_spool(fps_name, fps_state, fps, oams, pressure, hes_values, now)
+                        # Call stuck spool check with encoder value to prevent false positives
+                        # Requires BOTH low pressure AND encoder stopped (not just pressure alone)
+                        self._check_stuck_spool(fps_name, fps_state, fps, oams, encoder_value, pressure, hes_values, now)
 
                         # Skip clog detection during AMS runout DETECTED/COASTING states
                         # DETECTED: Old spool empty, no encoder movement expected
@@ -4314,8 +4313,16 @@ class OAMSManager:
 
             self.logger.info(f"Spool appears stuck while loading {lane_label} spool {spool_label} ({stuck_reason}) - letting retry logic handle it")
 
-    def _check_stuck_spool(self, fps_name, fps_state, fps, oams, pressure, hes_values, now):
-        """Check for stuck spool conditions (OPTIMIZED)."""
+    def _check_stuck_spool(self, fps_name, fps_state, fps, oams, encoder_value, pressure, hes_values, now):
+        """Check for stuck spool conditions during printing.
+
+        Requires BOTH conditions to trigger:
+        1. FPS pressure low (< threshold) for sustained time
+        2. Encoder not moving (< MIN_ENCODER_DIFF clicks)
+
+        This prevents false positives during print stalls where pressure may fluctuate
+        but encoder naturally stops due to toolhead buffer underrun.
+        """
         # Skip stuck spool detection if clog is active
         # Clog detection handles follower control during clog conditions
         if fps_state.clog.active:
@@ -4451,20 +4458,31 @@ class OAMSManager:
 
             return
 
+        # Check encoder movement to differentiate stuck spool from normal print pause
+        encoder_diff = fps_state.record_encoder_sample(encoder_value)
+        encoder_moving = encoder_diff is not None and encoder_diff >= MIN_ENCODER_DIFF
+
         # Hysteresis logic: Use lower threshold to start timer, upper threshold to clear
-        if pressure <= self.stuck_spool_pressure_threshold:
-            # Pressure is low - start or continue stuck spool timer
+        # CRITICAL: Require BOTH low pressure AND encoder stopped to prevent false positives
+        if pressure <= self.stuck_spool_pressure_threshold and not encoder_moving:
+            # Pressure is low AND encoder not moving - start or continue stuck spool timer
             if fps_state.stuck_spool.start_time is None:
                 fps_state.stuck_spool.start_time = now
+                self.logger.info(f"{fps_name}: Stuck spool timer started - pressure {pressure:.2f} <= {self.stuck_spool_pressure_threshold:.2f}, encoder stopped")
             elif (not fps_state.stuck_spool.active and now - fps_state.stuck_spool.start_time >= STUCK_SPOOL_DWELL):
                 message = "Spool appears stuck"
                 if fps_state.current_lane is not None:
-                    message = f"Spool appears stuck on {fps_state.current_lane} spool {fps_state.current_spool_idx}"
+                    message = f"Spool appears stuck on {fps_state.current_lane} spool {fps_state.current_spool_idx} (pressure {pressure:.2f}, encoder stopped)"
                 # SAFETY: Wrap pause trigger in try/except to prevent crash during stuck spool detection
                 try:
                     self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
                 except Exception:
                     self.logger.error(f"Failed to trigger stuck spool pause for {fps_name} - error state may be inconsistent")
+        elif encoder_moving:
+            # Encoder is moving - clear timer even if pressure is low (print stall with active extrusion)
+            if fps_state.stuck_spool.start_time is not None and not fps_state.stuck_spool.active:
+                fps_state.stuck_spool.start_time = None
+                self.logger.debug(f"{fps_name}: Stuck spool timer cleared - encoder moving ({encoder_diff} clicks)")
         elif pressure >= self.stuck_spool_pressure_clear_threshold:
             # Pressure is definitively high - clear stuck spool state
             if fps_state.stuck_spool.active and oams is not None and fps_state.current_spool_idx is not None:
