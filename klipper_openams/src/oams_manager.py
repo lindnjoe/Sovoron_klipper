@@ -3976,6 +3976,9 @@ class OAMSManager:
         if oams is not None:
             try:
                 oams.abort_current_action()
+                # Give MCU time to recover after abort before sending new commands
+                # Prevents MCU communication timeout from rapid command sequence
+                self.reactor.pause(self.reactor.monotonic() + 0.2)
             except Exception:
                 self.logger.error(f"Failed to abort active action for {fps_name} during stuck spool pause")
 
@@ -4172,6 +4175,9 @@ class OAMSManager:
             try:
                 oams.abort_current_action()
                 self.logger.info(f"Aborted stuck spool unload operation on {fps_name}")
+                # Give MCU time to recover after abort before sending new commands
+                # Prevents MCU communication timeout from rapid command sequence
+                self.reactor.pause(self.reactor.monotonic() + 0.2)
             except Exception:
                 self.logger.error(f"Failed to abort unload operation on {fps_name}")
 
@@ -4271,6 +4277,9 @@ class OAMSManager:
             try:
                 oams.abort_current_action()
                 self.logger.info(f"Aborted stuck spool load operation on {fps_name}: {stuck_reason}")
+                # Give MCU time to recover after abort before sending new commands
+                # Prevents MCU communication timeout from rapid command sequence
+                self.reactor.pause(self.reactor.monotonic() + 0.2)
             except Exception:
                 self.logger.error(f"Failed to abort load operation on {fps_name}")
 
