@@ -4609,6 +4609,23 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             return
 
+        # Skip clog detection when no lane is synced to the toolhead.
+        # This covers manual unloads (e.g., UNSET_LANE_LOADED) and startup states where
+        # AFC/OpenAMS haven't selected a lane yet, preventing idle false positives.
+        try:
+            afc = self._get_afc()
+            extruder_obj = getattr(afc, "extruder", None) if afc is not None else None
+            extruder_lane = getattr(extruder_obj, "lane_loaded", None)
+        except Exception:
+            extruder_lane = None
+
+        if fps_state.current_lane is None or extruder_lane is None:
+            if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
+                self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "no lane synced")
+
+            fps_state.reset_clog_tracker()
+            return
+
         # Skip clog detection if AFC bypass is enabled
         # User is manually controlling filament, extruder/encoder relationship will be abnormal
         try:
