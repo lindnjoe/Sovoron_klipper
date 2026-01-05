@@ -4268,6 +4268,12 @@ class OAMSManager:
                     state = self._get_follower_state(fps_state.current_oams)
                     state.manual_override = True
 
+            # Allow time for the MCU to process the abort before the next retry kicks in.
+            # This keeps automatic retries functional while preventing a rapid command burst.
+            cooldown = 1.0
+            self.logger.info(f"Cooling down {cooldown:.1f}s after stuck load abort on {fps_name} to avoid command flood")
+            self.reactor.pause(self.reactor.monotonic() + cooldown)
+
             self.logger.info(f"Spool appears stuck while loading {lane_label} spool {spool_label} ({stuck_reason}) - letting retry logic handle it")
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, encoder_value, pressure, hes_values, now):
