@@ -3249,8 +3249,9 @@ class OAMSManager:
 
             # Monitors are already running globally, no need to restart them
             return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
-            self._pause_on_critical_failure(error_msg, oams_name)
-            return False, error_msg
+
+        # Fallback - should not be hit, but return a failure tuple instead of None
+        return False, f"Failed to load lane {lane_name}"
 
 
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
