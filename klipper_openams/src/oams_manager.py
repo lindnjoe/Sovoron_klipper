@@ -3134,6 +3134,13 @@ class OAMSManager:
                         self.logger.error(f"Failed to unload after engagement failure for {lane_name}: {unload_msg}")
                 except Exception:
                     self.logger.error(f"Exception during unload after engagement failure for {lane_name}")
+                # Give the MCU a brief window to finish the unload before the next retry
+                cooldown = 0.5
+                self.logger.debug(f"Cooling {cooldown:.1f}s after failed engagement unload for {lane_name}")
+                try:
+                    self.reactor.pause(self.reactor.monotonic() + cooldown)
+                except Exception:
+                    pass
 
                 # Clear fps_state so retry starts fresh
                 fps_state.state = FPSLoadState.UNLOADED
