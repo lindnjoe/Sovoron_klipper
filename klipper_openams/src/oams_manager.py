@@ -3075,6 +3075,8 @@ class OAMSManager:
             return False, f"Failed to capture load state for lane {lane_name}"
 
         max_engagement_retries = max(1, getattr(oam, "load_retry_max", 1))
+        load_success = False
+        last_error = None
 
         for attempt in range(max_engagement_retries):
             # Only set state after all preliminary operations succeed
@@ -3096,7 +3098,7 @@ class OAMSManager:
             self._enable_follower(fps_name, fps_state, oam, 1, "before load - enable follower for buffer tracking")
 
             try:
-                success, message = oam.load_spool_with_retry(bay_index)
+                success, message = oam.load_spool(bay_index)
             except Exception:
                 self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
                 fps_state.state = FPSLoadState.UNLOADED
@@ -3108,17 +3110,20 @@ class OAMSManager:
                 return False, error_msg
 
             if not success:
-                # Should not happen because load_spool_with_retry already retried, but guard anyway
+                last_error = message
                 fps_state.state = FPSLoadState.UNLOADED
                 fps_state.current_spool_idx = None
                 fps_state.current_oams = None
                 fps_state.current_lane = None
-                return False, message
+                # Brief cooldown before retrying another load attempt
+                self.reactor.pause(self.reactor.monotonic() + 0.5)
+                continue
 
             # OAMS load succeeded - now verify filament engaged extruder
             # Extrude the configured reload length and check FPS pressure drop
             engagement_ok = self._verify_engagement_with_extrude(fps_name, fps_state, fps, lane_name, oam)
             if engagement_ok:
+                load_success = True
                 # Engagement verified! Track lane transitions for runout recovery protection
                 break
 
@@ -3163,12 +3168,11 @@ class OAMSManager:
             fps_state.since = self.reactor.monotonic()
 
             if attempt + 1 >= max_engagement_retries:
-                return False, f"Filament failed to engage extruder for {lane_name}"
+                last_error = f"Filament failed to engage extruder for {lane_name}"
             # Otherwise loop for another attempt
 
-        else:
-            # Should not reach here due to loop structure, but guard anyway
-            return False, f"Filament failed to engage extruder for {lane_name}"
+        if not load_success:
+            return False, last_error or f"Failed to load lane {lane_name}"
 
         old_lane = fps_state.current_lane
         fps_state.current_lane = lane_name  # Store lane name (e.g., "lane8") not map (e.g., "T0")
