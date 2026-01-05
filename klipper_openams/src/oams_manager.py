@@ -4541,6 +4541,12 @@ class OAMSManager:
             # Don't crash if bypass check fails, just continue with detection
             pass
 
+        # Suppress clog detection during engagement verification to avoid false positives
+        # while the extruder is deliberately driving filament for the check.
+        if fps_state.engagement_in_progress:
+            fps_state.reset_clog_tracker()
+            return
+
         # Skip clog detection if FPS pressure is very low - indicates stuck spool, not clog
         # During lane loads, stuck spool should trigger retry logic, not clog pause
         # During normal printing, low pressure also indicates stuck spool (separate detection)
