@@ -4268,10 +4268,10 @@ class OAMSManager:
                     state = self._get_follower_state(fps_state.current_oams)
                     state.manual_override = True
 
-            # Allow time for the MCU to process the abort before the next retry kicks in.
-            # This keeps automatic retries functional while preventing a rapid command burst.
-            cooldown = 1.0
-            self.logger.info(f"Cooling down {cooldown:.1f}s after stuck load abort on {fps_name} to avoid command flood")
+            # Prevent rapid-fire retries from flooding the MCU after an abort.
+            # Give a short breather so the next retry starts with a clean MCU queue.
+            cooldown = 0.5
+            self.logger.info(f"Cooling down {cooldown:.1f}s after stuck load abort on {fps_name} to avoid rapid retry spam")
             self.reactor.pause(self.reactor.monotonic() + cooldown)
 
             self.logger.info(f"Spool appears stuck while loading {lane_label} spool {spool_label} ({stuck_reason}) - letting retry logic handle it")
@@ -4542,7 +4542,11 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             return
 
-        # Clog detection now runs normally for all states (including TOOL_LOADING)
+        # Allow clog detection during loading so post-engagement purges still flag true clogs,
+        # but keep tracker reset when no lane is present.
+        if fps_state.current_spool_idx is None:
+            fps_state.reset_clog_tracker()
+            return
         # During load purge: extruder advances + encoder doesn't move = genuine clog, detect it
         # Before purge starts: extruder not advancing = clog won't trigger (extrusion_delta < threshold)
         # The existing clog logic is already smart enough to handle this correctly
