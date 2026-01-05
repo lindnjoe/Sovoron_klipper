@@ -216,10 +216,11 @@ class OAMSRunoutMonitor:
 
                 is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
                 spool_idx = self.fps_state.current_spool_idx or self.runout_spool_idx
-        
+
                 if self.state in (OAMSRunoutState.STOPPED, OAMSRunoutState.PAUSED, OAMSRunoutState.RELOADING):
-                    return eventtime + MONITOR_ENCODER_PERIOD
-        
+                    # When not actively monitoring, use the idle interval to reduce timer churn
+                    return eventtime + MONITOR_ENCODER_PERIOD_IDLE
+
                 if self.state == OAMSRunoutState.MONITORING:
                     if getattr(fps_state, "afc_delegation_active", False):
                         now = self.reactor.monotonic()
@@ -1710,7 +1711,10 @@ class OAMSManager:
             oams_obj = self.oams.get(fps_state.current_oams)
             if oams_obj:
                 try:
-                    oams_obj.set_oams_follower(0, direction)
+                    # Use state-aware helper to avoid redundant MCU commands
+                    self._set_follower_if_changed(
+                        fps_state.current_oams, oams_obj, 0, direction, "manual disable", force=True
+                    )
                     fps_state.following = False
                     # Update state tracker to avoid redundant commands
                     state = self._get_follower_state(fps_state.current_oams)
@@ -1737,7 +1741,10 @@ class OAMSManager:
 
         try:
             self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={fps_name} (manual override - will stay enabled regardless of hub sensors)")
-            oams_obj.set_oams_follower(enable, direction)
+            # Use state-aware helper so repeated commands don't spam the MCU
+            self._set_follower_if_changed(
+                fps_state.current_oams, oams_obj, enable, direction, "manual enable", force=True
+            )
             fps_state.following = bool(enable)
             fps_state.direction = direction
             # Update state tracker to avoid redundant commands
