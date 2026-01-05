@@ -216,10 +216,11 @@ class OAMSRunoutMonitor:
 
                 is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
                 spool_idx = self.fps_state.current_spool_idx or self.runout_spool_idx
-        
+
                 if self.state in (OAMSRunoutState.STOPPED, OAMSRunoutState.PAUSED, OAMSRunoutState.RELOADING):
-                    return eventtime + MONITOR_ENCODER_PERIOD
-        
+                    # When not actively monitoring, use the idle interval to reduce timer churn
+                    return eventtime + MONITOR_ENCODER_PERIOD_IDLE
+
                 if self.state == OAMSRunoutState.MONITORING:
                     if getattr(fps_state, "afc_delegation_active", False):
                         now = self.reactor.monotonic()
@@ -756,6 +757,8 @@ class OAMSManager:
         self._gcode_obj = None
         self._toolhead_obj = None
         self._pause_resume_obj = None
+        # Prevent duplicate detection logs when the same lane remains loaded
+        self._last_logged_detected_lane: Dict[str, Optional[str]] = {}
 
         self._initialize_oams()
 
@@ -1150,11 +1153,15 @@ class OAMSManager:
                 loaded_lane_name = getattr(extruder_obj, 'lane_loaded', None)
 
             if not loaded_lane_name:
+                # Clear last log so a future detection of the same lane after unload will log again
+                self._last_logged_detected_lane.pop(extruder_name, None)
                 continue
 
             # Check if this lane is on the current FPS
             lane_fps = self.get_fps_for_afc_lane(loaded_lane_name)
             if lane_fps != fps_name:
+                # Lane is loaded, but on a different FPS - clear last log for this extruder
+                self._last_logged_detected_lane.pop(extruder_name, None)
                 continue  # This lane is on a different FPS
 
             # Get the lane object
@@ -1216,7 +1223,10 @@ class OAMSManager:
             # Found loaded lane! Return lane name (e.g., "lane8") not map (e.g., "T4")
 
             # Map can be retrieved from lane object if needed for display
-            self.logger.info(f"Detected {loaded_lane_name} loaded to {extruder_name} (bay {bay_index} on {oams_name})")
+            last_logged = self._last_logged_detected_lane.get(extruder_name)
+            if last_logged != loaded_lane_name:
+                self._last_logged_detected_lane[extruder_name] = loaded_lane_name
+                self.logger.info(f"Detected {loaded_lane_name} loaded to {extruder_name} (bay {bay_index} on {oams_name})")
 
             return loaded_lane_name, oam, bay_index
 
@@ -1710,7 +1720,10 @@ class OAMSManager:
             oams_obj = self.oams.get(fps_state.current_oams)
             if oams_obj:
                 try:
-                    oams_obj.set_oams_follower(0, direction)
+                    # Use state-aware helper to avoid redundant MCU commands
+                    self._set_follower_if_changed(
+                        fps_state.current_oams, oams_obj, 0, direction, "manual disable", force=True
+                    )
                     fps_state.following = False
                     # Update state tracker to avoid redundant commands
                     state = self._get_follower_state(fps_state.current_oams)
@@ -1737,7 +1750,10 @@ class OAMSManager:
 
         try:
             self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={fps_name} (manual override - will stay enabled regardless of hub sensors)")
-            oams_obj.set_oams_follower(enable, direction)
+            # Use state-aware helper so repeated commands don't spam the MCU
+            self._set_follower_if_changed(
+                fps_state.current_oams, oams_obj, enable, direction, "manual enable", force=True
+            )
             fps_state.following = bool(enable)
             fps_state.direction = direction
             # Update state tracker to avoid redundant commands
