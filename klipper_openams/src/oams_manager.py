@@ -738,8 +738,6 @@ class OAMSManager:
         self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL, minval=0.0, maxval=60.0)
         self.load_fps_stuck_threshold = config.getfloat("load_fps_stuck_threshold", LOAD_FPS_STUCK_THRESHOLD, minval=0.0, maxval=1.0)
         self.engagement_pressure_threshold = config.getfloat("engagement_pressure_threshold", 0.6, minval=0.0, maxval=1.0)
-        # Optional AFC PREP restore workaround guard
-        self.enable_afc_restore_fix = config.getboolean("enable_afc_restore_fix", True)
 
         # Validate hysteresis: clear threshold must be > trigger threshold
         if self.stuck_spool_pressure_clear_threshold <= self.stuck_spool_pressure_threshold:
@@ -968,13 +966,6 @@ class OAMSManager:
 
         self.determine_state()
 
-        # WORKAROUND: Fix AFC state restoration after PREP command
-        # AFC's PREP doesn't call set_tool_loaded(), causing state inconsistency after firmware restart
-        if self.enable_afc_restore_fix:
-            self._fix_afc_state_restoration()
-        else:
-            self.logger.info("Skipping AFC state restoration fix (enable_afc_restore_fix=False)")
-
         self.start_monitors()
         self.ready = True
 
@@ -1103,84 +1094,6 @@ class OAMSManager:
             # Don't crash if this workaround fails - just log it
             self.logger.debug(
                 f"Failed to fix min_event_systime for {lane_name} (AFC may not have this lane or sensor)"
-            )
-
-    def _fix_afc_state_restoration(self) -> None:
-        """Workaround for AFC bug: Properly restore lane-to-extruder state after firmware restart.
-
-        AFC's PREP command restores lane_loaded and tool_loaded boolean properties but doesn't
-        call set_tool_loaded() to properly synchronize stepper state, LED state, and extruder
-        calibration. This causes the system to lose track of which lane is loaded after restarts.
-        As of the current AFC_prep.py (PREP restores booleans only), we still need this guard
-        to realign state until upstream adds the missing set_tool_loaded() call.
-
-        This is a defensive workaround until AFC fixes the bug in AFC_prep.py:125
-        """
-        try:
-            afc = self._get_afc()
-            if afc is None:
-                return
-
-            if not hasattr(afc, 'tools') or not hasattr(afc, 'lanes'):
-                return
-
-            # Check each extruder to see if it has lane_loaded but the lane's tool_loaded is False
-            for extruder_name, extruder_obj in afc.tools.items():
-                lane_loaded_name = getattr(extruder_obj, 'lane_loaded', None)
-
-                if not lane_loaded_name:
-                    continue  # No lane should be loaded to this extruder
-
-                lane_obj = afc.lanes.get(lane_loaded_name)
-                if lane_obj is None:
-                    self.logger.warning(
-                        "AFC state inconsistency: %s.lane_loaded=%s but lane doesn't exist",
-                        extruder_name, lane_loaded_name
-                    )
-                    continue
-
-                # Only restore tool-loaded state for the tool currently on the shuttle
-                # to avoid overriding toolchanger detection during PREP.
-                is_on_shuttle = True
-                try:
-                    shuttle_check = getattr(extruder_obj, 'on_shuttle', None)
-                    if callable(shuttle_check):
-                        is_on_shuttle = bool(shuttle_check())
-                except Exception:
-                    is_on_shuttle = True
-
-                if not is_on_shuttle:
-                    self.logger.debug(
-                        "Skipping tool restore for %s; extruder %s not on shuttle",
-                        lane_loaded_name,
-                        extruder_name,
-                    )
-                    continue
-
-                # Check if lane's tool_loaded matches extruder's lane_loaded
-                tool_loaded = getattr(lane_obj, 'tool_loaded', False)
-
-                if not tool_loaded:
-                    # Bug detected: extruder says lane is loaded but lane says it's not loaded to tool
-                    # Call set_tool_loaded() to properly synchronize state
-                    if hasattr(lane_obj, 'set_tool_loaded') and callable(lane_obj.set_tool_loaded):
-                        lane_obj.set_tool_loaded()
-                        self.logger.info(
-                            "Fixed AFC state restoration: Called %s.set_tool_loaded() to sync with %s.lane_loaded=%s",
-                            lane_loaded_name, extruder_name, lane_loaded_name
-                        )
-                    else:
-                        # Fallback: manually set tool_loaded if set_tool_loaded doesn't exist
-                        lane_obj.tool_loaded = True
-                        self.logger.warning(
-                            "Fixed AFC state restoration (fallback): Set %s.tool_loaded=True (no set_tool_loaded method)",
-                            lane_loaded_name
-                        )
-
-        except Exception:
-            self.logger.error(
-                "Failed to fix AFC state restoration (non-critical, AFC may handle this differently)",
-                exc_info=True
             )
 
     def determine_current_loaded_lane(self, fps_name: str) -> Tuple[Optional[str], Optional[object], Optional[int]]:
