@@ -3074,100 +3074,118 @@ class OAMSManager:
             self.logger.error(f"Failed to capture load state for lane {lane_name} bay {bay_index}")
             return False, f"Failed to capture load state for lane {lane_name}"
 
-        # Only set state after all preliminary operations succeed
-        fps_state.state = FPSLoadState.LOADING
-        fps_state.encoder = encoder
-        fps_state.current_oams = oam_name
-        fps_state.current_spool_idx = bay_index
-        fps_state.current_lane = lane_name  # Set lane name at start of load attempt for error reporting
-        # Set since to now for THIS load attempt (will be updated on success)
-        fps_state.since = current_time
-        fps_state.clear_encoder_samples()
-        fps_state.reset_engagement_tracking()  # Reset engagement state for clean load attempt
+        max_engagement_retries = max(1, getattr(oam, "load_retry_max", 1))
 
-        # CRITICAL: Enable follower BEFORE starting the OAMS load command
-        # The OAMS BLDC will push filament through the buffer, and the follower
-        # must be tracking it in real-time, not after the load completes
-        # Without this, filament gets stuck in the buffer during the load
-        # NOTE: Trusting automatic follower control to keep it enabled during LOADING state
-        self._enable_follower(fps_name, fps_state, oam, 1, "before load - enable follower for buffer tracking")
+        for attempt in range(max_engagement_retries):
+            # Only set state after all preliminary operations succeed
+            fps_state.state = FPSLoadState.LOADING
+            fps_state.encoder = encoder
+            fps_state.current_oams = oam_name
+            fps_state.current_spool_idx = bay_index
+            fps_state.current_lane = lane_name  # Set lane name at start of load attempt for error reporting
+            # Set since to now for THIS load attempt (will be updated on success)
+            fps_state.since = current_time
+            fps_state.clear_encoder_samples()
+            fps_state.reset_engagement_tracking()  # Reset engagement state for clean load attempt
 
-        try:
-            success, message = oam.load_spool_with_retry(bay_index)
-        except Exception:
-            self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
-            fps_state.state = FPSLoadState.UNLOADED
-            error_msg = f"Failed to load bay {bay_index} on {oams_name}"
+            # CRITICAL: Enable follower BEFORE starting the OAMS load command
+            # The OAMS BLDC will push filament through the buffer, and the follower
+            # must be tracking it in real-time, not after the load completes
+            # Without this, filament gets stuck in the buffer during the load
+            # NOTE: Trusting automatic follower control to keep it enabled during LOADING state
+            self._enable_follower(fps_name, fps_state, oam, 1, "before load - enable follower for buffer tracking")
 
-            # CRITICAL: Pause printer if load fails during printing
-            # This prevents printing without filament loaded
-            self._pause_on_critical_failure(error_msg, oams_name)
-            return False, error_msg
+            try:
+                success, message = oam.load_spool_with_retry(bay_index)
+            except Exception:
+                self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
+                fps_state.state = FPSLoadState.UNLOADED
+                error_msg = f"Failed to load bay {bay_index} on {oams_name}"
 
-        if success:
-            # OAMS load succeeded - now verify filament engaged extruder
-            # Extrude the configured reload length and check FPS pressure drop
-            engagement_ok = self._verify_engagement_with_extrude(fps_name, fps_state, fps, lane_name, oam)
-            if not engagement_ok:
-                # Filament reached extruder but didn't engage - unload and return failure to trigger retry
-                self.logger.warning(f"Filament engagement failed for {lane_name}, unloading before retry")
+                # CRITICAL: Pause printer if load fails during printing
+                # This prevents printing without filament loaded
+                self._pause_on_critical_failure(error_msg, oams_name)
+                return False, error_msg
 
-                # Retract extruder by reload distance to back out the filament that was extruded during engagement
-                # This ensures filament position is correct for the next load attempt
-                try:
-                    reload_length, reload_speed = self._get_reload_params(lane_name)
-                    if reload_length is not None and reload_speed is not None:
-                        self.logger.info(f"Retracting extruder {reload_length:.1f}mm to reverse engagement extrusion for {lane_name}")
-                        gcode = self.printer.lookup_object('gcode')
-                        gcode.run_script_from_command("M83")  # Relative extrusion mode
-                        gcode.run_script_from_command(f"G1 E-{reload_length:.2f} F{reload_speed:.0f}")  # Retract
-                        gcode.run_script_from_command("M400")  # Wait for moves to complete
-                    else:
-                        self.logger.warning(f"Could not get reload params for {lane_name}, skipping extruder retraction")
-                except Exception:
-                    self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}")
-
-                # Unload the filament since it didn't engage properly before letting retry logic run
-                try:
-                    unload_success, unload_msg = oam.unload_spool_with_retry()
-                    if not unload_success:
-                        self.logger.error(f"Failed to unload after engagement failure for {lane_name}: {unload_msg}")
-                except Exception:
-                    self.logger.error(f"Exception during unload after engagement failure for {lane_name}")
-                # Give the MCU a brief window to finish the unload before the next retry
-                cooldown = 0.5
-                self.logger.debug(f"Cooling {cooldown:.1f}s after failed engagement unload for {lane_name}")
-                try:
-                    self.reactor.pause(self.reactor.monotonic() + cooldown)
-                except Exception:
-                    pass
-
-                # Clear fps_state so retry starts fresh
+            if not success:
+                # Should not happen because load_spool_with_retry already retried, but guard anyway
                 fps_state.state = FPSLoadState.UNLOADED
                 fps_state.current_spool_idx = None
                 fps_state.current_oams = None
                 fps_state.current_lane = None
-                fps_state.since = self.reactor.monotonic()
+                return False, message
 
+            # OAMS load succeeded - now verify filament engaged extruder
+            # Extrude the configured reload length and check FPS pressure drop
+            engagement_ok = self._verify_engagement_with_extrude(fps_name, fps_state, fps, lane_name, oam)
+            if engagement_ok:
+                # Engagement verified! Track lane transitions for runout recovery protection
+                break
+
+            # Filament reached extruder but didn't engage - unload and retry (up to max_engagement_retries)
+            self.logger.warning(f"Filament engagement failed for {lane_name}, unloading before retry (attempt {attempt + 1}/{max_engagement_retries})")
+
+            # Retract extruder by reload distance to back out the filament that was extruded during engagement
+            # This ensures filament position is correct for the next load attempt
+            try:
+                reload_length, reload_speed = self._get_reload_params(lane_name)
+                if reload_length is not None and reload_speed is not None:
+                    self.logger.info(f"Retracting extruder {reload_length:.1f}mm to reverse engagement extrusion for {lane_name}")
+                    gcode = self.printer.lookup_object('gcode')
+                    gcode.run_script_from_command("M83")  # Relative extrusion mode
+                    gcode.run_script_from_command(f"G1 E-{reload_length:.2f} F{reload_speed:.0f}")  # Retract
+                    gcode.run_script_from_command("M400")  # Wait for moves to complete
+                else:
+                    self.logger.warning(f"Could not get reload params for {lane_name}, skipping extruder retraction")
+            except Exception:
+                self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}")
+
+            # Unload the filament since it didn't engage properly before letting retry logic run
+            try:
+                unload_success, unload_msg = oam.unload_spool_with_retry()
+                if not unload_success:
+                    self.logger.error(f"Failed to unload after engagement failure for {lane_name}: {unload_msg}")
+            except Exception:
+                self.logger.error(f"Exception during unload after engagement failure for {lane_name}")
+            # Give the MCU a brief window to finish the unload before the next retry
+            cooldown = 0.5
+            self.logger.debug(f"Cooling {cooldown:.1f}s after failed engagement unload for {lane_name}")
+            try:
+                self.reactor.pause(self.reactor.monotonic() + cooldown)
+            except Exception:
+                pass
+
+            # Clear fps_state so retry starts fresh
+            fps_state.state = FPSLoadState.UNLOADED
+            fps_state.current_spool_idx = None
+            fps_state.current_oams = None
+            fps_state.current_lane = None
+            fps_state.since = self.reactor.monotonic()
+
+            if attempt + 1 >= max_engagement_retries:
                 return False, f"Filament failed to engage extruder for {lane_name}"
+            # Otherwise loop for another attempt
 
-            # Engagement verified! Track lane transitions for runout recovery protection
-            old_lane = fps_state.current_lane
-            fps_state.current_lane = lane_name  # Store lane name (e.g., "lane8") not map (e.g., "T0")
+        else:
+            # Should not reach here due to loop structure, but guard anyway
+            return False, f"Filament failed to engage extruder for {lane_name}"
 
-            fps_state.current_oams = oam.name
-            fps_state.current_spool_idx = bay_index
+        old_lane = fps_state.current_lane
+        fps_state.current_lane = lane_name  # Store lane name (e.g., "lane8") not map (e.g., "T0")
 
-            # If lane actually changed (runout recovery), track the time
-            if old_lane is not None and old_lane != lane_name:
-                fps_state.last_lane_change_time = self.reactor.monotonic()
+        fps_state.current_oams = oam.name
+        fps_state.current_spool_idx = bay_index
 
-            # CRITICAL: Set fps_state.since to the successful load time BEFORE changing state
-            successful_load_time = oam.get_last_successful_load_time(bay_index)
-            if successful_load_time is not None:
-                fps_state.since = successful_load_time
-            else:
-                fps_state.since = self.reactor.monotonic()
+        # If lane actually changed (runout recovery), track the time
+        if old_lane is not None and old_lane != lane_name:
+            fps_state.last_lane_change_time = self.reactor.monotonic()
+
+        # CRITICAL: Set fps_state.since to the successful load time BEFORE changing state
+        successful_load_time = oam.get_last_successful_load_time(bay_index)
+        if successful_load_time is not None:
+            fps_state.since = successful_load_time
+        else:
+            fps_state.since = self.reactor.monotonic()
 
             # Now set state to LOADED after timestamp is correct
             fps_state.state = FPSLoadState.LOADED
@@ -3231,15 +3249,6 @@ class OAMSManager:
 
             # Monitors are already running globally, no need to restart them
             return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
-        else:
-            fps_state.state = FPSLoadState.UNLOADED
-            error_msg = message if message else f"Failed to load lane {lane_name}"
-
-            # CRITICAL: Pause printer if load fails during printing
-            # This prevents printing without filament loaded, which would cause:
-            # - No encoder movement
-            # - FPS pressure at ~0.01
-            # - Print failure and possible nozzle damage
             self._pause_on_critical_failure(error_msg, oams_name)
             return False, error_msg
 
