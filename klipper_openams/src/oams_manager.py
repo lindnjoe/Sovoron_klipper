@@ -1124,9 +1124,31 @@ class OAMSManager:
 
             return None, None, None
 
+        fps_state = self.current_state.fps_state.get(fps_name)
+
+        # Snapshot of AFC.var.unit (authoritative for lane_loaded mapping)
+        snapshot = self._load_afc_var_unit_snapshot()
+        snapshot_extruders = {}
+        if isinstance(snapshot, dict):
+            system = snapshot.get("system", {})
+            if isinstance(system, dict):
+                extruders = system.get("extruders", {})
+                if isinstance(extruders, dict):
+                    snapshot_extruders = extruders
+
         # Check each AFC tool/extruder to see which lane is loaded
         for extruder_name, extruder_obj in afc.tools.items():
-            loaded_lane_name = getattr(extruder_obj, 'lane_loaded', None)
+            loaded_lane_name = None
+
+            # Prefer snapshot data if available
+            extr_state = snapshot_extruders.get(extruder_name, {})
+            if isinstance(extr_state, dict):
+                loaded_lane_name = extr_state.get("lane_loaded")
+
+            # Fall back to live object if snapshot missing
+            if not loaded_lane_name:
+                loaded_lane_name = getattr(extruder_obj, 'lane_loaded', None)
+
             if not loaded_lane_name:
                 continue
 
@@ -1197,6 +1219,40 @@ class OAMSManager:
             self.logger.info(f"Detected {loaded_lane_name} loaded to {extruder_name} (bay {bay_index} on {oams_name})")
 
             return loaded_lane_name, oam, bay_index
+
+        # Fallback: if FPS state already tracks a lane as loaded, prefer that
+        if fps_state is not None and fps_state.state == FPSLoadState.LOADED and fps_state.current_lane:
+            lane = afc.lanes.get(fps_state.current_lane)
+            if lane is not None:
+                unit_str = getattr(lane, "unit", None)
+                if isinstance(unit_str, str) and ':' in unit_str:
+                    base_unit_name, slot_str = unit_str.split(':', 1)
+                    try:
+                        bay_index = int(slot_str) - 1
+                    except ValueError:
+                        bay_index = None
+                else:
+                    base_unit_name = str(unit_str) if unit_str is not None else None
+                    try:
+                        bay_index = int(getattr(lane, "index", 0)) - 1
+                    except Exception:
+                        bay_index = None
+
+                oam = None
+                if base_unit_name:
+                    unit_obj = getattr(lane, "unit_obj", None)
+                    if unit_obj is None:
+                        units = getattr(afc, "units", {})
+                        unit_obj = units.get(base_unit_name)
+                    oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
+                    if oams_name:
+                        oam = self.oams.get(oams_name) or self.oams.get(f"oams {oams_name}")
+
+                if oam is not None and bay_index is not None and bay_index >= 0:
+                    self.logger.info(
+                        f"Using fps_state fallback: {fps_state.current_lane} treated as loaded on {fps_name} (bay {bay_index} on {getattr(oam, 'name', 'unknown')})"
+                    )
+                    return fps_state.current_lane, oam, bay_index
 
         return None, None, None
         
@@ -3280,13 +3336,14 @@ class OAMSManager:
         lane_name = gcmd.get('LANE', None)
 
         if not lane_name:
-            gcmd.respond_info("LANE parameter is required (e.g., LANE=lane4)")
-
-            return
+            raise gcmd.error("LANE parameter is required (e.g., LANE=lane4)")
 
         # Load directly from lane configuration
         success, message = self._load_filament_for_lane(lane_name)
-        gcmd.respond_info(message)
+        if not success:
+            # Raise to halt any enclosing macro/script so we don't continue with a bad state
+            raise gcmd.error(message or f"Failed to load {lane_name}")
+        gcmd.respond_info(message or f"Loaded {lane_name}")
 
     def _pause_on_critical_failure(self, error_message: str, oams_name: Optional[str] = None) -> None:
         """
