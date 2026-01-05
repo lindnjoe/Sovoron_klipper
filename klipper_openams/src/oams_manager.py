@@ -222,6 +222,11 @@ class OAMSRunoutMonitor:
                     return eventtime + MONITOR_ENCODER_PERIOD_IDLE
 
                 if self.state == OAMSRunoutState.MONITORING:
+                    # If the printer isn't actively printing, relax monitoring to the idle interval
+                    # to avoid repeated hub/F1S reads when nothing is moving.
+                    if not is_printing:
+                        return eventtime + MONITOR_ENCODER_PERIOD_IDLE
+
                     if getattr(fps_state, "afc_delegation_active", False):
                         now = self.reactor.monotonic()
                         if now < getattr(fps_state, "afc_delegation_until", 0.0):
