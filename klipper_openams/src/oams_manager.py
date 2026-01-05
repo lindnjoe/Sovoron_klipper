@@ -3182,73 +3182,69 @@ class OAMSManager:
 
         # CRITICAL: Set fps_state.since to the successful load time BEFORE changing state
         successful_load_time = oam.get_last_successful_load_time(bay_index)
-        if successful_load_time is not None:
-            fps_state.since = successful_load_time
-        else:
-            fps_state.since = self.reactor.monotonic()
+        fps_state.since = successful_load_time if successful_load_time is not None else self.reactor.monotonic()
 
-            # Now set state to LOADED after timestamp is correct
-            fps_state.state = FPSLoadState.LOADED
-            fps_state.direction = 1
+        # Now set state to LOADED after timestamp is correct
+        fps_state.state = FPSLoadState.LOADED
+        fps_state.direction = 1
 
-            # OPTIMIZATION: Enable follower immediately before cleanup operations
-            self._ensure_forward_follower(fps_name, fps_state, "load filament")
+        # OPTIMIZATION: Enable follower immediately before cleanup operations
+        self._ensure_forward_follower(fps_name, fps_state, "load filament")
 
+        # WORKAROUND: Fix AFC runout helper min_event_systime after load
+        # AFC's handle_load_runout() doesn't update this, causing Klipper crashes during manual loads
+        self._fix_afc_runout_helper_time(lane_name)
 
-            # WORKAROUND: Fix AFC runout helper min_event_systime after load
-            # AFC's handle_load_runout() doesn't update this, causing Klipper crashes during manual loads
-            self._fix_afc_runout_helper_time(lane_name)
-
-            # Clear LED error state if stuck spool was active
-            if fps_state.stuck_spool.active:
-                try:
-                    oam.set_led_error(bay_index, 0)
-                    self.logger.info(f"Cleared stuck spool LED for {fps_name} spool {fps_name} after successful load")
-                except Exception:
-                    self.logger.error(f"Failed to clear LED on {fps_name} spool {fps_name} after successful load")
-
-            fps_state.reset_stuck_spool_state()
-            fps_state.reset_clog_tracker()
-
-            # Update virtual tool sensor state after successful load
-            # This ensures the virtual sensor reflects that filament is loaded at the toolhead
+        # Clear LED error state if stuck spool was active
+        if fps_state.stuck_spool.active:
             try:
-                afc = self._get_afc()
-                if afc is not None:
-                    lane = afc.lanes.get(lane_name)
-                    if lane is not None:
-                        unit_obj = getattr(lane, "unit_obj", None)
-                        if unit_obj is None:
-                            base_unit_name = getattr(lane, "unit", "").split(":")[0] if getattr(lane, "unit", None) else None
-                            units = getattr(afc, "units", {})
-                            unit_obj = units.get(base_unit_name)
-
-                        if unit_obj is not None and hasattr(unit_obj, '_set_virtual_tool_sensor_state'):
-                            eventtime = self.reactor.monotonic()
-                            # Call _set_virtual_tool_sensor_state directly with force=True
-                            # This is the same approach used in SET_LANE_LOADED wrapper
-                            unit_obj._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
-                            self.logger.info(f"Updated virtual tool sensor to LOADED for {lane_name} after successful load")
-
-                            # CRITICAL: Notify AFC that lane is loaded to toolhead
-                            # This calls handle_openams_lane_tool_state which sets extruder.lane_loaded
-                            # Without this, determine_current_loaded_lane() can't detect what's loaded
-                            if AMSRunoutCoordinator is not None:
-                                try:
-                                    AMSRunoutCoordinator.notify_lane_tool_state(
-                                        self.printer, oam_name, lane_name,
-                                        loaded=True, spool_index=bay_index, eventtime=eventtime
-                                    )
-                                    self.logger.debug(f"Notified AFC that lane {lane_name} is loaded to toolhead")
-                                except Exception:
-                                    self.logger.error(f"Failed to notify AFC that lane {lane_name} loaded")
-                        else:
-                            self.logger.debug(f"Virtual tool sensor update not available for {lane_name}")
+                oam.set_led_error(bay_index, 0)
+                self.logger.info(f"Cleared stuck spool LED for {fps_name} spool {fps_name} after successful load")
             except Exception:
-                self.logger.warning(f"Failed to update virtual tool sensor for {lane_name} after load")
+                self.logger.error(f"Failed to clear LED on {fps_name} spool {fps_name} after successful load")
 
-            # Monitors are already running globally, no need to restart them
-            return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
+        fps_state.reset_stuck_spool_state()
+        fps_state.reset_clog_tracker()
+
+        # Update virtual tool sensor state after successful load
+        # This ensures the virtual sensor reflects that filament is loaded at the toolhead
+        try:
+            afc = self._get_afc()
+            if afc is not None:
+                lane = afc.lanes.get(lane_name)
+                if lane is not None:
+                    unit_obj = getattr(lane, "unit_obj", None)
+                    if unit_obj is None:
+                        base_unit_name = getattr(lane, "unit", "").split(":")[0] if getattr(lane, "unit", None) else None
+                        units = getattr(afc, "units", {})
+                        unit_obj = units.get(base_unit_name)
+
+                    if unit_obj is not None and hasattr(unit_obj, '_set_virtual_tool_sensor_state'):
+                        eventtime = self.reactor.monotonic()
+                        # Call _set_virtual_tool_sensor_state directly with force=True
+                        # This is the same approach used in SET_LANE_LOADED wrapper
+                        unit_obj._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
+                        self.logger.info(f"Updated virtual tool sensor to LOADED for {lane_name} after successful load")
+
+                        # CRITICAL: Notify AFC that lane is loaded to toolhead
+                        # This calls handle_openams_lane_tool_state which sets extruder.lane_loaded
+                        # Without this, determine_current_loaded_lane() can't detect what's loaded
+                        if AMSRunoutCoordinator is not None:
+                            try:
+                                AMSRunoutCoordinator.notify_lane_tool_state(
+                                    self.printer, oam_name, lane_name,
+                                    loaded=True, spool_index=bay_index, eventtime=eventtime
+                                )
+                                self.logger.debug(f"Notified AFC that lane {lane_name} is loaded to toolhead")
+                            except Exception:
+                                self.logger.error(f"Failed to notify AFC that lane {lane_name} loaded")
+                    else:
+                        self.logger.debug(f"Virtual tool sensor update not available for {lane_name}")
+        except Exception:
+            self.logger.warning(f"Failed to update virtual tool sensor for {lane_name} after load")
+
+        # Monitors are already running globally, no need to restart them
+        return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
 
         # Fallback - should not be hit, but return a failure tuple instead of None
         return False, f"Failed to load lane {lane_name}"
