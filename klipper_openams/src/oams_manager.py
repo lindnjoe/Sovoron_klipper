@@ -3127,7 +3127,7 @@ class OAMSManager:
                 except Exception:
                     self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}")
 
-                # Unload the filament since it didn't engage properly
+                # Unload the filament since it didn't engage properly before letting retry logic run
                 try:
                     unload_success, unload_msg = oam.unload_spool_with_retry()
                     if not unload_success:
