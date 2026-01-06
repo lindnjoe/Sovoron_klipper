@@ -5258,4 +5258,4 @@ class OAMSManager:
                     self.logger.error(f"Failed to resume monitors{' after ' + reason if reason else ''}")
 
 def load_config(config):
-    return OAMSManager(config))
+    return OAMSManager(config)
