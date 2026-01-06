@@ -788,7 +788,6 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         # Wait for MCU to finish the current operation (max 5 seconds)
         # The MCU will send an oams_action_status response when done
         timeout = self.reactor.monotonic() + 5.0
-        pause_delay = 0.5
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
                 logging.error(f"OAMS[{self.oams_idx}]: Abort timeout - MCU did not respond, forcing clear")
@@ -796,9 +795,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             # Use reactor.pause to wait without queueing into toolhead
             # Increased from 0.05s to 0.5s to reduce reactor pressure during MCU communication issues
             # Using 0.5s provides good balance between responsiveness and reducing MCU load
-            self.reactor.pause(self.reactor.monotonic() + pause_delay)
-            # Gradually stretch the pause during longer waits to avoid tight loops when firmware is unresponsive
-            pause_delay = min(pause_delay + 0.25, 1.5)
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
 
         # Now clear the status (may already be None if MCU responded)
         self.action_status_code = code
