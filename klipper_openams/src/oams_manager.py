@@ -3355,8 +3355,29 @@ class OAMSManager:
         if preretract_lane is not None:
             _, reload_speed = self._get_reload_params(preretract_lane)
             preretract_feed_rate = reload_speed if reload_speed is not None else 1500.0
+            reverse_direction = 0  # Pull back when follower is re-enabled
+
+            # Stop the follower so the preretract isn't fighting active tension
+            try:
+                oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+                if oams is not None and fps_state.current_spool_idx is not None:
+                    self._set_follower_if_changed(
+                        fps_state.current_oams, oams, 0, 0, "pre-unload unload retract stop"
+                    )
+                    fps_state.following = False
+            except Exception:
+                self.logger.warning(f"Unable to disable follower before preretract on {fps_name}")
 
             try:
+                # Re-enable follower in reverse before issuing the overlapped preretract
+                oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+                if oams is not None and fps_state.current_spool_idx is not None:
+                    self._set_follower_if_changed(
+                        fps_state.current_oams, oams, 1, reverse_direction, "pre-unload preretract reverse"
+                    )
+                    fps_state.following = True
+                    fps_state.direction = reverse_direction
+
                 gcode = self._gcode_obj
                 if gcode is None:
                     gcode = self.printer.lookup_object("gcode")
