@@ -3333,6 +3333,13 @@ class OAMSManager:
             gcmd.respond_info(f"FPS {fps_name} does not exist")
 
             return
+
+        preretract_raw = gcmd.get('PRERETRACT', None)
+        try:
+            preretract = float(preretract_raw) if preretract_raw is not None else -10.0
+        except Exception:
+            raise gcmd.error("PRERETRACT must be a number")
+
         fps_state = self.current_state.fps_state[fps_name]
         if fps_state.state == FPSLoadState.UNLOADED:
             gcmd.respond_info(f"FPS {fps_name} is already unloaded")
@@ -3342,6 +3349,27 @@ class OAMSManager:
             gcmd.respond_info(f"FPS {fps_name} is currently busy")
 
             return
+
+        # Queue a small preretract move to overlap with the unload sequence
+        preretract_lane = fps_state.current_lane
+        if preretract_lane is not None:
+            _, reload_speed = self._get_reload_params(preretract_lane)
+            preretract_feed_rate = reload_speed if reload_speed is not None else 1500.0
+
+            try:
+                gcode = self._gcode_obj
+                if gcode is None:
+                    gcode = self.printer.lookup_object("gcode")
+                    self._gcode_obj = gcode
+
+                gcode.run_script_from_command("M83")  # Relative extrusion mode
+                gcode.run_script_from_command("G92 E0")  # Reset extruder position
+                gcode.run_script_from_command(f"G1 E{preretract:.2f} F{preretract_feed_rate:.0f}")
+                # Intentionally skip M400 so move overlaps with unload
+            except Exception:
+                self.logger.warning(f"Skipping preretract before unload on {fps_name}: unable to queue gcode")
+        else:
+            self.logger.info(f"Skipping preretract before unload on {fps_name}: no lane resolved")
 
         success, message = self._unload_filament_for_fps(fps_name)
         if not success or (message and message != "Spool unloaded successfully"):
