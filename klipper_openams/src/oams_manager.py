@@ -2165,6 +2165,29 @@ class OAMSManager:
         except Exception:
             self.logger.error(f"Failed to retract extruder before unload for {lane_name} ({context})")
 
+    def _assist_ams_unload_with_extruder_move(self, lane_name: Optional[str], context: str) -> None:
+        """Apply an additional small unload move so extruder gears are turning while AMS pulls back."""
+        if not lane_name:
+            return
+
+        extra_unload = 15.0
+        if extra_unload <= 0:
+            return
+
+        try:
+            _, _, _, unload_speed = self._get_extruder_motion_params(lane_name)
+            if unload_speed is None:
+                unload_speed = 25.0 * 60.0  # Match default load speed if unload not configured
+
+            gcode = self.printer.lookup_object('gcode')
+            gcode.run_script_from_command("M83")  # Relative extrusion mode
+            gcode.run_script_from_command(f"G1 E-{extra_unload:.2f} F{unload_speed:.0f}")  # Non-blocking assist move
+            self.logger.info(
+                f"Ran extra {extra_unload:.1f}mm unload move for {lane_name} ({context}) to keep gears turning"
+            )
+        except Exception:
+            self.logger.error(f"Failed to assist unload with extruder move for {lane_name} ({context})")
+
     def _verify_engagement_with_extrude(self, fps_name: str, fps_state: 'FPSState', fps,
                                       lane_name: str, oams) -> bool:
         """Verify filament engaged extruder by extruding reload length and monitoring FPS pressure.
@@ -2894,6 +2917,7 @@ class OAMSManager:
         # Retract extruder using tool_stn_unload distance before unloading spool
         lane_for_unload = lane_name or fps_state.current_lane
         self._retract_extruder_for_unload(lane_for_unload, "standard unload")
+        self._assist_ams_unload_with_extruder_move(lane_for_unload, "standard unload")
 
         try:
             success, message = oams.unload_spool_with_retry()
@@ -3274,6 +3298,7 @@ class OAMSManager:
             # Unload the filament since it didn't engage properly before letting retry logic run
             try:
                 self._retract_extruder_for_unload(lane_name, "engagement retry unload")
+                self._assist_ams_unload_with_extruder_move(lane_name, "engagement retry unload")
                 unload_success, unload_msg = oam.unload_spool_with_retry()
                 if not unload_success:
                     self.logger.error(f"Failed to unload after engagement failure for {lane_name}: {unload_msg}")
