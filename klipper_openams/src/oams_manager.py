@@ -1319,9 +1319,15 @@ class OAMSManager:
                     oam.clear_errors()
                     # Update LED tracking state to match hardware (all LEDs now off)
                     # This prevents the tracking dict from having stale error states
-                    for bay_idx in range(4):
+                    bay_count = getattr(oam, "num_spools", 4) or 4
+                    for bay_idx in range(bay_count):
                         led_key = f"{oams_name}:{bay_idx}"
                         self.led_error_state[led_key] = 0
+                        try:
+                            if hasattr(oam, "set_led_error"):
+                                oam.set_led_error(bay_idx, 0)
+                        except Exception:
+                            self.logger.warning(f"Failed to clear LED {bay_idx} on {oams_name} during OAMSM_CLEAR_ERRORS")
                 except Exception:
                     restart_monitors = False
                     self.logger.error(f"Failed to clear errors on {getattr(oam, 'name', '<unknown>')}")
@@ -3770,6 +3776,12 @@ class OAMSManager:
         to manage follower during normal printing. manual_override is only set
         during error conditions (clog/stuck spool) for manual recovery.
         """
+        if fps_state.current_oams is not None:
+            follower_state = self._get_follower_state(fps_state.current_oams)
+            if follower_state.manual_override:
+                self.logger.debug(f"Skipping _ensure_forward_follower for {fps_name} ({context}) due to manual_override")
+                return
+
         if (fps_state.current_oams is None or fps_state.current_spool_idx is None or
             fps_state.stuck_spool.active or fps_state.state != FPSLoadState.LOADED):
             return
