@@ -1388,6 +1388,17 @@ class OAMSManager:
                 "Cleared all manual follower overrides, coast state, LED state, and state tracking - returning to automatic control"
             )
 
+            # Explicitly clear LED errors on all bays now that tracking is reset
+            if ready_oams:
+                for oams_name, oam in ready_oams.items():
+                    if not self._is_oams_mcu_ready(oam):
+                        restart_monitors = False
+                        continue
+                    for bay_idx in range(4):
+                        self._set_led_error_if_changed(
+                            oam, oams_name, bay_idx, 0, "OAMSM_CLEAR_ERRORS explicit LED reset", force=True
+                        )
+
             # Force followers on so CLEAR_ERRORS never leaves them disabled, even if sensors
             # are empty or state is still settling. This keeps manual extrusion available
             # while the operator recovers from the error condition.
@@ -3688,7 +3699,9 @@ class OAMSManager:
         fps_state.direction = 1
         self._enable_follower(fps_name, fps_state, oams, 1, context)
 
-    def _set_led_error_if_changed(self, oams: Any, oams_name: str, spool_idx: int, error_state: int, context: str = "") -> None:
+    def _set_led_error_if_changed(
+        self, oams: Any, oams_name: str, spool_idx: int, error_state: int, context: str = "", force: bool = False
+    ) -> None:
         """
         Send LED error command only if state has changed to avoid overwhelming MCU with redundant commands.
 
@@ -3698,12 +3711,13 @@ class OAMSManager:
             spool_idx: Spool index (0-based)
             error_state: 0 to clear, 1 to set error
             context: Description for logging (optional)
+            force: Send even if cached state matches (useful after explicit clears)
         """
         led_key = f"{oams_name}:{spool_idx}"
         last_state = self.led_error_state.get(led_key, None)
 
         # Only send command if state changed or this is the first command
-        if last_state != error_state:
+        if force or last_state != error_state:
             try:
                 oams.set_led_error(spool_idx, error_state)
                 self.led_error_state[led_key] = error_state
