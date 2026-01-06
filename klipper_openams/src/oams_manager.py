@@ -2078,58 +2078,115 @@ class OAMSManager:
             self._afc_logged = True
         return self.afc
 
-    def _get_reload_params(self, lane_name: str) -> Tuple[Optional[float], Optional[float]]:
-        """Get reload length and speed from AFC extruder config.
+    def _get_extruder_motion_params(
+        self, lane_name: Optional[str]
+    ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+        """Get load/unload lengths and speeds from AFC extruder config.
 
         Returns:
-            (reload_length, reload_speed) tuple, or (None, None) if not available
+            (reload_length, reload_speed, unload_length, unload_speed) tuple,
+            or (None, None, None, None) if not available
         """
         try:
             afc = self._get_afc()
             if afc is None:
-                return None, None
+                return None, None, None, None
 
             lane = afc.lanes.get(lane_name)
             if lane is None:
-                return None, None
+                return None, None, None, None
 
             # Get extruder name from lane
             extruder_name = getattr(lane, 'extruder_name', None)
             if not extruder_name:
-                return None, None
+                return None, None, None, None
 
             # Look up AFC_extruder object
             afc_extruder_name = f'AFC_extruder {extruder_name}'
             afc_extruder = self.printer.lookup_object(afc_extruder_name, None)
             if afc_extruder is None:
-                return None, None
+                return None, None, None, None
 
             # Get reload parameters from AFC_extruder
-            # RELOAD_LENGTH = tool_stn + tool_sensor_after_extruder + retract_length + hotend_meltzone_compensation
+            # RELOAD_LENGTH = tool_stn + tool_sensor_after_extruder + hotend_meltzone_compensation
             tool_stn = getattr(afc_extruder, 'tool_stn', 0.0)
+            tool_stn_unload = getattr(afc_extruder, 'tool_stn_unload', tool_stn)
+            if tool_stn_unload <= 0:
+                tool_stn_unload = tool_stn
+
             tool_sensor_after = getattr(afc_extruder, 'tool_sensor_after_extruder', 0.0)
             tool_load_speed = getattr(afc_extruder, 'tool_load_speed', 25.0)
+            tool_unload_speed = getattr(afc_extruder, 'tool_unload_speed', tool_load_speed)
 
             # Get additional components from macro variables
             try:
                 macro_vars = self.printer.lookup_object('gcode_macro _oams_macro_variables', None)
                 hotend_compensation = getattr(macro_vars, 'hotend_meltzone_compensation', 0.0) if macro_vars else 0.0
-
-                cut_tip_vars = self.printer.lookup_object('gcode_macro _AFC_CUT_TIP_VARS', None)
-                retract_length = getattr(cut_tip_vars, 'retract_length', 0.0) if cut_tip_vars else 0.0
             except Exception:
                 hotend_compensation = 0.0
-                retract_length = 0.0
 
             # Calculate total reload length (same formula as macro)
-            reload_length = tool_stn + tool_sensor_after + retract_length + hotend_compensation
+            reload_length = tool_stn + tool_sensor_after + hotend_compensation
             reload_speed = tool_load_speed * 60.0  # Convert to mm/min
 
-            return reload_length, reload_speed
+            unload_length = tool_stn_unload + tool_sensor_after
+            unload_speed = tool_unload_speed * 60.0
+
+            return reload_length, reload_speed, unload_length, unload_speed
 
         except Exception:
-            self.logger.error(f"Failed to get reload params for {lane_name}")
-            return None, None
+            self.logger.error(f"Failed to get motion params for {lane_name}")
+            return None, None, None, None
+
+    def _get_reload_params(self, lane_name: str) -> Tuple[Optional[float], Optional[float]]:
+        """Get reload length and speed from AFC extruder config."""
+
+        reload_length, reload_speed, _, _ = self._get_extruder_motion_params(lane_name)
+        return reload_length, reload_speed
+
+    def _retract_extruder_for_unload(self, lane_name: Optional[str], context: str) -> None:
+        """Move extruder back using tool_stn_unload distance before unloading."""
+        if not lane_name:
+            return
+
+        try:
+            _, _, unload_length, unload_speed = self._get_extruder_motion_params(lane_name)
+            if unload_length is None or unload_speed is None or unload_length <= 0:
+                return
+
+            gcode = self.printer.lookup_object('gcode')
+            gcode.run_script_from_command("M83")  # Relative extrusion mode
+            gcode.run_script_from_command("G92 E0")  # Reset extruder position
+            gcode.run_script_from_command(f"G1 E-{unload_length:.2f} F{unload_speed:.0f}")  # Retract for unload
+            gcode.run_script_from_command("M400")  # Ensure move completes
+            self.logger.info(
+                f"Retracted extruder {unload_length:.1f}mm before unload for {lane_name} ({context})"
+            )
+        except Exception:
+            self.logger.error(f"Failed to retract extruder before unload for {lane_name} ({context})")
+
+    def _assist_ams_unload_with_extruder_move(self, lane_name: Optional[str], context: str) -> None:
+        """Apply an additional small unload move so extruder gears are turning while AMS pulls back."""
+        if not lane_name:
+            return
+
+        extra_unload = 15.0
+        if extra_unload <= 0:
+            return
+
+        try:
+            _, _, _, unload_speed = self._get_extruder_motion_params(lane_name)
+            if unload_speed is None:
+                unload_speed = 25.0 * 60.0  # Match default load speed if unload not configured
+
+            gcode = self.printer.lookup_object('gcode')
+            gcode.run_script_from_command("M83")  # Relative extrusion mode
+            gcode.run_script_from_command(f"G1 E-{extra_unload:.2f} F{unload_speed:.0f}")  # Non-blocking assist move
+            self.logger.info(
+                f"Ran extra {extra_unload:.1f}mm unload move for {lane_name} ({context}) to keep gears turning"
+            )
+        except Exception:
+            self.logger.error(f"Failed to assist unload with extruder move for {lane_name} ({context})")
 
     def _verify_engagement_with_extrude(self, fps_name: str, fps_state: 'FPSState', fps,
                                       lane_name: str, oams) -> bool:
@@ -2857,6 +2914,17 @@ class OAMSManager:
         # Cancel post-load pressure check to prevent false positive clog detection during unload
         self._cancel_post_load_pressure_check(fps_state)
 
+        # Reverse follower so gears pull back with AMS during unload
+        try:
+            self._enable_follower(fps_name, fps_state, oams, 0, "pre-unload reverse follower")
+        except Exception:
+            self.logger.error(f"Failed to reverse follower before unload on {fps_name}")
+
+        # Retract extruder using tool_stn_unload distance before unloading spool
+        lane_for_unload = lane_name or fps_state.current_lane
+        self._retract_extruder_for_unload(lane_for_unload, "standard unload")
+        self._assist_ams_unload_with_extruder_move(lane_for_unload, "standard unload")
+
         try:
             success, message = oams.unload_spool_with_retry()
         except Exception:
@@ -3235,6 +3303,12 @@ class OAMSManager:
 
             # Unload the filament since it didn't engage properly before letting retry logic run
             try:
+                try:
+                    self._enable_follower(fps_name, fps_state, oam, 0, "engagement retry unload - reverse follower")
+                except Exception:
+                    self.logger.error(f"Failed to reverse follower before engagement retry unload for {lane_name}")
+                self._retract_extruder_for_unload(lane_name, "engagement retry unload")
+                self._assist_ams_unload_with_extruder_move(lane_name, "engagement retry unload")
                 unload_success, unload_msg = oam.unload_spool_with_retry()
                 if not unload_success:
                     self.logger.error(f"Failed to unload after engagement failure for {lane_name}: {unload_msg}")
