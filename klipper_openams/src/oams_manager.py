@@ -1146,6 +1146,27 @@ class OAMSManager:
 
         return None
 
+    def _afc_tool_unload(self, lane_name: str) -> Tuple[bool, str]:
+        """Use AFC's tool unload (with custom cut/park) to clear a lane from the toolhead."""
+        afc = self._get_afc()
+        if afc is None:
+            return False, "AFC not available for unload"
+
+        lane_obj = afc.lanes.get(lane_name) if hasattr(afc, "lanes") else None
+        if lane_obj is None:
+            return False, f"Lane {lane_name} not found in AFC"
+
+        unload_fn = getattr(afc, "TOOL_UNLOAD", None)
+        if not callable(unload_fn):
+            return False, "AFC TOOL_UNLOAD not available"
+
+        try:
+            success = unload_fn(lane_obj)
+            return (True, "AFC TOOL_UNLOAD completed") if success else (False, f"AFC TOOL_UNLOAD failed for {lane_name}")
+        except Exception:
+            self.logger.error("Exception during AFC TOOL_UNLOAD for %s", lane_name)
+            return False, f"AFC TOOL_UNLOAD raised exception for {lane_name}"
+
     def _determine_loaded_lane_for_fps(self, fps_name: str, fps) -> Tuple[Optional[str], Optional[object], Optional[int]]:
         """Determine which AFC lane is loaded by asking AFC which lane is loaded to each extruder.
 
@@ -3170,9 +3191,21 @@ class OAMSManager:
 
             existing_fps = self.get_fps_for_afc_lane(existing_lane_for_extruder)
             if existing_fps is None or existing_fps == fps_name:
-                unload_success, unload_message = self._unload_filament_for_fps(fps_name)
+                # Use AFC's tool unload (with cut/park) when available so the lane is fully cleared
+                unload_success, unload_message = self._afc_tool_unload(existing_lane_for_extruder)
+                if not unload_success:
+                    # Fall back to hardware unload if AFC unload failed
+                    unload_success, unload_message = self._unload_filament_for_fps(fps_name)
                 if not unload_success:
                     return False, f"Failed to unload existing lane {existing_lane_for_extruder} from {fps_name}: {unload_message}"
+                # After unload, clear FPS state so the subsequent load starts clean
+                fps_state.state = FPSLoadState.UNLOADED
+                fps_state.current_lane = None
+                fps_state.current_spool_idx = None
+                fps_state.current_oams = None
+                fps_state.following = False
+                fps_state.direction = 0
+                fps_state.since = self.reactor.monotonic()
             else:
                 return False, f"Extruder already reports {existing_lane_for_extruder} loaded on {existing_fps}; unload it before loading {lane_name}"
 
