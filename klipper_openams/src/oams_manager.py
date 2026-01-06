@@ -2914,6 +2914,12 @@ class OAMSManager:
         # Cancel post-load pressure check to prevent false positive clog detection during unload
         self._cancel_post_load_pressure_check(fps_state)
 
+        # Reverse follower so gears pull back with AMS during unload
+        try:
+            self._enable_follower(fps_name, fps_state, oams, 0, "pre-unload reverse follower")
+        except Exception:
+            self.logger.error(f"Failed to reverse follower before unload on {fps_name}")
+
         # Retract extruder using tool_stn_unload distance before unloading spool
         lane_for_unload = lane_name or fps_state.current_lane
         self._retract_extruder_for_unload(lane_for_unload, "standard unload")
@@ -3297,6 +3303,10 @@ class OAMSManager:
 
             # Unload the filament since it didn't engage properly before letting retry logic run
             try:
+                try:
+                    self._enable_follower(fps_name, fps_state, oam, 0, "engagement retry unload - reverse follower")
+                except Exception:
+                    self.logger.error(f"Failed to reverse follower before engagement retry unload for {lane_name}")
                 self._retract_extruder_for_unload(lane_name, "engagement retry unload")
                 self._assist_ams_unload_with_extruder_move(lane_name, "engagement retry unload")
                 unload_success, unload_msg = oam.unload_spool_with_retry()
