@@ -2115,6 +2115,38 @@ class OAMSManager:
             self.logger.error(f"Failed to get reload params for {lane_name}")
             return None, None
 
+    def _get_unload_params(self, lane_name: str) -> Tuple[Optional[float], Optional[float]]:
+        """Get unload retract length and speed from AFC extruder config."""
+        try:
+            afc = self._get_afc()
+            if afc is None:
+                return None, None
+
+            lane = afc.lanes.get(lane_name)
+            if lane is None:
+                return None, None
+
+            extruder_name = getattr(lane, 'extruder_name', None)
+            if not extruder_name:
+                return None, None
+
+            afc_extruder_name = f'AFC_extruder {extruder_name}'
+            afc_extruder = self.printer.lookup_object(afc_extruder_name, None)
+            if afc_extruder is None:
+                return None, None
+
+            unload_length = getattr(afc_extruder, 'tool_stn_unload', None)
+            if unload_length is None or unload_length <= 0:
+                unload_length = getattr(afc_extruder, 'tool_stn', None)
+
+            unload_speed = getattr(afc_extruder, 'tool_unload_speed', None)
+            unload_speed = unload_speed * 60.0 if unload_speed is not None else None
+
+            return unload_length, unload_speed
+        except Exception:
+            self.logger.error(f"Failed to get unload params for {lane_name}")
+            return None, None
+
     def _verify_engagement_with_extrude(self, fps_name: str, fps_state: 'FPSState', fps,
                                       lane_name: str, oams) -> bool:
         """Verify filament engaged extruder by extruding reload length and monitoring FPS pressure.
@@ -3333,6 +3365,13 @@ class OAMSManager:
             gcmd.respond_info(f"FPS {fps_name} does not exist")
 
             return
+
+        preretract_raw = gcmd.get('PRERETRACT', None)
+        try:
+            preretract = float(preretract_raw) if preretract_raw is not None else -10.0
+        except Exception:
+            raise gcmd.error("PRERETRACT must be a number")
+
         fps_state = self.current_state.fps_state[fps_name]
         if fps_state.state == FPSLoadState.UNLOADED:
             gcmd.respond_info(f"FPS {fps_name} is already unloaded")
@@ -3342,6 +3381,55 @@ class OAMSManager:
             gcmd.respond_info(f"FPS {fps_name} is currently busy")
 
             return
+
+        # Queue a small preretract move to overlap with the unload sequence
+        preretract_lane = fps_state.current_lane
+        if preretract_lane is not None:
+            _, reload_speed = self._get_reload_params(preretract_lane)
+            unload_length, unload_speed = self._get_unload_params(preretract_lane)
+            preretract_feed_rate = (
+                unload_speed
+                if unload_speed is not None
+                else (reload_speed if reload_speed is not None else 1500.0)
+            )
+            reverse_direction = 0  # Pull back during unload overlap
+
+            # Ensure follower is enabled in reverse before the initial unload retract
+            try:
+                oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+                if oams is not None and fps_state.current_spool_idx is not None:
+                    context = "pre-unload retract reverse"
+                    if unload_length is not None:
+                        context = f"{context} ({unload_length:.2f}mm)"
+                    self._set_follower_if_changed(
+                        fps_state.current_oams, oams, 1, reverse_direction, context
+                    )
+                    fps_state.following = True
+                    fps_state.direction = reverse_direction
+            except Exception:
+                self.logger.warning(f"Unable to set follower reverse before preretract on {fps_name}")
+
+            try:
+                gcode = self._gcode_obj
+                if gcode is None:
+                    gcode = self.printer.lookup_object("gcode")
+                    self._gcode_obj = gcode
+
+                gcode.run_script_from_command("M83")  # Relative extrusion mode
+                gcode.run_script_from_command("G92 E0")  # Reset extruder position
+
+                # First retract by the configured unload length (if available)
+                if unload_length is not None:
+                    unload_feed = unload_speed if unload_speed is not None else preretract_feed_rate
+                    gcode.run_script_from_command(f"G1 E-{unload_length:.2f} F{unload_feed:.0f}")
+
+                # Then issue the overlapped preretract (no M400 so unload can overlap)
+                gcode.run_script_from_command(f"G1 E{preretract:.2f} F{preretract_feed_rate:.0f}")
+                # Intentionally skip M400 so moves overlap the unload
+            except Exception:
+                self.logger.warning(f"Skipping preretract before unload on {fps_name}: unable to queue gcode")
+        else:
+            self.logger.info(f"Skipping preretract before unload on {fps_name}: no lane resolved")
 
         success, message = self._unload_filament_for_fps(fps_name)
         if not success or (message and message != "Spool unloaded successfully"):
