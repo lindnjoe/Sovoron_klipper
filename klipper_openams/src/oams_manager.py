@@ -3393,6 +3393,7 @@ class OAMSManager:
                 else (reload_speed if reload_speed is not None else 1500.0)
             )
             reverse_direction = 0  # Pull back during unload overlap
+            follower_override_set = False
 
             # Ensure follower is enabled in reverse before the initial unload retract
             try:
@@ -3406,6 +3407,10 @@ class OAMSManager:
                     )
                     fps_state.following = True
                     fps_state.direction = reverse_direction
+                    # Prevent automatic control from flipping follower forward mid-unload
+                    follower_state = self._get_follower_state(fps_state.current_oams)
+                    follower_state.manual_override = True
+                    follower_override_set = True
             except Exception:
                 self.logger.warning(f"Unable to set follower reverse before preretract on {fps_name}")
 
@@ -3431,7 +3436,16 @@ class OAMSManager:
         else:
             self.logger.info(f"Skipping preretract before unload on {fps_name}: no lane resolved")
 
-        success, message = self._unload_filament_for_fps(fps_name)
+        try:
+            success, message = self._unload_filament_for_fps(fps_name)
+        finally:
+            if follower_override_set and fps_state.current_oams:
+                try:
+                    follower_state = self._get_follower_state(fps_state.current_oams)
+                    follower_state.manual_override = False
+                except Exception:
+                    self.logger.warning(f"Unable to clear follower override after unload on {fps_name}")
+
         if not success or (message and message != "Spool unloaded successfully"):
             gcmd.respond_info(message)
 
