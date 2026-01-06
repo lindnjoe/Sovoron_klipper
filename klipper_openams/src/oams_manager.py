@@ -1114,59 +1114,6 @@ class OAMSManager:
         # Lane-based detection only
         return self._determine_loaded_lane_for_fps(fps_name, fps)
 
-    def _get_loaded_lane_for_extruder(self, extruder_name: Optional[str]) -> Optional[str]:
-        """Return the lane AFC reports as loaded for an extruder, reusing AFC helpers."""
-        normalized = _normalize_extruder_name(extruder_name)
-        if not normalized:
-            return None
-
-        afc = self._get_afc()
-        if afc is None:
-            return None
-
-        # 1) Live AFC tool state (authoritative if set)
-        tools = getattr(afc, "tools", {}) if hasattr(afc, "tools") else {}
-        matched_tool_name = None
-        for name, tool in tools.items():
-            if _normalize_extruder_name(name) == normalized:
-                matched_tool_name = name
-                lane_live = getattr(tool, "lane_loaded", None)
-                if lane_live:
-                    return lane_live
-                break
-
-        # 2) Persisted state via AFC_OpenAMS helper (reads AFC.var.unit) if available
-        units = getattr(afc, "units", {}) if hasattr(afc, "units") else {}
-        for unit in units.values():
-            saved_getter = getattr(unit, "_get_saved_extruder_lane_loaded", None)
-            if callable(saved_getter):
-                lane_saved = saved_getter(matched_tool_name or extruder_name)
-                if lane_saved:
-                    return lane_saved
-
-        return None
-
-    def _afc_tool_unload(self, lane_name: str) -> Tuple[bool, str]:
-        """Use AFC's tool unload (with custom cut/park) to clear a lane from the toolhead."""
-        afc = self._get_afc()
-        if afc is None:
-            return False, "AFC not available for unload"
-
-        lane_obj = afc.lanes.get(lane_name) if hasattr(afc, "lanes") else None
-        if lane_obj is None:
-            return False, f"Lane {lane_name} not found in AFC"
-
-        unload_fn = getattr(afc, "TOOL_UNLOAD", None)
-        if not callable(unload_fn):
-            return False, "AFC TOOL_UNLOAD not available"
-
-        try:
-            success = unload_fn(lane_obj)
-            return (True, "AFC TOOL_UNLOAD completed") if success else (False, f"AFC TOOL_UNLOAD failed for {lane_name}")
-        except Exception:
-            self.logger.error("Exception during AFC TOOL_UNLOAD for %s", lane_name)
-            return False, f"AFC TOOL_UNLOAD raised exception for {lane_name}"
-
     def _determine_loaded_lane_for_fps(self, fps_name: str, fps) -> Tuple[Optional[str], Optional[object], Optional[int]]:
         """Determine which AFC lane is loaded by asking AFC which lane is loaded to each extruder.
 
@@ -3085,10 +3032,6 @@ class OAMSManager:
         if lane is None:
             return False, f"Lane {lane_name} does not exist"
 
-        target_extruder = _normalize_extruder_name(
-            getattr(lane, "extruder_obj", None).name if hasattr(lane, "extruder_obj") else getattr(lane, "extruder", None)
-        )
-
         # Get the unit string and slot/index
         # AFC stores "unit: AMS_1:1" as unit="AMS_1" and index stored separately
         unit_str = getattr(lane, "unit", None)
@@ -3167,47 +3110,6 @@ class OAMSManager:
             return False, f"No FPS found for OAMS {oams_name}"
 
         fps_state = self.current_state.fps_state[fps_name]
-
-        # Guard against stale state when shuttle is empty but an extruder still reports a lane.
-        # Prefer extruder-reported lane, then active tool's lane if it belongs to this extruder.
-        existing_lane_for_extruder = self._get_loaded_lane_for_extruder(target_extruder)
-        if not existing_lane_for_extruder:
-            try:
-                afc_func = getattr(afc, "function", None)
-                current_lane_active = afc_func.get_current_lane() if afc_func and hasattr(afc_func, "get_current_lane") else None
-                if current_lane_active:
-                    lane_obj_active = afc.lanes.get(current_lane_active)
-                    active_extruder = _normalize_extruder_name(
-                        getattr(lane_obj_active, "extruder_obj", None).name if hasattr(lane_obj_active, "extruder_obj") else getattr(lane_obj_active, "extruder", None)
-                    )
-                    if active_extruder and target_extruder and active_extruder == target_extruder:
-                        existing_lane_for_extruder = current_lane_active
-            except Exception:
-                pass
-
-        if existing_lane_for_extruder:
-            if existing_lane_for_extruder == lane_name:
-                return False, f"Lane {lane_name} is already loaded to {fps_name}"
-
-            existing_fps = self.get_fps_for_afc_lane(existing_lane_for_extruder)
-            if existing_fps is None or existing_fps == fps_name:
-                # Use AFC's tool unload (with cut/park) when available so the lane is fully cleared
-                unload_success, unload_message = self._afc_tool_unload(existing_lane_for_extruder)
-                if not unload_success:
-                    # Fall back to hardware unload if AFC unload failed
-                    unload_success, unload_message = self._unload_filament_for_fps(fps_name)
-                if not unload_success:
-                    return False, f"Failed to unload existing lane {existing_lane_for_extruder} from {fps_name}: {unload_message}"
-                # After unload, clear FPS state so the subsequent load starts clean
-                fps_state.state = FPSLoadState.UNLOADED
-                fps_state.current_lane = None
-                fps_state.current_spool_idx = None
-                fps_state.current_oams = None
-                fps_state.following = False
-                fps_state.direction = 0
-                fps_state.since = self.reactor.monotonic()
-            else:
-                return False, f"Extruder already reports {existing_lane_for_extruder} loaded on {existing_fps}; unload it before loading {lane_name}"
 
         # Synchronize with actual loaded lane before deciding how to handle the request
         detected_lane, detected_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
