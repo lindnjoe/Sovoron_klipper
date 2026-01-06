@@ -3365,6 +3365,7 @@ class OAMSManager:
                         fps_state.current_oams, oams, 0, 0, "pre-unload unload retract stop"
                     )
                     fps_state.following = False
+                    fps_state.direction= reverse_direction
             except Exception:
                 self.logger.warning(f"Unable to disable follower before preretract on {fps_name}")
 
@@ -3383,6 +3384,9 @@ class OAMSManager:
                     gcode = self.printer.lookup_object("gcode")
                     self._gcode_obj = gcode
 
+                gcode.run_script_from_command("M83")  # Relative extrusion mode
+                gcode.run_script_from_command("G92 E0")  # Reset extruder position
+                gcode.run_script_from_command(f"G1 E-{reload_length:.2f} F{reload_speed:.0f}")
                 gcode.run_script_from_command("M83")  # Relative extrusion mode
                 gcode.run_script_from_command("G92 E0")  # Reset extruder position
                 gcode.run_script_from_command(f"G1 E{preretract:.2f} F{preretract_feed_rate:.0f}")
