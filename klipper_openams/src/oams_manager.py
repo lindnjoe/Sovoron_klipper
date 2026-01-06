@@ -3147,8 +3147,23 @@ class OAMSManager:
 
         fps_state = self.current_state.fps_state[fps_name]
 
-        # Guard against stale state when shuttle is empty but an extruder still reports a lane
+        # Guard against stale state when shuttle is empty but an extruder still reports a lane.
+        # Prefer extruder-reported lane, then active tool's lane if it belongs to this extruder.
         existing_lane_for_extruder = self._get_loaded_lane_for_extruder(target_extruder)
+        if not existing_lane_for_extruder:
+            try:
+                afc_func = getattr(afc, "function", None)
+                current_lane_active = afc_func.get_current_lane() if afc_func and hasattr(afc_func, "get_current_lane") else None
+                if current_lane_active:
+                    lane_obj_active = afc.lanes.get(current_lane_active)
+                    active_extruder = _normalize_extruder_name(
+                        getattr(lane_obj_active, "extruder_obj", None).name if hasattr(lane_obj_active, "extruder_obj") else getattr(lane_obj_active, "extruder", None)
+                    )
+                    if active_extruder and target_extruder and active_extruder == target_extruder:
+                        existing_lane_for_extruder = current_lane_active
+            except Exception:
+                pass
+
         if existing_lane_for_extruder:
             if existing_lane_for_extruder == lane_name:
                 return False, f"Lane {lane_name} is already loaded to {fps_name}"
