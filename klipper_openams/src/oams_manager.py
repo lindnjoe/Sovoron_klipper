@@ -968,6 +968,7 @@ class OAMSManager:
             self._toolhead_obj = None
 
         self.determine_state()
+        self._ensure_followers_for_loaded_hubs()
 
         self.start_monitors()
         self.ready = True
@@ -3910,19 +3911,24 @@ class OAMSManager:
             lane_loaded = False
             direction = None
             in_runout_recovery = False  # Track if any FPS for this OAMS is in runout recovery
+            runout_coasting = False
+            coasting_fps_states: List["FPSState"] = []
             now = self.reactor.monotonic()
 
-            for fps_state in self.current_state.fps_state.values():
+            for fps_name, fps_state in self.current_state.fps_state.items():
                 if fps_state.current_oams == oams_name:
                     fps_states_for_oams.append(fps_state)
 
                     # Check if this FPS is in runout recovery
                     # 1. Check runout monitor state
-                    for fps_name, monitor in self.runout_monitors.items():
-                        if fps_state == self.current_state.fps_state.get(fps_name):
-                            if monitor.state not in (OAMSRunoutState.MONITORING, OAMSRunoutState.STOPPED):
-                                in_runout_recovery = True
-                                break
+                    monitor = self.runout_monitors.get(fps_name)
+                    if monitor and monitor.state not in (OAMSRunoutState.MONITORING, OAMSRunoutState.STOPPED):
+                        in_runout_recovery = True
+                        if (monitor.state == OAMSRunoutState.COASTING
+                                and not monitor.is_cross_extruder_runout
+                                and monitor.hub_cleared):
+                            runout_coasting = True
+                            coasting_fps_states.append(fps_state)
 
                     # 2. Check if within lane transition grace period (30 seconds)
                     if fps_state.last_lane_change_time is not None and now - fps_state.last_lane_change_time < 30.0:
@@ -3942,6 +3948,20 @@ class OAMSManager:
             # Default to forward when no direction is available
             if direction is None:
                 direction = state.last_state[1] if state.last_state else 1
+
+            if runout_coasting:
+                if not state.coasting:
+                    state.coasting = True
+                    state.coast_start_pos = 0.0
+                    self.logger.info(
+                        "Disabling follower on %s during same-FPS runout coasting (hub cleared).",
+                        oams_name,
+                    )
+                self._set_follower_if_changed(oams_name, oams, 0, direction, "same-FPS runout coasting", force=True)
+                for fps_state in coasting_fps_states:
+                    fps_state.following = False
+                    fps_state.direction = 0
+                return
 
             has_filament = hub_has_filament or lane_loaded
             if has_filament:
