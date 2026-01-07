@@ -1288,7 +1288,6 @@ class OAMSManager:
             ("OAMSM_LOAD_FILAMENT", self.cmd_LOAD_FILAMENT, self.cmd_LOAD_FILAMENT_help),
             ("OAMSM_FOLLOWER", self.cmd_FOLLOWER, self.cmd_FOLLOWER_help),
             ("OAMSM_FOLLOWER_RESET", self.cmd_FOLLOWER_RESET, self.cmd_FOLLOWER_RESET_help),
-            ("OAMSM_FOLLOWER_OVERRIDE", self.cmd_FOLLOWER_OVERRIDE, self.cmd_FOLLOWER_OVERRIDE_help),
             ("OAMSM_CLEAR_ERRORS", self.cmd_CLEAR_ERRORS, self.cmd_CLEAR_ERRORS_help),
             ("OAMSM_CLEAR_LANE_MAPPINGS", self.cmd_CLEAR_LANE_MAPPINGS, self.cmd_CLEAR_LANE_MAPPINGS_help),
             ("OAMSM_STATUS", self.cmd_STATUS, self.cmd_STATUS_help),
@@ -1825,25 +1824,6 @@ class OAMSManager:
         if oams_obj:
             self._update_follower_for_oams(fps_state.current_oams, oams_obj)
             gcmd.respond_info(f"Follower state updated based on current hub sensors")
-
-    cmd_FOLLOWER_OVERRIDE_help = "Set manual follower override on the current FPS without changing the motor state"
-    def cmd_FOLLOWER_OVERRIDE(self, gcmd):
-        fps_name = "fps " + gcmd.get('FPS')
-        enable = gcmd.get_int('ENABLE')
-
-        if fps_name not in self.fpss:
-            gcmd.respond_info(f"FPS {fps_name} does not exist")
-            return
-
-        fps_state = self.current_state.fps_state[fps_name]
-        if not fps_state.current_oams:
-            gcmd.respond_info(f"No OAMS associated with {fps_name}")
-            return
-
-        state = self._get_follower_state(fps_state.current_oams)
-        state.manual_override = bool(enable)
-        self.logger.info(f"Set manual follower override for {fps_name} to {state.manual_override}")
-        gcmd.respond_info(f"Manual follower override for {fps_name} set to {int(state.manual_override)}")
 
     def get_fps_for_afc_lane(self, lane_name: str) -> Optional[str]:
         """Get the FPS name for an AFC lane by querying its unit configuration.
@@ -3829,6 +3809,8 @@ class OAMSManager:
             if follower_state.manual_override:
                 self.logger.debug(f"Skipping _ensure_forward_follower for {fps_name} ({context}) due to manual_override")
                 return
+            if follower_state.last_state is not None:
+                return
 
         if (fps_state.current_oams is None or fps_state.current_spool_idx is None or
             fps_state.stuck_spool.active or fps_state.state != FPSLoadState.LOADED):
@@ -3976,8 +3958,10 @@ class OAMSManager:
         """Force followers on for all ready OAMS controllers."""
 
         for oams_name, oams in ready_oams.items():
-            self._set_follower_if_changed(oams_name, oams, 1, 1, "OAMSM_CLEAR_ERRORS force-enable", force=True)
             state = self._get_follower_state(oams_name)
+            if state.last_state is not None:
+                continue
+            self._set_follower_if_changed(oams_name, oams, 1, 1, "OAMSM_CLEAR_ERRORS force-enable", force=True)
             state.had_filament = True
 
     def _find_fps_for_oams_bay(self, oams_name: str, bay_idx: int) -> Optional[str]:
