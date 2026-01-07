@@ -2331,6 +2331,7 @@ class OAMSManager:
         if fps_state.current_oams and fps_state.current_spool_idx is not None:
             oams = self.oams.get(fps_state.current_oams)
             if oams:
+                pass
 
 
         # Clear the source lane's state in AFC so it shows as EMPTY and can detect new filament
