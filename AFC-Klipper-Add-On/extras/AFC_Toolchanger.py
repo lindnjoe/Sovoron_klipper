@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 # Toolchanging code is inspired and based off klipper-toolchanger project https://github.com/viesturz/klipper-toolchanger
-# Originally authored by Viesturs Zarin� and licensed under the GNU General Public License v3.0.
+# Originally authored by Viesturs Zariņš and licensed under the GNU General Public License v3.0.
 #
 # Full license text available at: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -166,9 +166,11 @@ class AfcToolchanger(afcUnit):
     }
     def cmd_AFC_SET_TOOLHEAD_LED(self, gcmd: GCodeCommand):
         """
-        Macro call to set print led in toolhead based on lane/tool mapping. Led config name needs to be
+        Macro call to set nozzle led in toolhead based on lane/tool mapping. Led config name needs to be
         set to AFC_extruder `led_name` variable. Status led in toolhead will not be affected if `status_led_idx`
-        is set in AFC_extruder config.
+        is set in AFC_extruder config. If `nozzle_led_idx` is set in AFC_extruder configuration then just
+        those leds will be turned on. If `nozzle_led_inx` is not provided then all leds not in defined in
+        `status_led_idx` will be turned on.
 
         `MAP` - is the mapped toolhead to set. ex(T0,T1,etc)
 
