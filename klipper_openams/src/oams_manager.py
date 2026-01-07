@@ -1717,6 +1717,16 @@ class OAMSManager:
 
             return
 
+        if not fps_state.current_oams:
+            try:
+                detected_lane, detected_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
+            except Exception:
+                detected_lane, detected_oams, detected_spool_idx = None, None, None
+            if detected_oams is not None:
+                fps_state.current_oams = detected_oams.name
+                fps_state.current_spool_idx = detected_spool_idx
+                fps_state.current_lane = detected_lane
+
         # When disabling (ENABLE=0), disable follower and keep state tracking
         if not enable:
             # If already unloaded or no OAMS, just mark as not following and return
