@@ -1404,20 +1404,14 @@ class OAMSManager:
             # are empty or state is still settling. This keeps manual extrusion available
             # while the operator recovers from the error condition.
             if ready_oams:
-                try:
-                except Exception:
-                    restart_monitors = False
-                    self.logger.error("Failed to force followers on during OAMSM_CLEAR_ERRORS")
+                pass
 
 
             # After clearing errors and detecting state, ensure followers are enabled for any
             # lanes that have filament loaded to the hub (even if not loaded to toolhead)
             # This keeps filament pressure up for manual operations during troubleshooting
             if ready_oams:
-                try:
-                except Exception:
-                    restart_monitors = False
-                    self.logger.error("Failed to refresh followers after OAMSM_CLEAR_ERRORS")
+                pass
 
 
         if monitors_were_running:
