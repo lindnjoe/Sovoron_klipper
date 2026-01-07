@@ -2188,7 +2188,13 @@ class OAMSManager:
             if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
                 oams_obj = self.oams.get(fps_state.current_oams)
                 if oams_obj is not None:
-                    pass
+                    self._enable_follower(
+                        fps_name,
+                        fps_state,
+                        oams_obj,
+                        1,
+                        "engagement verification extrusion",
+                    )
 
             # Get extruder object
             extruder = getattr(fps, 'extruder', None)
@@ -2567,7 +2573,7 @@ class OAMSManager:
 
         # Enable follower before load
         fps_state_obj = self.current_state.fps_state[fps_name]
-        pass
+        self._enable_follower(fps_name, fps_state_obj, oam_load, 1, "before async load")
 
 
         # Update FPS state for loading
@@ -2883,7 +2889,16 @@ class OAMSManager:
             fps_state.since = self.reactor.monotonic()
             fps_state.reset_stuck_spool_state(preserve_restore=True)
             if fps_state.current_oams:
-                self._ensure_forward_follower(fps_name, fps_state, "unload retry after exception")
+                oams_obj = self.oams.get(fps_state.current_oams)
+                if oams_obj is not None:
+                    self._set_follower_if_changed(
+                        fps_state.current_oams,
+                        oams_obj,
+                        1,
+                        0,
+                        "unload retry after exception",
+                        force=True,
+                    )
 
             return False, f"Exception unloading filament on {fps_name}"
 
@@ -2963,7 +2978,16 @@ class OAMSManager:
         fps_state.since = self.reactor.monotonic()
         fps_state.reset_stuck_spool_state(preserve_restore=True)
         if fps_state.current_oams:
-            self._ensure_forward_follower(fps_name, fps_state, "unload retry")
+            oams_obj = self.oams.get(fps_state.current_oams)
+            if oams_obj is not None:
+                self._set_follower_if_changed(
+                    fps_state.current_oams,
+                    oams_obj,
+                    1,
+                    0,
+                    "unload retry",
+                    force=True,
+                )
 
         return False, message
 
@@ -3136,6 +3160,31 @@ class OAMSManager:
             fps_state.current_spool_idx = detected_spool_idx
             fps_state.state = FPSLoadState.LOADED
             fps_state.since = self.reactor.monotonic()
+            hub_hes_values = getattr(oam, "hub_hes_value", None)
+            hub_has_filament = any(hub_hes_values) if hub_hes_values is not None else False
+            if oam.current_spool is None and not hub_has_filament:
+                self.logger.info(
+                    f"Clearing stale AFC lane_loaded state for {detected_lane} on {fps_name} "
+                    f"(no spool detected in {oams_name})"
+                )
+                if AMSRunoutCoordinator is not None:
+                    try:
+                        AMSRunoutCoordinator.notify_lane_tool_state(
+                            self.printer,
+                            fps_state.current_oams or oam.name,
+                            detected_lane,
+                            loaded=False,
+                            spool_index=detected_spool_idx,
+                            eventtime=fps_state.since,
+                        )
+                    except Exception:
+                        self.logger.error(f"Failed to clear AFC lane_loaded for {detected_lane} on {fps_name}")
+                fps_state.state = FPSLoadState.UNLOADED
+                fps_state.current_lane = None
+                fps_state.current_oams = None
+                fps_state.current_spool_idx = None
+                detected_lane = None
+
             if detected_lane == lane_name:
                 return False, f"Lane {lane_name} is already loaded to {fps_name}"
 
@@ -3200,7 +3249,13 @@ class OAMSManager:
             # must be tracking it in real-time, not after the load completes
             # Without this, filament gets stuck in the buffer during the load
             # NOTE: Trusting automatic follower control to keep it enabled during LOADING state
-            pass
+            self._enable_follower(
+                fps_name,
+                fps_state,
+                oam,
+                1,
+                "before load - enable follower for buffer tracking",
+            )
 
             try:
                 success, message = oam.load_spool(bay_index)
@@ -3918,7 +3973,23 @@ class OAMSManager:
         return None
 
     def _restore_follower_if_needed(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], context: str) -> None:
-        return
+        if not fps_state.stuck_spool.restore_follower:
+            return
+
+        if fps_state.current_oams is None:
+            fps_state.stuck_spool.restore_follower = False
+            return
+
+        if oams is None:
+            oams = self.oams.get(fps_state.current_oams)
+        if oams is None:
+            return
+
+        direction = fps_state.stuck_spool.restore_direction
+        self._enable_follower(fps_name, fps_state, oams, direction, context)
+        if fps_state.following:
+            fps_state.stuck_spool.restore_follower = False
+            self.logger.info(f"Restarted follower for {fps_name} spool {fps_state.current_spool_idx} after {context}.")
     def _handle_printing_resumed(self, _eventtime):
         # Check if monitors were stopped and need to be restarted
         if not self.monitor_timers:
@@ -4017,7 +4088,14 @@ class OAMSManager:
             fps_state.stuck_spool.restore_follower = True
             fps_state.stuck_spool.restore_direction = current_direction
 
-            self.logger.info(f"Skipping follower auto-enable on {fps_name} during stuck spool pause")
+            self._enable_follower(
+                fps_name,
+                fps_state,
+                oams,
+                current_direction,
+                "stuck spool pause - keep follower active",
+            )
+            self.logger.info(f"Follower enabled on {fps_name} during stuck spool pause")
 
         self.logger.info(f"Stuck spool pause triggered for {fps_name} (LED stays red, active flag set, follower enabled)")
     def _unified_monitor_for_fps(self, fps_name):
@@ -4325,7 +4403,13 @@ class OAMSManager:
             if fps_state.current_oams and fps_state.current_spool_idx is not None:
                 oams_obj = self.oams.get(fps_state.current_oams)
                 if oams_obj is not None:
-                    pass
+                    self._enable_follower(
+                        fps_name,
+                        fps_state,
+                        oams_obj,
+                        1,
+                        "stuck load - keep follower active",
+                    )
 
             # Prevent rapid-fire retries from flooding the MCU after an abort.
             # Give a short breather so the next retry starts with a clean MCU queue.
@@ -4738,7 +4822,13 @@ class OAMSManager:
             if fps_state.current_oams and fps_state.current_spool_idx is not None:
                 oams_obj = self.oams.get(fps_state.current_oams)
                 if oams_obj is not None:
-                    pass
+                    self._enable_follower(
+                        fps_name,
+                        fps_state,
+                        oams_obj,
+                        1,
+                        "clog detected - keep follower forward for recovery",
+                    )
                 else:
                     self.logger.warning(f"Cannot enable follower during clog on {fps_name} - OAMS {fps_state.current_oams} not found")
             else:
