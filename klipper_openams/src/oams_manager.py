@@ -1738,16 +1738,8 @@ class OAMSManager:
             oams_obj = self.oams.get(fps_state.current_oams)
             if oams_obj:
                 try:
-                    # Use state-aware helper to avoid redundant MCU commands
                     state = self._get_follower_state(fps_state.current_oams)
-                    self._set_follower_if_changed(
-                        fps_state.current_oams,
-                        oams_obj,
-                        0,
-                        direction,
-                        "manual disable",
-                        force=True,
-                    )
+                    oams_obj.set_oams_follower(0, direction)
                     fps_state.following = False
                     # Update state tracker to avoid redundant commands
                     state.last_state = (0, direction)
@@ -1771,16 +1763,8 @@ class OAMSManager:
 
         try:
             self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={fps_name}")
-            # Use state-aware helper so repeated commands don't spam the MCU
             state = self._get_follower_state(fps_state.current_oams)
-            self._set_follower_if_changed(
-                fps_state.current_oams,
-                oams_obj,
-                enable,
-                direction,
-                "manual enable",
-                force=True,
-            )
+            oams_obj.set_oams_follower(enable, direction)
             fps_state.following = bool(enable)
             fps_state.direction = direction
             # Update state tracker to avoid redundant commands
