@@ -3185,12 +3185,13 @@ class OAMSManager:
                 fps_state.current_spool_idx = None
                 detected_lane = None
 
-            if detected_lane == lane_name:
-                return False, f"Lane {lane_name} is already loaded to {fps_name}"
+            if detected_lane is not None:
+                if detected_lane == lane_name:
+                    return False, f"Lane {lane_name} is already loaded to {fps_name}"
 
-            unload_success, unload_message = self._unload_filament_for_fps(fps_name)
-            if not unload_success:
-                return False, f"Failed to unload existing lane {detected_lane} from {fps_name}: {unload_message}"
+                unload_success, unload_message = self._unload_filament_for_fps(fps_name)
+                if not unload_success:
+                    return False, f"Failed to unload existing lane {detected_lane} from {fps_name}: {unload_message}"
         else:
             # No lane detected as loaded - clear fps_state if it thinks it's loaded
             # This handles cases where fps_state is stale (e.g., load failed with clog)
