@@ -3483,6 +3483,7 @@ class OAMSManager:
                 if unload_length is not None:
                     unload_feed = unload_speed if unload_speed is not None else preretract_feed_rate
                     gcode.run_script_from_command(f"G1 E-{unload_length:.2f} F{unload_feed:.0f}")
+                    gcode.run_script_from_command("M400")
 
                 # Then issue the overlapped preretract (no M400 so unload can overlap)
                 gcode.run_script_from_command(f"G1 E{preretract:.2f} F{preretract_feed_rate:.0f}")
