@@ -1728,7 +1728,13 @@ class OAMSManager:
                 try:
                     # Use state-aware helper to avoid redundant MCU commands
                     self._set_follower_if_changed(
-                        fps_state.current_oams, oams_obj, 0, direction, "manual disable", force=True
+                        fps_state.current_oams,
+                        oams_obj,
+                        0,
+                        direction,
+                        "manual disable",
+                        force=True,
+                        allow_manual_override=True,
                     )
                     fps_state.following = False
                     # Update state tracker to avoid redundant commands
@@ -1758,7 +1764,13 @@ class OAMSManager:
             self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={fps_name} (manual override - will stay enabled regardless of hub sensors)")
             # Use state-aware helper so repeated commands don't spam the MCU
             self._set_follower_if_changed(
-                fps_state.current_oams, oams_obj, enable, direction, "manual enable", force=True
+                fps_state.current_oams,
+                oams_obj,
+                enable,
+                direction,
+                "manual enable",
+                force=True,
+                allow_manual_override=True,
             )
             fps_state.following = bool(enable)
             fps_state.direction = direction
@@ -3409,7 +3421,12 @@ class OAMSManager:
                     if unload_length is not None:
                         context = f"{context} ({unload_length:.2f}mm)"
                     self._set_follower_if_changed(
-                        fps_state.current_oams, oams, 1, reverse_direction, context
+                        fps_state.current_oams,
+                        oams,
+                        1,
+                        reverse_direction,
+                        context,
+                        allow_manual_override=True,
                     )
                     fps_state.following = True
                     fps_state.direction = reverse_direction
@@ -3859,6 +3876,7 @@ class OAMSManager:
         direction: int,
         context: str = "",
         force: bool = False,
+        allow_manual_override: bool = False,
     ) -> None:
         """
         Send follower command only if state has changed to avoid overwhelming MCU with redundant commands.
@@ -3875,6 +3893,12 @@ class OAMSManager:
 
         if not self._is_oams_mcu_ready(oams):
             self.logger.debug(f"Skipping follower change for {oams_name} ({context or 'no context'}) because MCU is not ready")
+            return
+
+        if state.manual_override and not allow_manual_override and state.last_state != desired_state:
+            self.logger.debug(
+                f"Skipping follower change for {oams_name} ({context or 'no context'}) due to manual_override"
+            )
             return
 
         # Only send command if state changed or this is the first command
@@ -3945,7 +3969,7 @@ class OAMSManager:
 
             has_filament = hub_has_filament or lane_loaded
             if has_filament:
-                self._set_follower_if_changed(oams_name, oams, 1, direction, "filament present", force=True)
+                self._set_follower_if_changed(oams_name, oams, 1, direction, "filament present")
                 for fps_state in fps_states_for_oams:
                     fps_state.following = True
                     fps_state.direction = direction
