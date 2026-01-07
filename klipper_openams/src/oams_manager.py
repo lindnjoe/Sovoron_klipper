@@ -123,7 +123,6 @@ class FollowerState:
     coasting: bool = False                           # Is follower in coast mode (hub empty, coasting before disable)
     coast_start_pos: float = 0.0                     # Extruder position when coast started (mm)
     had_filament: bool = False                       # Previous state - whether follower had filament
-    manual_override: bool = False                    # Manually commanded (skip auto control)
     last_state: Optional[Tuple[int, int]] = None     # (enable, direction) to avoid redundant MCU commands
 
 
@@ -1390,7 +1389,6 @@ class OAMSManager:
             # Also clear last state tracking so follower state is refreshed from actual sensors
             for oams_name in self.oams.keys():
                 state = self._get_follower_state(oams_name)
-                state.manual_override = False
                 state.last_state = None  # Force state refresh
                 state.coasting = False
                 state.coast_start_pos = 0.0
@@ -1742,8 +1740,6 @@ class OAMSManager:
                 try:
                     # Use state-aware helper to avoid redundant MCU commands
                     state = self._get_follower_state(fps_state.current_oams)
-                    # Keep manual override so it stays disabled (use OAMSM_FOLLOWER_RESET to return to automatic)
-                    state.manual_override = True
                     self._set_follower_if_changed(
                         fps_state.current_oams,
                         oams_obj,
@@ -1777,8 +1773,6 @@ class OAMSManager:
             self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={fps_name} (manual override - will stay enabled regardless of hub sensors)")
             # Use state-aware helper so repeated commands don't spam the MCU
             state = self._get_follower_state(fps_state.current_oams)
-            # Set manual override flag - follower stays enabled even if hub sensors are empty
-            state.manual_override = True
             self._set_follower_if_changed(
                 fps_state.current_oams,
                 oams_obj,
@@ -1812,11 +1806,8 @@ class OAMSManager:
 
             return
 
-        # Clear manual override flag - return to automatic hub sensor control
-        state = self._get_follower_state(fps_state.current_oams)
-        state.manual_override = False
-        self.logger.info(f"Cleared manual follower override for {fps_name}, returning to automatic control")
-        gcmd.respond_info(f"Follower on {fps_name} returned to automatic control (hub sensor based)")
+        self.logger.info(f"Follower reset requested for {fps_name}")
+        gcmd.respond_info(f"Follower reset requested for {fps_name}")
 
 
         # Immediately update follower based on current hub sensor state
@@ -2212,8 +2203,6 @@ class OAMSManager:
 
             # CRITICAL: Ensure follower is enabled for the engagement extrusion
             # The follower must track filament movement through buffer during extrusion
-            # Note: manual_override is already set by the load operation at line 3129
-            # We don't need to set or clear it here
             if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
                 oams_obj = self.oams.get(fps_state.current_oams)
                 if oams_obj is not None:
@@ -3423,7 +3412,6 @@ class OAMSManager:
                 else (reload_speed if reload_speed is not None else 1500.0)
             )
             reverse_direction = 0  # Pull back during unload overlap
-            follower_override_set = False
 
             # Ensure follower is enabled in reverse before the initial unload retract
             try:
@@ -3432,9 +3420,6 @@ class OAMSManager:
                     context = "pre-unload retract reverse"
                     if unload_length is not None:
                         context = f"{context} ({unload_length:.2f}mm)"
-                    # Prevent automatic control from flipping follower forward mid-unload
-                    follower_state = self._get_follower_state(fps_state.current_oams)
-                    follower_state.manual_override = True
                     self._set_follower_if_changed(
                         fps_state.current_oams,
                         oams,
@@ -3444,7 +3429,6 @@ class OAMSManager:
                     )
                     fps_state.following = True
                     fps_state.direction = reverse_direction
-                    follower_override_set = True
             except Exception:
                 self.logger.warning(f"Unable to set follower reverse before preretract on {fps_name}")
 
@@ -3470,15 +3454,7 @@ class OAMSManager:
         else:
             self.logger.info(f"Skipping preretract before unload on {fps_name}: no lane resolved")
 
-        try:
-            success, message = self._unload_filament_for_fps(fps_name)
-        finally:
-            if follower_override_set and fps_state.current_oams:
-                try:
-                    follower_state = self._get_follower_state(fps_state.current_oams)
-                    follower_state.manual_override = False
-                except Exception:
-                    self.logger.warning(f"Unable to clear follower override after unload on {fps_name}")
+        success, message = self._unload_filament_for_fps(fps_name)
 
         if not success or (message and message != "Spool unloaded successfully"):
             gcmd.respond_info(message)
@@ -3798,34 +3774,8 @@ class OAMSManager:
         fps_state.direction = direction
 
     def _ensure_forward_follower(self, fps_name: str, fps_state: "FPSState", context: str) -> None:
-        """Ensure follower is enabled in forward direction after successful load.
-
-        NOTE: Does NOT set manual_override - allows automatic hub-sensor control
-        to manage follower during normal printing. manual_override is only set
-        during error conditions (clog/stuck spool) for manual recovery.
-        """
-        if fps_state.current_oams is not None:
-            follower_state = self._get_follower_state(fps_state.current_oams)
-            if follower_state.manual_override:
-                self.logger.debug(f"Skipping _ensure_forward_follower for {fps_name} ({context}) due to manual_override")
-                return
-            if follower_state.last_state is not None:
-                return
-
-        if (fps_state.current_oams is None or fps_state.current_spool_idx is None or
-            fps_state.stuck_spool.active or fps_state.state != FPSLoadState.LOADED):
-            return
-
-        if fps_state.following and fps_state.direction == 1:
-            return  # Already following in correct direction
-
-        oams = self.oams.get(fps_state.current_oams)
-        if oams is None:
-            self.logger.warning(f"Cannot enable follower: OAMS {fps_state.current_oams} not found")
-            return
-
-        fps_state.direction = 1
-        self._enable_follower(fps_name, fps_state, oams, 1, context)
+        """No-op: follower direction is manually controlled."""
+        return
 
     def _set_led_error_if_changed(self, oams: Any, oams_name: str, spool_idx: int, error_state: int, context: str = "") -> None:
         """
@@ -3916,7 +3866,7 @@ class OAMSManager:
                 if enable:
                     self.logger.debug(f"Follower enabled for {oams_name} ({context or 'no context'})")
                 else:
-                    self.logger.info(f"Follower DISABLED for {oams_name} ({context or 'no context'}) - manual_override={state.manual_override}")
+                    self.logger.info(f"Follower DISABLED for {oams_name} ({context or 'no context'})")
 
             except Exception:
                 self.logger.error(f"Failed to {'enable' if enable else 'disable'} follower for {oams_name}{f' ({context})' if context else ''}")
@@ -3925,9 +3875,6 @@ class OAMSManager:
         """Enable the follower in forward direction when filament is detected at startup."""
         try:
             state = self._get_follower_state(oams_name)
-            if state.manual_override:
-                self.logger.debug(f"Skipping automatic follower control for {oams_name} (manual override active)")
-                return
 
             if not self._is_oams_mcu_ready(oams):
                 self.logger.debug(f"Skipping automatic follower control for {oams_name} (MCU not ready)")
@@ -4066,12 +4013,6 @@ class OAMSManager:
 
             if fps_state.stuck_spool.restore_follower:
                 self._restore_follower_if_needed(fps_name, fps_state, oams, "print resume")
-
-                # Clear manual override after restoring follower to return to automatic control
-                if fps_state.current_oams is not None:
-                    state = self._get_follower_state(fps_state.current_oams)
-                    state.manual_override = False
-                    self.logger.info(f"Cleared manual override for {fps_name} on print resume - returning to automatic follower control")
             elif (
                 fps_state.current_oams is not None
                 and fps_state.current_spool_idx is not None
@@ -4136,12 +4077,7 @@ class OAMSManager:
             fps_state.stuck_spool.restore_direction = current_direction
 
             self._enable_follower(fps_name, fps_state, oams, current_direction, "stuck spool pause - keep follower active")
-
-            # Set manual override to prevent automatic hub-sensor control from disabling it
-            # This keeps follower enabled even if hub sensors are empty during stuck spool
-            state = self._get_follower_state(fps_state.current_oams)
-            state.manual_override = True
-            self.logger.info(f"Follower enabled and locked on {fps_name} during stuck spool pause (manual override active, will restore on RESUME)")
+            self.logger.info(f"Follower enabled on {fps_name} during stuck spool pause")
 
         self.logger.info(f"Stuck spool pause triggered for {fps_name} (LED stays red, active flag set, follower enabled)")
     def _unified_monitor_for_fps(self, fps_name):
@@ -4450,10 +4386,6 @@ class OAMSManager:
                 oams_obj = self.oams.get(fps_state.current_oams)
                 if oams_obj is not None:
                     self._enable_follower(fps_name, fps_state, oams_obj, 1, "stuck load - keep follower active")
-
-                    # Set manual override to prevent automatic hub-sensor control from disabling it
-                    state = self._get_follower_state(fps_state.current_oams)
-                    state.manual_override = True
 
             # Prevent rapid-fire retries from flooding the MCU after an abort.
             # Give a short breather so the next retry starts with a clean MCU queue.
@@ -4862,21 +4794,11 @@ class OAMSManager:
                 # Keep active=True to prevent retriggering until user intervention
                 return
 
-            # CRITICAL: Explicitly enable follower forward and set manual_override
-            # During clog, automatic follower control (_update_follower_for_oams) keeps running
-            # and can disable/reverse follower based on hub sensors. We must:
-            # 1. Explicitly enable follower forward for manual extrusion during troubleshooting
-            # 2. Set manual_override=True to prevent automatic control from changing it
-            # This keeps follower active and in correct direction for user recovery
+            # CRITICAL: Explicitly enable follower forward for manual extrusion during troubleshooting
             if fps_state.current_oams and fps_state.current_spool_idx is not None:
                 oams_obj = self.oams.get(fps_state.current_oams)
                 if oams_obj is not None:
                     self._enable_follower(fps_name, fps_state, oams_obj, 1, "clog detected - keep follower forward for recovery")
-
-                    # Set manual override to prevent automatic hub-sensor control from changing it
-                    state = self._get_follower_state(fps_state.current_oams)
-                    state.manual_override = True
-                    self.logger.info(f"Set manual follower override for {fps_name} during clog - prevents automatic control")
                 else:
                     self.logger.warning(f"Cannot enable follower during clog on {fps_name} - OAMS {fps_state.current_oams} not found")
             else:
