@@ -1736,6 +1736,7 @@ class OAMSManager:
                         0,
                         direction,
                         "manual disable",
+                        force=True,
                     )
                     fps_state.following = False
                     # Update state tracker to avoid redundant commands
@@ -1768,6 +1769,7 @@ class OAMSManager:
                 enable,
                 direction,
                 "manual enable",
+                force=True,
             )
             fps_state.following = bool(enable)
             fps_state.direction = direction
