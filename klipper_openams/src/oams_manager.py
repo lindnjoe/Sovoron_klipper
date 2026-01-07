@@ -3893,6 +3893,11 @@ class OAMSManager:
         if not self._is_oams_mcu_ready(oams):
             self.logger.debug(f"Skipping follower change for {oams_name} ({context or 'no context'}) because MCU is not ready")
             return
+        if getattr(oams, "action_status", None) is not None:
+            self.logger.debug(
+                f"Skipping follower change for {oams_name} ({context or 'no context'}) because OAMS is busy"
+            )
+            return
 
         # Only send command if state changed or this is the first command
         if force or state.last_state != desired_state:
