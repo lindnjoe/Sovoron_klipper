@@ -4161,6 +4161,7 @@ class OAMSManager:
                 if oams and fps_state.current_oams:
                     # Run on state changes or every 10th idle poll to catch new filament insertions
                     if state_changed or fps_state.consecutive_idle_polls % 10 == 0:
+                        pass
 
                 # OPTIMIZATION: Adaptive polling interval with exponential backoff
                 if state_changed or is_printing:
