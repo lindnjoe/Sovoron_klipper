@@ -1717,17 +1717,7 @@ class OAMSManager:
 
             return
 
-        # Prevent manual ENABLE during active error conditions (allow DISABLE for troubleshooting)
-        if enable and (fps_state.clog.active or fps_state.stuck_spool.active):
-            gcmd.respond_info(
-                f"FPS {fps_name} has active error condition "
-                f"(clog_active={fps_state.clog.active}, stuck_spool_active={fps_state.stuck_spool.active}). "
-                f"Use OAMSM_CLEAR_ERRORS first to clear error state."
-            )
-            return
-
-        # When disabling (ENABLE=0), disable follower and keep manual override
-        # This prevents automatic control from re-enabling it
+        # When disabling (ENABLE=0), disable follower and keep state tracking
         if not enable:
             # If already unloaded or no OAMS, just mark as not following and return
             if not fps_state.current_oams:
@@ -1746,12 +1736,11 @@ class OAMSManager:
                         0,
                         direction,
                         "manual disable",
-                        force=True,
                     )
                     fps_state.following = False
                     # Update state tracker to avoid redundant commands
                     state.last_state = (0, direction)
-                    self.logger.debug(f"Disabled follower on {fps_name} (manual override - use OAMSM_FOLLOWER_RESET to return to automatic)")
+                    self.logger.debug(f"Disabled follower on {fps_name}")
                 except Exception:
                     self.logger.error(f"Failed to disable follower on {fps_state.current_oams}")
                     gcmd.respond_info(f"Failed to disable follower. Check logs.")
@@ -1770,7 +1759,7 @@ class OAMSManager:
             return
 
         try:
-            self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={fps_name} (manual override - will stay enabled regardless of hub sensors)")
+            self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={fps_name}")
             # Use state-aware helper so repeated commands don't spam the MCU
             state = self._get_follower_state(fps_state.current_oams)
             self._set_follower_if_changed(
@@ -1779,13 +1768,12 @@ class OAMSManager:
                 enable,
                 direction,
                 "manual enable",
-                force=True,
             )
             fps_state.following = bool(enable)
             fps_state.direction = direction
             # Update state tracker to avoid redundant commands
             state.last_state = (enable, direction)
-            self.logger.debug(f"OAMSM_FOLLOWER: successfully enabled follower on {fps_name} (manual override active)")
+            self.logger.debug(f"OAMSM_FOLLOWER: successfully enabled follower on {fps_name}")
         except Exception:
             self.logger.error(f"Failed to set follower on {fps_state.current_oams}")
             gcmd.respond_info(f"Failed to set follower. Check logs.")
