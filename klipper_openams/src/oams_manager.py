@@ -5112,6 +5112,7 @@ class OAMSManager:
                 if prev_oams_name:
                     oam = self.oams.get(prev_oams_name)
                     if oam:
+                        pass
 
                 self.logger.info(f"Synced OAMS state from AFC: {lane_name} unloaded from {fps_name}")
         except Exception:
