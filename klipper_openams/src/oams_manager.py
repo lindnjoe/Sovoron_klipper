@@ -978,9 +978,23 @@ class OAMSManager:
 
     def _get_follower_state(self, oams_name: str) -> FollowerState:
         """Get or create FollowerState for an OAMS unit."""
-        if oams_name not in self.follower_state:
-            self.follower_state[oams_name] = FollowerState()
-        return self.follower_state[oams_name]
+        resolved_name = oams_name
+        if oams_name not in self.oams:
+            prefixed = f"oams {oams_name}"
+            if prefixed in self.oams:
+                resolved_name = prefixed
+            elif oams_name.startswith("oams "):
+                unprefixed = oams_name[5:]
+                if unprefixed in self.oams:
+                    resolved_name = unprefixed
+
+        if resolved_name != oams_name and oams_name in self.follower_state:
+            if resolved_name not in self.follower_state:
+                self.follower_state[resolved_name] = self.follower_state.pop(oams_name)
+
+        if resolved_name not in self.follower_state:
+            self.follower_state[resolved_name] = FollowerState()
+        return self.follower_state[resolved_name]
 
     def _sync_afc_lane_loaded(self, fps_name: str, detected_lane: Optional[str]) -> None:
         """Sync AFC's extruder.lane_loaded with OAMS-detected state.
@@ -1727,15 +1741,20 @@ class OAMSManager:
             if oams_obj:
                 try:
                     # Use state-aware helper to avoid redundant MCU commands
+                    state = self._get_follower_state(fps_state.current_oams)
+                    # Keep manual override so it stays disabled (use OAMSM_FOLLOWER_RESET to return to automatic)
+                    state.manual_override = True
                     self._set_follower_if_changed(
-                        fps_state.current_oams, oams_obj, 0, direction, "manual disable", force=True
+                        fps_state.current_oams,
+                        oams_obj,
+                        0,
+                        direction,
+                        "manual disable",
+                        force=True,
                     )
                     fps_state.following = False
                     # Update state tracker to avoid redundant commands
-                    state = self._get_follower_state(fps_state.current_oams)
                     state.last_state = (0, direction)
-                    # Keep manual override so it stays disabled (use OAMSM_FOLLOWER_RESET to return to automatic)
-                    state.manual_override = True
                     self.logger.debug(f"Disabled follower on {fps_name} (manual override - use OAMSM_FOLLOWER_RESET to return to automatic)")
                 except Exception:
                     self.logger.error(f"Failed to disable follower on {fps_state.current_oams}")
@@ -1757,16 +1776,21 @@ class OAMSManager:
         try:
             self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={fps_name} (manual override - will stay enabled regardless of hub sensors)")
             # Use state-aware helper so repeated commands don't spam the MCU
+            state = self._get_follower_state(fps_state.current_oams)
+            # Set manual override flag - follower stays enabled even if hub sensors are empty
+            state.manual_override = True
             self._set_follower_if_changed(
-                fps_state.current_oams, oams_obj, enable, direction, "manual enable", force=True
+                fps_state.current_oams,
+                oams_obj,
+                enable,
+                direction,
+                "manual enable",
+                force=True,
             )
             fps_state.following = bool(enable)
             fps_state.direction = direction
             # Update state tracker to avoid redundant commands
-            state = self._get_follower_state(fps_state.current_oams)
             state.last_state = (enable, direction)
-            # Set manual override flag - follower stays enabled even if hub sensors are empty
-            state.manual_override = True
             self.logger.debug(f"OAMSM_FOLLOWER: successfully enabled follower on {fps_name} (manual override active)")
         except Exception:
             self.logger.error(f"Failed to set follower on {fps_state.current_oams}")
@@ -3408,14 +3432,18 @@ class OAMSManager:
                     context = "pre-unload retract reverse"
                     if unload_length is not None:
                         context = f"{context} ({unload_length:.2f}mm)"
-                    self._set_follower_if_changed(
-                        fps_state.current_oams, oams, 1, reverse_direction, context
-                    )
-                    fps_state.following = True
-                    fps_state.direction = reverse_direction
                     # Prevent automatic control from flipping follower forward mid-unload
                     follower_state = self._get_follower_state(fps_state.current_oams)
                     follower_state.manual_override = True
+                    self._set_follower_if_changed(
+                        fps_state.current_oams,
+                        oams,
+                        1,
+                        reverse_direction,
+                        context,
+                    )
+                    fps_state.following = True
+                    fps_state.direction = reverse_direction
                     follower_override_set = True
             except Exception:
                 self.logger.warning(f"Unable to set follower reverse before preretract on {fps_name}")
