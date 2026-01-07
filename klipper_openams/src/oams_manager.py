@@ -1728,7 +1728,12 @@ class OAMSManager:
                 try:
                     # Use state-aware helper to avoid redundant MCU commands
                     self._set_follower_if_changed(
-                        fps_state.current_oams, oams_obj, 0, direction, "manual disable", force=True
+                        fps_state.current_oams,
+                        oams_obj,
+                        0,
+                        direction,
+                        "manual disable",
+                        force=True,
                     )
                     fps_state.following = False
                     # Update state tracker to avoid redundant commands
@@ -1758,7 +1763,12 @@ class OAMSManager:
             self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={fps_name} (manual override - will stay enabled regardless of hub sensors)")
             # Use state-aware helper so repeated commands don't spam the MCU
             self._set_follower_if_changed(
-                fps_state.current_oams, oams_obj, enable, direction, "manual enable", force=True
+                fps_state.current_oams,
+                oams_obj,
+                enable,
+                direction,
+                "manual enable",
+                force=True,
             )
             fps_state.following = bool(enable)
             fps_state.direction = direction
@@ -3408,14 +3418,18 @@ class OAMSManager:
                     context = "pre-unload retract reverse"
                     if unload_length is not None:
                         context = f"{context} ({unload_length:.2f}mm)"
-                    self._set_follower_if_changed(
-                        fps_state.current_oams, oams, 1, reverse_direction, context
-                    )
-                    fps_state.following = True
-                    fps_state.direction = reverse_direction
                     # Prevent automatic control from flipping follower forward mid-unload
                     follower_state = self._get_follower_state(fps_state.current_oams)
                     follower_state.manual_override = True
+                    self._set_follower_if_changed(
+                        fps_state.current_oams,
+                        oams,
+                        1,
+                        reverse_direction,
+                        context,
+                    )
+                    fps_state.following = True
+                    fps_state.direction = reverse_direction
                     follower_override_set = True
             except Exception:
                 self.logger.warning(f"Unable to set follower reverse before preretract on {fps_name}")
