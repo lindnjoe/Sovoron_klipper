@@ -1906,11 +1906,6 @@ class OAMSManager:
 
         return None
 
-
-    def _rebuild_lane_location_index(self) -> None:
-        """No longer needed - using lane-based detection only."""
-        pass
-
     def _validate_afc_oams_integration(self, afc) -> None:
         """Validate AFC lane configs match OAMS hardware configuration.
 
@@ -2515,6 +2510,26 @@ class OAMSManager:
 
         # Start unload operation (non-blocking - just sends MCU command)
         self.logger.info(f"Starting async unload for same-FPS reload on {fps_name}")
+
+        # CRITICAL: Enable follower in reverse direction BEFORE starting unload
+        # The follower motor must be set to pull filament back to the spool
+        # before the BLDC motor starts rewinding (following user's requirement:
+        # "we have to first tell the follower what direction to be going in")
+        try:
+            gcode = self._gcode_obj
+            if gcode is None:
+                gcode = self.printer.lookup_object("gcode")
+                self._gcode_obj = gcode
+            fps_param = fps_name.replace("fps ", "", 1)
+            gcode.run_script_from_command(
+                f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
+            )
+            fps_state_obj.following = True
+            fps_state_obj.direction = 0
+            self.logger.debug(f"Set follower reverse before async unload on {fps_name}")
+        except Exception:
+            self.logger.warning(f"Failed to set follower reverse before async unload on {fps_name}")
+
         if OAMSStatus is None:
             self.logger.error("CRITICAL: OAMSStatus not available (oams.py import failed)")
 
