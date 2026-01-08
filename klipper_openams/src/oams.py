@@ -410,17 +410,26 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self._unload_retry_count = 0
         self._last_unload_attempt = 0.0
 
-    def load_spool_with_retry(self, spool_idx: int) -> Tuple[bool, str]:
-        """Load spool with automatic retry on failure."""
+    def load_spool_with_retry(self, spool_idx: int, max_retries: Optional[int] = None) -> Tuple[bool, str]:
+        """Load spool with automatic retry on failure.
+
+        Args:
+            spool_idx: Index of the spool to load
+            max_retries: Override for load_retry_max. If provided, uses this value instead
+                        of the configured load_retry_max. Allows AFC to control retry count.
+        """
         retry_count = self._load_retry_count.get(spool_idx, 0)
         attempt_history = []  # Track failure reasons for diagnostic context
 
+        # Use AFC's retry config if provided, otherwise fall back to OAMS config
+        retry_limit = max_retries if max_retries is not None else self.load_retry_max
+
         # Use a loop instead of recursion to prevent monitor state issues
-        while retry_count < self.load_retry_max:
+        while retry_count < retry_limit:
             if retry_count > 0:
                 delay = self._calculate_retry_delay(retry_count)
                 logging.info(
-                    f"OAMS[{self.oams_idx}]: Load retry {retry_count + 1}/{self.load_retry_max} for spool {spool_idx}, waiting {delay:.1f}s"
+                    f"OAMS[{self.oams_idx}]: Load retry {retry_count + 1}/{retry_limit} for spool {spool_idx}, waiting {delay:.1f}s"
                 )
                 self.reactor.pause(self.reactor.monotonic() + delay)
 
@@ -447,9 +456,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             attempt_history.append(f"Attempt {retry_count + 1}: {message}")
 
 
-            if retry_count + 1 < self.load_retry_max:
+            if retry_count + 1 < retry_limit:
                 logging.warning(
-                    f"OAMS[{self.oams_idx}]: Load failed for spool {spool_idx}: {message}. Attempt {retry_count + 1}/{self.load_retry_max}"
+                    f"OAMS[{self.oams_idx}]: Load failed for spool {spool_idx}: {message}. Attempt {retry_count + 1}/{retry_limit}"
                 )
 
                 if self.auto_unload_on_failed_load:
@@ -484,7 +493,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         # Build detailed error message with attempt history
         history_str = "; ".join(attempt_history) if attempt_history else message
         return False, (
-            f"Failed to load spool {spool_idx} after {self.load_retry_max} attempts. "
+            f"Failed to load spool {spool_idx} after {retry_limit} attempts. "
             f"Attempt history: {history_str}"
         )
 
@@ -506,16 +515,24 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         """
         return self._last_load_was_retry.get(spool_idx, False)
 
-    def unload_spool_with_retry(self) -> Tuple[bool, str]:
-        """Unload spool with automatic retry on failure."""
+    def unload_spool_with_retry(self, max_retries: Optional[int] = None) -> Tuple[bool, str]:
+        """Unload spool with automatic retry on failure.
+
+        Args:
+            max_retries: Override for unload_retry_max. If provided, uses this value instead
+                        of the configured unload_retry_max. Allows AFC to control retry count.
+        """
         attempt_history = []  # Track failure reasons for diagnostic context
 
+        # Use AFC's retry config if provided, otherwise fall back to OAMS config
+        retry_limit = max_retries if max_retries is not None else self.unload_retry_max
+
         # Use a loop instead of recursion to prevent monitor state issues
-        while self._unload_retry_count < self.unload_retry_max:
+        while self._unload_retry_count < retry_limit:
             if self._unload_retry_count > 0:
                 delay = self._calculate_retry_delay(self._unload_retry_count)
                 logging.info(
-                    f"OAMS[{self.oams_idx}]: Unload retry {self._unload_retry_count + 1}/{self.unload_retry_max}, waiting {delay:.1f}s"
+                    f"OAMS[{self.oams_idx}]: Unload retry {self._unload_retry_count + 1}/{retry_limit}, waiting {delay:.1f}s"
                 )
                 self.reactor.pause(self.reactor.monotonic() + delay)
 
@@ -536,9 +553,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             attempt_history.append(f"Attempt {self._unload_retry_count}: {message}")
 
 
-            if self._unload_retry_count < self.unload_retry_max:
+            if self._unload_retry_count < retry_limit:
                 logging.warning(
-                    f"OAMS[{self.oams_idx}]: Unload failed: {message}. Attempt {self._unload_retry_count}/{self.unload_retry_max}"
+                    f"OAMS[{self.oams_idx}]: Unload failed: {message}. Attempt {self._unload_retry_count}/{retry_limit}"
                 )
                 # Continue loop for retry
             else:
@@ -553,7 +570,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         # Build detailed error message with attempt history
         history_str = "; ".join(attempt_history) if attempt_history else message
         return False, (
-            f"Failed to unload after {self.unload_retry_max} attempts. "
+            f"Failed to unload after {retry_limit} attempts. "
             f"Attempt history: {history_str}"
         )
 

@@ -3008,8 +3008,15 @@ class OAMSManager:
         except Exception:
             self.logger.warning(f"Failed to set follower reverse before unload on {fps_name}")
 
+        # REFACTOR: Use AFC's retry config for unload attempts
+        afc = self._get_afc()
+        max_retries = None
+        if afc is not None and hasattr(afc, 'tool_max_unload_attempts'):
+            max_retries = afc.tool_max_unload_attempts
+            self.logger.debug(f"Using AFC retry config for unload: {max_retries} attempts")
+
         try:
-            success, message = oams.unload_spool_with_retry()
+            success, message = oams.unload_spool_with_retry(max_retries=max_retries)
         except Exception:
             success = False
             message = f"Exception unloading filament on {fps_name}"
@@ -3388,7 +3395,18 @@ class OAMSManager:
             self.logger.error(f"Failed to capture load state for lane {lane_name} bay {bay_index}")
             return False, f"Failed to capture load state for lane {lane_name}"
 
-        max_engagement_retries = max(1, getattr(oam, "load_retry_max", 1))
+        # REFACTOR: Use AFC's tool_max_unload_attempts config instead of OAMS load_retry_max
+        # This ensures consistent retry behavior across AFC and OAMS, using AFC as the single
+        # source of truth for retry configuration.
+        afc = self._get_afc()
+        if afc is not None and hasattr(afc, 'tool_max_unload_attempts'):
+            max_engagement_retries = max(1, afc.tool_max_unload_attempts)
+            self.logger.debug(f"Using AFC retry config: {max_engagement_retries} attempts (from AFC.tool_max_unload_attempts)")
+        else:
+            # Fallback to OAMS config if AFC not available
+            max_engagement_retries = max(1, getattr(oam, "load_retry_max", 1))
+            self.logger.debug(f"Using OAMS retry config: {max_engagement_retries} attempts (AFC config not available)")
+
         load_success = False
         last_error = None
 
@@ -4417,6 +4435,10 @@ class OAMSManager:
             self.logger.error(f"Cannot get gcode object for retry: {e}")
             return
 
+        # Extract FPS parameter (remove "fps " prefix if present)
+        # fps_name is like "fps fps1", but G-code commands need just "fps1"
+        fps_param = fps_name.replace("fps ", "", 1)
+
         # Build G-code retry sequence
         # This queues commands through Klipper's command system (non-blocking)
         retry_gcode = f"""
@@ -4427,19 +4449,19 @@ G1 E-10 F300
 G90
 
 ; Step 2: Ensure follower is reverse for unload
-OAMSM_FOLLOWER FPS={fps_name} ENABLE=1 DIRECTION=0
+OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=0
 
 ; Step 3: Unload the stuck filament
-OAMSM_UNLOAD_FILAMENT FPS={fps_name}
+OAMSM_UNLOAD_FILAMENT FPS={fps_param}
 
 ; Step 4: Clear stuck flag for retry
 ; (will be cleared automatically by successful load)
 
 ; Step 5: Ensure follower is forward for load
-OAMSM_FOLLOWER FPS={fps_name} ENABLE=1 DIRECTION=1
+OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=1
 
 ; Step 6: Retry load
-OAMSM_LOAD_FILAMENT FPS={fps_name} LANE={lane_name}
+OAMSM_LOAD_FILAMENT FPS={fps_param} LANE={lane_name}
 """
 
         # Execute the G-code sequence
