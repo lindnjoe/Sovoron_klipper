@@ -2970,24 +2970,50 @@ class OAMSManager:
         try:
             success, message = oams.unload_spool_with_retry()
         except Exception:
-            self.logger.error(f"Exception while unloading filament on {fps_name}")
-            # Reset state on exception to avoid getting stuck
-            fps_state.state = FPSLoadState.LOADED
-            fps_state.since = self.reactor.monotonic()
-            fps_state.reset_stuck_spool_state(preserve_restore=True)
-            if fps_state.current_oams:
-                oams_obj = self.oams.get(fps_state.current_oams)
-                if oams_obj is not None:
-                    self._set_follower_if_changed(
-                        fps_state.current_oams,
-                        oams_obj,
-                        1,
-                        0,
-                        "unload retry after exception",
-                        force=True,
-                    )
+            success = False
+            message = f"Exception unloading filament on {fps_name}"
+            self.logger.error(message)
 
-            return False, f"Exception unloading filament on {fps_name}"
+        if not success:
+            self.logger.warning(f"Unload failed on {fps_name}, preparing retry: {message}")
+            try:
+                unload_lane = fps_state.current_lane or lane_name
+                unload_length, unload_speed = (
+                    self._get_unload_params(unload_lane) if unload_lane else (None, None)
+                )
+                retract_feed = unload_speed if unload_speed is not None else 1200.0
+                self._set_follower_if_changed(
+                    fps_state.current_oams,
+                    oams,
+                    1,
+                    1,
+                    "unload retry - forward",
+                    force=True,
+                )
+                fps_state.following = True
+                fps_state.direction = 1
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
+                self._set_follower_if_changed(
+                    fps_state.current_oams,
+                    oams,
+                    1,
+                    0,
+                    "unload retry - reverse",
+                    force=True,
+                )
+                fps_state.direction = 0
+                gcode = self._gcode_obj
+                if gcode is None:
+                    gcode = self.printer.lookup_object("gcode")
+                    self._gcode_obj = gcode
+                gcode.run_script_from_command("M83")  # Relative extrusion mode
+                gcode.run_script_from_command("G92 E0")  # Reset extruder position
+                gcode.run_script_from_command(f"G1 E-5.00 F{retract_feed:.0f}")
+                gcode.run_script_from_command("M400")
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
+                success, message = oams.unload_spool_with_retry()
+            except Exception:
+                self.logger.error(f"Exception while retrying unload on {fps_name}")
 
         if success:
             fps_state.state = FPSLoadState.UNLOADED
