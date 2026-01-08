@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 # This file includes code modified from the Shaketune Project. https://github.com/Frix-x/klippain-shaketune
-# Originally authored by Félix Boisselier and licensed under the GNU General Public License v3.0.
+# Originally authored by FÃ©lix Boisselier and licensed under the GNU General Public License v3.0.
 #
 # Full license text available at: https://www.gnu.org/licenses/gpl-3.0.html
 from __future__ import annotations
@@ -540,6 +540,15 @@ class afcFunction:
             cur_lane_loaded.unsync_to_extruder()
             cur_lane_loaded.set_tool_unloaded()
             cur_lane_loaded.unit_obj.return_to_home()
+            unit_obj = getattr(cur_lane_loaded, "unit_obj", None)
+            if unit_obj is not None and getattr(unit_obj, "type", "") == "OpenAMS":
+                try:
+                    oams_manager = self.afc.printer.lookup_object("oams_manager", None)
+                    extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None)
+                    if oams_manager is not None:
+                        oams_manager.on_afc_lane_unloaded(cur_lane_loaded.name, extruder_name=extruder_name)
+                except Exception:
+                    self.logger.error("Failed to notify OAMS manager during unset_lane_loaded")
             self.afc.function.handle_activate_extruder()
             self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
             self.afc.save_vars()
