@@ -2925,6 +2925,21 @@ class OAMSManager:
         # Cancel post-load pressure check to prevent false positive clog detection during unload
         self._cancel_post_load_pressure_check(fps_state)
 
+        # Ensure follower is set to reverse before starting unload
+        try:
+            self._set_follower_if_changed(
+                fps_state.current_oams,
+                oams,
+                1,
+                0,
+                "before unload",
+                force=True,
+            )
+            fps_state.following = True
+            fps_state.direction = 0
+        except Exception:
+            self.logger.warning(f"Failed to set follower reverse before unload on {fps_name}")
+
         try:
             success, message = oams.unload_spool_with_retry()
         except Exception:
@@ -3302,6 +3317,19 @@ class OAMSManager:
                 1,
                 "before load - enable follower for buffer tracking",
             )
+            try:
+                self._set_follower_if_changed(
+                    fps_state.current_oams,
+                    oam,
+                    1,
+                    1,
+                    "before load",
+                    force=True,
+                )
+                fps_state.following = True
+                fps_state.direction = 1
+            except Exception:
+                self.logger.warning(f"Failed to set follower forward before load on {fps_name}")
 
             busy_retries = 0
             while True:
