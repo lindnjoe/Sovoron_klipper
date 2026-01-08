@@ -699,11 +699,12 @@ class OAMSManager:
         # Key format: "oams_name:spool_idx" -> error_state (0 or 1)
         self.led_error_state: Dict[str, int] = {}  # Track last commanded LED state to avoid redundant MCU commands
 
-        # MCU command rate limiting: prevent command queue overflow
-        # Track last command time per OAMS to space out commands
-        # Key format: "oams_name" -> last_command_timestamp
-        self._last_mcu_command_time: Dict[str, float] = {}
-        self._mcu_command_min_interval = 0.05  # Minimum 50ms between commands to same OAMS
+        # MCU command completion tracking: prevent command queue overflow
+        # Track pending commands per OAMS and wait for completion before sending next
+        # Key format: "oams_name" -> list of (command_fn, args, kwargs) tuples
+        self._mcu_command_queue: Dict[str, List[Tuple[Callable, tuple, dict]]] = {}
+        self._mcu_command_in_flight: Dict[str, bool] = {}  # Track if command is being processed
+        self._mcu_command_poll_timers: Dict[str, Any] = {}  # Completion polling timers
 
         self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
 
@@ -3361,7 +3362,7 @@ class OAMSManager:
             # The OAMS BLDC will push filament through the buffer, and the follower
             # must be tracking it in real-time, not after the load completes
             # Without this, filament gets stuck in the buffer during the load
-            # NOTE: Trusting automatic follower control to keep it enabled during LOADING state
+            # NOTE: Follower is explicitly enabled forward (1) for load operations
             self._enable_follower(
                 fps_name,
                 fps_state,
@@ -3994,38 +3995,109 @@ class OAMSManager:
 
     def _rate_limited_mcu_command(self, oams_name: str, command_fn: Callable, *args, **kwargs) -> None:
         """
-        Execute MCU command with rate limiting to prevent queue overflow.
+        Execute MCU command with completion-aware queuing to prevent queue overflow.
 
-        Enforces minimum interval between commands to same OAMS unit.
-        If called too soon after last command, schedules via reactor callback.
+        Waits for previous command to complete (action_status becomes None) before
+        sending next command. Queues commands if OAMS is busy.
 
         Args:
             oams_name: Name of OAMS unit
             command_fn: Function to call (e.g., oams.set_led_error)
             *args, **kwargs: Arguments to pass to command_fn
         """
-        now = self.reactor.monotonic()
-        last_time = self._last_mcu_command_time.get(oams_name, 0)
-        time_since_last = now - last_time
+        # Get OAMS object to check status
+        oams = self.oams.get(oams_name)
+        if oams is None:
+            self.logger.error(f"Cannot send command to {oams_name} - OAMS not found")
+            return
 
-        if time_since_last >= self._mcu_command_min_interval:
-            # Enough time has passed, send immediately
-            try:
-                command_fn(*args, **kwargs)
-                self._last_mcu_command_time[oams_name] = now
-            except Exception as e:
-                self.logger.error(f"MCU command failed for {oams_name}: {e}")
-        else:
-            # Too soon, schedule with delay
-            delay = self._mcu_command_min_interval - time_since_last
-            def _delayed_command(eventtime):
+        # Initialize queue if needed
+        if oams_name not in self._mcu_command_queue:
+            self._mcu_command_queue[oams_name] = []
+            self._mcu_command_in_flight[oams_name] = False
+
+        # Add command to queue
+        self._mcu_command_queue[oams_name].append((command_fn, args, kwargs))
+
+        # Try to process queue
+        self._process_mcu_command_queue(oams_name)
+
+    def _process_mcu_command_queue(self, oams_name: str) -> None:
+        """
+        Process queued MCU commands for an OAMS, waiting for each to complete.
+
+        Args:
+            oams_name: Name of OAMS unit
+        """
+        oams = self.oams.get(oams_name)
+        if oams is None:
+            return
+
+        # Skip if command already in flight
+        if self._mcu_command_in_flight.get(oams_name, False):
+            return
+
+        # Skip if no commands queued
+        queue = self._mcu_command_queue.get(oams_name, [])
+        if not queue:
+            return
+
+        # Check if OAMS is busy with a load/unload operation
+        # action_status is None when idle, set to LOADING/UNLOADING/etc when busy
+        if getattr(oams, "action_status", None) is not None:
+            # OAMS is busy - schedule retry after operation completes
+            # Use short polling interval (100ms) to detect completion quickly
+            def _retry_queue(eventtime):
+                self._mcu_command_in_flight[oams_name] = False
+                self._process_mcu_command_queue(oams_name)
+                return self.reactor.NEVER
+
+            # Cancel existing poll timer if any
+            if oams_name in self._mcu_command_poll_timers:
                 try:
-                    command_fn(*args, **kwargs)
-                    self._last_mcu_command_time[oams_name] = eventtime
-                except Exception as e:
-                    self.logger.error(f"Delayed MCU command failed for {oams_name}: {e}")
+                    self.reactor.unregister_timer(self._mcu_command_poll_timers[oams_name])
+                except Exception:
+                    pass
 
-            self.reactor.register_callback(_delayed_command, now + delay)
+            # Register new poll timer
+            timer = self.reactor.register_timer(_retry_queue, self.reactor.NOW + 0.1)
+            self._mcu_command_poll_timers[oams_name] = timer
+            return
+
+        # OAMS is idle - send next command
+        command_fn, args, kwargs = queue.pop(0)
+        self._mcu_command_in_flight[oams_name] = True
+
+        try:
+            command_fn(*args, **kwargs)
+            self.logger.debug(f"Sent MCU command to {oams_name} ({len(queue)} remaining in queue)")
+        except Exception as e:
+            self.logger.error(f"MCU command failed for {oams_name}: {e}")
+
+        # Schedule completion check after short delay (50ms) to allow command to process
+        # Then check if action_status changed (command started processing)
+        def _check_completion(eventtime):
+            # If action_status is still None, command completed immediately (like set_led)
+            # If action_status is set, need to wait for it to return to None
+            if getattr(oams, "action_status", None) is None:
+                # Command completed - mark as not in flight and process next
+                self._mcu_command_in_flight[oams_name] = False
+                self._process_mcu_command_queue(oams_name)
+                return self.reactor.NEVER
+            else:
+                # Command started an operation - poll for completion
+                return eventtime + 0.1  # Poll every 100ms
+
+        # Cancel existing poll timer if any
+        if oams_name in self._mcu_command_poll_timers:
+            try:
+                self.reactor.unregister_timer(self._mcu_command_poll_timers[oams_name])
+            except Exception:
+                pass
+
+        # Register completion check timer
+        timer = self.reactor.register_timer(_check_completion, self.reactor.NOW + 0.05)
+        self._mcu_command_poll_timers[oams_name] = timer
 
     def _set_led_error_if_changed(self, oams: Any, oams_name: str, spool_idx: int, error_state: int, context: str = "") -> None:
         """
@@ -4104,7 +4176,11 @@ class OAMSManager:
         if not self._is_oams_mcu_ready(oams):
             self.logger.debug(f"Skipping follower change for {oams_name} ({context or 'no context'}) because MCU is not ready")
             return
-        if getattr(oams, "action_status", None) is not None:
+
+        # Allow follower changes during error recovery (clog, stuck spool) even if OAMS is busy
+        # User needs manual extrusion capability to fix issues
+        is_error_recovery = "clog" in context.lower() or "stuck" in context.lower() or "recovery" in context.lower()
+        if not is_error_recovery and getattr(oams, "action_status", None) is not None:
             self.logger.debug(
                 f"Skipping follower change for {oams_name} ({context or 'no context'}) because OAMS is busy"
             )
@@ -4113,7 +4189,8 @@ class OAMSManager:
         # Only send command if state changed or this is the first command
         if force or state.last_state != desired_state:
             try:
-                oams.set_oams_follower(enable, direction)
+                # Use rate limiting to prevent MCU queue overflow
+                self._rate_limited_mcu_command(oams_name, oams.set_oams_follower, enable, direction)
                 state.last_state = desired_state
                 # Log follower disable at INFO level to track what's disabling it during clogs
                 if enable:
@@ -4253,6 +4330,96 @@ class OAMSManager:
         # Simple: if hub has filament, enable follower; if all empty, disable
         self._ensure_followers_for_loaded_hubs()
 
+    def _trigger_stuck_spool_retry(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], message: str) -> None:
+        """
+        Trigger automatic unload + retry for stuck spool detected BEFORE engagement.
+
+        This handles filament that failed to feed properly during the initial load.
+        Unlike post-engagement stuck spool (which pauses), this triggers automatic recovery.
+
+        Args:
+            fps_name: Name of the FPS where stuck spool was detected
+            fps_state: Current state of the FPS
+            oams: OAMS object (can be None, will be looked up)
+            message: Error message describing the stuck spool condition
+        """
+        spool_idx = fps_state.current_spool_idx
+        oams_name = fps_state.current_oams
+
+        if oams is None and oams_name is not None:
+            oams = self.oams.get(oams_name)
+
+        if oams is None:
+            self.logger.error(f"Cannot retry stuck spool on {fps_name} - OAMS not found")
+            return
+
+        if spool_idx is None:
+            self.logger.error(f"Cannot retry stuck spool on {fps_name} - spool index unknown")
+            return
+
+        self.logger.info(f"Triggering stuck spool retry for {fps_name}: {message}")
+
+        # Set LED to orange (warning) to indicate retry in progress
+        try:
+            # Use rate limiting to prevent MCU queue overflow
+            self._rate_limited_mcu_command(oams_name, oams.set_led_error, spool_idx, 0)  # Clear red first
+        except Exception:
+            self.logger.error(f"Failed to clear stuck spool LED on {fps_name} spool {spool_idx}")
+
+        # Abort current action (load in progress)
+        try:
+            # Use rate limiting to prevent MCU queue overflow
+            self._rate_limited_mcu_command(oams_name, oams.abort_current_action)
+            self.logger.info(f"Aborted stuck load on {fps_name}")
+        except Exception:
+            self.logger.error(f"Failed to abort stuck load on {fps_name}")
+
+        # Schedule unload + retry via reactor callback to avoid blocking timer
+        def _retry_sequence(eventtime):
+            try:
+                self.logger.info(f"Starting stuck spool recovery sequence for {fps_name} spool {spool_idx}")
+
+                # Step 1: Unload the stuck filament
+                unload_success, unload_msg = oams.unload_spool_with_retry()
+
+                if not unload_success:
+                    self.logger.error(f"Failed to unload stuck spool on {fps_name}: {unload_msg}")
+                    # Set LED to red and clear stuck flag so detection can retrigger
+                    fps_state.stuck_spool.active = False
+                    try:
+                        oams.set_led_error(spool_idx, 1)
+                    except Exception:
+                        pass
+                    return
+
+                self.logger.info(f"Successfully unloaded stuck spool on {fps_name}, attempting reload")
+
+                # Step 2: Reload with retry
+                load_success, load_msg = oams.load_spool_with_retry(spool_idx)
+
+                if load_success:
+                    self.logger.info(f"Successfully recovered from stuck spool on {fps_name}: {load_msg}")
+                    # Clear stuck spool state
+                    fps_state.reset_stuck_spool_state()
+                    # Reset engagement tracking for clean verification
+                    fps_state.reset_engagement_tracking()
+                else:
+                    self.logger.error(f"Failed to reload after stuck spool on {fps_name}: {load_msg}")
+                    # Set LED to red and clear stuck flag so user can intervene
+                    fps_state.stuck_spool.active = False
+                    try:
+                        oams.set_led_error(spool_idx, 1)
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                self.logger.error(f"Exception during stuck spool retry sequence for {fps_name}: {e}")
+                fps_state.stuck_spool.active = False
+
+        # Schedule retry sequence to run ASAP but not block current timer callback
+        self.reactor.register_callback(_retry_sequence)
+        self.logger.info(f"Scheduled stuck spool retry sequence for {fps_name}")
+
     def _trigger_stuck_spool_pause(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], message: str) -> None:
         if fps_state.stuck_spool.active:
             return
@@ -4292,6 +4459,7 @@ class OAMSManager:
         # Enable follower directly during stuck spool pause, bypassing state checks
         # NOTE: Unlike clog detection, stuck spool can happen during LOADING before follower is enabled
         if oams is not None and spool_idx is not None:
+            # ALWAYS use forward direction (1) during error states so user can manually extrude to fix the issue
             # Save the current direction for restore on RESUME
             current_direction = fps_state.direction if fps_state.following else 1
             fps_state.stuck_spool.restore_follower = True
@@ -4301,8 +4469,8 @@ class OAMSManager:
                 fps_name,
                 fps_state,
                 oams,
-                current_direction,
-                "stuck spool pause - keep follower active",
+                1,  # Always forward during stuck spool so user can manually extrude
+                "stuck spool pause - keep follower forward for manual recovery",
             )
             self.logger.info(f"Follower enabled on {fps_name} during stuck spool pause")
 
@@ -4808,11 +4976,35 @@ class OAMSManager:
                         f"encoder_diff={encoder_diff} (threshold={MIN_ENCODER_DIFF}), dwell_time={elapsed:.1f}s (threshold={STUCK_SPOOL_DWELL}s)"
                     )
 
-                    # SAFETY: Wrap pause trigger in try/except to prevent crash during stuck spool detection
-                    try:
-                        self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
-                    except Exception:
-                        self.logger.error(f"Failed to trigger stuck spool pause for {fps_name} - error state may be inconsistent")
+                    # CRITICAL: Check if filament has engaged with extruder yet
+                    # If NOT engaged, this is a load failure - trigger unload + retry instead of pause
+                    # If ENGAGED, this is a stuck spool during printing - pause for user intervention
+                    if not fps_state.engaged_with_extruder:
+                        # Pre-engagement stuck spool - filament failed to load properly
+                        # Trigger automatic unload + retry sequence instead of pausing
+                        self.logger.info(f"{fps_name}: Stuck spool detected BEFORE engagement - triggering unload + retry sequence")
+                        fps_state.stuck_spool.active = True  # Set flag to prevent retriggering
+
+                        # SAFETY: Wrap retry trigger in try/except to prevent crash
+                        try:
+                            self._trigger_stuck_spool_retry(fps_name, fps_state, oams, message)
+                        except Exception:
+                            self.logger.error(f"Failed to trigger stuck spool retry for {fps_name} - falling back to pause")
+                            # Fallback to pause if retry fails
+                            try:
+                                self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
+                            except Exception:
+                                self.logger.error(f"Failed to trigger stuck spool pause fallback for {fps_name}")
+                    else:
+                        # Post-engagement stuck spool - filament is loaded but spool is stuck/tangled
+                        # This requires user intervention - pause the print
+                        self.logger.info(f"{fps_name}: Stuck spool detected AFTER engagement - pausing for user intervention")
+
+                        # SAFETY: Wrap pause trigger in try/except to prevent crash
+                        try:
+                            self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
+                        except Exception:
+                            self.logger.error(f"Failed to trigger stuck spool pause for {fps_name} - error state may be inconsistent")
         elif encoder_moving:
             # Encoder is moving - clear timer even if pressure is low (print stall with active extrusion)
             if fps_state.stuck_spool.start_time is not None and not fps_state.stuck_spool.active:
@@ -5026,7 +5218,9 @@ class OAMSManager:
                 # Keep active=True to prevent retriggering until user intervention
                 return
 
-            # CRITICAL: Explicitly enable follower forward for manual extrusion during troubleshooting
+            # CRITICAL: Enable follower FORWARD for manual extrusion during clog recovery
+            # Clog detection ALWAYS pauses - user needs to manually extrude to clear the blockage
+            # Unlike pre-engagement stuck spool (which retries), clogs require user intervention
             if fps_state.current_oams and fps_state.current_spool_idx is not None:
                 oams_obj = self.oams.get(fps_state.current_oams)
                 if oams_obj is not None:
@@ -5034,8 +5228,8 @@ class OAMSManager:
                         fps_name,
                         fps_state,
                         oams_obj,
-                        1,
-                        "clog detected - keep follower forward for recovery",
+                        1,  # Always forward for clog - user needs to manually extrude to clear
+                        "clog detected - keep follower forward for manual recovery",
                     )
                 else:
                     self.logger.warning(f"Cannot enable follower during clog on {fps_name} - OAMS {fps_state.current_oams} not found")
