@@ -4229,8 +4229,7 @@ class OAMSManager:
         if oams is not None and spool_idx is not None:
             try:
                 oams.set_led_error(spool_idx, 1)
-                # CRITICAL: 1-second delay between commands to prevent MCU communication overload
-                self.reactor.pause(self.reactor.monotonic() + 1.0)
+                # Note: Removed reactor.pause() - cannot block in timer callback during printing
             except Exception:
                 self.logger.error(f"Failed to set stuck spool LED on {fps_name} spool {spool_idx}")
 
@@ -4238,9 +4237,8 @@ class OAMSManager:
         if oams is not None:
             try:
                 oams.abort_current_action()
-                # CRITICAL: 1-second delay after abort to allow MCU recovery
-                # Increased from 0.2s to 1.0s to prevent MCU communication timeout during stressed conditions
-                self.reactor.pause(self.reactor.monotonic() + 1.0)
+                # Note: Removed reactor.pause() - cannot block in timer callback during printing
+                # MCU will recover naturally through async command processing
             except Exception:
                 self.logger.error(f"Failed to abort active action for {fps_name} during stuck spool pause")
 
@@ -4248,8 +4246,7 @@ class OAMSManager:
         # SAFETY: Wrap pause in try/except to prevent crash if pause logic fails
         try:
             self._pause_printer_message(message, fps_state.current_oams)
-            # 1-second delay before follower commands
-            self.reactor.pause(self.reactor.monotonic() + 1.0)
+            # Note: Removed reactor.pause() - cannot block in timer callback during printing
         except Exception:
             self.logger.error(f"Failed to pause printer during stuck spool on {fps_name} - continuing with error state")
             # If pause failed, keep active=True to prevent retriggering until user intervention
@@ -4972,9 +4969,8 @@ class OAMSManager:
             # Set LED error first
             if oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 1, "clog detected")
-                # CRITICAL: 1-second delay between commands to prevent MCU communication overload
-                # This prevents command floods during already-stressed print conditions
-                self.reactor.pause(self.reactor.monotonic() + 1.0)
+                # Note: Removed reactor.pause() here - cannot block in timer callback during printing
+                # The LED command is asynchronous and will be processed by MCU without blocking
 
             message = (
                 f"Clog suspected on {fps_state.current_lane or fps_name}: "
@@ -4988,8 +4984,8 @@ class OAMSManager:
             # SAFETY: Wrap pause in try/except to prevent crash if pause logic fails
             try:
                 self._pause_printer_message(message, fps_state.current_oams)
-                # CRITICAL: 1-second delay after pause to allow system to settle
-                self.reactor.pause(self.reactor.monotonic() + 1.0)
+                # Note: Removed reactor.pause() - cannot block in timer callback
+                # System will settle naturally through event loop processing
             except Exception:
                 self.logger.error(f"Failed to pause printer during clog on {fps_name} - continuing with error state")
                 # Keep active=True to prevent retriggering until user intervention
