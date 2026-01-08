@@ -1704,9 +1704,17 @@ class afcAMS(afcUnit):
                 afc_self.logger.info(
                     "OpenAMS load: delegating to OAMSM_LOAD_FILAMENT for lane {}".format(cur_lane.name)
                 )
-                afc_self.gcode.run_script_from_command(
-                    "OAMSM_LOAD_FILAMENT LANE={}".format(cur_lane.name)
-                )
+                oams_manager = afc_self.printer.lookup_object("oams_manager", None)
+                if oams_manager is not None:
+                    success, message = oams_manager._load_filament_for_lane(cur_lane.name)
+                    if not success:
+                        message = message or f"OpenAMS load failed for {cur_lane.name}"
+                        afc_self.error.handle_lane_failure(cur_lane, message)
+                        return False
+                else:
+                    afc_self.gcode.run_script_from_command(
+                        "OAMSM_LOAD_FILAMENT LANE={}".format(cur_lane.name)
+                    )
             except Exception as e:
                 message = "OpenAMS load failed for {}: {}".format(cur_lane.name, str(e))
                 afc_self.error.handle_lane_failure(cur_lane, message)
@@ -1791,7 +1799,15 @@ class afcAMS(afcUnit):
                         cur_lane.name, fps_id
                     )
                 )
-                afc_self.gcode.run_script_from_command("OAMSM_UNLOAD_FILAMENT FPS={}".format(fps_id))
+                if oams_manager is not None:
+                    success, message = oams_manager._unload_filament_for_fps(fps_name)
+                    if not success:
+                        message = message or f"OpenAMS unload failed for {cur_lane.name}"
+                        afc_self.error.handle_lane_failure(cur_lane, message)
+                        return False
+                else:
+                    afc_self.gcode.run_script_from_command("OAMSM_UNLOAD_FILAMENT FPS={}".format(fps_id))
+
                 cur_lane.loaded_to_hub = True
                 cur_lane.set_tool_unloaded()
                 cur_lane.status = AFCLaneState.LOADED

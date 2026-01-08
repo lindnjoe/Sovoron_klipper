@@ -3303,17 +3303,32 @@ class OAMSManager:
                 "before load - enable follower for buffer tracking",
             )
 
-            try:
-                success, message = oam.load_spool(bay_index)
-            except Exception:
-                self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
-                fps_state.state = FPSLoadState.UNLOADED
-                error_msg = f"Failed to load bay {bay_index} on {oams_name}"
+            busy_retries = 0
+            while True:
+                try:
+                    success, message = oam.load_spool(bay_index)
+                except Exception:
+                    self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
+                    fps_state.state = FPSLoadState.UNLOADED
+                    error_msg = f"Failed to load bay {bay_index} on {oams_name}"
 
-                # CRITICAL: Pause printer if load fails during printing
-                # This prevents printing without filament loaded
-                self._pause_on_critical_failure(error_msg, oams_name)
-                return False, error_msg
+                    # CRITICAL: Pause printer if load fails during printing
+                    # This prevents printing without filament loaded
+                    self._pause_on_critical_failure(error_msg, oams_name)
+                    return False, error_msg
+
+                if success or message != "OAMS is busy" or busy_retries >= 3:
+                    break
+
+                busy_retries += 1
+                self.logger.warning(
+                    f"OAMS reported busy for bay {bay_index} on {oams_name}; retrying load ({busy_retries}/3)"
+                )
+                try:
+                    oam.abort_current_action()
+                except Exception:
+                    self.logger.warning(f"Failed to abort busy action on {oams_name} before retry")
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
 
             if not success:
                 last_error = message
