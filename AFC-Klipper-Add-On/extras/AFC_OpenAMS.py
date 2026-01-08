@@ -279,17 +279,18 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.error("Failed to subscribe to AMS events")
 
-        self._last_loaded_lane_by_extruder: Dict[str, Optional[str]] = {}
+        # PHASE 2 REFACTOR: Remove duplicate state tracking dictionaries
+        # AFC native objects already track this state:
+        # - extruder.lane_loaded (replaces _last_loaded_lane_by_extruder)
+        # - lane.load_state (replaces _last_lane_states)
+        # - lane.loaded_to_hub (replaces _last_hub_states)
+        # - lane.tool_loaded (replaces _last_virtual_tool_state and _lane_tool_latches)
 
         self._saved_unit_cache: Optional[Dict[str, Any]] = None
         self._saved_unit_mtime: Optional[float] = None
 
-        self._last_lane_states: Dict[str, bool] = {}
-        self._last_hub_states: Dict[str, bool] = {}
         self._virtual_tool_sensor = None
-        self._last_virtual_tool_state: Optional[bool] = None
-        self._lane_tool_latches: Dict[str, bool] = {}
-        self._lane_tool_latches_by_lane: Dict[object, bool] = {}
+        # Keep _last_hub_hes_values for HES calibration (not an AFC responsibility)
         self._last_hub_hes_values: Optional[List[float]] = None
 
         # OPTIMIZATION: Cache frequently accessed objects
@@ -599,8 +600,6 @@ class afcAMS(afcUnit):
         helper.sensor_enabled = False
 
         filament_present = getattr(helper, "filament_present", None)
-        if filament_present is not None:
-            self._last_virtual_tool_state = bool(filament_present)
 
         if getattr(extruder, "fila_tool_start", None) is None:
             extruder.fila_tool_start = sensor
@@ -728,8 +727,6 @@ class afcAMS(afcUnit):
                     if canonical_saved == canonical_lane:
                         try:
                             extruder.lane_loaded = lane_name
-                            if canonical_lane:
-                                self._last_loaded_lane_by_extruder[getattr(extruder, "name", "")] = canonical_lane
                             self.logger.debug(f"Restored extruder.lane_loaded to {lane_name} from AFC.var.unit during sync")
                             return True
                         except Exception:
@@ -740,10 +737,6 @@ class afcAMS(afcUnit):
                 if lane_has_filament:
                     try:
                         extruder.lane_loaded = lane_name
-                        canonical = self._canonical_lane_name(lane_name)
-                        extruder_name = getattr(extruder, "name", None) or getattr(extruder, "extruder_name", None)
-                        if extruder_name and canonical:
-                            self._last_loaded_lane_by_extruder[extruder_name] = canonical
                         self.logger.debug(f"Restored extruder.lane_loaded to {lane_name} based on lane state during sync")
                         return True
                     except Exception:
@@ -782,7 +775,7 @@ class afcAMS(afcUnit):
             canonical_lane = self._canonical_lane_name(getattr(lane_obj, "name", None))
 
         if new_state and not force:
-            if canonical_lane and self._lane_tool_latches.get(canonical_lane) is False:
+            if lane_obj and getattr(lane_obj, "tool_loaded", False) is False:
                 return
 
         #  Use cached sensor helper
@@ -806,11 +799,6 @@ class afcAMS(afcUnit):
         if extruder is not None:
             extruder.tool_start_state = filament_present
 
-        self._last_virtual_tool_state = new_state
-
-        if canonical_lane:
-            self._lane_tool_latches[canonical_lane] = new_state
-
     def lane_tool_loaded(self, lane):
         """Update the virtual tool sensor when a lane loads into the tool."""
         super().lane_tool_loaded(lane)
@@ -829,8 +817,9 @@ class afcAMS(afcUnit):
                 other_extruder = getattr(other_lane.extruder_obj, "name", None) if hasattr(other_lane, "extruder_obj") else None
 
                 if other_extruder == lane_extruder:
-                    # Same FPS: Just clear tool_loaded
-                    other_lane.tool_loaded = False
+                    # PHASE 1 REFACTOR: Use AFC native set_tool_unloaded() instead of direct assignment
+                    # This ensures proper state cleanup and callbacks
+                    other_lane.set_tool_unloaded()
                     if hasattr(other_lane, '_oams_runout_detected'):
                         other_lane._oams_runout_detected = False
                     self.logger.debug(f"Cleared tool_loaded for {other_lane.name} on same FPS (new lane {lane.name} loaded)")
@@ -865,8 +854,9 @@ class afcAMS(afcUnit):
         """Update the virtual tool sensor when a lane unloads from the tool."""
         super().lane_tool_unloaded(lane)
 
-        # Explicitly clear tool_loaded to prevent sensor sync from re-setting it
-        lane.tool_loaded = False
+        # PHASE 1 REFACTOR: Removed redundant lane.tool_loaded = False
+        # Parent's lane_tool_unloaded() already calls lane.set_tool_unloaded() which sets tool_loaded = False
+
         # Clear runout flag if set
         if hasattr(lane, '_oams_runout_detected'):
             lane._oams_runout_detected = False
@@ -896,7 +886,7 @@ class afcAMS(afcUnit):
         if desired_state is None:
             return
 
-        if desired_state == self._last_virtual_tool_state:
+        if desired_state == getattr(lane, "tool_loaded", False):
             return
 
         lane_name = getattr(lane, "name", None)
@@ -952,7 +942,7 @@ class afcAMS(afcUnit):
                 desired_state, desired_lane, desired_lane_obj = pending_false
 
         # Skip update only if state matches AND not forcing
-        if desired_state is None or (not force and desired_state == self._last_virtual_tool_state):
+        if desired_state is None or (not force and desired_state == getattr(desired_lane_obj, "tool_loaded", False) if desired_lane_obj else False):
             return
 
         self._set_virtual_tool_sensor_state(desired_state, eventtime, desired_lane, lane_obj=desired_lane_obj)
@@ -1330,7 +1320,6 @@ class afcAMS(afcUnit):
 
             try:
                 extruder_obj.lane_loaded = canonical_lane
-                self._last_loaded_lane_by_extruder[extruder_name] = canonical_lane
                 self.__class__._hydrated_extruders.add(extruder_name)
                 self.logger.debug(f"Hydrated {extruder_name}.lane_loaded from saved state: {canonical_lane}")
             except Exception:
@@ -1345,8 +1334,6 @@ class afcAMS(afcUnit):
     def record_load(self, extruder: Optional[str] = None, lane_name: Optional[str] = None) -> Optional[str]:
         extruder_name = extruder or getattr(self, "extruder", None)
         canonical = self._canonical_lane_name(lane_name)
-        if extruder_name:
-            self._last_loaded_lane_by_extruder[extruder_name] = canonical
 
         return canonical
 
@@ -1355,7 +1342,8 @@ class afcAMS(afcUnit):
         if extruder_name is None:
             return None
 
-        return self._last_loaded_lane_by_extruder.get(extruder_name)
+        extruder_obj = self.afc.extruders.get(extruder_name) if hasattr(self, "afc") else None
+        return getattr(extruder_obj, "lane_loaded", None) if extruder_obj else None
 
     cmd_SYNC_TOOL_SENSOR_help = "Synchronise the AMS virtual tool-start sensor with the assigned lane."
     def cmd_SYNC_TOOL_SENSOR(self, gcmd):
@@ -1878,7 +1866,7 @@ class afcAMS(afcUnit):
             return
 
         lane_val = bool(value)
-        prev_val = self._last_lane_states.get(lane.name)
+        prev_val = getattr(lane, "load_state", False)
 
         # Update lane state based on sensor FIRST
         if getattr(lane, "ams_share_prep_load", False):
@@ -1887,7 +1875,6 @@ class afcAMS(afcUnit):
             lane.load_callback(eventtime, lane_val)
             lane.prep_callback(eventtime, lane_val)
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
-            self._last_lane_states[lane.name] = lane_val
 
         # Detect F1S sensor going False (spool empty) - trigger runout detection AFTER sensor update
         # Only trigger if printer is actively printing (not during filament insertion/removal)
@@ -1915,7 +1902,7 @@ class afcAMS(afcUnit):
         # Update hardware service snapshot
         if self.hardware_service is not None:
             hub_obj = getattr(lane, "hub_obj", None)
-            hub_state = self._last_hub_states.get(hub_obj.name) if hub_obj else None
+            hub_state = getattr(lane, "loaded_to_hub", False) if hub_obj else None
             tool_state = self._lane_reports_tool_filament(lane)
             try:
                 self.hardware_service.update_lane_snapshot(
@@ -1945,16 +1932,15 @@ class afcAMS(afcUnit):
             return
 
         hub_val = bool(value)
-        if hub_val != self._last_hub_states.get(hub.name):
+        if hub_val != getattr(lane, "loaded_to_hub", False):
             hub.switch_pin_callback(eventtime, hub_val)
             fila = getattr(hub, "fila", None)
             if fila is not None:
                 fila.runout_helper.note_filament_present(eventtime, hub_val)
-            self._last_hub_states[hub.name] = hub_val
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
-            lane_state = self._last_lane_states.get(lane.name, False)
+            lane_state = getattr(lane, "load_state", False)
             tool_state = self._lane_reports_tool_filament(lane)
             try:
                 self.hardware_service.update_lane_snapshot(
@@ -2009,13 +1995,9 @@ class afcAMS(afcUnit):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
         # Check if runout handling requires blocking this sensor update
         if self._should_block_sensor_update_for_runout(lane, lane_val):
-            # Update state tracking before returning to prevent duplicate processing
-            lane_name = getattr(lane, "name", None)
-            if lane_name:
-                self._last_lane_states[lane_name] = bool(lane_val)
             return
 
-        previous = self._last_lane_states.get(lane.name)
+        previous = getattr(lane, "load_state", False)
         lane_val_bool = bool(lane_val)
         prep_state = getattr(lane, "prep_state", None)
         load_state = getattr(lane, "load_state", None)
@@ -2046,12 +2028,10 @@ class afcAMS(afcUnit):
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
 
-            # Clear tool_loaded since filament can't be in toolhead if not in spool bay
-            lane.tool_loaded = False
-            lane.loaded_to_hub = False
-
             # Shared prep/load sensors stay in sync for AMS lanes; treat False as fully unloaded
             try:
+                # PHASE 1 REFACTOR: Remove redundant manual state assignments
+                # lane.set_unloaded() already handles tool_loaded and loaded_to_hub
                 # Only call set_unloaded if lane isn't already in NONE state
                 # This prevents errors when sensor reports empty for an already-empty lane
                 if lane.status != AFCLaneState.NONE:
@@ -2116,17 +2096,12 @@ class afcAMS(afcUnit):
         lane.afc.save_vars()
         lane.prep_state = lane_val_bool
         lane.load_state = lane_val_bool
-        self._last_lane_states[lane.name] = lane_val_bool
 
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
         """Apply a boolean lane sensor value using existing AFC callbacks."""
         # Check if runout handling requires blocking this sensor update
         if self._should_block_sensor_update_for_runout(lane, lane_val):
             self.logger.debug(f"Ignoring sensor update for lane {getattr(lane, 'name', 'unknown')} - runout in progress")
-            # Update state tracking before returning to prevent duplicate processing
-            lane_name = getattr(lane, "name", None)
-            if lane_name:
-                self._last_lane_states[lane_name] = bool(lane_val)
             return
 
         try:
@@ -2138,7 +2113,7 @@ class afcAMS(afcUnit):
             self._update_shared_lane(lane, lane_val, eventtime)
             return
 
-        previous = self._last_lane_states.get(getattr(lane, "name", ""))
+        previous = getattr(lane, "load_state", False)
 
         if previous is not None and bool(previous) == bool(lane_val):
             return
@@ -2162,9 +2137,6 @@ class afcAMS(afcUnit):
             lane.loaded_to_hub = False
 
         self._mirror_lane_to_virtual_sensor(lane, eventtime)
-        lane_name = getattr(lane, "name", None)
-        if lane_name:
-            self._last_lane_states[lane_name] = bool(lane_val)
 
     def _lane_for_spool_index(self, spool_index: Optional[int]):
         """Use indexed lookup instead of iteration."""
@@ -2537,8 +2509,8 @@ class afcAMS(afcUnit):
                 try:
                     canonical_lane = self._canonical_lane_name(lane.name)
                     force_update = True
-                    if canonical_lane:
-                        force_update = (self._lane_tool_latches.get(canonical_lane) is not False)
+                    if lane:
+                        force_update = (getattr(lane, "tool_loaded", False) is not False)
                     self._set_virtual_tool_sensor_state(True, eventtime, lane.name, force=force_update, lane_obj=lane)
                 except Exception:
                     self.logger.error(f"Failed to mirror tool sensor state for loaded lane {lane.name}")
@@ -2589,9 +2561,6 @@ class afcAMS(afcUnit):
         if extruder_obj is not None and extruder_lane == getattr(lane, "name", None):
             try:
                 extruder_obj.lane_loaded = None
-                extruder_name = getattr(extruder_obj, "name", None)
-                if extruder_name:
-                    self._last_loaded_lane_by_extruder[extruder_name] = None
                 self.logger.debug(f"Cleared extruder.lane_loaded for {getattr(lane, 'name', None)} during unload cleanup")
             except Exception:
                 self.logger.debug(f"Failed to clear extruder tracking for {getattr(lane, 'name', None)} during unload cleanup")
@@ -2654,34 +2623,18 @@ class afcAMS(afcUnit):
         if lane is None:
             return
 
-        previous_loaded = bool(self._last_lane_states.get(lane.name))
-
-        lane.load_state = True
-        self._last_lane_states[lane.name] = True
+        # PHASE 2 REFACTOR: Use AFC native lane.load_state instead of dictionary
+        previous_loaded = bool(getattr(lane, "load_state", False))
 
         eventtime = kwargs.get("eventtime", 0.0)
 
-        # Apply spool info for this load event
-        # AFC's lane.set_loaded() also calls _set_values(), but that's only triggered
-        # by direct load commands (LANE_LOAD), not by hardware detection events.
-        # For filament insert events (this handler), we need to call it ourselves.
-        #
-        # Race condition handling: If AFC's lane.set_loaded() gets called first
-        # (consuming next_spool_id), this handler must NOT overwrite with defaults.
-        # Solution: Only call _set_values() if next_id is set OR lane truly has no data yet.
-        try:
-            spool_mgr = getattr(self.afc, "spool", None)
-            if spool_mgr is not None:
-                next_id = getattr(spool_mgr, "next_spool_id", "")
-                has_spool_data = bool(getattr(lane, "spool_id", ""))
-
-                # Call _set_values if:
-                # 1. next_id is set (apply specific spool data from spoolman), OR
-                # 2. Lane has no spool data (set defaults for any new filament)
-                if next_id or not has_spool_data:
-                    spool_mgr._set_values(lane)
-        except Exception:
-            self.logger.error(f"Failed to update spool info for {lane.name} after load event")
+        # PHASE 1 REFACTOR: Use AFC native set_loaded() instead of direct state assignment
+        # lane.set_loaded() handles:
+        # - Sets lane.status = AFCLaneState.LOADED
+        # - Calls self.unit_obj.lane_loaded(self) for LED updates
+        # - Calls self.afc.spool._set_values(self) for spool metadata
+        # This eliminates manual state management and ensures proper state transitions
+        lane.set_loaded()
         extruder_name = getattr(lane, "extruder_name", None)
         if extruder_name is None and self.registry is not None:
             try:
@@ -2723,14 +2676,19 @@ class afcAMS(afcUnit):
         if lane is None:
             return
 
-        lane.load_state = False
-        self._last_lane_states[lane.name] = False
-        lane.tool_loaded = False
-        lane.loaded_to_hub = False
-
-        extruder_name = getattr(lane, "extruder_name", None)
-        if extruder_name and self._last_loaded_lane_by_extruder.get(extruder_name) == lane.name:
-            self._last_loaded_lane_by_extruder.pop(extruder_name, None)
+        # PHASE 1 REFACTOR: Use AFC native set_unloaded() instead of direct state assignments
+        # lane.set_unloaded() handles:
+        # - Sets lane.tool_loaded = False
+        # - Sets lane.status = AFCLaneState.NONE
+        # - Sets lane.loaded_to_hub = False
+        # - Clears lane.td1_data = {}
+        # - Calls self.afc.spool.clear_values(self)
+        # - Calls self.unit_obj.lane_unloaded(self)
+        # This eliminates manual state management and ensures proper cleanup
+        #
+        # PHASE 2 REFACTOR: Removed dictionary updates
+        # AFC native lane.set_unloaded() handles all state cleanup
+        lane.set_unloaded()
 
         eventtime = kwargs.get("eventtime", 0.0)
         if self.hardware_service is not None and normalized_index is not None:
