@@ -22,6 +22,7 @@
 # - post_load_pressure_dwell: Duration (seconds) to monitor pressure after load (default: 15.0)
 # - load_fps_stuck_threshold: FPS pressure above which load is considered failed (default: 0.75)
 # - clog_sensitivity: Detection sensitivity level - "low", "medium", "high" (default: "medium")
+# - preretract: Default preretract distance (mm) applied before unload (default: -10.0)
 
 import json
 import logging
@@ -738,6 +739,7 @@ class OAMSManager:
         self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL, minval=0.0, maxval=60.0)
         self.load_fps_stuck_threshold = config.getfloat("load_fps_stuck_threshold", LOAD_FPS_STUCK_THRESHOLD, minval=0.0, maxval=1.0)
         self.engagement_pressure_threshold = config.getfloat("engagement_pressure_threshold", 0.6, minval=0.0, maxval=1.0)
+        self.preretract_default = config.getfloat("preretract", -10.0)
 
         # Validate hysteresis: clear threshold must be > trigger threshold
         if self.stuck_spool_pressure_clear_threshold <= self.stuck_spool_pressure_threshold:
@@ -974,6 +976,7 @@ class OAMSManager:
     def _initialize_oams(self) -> None:
         for name, oam in self.printer.lookup_objects(module="oams"):
             self.oams[name] = oam
+
 
     def _get_follower_state(self, oams_name: str) -> FollowerState:
         """Get or create FollowerState for an OAMS unit."""
@@ -2094,7 +2097,7 @@ class OAMSManager:
                 return None, None
 
             # Get reload parameters from AFC_extruder
-            # RELOAD_LENGTH = tool_stn + tool_sensor_after_extruder + retract_length + hotend_meltzone_compensation
+            # RELOAD_LENGTH = (tool_stn / 2) + tool_sensor_after_extruder + retract_length + hotend_meltzone_compensation
             tool_stn = getattr(afc_extruder, 'tool_stn', 0.0)
             tool_sensor_after = getattr(afc_extruder, 'tool_sensor_after_extruder', 0.0)
             tool_load_speed = getattr(afc_extruder, 'tool_load_speed', 25.0)
@@ -2110,14 +2113,46 @@ class OAMSManager:
                 hotend_compensation = 0.0
                 retract_length = 0.0
 
-            # Calculate total reload length (same formula as macro)
-            reload_length = tool_stn + tool_sensor_after + retract_length + hotend_compensation
+            # Calculate post-engagement reload length (remaining move after engagement check)
+            reload_length = (tool_stn / 2.0) + tool_sensor_after + retract_length + hotend_compensation
             reload_speed = tool_load_speed * 60.0  # Convert to mm/min
 
             return reload_length, reload_speed
 
         except Exception:
             self.logger.error(f"Failed to get reload params for {lane_name}")
+            return None, None
+
+    def _get_engagement_params(self, lane_name: str) -> Tuple[Optional[float], Optional[float]]:
+        """Get engagement extrusion length and speed from AFC extruder config."""
+        try:
+            afc = self._get_afc()
+            if afc is None:
+                return None, None
+
+            lane = afc.lanes.get(lane_name)
+            if lane is None:
+                return None, None
+
+            # Get extruder name from lane
+            extruder_name = getattr(lane, 'extruder_name', None)
+            if not extruder_name:
+                return None, None
+
+            # Look up AFC_extruder object
+            afc_extruder_name = f'AFC_extruder {extruder_name}'
+            afc_extruder = self.printer.lookup_object(afc_extruder_name, None)
+            if afc_extruder is None:
+                return None, None
+
+            tool_stn = getattr(afc_extruder, 'tool_stn', None)
+            engagement_length = (tool_stn / 2.0) if tool_stn is not None else None
+            engagement_speed = getattr(afc_extruder, 'tool_load_speed', None)
+            engagement_speed = engagement_speed * 60.0 if engagement_speed is not None else None
+
+            return engagement_length, engagement_speed
+        except Exception:
+            self.logger.error(f"Failed to get engagement params for {lane_name}")
             return None, None
 
     def _get_unload_params(self, lane_name: str) -> Tuple[Optional[float], Optional[float]]:
@@ -2173,101 +2208,138 @@ class OAMSManager:
             True if filament engaged (pressure dropped), False otherwise
         """
         try:
-            # Get reload parameters from AFC config
-            reload_length, reload_speed = self._get_reload_params(lane_name)
-            if reload_length is None or reload_speed is None:
-                self.logger.error(f"Failed to get reload params for {lane_name}, cannot verify engagement")
+            # Get engagement parameters from AFC config
+            engagement_length, engagement_speed = self._get_engagement_params(lane_name)
+            if engagement_length is None or engagement_speed is None:
+                self.logger.error(f"Failed to get engagement params for {lane_name}, cannot verify engagement")
                 return True  # Assume success to avoid false failures
+            post_length, post_speed = self._get_reload_params(lane_name)
+            post_length_display = f"{post_length:.2f}" if post_length is not None else "None"
+            post_speed_display = f"{post_speed:.0f}" if post_speed is not None else "None"
+            self.logger.debug(
+                f"Load params for {lane_name}: "
+                f"engagement_length={engagement_length:.2f}mm "
+                f"engagement_speed={engagement_speed:.0f}mm/min "
+                f"reload_length={post_length_display}mm reload_speed={post_speed_display}mm/min"
+            )
 
-            self.logger.info(f"Verifying filament engagement for {lane_name}: extruding {reload_length:.1f}mm at {reload_speed:.0f}mm/min")
+            self.logger.info(
+                f"Verifying filament engagement for {lane_name}: "
+                f"extruding {engagement_length:.1f}mm at {engagement_speed:.0f}mm/min"
+            )
 
             # Set flag to suppress stuck spool detection during engagement verification
             # High FPS pressure during engagement extrusion is NORMAL and expected
             fps_state.engagement_in_progress = True
-
-            if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
-                oams_obj = self.oams.get(fps_state.current_oams)
-                if oams_obj is not None:
-                    self._enable_follower(
-                        fps_name,
-                        fps_state,
-                        oams_obj,
-                        1,
-                        "engagement verification extrusion",
-                    )
-
-            # Get extruder object
-            extruder = getattr(fps, 'extruder', None)
-            if extruder is None:
-                self.logger.error(f"No extruder found for {fps_name}")
-                return True  # Assume success
-
-            # Record encoder position BEFORE engagement extrusion
-            # Encoder movement during extrusion proves filament engaged successfully
             try:
-                encoder_before = oams.encoder_clicks
-            except Exception:
-                self.logger.warning(f"Could not read encoder before engagement for {lane_name}")
-                encoder_before = None
+                if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
+                    oams_obj = self.oams.get(fps_state.current_oams)
+                    if oams_obj is not None:
+                        self._enable_follower(
+                            fps_name,
+                            fps_state,
+                            oams_obj,
+                            1,
+                            "engagement verification extrusion",
+                        )
 
-            # Get gcode object for running extrusion command
-            gcode = self.printer.lookup_object('gcode')
+                # Get extruder object
+                extruder = getattr(fps, 'extruder', None)
+                if extruder is None:
+                    self.logger.error(f"No extruder found for {fps_name}")
+                    return True  # Assume success
 
-            # Run the engagement extrusion using gcode command
-            # M83: relative extrusion, G92 E0: reset position, G1: extrude
-            gcode.run_script_from_command("M83")  # Relative extrusion mode
-            gcode.run_script_from_command("G92 E0")  # Reset extruder position
-            gcode.run_script_from_command(f"G1 E{reload_length:.2f} F{reload_speed:.0f}")  # Extrude to nozzle tip
-            gcode.run_script_from_command("M400")  # Wait for moves to complete
+                # Record encoder position BEFORE engagement extrusion
+                # Encoder movement during extrusion proves filament engaged successfully
+                try:
+                    encoder_before = oams.encoder_clicks
+                except Exception:
+                    self.logger.warning(f"Could not read encoder before engagement for {lane_name}")
+                    encoder_before = None
 
-            # Small pause to let encoder reading settle
-            self.reactor.pause(self.reactor.monotonic() + 0.2)
+                # Get gcode object for running extrusion command
+                gcode = self.printer.lookup_object('gcode')
 
-            # Check encoder movement - most reliable indicator of successful engagement
-            # If encoder moved, follower tracked filament being pulled through buffer ? engaged!
-            try:
-                encoder_after = oams.encoder_clicks
+                # Run the engagement extrusion using gcode command
+                # M83: relative extrusion, G92 E0: reset position, G1: extrude
+                gcode.run_script_from_command("M83")  # Relative extrusion mode
+                gcode.run_script_from_command("G92 E0")  # Reset extruder position
+                gcode.run_script_from_command(f"G1 E{engagement_length:.2f} F{engagement_speed:.0f}")  # Extrude to nozzle tip
+                gcode.run_script_from_command("M400")  # Wait for moves to complete
 
-                # Record engagement result and timestamp for stuck spool suppression
-                now = self.reactor.monotonic()
-                fps_state.engagement_checked_at = now
+                # Small pause to let encoder reading settle
+                self.reactor.pause(self.reactor.monotonic() + 0.2)
+
+                # Check encoder movement - most reliable indicator of successful engagement
+                # If encoder moved, follower tracked filament being pulled through buffer ? engaged!
+                try:
+                    encoder_after = oams.encoder_clicks
+
+                    # Record engagement result and timestamp for stuck spool suppression
+                    now = self.reactor.monotonic()
+                    fps_state.engagement_checked_at = now
+
+                    if encoder_before is not None:
+                        encoder_delta = abs(encoder_after - encoder_before)
+                        # Expect significant encoder movement for reload_length (typically 50-100mm)
+                        # Minimum threshold: at least 10 encoder clicks
+                        min_encoder_movement = 10
+
+                        if encoder_delta >= min_encoder_movement:
+                            # Encoder moved - filament engaged successfully!
+                            fps_state.engaged_with_extruder = True
+                            self.logger.info(
+                                f"Filament engagement verified for {lane_name} "
+                                f"(encoder moved {encoder_delta} clicks during {engagement_length:.1f}mm extrusion)"
+                            )
+                            if post_length is not None and post_speed is not None and post_length > 0:
+                                self.logger.info(
+                                    f"Completing reload for {lane_name}: extruding {post_length:.1f}mm "
+                                    f"at {post_speed:.0f}mm/min"
+                                )
+                                gcode.run_script_from_command(f"G1 E{post_length:.2f} F{post_speed:.0f}")
+                                gcode.run_script_from_command("M400")
+                            return True
+                        else:
+                            # Encoder didn't move - filament not engaged
+                            fps_state.engaged_with_extruder = False
+                            self.logger.warning(
+                                f"Filament failed to engage extruder for {lane_name} "
+                                f"(encoder only moved {encoder_delta} clicks, expected >={min_encoder_movement})"
+                            )
+                            return False
+                    else:
+                        # Couldn't read encoder before - fall back to pressure check
+                        fps_pressure = oams.fps_value
+                        if fps_pressure < self.engagement_pressure_threshold:
+                            fps_state.engaged_with_extruder = True
+                            self.logger.info(
+                                f"Filament engagement verified for {lane_name} "
+                                f"(FPS pressure {fps_pressure:.2f}, encoder unavailable)"
+                            )
+                            if post_length is not None and post_speed is not None and post_length > 0:
+                                self.logger.info(
+                                    f"Completing reload for {lane_name}: extruding {post_length:.1f}mm "
+                                    f"at {post_speed:.0f}mm/min"
+                                )
+                                gcode.run_script_from_command(f"G1 E{post_length:.2f} F{post_speed:.0f}")
+                                gcode.run_script_from_command("M400")
+                            return True
+                        else:
+                            fps_state.engaged_with_extruder = False
+                            self.logger.warning(
+                                f"Filament failed to engage for {lane_name} "
+                                f"(FPS pressure {fps_pressure:.2f}, encoder unavailable)"
+                            )
+                            return False
+
+                except Exception:
+                    self.logger.error(f"Failed to check encoder for engagement verification on {fps_name}")
+                    return True  # Assume success to avoid false failures
+            finally:
                 fps_state.engagement_in_progress = False  # Clear flag now that verification is complete
 
-                if encoder_before is not None:
-                    encoder_delta = abs(encoder_after - encoder_before)
-                    # Expect significant encoder movement for reload_length (typically 50-100mm)
-                    # Minimum threshold: at least 10 encoder clicks
-                    min_encoder_movement = 10
-
-                    if encoder_delta >= min_encoder_movement:
-                        # Encoder moved - filament engaged successfully!
-                        fps_state.engaged_with_extruder = True
-                        self.logger.info(f"Filament engagement verified for {lane_name} (encoder moved {encoder_delta} clicks during {reload_length:.1f}mm extrusion)")
-                        return True
-                    else:
-                        # Encoder didn't move - filament not engaged
-                        fps_state.engaged_with_extruder = False
-                        self.logger.warning(f"Filament failed to engage extruder for {lane_name} (encoder only moved {encoder_delta} clicks, expected >={min_encoder_movement})")
-                        return False
-                else:
-                    # Couldn't read encoder before - fall back to pressure check
-                    fps_pressure = oams.fps_value
-                    if fps_pressure < self.engagement_pressure_threshold:
-                        fps_state.engaged_with_extruder = True
-                        self.logger.info(f"Filament engagement verified for {lane_name} (FPS pressure {fps_pressure:.2f}, encoder unavailable)")
-                        return True
-                    else:
-                        fps_state.engaged_with_extruder = False
-                        self.logger.warning(f"Filament failed to engage for {lane_name} (FPS pressure {fps_pressure:.2f}, encoder unavailable)")
-                        return False
-
-            except Exception:
-                fps_state.engagement_in_progress = False  # Clear flag on error
-                self.logger.error(f"Failed to check encoder for engagement verification on {fps_name}")
-                return True  # Assume success to avoid false failures
-
         except Exception:
-            fps_state.engagement_in_progress = False  # Clear flag on error
             self.logger.error(f"Failed to verify engagement for {lane_name}")
             return True  # Assume success to avoid false failures
 
@@ -2880,27 +2952,69 @@ class OAMSManager:
         # Cancel post-load pressure check to prevent false positive clog detection during unload
         self._cancel_post_load_pressure_check(fps_state)
 
+        # Ensure follower is set to reverse before starting unload
+        try:
+            self._set_follower_if_changed(
+                fps_state.current_oams,
+                oams,
+                1,
+                0,
+                "before unload",
+                force=True,
+            )
+            fps_state.following = True
+            fps_state.direction = 0
+        except Exception:
+            self.logger.warning(f"Failed to set follower reverse before unload on {fps_name}")
+
         try:
             success, message = oams.unload_spool_with_retry()
         except Exception:
-            self.logger.error(f"Exception while unloading filament on {fps_name}")
-            # Reset state on exception to avoid getting stuck
-            fps_state.state = FPSLoadState.LOADED
-            fps_state.since = self.reactor.monotonic()
-            fps_state.reset_stuck_spool_state(preserve_restore=True)
-            if fps_state.current_oams:
-                oams_obj = self.oams.get(fps_state.current_oams)
-                if oams_obj is not None:
-                    self._set_follower_if_changed(
-                        fps_state.current_oams,
-                        oams_obj,
-                        1,
-                        0,
-                        "unload retry after exception",
-                        force=True,
-                    )
+            success = False
+            message = f"Exception unloading filament on {fps_name}"
+            self.logger.error(message)
 
-            return False, f"Exception unloading filament on {fps_name}"
+        if not success:
+            self.logger.warning(f"Unload failed on {fps_name}, preparing retry: {message}")
+            try:
+                unload_lane = fps_state.current_lane or lane_name
+                unload_length, unload_speed = (
+                    self._get_unload_params(unload_lane) if unload_lane else (None, None)
+                )
+                retract_feed = unload_speed if unload_speed is not None else 1200.0
+                self._set_follower_if_changed(
+                    fps_state.current_oams,
+                    oams,
+                    1,
+                    1,
+                    "unload retry - forward",
+                    force=True,
+                )
+                fps_state.following = True
+                fps_state.direction = 1
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
+                self._set_follower_if_changed(
+                    fps_state.current_oams,
+                    oams,
+                    1,
+                    0,
+                    "unload retry - reverse",
+                    force=True,
+                )
+                fps_state.following = True
+                fps_state.direction = 0
+                gcode = self._gcode_obj
+                if gcode is None:
+                    gcode = self.printer.lookup_object("gcode")
+                    self._gcode_obj = gcode
+                gcode.run_script_from_command("M83")  # Relative extrusion mode
+                gcode.run_script_from_command("G92 E0")  # Reset extruder position
+                gcode.run_script_from_command(f"G1 E-5.00 F{retract_feed:.0f}")
+                gcode.run_script_from_command("M400")
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
+                success, message = oams.unload_spool_with_retry()
+            except Exception:
+                self.logger.error(f"Exception while retrying unload on {fps_name}")
 
         if success:
             fps_state.state = FPSLoadState.UNLOADED
@@ -3220,6 +3334,16 @@ class OAMSManager:
         # Load the filament
         self.logger.info(f"Loading lane {lane_name}: {oams_name} bay {bay_index} via {fps_name}")
 
+        if getattr(oam, "dock_load", False):
+            try:
+                gcode = self._gcode_obj
+                if gcode is None:
+                    gcode = self.printer.lookup_object("gcode")
+                    self._gcode_obj = gcode
+                gcode.run_script_from_command("AFC_UNSELECT_TOOL")
+            except Exception:
+                self.logger.warning(f"Failed to dock tool before loading {lane_name}")
+
         # Capture state BEFORE changing fps_state.state to avoid getting stuck
         try:
             encoder = oam.encoder_clicks
@@ -3257,18 +3381,46 @@ class OAMSManager:
                 1,
                 "before load - enable follower for buffer tracking",
             )
-
             try:
-                success, message = oam.load_spool(bay_index)
+                self._set_follower_if_changed(
+                    fps_state.current_oams,
+                    oam,
+                    1,
+                    1,
+                    "before load",
+                    force=True,
+                )
+                fps_state.following = True
+                fps_state.direction = 1
             except Exception:
-                self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
-                fps_state.state = FPSLoadState.UNLOADED
-                error_msg = f"Failed to load bay {bay_index} on {oams_name}"
+                self.logger.warning(f"Failed to set follower forward before load on {fps_name}")
 
-                # CRITICAL: Pause printer if load fails during printing
-                # This prevents printing without filament loaded
-                self._pause_on_critical_failure(error_msg, oams_name)
-                return False, error_msg
+            busy_retries = 0
+            while True:
+                try:
+                    success, message = oam.load_spool(bay_index)
+                except Exception:
+                    self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
+                    fps_state.state = FPSLoadState.UNLOADED
+                    error_msg = f"Failed to load bay {bay_index} on {oams_name}"
+
+                    # CRITICAL: Pause printer if load fails during printing
+                    # This prevents printing without filament loaded
+                    self._pause_on_critical_failure(error_msg, oams_name)
+                    return False, error_msg
+
+                if success or message != "OAMS is busy" or busy_retries >= 3:
+                    break
+
+                busy_retries += 1
+                self.logger.warning(
+                    f"OAMS reported busy for bay {bay_index} on {oams_name}; retrying load ({busy_retries}/3)"
+                )
+                try:
+                    oam.abort_current_action()
+                except Exception:
+                    self.logger.warning(f"Failed to abort busy action on {oams_name} before retry")
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
 
             if not success:
                 last_error = message
@@ -3294,15 +3446,18 @@ class OAMSManager:
             # Retract extruder by reload distance to back out the filament that was extruded during engagement
             # This ensures filament position is correct for the next load attempt
             try:
-                reload_length, reload_speed = self._get_reload_params(lane_name)
-                if reload_length is not None and reload_speed is not None:
-                    self.logger.info(f"Retracting extruder {reload_length:.1f}mm to reverse engagement extrusion for {lane_name}")
+                engagement_length, engagement_speed = self._get_engagement_params(lane_name)
+                if engagement_length is not None and engagement_speed is not None:
+                    self.logger.info(
+                        f"Retracting extruder {engagement_length:.1f}mm to reverse engagement extrusion for {lane_name}"
+                    )
                     gcode = self.printer.lookup_object('gcode')
                     gcode.run_script_from_command("M83")  # Relative extrusion mode
-                    gcode.run_script_from_command(f"G1 E-{reload_length:.2f} F{reload_speed:.0f}")  # Retract
+                    gcode.run_script_from_command(f"G1 E-{engagement_length:.2f} F{engagement_speed:.0f}")  # Retract
                     gcode.run_script_from_command("M400")  # Wait for moves to complete
+                    gcode.run_script_from_command(f"G1 E-10.00 F{engagement_speed:.0f}")  # Overlap retract with unload
                 else:
-                    self.logger.warning(f"Could not get reload params for {lane_name}, skipping extruder retraction")
+                    self.logger.warning(f"Could not get engagement params for {lane_name}, skipping extruder retraction")
             except Exception:
                 self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}")
 
@@ -3409,6 +3564,35 @@ class OAMSManager:
             self.logger.warning(f"Failed to update virtual tool sensor for {lane_name} after load")
 
         # Monitors are already running globally, no need to restart them
+        if getattr(oam, "dock_load", False):
+            extruder_obj = getattr(lane, "extruder_obj", None)
+            extruder_name = getattr(extruder_obj, "name", None) if extruder_obj else None
+            purge_length = getattr(oam, "post_load_purge", 0.0) or 0.0
+            if purge_length > 0:
+                _, purge_speed = self._get_reload_params(lane_name)
+                purge_feed = purge_speed if purge_speed is not None else 1200.0
+                try:
+                    gcode = self._gcode_obj
+                    if gcode is None:
+                        gcode = self.printer.lookup_object("gcode")
+                        self._gcode_obj = gcode
+                    gcode.run_script_from_command("M83")  # Relative extrusion mode
+                    gcode.run_script_from_command("G92 E0")  # Reset extruder position
+                    gcode.run_script_from_command(f"G1 E{purge_length:.2f} F{purge_feed:.0f}")
+                    gcode.run_script_from_command("M400")
+                except Exception:
+                    self.logger.warning(f"Failed to run post-load purge for {lane_name}")
+            if extruder_name:
+                try:
+                    gcode = self._gcode_obj
+                    if gcode is None:
+                        gcode = self.printer.lookup_object("gcode")
+                        self._gcode_obj = gcode
+                    gcode.run_script_from_command(f"AFC_SELECT_TOOL TOOL={extruder_name}")
+                except Exception:
+                    self.logger.warning(f"Failed to select tool {extruder_name} after loading {lane_name}")
+            else:
+                self.logger.warning(f"No extruder name available to select tool after loading {lane_name}")
         return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
 
         # Fallback - should not be hit, but return a failure tuple instead of None
@@ -3425,7 +3609,7 @@ class OAMSManager:
 
         preretract_raw = gcmd.get('PRERETRACT', None)
         try:
-            preretract = float(preretract_raw) if preretract_raw is not None else -10.0
+            preretract = float(preretract_raw) if preretract_raw is not None else self.preretract_default
         except Exception:
             raise gcmd.error("PRERETRACT must be a number")
 
@@ -3448,6 +3632,13 @@ class OAMSManager:
                 unload_speed
                 if unload_speed is not None
                 else (reload_speed if reload_speed is not None else 1500.0)
+            )
+            unload_length_display = f"{unload_length:.2f}" if unload_length is not None else "None"
+            unload_speed_display = f"{unload_speed:.0f}" if unload_speed is not None else "None"
+            self.logger.debug(
+                f"Unload params for {preretract_lane} on {fps_name}: "
+                f"unload_length={unload_length_display}mm unload_speed={unload_speed_display}mm/min "
+                f"preretract={preretract:.2f}mm feed_rate={preretract_feed_rate:.0f}mm/min"
             )
             reverse_direction = 0  # Pull back during unload overlap
 
