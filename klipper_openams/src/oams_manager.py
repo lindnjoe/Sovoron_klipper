@@ -3001,6 +3001,7 @@ class OAMSManager:
                     "unload retry - reverse",
                     force=True,
                 )
+                fps_state.following = True
                 fps_state.direction = 0
                 gcode = self._gcode_obj
                 if gcode is None:
@@ -3566,6 +3567,21 @@ class OAMSManager:
         if getattr(oam, "dock_load", False):
             extruder_obj = getattr(lane, "extruder_obj", None)
             extruder_name = getattr(extruder_obj, "name", None) if extruder_obj else None
+            purge_length = getattr(oam, "post_load_purge", 0.0) or 0.0
+            if purge_length > 0:
+                _, purge_speed = self._get_reload_params(lane_name)
+                purge_feed = purge_speed if purge_speed is not None else 1200.0
+                try:
+                    gcode = self._gcode_obj
+                    if gcode is None:
+                        gcode = self.printer.lookup_object("gcode")
+                        self._gcode_obj = gcode
+                    gcode.run_script_from_command("M83")  # Relative extrusion mode
+                    gcode.run_script_from_command("G92 E0")  # Reset extruder position
+                    gcode.run_script_from_command(f"G1 E{purge_length:.2f} F{purge_feed:.0f}")
+                    gcode.run_script_from_command("M400")
+                except Exception:
+                    self.logger.warning(f"Failed to run post-load purge for {lane_name}")
             if extruder_name:
                 try:
                     gcode = self._gcode_obj
