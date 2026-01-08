@@ -22,6 +22,7 @@
 # - post_load_pressure_dwell: Duration (seconds) to monitor pressure after load (default: 15.0)
 # - load_fps_stuck_threshold: FPS pressure above which load is considered failed (default: 0.75)
 # - clog_sensitivity: Detection sensitivity level - "low", "medium", "high" (default: "medium")
+# - preretract: Default preretract distance (mm) applied before unload (default: -10.0)
 
 import json
 import logging
@@ -738,6 +739,7 @@ class OAMSManager:
         self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL, minval=0.0, maxval=60.0)
         self.load_fps_stuck_threshold = config.getfloat("load_fps_stuck_threshold", LOAD_FPS_STUCK_THRESHOLD, minval=0.0, maxval=1.0)
         self.engagement_pressure_threshold = config.getfloat("engagement_pressure_threshold", 0.6, minval=0.0, maxval=1.0)
+        self.preretract_default = config.getfloat("preretract", -10.0)
 
         # Validate hysteresis: clear threshold must be > trigger threshold
         if self.stuck_spool_pressure_clear_threshold <= self.stuck_spool_pressure_threshold:
@@ -974,6 +976,7 @@ class OAMSManager:
     def _initialize_oams(self) -> None:
         for name, oam in self.printer.lookup_objects(module="oams"):
             self.oams[name] = oam
+
 
     def _get_follower_state(self, oams_name: str) -> FollowerState:
         """Get or create FollowerState for an OAMS unit."""
@@ -3467,7 +3470,7 @@ class OAMSManager:
 
         preretract_raw = gcmd.get('PRERETRACT', None)
         try:
-            preretract = float(preretract_raw) if preretract_raw is not None else -10.0
+            preretract = float(preretract_raw) if preretract_raw is not None else self.preretract_default
         except Exception:
             raise gcmd.error("PRERETRACT must be a number")
 
