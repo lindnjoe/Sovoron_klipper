@@ -156,6 +156,7 @@ class OAMS:
         self.auto_unload_on_failed_load: bool = config.getboolean(
             "auto_unload_on_failed_load", True
         )
+        self.dock_load: bool = config.getboolean("dock_load", False)
 
         # Retry state tracking
         self._load_retry_count: Dict[int, int] = {}
