@@ -3658,6 +3658,11 @@ class OAMSManager:
                     )
                     fps_state.following = True
                     fps_state.direction = reverse_direction
+                    gcode = self._gcode_obj
+                    if gcode is None:
+                        gcode = self.printer.lookup_object("gcode")
+                        self._gcode_obj = gcode
+                    gcode.run_script_from_command("M400")
             except Exception:
                 self.logger.warning(f"Unable to set follower reverse before preretract on {fps_name}")
 
@@ -3666,7 +3671,6 @@ class OAMSManager:
                 if gcode is None:
                     gcode = self.printer.lookup_object("gcode")
                     self._gcode_obj = gcode
-
                 gcode.run_script_from_command("M83")  # Relative extrusion mode
                 gcode.run_script_from_command("G92 E0")  # Reset extruder position
 
