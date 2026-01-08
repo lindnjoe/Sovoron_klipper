@@ -3601,7 +3601,8 @@ class OAMSManager:
 
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
     def cmd_UNLOAD_FILAMENT(self, gcmd):
-        fps_name = "fps " + gcmd.get('FPS')
+        fps_param = gcmd.get('FPS')
+        fps_name = "fps " + fps_param
         if fps_name not in self.fpss:
             gcmd.respond_info(f"FPS {fps_name} does not exist")
 
@@ -3644,25 +3645,16 @@ class OAMSManager:
 
             # Ensure follower is enabled in reverse before the initial unload retract
             try:
-                oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
-                if oams is not None and fps_state.current_spool_idx is not None:
-                    context = "pre-unload retract reverse"
-                    if unload_length is not None:
-                        context = f"{context} ({unload_length:.2f}mm)"
-                    self._set_follower_if_changed(
-                        fps_state.current_oams,
-                        oams,
-                        1,
-                        reverse_direction,
-                        context,
-                    )
-                    fps_state.following = True
-                    fps_state.direction = reverse_direction
-                    gcode = self._gcode_obj
-                    if gcode is None:
-                        gcode = self.printer.lookup_object("gcode")
-                        self._gcode_obj = gcode
-                    gcode.run_script_from_command("M400")
+                gcode = self._gcode_obj
+                if gcode is None:
+                    gcode = self.printer.lookup_object("gcode")
+                    self._gcode_obj = gcode
+                gcode.run_script_from_command(
+                    f"OAMSM_FOLLOWER ENABLE=1 DIRECTION={reverse_direction} FPS={fps_param}"
+                )
+                gcode.run_script_from_command("M400")
+                fps_state.following = True
+                fps_state.direction = reverse_direction
             except Exception:
                 self.logger.warning(f"Unable to set follower reverse before preretract on {fps_name}")
 
