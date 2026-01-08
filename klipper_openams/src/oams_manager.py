@@ -34,34 +34,22 @@ from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 try:
-    from extras.openams_integration import AMSRunoutCoordinator, normalize_extruder_name
+    from extras.openams_integration import AMSRunoutCoordinator, normalize_extruder_name as _normalize_extruder_name
 except Exception:
     AMSRunoutCoordinator = None
-    normalize_extruder_name = None
+    # Fallback implementation if openams_integration not available
+    def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
+        """Fallback: Return a lowercase token for comparing extruder identifiers."""
+        if not name or not isinstance(name, str):
+            return None
+        cleaned = name.strip()
+        return cleaned.lower() if cleaned else None
 
 try:
     from extras.oams import OAMSStatus, OAMSOpCode
 except Exception:
     OAMSStatus = None
     OAMSOpCode = None
-
-
-def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
-    """Return a lowercase token for comparing extruder identifiers."""
-    if callable(normalize_extruder_name):
-        try:
-            return normalize_extruder_name(name)
-        except Exception:
-            pass
-
-    if not name or not isinstance(name, str):
-        return None
-
-    cleaned = name.strip()
-    if not cleaned:
-        return None
-
-    return cleaned.lower()
 
 # Configuration constants
 PAUSE_DISTANCE = 60
