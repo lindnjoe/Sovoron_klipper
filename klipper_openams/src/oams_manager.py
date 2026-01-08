@@ -4359,32 +4359,42 @@ class OAMSManager:
 
         self.logger.info(f"Triggering stuck spool retry for {fps_name}: {message}")
 
-        # Set LED to orange (warning) to indicate retry in progress
-        try:
-            # Use rate limiting to prevent MCU queue overflow
-            self._rate_limited_mcu_command(oams_name, oams.set_led_error, spool_idx, 0)  # Clear red first
-        except Exception:
-            self.logger.error(f"Failed to clear stuck spool LED on {fps_name} spool {spool_idx}")
-
-        # Abort current action (load in progress)
-        try:
-            # Use rate limiting to prevent MCU queue overflow
-            self._rate_limited_mcu_command(oams_name, oams.abort_current_action)
-            self.logger.info(f"Aborted stuck load on {fps_name}")
-        except Exception:
-            self.logger.error(f"Failed to abort stuck load on {fps_name}")
-
-        # Schedule unload + retry via reactor callback to avoid blocking timer
+        # Schedule unload + retry via reactor callback
+        # This moves us OUT of the timer callback context so we can safely use reactor.pause()
         def _retry_sequence(eventtime):
             try:
                 self.logger.info(f"Starting stuck spool recovery sequence for {fps_name} spool {spool_idx}")
 
-                # Step 1: Unload the stuck filament
+                # Step 1: Abort current stuck load operation
+                # NOTE: abort_current_action() already contains blocking reactor.pause() calls
+                # and waits for the MCU to complete the abort. This is safe here because
+                # we're in a reactor callback, not a timer callback.
+                try:
+                    self.logger.info(f"Aborting stuck load operation on {fps_name}")
+                    oams.abort_current_action()
+                    self.logger.info(f"Abort complete for {fps_name}")
+                except Exception as e:
+                    self.logger.error(f"Failed to abort stuck load on {fps_name}: {e}")
+                    # Continue anyway - try to unload even if abort failed
+
+                # Step 2: Clear LED to indicate retry in progress
+                try:
+                    oams.set_led_error(spool_idx, 0)
+                except Exception:
+                    pass
+
+                # Step 3: Wait a bit for hardware to stabilize after abort
+                self.reactor.pause(self.reactor.monotonic() + 0.5)
+
+                # Step 4: Unload the stuck filament
+                # unload_spool_with_retry() contains blocking reactor.pause() calls for retry delays
+                # This is safe here because we're in a reactor callback
+                self.logger.info(f"Unloading stuck filament from {fps_name} spool {spool_idx}")
                 unload_success, unload_msg = oams.unload_spool_with_retry()
 
                 if not unload_success:
                     self.logger.error(f"Failed to unload stuck spool on {fps_name}: {unload_msg}")
-                    # Set LED to red and clear stuck flag so detection can retrigger
+                    # Set LED to red and clear stuck flag so user can intervene
                     fps_state.stuck_spool.active = False
                     try:
                         oams.set_led_error(spool_idx, 1)
@@ -4394,7 +4404,13 @@ class OAMSManager:
 
                 self.logger.info(f"Successfully unloaded stuck spool on {fps_name}, attempting reload")
 
-                # Step 2: Reload with retry
+                # Step 5: Wait before reload to ensure hardware is ready
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
+
+                # Step 6: Reload with retry
+                # load_spool_with_retry() contains blocking reactor.pause() calls for retry delays
+                # This is safe here because we're in a reactor callback
+                self.logger.info(f"Reloading filament to {fps_name} spool {spool_idx}")
                 load_success, load_msg = oams.load_spool_with_retry(spool_idx)
 
                 if load_success:
@@ -4405,7 +4421,7 @@ class OAMSManager:
                     fps_state.reset_engagement_tracking()
                 else:
                     self.logger.error(f"Failed to reload after stuck spool on {fps_name}: {load_msg}")
-                    # Set LED to red and clear stuck flag so user can intervene
+                    # Set LED to red and clear stuck flag so detection can retrigger or user can intervene
                     fps_state.stuck_spool.active = False
                     try:
                         oams.set_led_error(spool_idx, 1)
@@ -4415,8 +4431,14 @@ class OAMSManager:
             except Exception as e:
                 self.logger.error(f"Exception during stuck spool retry sequence for {fps_name}: {e}")
                 fps_state.stuck_spool.active = False
+                # Set LED to red to indicate failure
+                try:
+                    oams.set_led_error(spool_idx, 1)
+                except Exception:
+                    pass
 
-        # Schedule retry sequence to run ASAP but not block current timer callback
+        # Schedule retry sequence to run ASAP
+        # This callback will have its own execution context where blocking reactor.pause() is safe
         self.reactor.register_callback(_retry_sequence)
         self.logger.info(f"Scheduled stuck spool retry sequence for {fps_name}")
 
