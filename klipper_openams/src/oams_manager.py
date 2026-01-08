@@ -3333,6 +3333,7 @@ class OAMSManager:
                 if gcode is None:
                     gcode = self.printer.lookup_object("gcode")
                     self._gcode_obj = gcode
+                gcode.run_script_from_command("STOP_TOOL_CRASH_DETECTION")
                 gcode.run_script_from_command("AFC_UNSELECT_TOOL")
             except Exception:
                 self.logger.warning(f"Failed to dock tool before loading {lane_name}")
@@ -3582,6 +3583,7 @@ class OAMSManager:
                         gcode = self.printer.lookup_object("gcode")
                         self._gcode_obj = gcode
                     gcode.run_script_from_command(f"AFC_SELECT_TOOL TOOL={extruder_name}")
+                    gcode.run_script_from_command("START_TOOL_CRASH_DETECTION")
                 except Exception:
                     self.logger.warning(f"Failed to select tool {extruder_name} after loading {lane_name}")
             else:
