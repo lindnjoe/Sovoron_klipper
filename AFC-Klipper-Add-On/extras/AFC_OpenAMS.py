@@ -1553,6 +1553,7 @@ class afcAMS(afcUnit):
             self.logger.error(f"Failed to start unified polling for {self.oams_name}")
         # Hook into AFC's LANE_UNLOAD for cross-extruder runouts
         self._wrap_afc_lane_unload()
+        self._wrap_afc_unset_lane_loaded()
         self._patch_afc_sequences()
 
     def _wrap_afc_lane_unload(self):
@@ -1675,6 +1676,42 @@ class afcAMS(afcUnit):
         # Apply wrapper
         self.afc.LANE_UNLOAD = wrapped_lane_unload
         self.logger.info("Wrapped AFC.LANE_UNLOAD for cross-extruder runout handling")
+
+    def _wrap_afc_unset_lane_loaded(self):
+        """Wrap AFC's unset_lane_loaded to notify OAMS manager for OpenAMS lanes."""
+        if not hasattr(self, 'afc') or self.afc is None:
+            return
+
+        afc_function = getattr(self.afc, "function", None)
+        if afc_function is None:
+            return
+
+        if not hasattr(afc_function, "unset_lane_loaded"):
+            return
+
+        if not hasattr(afc_function, "_oams_unset_lane_loaded_original"):
+            afc_function._oams_unset_lane_loaded_original = afc_function.unset_lane_loaded
+
+        def unset_lane_loaded_wrapper():
+            cur_lane_loaded = afc_function.get_current_lane_obj()
+            lane_name = getattr(cur_lane_loaded, "name", None) if cur_lane_loaded else None
+            unit_obj = getattr(cur_lane_loaded, "unit_obj", None) if cur_lane_loaded else None
+            is_openams = unit_obj is not None and getattr(unit_obj, "type", "") == "OpenAMS"
+
+            result = afc_function._oams_unset_lane_loaded_original()
+
+            if is_openams and lane_name:
+                try:
+                    oams_manager = self.printer.lookup_object("oams_manager", None)
+                    extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None) if cur_lane_loaded else None
+                    if oams_manager is not None:
+                        oams_manager.on_afc_lane_unloaded(lane_name, extruder_name=extruder_name)
+                except Exception:
+                    self.logger.error("Failed to notify OAMS manager during unset_lane_loaded")
+            return result
+
+        afc_function.unset_lane_loaded = unset_lane_loaded_wrapper
+        self.logger.info("Wrapped AFC.function.unset_lane_loaded for OpenAMS state sync")
 
     def _patch_afc_sequences(self) -> None:
         """Patch AFC load/unload sequences to delegate OpenAMS lanes."""
@@ -1799,14 +1836,7 @@ class afcAMS(afcUnit):
                         cur_lane.name, fps_id
                     )
                 )
-                if oams_manager is not None:
-                    success, message = oams_manager._unload_filament_for_fps(fps_name)
-                    if not success:
-                        message = message or f"OpenAMS unload failed for {cur_lane.name}"
-                        afc_self.error.handle_lane_failure(cur_lane, message)
-                        return False
-                else:
-                    afc_self.gcode.run_script_from_command("OAMSM_UNLOAD_FILAMENT FPS={}".format(fps_id))
+                afc_self.gcode.run_script_from_command("OAMSM_UNLOAD_FILAMENT FPS={}".format(fps_id))
 
                 cur_lane.loaded_to_hub = True
                 cur_lane.set_tool_unloaded()

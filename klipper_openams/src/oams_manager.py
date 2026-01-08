@@ -2213,6 +2213,15 @@ class OAMSManager:
             if engagement_length is None or engagement_speed is None:
                 self.logger.error(f"Failed to get engagement params for {lane_name}, cannot verify engagement")
                 return True  # Assume success to avoid false failures
+            post_length, post_speed = self._get_reload_params(lane_name)
+            post_length_display = f"{post_length:.2f}" if post_length is not None else "None"
+            post_speed_display = f"{post_speed:.0f}" if post_speed is not None else "None"
+            self.logger.debug(
+                f"Load params for {lane_name}: "
+                f"engagement_length={engagement_length:.2f}mm "
+                f"engagement_speed={engagement_speed:.0f}mm/min "
+                f"reload_length={post_length_display}mm reload_speed={post_speed_display}mm/min"
+            )
 
             self.logger.info(
                 f"Verifying filament engagement for {lane_name}: "
@@ -2283,7 +2292,6 @@ class OAMSManager:
                                 f"Filament engagement verified for {lane_name} "
                                 f"(encoder moved {encoder_delta} clicks during {engagement_length:.1f}mm extrusion)"
                             )
-                            post_length, post_speed = self._get_reload_params(lane_name)
                             if post_length is not None and post_speed is not None and post_length > 0:
                                 self.logger.info(
                                     f"Completing reload for {lane_name}: extruding {post_length:.1f}mm "
@@ -2309,7 +2317,6 @@ class OAMSManager:
                                 f"Filament engagement verified for {lane_name} "
                                 f"(FPS pressure {fps_pressure:.2f}, encoder unavailable)"
                             )
-                            post_length, post_speed = self._get_reload_params(lane_name)
                             if post_length is not None and post_speed is not None and post_length > 0:
                                 self.logger.info(
                                     f"Completing reload for {lane_name}: extruding {post_length:.1f}mm "
@@ -3583,6 +3590,13 @@ class OAMSManager:
                 unload_speed
                 if unload_speed is not None
                 else (reload_speed if reload_speed is not None else 1500.0)
+            )
+            unload_length_display = f"{unload_length:.2f}" if unload_length is not None else "None"
+            unload_speed_display = f"{unload_speed:.0f}" if unload_speed is not None else "None"
+            self.logger.debug(
+                f"Unload params for {preretract_lane} on {fps_name}: "
+                f"unload_length={unload_length_display}mm unload_speed={unload_speed_display}mm/min "
+                f"preretract={preretract:.2f}mm feed_rate={preretract_feed_rate:.0f}mm/min"
             )
             reverse_direction = 0  # Pull back during unload overlap
 
