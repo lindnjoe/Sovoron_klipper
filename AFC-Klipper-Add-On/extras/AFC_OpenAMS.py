@@ -1734,6 +1734,15 @@ class afcAMS(afcUnit):
             if not is_openams:
                 return afc_self._oams_load_sequence_original(cur_lane, cur_hub, cur_extruder)
 
+            # Check if this lane is already loaded to toolhead
+            # If so, skip load and just sync state
+            if cur_lane.get_toolhead_pre_sensor_state() and hasattr(cur_lane, 'tool_loaded') and cur_lane.tool_loaded:
+                afc_self.logger.info(f"Lane {cur_lane.name} already loaded to toolhead, skipping load")
+                cur_lane.set_tool_loaded()
+                cur_lane.enable_buffer()
+                afc_self.save_vars()
+                return True
+
             if afc_self._check_extruder_temp(cur_lane):
                 afc_self.afcDeltaTime.log_with_time("Done heating toolhead")
 

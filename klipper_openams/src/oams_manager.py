@@ -699,6 +699,12 @@ class OAMSManager:
         # Key format: "oams_name:spool_idx" -> error_state (0 or 1)
         self.led_error_state: Dict[str, int] = {}  # Track last commanded LED state to avoid redundant MCU commands
 
+        # MCU command rate limiting: prevent command queue overflow
+        # Track last command time per OAMS to space out commands
+        # Key format: "oams_name" -> last_command_timestamp
+        self._last_mcu_command_time: Dict[str, float] = {}
+        self._mcu_command_min_interval = 0.05  # Minimum 50ms between commands to same OAMS
+
         self.reload_before_toolhead_distance: float = config.getfloat("reload_before_toolhead_distance", 0.0)
 
         # F1S sensor debounce: Use AFC's global debounce_delay to prevent false runouts
@@ -3986,6 +3992,41 @@ class OAMSManager:
         """No-op: follower direction is manually controlled."""
         return
 
+    def _rate_limited_mcu_command(self, oams_name: str, command_fn: Callable, *args, **kwargs) -> None:
+        """
+        Execute MCU command with rate limiting to prevent queue overflow.
+
+        Enforces minimum interval between commands to same OAMS unit.
+        If called too soon after last command, schedules via reactor callback.
+
+        Args:
+            oams_name: Name of OAMS unit
+            command_fn: Function to call (e.g., oams.set_led_error)
+            *args, **kwargs: Arguments to pass to command_fn
+        """
+        now = self.reactor.monotonic()
+        last_time = self._last_mcu_command_time.get(oams_name, 0)
+        time_since_last = now - last_time
+
+        if time_since_last >= self._mcu_command_min_interval:
+            # Enough time has passed, send immediately
+            try:
+                command_fn(*args, **kwargs)
+                self._last_mcu_command_time[oams_name] = now
+            except Exception as e:
+                self.logger.error(f"MCU command failed for {oams_name}: {e}")
+        else:
+            # Too soon, schedule with delay
+            delay = self._mcu_command_min_interval - time_since_last
+            def _delayed_command(eventtime):
+                try:
+                    command_fn(*args, **kwargs)
+                    self._last_mcu_command_time[oams_name] = eventtime
+                except Exception as e:
+                    self.logger.error(f"Delayed MCU command failed for {oams_name}: {e}")
+
+            self.reactor.register_callback(_delayed_command, now + delay)
+
     def _set_led_error_if_changed(self, oams: Any, oams_name: str, spool_idx: int, error_state: int, context: str = "") -> None:
         """
         Send LED error command only if state has changed to avoid overwhelming MCU with redundant commands.
@@ -4002,13 +4043,11 @@ class OAMSManager:
 
         # Only send command if state changed or this is the first command
         if last_state != error_state:
-            try:
-                oams.set_led_error(spool_idx, error_state)
-                self.led_error_state[led_key] = error_state
-                if context and self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug(f"LED error {'set' if error_state else 'cleared'} for {oams_name} spool {spool_idx} ({context})")
-            except Exception:
-                self.logger.error(f"Failed to {'set' if error_state else 'clear'} LED error for {oams_name} spool {spool_idx}{f' ({context})' if context else ''}")
+            # Use rate limiting to prevent MCU queue overflow
+            self._rate_limited_mcu_command(oams_name, oams.set_led_error, spool_idx, error_state)
+            self.led_error_state[led_key] = error_state
+            if context and self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(f"LED error {'set' if error_state else 'cleared'} for {oams_name} spool {spool_idx} ({context})")
 
     def _is_oams_mcu_ready(self, oams: Any) -> bool:
         """True when the OAMS MCU is reachable and not shutdown."""
@@ -4235,12 +4274,8 @@ class OAMSManager:
 
         # Abort current action (unload/load)
         if oams is not None:
-            try:
-                oams.abort_current_action()
-                # Note: Removed reactor.pause() - cannot block in timer callback during printing
-                # MCU will recover naturally through async command processing
-            except Exception:
-                self.logger.error(f"Failed to abort active action for {fps_name} during stuck spool pause")
+            # Use rate limiting to prevent MCU queue overflow
+            self._rate_limited_mcu_command(fps_state.current_oams, oams.abort_current_action)
 
         # Pause printer with error message
         # SAFETY: Wrap pause in try/except to prevent crash if pause logic fails
