@@ -4839,12 +4839,21 @@ class OAMSManager:
             fps_state.state = FPSLoadState.LOADED
             fps_state.clear_encoder_samples()
 
-            # Set the stuck flag but DON'T pause - let the OAMS retry logic handle it
-            # The retry logic will clear this flag if the retry succeeds
+            # Set the stuck flag and trigger automatic retry
             fps_state.stuck_spool.active = True
             fps_state.stuck_spool.start_time = None
 
-            self.logger.info(f"Spool appears stuck while unloading {lane_label} spool {spool_label} - letting retry logic handle it")
+            # Trigger automatic retry sequence using blocked G-code commands
+            # This will attempt to unload again with fresh follower state
+            self.logger.info(f"Spool appears stuck while unloading {lane_label} spool {spool_label} - triggering automatic retry")
+
+            # SAFETY: Wrap retry trigger in try/except to prevent crash
+            try:
+                self._trigger_stuck_spool_retry_gcode(fps_name, fps_state, oams, f"Stuck during unload: encoder not moving")
+            except Exception as e:
+                self.logger.error(f"Failed to trigger stuck spool unload retry for {fps_name}: {e} - unload operation aborted")
+                # Fallback: just let the stuck flag remain set, user will need to intervene
+                pass
     def _check_load_speed(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
         """Detect stalled loads by combining encoder deltas with FPS pressure feedback."""
         if fps_state.stuck_spool.active:
@@ -4960,7 +4969,17 @@ class OAMSManager:
             self.logger.info(f"Cooling down {cooldown:.1f}s after stuck load abort on {fps_name} to avoid rapid retry spam")
             self.reactor.pause(self.reactor.monotonic() + cooldown)
 
-            self.logger.info(f"Spool appears stuck while loading {lane_label} spool {spool_label} ({stuck_reason}) - letting retry logic handle it")
+            # Trigger automatic retry sequence using blocked G-code commands
+            # This will unload the stuck filament, reset follower direction, and retry the load
+            self.logger.info(f"Spool appears stuck while loading {lane_label} spool {spool_label} ({stuck_reason}) - triggering automatic retry")
+
+            # SAFETY: Wrap retry trigger in try/except to prevent crash
+            try:
+                self._trigger_stuck_spool_retry_gcode(fps_name, fps_state, oams, f"Stuck during load: {stuck_reason}")
+            except Exception as e:
+                self.logger.error(f"Failed to trigger stuck spool retry for {fps_name}: {e} - load operation aborted")
+                # Fallback: just let the stuck flag remain set, user will need to intervene
+                pass
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, encoder_value, pressure, hes_values, now):
         """Check for stuck spool conditions during printing.
