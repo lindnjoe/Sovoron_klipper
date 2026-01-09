@@ -3630,41 +3630,34 @@ class OAMSManager:
                 fps_state.current_oams = None
                 fps_state.current_lane = None
 
-                # If this is not the last attempt, trigger stuck spool retry sequence
-                # This unloads, resets follower direction, and prepares for next load attempt
+                # If this is not the last attempt, prepare for retry
                 if attempt + 1 < max_engagement_retries:
                     self.logger.info(f"Load failed for {lane_name} (attempt {attempt + 1}/{max_engagement_retries}): {message}")
-                    self.logger.info(f"Triggering stuck spool retry sequence before next attempt")
+                    self.logger.info(f"Preparing for retry: resetting follower and cooling down")
 
                     try:
-                        # Get G-code object for running commands
-                        gcode = self.printer.lookup_object("gcode")
-                        fps_param = fps_name.replace("fps ", "", 1)
+                        # Reset follower state to forward direction for next load attempt
+                        # Use direct function call instead of G-code command to avoid
+                        # "OAMS is busy" errors from recursive G-code calls
+                        fps_state.following = False
+                        fps_state.direction = 1  # Forward for next load attempt
 
-                        # Step 1: Set follower to forward (clear any reverse state)
-                        gcode.run_script_from_command(f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=1 FPS={fps_param}")
-                        gcode.run_script_from_command("M400")
-                        fps_state.following = True
-                        fps_state.direction = 1
+                        # Optionally retract extruder to relieve any pressure buildup
+                        try:
+                            gcode = self.printer.lookup_object("gcode")
+                            gcode.run_script_from_command("M83")  # Relative extrusion mode
+                            gcode.run_script_from_command("G92 E0")  # Reset extruder position
+                            gcode.run_script_from_command("G1 E-5.00 F1200")  # Quick retract
+                            gcode.run_script_from_command("M400")
+                        except Exception as e:
+                            self.logger.debug(f"Could not retract extruder before retry: {e}")
+
+                        # Cool down before retry to let MCU recover
                         self.reactor.pause(self.reactor.monotonic() + 1.0)
-
-                        # Step 2: Set follower to reverse for unload
-                        gcode.run_script_from_command(f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}")
-                        gcode.run_script_from_command("M400")
-                        fps_state.following = True
-                        fps_state.direction = 0
-
-                        # Step 3: Retract extruder to relieve pressure
-                        gcode.run_script_from_command("M83")  # Relative extrusion mode
-                        gcode.run_script_from_command("G92 E0")  # Reset extruder position
-                        gcode.run_script_from_command("G1 E-5.00 F1200")  # Quick retract
-                        gcode.run_script_from_command("M400")
-                        self.reactor.pause(self.reactor.monotonic() + 0.5)
-
-                        self.logger.info(f"Stuck spool retry sequence complete for {lane_name}, ready for next attempt")
+                        self.logger.info(f"Ready for next load attempt {attempt + 2}/{max_engagement_retries}")
                     except Exception as e:
-                        self.logger.error(f"Failed to execute stuck spool retry sequence for {lane_name}: {e}")
-                        # Still cooldown before retry even if sequence failed
+                        self.logger.error(f"Failed to prepare for retry for {lane_name}: {e}")
+                        # Still cooldown before retry even if prep failed
                         self.reactor.pause(self.reactor.monotonic() + 0.5)
                 else:
                     # Last attempt failed - just cooldown
@@ -4900,9 +4893,7 @@ class OAMSManager:
             try:
                 oams.abort_current_action()
                 self.logger.info(f"Aborted stuck spool unload operation on {fps_name}")
-                # Give MCU time to recover after abort before sending new commands
-                # Prevents MCU communication timeout from rapid command sequence
-                self.reactor.pause(self.reactor.monotonic() + 0.2)
+                # NOTE: Cannot use reactor.pause() in timer callback - it doesn't work properly
             except Exception:
                 self.logger.error(f"Failed to abort unload operation on {fps_name}")
 
@@ -4922,21 +4913,15 @@ class OAMSManager:
             fps_state.state = FPSLoadState.LOADED
             fps_state.clear_encoder_samples()
 
-            # Set the stuck flag and trigger automatic retry
+            # Set the stuck flag to trigger pause
             fps_state.stuck_spool.active = True
             fps_state.stuck_spool.start_time = None
 
-            # Trigger automatic retry sequence using blocked G-code commands
-            # This will attempt to unload again with fresh follower state
-            self.logger.info(f"Spool appears stuck while unloading {lane_label} spool {spool_label} - triggering automatic retry")
-
-            # SAFETY: Wrap retry trigger in try/except to prevent crash
-            try:
-                self._trigger_stuck_spool_retry_gcode(fps_name, fps_state, oams, f"Stuck during unload: encoder not moving")
-            except Exception as e:
-                self.logger.error(f"Failed to trigger stuck spool unload retry for {fps_name}: {e} - unload operation aborted")
-                # Fallback: just let the stuck flag remain set, user will need to intervene
-                pass
+            # NOTE: Do NOT call retry sequence from this timer callback context!
+            # Timer callbacks cannot use reactor.pause() properly - it causes commands
+            # to fire all at once without waiting for MCU, overwhelming it.
+            # For unload during print, this will trigger a pause for user intervention.
+            self.logger.info(f"Spool appears stuck while unloading {lane_label} spool {spool_label} - pausing for user intervention")
     def _check_load_speed(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
         """Detect stalled loads by combining encoder deltas with FPS pressure feedback."""
         if fps_state.stuck_spool.active:
@@ -5011,9 +4996,7 @@ class OAMSManager:
             try:
                 oams.abort_current_action()
                 self.logger.info(f"Aborted stuck spool load operation on {fps_name}: {stuck_reason}")
-                # Give MCU time to recover after abort before sending new commands
-                # Prevents MCU communication timeout from rapid command sequence
-                self.reactor.pause(self.reactor.monotonic() + 0.2)
+                # NOTE: Cannot use reactor.pause() in timer callback - it doesn't work properly
             except Exception:
                 self.logger.error(f"Failed to abort load operation on {fps_name}")
 
@@ -5046,23 +5029,12 @@ class OAMSManager:
                         "stuck load - keep follower active",
                     )
 
-            # Prevent rapid-fire retries from flooding the MCU after an abort.
-            # Give a short breather so the next retry starts with a clean MCU queue.
-            cooldown = 0.5
-            self.logger.info(f"Cooling down {cooldown:.1f}s after stuck load abort on {fps_name} to avoid rapid retry spam")
-            self.reactor.pause(self.reactor.monotonic() + cooldown)
-
-            # Trigger automatic retry sequence using blocked G-code commands
-            # This will unload the stuck filament, reset follower direction, and retry the load
-            self.logger.info(f"Spool appears stuck while loading {lane_label} spool {spool_label} ({stuck_reason}) - triggering automatic retry")
-
-            # SAFETY: Wrap retry trigger in try/except to prevent crash
-            try:
-                self._trigger_stuck_spool_retry_gcode(fps_name, fps_state, oams, f"Stuck during load: {stuck_reason}")
-            except Exception as e:
-                self.logger.error(f"Failed to trigger stuck spool retry for {fps_name}: {e} - load operation aborted")
-                # Fallback: just let the stuck flag remain set, user will need to intervene
-                pass
+            # NOTE: Do NOT call retry sequence from this timer callback context!
+            # Timer callbacks cannot use reactor.pause() properly - it causes commands
+            # to fire all at once without waiting for MCU, overwhelming it.
+            # The retry logic in the main load loop (lines 3628-3668) will handle retries
+            # properly in a command context where reactor blocking works correctly.
+            self.logger.info(f"Spool appears stuck while loading {lane_label} spool {spool_label} ({stuck_reason}) - load will fail and retry in main loop")
 
     def _check_stuck_spool(self, fps_name, fps_state, fps, oams, encoder_value, pressure, hes_values, now):
         """Check for stuck spool conditions during printing.
@@ -5245,24 +5217,19 @@ class OAMSManager:
                     )
 
                     # CRITICAL: Check if filament has engaged with extruder yet
-                    # If NOT engaged, this is a load failure - trigger automatic retry via G-code
+                    # If NOT engaged, this is a load failure during initial load
                     # If ENGAGED, this is a stuck spool during printing - pause for user intervention
                     if not fps_state.engaged_with_extruder:
                         # Pre-engagement stuck spool - filament failed to load properly
-                        # Trigger automatic retry using G-code commands (non-blocking)
-                        self.logger.info(f"{fps_name}: Stuck spool detected BEFORE engagement - triggering G-code retry sequence")
+                        # NOTE: Cannot trigger retry from timer callback - just pause
+                        self.logger.info(f"{fps_name}: Stuck spool detected BEFORE engagement - pausing")
                         fps_state.stuck_spool.active = True  # Set flag to prevent retriggering
 
-                        # SAFETY: Wrap retry trigger in try/except to prevent crash
+                        # Pause for user intervention
                         try:
-                            self._trigger_stuck_spool_retry_gcode(fps_name, fps_state, oams, message)
+                            self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
                         except Exception as e:
-                            self.logger.error(f"Failed to trigger stuck spool retry for {fps_name}: {e} - falling back to pause")
-                            # Fallback to pause if retry fails
-                            try:
-                                self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
-                            except Exception:
-                                self.logger.error(f"Failed to trigger stuck spool pause fallback for {fps_name}")
+                            self.logger.error(f"Failed to trigger stuck spool pause for {fps_name}: {e}")
                     else:
                         # Post-engagement stuck spool - filament is loaded but spool is stuck/tangled
                         # This requires user intervention - pause the print
