@@ -3641,13 +3641,21 @@ class OAMSManager:
 
                         # Step 1: UNLOAD any stuck filament
                         # CRITICAL: Must unload first or firmware returns error code 3 (SPOOL_ALREADY_IN_BAY)
+                        # Disable stuck detection during retry unload to prevent interference
                         self.logger.info(f"Retry {attempt + 1}: Unloading stuck filament")
+
+                        # Set flag to disable stuck detection during retry operations
+                        fps_state.stuck_spool.active = True  # Prevents detection from retriggering
+
                         try:
                             unload_success, unload_msg = oam.unload_spool()
                             if not unload_success:
                                 self.logger.warning(f"Unload before retry returned: {unload_msg}")
                         except Exception as e:
                             self.logger.warning(f"Could not unload before retry: {e}")
+
+                        # Clear stuck flag after unload attempt (whether success or fail)
+                        fps_state.stuck_spool.active = False
 
                         # Cool down after unload - reactor.pause() works here in command context
                         self.reactor.pause(self.reactor.monotonic() + 1.0)
