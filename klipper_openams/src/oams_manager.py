@@ -5010,12 +5010,15 @@ class OAMSManager:
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
 
             # Abort the current unload operation without blocking
-            try:
-                oams.abort_current_action_nonblocking()
-                self.logger.info(f"Aborted stuck spool unload operation on {fps_name}")
-                # NOTE: Cannot use reactor.pause() in timer callback - it doesn't work properly
-            except Exception:
-                self.logger.error(f"Failed to abort unload operation on {fps_name}")
+            if self._is_oams_mcu_ready(oams):
+                try:
+                    oams.abort_current_action_nonblocking()
+                    self.logger.info(f"Aborted stuck spool unload operation on {fps_name}")
+                    # NOTE: Cannot use reactor.pause() in timer callback - it doesn't work properly
+                except Exception:
+                    self.logger.error(f"Failed to abort unload operation on {fps_name}")
+            else:
+                self.logger.warning(f"Skipping unload abort on {fps_name} because OAMS MCU is not ready")
 
             # Set LED error using state-tracked helper
             if fps_state.current_spool_idx is not None:
@@ -5115,12 +5118,15 @@ class OAMSManager:
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
 
             # Abort the current load operation without blocking
-            try:
-                oams.abort_current_action_nonblocking()
-                self.logger.info(f"Aborted stuck spool load operation on {fps_name}: {stuck_reason}")
-                # NOTE: Cannot use reactor.pause() in timer callback - it doesn't work properly
-            except Exception:
-                self.logger.error(f"Failed to abort load operation on {fps_name}")
+            if self._is_oams_mcu_ready(oams):
+                try:
+                    oams.abort_current_action_nonblocking()
+                    self.logger.info(f"Aborted stuck spool load operation on {fps_name}: {stuck_reason}")
+                    # NOTE: Cannot use reactor.pause() in timer callback - it doesn't work properly
+                except Exception:
+                    self.logger.error(f"Failed to abort load operation on {fps_name}")
+            else:
+                self.logger.warning(f"Skipping load abort on {fps_name} because OAMS MCU is not ready")
 
             # Set LED error using state-tracked helper
             if fps_state.current_spool_idx is not None:
