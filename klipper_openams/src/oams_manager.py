@@ -1557,6 +1557,24 @@ class OAMSManager:
                 restart_monitors = False
                 self.logger.error("Failed to refresh state from AFC.var.unit during OAMSM_CLEAR_ERRORS")
 
+            # If AFC indicates a lane is loaded, ensure follower is forward before resuming
+            for fps_name, fps_state in self.current_state.fps_state.items():
+                try:
+                    detected_lane, current_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
+                    if detected_lane and current_oams is not None and detected_spool_idx is not None:
+                        fps_state.current_lane = detected_lane
+                        fps_state.current_oams = current_oams.name
+                        fps_state.current_spool_idx = detected_spool_idx
+                        fps_state.state = FPSLoadState.LOADED
+                        if not (fps_state.following and fps_state.direction == 1):
+                            self._set_forward_follower_gcode(
+                                fps_name,
+                                fps_state,
+                                "OAMSM_CLEAR_ERRORS loaded lane",
+                            )
+                except Exception:
+                    self.logger.warning(f"Failed to restore follower direction after OAMSM_CLEAR_ERRORS for {fps_name}")
+
 
             # Clear all manual follower overrides and coast state - return to automatic hub sensor control
             # Also clear last state tracking so follower state is refreshed from actual sensors
@@ -1732,7 +1750,8 @@ class OAMSManager:
             fps_state.since = self.reactor.monotonic()
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
-            self._ensure_forward_follower(fps_name, fps_state, "AFC.var.unit refresh")
+            if not (fps_state.following and fps_state.direction == 1):
+                self._set_forward_follower_gcode(fps_name, fps_state, "AFC.var.unit refresh")
 
 
             self.logger.info(
@@ -4509,6 +4528,24 @@ class OAMSManager:
             except Exception:
                 self.logger.error(f"Failed to {'enable' if enable else 'disable'} follower for {oams_name}{f' ({context})' if context else ''}")
 
+    def _set_forward_follower_gcode(self, fps_name: str, fps_state: "FPSState", context: str) -> None:
+        """Set follower forward using G-code to ensure MCU ordering."""
+        fps_param = fps_name.replace("fps ", "", 1)
+        try:
+            gcode = self._gcode_obj
+            if gcode is None:
+                gcode = self.printer.lookup_object("gcode")
+                self._gcode_obj = gcode
+            gcode.run_script_from_command(
+                f"OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=1"
+            )
+            gcode.run_script_from_command("M400")
+            fps_state.following = True
+            fps_state.direction = 1
+            self.logger.debug(f"Set follower forward via G-code for {fps_name} ({context})")
+        except Exception as e:
+            self.logger.warning(f"Failed to set follower forward via G-code for {fps_name} ({context}): {e}")
+
     def _update_follower_for_oams(self, oams_name: str, oams: Any) -> None:
         """Follower is manually controlled; no automatic updates."""
         return
@@ -4632,6 +4669,22 @@ class OAMSManager:
                 and not fps_state.following
             ):
                 self._ensure_forward_follower(fps_name, fps_state, "print resume")
+
+            try:
+                detected_lane, current_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
+                if detected_lane and current_oams is not None and detected_spool_idx is not None:
+                    fps_state.current_lane = detected_lane
+                    fps_state.current_oams = current_oams.name
+                    fps_state.current_spool_idx = detected_spool_idx
+                    fps_state.state = FPSLoadState.LOADED
+                    if not (fps_state.following and fps_state.direction == 1):
+                        self._set_forward_follower_gcode(
+                            fps_name,
+                            fps_state,
+                            "print resume loaded lane",
+                        )
+            except Exception:
+                self.logger.warning(f"Failed to restore follower direction on print resume for {fps_name}")
 
 
         # Update all followers based on hub sensors
