@@ -3635,6 +3635,15 @@ class OAMSManager:
                 if attempt + 1 < max_engagement_retries:
                     self.logger.warning(f"Stuck spool detected for {lane_name}, unloading before retry (attempt {attempt + 1}/{max_engagement_retries})")
 
+                    # CRITICAL: Wait for MCU to finish abort operation before trying to unload
+                    # Stuck detection calls abort_current_action() from timer callback,
+                    # but MCU needs time to clear busy state before accepting new commands
+                    self.logger.debug(f"Waiting 1.0s for MCU to finish abort operation before retry")
+                    try:
+                        self.reactor.pause(self.reactor.monotonic() + 1.0)
+                    except Exception:
+                        pass
+
                     # Step 1: Retract extruder to relieve any pressure buildup
                     # This matches engagement retry pattern (retract before unload)
                     try:
