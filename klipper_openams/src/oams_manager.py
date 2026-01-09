@@ -3673,7 +3673,8 @@ class OAMSManager:
 
                 if attempt + 1 >= max_engagement_retries:
                     last_error = message
-                # Otherwise loop continues for another attempt
+                # Loop continues for another attempt
+                continue
 
             # OAMS load succeeded - now verify filament engaged extruder
             # Extrude the configured reload length and check FPS pressure drop
