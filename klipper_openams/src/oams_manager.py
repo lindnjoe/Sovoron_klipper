@@ -3630,37 +3630,53 @@ class OAMSManager:
                 fps_state.current_oams = None
                 fps_state.current_lane = None
 
-                # If this is not the last attempt, prepare for retry
+                # If this is not the last attempt, execute stuck spool retry sequence
                 if attempt + 1 < max_engagement_retries:
                     self.logger.info(f"Load failed for {lane_name} (attempt {attempt + 1}/{max_engagement_retries}): {message}")
-                    self.logger.info(f"Preparing for retry: resetting follower and cooling down")
+                    self.logger.info(f"Executing stuck spool retry: unload ? retract ? retry")
 
                     try:
-                        # Reset follower state to forward direction for next load attempt
-                        # Use direct function call instead of G-code command to avoid
-                        # "OAMS is busy" errors from recursive G-code calls
-                        fps_state.following = False
-                        fps_state.direction = 1  # Forward for next load attempt
+                        # Get G-code object for commands that need reactor blocking
+                        gcode = self.printer.lookup_object("gcode")
 
-                        # Optionally retract extruder to relieve any pressure buildup
+                        # Step 1: UNLOAD any stuck filament
+                        # CRITICAL: Must unload first or firmware returns error code 3 (SPOOL_ALREADY_IN_BAY)
+                        self.logger.info(f"Retry {attempt + 1}: Unloading stuck filament")
                         try:
-                            gcode = self.printer.lookup_object("gcode")
-                            gcode.run_script_from_command("M83")  # Relative extrusion mode
-                            gcode.run_script_from_command("G92 E0")  # Reset extruder position
-                            gcode.run_script_from_command("G1 E-5.00 F1200")  # Quick retract
-                            gcode.run_script_from_command("M400")
+                            unload_success, unload_msg = oam.unload_spool()
+                            if not unload_success:
+                                self.logger.warning(f"Unload before retry returned: {unload_msg}")
                         except Exception as e:
-                            self.logger.debug(f"Could not retract extruder before retry: {e}")
+                            self.logger.warning(f"Could not unload before retry: {e}")
 
-                        # Cool down before retry to let MCU recover
+                        # Cool down after unload - reactor.pause() works here in command context
                         self.reactor.pause(self.reactor.monotonic() + 1.0)
-                        self.logger.info(f"Ready for next load attempt {attempt + 2}/{max_engagement_retries}")
+
+                        # Step 2: Retract extruder to relieve any pressure buildup
+                        self.logger.debug(f"Retry {attempt + 1}: Retracting extruder")
+                        try:
+                            gcode.run_script_from_command("G91")  # Relative positioning
+                            gcode.run_script_from_command("G1 E-10 F300")  # Retract 10mm slowly
+                            gcode.run_script_from_command("G90")  # Absolute positioning
+                            gcode.run_script_from_command("M400")  # Wait for moves
+                        except Exception as e:
+                            self.logger.debug(f"Could not retract extruder: {e}")
+
+                        # Cool down before next load attempt
+                        self.reactor.pause(self.reactor.monotonic() + 0.5)
+
+                        # Step 3: Reset follower state for clean next attempt
+                        fps_state.following = False
+                        fps_state.direction = 1  # Forward for next load
+
+                        self.logger.info(f"Retry sequence complete - ready for attempt {attempt + 2}/{max_engagement_retries}")
                     except Exception as e:
-                        self.logger.error(f"Failed to prepare for retry for {lane_name}: {e}")
-                        # Still cooldown before retry even if prep failed
+                        self.logger.error(f"Failed to execute retry sequence for {lane_name}: {e}")
+                        # Still cooldown before retry even if sequence failed
                         self.reactor.pause(self.reactor.monotonic() + 0.5)
                 else:
                     # Last attempt failed - just cooldown
+                    self.logger.info(f"All {max_engagement_retries} load attempts failed for {lane_name}")
                     self.reactor.pause(self.reactor.monotonic() + 0.5)
 
                 continue
