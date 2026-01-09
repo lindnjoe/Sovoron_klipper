@@ -613,6 +613,7 @@ class FPSState:
         self.engagement_extruder_pos: Optional[float] = None
         self.load_pressure_dropped: bool = False
         self.engagement_in_progress: bool = False  # Set during engagement verification to suppress stuck detection
+        self.suppress_stuck_spool_detection: bool = False
 
     def record_encoder_sample(self, value: int) -> Optional[int]:
         """Record encoder sample and return diff if we have 2 samples."""
@@ -3596,32 +3597,44 @@ class OAMSManager:
             except Exception:
                 self.logger.warning(f"Failed to set follower forward before load on {fps_name}")
 
-            busy_retries = 0
-            while True:
-                try:
-                    success, message = oam.load_spool(bay_index)
-                except Exception:
-                    self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
-                    fps_state.state = FPSLoadState.UNLOADED
-                    error_msg = f"Failed to load bay {bay_index} on {oams_name}"
-
-                    # CRITICAL: Pause printer if load fails during printing
-                    # This prevents printing without filament loaded
-                    self._pause_on_critical_failure(error_msg, oams_name)
-                    return False, error_msg
-
-                if success or message != "OAMS is busy" or busy_retries >= 3:
-                    break
-
-                busy_retries += 1
-                self.logger.warning(
-                    f"OAMS reported busy for bay {bay_index} on {oams_name}; retrying load ({busy_retries}/3)"
+            if attempt > 0:
+                fps_state.suppress_stuck_spool_detection = True
+                self.logger.info(
+                    f"Suppressing stuck spool detection during retry load attempt {attempt + 1}/{max_engagement_retries}"
                 )
-                try:
-                    oam.abort_current_action()
-                except Exception:
-                    self.logger.warning(f"Failed to abort busy action on {oams_name} before retry")
-                self.reactor.pause(self.reactor.monotonic() + 1.0)
+            else:
+                fps_state.suppress_stuck_spool_detection = False
+
+            busy_retries = 0
+            try:
+                while True:
+                    try:
+                        success, message = oam.load_spool(bay_index)
+                    except Exception:
+                        self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
+                        fps_state.state = FPSLoadState.UNLOADED
+                        error_msg = f"Failed to load bay {bay_index} on {oams_name}"
+
+                        # CRITICAL: Pause printer if load fails during printing
+                        # This prevents printing without filament loaded
+                        self._pause_on_critical_failure(error_msg, oams_name)
+                        return False, error_msg
+
+                    if success or message != "OAMS is busy" or busy_retries >= 3:
+                        break
+
+                    busy_retries += 1
+                    self.logger.warning(
+                        f"OAMS reported busy for bay {bay_index} on {oams_name}; retrying load ({busy_retries}/3)"
+                    )
+                    try:
+                        oam.abort_current_action()
+                    except Exception:
+                        self.logger.warning(f"Failed to abort busy action on {oams_name} before retry")
+                    self.reactor.pause(self.reactor.monotonic() + 1.0)
+            finally:
+                if fps_state.suppress_stuck_spool_detection:
+                    fps_state.suppress_stuck_spool_detection = False
 
             if not success:
                 last_error = message
@@ -4949,6 +4962,8 @@ class OAMSManager:
     def _check_load_speed(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
         """Detect stalled loads by combining encoder deltas with FPS pressure feedback."""
         if fps_state.stuck_spool.active:
+            return
+        if fps_state.suppress_stuck_spool_detection:
             return
 
         # Skip check if we don't have a valid since timestamp
