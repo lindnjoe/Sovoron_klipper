@@ -1470,6 +1470,45 @@ class OAMSManager:
                     restart_monitors = False
                     self.logger.error(f"Failed to clear errors on {oams_name}: {e}")
 
+            # Restore normal LED states for all loaded spools
+            # After clearing error LEDs, we need to restore the proper LED state
+            # (green for loaded, blue for tool loaded, etc) based on current lane state
+            try:
+                afc = self.printer.lookup_object('AFC', None)
+                if afc and hasattr(afc, 'units'):
+                    for unit_name, unit_obj in afc.units.items():
+                        # Only process OpenAMS units
+                        if not hasattr(unit_obj, 'oams_name'):
+                            continue
+
+                        oams_name = unit_obj.oams_name
+                        if oams_name not in ready_oams:
+                            continue
+
+                        # Restore LED state for each lane based on its current state
+                        if hasattr(unit_obj, 'lanes'):
+                            for lane_name, lane in unit_obj.lanes.items():
+                                try:
+                                    # Check lane state and restore appropriate LED
+                                    if getattr(lane, 'tool_loaded', False):
+                                        # Lane is loaded to toolhead - set tool loaded LED
+                                        unit_obj.lane_tool_loaded(lane)
+                                        self.logger.debug(f"Restored tool loaded LED for {lane_name}")
+                                    elif getattr(lane, 'load_state', False):
+                                        # Lane is loaded to hub - set loaded LED
+                                        unit_obj.lane_loaded(lane)
+                                        self.logger.debug(f"Restored loaded LED for {lane_name}")
+                                    else:
+                                        # Lane is unloaded - set unloaded LED
+                                        unit_obj.lane_unloaded(lane)
+                                        self.logger.debug(f"Restored unloaded LED for {lane_name}")
+                                except Exception as e:
+                                    self.logger.warning(f"Failed to restore LED for {lane_name}: {e}")
+
+                    self.logger.info("Restored normal LED states for all lanes after clearing errors")
+            except Exception as e:
+                self.logger.error(f"Failed to restore normal LED states: {e}")
+
             # Preserve lane mappings during error clearing to avoid losing lane state.
             # We still surface any active redirects so an operator can clear them explicitly
             # with OAMSM_CLEAR_LANE_MAPPINGS if desired.
