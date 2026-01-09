@@ -5039,9 +5039,9 @@ class OAMSManager:
             lane_label = fps_state.current_lane or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
 
-            # Abort the current unload operation cleanly
+            # Abort the current unload operation without blocking
             try:
-                oams.abort_current_action()
+                oams.abort_current_action_nonblocking()
                 self.logger.info(f"Aborted stuck spool unload operation on {fps_name}")
                 # NOTE: Cannot use reactor.pause() in timer callback - it doesn't work properly
             except Exception:
@@ -5144,9 +5144,9 @@ class OAMSManager:
             lane_label = fps_state.current_lane or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
 
-            # Abort the current load operation cleanly
+            # Abort the current load operation without blocking
             try:
-                oams.abort_current_action()
+                oams.abort_current_action_nonblocking()
                 self.logger.info(f"Aborted stuck spool load operation on {fps_name}: {stuck_reason}")
                 # NOTE: Cannot use reactor.pause() in timer callback - it doesn't work properly
             except Exception:

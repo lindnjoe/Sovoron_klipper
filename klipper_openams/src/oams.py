@@ -819,7 +819,17 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             # Gradually stretch the pause during longer waits to avoid tight loops when firmware is unresponsive
             pause_delay = min(pause_delay + 0.25, 1.5)
 
-        # Now clear the status (may already be None if MCU responded)
+    def abort_current_action_nonblocking(self, code: int = OAMSOpCode.ERROR_KLIPPER_CALL) -> None:
+        """Force-clear action status without waiting for MCU response.
+
+        Use only in timer callbacks where blocking is unsafe.
+        """
+        if self.action_status is None:
+            return
+
+        logging.warning(
+            f"OAMS[{self.oams_idx}]: Nonblocking abort of action {self.action_status} with code {code}"
+        )
         self.action_status_code = code
         self.action_status_value = None
         self.action_status = None
