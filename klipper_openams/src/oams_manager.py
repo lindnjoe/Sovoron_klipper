@@ -3606,36 +3606,32 @@ class OAMSManager:
                 fps_state.suppress_stuck_spool_detection = False
 
             busy_retries = 0
-            try:
-                while True:
-                    try:
-                        success, message = oam.load_spool(bay_index)
-                    except Exception:
-                        self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
-                        fps_state.state = FPSLoadState.UNLOADED
-                        error_msg = f"Failed to load bay {bay_index} on {oams_name}"
+            while True:
+                try:
+                    success, message = oam.load_spool(bay_index)
+                except Exception:
+                    self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
+                    fps_state.state = FPSLoadState.UNLOADED
+                    error_msg = f"Failed to load bay {bay_index} on {oams_name}"
 
-                        # CRITICAL: Pause printer if load fails during printing
-                        # This prevents printing without filament loaded
-                        self._pause_on_critical_failure(error_msg, oams_name)
-                        return False, error_msg
-
-                    if success or message != "OAMS is busy" or busy_retries >= 3:
-                        break
-
-                    busy_retries += 1
-                    self.logger.warning(
-                        f"OAMS reported busy for bay {bay_index} on {oams_name}; retrying load ({busy_retries}/3)"
-                    )
-                    try:
-                        oam.abort_current_action()
-                    except Exception:
-                        self.logger.warning(f"Failed to abort busy action on {oams_name} before retry")
-                    self.reactor.pause(self.reactor.monotonic() + 1.0)
-            finally:
-                if fps_state.suppress_stuck_spool_detection:
+                    # CRITICAL: Pause printer if load fails during printing
+                    # This prevents printing without filament loaded
+                    self._pause_on_critical_failure(error_msg, oams_name)
                     fps_state.suppress_stuck_spool_detection = False
+                    return False, error_msg
 
+                if success or message != "OAMS is busy" or busy_retries >= 3:
+                    break
+
+                busy_retries += 1
+                self.logger.warning(
+                    f"OAMS reported busy for bay {bay_index} on {oams_name}; retrying load ({busy_retries}/3)"
+                )
+                try:
+                    oam.abort_current_action()
+                except Exception:
+                    self.logger.warning(f"Failed to abort busy action on {oams_name} before retry")
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
             if not success:
                 last_error = message
                 fps_state.state = FPSLoadState.UNLOADED
@@ -3700,6 +3696,7 @@ class OAMSManager:
                     self.logger.info(f"All {max_engagement_retries} load attempts failed for {lane_name}")
                     self.reactor.pause(self.reactor.monotonic() + 0.5)
 
+                fps_state.suppress_stuck_spool_detection = False
                 continue
 
             # OAMS load succeeded - now verify filament engaged extruder
@@ -3707,6 +3704,7 @@ class OAMSManager:
             engagement_ok = self._verify_engagement_with_extrude(fps_name, fps_state, fps, lane_name, oam)
             if engagement_ok:
                 load_success = True
+                fps_state.suppress_stuck_spool_detection = False
                 # Engagement verified! Track lane transitions for runout recovery protection
                 break
 
@@ -3756,6 +3754,7 @@ class OAMSManager:
             if attempt + 1 >= max_engagement_retries:
                 last_error = f"Filament failed to engage extruder for {lane_name}"
             # Otherwise loop for another attempt
+            fps_state.suppress_stuck_spool_detection = False
 
         if not load_success:
             return False, last_error or f"Failed to load lane {lane_name}"
@@ -5085,6 +5084,8 @@ class OAMSManager:
         This prevents false positives during print stalls where pressure may fluctuate
         but encoder naturally stops due to toolhead buffer underrun.
         """
+        if fps_state.suppress_stuck_spool_detection:
+            return
         # Skip stuck spool detection if clog is active
         # Clog detection handles follower control during clog conditions
         if fps_state.clog.active:
