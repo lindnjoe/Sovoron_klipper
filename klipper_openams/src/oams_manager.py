@@ -3649,6 +3649,16 @@ class OAMSManager:
 
                     # No abort call - load has already failed naturally by now
 
+                    # CRITICAL: Clear error state set by stuck detection (line 5043)
+                    # User insight: "maybe we need to clear error state between attempts?"
+                    # LED error blocks subsequent operations - must clear before retry
+                    if fps_state.current_spool_idx is not None:
+                        try:
+                            oam.set_led_off(fps_state.current_spool_idx)
+                            self.logger.debug(f"Cleared error LED for spool {fps_state.current_spool_idx} before retry")
+                        except Exception as e:
+                            self.logger.debug(f"Could not clear error LED: {e}")
+
                     # Step 1: Retract extruder to relieve any pressure buildup
                     # This matches engagement retry pattern (retract before unload)
                     try:
