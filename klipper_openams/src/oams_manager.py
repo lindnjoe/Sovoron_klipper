@@ -3186,39 +3186,9 @@ class OAMSManager:
             self.logger.error(message)
 
         if not success:
-            self.logger.warning(f"Unload failed on {fps_name}, preparing retry: {message}")
-            try:
-                fps_param = fps_name.replace("fps ", "", 1)
-                unload_lane = fps_state.current_lane or lane_name
-                unload_length, unload_speed = (
-                    self._get_unload_params(unload_lane) if unload_lane else (None, None)
-                )
-                retract_feed = unload_speed if unload_speed is not None else 1200.0
-                gcode = self._gcode_obj
-                if gcode is None:
-                    gcode = self.printer.lookup_object("gcode")
-                    self._gcode_obj = gcode
-                gcode.run_script_from_command(
-                    f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=1 FPS={fps_param}"
-                )
-                gcode.run_script_from_command("M400")
-                fps_state.following = True
-                fps_state.direction = 1
-                self.reactor.pause(self.reactor.monotonic() + 1.0)
-                gcode.run_script_from_command(
-                    f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
-                )
-                gcode.run_script_from_command("M400")
-                fps_state.following = True
-                fps_state.direction = 0
-                gcode.run_script_from_command("M83")  # Relative extrusion mode
-                gcode.run_script_from_command("G92 E0")  # Reset extruder position
-                gcode.run_script_from_command(f"G1 E-5.00 F{retract_feed:.0f}")
-                gcode.run_script_from_command("M400")
-                self.reactor.pause(self.reactor.monotonic() + 1.0)
-                success, message = oams.unload_spool_with_retry()
-            except Exception:
-                self.logger.error(f"Exception while retrying unload on {fps_name}")
+            self.logger.warning(f"Unload failed on {fps_name}: {message}")
+            fps_state.state = FPSLoadState.LOADED
+            return False, message
 
         if success:
             fps_state.state = FPSLoadState.UNLOADED
