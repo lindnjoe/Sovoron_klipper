@@ -3635,15 +3635,19 @@ class OAMSManager:
                 if attempt + 1 < max_engagement_retries:
                     self.logger.warning(f"Stuck spool detected for {lane_name}, unloading before retry (attempt {attempt + 1}/{max_engagement_retries})")
 
-                    # CRITICAL: Abort the stuck load operation HERE in command context,
-                    # not from the timer callback where reactor.pause() doesn't work.
-                    # This ensures the abort properly waits for MCU completion before continuing.
-                    self.logger.debug(f"Aborting stuck load in command context (reactor blocking works here)")
+                    # CRITICAL: After stuck detection, OAMS firmware finishes load operation naturally.
+                    # Give MCU time to complete and clear busy state before sending more commands.
+                    # User insight from old code: just let detection happen, operation fails naturally,
+                    # then retry in main loop. No abort needed - operation already done.
+                    # User observation: "whatever we are doing is overloading the mcu"
+                    mcu_clear_time = 3.0
+                    self.logger.info(f"Waiting {mcu_clear_time:.1f}s for MCU to complete and clear")
                     try:
-                        oam.abort_current_action()
-                        self.logger.debug(f"Abort completed, MCU ready for next operation")
-                    except Exception as e:
-                        self.logger.warning(f"Could not abort stuck load: {e}")
+                        self.reactor.pause(self.reactor.monotonic() + mcu_clear_time)
+                    except Exception:
+                        pass
+
+                    # No abort call - load has already failed naturally by now
 
                     # Step 1: Retract extruder to relieve any pressure buildup
                     # This matches engagement retry pattern (retract before unload)
