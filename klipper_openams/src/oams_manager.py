@@ -3541,19 +3541,24 @@ class OAMSManager:
         # REFACTOR: Use AFC's tool_max_unload_attempts config instead of OAMS load_retry_max
         # This ensures consistent retry behavior across AFC and OAMS, using AFC as the single
         # source of truth for retry configuration.
+        # CRITICAL: Ensure minimum of 3 attempts so retry sequence logic works properly
         afc = self._get_afc()
         if afc is not None and hasattr(afc, 'tool_max_unload_attempts'):
-            max_engagement_retries = max(1, afc.tool_max_unload_attempts)
+            max_engagement_retries = max(3, afc.tool_max_unload_attempts)
             self.logger.debug(f"Using AFC retry config: {max_engagement_retries} attempts (from AFC.tool_max_unload_attempts)")
         else:
-            # Fallback to OAMS config if AFC not available
-            max_engagement_retries = max(1, getattr(oam, "load_retry_max", 1))
+            # Fallback to OAMS config if AFC not available, but ensure minimum of 3
+            max_engagement_retries = max(3, getattr(oam, "load_retry_max", 3))
             self.logger.debug(f"Using OAMS retry config: {max_engagement_retries} attempts (AFC config not available)")
 
         load_success = False
         last_error = None
 
+        self.logger.info(f"Starting load attempts for {lane_name} (max {max_engagement_retries} attempts)")
+
         for attempt in range(max_engagement_retries):
+            self.logger.info(f"Load attempt {attempt + 1}/{max_engagement_retries} for {lane_name}")
+
             # Only set state after all preliminary operations succeed
             fps_state.state = FPSLoadState.LOADING
             fps_state.encoder = encoder
@@ -3624,8 +3629,47 @@ class OAMSManager:
                 fps_state.current_spool_idx = None
                 fps_state.current_oams = None
                 fps_state.current_lane = None
-                # Brief cooldown before retrying another load attempt
-                self.reactor.pause(self.reactor.monotonic() + 0.5)
+
+                # If this is not the last attempt, trigger stuck spool retry sequence
+                # This unloads, resets follower direction, and prepares for next load attempt
+                if attempt + 1 < max_engagement_retries:
+                    self.logger.info(f"Load failed for {lane_name} (attempt {attempt + 1}/{max_engagement_retries}): {message}")
+                    self.logger.info(f"Triggering stuck spool retry sequence before next attempt")
+
+                    try:
+                        # Get G-code object for running commands
+                        gcode = self.printer.lookup_object("gcode")
+                        fps_param = fps_name.replace("fps ", "", 1)
+
+                        # Step 1: Set follower to forward (clear any reverse state)
+                        gcode.run_script_from_command(f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=1 FPS={fps_param}")
+                        gcode.run_script_from_command("M400")
+                        fps_state.following = True
+                        fps_state.direction = 1
+                        self.reactor.pause(self.reactor.monotonic() + 1.0)
+
+                        # Step 2: Set follower to reverse for unload
+                        gcode.run_script_from_command(f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}")
+                        gcode.run_script_from_command("M400")
+                        fps_state.following = True
+                        fps_state.direction = 0
+
+                        # Step 3: Retract extruder to relieve pressure
+                        gcode.run_script_from_command("M83")  # Relative extrusion mode
+                        gcode.run_script_from_command("G92 E0")  # Reset extruder position
+                        gcode.run_script_from_command("G1 E-5.00 F1200")  # Quick retract
+                        gcode.run_script_from_command("M400")
+                        self.reactor.pause(self.reactor.monotonic() + 0.5)
+
+                        self.logger.info(f"Stuck spool retry sequence complete for {lane_name}, ready for next attempt")
+                    except Exception as e:
+                        self.logger.error(f"Failed to execute stuck spool retry sequence for {lane_name}: {e}")
+                        # Still cooldown before retry even if sequence failed
+                        self.reactor.pause(self.reactor.monotonic() + 0.5)
+                else:
+                    # Last attempt failed - just cooldown
+                    self.reactor.pause(self.reactor.monotonic() + 0.5)
+
                 continue
 
             # OAMS load succeeded - now verify filament engaged extruder
