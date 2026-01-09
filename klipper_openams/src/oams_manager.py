@@ -3680,13 +3680,20 @@ class OAMSManager:
                         except Exception as e:
                             self.logger.warning(f"Could not set follower reverse before unload: {e}")
 
+                        if getattr(oam, "action_status", None) is not None:
+                            try:
+                                oam.abort_current_action()
+                            except Exception:
+                                self.logger.warning(f"Failed to abort busy action on {oams_name} before unload")
+                            self._wait_for_oams_idle(oam, timeout=5.0)
+
                         try:
                             unload_success = False
                             unload_msg = None
                             unload_busy_retries = 0
                             while True:
                                 unload_success, unload_msg = oam.unload_spool_with_retry()
-                                if unload_success or unload_msg != "OAMS is busy" or unload_busy_retries >= 3:
+                                if unload_success or not self._oams_message_is_busy(unload_msg) or unload_busy_retries >= 3:
                                     break
                                 unload_busy_retries += 1
                                 self.logger.warning(
@@ -3697,6 +3704,7 @@ class OAMSManager:
                                     oam.abort_current_action()
                                 except Exception:
                                     self.logger.warning(f"Failed to abort busy action on {oams_name} before unload retry")
+                                self._wait_for_oams_idle(oam, timeout=2.0)
                                 self.reactor.pause(self.reactor.monotonic() + 1.0)
                             if not unload_success:
                                 self.logger.warning(f"Unload before retry returned: {unload_msg}")
@@ -4545,6 +4553,20 @@ class OAMSManager:
             self.logger.debug(f"Set follower forward via G-code for {fps_name} ({context})")
         except Exception as e:
             self.logger.warning(f"Failed to set follower forward via G-code for {fps_name} ({context}): {e}")
+
+    def _oams_message_is_busy(self, message: Optional[str]) -> bool:
+        if not message:
+            return False
+        return "OAMS is busy" in message or "busy" in message.lower()
+
+    def _wait_for_oams_idle(self, oams: Any, timeout: float = 3.0) -> bool:
+        """Wait for OAMS action_status to clear."""
+        end_time = self.reactor.monotonic() + timeout
+        while self.reactor.monotonic() < end_time:
+            if getattr(oams, "action_status", None) is None:
+                return True
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+        return False
 
     def _update_follower_for_oams(self, oams_name: str, oams: Any) -> None:
         """Follower is manually controlled; no automatic updates."""
