@@ -3635,14 +3635,15 @@ class OAMSManager:
                 if attempt + 1 < max_engagement_retries:
                     self.logger.warning(f"Stuck spool detected for {lane_name}, unloading before retry (attempt {attempt + 1}/{max_engagement_retries})")
 
-                    # CRITICAL: Wait for MCU to finish abort operation before trying to unload
-                    # Stuck detection calls abort_current_action() from timer callback,
-                    # but MCU needs time to clear busy state before accepting new commands
-                    self.logger.debug(f"Waiting 1.0s for MCU to finish abort operation before retry")
+                    # CRITICAL: Abort the stuck load operation HERE in command context,
+                    # not from the timer callback where reactor.pause() doesn't work.
+                    # This ensures the abort properly waits for MCU completion before continuing.
+                    self.logger.debug(f"Aborting stuck load in command context (reactor blocking works here)")
                     try:
-                        self.reactor.pause(self.reactor.monotonic() + 1.0)
-                    except Exception:
-                        pass
+                        oam.abort_current_action()
+                        self.logger.debug(f"Abort completed, MCU ready for next operation")
+                    except Exception as e:
+                        self.logger.warning(f"Could not abort stuck load: {e}")
 
                     # Step 1: Retract extruder to relieve any pressure buildup
                     # This matches engagement retry pattern (retract before unload)
@@ -5020,10 +5021,15 @@ class OAMSManager:
             lane_label = fps_state.current_lane or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
 
-            # Abort the current load operation cleanly
+            # NOTE: Do NOT call abort_current_action() from this timer callback!
+            # Timer callbacks cannot use reactor.pause() properly - it doesn't block,
+            # causing abort to return before MCU completes, leaving MCU in busy state.
+            # Instead, just set the stuck flag - the load operation will check this flag
+            # and fail naturally, then retry sequence handles abort in command context
+            # where reactor blocking works properly.
             try:
-                oams.abort_current_action()
-                self.logger.info(f"Aborted stuck spool load operation on {fps_name}: {stuck_reason}")
+                # Just log the detection - abort will happen in command context
+                self.logger.info(f"Detected stuck spool on {fps_name}: {stuck_reason}")
                 # NOTE: Cannot use reactor.pause() in timer callback - it doesn't work properly
             except Exception:
                 self.logger.error(f"Failed to abort load operation on {fps_name}")
