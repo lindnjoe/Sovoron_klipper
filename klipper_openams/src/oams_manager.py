@@ -3659,10 +3659,6 @@ class OAMSManager:
                 self.reactor.pause(self.reactor.monotonic() + 1.0)
             if not success:
                 last_error = message
-                fps_state.state = FPSLoadState.UNLOADED
-                fps_state.current_spool_idx = None
-                fps_state.current_oams = None
-                fps_state.current_lane = None
 
                 # If this is not the last attempt, execute stuck spool retry sequence
                 if attempt + 1 < max_engagement_retries:
@@ -3762,6 +3758,10 @@ class OAMSManager:
                     self.logger.info(f"All {max_engagement_retries} load attempts failed for {lane_name}")
                     self.reactor.pause(self.reactor.monotonic() + 0.5)
 
+                fps_state.state = FPSLoadState.UNLOADED
+                fps_state.current_spool_idx = None
+                fps_state.current_oams = None
+                fps_state.current_lane = None
                 fps_state.suppress_stuck_spool_detection = False
                 continue
 
