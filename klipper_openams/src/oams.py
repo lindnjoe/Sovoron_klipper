@@ -134,7 +134,6 @@ class OAMS:
         self.action_status: Optional[int] = None
         self.action_status_code: Optional[int] = None
         self.action_status_value: Optional[int] = None
-        self.abort_requested: bool = False
         
         # Setup MCU communication
         self.mcu.register_response(self._oams_action_status, "oams_action_status")
@@ -820,17 +819,12 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             # Gradually stretch the pause during longer waits to avoid tight loops when firmware is unresponsive
             pause_delay = min(pause_delay + 0.25, 1.5)
 
-    def abort_current_action_nonblocking(self, code: int = OAMSOpCode.ERROR_KLIPPER_CALL) -> None:
-        """Request an abort without blocking while MCU completes the action."""
-        if self.action_status is None:
-            return
-
-        logging.warning(
-            f"OAMS[{self.oams_idx}]: Nonblocking abort requested for action {self.action_status} with code {code}"
-        )
-        self.abort_requested = True
+        # Now clear the status (may already be None if MCU responded)
         self.action_status_code = code
         self.action_status_value = None
+        self.action_status = None
+
+        logging.info(f"OAMS[{self.oams_idx}]: Abort complete - ready for new operations")
     cmd_OAMS_FOLLOWER_help = "Enable or disable follower and set its direction"
     def cmd_OAMS_FOLLOWER(self, gcmd):
         enable = gcmd.get_int("ENABLE", None)
