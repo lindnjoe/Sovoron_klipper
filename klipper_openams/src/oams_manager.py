@@ -3596,32 +3596,22 @@ class OAMSManager:
             except Exception:
                 self.logger.warning(f"Failed to set follower forward before load on {fps_name}")
 
-            busy_retries = 0
-            while True:
-                try:
-                    success, message = oam.load_spool(bay_index)
-                except Exception:
-                    self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
-                    fps_state.state = FPSLoadState.UNLOADED
-                    error_msg = f"Failed to load bay {bay_index} on {oams_name}"
+            # REFACTOR: Removed busy retry loop to match engagement retry pattern
+            # When stuck is detected, operation fails naturally - no need for abort_current_action()
+            # User insight: "engagement retry works fine, but not stuck spool pre engagement"
+            # Root cause: abort_current_action() adds 18+ seconds of blocking waits (6s × 3 retries)
+            # with continuous MCU status polling, causing MCU overload and unresponsiveness
+            try:
+                success, message = oam.load_spool(bay_index)
+            except Exception:
+                self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
+                fps_state.state = FPSLoadState.UNLOADED
+                error_msg = f"Failed to load bay {bay_index} on {oams_name}"
 
-                    # CRITICAL: Pause printer if load fails during printing
-                    # This prevents printing without filament loaded
-                    self._pause_on_critical_failure(error_msg, oams_name)
-                    return False, error_msg
-
-                if success or message != "OAMS is busy" or busy_retries >= 3:
-                    break
-
-                busy_retries += 1
-                self.logger.warning(
-                    f"OAMS reported busy for bay {bay_index} on {oams_name}; retrying load ({busy_retries}/3)"
-                )
-                try:
-                    oam.abort_current_action()
-                except Exception:
-                    self.logger.warning(f"Failed to abort busy action on {oams_name} before retry")
-                self.reactor.pause(self.reactor.monotonic() + 1.0)
+                # CRITICAL: Pause printer if load fails during printing
+                # This prevents printing without filament loaded
+                self._pause_on_critical_failure(error_msg, oams_name)
+                return False, error_msg
 
             if not success:
                 last_error = message
@@ -3635,29 +3625,21 @@ class OAMSManager:
                 if attempt + 1 < max_engagement_retries:
                     self.logger.warning(f"Stuck spool detected for {lane_name}, unloading before retry (attempt {attempt + 1}/{max_engagement_retries})")
 
-                    # CRITICAL: After stuck detection, OAMS firmware finishes load operation naturally.
-                    # Give MCU time to complete and clear busy state before sending more commands.
-                    # User insight from old code: just let detection happen, operation fails naturally,
-                    # then retry in main loop. No abort needed - operation already done.
-                    # User observation: "whatever we are doing is overloading the mcu"
-                    mcu_clear_time = 3.0
-                    self.logger.info(f"Waiting {mcu_clear_time:.1f}s for MCU to complete and clear")
-                    try:
-                        self.reactor.pause(self.reactor.monotonic() + mcu_clear_time)
-                    except Exception:
-                        pass
-
-                    # No abort call - load has already failed naturally by now
-
                     # CRITICAL: Clear error state set by stuck detection (line 5043)
                     # User insight: "maybe we need to clear error state between attempts?"
                     # LED error blocks subsequent operations - must clear before retry
                     if fps_state.current_spool_idx is not None:
                         try:
-                            oam.set_led_off(fps_state.current_spool_idx)
-                            self.logger.debug(f"Cleared error LED for spool {fps_state.current_spool_idx} before retry")
+                            # Force LED clear by invalidating tracking state first
+                            led_key = f"{fps_state.current_oams}:{fps_state.current_spool_idx}"
+                            self.led_error_state.pop(led_key, None)
+                            # Now send clear command - will always go through since tracking was cleared
+                            oam.set_led_error(fps_state.current_spool_idx, 0)
+                            # Update tracking to reflect new state
+                            self.led_error_state[led_key] = 0
+                            self.logger.info(f"Cleared error LED for spool {fps_state.current_spool_idx} before retry")
                         except Exception as e:
-                            self.logger.debug(f"Could not clear error LED: {e}")
+                            self.logger.warning(f"Could not clear error LED: {e}")
 
                     # Step 1: Retract extruder to relieve any pressure buildup
                     # This matches engagement retry pattern (retract before unload)
@@ -3678,11 +3660,26 @@ class OAMSManager:
                     except Exception:
                         self.logger.error(f"Exception during unload after stuck spool detection for {lane_name}")
 
-                    # Step 3: Cooldown to let MCU finish unload and fully clear busy state
-                    # CRITICAL: After abort + unload, MCU needs substantial time to clear busy state
-                    # before next load attempt. Insufficient cooldown causes "OAMS is busy" errors
-                    # on subsequent load attempts (especially attempt 3-4 after multiple aborts)
-                    cooldown = 2.0  # Increased from 0.5s - MCU needs time after abort sequence
+                    # CRITICAL: Clear error LED again after unload completes
+                    # User: "it isn't clearing the error after unloading during the retry"
+                    # Unload may re-set error state if it encounters issues - clear again
+                    if fps_state.current_spool_idx is not None:
+                        try:
+                            # Force LED clear by invalidating tracking state first
+                            led_key = f"{fps_state.current_oams}:{fps_state.current_spool_idx}"
+                            self.led_error_state.pop(led_key, None)
+                            # Now send clear command - will always go through since tracking was cleared
+                            oam.set_led_error(fps_state.current_spool_idx, 0)
+                            # Update tracking to reflect new state
+                            self.led_error_state[led_key] = 0
+                            self.logger.info(f"Cleared error LED after unload for spool {fps_state.current_spool_idx}")
+                        except Exception as e:
+                            self.logger.warning(f"Could not clear error LED after unload: {e}")
+
+                    # Step 3: Brief cooldown after unload (matches engagement retry timing)
+                    # Now that LED error is cleared, MCU doesn't need long waits - just brief window
+                    # to finish unload before next attempt (same 0.5s as engagement retry line 3758)
+                    cooldown = 0.5
                     self.logger.debug(f"Cooling {cooldown:.1f}s after stuck spool unload for {lane_name}")
                     try:
                         self.reactor.pause(self.reactor.monotonic() + cooldown)
