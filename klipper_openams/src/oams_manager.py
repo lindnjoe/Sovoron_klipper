@@ -3671,6 +3671,11 @@ class OAMSManager:
                     fps_state.current_lane = None
                     fps_state.since = self.reactor.monotonic()
 
+                    # CRITICAL: Clear stuck spool flag so detection can run on next attempt
+                    # Without this, stuck detection is suppressed and load waits full 30s timeout
+                    fps_state.stuck_spool.active = False
+                    fps_state.stuck_spool.start_time = None
+
                 if attempt + 1 >= max_engagement_retries:
                     last_error = message
                 # Loop continues for another attempt
