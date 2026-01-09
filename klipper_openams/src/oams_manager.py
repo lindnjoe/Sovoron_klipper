@@ -1905,9 +1905,23 @@ class OAMSManager:
         # Allow enabling follower when UNLOADED (before load starts) or LOADED
         # Only block during active LOADING/UNLOADING operations
         if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
-            gcmd.respond_info(f"FPS {fps_name} is currently busy")
+            oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+            if oams_obj is not None and getattr(oams_obj, "action_status", None) is None:
+                self.logger.warning(
+                    f"Clearing stale {fps_state.state.name} state for {fps_name} before unload"
+                )
+                fps_state.state = FPSLoadState.LOADED
+            elif oams_obj is not None:
+                try:
+                    oams_obj.abort_current_action()
+                except Exception:
+                    self.logger.warning(f"Failed to abort busy action on {fps_state.current_oams} before unload")
+                self._wait_for_oams_idle(oams_obj, timeout=5.0)
+                fps_state.state = FPSLoadState.LOADED
+            else:
+                gcmd.respond_info(f"FPS {fps_name} is currently busy")
 
-            return
+                return
 
         if not fps_state.current_oams:
             try:
@@ -3926,9 +3940,23 @@ class OAMSManager:
 
             return
         if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
-            gcmd.respond_info(f"FPS {fps_name} is currently busy")
+            oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+            if oams_obj is not None and getattr(oams_obj, "action_status", None) is None:
+                self.logger.warning(
+                    f"Clearing stale {fps_state.state.name} state for {fps_name} before unload"
+                )
+                fps_state.state = FPSLoadState.LOADED
+            elif oams_obj is not None:
+                try:
+                    oams_obj.abort_current_action()
+                except Exception:
+                    self.logger.warning(f"Failed to abort busy action on {fps_state.current_oams} before unload")
+                self._wait_for_oams_idle(oams_obj, timeout=5.0)
+                fps_state.state = FPSLoadState.LOADED
+            else:
+                gcmd.respond_info(f"FPS {fps_name} is currently busy")
 
-            return
+                return
 
         # Queue a small preretract move to overlap with the unload sequence
         preretract_lane = fps_state.current_lane
