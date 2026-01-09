@@ -3581,6 +3581,16 @@ class OAMSManager:
         for attempt in range(max_engagement_retries):
             self.logger.info(f"Load attempt {attempt + 1}/{max_engagement_retries} for {lane_name}")
 
+            if getattr(oam, "action_status", None) is not None:
+                self.logger.warning(
+                    f"OAMS still busy before load attempt {attempt + 1} for bay {bay_index} on {oams_name}; aborting"
+                )
+                try:
+                    oam.abort_current_action()
+                except Exception:
+                    self.logger.warning(f"Failed to abort busy action on {oams_name} before load attempt")
+                self._wait_for_oams_idle(oam, timeout=5.0)
+
             # Only set state after all preliminary operations succeed
             fps_state.state = FPSLoadState.LOADING
             fps_state.encoder = encoder
@@ -3645,6 +3655,7 @@ class OAMSManager:
                     oam.abort_current_action()
                 except Exception:
                     self.logger.warning(f"Failed to abort busy action on {oams_name} before retry")
+                self._wait_for_oams_idle(oam, timeout=5.0)
                 self.reactor.pause(self.reactor.monotonic() + 1.0)
             if not success:
                 last_error = message
