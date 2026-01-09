@@ -824,15 +824,17 @@ class afcAMS(afcUnit):
                         other_lane._oams_runout_detected = False
                     self.logger.debug(f"Cleared tool_loaded for {other_lane.name} on same FPS (new lane {lane.name} loaded)")
 
-        # Trigger OAMS state sync to keep OAMS manager in sync with AFC state
-        # This ensures OAMS knows when AFC loads a lane and validates state consistency
+        # Trigger OAMS state detection to sync FPS state with sensor readings
+        # This ensures FPS state is updated when manually setting lane as loaded
+        # NOTE: Use determine_state() for normal operations, not sync_state_with_afc()
+        # sync_state_with_afc() is only for error recovery (SET_LANE_LOADED, OAMSM_CLEAR_ERRORS)
         if self.oams is not None:
             try:
                 oams_manager = self.printer.lookup_object("oams_manager", None)
                 if oams_manager is not None:
-                    oams_manager.sync_state_with_afc()
+                    oams_manager.determine_state()
             except Exception as e:
-                self.logger.error(f"Failed to sync OAMS state after load for {getattr(lane, 'name', None)}: {e}")
+                self.logger.error(f"Failed to trigger OAMS state detection for {getattr(lane, 'name', None)}: {e}")
 
         if not self._lane_matches_extruder(lane):
             return
@@ -861,15 +863,9 @@ class afcAMS(afcUnit):
         if hasattr(lane, '_oams_runout_detected'):
             lane._oams_runout_detected = False
 
-        # Trigger OAMS state sync to keep OAMS manager in sync with AFC state
-        # This ensures OAMS knows when AFC unloads a lane
-        if self.oams is not None:
-            try:
-                oams_manager = self.printer.lookup_object("oams_manager", None)
-                if oams_manager is not None:
-                    oams_manager.sync_state_with_afc()
-            except Exception as e:
-                self.logger.error(f"Failed to sync OAMS state after unload for {getattr(lane, 'name', None)}: {e}")
+        # NOTE: Don't call sync_state_with_afc() here - it interferes with normal unload
+        # sync_state_with_afc() is only for error recovery (SET_LANE_LOADED, OAMSM_CLEAR_ERRORS)
+        # Normal unload operations update state through AFC's standard callbacks
 
         if not self._lane_matches_extruder(lane):
             return
