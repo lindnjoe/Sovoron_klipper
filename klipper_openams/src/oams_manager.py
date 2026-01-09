@@ -3557,6 +3557,8 @@ class OAMSManager:
 
         self.logger.info(f"Starting load attempts for {lane_name} (max {max_engagement_retries} attempts)")
 
+        fps_param = fps_name.replace("fps ", "", 1)
+
         for attempt in range(max_engagement_retries):
             self.logger.info(f"Load attempt {attempt + 1}/{max_engagement_retries} for {lane_name}")
 
@@ -3576,22 +3578,15 @@ class OAMSManager:
             # must be tracking it in real-time, not after the load completes
             # Without this, filament gets stuck in the buffer during the load
             # NOTE: Follower is explicitly enabled forward (1) for load operations
-            self._enable_follower(
-                fps_name,
-                fps_state,
-                oam,
-                1,
-                "before load - enable follower for buffer tracking",
-            )
             try:
-                self._set_follower_if_changed(
-                    fps_state.current_oams,
-                    oam,
-                    1,
-                    1,
-                    "before load",
-                    force=True,
+                gcode = self._gcode_obj
+                if gcode is None:
+                    gcode = self.printer.lookup_object("gcode")
+                    self._gcode_obj = gcode
+                gcode.run_script_from_command(
+                    f"OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=1"
                 )
+                gcode.run_script_from_command("M400")
                 fps_state.following = True
                 fps_state.direction = 1
             except Exception:
@@ -3648,7 +3643,7 @@ class OAMSManager:
                         # Get G-code object for commands that need reactor blocking
                         gcode = self.printer.lookup_object("gcode")
 
-                        # Step 1: UNLOAD any stuck filament
+                        # Step 1: Set follower reverse before unload
                         # CRITICAL: Must unload first or firmware returns error code 3 (SPOOL_ALREADY_IN_BAY)
                         # Disable stuck detection during retry unload to prevent interference
                         self.logger.info(f"Retry {attempt + 1}: Unloading stuck filament")
@@ -3657,7 +3652,33 @@ class OAMSManager:
                         fps_state.stuck_spool.active = True  # Prevents detection from retriggering
 
                         try:
-                            unload_success, unload_msg = oam.unload_spool()
+                            gcode.run_script_from_command(
+                                f"OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=0"
+                            )
+                            gcode.run_script_from_command("M400")
+                            fps_state.following = True
+                            fps_state.direction = 0
+                        except Exception as e:
+                            self.logger.warning(f"Could not set follower reverse before unload: {e}")
+
+                        try:
+                            unload_success = False
+                            unload_msg = None
+                            unload_busy_retries = 0
+                            while True:
+                                unload_success, unload_msg = oam.unload_spool_with_retry()
+                                if unload_success or unload_msg != "OAMS is busy" or unload_busy_retries >= 3:
+                                    break
+                                unload_busy_retries += 1
+                                self.logger.warning(
+                                    f"OAMS reported busy during retry unload for bay {bay_index} on {oams_name}; "
+                                    f"retrying ({unload_busy_retries}/3)"
+                                )
+                                try:
+                                    oam.abort_current_action()
+                                except Exception:
+                                    self.logger.warning(f"Failed to abort busy action on {oams_name} before unload retry")
+                                self.reactor.pause(self.reactor.monotonic() + 1.0)
                             if not unload_success:
                                 self.logger.warning(f"Unload before retry returned: {unload_msg}")
                         except Exception as e:
@@ -3679,12 +3700,19 @@ class OAMSManager:
                         except Exception as e:
                             self.logger.debug(f"Could not retract extruder: {e}")
 
+                        # Step 3: Set follower forward for the next load attempt
+                        try:
+                            gcode.run_script_from_command(
+                                f"OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=1"
+                            )
+                            gcode.run_script_from_command("M400")
+                            fps_state.following = True
+                            fps_state.direction = 1
+                        except Exception as e:
+                            self.logger.warning(f"Could not set follower forward before retry load: {e}")
+
                         # Cool down before next load attempt
                         self.reactor.pause(self.reactor.monotonic() + 0.5)
-
-                        # Step 3: Reset follower state for clean next attempt
-                        fps_state.following = False
-                        fps_state.direction = 1  # Forward for next load
 
                         self.logger.info(f"Retry sequence complete - ready for attempt {attempt + 2}/{max_engagement_retries}")
                     except Exception as e:
