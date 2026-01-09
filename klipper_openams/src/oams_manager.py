@@ -3663,8 +3663,11 @@ class OAMSManager:
                     except Exception:
                         self.logger.error(f"Exception during unload after stuck spool detection for {lane_name}")
 
-                    # Step 3: Cooldown to let MCU finish
-                    cooldown = 0.5
+                    # Step 3: Cooldown to let MCU finish unload and fully clear busy state
+                    # CRITICAL: After abort + unload, MCU needs substantial time to clear busy state
+                    # before next load attempt. Insufficient cooldown causes "OAMS is busy" errors
+                    # on subsequent load attempts (especially attempt 3-4 after multiple aborts)
+                    cooldown = 2.0  # Increased from 0.5s - MCU needs time after abort sequence
                     self.logger.debug(f"Cooling {cooldown:.1f}s after stuck spool unload for {lane_name}")
                     try:
                         self.reactor.pause(self.reactor.monotonic() + cooldown)
