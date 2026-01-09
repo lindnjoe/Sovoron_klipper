@@ -933,7 +933,103 @@ class OAMSManager:
                             self.logger.debug(f"Notified AFC that {old_lane_name} unloaded during state detection (clears virtual sensor)")
                         except Exception:
                             self.logger.error(f"Failed to notify AFC about {old_lane_name} unload during state detection")
-        
+
+    def sync_state_with_afc(self) -> None:
+        """Synchronize OAMS manager state with AFC's current state.
+
+        This function validates that OAMS hardware state (current_spool) matches AFC's
+        lane tracking (extruder.lane_loaded). It corrects any discrepancies to prevent
+        state desync issues like attempting to load a lane when another is already loaded.
+
+        The mapping is: OAMS current_spool 0-3 = AFC lane ams_#:1-4
+        """
+        try:
+            afc = self._get_afc()
+            if afc is None:
+                self.logger.debug("sync_state_with_afc: AFC not available, skipping")
+                return
+
+            # Iterate through all OAMS units and validate their state
+            for oams_name, oams_obj in self.oams.items():
+                current_spool_idx = getattr(oams_obj, 'current_spool', None)
+
+                # Get the AFC unit object for this OAMS
+                afc_unit = None
+                if hasattr(afc, 'units'):
+                    for unit_name, unit_obj in afc.units.items():
+                        # Check if this AFC unit is an OpenAMS unit for this OAMS
+                        if hasattr(unit_obj, 'oams_name') and unit_obj.oams_name == oams_name:
+                            afc_unit = unit_obj
+                            break
+
+                if afc_unit is None:
+                    continue
+
+                # Find which lane corresponds to current_spool (0-3 maps to ams_#:1-4)
+                if current_spool_idx is not None and hasattr(afc_unit, '_find_lane_by_spool'):
+                    lane_obj = afc_unit._find_lane_by_spool(current_spool_idx)
+                    if lane_obj:
+                        lane_name = getattr(lane_obj, 'name', None)
+                        extruder_obj = getattr(lane_obj, 'extruder_obj', None)
+
+                        if lane_name and extruder_obj:
+                            # Check if AFC thinks this lane is loaded to the extruder
+                            afc_lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
+
+                            # Validate consistency
+                            if afc_lane_loaded != lane_name:
+                                self.logger.warning(
+                                    f"State sync: OAMS {oams_name} has spool {current_spool_idx} loaded "
+                                    f"({lane_name}), but AFC thinks {afc_lane_loaded} is loaded. "
+                                    f"Syncing AFC to match OAMS hardware state."
+                                )
+
+                                # Update AFC to match OAMS hardware
+                                extruder_obj.lane_loaded = lane_name
+
+                                # Also update lane.tool_loaded if needed
+                                if not getattr(lane_obj, 'tool_loaded', False):
+                                    lane_obj.tool_loaded = True
+
+                                # Persist to vars file
+                                if hasattr(afc, 'save_vars') and callable(afc.save_vars):
+                                    try:
+                                        afc.save_vars()
+                                        self.logger.info(f"Synced AFC state to match OAMS hardware: {lane_name} loaded")
+                                    except Exception as e:
+                                        self.logger.error(f"Failed to save AFC vars after state sync: {e}")
+                else:
+                    # current_spool is None - validate that AFC also shows nothing loaded
+                    if hasattr(afc_unit, 'lanes'):
+                        for lane_obj in afc_unit.lanes.values():
+                            if getattr(lane_obj, 'tool_loaded', False):
+                                extruder_obj = getattr(lane_obj, 'extruder_obj', None)
+                                lane_name = getattr(lane_obj, 'name', None)
+
+                                self.logger.warning(
+                                    f"State sync: OAMS {oams_name} has no spool loaded, "
+                                    f"but AFC thinks {lane_name} is loaded. Clearing AFC state."
+                                )
+
+                                # Clear the lane from AFC
+                                if extruder_obj:
+                                    extruder_obj.lane_loaded = None
+                                lane_obj.tool_loaded = False
+
+                                # Persist to vars file
+                                if hasattr(afc, 'save_vars') and callable(afc.save_vars):
+                                    try:
+                                        afc.save_vars()
+                                        self.logger.info(f"Cleared AFC state to match OAMS hardware: {lane_name} unloaded")
+                                    except Exception as e:
+                                        self.logger.error(f"Failed to save AFC vars after state clear: {e}")
+
+            # After syncing with hardware state, update FPS state tracking
+            self.determine_state()
+
+        except Exception as e:
+            self.logger.error(f"Failed to sync state with AFC: {e}", exc_info=True)
+
     def handle_ready(self) -> None:
         """Initialize system when printer is ready."""
         for fps_name, fps in self.printer.lookup_objects(module="fps"):
@@ -1404,6 +1500,14 @@ class OAMSManager:
                     restart_monitors = False
                     self.logger.error("State detection failed during OAMSM_CLEAR_ERRORS")
 
+            # Sync state between OAMS hardware and AFC to prevent state desync issues
+            # This validates that AFC's lane_loaded matches OAMS hardware current_spool
+            if ready_oams:
+                try:
+                    self.sync_state_with_afc()
+                except Exception:
+                    restart_monitors = False
+                    self.logger.error("State sync with AFC failed during OAMSM_CLEAR_ERRORS")
 
             # Rehydrate state from AFC.var.unit so lane/tool status reflects the
             # latest AFC snapshot after clearing hardware state.
@@ -4439,38 +4543,46 @@ class OAMSManager:
         # fps_name is like "fps fps1", but G-code commands need just "fps1"
         fps_param = fps_name.replace("fps ", "", 1)
 
-        # Build G-code retry sequence
-        # This queues commands through Klipper's command system (non-blocking)
-        retry_gcode = f"""
-; Stuck spool retry for {lane_name}
-; Step 1: Retract extruder to relieve pressure
-G91
-G1 E-10 F300
-G90
-
-; Step 2: Ensure follower is reverse for unload
-OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=0
-
-; Step 3: Unload the stuck filament
-OAMSM_UNLOAD_FILAMENT FPS={fps_param}
-
-; Step 4: Clear stuck flag for retry
-; (will be cleared automatically by successful load)
-
-; Step 5: Ensure follower is forward for load
-OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=1
-
-; Step 6: Retry load
-OAMSM_LOAD_FILAMENT FPS={fps_param} LANE={lane_name}
-"""
-
-        # Execute the G-code sequence
-        # This queues all commands - they execute asynchronously without blocking
+        # Execute stuck spool retry sequence with reactor blocking
+        # CRITICAL: Use reactor.pause() between commands to prevent MCU overwhelm
+        # The OAMS MCU needs time to process each command before receiving the next one
         try:
-            gcode.run_script_from_command(retry_gcode)
-            self.logger.info(f"Queued stuck spool retry G-code sequence for {fps_name}")
+            self.logger.info(f"Starting blocked retry sequence for {fps_name} lane {lane_name}")
+
+            # Step 1: Retract extruder to relieve pressure
+            self.logger.debug(f"{fps_name}: Retracting extruder")
+            gcode.run_script_from_command("G91")
+            gcode.run_script_from_command("G1 E-10 F300")
+            gcode.run_script_from_command("G90")
+            gcode.run_script_from_command("M400")  # Wait for moves to finish
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
+
+            # Step 2: Ensure follower is reverse for unload
+            self.logger.debug(f"{fps_name}: Setting follower to reverse")
+            gcode.run_script_from_command(f"OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=0")
+            gcode.run_script_from_command("M400")
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
+
+            # Step 3: Unload the stuck filament
+            self.logger.debug(f"{fps_name}: Unloading stuck filament")
+            gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
+            gcode.run_script_from_command("M400")
+            self.reactor.pause(self.reactor.monotonic() + 2.0)  # Longer wait for unload
+
+            # Step 4: Ensure follower is forward for load
+            self.logger.debug(f"{fps_name}: Setting follower to forward")
+            gcode.run_script_from_command(f"OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=1")
+            gcode.run_script_from_command("M400")
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
+
+            # Step 5: Retry load
+            self.logger.debug(f"{fps_name}: Retrying load")
+            gcode.run_script_from_command(f"OAMSM_LOAD_FILAMENT FPS={fps_param} LANE={lane_name}")
+            gcode.run_script_from_command("M400")
+
+            self.logger.info(f"Completed blocked retry sequence for {fps_name}")
         except Exception as e:
-            self.logger.error(f"Failed to queue stuck spool retry G-code: {e}")
+            self.logger.error(f"Failed to execute stuck spool retry for {fps_name}: {e}")
             # Clear stuck flag so detection can retrigger
             fps_state.stuck_spool.active = False
 
