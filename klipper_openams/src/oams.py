@@ -534,6 +534,19 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                     f"OAMS[{self.oams_idx}]: Unload retry {self._unload_retry_count + 1}/{retry_limit}, waiting {delay:.1f}s"
                 )
                 self.reactor.pause(self.reactor.monotonic() + delay)
+                try:
+                    gcode = self._cached_gcode
+                    if gcode is None:
+                        gcode = self.printer.lookup_object("gcode")
+                        self._cached_gcode = gcode
+                    gcode.run_script_from_command("M83")
+                    gcode.run_script_from_command("G92 E0")
+                    gcode.run_script_from_command("G1 E-5.00 F1200")
+                    gcode.run_script_from_command("M400")
+                except Exception:
+                    logging.warning(
+                        f"OAMS[{self.oams_idx}]: Failed to retract extruder before unload retry"
+                    )
 
             self._unload_retry_count += 1
             attempt_number = self._unload_retry_count
