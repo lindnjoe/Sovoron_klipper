@@ -5636,6 +5636,12 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             return
 
+        # Suppress clog detection briefly after lane transitions (e.g., same-FPS runouts)
+        # so the new filament has time to engage the extruder before we evaluate encoder motion.
+        if fps_state.last_lane_change_time is not None and now - fps_state.last_lane_change_time < 5.0:
+            fps_state.reset_clog_tracker()
+            return
+
         # Skip clog detection if FPS pressure is very low - indicates stuck spool, not clog
         # During lane loads, stuck spool should trigger retry logic, not clog pause
         # During normal printing, low pressure also indicates stuck spool (separate detection)
@@ -5781,23 +5787,8 @@ class OAMSManager:
                     f"Reset FPS state to LOADED after clog pause on {fps_name} to allow recovery commands"
                 )
 
-            # CRITICAL: Enable follower FORWARD for manual extrusion during clog recovery
-            # Clog detection ALWAYS pauses - user needs to manually extrude to clear the blockage
-            # Unlike pre-engagement stuck spool (which retries), clogs require user intervention
-            if fps_state.current_oams and fps_state.current_spool_idx is not None:
-                oams_obj = self.oams.get(fps_state.current_oams)
-                if oams_obj is not None:
-                    self._enable_follower(
-                        fps_name,
-                        fps_state,
-                        oams_obj,
-                        1,  # Always forward for clog - user needs to manually extrude to clear
-                        "clog detected - keep follower forward for manual recovery",
-                    )
-                else:
-                    self.logger.warning(f"Cannot enable follower during clog on {fps_name} - OAMS {fps_state.current_oams} not found")
-            else:
-                self.logger.warning(f"Cannot enable follower during clog on {fps_name} - no OAMS or spool loaded")
+            # Do not change follower direction during clog detection error flows.
+            # User can manually set follower direction as needed during recovery.
 
     def start_monitors(self):
         """Start all monitoring timers"""
