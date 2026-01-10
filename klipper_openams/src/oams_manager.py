@@ -3177,6 +3177,15 @@ class OAMSManager:
 
         # Ensure follower is set to reverse before starting unload
         try:
+            gcode = self._gcode_obj
+            if gcode is None:
+                gcode = self.printer.lookup_object("gcode")
+                self._gcode_obj = gcode
+            fps_param = fps_name.replace("fps ", "", 1)
+            gcode.run_script_from_command(
+                f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
+            )
+            gcode.run_script_from_command("M400")
             self._set_follower_if_changed(
                 fps_state.current_oams,
                 oams,
@@ -3223,6 +3232,15 @@ class OAMSManager:
                 fps_state.following = True
                 fps_state.direction = 1
                 self.reactor.pause(self.reactor.monotonic() + 1.0)
+                gcode = self._gcode_obj
+                if gcode is None:
+                    gcode = self.printer.lookup_object("gcode")
+                    self._gcode_obj = gcode
+                fps_param = fps_name.replace("fps ", "", 1)
+                gcode.run_script_from_command(
+                    f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
+                )
+                gcode.run_script_from_command("M400")
                 self._set_follower_if_changed(
                     fps_state.current_oams,
                     oams,
@@ -5718,6 +5736,17 @@ class OAMSManager:
                 self.logger.error(f"Failed to pause printer during clog on {fps_name} - continuing with error state")
                 # Keep active=True to prevent retriggering until user intervention
                 return
+            # Ensure the lane is ready to accept commands after the pause.
+            # If a clog is detected during a transient load/unload state, mark as LOADED
+            # so unload/recovery commands are not rejected as "busy."
+            if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
+                fps_state.state = FPSLoadState.LOADED
+                fps_state.since = self.reactor.monotonic()
+                fps_state.afc_delegation_active = False
+                fps_state.afc_delegation_until = 0.0
+                self.logger.info(
+                    f"Reset FPS state to LOADED after clog pause on {fps_name} to allow recovery commands"
+                )
 
             # CRITICAL: Enable follower FORWARD for manual extrusion during clog recovery
             # Clog detection ALWAYS pauses - user needs to manually extrude to clear the blockage
