@@ -187,6 +187,7 @@ class OAMSRunoutMonitor:
 
         self.hardware_service = None
         self.latest_lane_name: Optional[str] = None
+        self._last_logged_fallback_lane: Optional[str] = None
         self._logged_f1s_error: bool = False
         if AMSRunoutCoordinator is not None:
             try:
@@ -240,9 +241,12 @@ class OAMSRunoutMonitor:
         
                     if lane_name is None and fps_state.current_lane is not None:
                         lane_name = fps_state.current_lane
-                        self.logger.debug(
-                            f"OAMS: Using fps_state.current_lane '{lane_name}' (hardware_service didn't resolve lane name)"
-                        )
+                        if lane_name != self._last_logged_fallback_lane:
+                            self._last_logged_fallback_lane = lane_name
+                            self.logger.debug(
+                                "OAMS: Using fps_state.current_lane "
+                                f"'{lane_name}' (hardware_service didn't resolve lane name)"
+                            )
 
         
                     try:
