@@ -2598,37 +2598,8 @@ class OAMSManager:
                 except Exception as e:
                     self.logger.warning(f"Failed to force update loaded_to_hub for {target_lane}: {e}")
 
-
-        # Clear LED error for source lane if any error was set
-        # During same-FPS runout, the old lane might have had stuck detection or other error
-        # Clear its LED so it shows normal state after unload
-        if source_lane_name and fps_state.current_oams:
-            try:
-                # Find the bay index for source lane to clear its LED
-                afc = self._get_afc()
-                if afc and hasattr(afc, 'lanes'):
-                    source_lane_obj = afc.lanes.get(source_lane_name)
-                    if source_lane_obj:
-                        unit_str = getattr(source_lane_obj, "unit", None)
-                        source_bay_idx = None
-                        if isinstance(unit_str, str) and ':' in unit_str:
-                            _, slot_str = unit_str.split(':', 1)
-                            try:
-                                source_bay_idx = int(slot_str) - 1
-                            except ValueError:
-                                pass
-                        elif hasattr(source_lane_obj, "index"):
-                            source_bay_idx = getattr(source_lane_obj, "index") - 1
-
-                        if source_bay_idx is not None and source_bay_idx >= 0:
-                            oams = self.oams.get(fps_state.current_oams)
-                            if oams and hasattr(oams, "set_led_error"):
-                                oams.set_led_error(source_bay_idx, 0)
-                                self.logger.info(f"Cleared LED error for source lane {source_lane_name} (bay {source_bay_idx}) after runout swap")
-            except Exception as e:
-                self.logger.warning(f"Failed to clear LED for source lane {source_lane_name}: {e}")
-
         # Clear the source lane's state in AFC so it shows as EMPTY and can detect new filament
+        # Note: LED will clear automatically when lane state updates to empty
         # FPS state stays LOADED with the new target lane, but old lane needs to be cleared
         if source_lane_name:
             try:
