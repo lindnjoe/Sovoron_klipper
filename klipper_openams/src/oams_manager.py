@@ -2739,13 +2739,14 @@ class OAMSManager:
         # before the BLDC motor starts rewinding (following user's requirement:
         # "we have to first tell the follower what direction to be going in")
         try:
-            gcode = self._gcode_obj
-            if gcode is None:
-                gcode = self.printer.lookup_object("gcode")
-                self._gcode_obj = gcode
-            fps_param = fps_name.replace("fps ", "", 1)
-            gcode.run_script_from_command(
-                f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
+            self._set_follower_if_changed(
+                fps_state_obj.current_oams,
+                oams_unload,
+                1,
+                0,
+                "before async unload",
+                force=True,
+                fps_name=fps_name,
             )
             fps_state_obj.following = True
             fps_state_obj.direction = 0
@@ -3206,15 +3207,6 @@ class OAMSManager:
 
         # Ensure follower is set to reverse before starting unload
         try:
-            gcode = self._gcode_obj
-            if gcode is None:
-                gcode = self.printer.lookup_object("gcode")
-                self._gcode_obj = gcode
-            fps_param = fps_name.replace("fps ", "", 1)
-            gcode.run_script_from_command(
-                f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
-            )
-            gcode.run_script_from_command("M400")
             self._set_follower_if_changed(
                 fps_state.current_oams,
                 oams,
@@ -3223,7 +3215,6 @@ class OAMSManager:
                 "before unload",
                 force=True,
                 fps_name=fps_name,
-                use_gcode=False,
             )
             fps_state.following = True
             fps_state.direction = 0
@@ -3268,11 +3259,6 @@ class OAMSManager:
                 if gcode is None:
                     gcode = self.printer.lookup_object("gcode")
                     self._gcode_obj = gcode
-                fps_param = fps_name.replace("fps ", "", 1)
-                gcode.run_script_from_command(
-                    f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
-                )
-                gcode.run_script_from_command("M400")
                 self._set_follower_if_changed(
                     fps_state.current_oams,
                     oams,
@@ -3281,7 +3267,6 @@ class OAMSManager:
                     "unload retry recovery",
                     force=True,
                     fps_name=fps_name,
-                    use_gcode=False,
                 )
                 fps_state.following = True
                 fps_state.direction = 0
@@ -3747,15 +3732,20 @@ class OAMSManager:
                     )
                     if self._is_oams_mcu_ready(oam):
                         try:
+                            self._set_follower_if_changed(
+                                fps_state.current_oams,
+                                oam,
+                                1,
+                                0,
+                                "stuck spool recovery unload",
+                                force=True,
+                                fps_name=fps_name,
+                            )
                             gcode = self._gcode_obj
                             if gcode is None:
                                 gcode = self.printer.lookup_object("gcode")
                                 self._gcode_obj = gcode
                             fps_param = fps_name.replace("fps ", "", 1)
-                            gcode.run_script_from_command(
-                                f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
-                            )
-                            gcode.run_script_from_command("M400")
                             gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
                             gcode.run_script_from_command("M400")
                             gcode.run_script_from_command("OAMSM_CLEAR_ERRORS")
@@ -3776,13 +3766,14 @@ class OAMSManager:
                 # If filament barely engaged the extruder, we want the follower helping with
                 # the retraction, not fighting against it
                 try:
-                    gcode = self._gcode_obj
-                    if gcode is None:
-                        gcode = self.printer.lookup_object("gcode")
-                        self._gcode_obj = gcode
-                    fps_param = fps_name.replace("fps ", "", 1)
-                    gcode.run_script_from_command(
-                        f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
+                    self._set_follower_if_changed(
+                        fps_state.current_oams,
+                        oam,
+                        1,
+                        0,
+                        "stuck spool retry",
+                        force=True,
+                        fps_name=fps_name,
                     )
                     fps_state.following = True
                     fps_state.direction = 0
@@ -4115,17 +4106,20 @@ class OAMSManager:
             reverse_direction = 0  # Pull back during unload overlap
 
             # Ensure follower is enabled in reverse before the initial unload retract
+            oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
             try:
-                gcode = self._gcode_obj
-                if gcode is None:
-                    gcode = self.printer.lookup_object("gcode")
-                    self._gcode_obj = gcode
-                gcode.run_script_from_command(
-                    f"OAMSM_FOLLOWER ENABLE=1 DIRECTION={reverse_direction} FPS={fps_param}"
-                )
-                gcode.run_script_from_command("M400")
-                fps_state.following = True
-                fps_state.direction = reverse_direction
+                if oams_obj is not None and fps_state.current_oams:
+                    self._set_follower_if_changed(
+                        fps_state.current_oams,
+                        oams_obj,
+                        1,
+                        reverse_direction,
+                        "before preretract unload",
+                        force=True,
+                        fps_name=fps_name,
+                    )
+                    fps_state.following = True
+                    fps_state.direction = reverse_direction
             except Exception:
                 self.logger.warning(f"Unable to set follower reverse before preretract on {fps_name}")
 
