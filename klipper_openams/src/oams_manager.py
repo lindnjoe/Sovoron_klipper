@@ -1409,10 +1409,17 @@ class OAMSManager:
             #
             # This ensures AFC state matches hardware reality, whether loaded or empty
             try:
-                gcode = self.printer.lookup_object("gcode")
-                if gcode:
-                    gcode.run_script_from_command("UNSET_LANE_LOADED")
+                afc = self._get_afc()
+                afc_function = getattr(afc, "function", None) if afc is not None else None
+                unset_fn = getattr(afc_function, "unset_lane_loaded", None)
+                if unset_fn is not None:
+                    unset_fn()
                     self.logger.info("Cleared AFC lane_loaded state - will resync from hardware sensors")
+                else:
+                    gcode = self.printer.lookup_object("gcode")
+                    if gcode:
+                        gcode.run_script_from_command("UNSET_LANE_LOADED")
+                        self.logger.info("Cleared AFC lane_loaded state via G-code fallback")
             except Exception as e:
                 # Don't block CLEAR_ERRORS if UNSET fails, but log it
                 self.logger.warning(f"Failed to clear AFC lane state during OAMSM_CLEAR_ERRORS: {e}")
@@ -1433,6 +1440,13 @@ class OAMSManager:
                 fps_state.reset_engagement_tracking()  # Clear engagement state too
                 fps_state.afc_delegation_active = False
                 fps_state.afc_delegation_until = 0.0
+                fps_state.state = FPSLoadState.UNLOADED
+                fps_state.current_lane = None
+                fps_state.current_oams = None
+                fps_state.current_spool_idx = None
+                fps_state.following = False
+                fps_state.direction = 0
+                fps_state.since = self.reactor.monotonic()
                 self._cancel_post_load_pressure_check(fps_state)
 
             # Clear OAMS hardware errors and LEDs
@@ -1443,6 +1457,10 @@ class OAMSManager:
                     restart_monitors = False
                     continue
                 try:
+                    # Step 0: Abort any in-flight action to clear "busy" state
+                    oam.abort_current_action()
+                    self.reactor.pause(self.reactor.monotonic() + 0.1)
+
                     # Step 1: Clear hardware errors
                     oam.clear_errors()
                     self.reactor.pause(self.reactor.monotonic() + 0.1)  # Wait for MCU
@@ -1885,7 +1903,7 @@ class OAMSManager:
         # Allow enabling follower when UNLOADED (before load starts) or LOADED
         # Only block during active LOADING/UNLOADING operations
         if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
-            gcmd.respond_info(f"FPS {fps_name} is currently busy")
+            self.logger.debug(f"OAMSM_FOLLOWER ignored because {fps_name} is busy")
 
             return
 
@@ -3159,6 +3177,15 @@ class OAMSManager:
 
         # Ensure follower is set to reverse before starting unload
         try:
+            gcode = self._gcode_obj
+            if gcode is None:
+                gcode = self.printer.lookup_object("gcode")
+                self._gcode_obj = gcode
+            fps_param = fps_name.replace("fps ", "", 1)
+            gcode.run_script_from_command(
+                f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
+            )
+            gcode.run_script_from_command("M400")
             self._set_follower_if_changed(
                 fps_state.current_oams,
                 oams,
@@ -3189,27 +3216,39 @@ class OAMSManager:
         if not success:
             self.logger.warning(f"Unload failed on {fps_name}, preparing retry: {message}")
             try:
-                fps_param = fps_name.replace("fps ", "", 1)
                 unload_lane = fps_state.current_lane or lane_name
                 unload_length, unload_speed = (
                     self._get_unload_params(unload_lane) if unload_lane else (None, None)
                 )
                 retract_feed = unload_speed if unload_speed is not None else 1200.0
+                self._set_follower_if_changed(
+                    fps_state.current_oams,
+                    oams,
+                    1,
+                    1,
+                    "unload retry recovery",
+                    force=True,
+                )
+                fps_state.following = True
+                fps_state.direction = 1
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
                 gcode = self._gcode_obj
                 if gcode is None:
                     gcode = self.printer.lookup_object("gcode")
                     self._gcode_obj = gcode
-                gcode.run_script_from_command(
-                    f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=1 FPS={fps_param}"
-                )
-                gcode.run_script_from_command("M400")
-                fps_state.following = True
-                fps_state.direction = 1
-                self.reactor.pause(self.reactor.monotonic() + 1.0)
+                fps_param = fps_name.replace("fps ", "", 1)
                 gcode.run_script_from_command(
                     f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
                 )
                 gcode.run_script_from_command("M400")
+                self._set_follower_if_changed(
+                    fps_state.current_oams,
+                    oams,
+                    1,
+                    0,
+                    "unload retry recovery",
+                    force=True,
+                )
                 fps_state.following = True
                 fps_state.direction = 0
                 gcode.run_script_from_command("M83")  # Relative extrusion mode
@@ -3659,6 +3698,26 @@ class OAMSManager:
                         f"Filament may be tangled or spool not feeding properly. "
                         f"Please manually correct the issue, then run: SET_LANE_LOADED LANE={lane_name}, followed by OAMSM_CLEAR_ERRORS"
                     )
+                    if self._is_oams_mcu_ready(oam):
+                        try:
+                            gcode = self._gcode_obj
+                            if gcode is None:
+                                gcode = self.printer.lookup_object("gcode")
+                                self._gcode_obj = gcode
+                            fps_param = fps_name.replace("fps ", "", 1)
+                            gcode.run_script_from_command(
+                                f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
+                            )
+                            gcode.run_script_from_command("M400")
+                            gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
+                            gcode.run_script_from_command("M400")
+                            gcode.run_script_from_command("OAMSM_CLEAR_ERRORS")
+                        except Exception:
+                            self.logger.error(f"Failed to unwind stuck spool before pausing on {fps_name}")
+                    else:
+                        self.logger.error(
+                            f"Skipping stuck spool recovery commands for {fps_name} because OAMS MCU is not ready"
+                        )
                     self.logger.error(error_msg)
                     self._pause_printer_message(error_msg, oams_name)
                     return False, error_msg
@@ -3670,13 +3729,13 @@ class OAMSManager:
                 # If filament barely engaged the extruder, we want the follower helping with
                 # the retraction, not fighting against it
                 try:
-                    self._set_follower_if_changed(
-                        fps_state.current_oams,
-                        oams,
-                        1,
-                        0,
-                        "before stuck spool retry",
-                        force=True,
+                    gcode = self._gcode_obj
+                    if gcode is None:
+                        gcode = self.printer.lookup_object("gcode")
+                        self._gcode_obj = gcode
+                    fps_param = fps_name.replace("fps ", "", 1)
+                    gcode.run_script_from_command(
+                        f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
                     )
                     fps_state.following = True
                     fps_state.direction = 0
@@ -3983,7 +4042,7 @@ class OAMSManager:
 
             return
         if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
-            gcmd.respond_info(f"FPS {fps_name} is currently busy")
+            self.logger.debug(f"OAMSM_UNLOAD_FILAMENT ignored because {fps_name} is busy")
 
             return
 
@@ -4794,6 +4853,11 @@ class OAMSManager:
             self.logger.error(f"Cannot retry stuck spool on {fps_name} - OAMS not found")
             return
 
+        oams_name = oams_name or getattr(oams, "name", oams_name)
+        if not oams_name:
+            self.logger.error(f"Cannot retry stuck spool on {fps_name} - OAMS name unavailable")
+            return
+
         if spool_idx is None:
             self.logger.error(f"Cannot retry stuck spool on {fps_name} - spool index unknown")
             return
@@ -4831,8 +4895,16 @@ class OAMSManager:
 
             # Step 2: Ensure follower is reverse for unload
             self.logger.debug(f"{fps_name}: Setting follower to reverse")
-            gcode.run_script_from_command(f"OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=0")
-            gcode.run_script_from_command("M400")
+            self._set_follower_if_changed(
+                oams_name,
+                oams,
+                1,
+                0,
+                "stuck spool retry recovery",
+                force=True,
+            )
+            fps_state.following = True
+            fps_state.direction = 0
             self.reactor.pause(self.reactor.monotonic() + 0.5)
 
             # Step 3: Unload the stuck filament
@@ -4843,8 +4915,16 @@ class OAMSManager:
 
             # Step 4: Ensure follower is forward for load
             self.logger.debug(f"{fps_name}: Setting follower to forward")
-            gcode.run_script_from_command(f"OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=1")
-            gcode.run_script_from_command("M400")
+            self._set_follower_if_changed(
+                oams_name,
+                oams,
+                1,
+                1,
+                "stuck spool retry recovery",
+                force=True,
+            )
+            fps_state.following = True
+            fps_state.direction = 1
             self.reactor.pause(self.reactor.monotonic() + 0.5)
 
             # Step 5: Retry load
@@ -5652,6 +5732,17 @@ class OAMSManager:
                 self.logger.error(f"Failed to pause printer during clog on {fps_name} - continuing with error state")
                 # Keep active=True to prevent retriggering until user intervention
                 return
+            # Ensure the lane is ready to accept commands after the pause.
+            # If a clog is detected during a transient load/unload state, mark as LOADED
+            # so unload/recovery commands are not rejected as "busy."
+            if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
+                fps_state.state = FPSLoadState.LOADED
+                fps_state.since = self.reactor.monotonic()
+                fps_state.afc_delegation_active = False
+                fps_state.afc_delegation_until = 0.0
+                self.logger.info(
+                    f"Reset FPS state to LOADED after clog pause on {fps_name} to allow recovery commands"
+                )
 
             # CRITICAL: Enable follower FORWARD for manual extrusion during clog recovery
             # Clog detection ALWAYS pauses - user needs to manually extrude to clear the blockage
