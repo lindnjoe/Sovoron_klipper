@@ -3615,58 +3615,34 @@ class OAMSManager:
 
             if not success:
                 last_error = message
-                fps_state.state = FPSLoadState.UNLOADED
-                # BUG FIX: Save spool index BEFORE clearing fps_state for LED clearing
-                # User insight: "its not clearing the led after the first detection"
-                # Root cause: We were checking fps_state.current_spool_idx after setting it to None
-                failed_spool_idx = fps_state.current_spool_idx
-                failed_oams_name = fps_state.current_oams
-                fps_state.current_spool_idx = None
-                fps_state.current_oams = None
-                fps_state.current_lane = None
 
                 # If this is not the last attempt, execute stuck spool retry sequence
-                # REFACTOR: Use G-code commands for retry to ensure proper follower and MCU state
-                # User insight: "its not setting the follower before trying to unload on stuck spool pre engagement retry"
+                # REFACTOR: Use EXACT same code path as engagement retry (lines 3703-3743)
+                # User insight: "can we just call the same code path as the engagement check uses?"
                 if attempt + 1 < max_engagement_retries:
                     self.logger.warning(f"Stuck spool detected for {lane_name}, unloading before retry (attempt {attempt + 1}/{max_engagement_retries})")
 
+                    # Retract extruder to relieve any pressure buildup (same as engagement retry)
                     try:
-                        gcode = self.printer.lookup_object('gcode')
-                        # Extract FPS parameter (remove "fps " prefix) for G-code commands
-                        fps_param = fps_name.replace("fps ", "", 1)
+                        engagement_length, engagement_speed = self._get_engagement_params(lane_name)
+                        if engagement_length is not None and engagement_speed is not None:
+                            gcode = self.printer.lookup_object('gcode')
+                            gcode.run_script_from_command("M83")  # Relative extrusion mode
+                            gcode.run_script_from_command(f"G1 E-{engagement_length:.2f} F{engagement_speed:.0f}")  # Retract
+                            gcode.run_script_from_command("M400")  # Wait for moves to complete
+                            gcode.run_script_from_command(f"G1 E-10.00 F{engagement_speed:.0f}")  # Overlap retract
+                    except Exception:
+                        self.logger.error(f"Failed to retract extruder after stuck spool detection for {lane_name}")
 
-                        # Step 1: Clear errors and LED using OAMSM_CLEAR_ERRORS
-                        # This ensures clean state before retry, clearing any LED errors
-                        self.logger.info(f"Clearing errors for {oams_name} before retry")
-                        gcode.run_script_from_command("OAMSM_CLEAR_ERRORS")
-                        gcode.run_script_from_command("M400")
+                    # Unload the stuck filament (same as engagement retry - this handles follower direction!)
+                    try:
+                        unload_success, unload_msg = oam.unload_spool_with_retry()
+                        if not unload_success:
+                            self.logger.error(f"Failed to unload after stuck spool detection for {lane_name}: {unload_msg}")
+                    except Exception:
+                        self.logger.error(f"Exception during unload after stuck spool detection for {lane_name}")
 
-                        # Step 2: Retract extruder to relieve any pressure buildup
-                        self.logger.info(f"Retracting extruder for {lane_name}")
-                        gcode.run_script_from_command("M83")  # Relative extrusion mode
-                        gcode.run_script_from_command("G1 E-10 F300")  # Retract 10mm slowly
-                        gcode.run_script_from_command("M400")  # Wait for moves to complete
-
-                        # Step 3: Set follower to reverse (DIRECTION=0) for unload
-                        self.logger.info(f"Setting follower to reverse for unload on {fps_name}")
-                        gcode.run_script_from_command(f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}")
-                        gcode.run_script_from_command("M400")
-
-                        # Step 4: Unload the stuck filament using G-code
-                        self.logger.info(f"Unloading stuck filament from {fps_name}")
-                        gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
-                        gcode.run_script_from_command("M400")
-
-                        # Step 5: Set follower to forward (DIRECTION=1) for next load attempt
-                        self.logger.info(f"Setting follower to forward for next load on {fps_name}")
-                        gcode.run_script_from_command(f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=1 FPS={fps_param}")
-                        gcode.run_script_from_command("M400")
-
-                    except Exception as e:
-                        self.logger.error(f"Failed to execute G-code retry sequence for {lane_name}: {e}")
-
-                    # Step 6: Brief cooldown after unload (matches engagement retry timing)
+                    # Brief cooldown after unload (same as engagement retry)
                     cooldown = 0.5
                     self.logger.debug(f"Cooling {cooldown:.1f}s after stuck spool unload for {lane_name}")
                     try:
@@ -3674,7 +3650,7 @@ class OAMSManager:
                     except Exception:
                         pass
 
-                    # Step 7: Clear fps_state so retry starts fresh (matches engagement retry)
+                    # Clear fps_state so retry starts fresh (same as engagement retry)
                     fps_state.state = FPSLoadState.UNLOADED
                     fps_state.current_spool_idx = None
                     fps_state.current_oams = None
@@ -3682,7 +3658,6 @@ class OAMSManager:
                     fps_state.since = self.reactor.monotonic()
 
                     # CRITICAL: Clear stuck spool flag so detection can run on next attempt
-                    # Without this, stuck detection is suppressed and load waits full 30s timeout
                     fps_state.stuck_spool.active = False
                     fps_state.stuck_spool.start_time = None
 
