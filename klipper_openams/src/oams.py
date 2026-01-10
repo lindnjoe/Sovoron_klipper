@@ -348,6 +348,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             ("OAMS_PID_AUTOTUNE", self.cmd_OAMS_PID_AUTOTUNE, self.cmd_OAMS_PID_AUTOTUNE_help),
             ("OAMS_PID_SET", self.cmd_OAMS_PID_SET, self.cmd_OAMS_PID_SET_help),
             ("OAMS_CURRENT_PID_SET", self.cmd_OAMS_CURRENT_PID_SET, self.cmd_OAMS_CURRENT_PID_SET_help),
+            ("OAMS_ABORT_ACTION", self.cmd_OAMS_ABORT_ACTION, self.cmd_OAMS_ABORT_ACTION_help),
             ("OAMS_RETRY_STATUS", self.cmd_OAMS_RETRY_STATUS, self.cmd_OAMS_RETRY_STATUS_help),
             (
                 "OAMS_RESET_RETRY_COUNTS",
@@ -757,11 +758,12 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             raise gcmd.error("Invalid SPOOL index")
 
         
+        quiet = gcmd.get_int("QUIET", 0)
         success, message = self.load_spool_with_retry(spool_idx)
         
-        if success:
+        if success and not quiet:
             gcmd.respond_info(message)
-        else:
+        elif not success:
             gcmd.error(message)
             
     def unload_spool(self):
@@ -795,16 +797,27 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
     cmd_OAMS_UNLOAD_SPOOL_help = "Unload a spool of filament"
     def cmd_OAMS_UNLOAD_SPOOL(self, gcmd):
-        success, message = self.unload_spool_with_retry()
+        max_retries = gcmd.get_int("MAX_RETRIES", None)
+        success, message = self.unload_spool_with_retry(max_retries=max_retries)
         if success:
             gcmd.respond_info(message)
         else:
             gcmd.error(message)
 
+    cmd_OAMS_ABORT_ACTION_help = "Abort the current OAMS action"
+    def cmd_OAMS_ABORT_ACTION(self, gcmd):
+        code = gcmd.get_int("CODE", OAMSOpCode.ERROR_KLIPPER_CALL)
+        wait = gcmd.get_int("WAIT", 1)
+        self.abort_current_action(code=code, wait=bool(wait))
+
     def set_oams_follower(self, enable, direction):
         self.oams_follower_cmd.send([enable, direction])
 
-    def abort_current_action(self, code: int = OAMSOpCode.ERROR_KLIPPER_CALL) -> None:
+    def abort_current_action(
+        self,
+        code: int = OAMSOpCode.ERROR_KLIPPER_CALL,
+        wait: bool = True,
+    ) -> None:
         """Abort any in-flight hardware action initiated by Klipper helpers.
 
         IMPORTANT: This waits for the MCU to finish the current operation before
@@ -815,31 +828,38 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         if self.action_status is None:
             return
 
-        self.logger.warning(
-            f"OAMS[{self.oams_idx}]: Aborting current action {self.action_status} with code {code} - waiting for MCU to complete"
-        )
+        if wait:
+            self.logger.warning(
+                f"OAMS[{self.oams_idx}]: Aborting current action {self.action_status} with code {code} - waiting for MCU to complete"
+            )
 
-        # Wait for MCU to finish the current operation (max 5 seconds)
-        # The MCU will send an oams_action_status response when done
-        timeout = self.reactor.monotonic() + 5.0
-        pause_delay = 0.5
-        while self.action_status is not None:
-            if self.reactor.monotonic() > timeout:
-                self.logger.error(f"OAMS[{self.oams_idx}]: Abort timeout - MCU did not respond, forcing clear")
-                break
-            # Use reactor.pause to wait without queueing into toolhead
-            # Increased from 0.05s to 0.5s to reduce reactor pressure during MCU communication issues
-            # Using 0.5s provides good balance between responsiveness and reducing MCU load
-            self.reactor.pause(self.reactor.monotonic() + pause_delay)
-            # Gradually stretch the pause during longer waits to avoid tight loops when firmware is unresponsive
-            pause_delay = min(pause_delay + 0.25, 1.5)
+        if wait:
+            # Wait for MCU to finish the current operation (max 5 seconds)
+            # The MCU will send an oams_action_status response when done
+            timeout = self.reactor.monotonic() + 5.0
+            pause_delay = 0.5
+            while self.action_status is not None:
+                if self.reactor.monotonic() > timeout:
+                    self.logger.error(f"OAMS[{self.oams_idx}]: Abort timeout - MCU did not respond, forcing clear")
+                    break
+                # Use reactor.pause to wait without queueing into toolhead
+                # Increased from 0.05s to 0.5s to reduce reactor pressure during MCU communication issues
+                # Using 0.5s provides good balance between responsiveness and reducing MCU load
+                self.reactor.pause(self.reactor.monotonic() + pause_delay)
+                # Gradually stretch the pause during longer waits to avoid tight loops when firmware is unresponsive
+                pause_delay = min(pause_delay + 0.25, 1.5)
 
-        # Now clear the status (may already be None if MCU responded)
-        self.action_status_code = code
-        self.action_status_value = None
-        self.action_status = None
+            # Now clear the status (may already be None if MCU responded)
+            self.action_status_code = code
+            self.action_status_value = None
+            self.action_status = None
 
-        self.logger.info(f"OAMS[{self.oams_idx}]: Abort complete - ready for new operations")
+            self.logger.info(f"OAMS[{self.oams_idx}]: Abort complete - ready for new operations")
+        else:
+            self.action_status_code = code
+            self.logger.debug(
+                f"OAMS[{self.oams_idx}]: Abort requested without waiting; awaiting MCU completion"
+            )
     cmd_OAMS_FOLLOWER_help = "Enable or disable follower and set its direction"
     def cmd_OAMS_FOLLOWER(self, gcmd):
         enable = gcmd.get_int("ENABLE", None)
