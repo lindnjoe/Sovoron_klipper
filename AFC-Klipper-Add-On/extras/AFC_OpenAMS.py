@@ -1940,6 +1940,10 @@ class afcAMS(afcUnit):
         hub_val = bool(value)
         if hub_val != getattr(lane, "loaded_to_hub", False):
             hub.switch_pin_callback(eventtime, hub_val)
+            # CRITICAL: Update lane.loaded_to_hub to match hub sensor state
+            # This field is reported to Mainsail via lane.get_status()
+            # Without this, Mainsail shows stale hub status even when hardware sensor is correct
+            lane.loaded_to_hub = hub_val
             fila = getattr(hub, "fila", None)
             if fila is not None:
                 fila.runout_helper.note_filament_present(eventtime, hub_val)
