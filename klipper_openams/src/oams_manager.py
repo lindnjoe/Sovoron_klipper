@@ -3644,7 +3644,23 @@ class OAMSManager:
                     except Exception:
                         self.logger.error(f"Failed to abort stuck load operation for {lane_name}")
 
-                    # Unload the stuck filament (same as engagement retry - this handles follower direction!)
+                    # Ensure follower is set to reverse before starting unload
+                    try:
+                        self._set_follower_if_changed(
+                            fps_state.current_oams,
+                            oams,
+                            1,
+                            0,
+                            "before stuck spool unload",
+                            force=True,
+                        )
+                        fps_state.following = True
+                        fps_state.direction = 0
+                        self.logger.info(f"Set follower to reverse for stuck spool unload on {fps_name}")
+                    except Exception:
+                        self.logger.warning(f"Failed to set follower reverse before stuck spool unload on {fps_name}")
+
+                    # Unload the stuck filament (same as engagement retry)
                     try:
                         unload_success, unload_msg = oam.unload_spool_with_retry()
                         if not unload_success:
