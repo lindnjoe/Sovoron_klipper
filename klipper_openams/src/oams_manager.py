@@ -1377,7 +1377,9 @@ class OAMSManager:
             last_logged = self._last_logged_detected_lane.get(extruder_name)
             if last_logged != loaded_lane_name:
                 self._last_logged_detected_lane[extruder_name] = loaded_lane_name
-                self.logger.info(f"Detected {loaded_lane_name} loaded to {extruder_name} (bay {bay_index} on {oams_name})")
+                self.logger.debug(
+                    f"Detected {loaded_lane_name} loaded to {extruder_name} (bay {bay_index} on {oams_name})"
+                )
 
             return loaded_lane_name, oam, bay_index
 
@@ -2463,7 +2465,7 @@ class OAMSManager:
                 f"reload_length={post_length_display}mm reload_speed={post_speed_display}mm/min"
             )
 
-            self.logger.info(
+            self.logger.debug(
                 f"Verifying filament engagement for {lane_name}: "
                 f"extruding {engagement_length:.1f}mm at {engagement_speed:.0f}mm/min"
             )
@@ -2528,7 +2530,7 @@ class OAMSManager:
                         if encoder_delta >= min_encoder_movement:
                             # Encoder moved - filament engaged successfully!
                             fps_state.engaged_with_extruder = True
-                            self.logger.info(
+                            self.logger.debug(
                                 f"Filament engagement verified for {lane_name} "
                                 f"(encoder moved {encoder_delta} clicks during {engagement_length:.1f}mm extrusion)"
                             )
@@ -2553,7 +2555,7 @@ class OAMSManager:
                         fps_pressure = oams.fps_value
                         if fps_pressure < self.engagement_pressure_threshold:
                             fps_state.engaged_with_extruder = True
-                            self.logger.info(
+                            self.logger.debug(
                                 f"Filament engagement verified for {lane_name} "
                                 f"(FPS pressure {fps_pressure:.2f}, encoder unavailable)"
                             )
@@ -3752,7 +3754,7 @@ class OAMSManager:
                         gcode = self.printer.lookup_object("gcode")
                         self._gcode_obj = gcode
                     gcode.run_script_from_command(
-                        f"OAMS_LOAD_SPOOL OAMS={oam.oams_idx} SPOOL={bay_index}"
+                        f"OAMS_LOAD_SPOOL OAMS={oam.oams_idx} SPOOL={bay_index} QUIET=1"
                     )
                     gcode.run_script_from_command("M400")
                     success = True

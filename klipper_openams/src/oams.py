@@ -758,11 +758,12 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             raise gcmd.error("Invalid SPOOL index")
 
         
+        quiet = gcmd.get_int("QUIET", 0)
         success, message = self.load_spool_with_retry(spool_idx)
         
-        if success:
+        if success and not quiet:
             gcmd.respond_info(message)
-        else:
+        elif not success:
             gcmd.error(message)
             
     def unload_spool(self):
