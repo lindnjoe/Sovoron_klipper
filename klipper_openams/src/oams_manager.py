@@ -3676,6 +3676,23 @@ class OAMSManager:
                     except Exception:
                         pass
 
+                    # CRITICAL: Notify AFC that lane is unloaded before clearing fps_state
+                    # This keeps AFC state in sync - without this, AFC still thinks the old lane
+                    # is loaded, causing future load attempts to skip the unload step
+                    if fps_state.current_lane and AMSRunoutCoordinator is not None:
+                        try:
+                            AMSRunoutCoordinator.notify_lane_tool_state(
+                                self.printer,
+                                fps_state.current_oams or oam.name,
+                                fps_state.current_lane,
+                                loaded=False,
+                                spool_index=fps_state.current_spool_idx,
+                                eventtime=self.reactor.monotonic()
+                            )
+                            self.logger.info(f"Notified AFC that {fps_state.current_lane} is unloaded after stuck spool retry")
+                        except Exception:
+                            self.logger.error(f"Failed to notify AFC about unload for {fps_state.current_lane}")
+
                     # Clear fps_state so retry starts fresh (same as engagement retry)
                     fps_state.state = FPSLoadState.UNLOADED
                     fps_state.current_spool_idx = None
@@ -3743,6 +3760,23 @@ class OAMSManager:
                 self.reactor.pause(self.reactor.monotonic() + cooldown)
             except Exception:
                 pass
+
+            # CRITICAL: Notify AFC that lane is unloaded before clearing fps_state
+            # This keeps AFC state in sync - without this, AFC still thinks the old lane
+            # is loaded, causing future load attempts to skip the unload step
+            if fps_state.current_lane and AMSRunoutCoordinator is not None:
+                try:
+                    AMSRunoutCoordinator.notify_lane_tool_state(
+                        self.printer,
+                        fps_state.current_oams or oam.name,
+                        fps_state.current_lane,
+                        loaded=False,
+                        spool_index=fps_state.current_spool_idx,
+                        eventtime=self.reactor.monotonic()
+                    )
+                    self.logger.info(f"Notified AFC that {fps_state.current_lane} is unloaded after engagement retry")
+                except Exception:
+                    self.logger.error(f"Failed to notify AFC about unload for {fps_state.current_lane}")
 
             # Clear fps_state so retry starts fresh
             fps_state.state = FPSLoadState.UNLOADED
