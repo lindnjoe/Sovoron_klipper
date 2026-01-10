@@ -142,6 +142,7 @@ class ClogState:
     min_pressure: Optional[float] = None        # Minimum FPS pressure observed during clog
     max_pressure: Optional[float] = None        # Maximum FPS pressure observed during clog
     last_extruder: Optional[float] = None       # Last extruder position checked
+    last_wait_log_time: Optional[float] = None  # Last time we logged a wait for extrusion window
 
 
 class OAMSRunoutMonitor:
@@ -681,6 +682,7 @@ class FPSState:
         self.clog.min_pressure = None
         self.clog.max_pressure = None
         self.clog.last_extruder = None
+        self.clog.last_wait_log_time = None
 
     def reset_engagement_tracking(self) -> None:
         """Reset engagement tracking state for clean retry attempts."""
@@ -697,6 +699,7 @@ class FPSState:
         self.clog.start_time = timestamp
         self.clog.min_pressure = pressure
         self.clog.max_pressure = pressure
+        self.clog.last_wait_log_time = None
         
     def __repr__(self) -> str:
         state_names = {0: "UNLOADED", 1: "LOADED", 2: "LOADING", 3: "UNLOADING"}
@@ -5785,10 +5788,15 @@ class OAMSManager:
         settings = self.clog_settings
         if extrusion_delta < settings["extrusion_window"]:
             # Not enough extrusion yet to check for clog
-            self.logger.debug(
-                f"{fps_name}: Clog detection waiting for extrusion window - "
-                f"extruded={extrusion_delta:.1f}mm (need {settings['extrusion_window']}mm)"
-            )
+            if (
+                fps_state.clog.last_wait_log_time is None
+                or now - fps_state.clog.last_wait_log_time >= 10.0
+            ):
+                fps_state.clog.last_wait_log_time = now
+                self.logger.debug(
+                    f"{fps_name}: Clog detection waiting for extrusion window - "
+                    f"extruded={extrusion_delta:.1f}mm (need {settings['extrusion_window']}mm)"
+                )
             return
 
         if (encoder_delta > settings["encoder_slack"] or pressure_span > settings["pressure_band"]):
