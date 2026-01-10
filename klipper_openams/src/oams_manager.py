@@ -1383,6 +1383,7 @@ class OAMSManager:
             ("OAMSM_FOLLOWER_RESET", self.cmd_FOLLOWER_RESET, self.cmd_FOLLOWER_RESET_help),
             ("OAMSM_CLEAR_ERRORS", self.cmd_CLEAR_ERRORS, self.cmd_CLEAR_ERRORS_help),
             ("OAMSM_CLEAR_LANE_MAPPINGS", self.cmd_CLEAR_LANE_MAPPINGS, self.cmd_CLEAR_LANE_MAPPINGS_help),
+            ("OAMSM_SET_LANE_LOADED", self.cmd_SET_LANE_LOADED, self.cmd_SET_LANE_LOADED_help),
             ("OAMSM_STATUS", self.cmd_STATUS, self.cmd_STATUS_help),
         ]
         for cmd_name, handler, help_text in commands:
@@ -1608,6 +1609,55 @@ class OAMSManager:
                 )
 
         gcmd.respond_info("OAMS errors cleared and system re-initialized")
+
+    cmd_SET_LANE_LOADED_help = "Mark a lane as loaded and sync OAMS/AFC states (wrapper for AFC SET_LANE_LOADED)"
+    def cmd_SET_LANE_LOADED(self, gcmd):
+        """
+        Wrapper for AFC's SET_LANE_LOADED that ensures OAMS and AFC states are synced.
+
+        User requirement: SET_LANE_LOADED should sync up OAMS and AFC states properly.
+
+        Usage: OAMSM_SET_LANE_LOADED LANE=lane11
+        """
+        lane = gcmd.get("LANE", None)
+        if lane is None:
+            raise gcmd.error("LANE parameter is required")
+
+        # Call AFC's SET_LANE_LOADED
+        try:
+            gcode = self.printer.lookup_object("gcode")
+            if gcode:
+                gcode.run_script_from_command(f"SET_LANE_LOADED LANE={lane}")
+                self.logger.info(f"Called SET_LANE_LOADED for {lane}")
+            else:
+                raise gcmd.error("GCode object not available")
+        except Exception as e:
+            raise gcmd.error(f"Failed to call SET_LANE_LOADED: {e}")
+
+        # Give AFC a moment to process the command
+        self.reactor.pause(self.reactor.monotonic() + 0.1)
+
+        # Sync OAMS state with AFC to ensure consistency
+        try:
+            self.determine_state()
+            self.logger.info("Refreshed OAMS state from hardware sensors after SET_LANE_LOADED")
+        except Exception as e:
+            self.logger.error(f"Failed to refresh OAMS state after SET_LANE_LOADED: {e}")
+
+        try:
+            self.sync_state_with_afc()
+            self.logger.info("Synced OAMS and AFC states after SET_LANE_LOADED")
+        except Exception as e:
+            self.logger.error(f"Failed to sync OAMS/AFC states after SET_LANE_LOADED: {e}")
+
+        # Ensure follower is enabled forward if lane is now loaded
+        try:
+            self._ensure_followers_for_loaded_hubs()
+            self.logger.info("Ensured followers enabled for loaded lanes after SET_LANE_LOADED")
+        except Exception as e:
+            self.logger.error(f"Failed to enable followers after SET_LANE_LOADED: {e}")
+
+        gcmd.respond_info(f"Lane {lane} marked as loaded and states synced")
 
     def _load_afc_var_unit_snapshot(self) -> Optional[Dict[str, Any]]:
         """Load the current AFC.var.unit snapshot from the live AFC object."""
@@ -3599,7 +3649,7 @@ class OAMSManager:
             # REFACTOR: Removed busy retry loop to match engagement retry pattern
             # When stuck is detected, operation fails naturally - no need for abort_current_action()
             # User insight: "engagement retry works fine, but not stuck spool pre engagement"
-            # Root cause: abort_current_action() adds 18+ seconds of blocking waits (6s × 3 retries)
+            # Root cause: abort_current_action() adds 18+ seconds of blocking waits (6s ï¿½ 3 retries)
             # with continuous MCU status polling, causing MCU overload and unresponsiveness
             try:
                 success, message = oam.load_spool(bay_index)
@@ -3615,6 +3665,27 @@ class OAMSManager:
 
             if not success:
                 last_error = message
+
+                # Track stuck spool detection attempts to limit retries
+                # User requirement: Only retry ONCE on stuck spool detection
+                # If stuck detected again (2nd time), pause for user intervention
+                if not hasattr(fps_state, 'stuck_spool_attempt_count'):
+                    fps_state.stuck_spool_attempt_count = 0
+
+                fps_state.stuck_spool_attempt_count += 1
+
+                # Check if this is the 2nd stuck detection (1st retry failed)
+                if fps_state.stuck_spool_attempt_count >= 2:
+                    # Second stuck detection - pause for user intervention
+                    error_msg = (
+                        f"Stuck spool detected on {lane_name} after retry. "
+                        f"Filament may be tangled or spool not feeding properly. "
+                        f"Please manually correct the issue, then use SET_LANE_LOADED LANE={lane_name} to continue."
+                    )
+                    self.logger.error(error_msg)
+                    self._pause_printer_message(error_msg, oams_name)
+                    fps_state.stuck_spool_attempt_count = 0  # Reset for next load attempt
+                    return False, error_msg
 
                 # If this is not the last attempt, execute stuck spool retry sequence
                 # REFACTOR: Use EXACT same code path as engagement retry (lines 3703-3743)
@@ -3668,6 +3739,15 @@ class OAMSManager:
                         unload_success, unload_msg = oam.unload_spool_with_retry()
                         if not unload_success:
                             self.logger.error(f"Failed to unload after stuck spool detection for {lane_name}: {unload_msg}")
+                        else:
+                            # STEP 4a: Clear error LED after successful unload
+                            # User requirement: LED must be cleared for hardware to operate properly
+                            if fps_state.stuck_spool.active and fps_state.current_spool_idx is not None:
+                                try:
+                                    oam.set_led_error(fps_state.current_spool_idx, 0)
+                                    self.logger.info(f"Cleared stuck spool LED for {fps_name} after successful retry unload")
+                                except Exception:
+                                    self.logger.error(f"Failed to clear LED after retry unload on {fps_name}")
                     except Exception:
                         self.logger.error(f"Exception during unload after stuck spool detection for {lane_name}")
 
@@ -3711,6 +3791,10 @@ class OAMSManager:
                     last_error = message
                 # Loop continues for another attempt
                 continue
+
+            # Clear stuck spool attempt counter on successful OAMS load before engagement check
+            # This ensures engagement failures don't count against stuck spool retry limit
+            fps_state.stuck_spool_attempt_count = 0
 
             # OAMS load succeeded - now verify filament engaged extruder
             # Extrude the configured reload length and check FPS pressure drop
@@ -4522,15 +4606,82 @@ class OAMSManager:
         return
     def _ensure_followers_for_loaded_hubs(self) -> None:
         """
-        Ensure followers are enabled for any OAMS that has filament in the hub.
+        Ensure followers are enabled forward for any OAMS unit that has:
+        1. Any hub sensor showing filament loaded, OR
+        2. Any lane on that unit showing loaded to toolhead
+
         Called after OAMSM_CLEAR_ERRORS and other state changes.
-        Simple: just check hub sensors and enable/disable accordingly.
+        User requirement: Keep follower feeding filament towards extruder when filament is present.
         """
-        return
+        afc = self._get_afc()
+        if afc is None or not hasattr(afc, 'units'):
+            return
+
+        for unit_name, unit_obj in afc.units.items():
+            # Only process OpenAMS units
+            if not hasattr(unit_obj, 'oams_name'):
+                continue
+
+            oams_name = unit_obj.oams_name
+            oams = self.oams.get(oams_name)
+            if oams is None or not self._is_oams_mcu_ready(oams):
+                continue
+
+            should_enable_follower = False
+
+            # Check 1: Does any hub sensor show filament loaded?
+            hub_hes_values = getattr(oams, "hub_hes_value", None)
+            if hub_hes_values is not None and any(hub_hes_values):
+                should_enable_follower = True
+                self.logger.debug(f"Hub sensors on {oams_name} show filament loaded - enabling follower forward")
+
+            # Check 2: Does any lane on this unit show loaded to toolhead?
+            if not should_enable_follower and hasattr(unit_obj, 'lanes'):
+                for lane_name, lane in unit_obj.lanes.items():
+                    if getattr(lane, 'tool_loaded', False):
+                        should_enable_follower = True
+                        self.logger.debug(f"Lane {lane_name} loaded to toolhead - enabling follower forward on {oams_name}")
+                        break
+
+            # Enable follower forward if conditions met
+            if should_enable_follower:
+                # Find the FPS for this OAMS - use first loaded bay
+                fps_name = None
+                for fps_name_candidate, fps_state in self.current_state.fps_state.items():
+                    if fps_state.current_oams == oams_name and fps_state.current_spool_idx is not None:
+                        fps_name = fps_name_candidate
+                        break
+
+                if fps_name:
+                    fps_state = self.current_state.fps_state.get(fps_name)
+                    if fps_state:
+                        try:
+                            self._enable_follower(fps_name, fps_state, oams, 1, "CLEAR_ERRORS with filament present")
+                            self.logger.info(f"Enabled follower forward on {oams_name} {fps_name} - filament present in hub/toolhead")
+                        except Exception as e:
+                            self.logger.error(f"Failed to enable follower on {oams_name} {fps_name}: {e}")
 
     def _force_enable_followers(self, ready_oams: Dict[str, Any]) -> None:
-        """Force followers on for all ready OAMS controllers."""
-        return
+        """
+        Force followers on forward for all ready OAMS controllers.
+        This ensures manual extrusion is available during error recovery.
+        """
+        for oams_name, oams in ready_oams.items():
+            # Find first FPS associated with this OAMS
+            fps_name = None
+            for fps_name_candidate, fps_state in self.current_state.fps_state.items():
+                if fps_state.current_oams == oams_name:
+                    fps_name = fps_name_candidate
+                    break
+
+            if fps_name:
+                fps_state = self.current_state.fps_state.get(fps_name)
+                if fps_state and fps_state.current_spool_idx is not None:
+                    try:
+                        self._enable_follower(fps_name, fps_state, oams, 1, "CLEAR_ERRORS force enable")
+                        self.logger.debug(f"Force enabled follower forward on {oams_name} {fps_name}")
+                    except Exception as e:
+                        self.logger.error(f"Failed to force enable follower on {oams_name} {fps_name}: {e}")
 
     def _find_fps_for_oams_bay(self, oams_name: str, bay_idx: int) -> Optional[str]:
         """Find the FPS name that corresponds to a specific OAMS bay."""
@@ -5064,16 +5215,15 @@ class OAMSManager:
             lane_label = fps_state.current_lane or fps_name
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
 
-            # NOTE: Do NOT call abort_current_action() from this timer callback!
-            # Timer callbacks cannot use reactor.pause() properly - it doesn't block,
-            # causing abort to return before MCU completes, leaving MCU in busy state.
-            # Instead, just set the stuck flag - the load operation will check this flag
-            # and fail naturally, then retry sequence handles abort in command context
-            # where reactor blocking works properly.
+            # User requirement: Stuck detection should trigger after couple seconds, not full timeout
+            # Use rate-limited command queue to abort from timer callback safely
+            # This makes the load fail after ~3-5 seconds instead of waiting 30 seconds for timeout
             try:
-                # Just log the detection - abort will happen in command context
                 self.logger.info(f"Detected stuck spool on {fps_name}: {stuck_reason}")
-                # NOTE: Cannot use reactor.pause() in timer callback - it doesn't work properly
+                # Abort the load operation using rate-limited queue to prevent MCU overload
+                if fps_state.current_oams and oams is not None:
+                    self._rate_limited_mcu_command(fps_state.current_oams, oams.abort_current_action)
+                    self.logger.info(f"Queued abort for stuck load operation on {fps_name}")
             except Exception:
                 self.logger.error(f"Failed to abort load operation on {fps_name}")
 
