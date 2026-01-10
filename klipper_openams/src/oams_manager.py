@@ -1383,7 +1383,6 @@ class OAMSManager:
             ("OAMSM_FOLLOWER_RESET", self.cmd_FOLLOWER_RESET, self.cmd_FOLLOWER_RESET_help),
             ("OAMSM_CLEAR_ERRORS", self.cmd_CLEAR_ERRORS, self.cmd_CLEAR_ERRORS_help),
             ("OAMSM_CLEAR_LANE_MAPPINGS", self.cmd_CLEAR_LANE_MAPPINGS, self.cmd_CLEAR_LANE_MAPPINGS_help),
-            ("OAMSM_SET_LANE_LOADED", self.cmd_SET_LANE_LOADED, self.cmd_SET_LANE_LOADED_help),
             ("OAMSM_STATUS", self.cmd_STATUS, self.cmd_STATUS_help),
         ]
         for cmd_name, handler, help_text in commands:
@@ -1609,55 +1608,6 @@ class OAMSManager:
                 )
 
         gcmd.respond_info("OAMS errors cleared and system re-initialized")
-
-    cmd_SET_LANE_LOADED_help = "Mark a lane as loaded and sync OAMS/AFC states (wrapper for AFC SET_LANE_LOADED)"
-    def cmd_SET_LANE_LOADED(self, gcmd):
-        """
-        Wrapper for AFC's SET_LANE_LOADED that ensures OAMS and AFC states are synced.
-
-        User requirement: SET_LANE_LOADED should sync up OAMS and AFC states properly.
-
-        Usage: OAMSM_SET_LANE_LOADED LANE=lane11
-        """
-        lane = gcmd.get("LANE", None)
-        if lane is None:
-            raise gcmd.error("LANE parameter is required")
-
-        # Call AFC's SET_LANE_LOADED
-        try:
-            gcode = self.printer.lookup_object("gcode")
-            if gcode:
-                gcode.run_script_from_command(f"SET_LANE_LOADED LANE={lane}")
-                self.logger.info(f"Called SET_LANE_LOADED for {lane}")
-            else:
-                raise gcmd.error("GCode object not available")
-        except Exception as e:
-            raise gcmd.error(f"Failed to call SET_LANE_LOADED: {e}")
-
-        # Give AFC a moment to process the command
-        self.reactor.pause(self.reactor.monotonic() + 0.1)
-
-        # Sync OAMS state with AFC to ensure consistency
-        try:
-            self.determine_state()
-            self.logger.info("Refreshed OAMS state from hardware sensors after SET_LANE_LOADED")
-        except Exception as e:
-            self.logger.error(f"Failed to refresh OAMS state after SET_LANE_LOADED: {e}")
-
-        try:
-            self.sync_state_with_afc()
-            self.logger.info("Synced OAMS and AFC states after SET_LANE_LOADED")
-        except Exception as e:
-            self.logger.error(f"Failed to sync OAMS/AFC states after SET_LANE_LOADED: {e}")
-
-        # Ensure follower is enabled forward if lane is now loaded
-        try:
-            self._ensure_followers_for_loaded_hubs()
-            self.logger.info("Ensured followers enabled for loaded lanes after SET_LANE_LOADED")
-        except Exception as e:
-            self.logger.error(f"Failed to enable followers after SET_LANE_LOADED: {e}")
-
-        gcmd.respond_info(f"Lane {lane} marked as loaded and states synced")
 
     def _load_afc_var_unit_snapshot(self) -> Optional[Dict[str, Any]]:
         """Load the current AFC.var.unit snapshot from the live AFC object."""
@@ -3680,7 +3630,7 @@ class OAMSManager:
                     error_msg = (
                         f"Stuck spool detected on {lane_name} after retry. "
                         f"Filament may be tangled or spool not feeding properly. "
-                        f"Please manually correct the issue, then use SET_LANE_LOADED LANE={lane_name} to continue."
+                        f"Please manually correct the issue, then run: SET_LANE_LOADED LANE={lane_name}, followed by OAMSM_CLEAR_ERRORS"
                     )
                     self.logger.error(error_msg)
                     self._pause_printer_message(error_msg, oams_name)
