@@ -5412,7 +5412,7 @@ class OAMSManager:
                     if gcode is None:
                         gcode = self.printer.lookup_object("gcode")
                         self._gcode_obj = gcode
-                    gcode.run_script_from_command(f"OAMS_ABORT_ACTION OAMS={oams.oams_idx} WAIT=0")
+                    gcode.run_script_from_command(f"OAMS_ABORT_ACTION OAMS={oams.oams_idx} WAIT=1")
                     self.logger.info(f"Requested abort for stuck load operation on {fps_name}")
             except Exception:
                 self.logger.error(f"Failed to abort load operation on {fps_name}")
