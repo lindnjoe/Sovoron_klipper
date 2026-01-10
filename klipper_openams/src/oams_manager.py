@@ -3285,6 +3285,10 @@ class OAMSManager:
                 )
                 fps_state.following = True
                 fps_state.direction = 0
+                gcode = self._gcode_obj
+                if gcode is None:
+                    gcode = self.printer.lookup_object("gcode")
+                    self._gcode_obj = gcode
                 gcode.run_script_from_command("M83")  # Relative extrusion mode
                 gcode.run_script_from_command("G92 E0")  # Reset extruder position
                 gcode.run_script_from_command(f"G1 E-5.00 F{retract_feed:.0f}")
