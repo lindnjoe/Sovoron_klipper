@@ -1096,6 +1096,11 @@ class OAMSManager:
 
         self.determine_state()
 
+        try:
+            self._ensure_followers_for_loaded_hubs()
+        except Exception:
+            self.logger.error("Failed to enable followers for loaded hubs during startup")
+
         self.start_monitors()
         self.ready = True
 
