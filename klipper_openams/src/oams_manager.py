@@ -220,7 +220,7 @@ class OAMSRunoutMonitor:
                         fps_state.afc_delegation_active = False
                         fps_state.afc_delegation_until = 0.0
         
-                    oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+                    oams_obj = self._get_oams_object(fps_state.current_oams)
                     if oams_obj is None:
                         return eventtime + MONITOR_ENCODER_PERIOD
         
@@ -316,8 +316,11 @@ class OAMSRunoutMonitor:
                             f"OAMS: Pause complete, entering COASTING (waiting for hub to clear before counting) on {self.fps_name}"
                         )
 
+                    oams_obj = self._get_oams_object(fps_state.current_oams)
+                    if oams_obj is None:
+                        return eventtime + MONITOR_ENCODER_PERIOD
                     try:
-                        hub_values = self.oams[fps_state.current_oams].hub_hes_value
+                        hub_values = oams_obj.hub_hes_value
                         spool_present = bool(hub_values[spool_idx])
                     except Exception as e:
                         self.logger.error(f"OAMS: Failed to read hub HES values during COASTING on {self.fps_name}: {e}")
@@ -360,7 +363,7 @@ class OAMSRunoutMonitor:
                         self.runout_after_position = 0.0
 
                 try:
-                    path_length = getattr(self.oams[fps_state.current_oams], "filament_path_length", 0.0)
+                    path_length = getattr(oams_obj, "filament_path_length", 0.0)
                 except Exception as e:
                     self.logger.error(f"OAMS: Failed to read filament path length while coasting on {self.fps_name}: {e}")
                     return eventtime + MONITOR_ENCODER_PERIOD
@@ -535,6 +538,19 @@ class OAMSRunoutMonitor:
                 AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=lane_name)
             except Exception:
                 self.logger.error("Failed to notify AFC about OpenAMS runout")
+
+    def _get_oams_object(self, oams_name: Optional[str]):
+        if not oams_name:
+            return None
+        if oams_name in self.oams:
+            return self.oams.get(oams_name)
+        prefixed = f"oams {oams_name}"
+        if prefixed in self.oams:
+            return self.oams.get(prefixed)
+        if oams_name.startswith("oams "):
+            unprefixed = oams_name[5:]
+            return self.oams.get(unprefixed)
+        return None
 
     def start(self) -> None:
         if self.timer is None:
@@ -1444,7 +1460,7 @@ class OAMSManager:
         ready_oams = {name: oam for name, oam in self.oams.items() if self._is_oams_mcu_ready(oam)}
         if not ready_oams:
             restart_monitors = False
-            self.logger.warning(
+            self.logger.info(
                 "No OAMS MCUs ready; skipping hardware clears and leaving monitors paused until connectivity returns"
             )
         with self._monitors_suspended("OAMSM_CLEAR_ERRORS", restart_on_exit=False):
@@ -1690,7 +1706,7 @@ class OAMSManager:
                     self.logger.error("Failed to restart monitors after OAMSM_CLEAR_ERRORS")
 
             else:
-                self.logger.warning(
+                self.logger.info(
                     "Leaving monitors paused after OAMSM_CLEAR_ERRORS due to earlier errors; run OAMSM_STATUS once issues are resolved"
                 )
 
