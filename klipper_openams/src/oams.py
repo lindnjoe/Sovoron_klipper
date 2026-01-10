@@ -306,8 +306,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             self.logger.error(f"Failed to determine current spool during clear_errors on {getattr(self, 'name', 'unknown')}: {e}")
             
     def set_led_error(self, idx, value):
-        if self.logger.isEnabledFor(logging.DEBUG):
-            self.logger.debug(f"Setting LED {idx} to {value}")
+        self.logger.debug(f"Setting LED {idx} to {value}")
         self.oams_set_led_error_cmd.send([idx, value])
         
     def determine_current_spool(self):
@@ -325,7 +324,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         if 0 <= spool_val <= 3:
             return spool_val
 
-        self.logger.error(f"OAMS[{self.oams_idx}]: Hardware reported invalid spool index {spool_val} (expected 0-3)")
+        self.logger.info(
+            f"OAMS[{self.oams_idx}]: Hardware reported invalid spool index {spool_val} (expected 0-3); treating as no spool loaded"
+        )
         return None
         
 
@@ -878,8 +879,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         return self.i_value
 
     def _oams_action_status(self, params):
-        if self.logger.isEnabledFor(logging.DEBUG):
-            self.logger.debug("OAMS status received")
+        self.logger.debug("OAMS status received")
 
         
         action = params["action"]
