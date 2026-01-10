@@ -664,6 +664,7 @@ class FPSState:
         self.engagement_extruder_pos: Optional[float] = None
         self.load_pressure_dropped: bool = False
         self.engagement_in_progress: bool = False  # Set during engagement verification to suppress stuck detection
+        self.engagement_retry_active: bool = False  # Suppress clog detection during engagement retry flow
 
     def record_encoder_sample(self, value: int) -> Optional[int]:
         """Record encoder sample and return diff if we have 2 samples."""
@@ -3743,6 +3744,7 @@ class OAMSManager:
         )
 
         # Outer loop: Engagement retries (uses configured max_engagement_retries)
+        fps_state.engagement_retry_active = True
         for engagement_attempt in range(max_engagement_retries):
             self.logger.debug(
                 f"Engagement attempt {engagement_attempt + 1}/{max_engagement_retries} for {lane_name}"
@@ -3805,6 +3807,7 @@ class OAMSManager:
                     # CRITICAL: Pause printer if load fails during printing
                     # This prevents printing without filament loaded
                     self._pause_on_critical_failure(error_msg, oams_name)
+                    fps_state.engagement_retry_active = False
                     return False, error_msg
 
                 if success:
@@ -3849,6 +3852,7 @@ class OAMSManager:
                         )
                     self.logger.error(error_msg)
                     self._pause_printer_message(error_msg, oams_name)
+                    fps_state.engagement_retry_active = False
                     return False, error_msg
 
                 # Not max retries yet - do stuck spool retry sequence
@@ -4051,6 +4055,8 @@ class OAMSManager:
             if engagement_attempt + 1 >= max_engagement_retries:
                 last_error = f"Filament failed to engage extruder for {lane_name} after {max_engagement_retries} attempts"
             # Otherwise loop for another engagement attempt (which starts a fresh stuck spool retry sequence)
+
+        fps_state.engagement_retry_active = False
 
         if not load_success:
             return False, last_error or f"Failed to load lane {lane_name}"
@@ -5729,7 +5735,10 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             return
 
-        if not is_printing:
+        allow_clog_checks = is_printing or (
+            fps_state.state == FPSLoadState.LOADING and fps_state.engaged_with_extruder
+        )
+        if not allow_clog_checks:
             if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer idle")
 
@@ -5755,6 +5764,10 @@ class OAMSManager:
         # Suppress clog detection during engagement verification to avoid false positives
         # while the extruder is deliberately driving filament for the check.
         if fps_state.engagement_in_progress:
+            fps_state.reset_clog_tracker()
+            return
+
+        if fps_state.engagement_retry_active:
             fps_state.reset_clog_tracker()
             return
 
