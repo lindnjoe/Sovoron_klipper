@@ -3577,6 +3577,51 @@ class OAMSManager:
         else:
             # No lane detected as loaded - clear fps_state if it thinks it's loaded
             # This handles cases where fps_state is stale (e.g., load failed with clog)
+            afc_loaded_lane = None
+            for candidate_lane in afc.lanes.values():
+                if getattr(candidate_lane, "tool_loaded", False):
+                    if self.get_fps_for_afc_lane(candidate_lane.name) == fps_name:
+                        afc_loaded_lane = candidate_lane
+                        break
+
+            if afc_loaded_lane is not None:
+                if afc_loaded_lane.name == lane_name:
+                    return False, f"Lane {lane_name} is already loaded to {fps_name}"
+
+                slot_number = None
+                unit_str = getattr(afc_loaded_lane, "unit", None)
+                if isinstance(unit_str, str) and ":" in unit_str:
+                    _, slot_str = unit_str.split(":", 1)
+                    try:
+                        slot_number = int(slot_str)
+                    except ValueError:
+                        slot_number = None
+                else:
+                    slot_number = getattr(afc_loaded_lane, "index", None)
+
+                fps_state.current_lane = afc_loaded_lane.name
+                fps_state.current_spool_idx = slot_number - 1 if slot_number else None
+
+                loaded_unit_obj = getattr(afc_loaded_lane, "unit_obj", None)
+                if loaded_unit_obj is None:
+                    base_unit_name = str(unit_str) if unit_str is not None else None
+                    loaded_unit_obj = afc.units.get(base_unit_name) if base_unit_name else None
+
+                loaded_oams_name = getattr(loaded_unit_obj, "oams_name", None) if loaded_unit_obj else None
+                loaded_oam = None
+                if loaded_oams_name:
+                    loaded_oam = self.oams.get(loaded_oams_name) or self.oams.get(f"oams {loaded_oams_name}")
+                fps_state.current_oams = loaded_oam.name if loaded_oam else loaded_oams_name
+                fps_state.state = FPSLoadState.LOADED
+                fps_state.since = self.reactor.monotonic()
+
+                unload_success, unload_message = self._unload_filament_for_fps(fps_name)
+                if not unload_success:
+                    return False, (
+                        f"Failed to unload existing lane {afc_loaded_lane.name} "
+                        f"from {fps_name}: {unload_message}"
+                    )
+
             if fps_state.state == FPSLoadState.LOADED:
                 self.logger.info(f"Clearing stale LOADED state for {fps_name} - no lane detected by AFC")
                 fps_state.state = FPSLoadState.UNLOADED
