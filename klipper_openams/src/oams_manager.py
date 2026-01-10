@@ -60,6 +60,7 @@ MONITOR_ENCODER_PERIOD_IDLE = 4.0  # OPTIMIZATION: Longer interval when idle
 MONITOR_ENCODER_SPEED_GRACE = 3.0  # Increased from 2.0 to 3.0 - more grace time before stuck detection
 MIN_EXTRUDER_ENGAGEMENT_DELTA = 0.5  # Minimum extruder movement to confirm engagement
 ENGAGEMENT_SUPPRESSION_WINDOW = 10.0  # Increased from 6.0 to 10.0 - longer suppression after engagement to prevent false clog detection
+CLOG_CHECK_INTERVAL = 8.0  # Minimum seconds between clog checks to reduce log/CPU churn
 AFC_DELEGATION_TIMEOUT = 30.0
 COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
@@ -143,6 +144,7 @@ class ClogState:
     max_pressure: Optional[float] = None        # Maximum FPS pressure observed during clog
     last_extruder: Optional[float] = None       # Last extruder position checked
     last_wait_log_time: Optional[float] = None  # Last time we logged a wait for extrusion window
+    last_check_time: Optional[float] = None     # Last time clog detection ran
 
 
 class OAMSRunoutMonitor:
@@ -699,6 +701,7 @@ class FPSState:
         self.clog.max_pressure = None
         self.clog.last_extruder = None
         self.clog.last_wait_log_time = None
+        self.clog.last_check_time = None
 
     def reset_engagement_tracking(self) -> None:
         """Reset engagement tracking state for clean retry attempts."""
@@ -716,6 +719,7 @@ class FPSState:
         self.clog.min_pressure = pressure
         self.clog.max_pressure = pressure
         self.clog.last_wait_log_time = None
+        self.clog.last_check_time = timestamp
         
     def __repr__(self) -> str:
         state_names = {0: "UNLOADED", 1: "LOADED", 2: "LOADING", 3: "UNLOADING"}
@@ -5760,6 +5764,13 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             return
 
+        if (
+            not fps_state.clog.active
+            and fps_state.clog.last_check_time is not None
+            and now - fps_state.clog.last_check_time < CLOG_CHECK_INTERVAL
+        ):
+            return
+
         # Skip clog detection if FPS pressure is very low - indicates stuck spool, not clog
         # During lane loads, stuck spool should trigger retry logic, not clog pause
         # During normal printing, low pressure also indicates stuck spool (separate detection)
@@ -5776,6 +5787,8 @@ class OAMSManager:
         # During load purge: extruder advances + encoder doesn't move = genuine clog, detect it
         # Before purge starts: extruder not advancing = clog won't trigger (extrusion_delta < threshold)
         # The existing clog logic is already smart enough to handle this correctly
+
+        fps_state.clog.last_check_time = now
 
         try:
             extruder_pos = float(getattr(fps.extruder, "last_position", 0.0))
