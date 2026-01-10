@@ -3634,6 +3634,16 @@ class OAMSManager:
                     except Exception:
                         self.logger.error(f"Failed to retract extruder after stuck spool detection for {lane_name}")
 
+                    # CRITICAL: Abort the stuck load operation before attempting unload
+                    # The monitor detected stuck condition but can't abort from timer callback context
+                    # Must abort here in command context to clear action_status before unload can proceed
+                    # Without this, unload fails with "OAMS is busy" because action_status is still LOADING
+                    try:
+                        oam.abort_current_action()
+                        self.logger.info(f"Aborted stuck load operation for {lane_name} before unload")
+                    except Exception:
+                        self.logger.error(f"Failed to abort stuck load operation for {lane_name}")
+
                     # Unload the stuck filament (same as engagement retry - this handles follower direction!)
                     try:
                         unload_success, unload_msg = oam.unload_spool_with_retry()
@@ -3694,6 +3704,14 @@ class OAMSManager:
                     self.logger.warning(f"Could not get engagement params for {lane_name}, skipping extruder retraction")
             except Exception:
                 self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}")
+
+            # Abort any lingering load operation before unload (defensive programming)
+            # Normally action_status should be None by now (load completed), but if engagement
+            # check happened quickly the MCU might not have cleared it yet
+            try:
+                oam.abort_current_action()
+            except Exception:
+                self.logger.error(f"Failed to abort load operation before engagement retry for {lane_name}")
 
             # Unload the filament since it didn't engage properly before letting retry logic run
             try:
