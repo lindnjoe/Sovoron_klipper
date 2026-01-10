@@ -829,7 +829,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             return
 
         if wait:
-            self.logger.warning(
+            self.logger.debug(
                 f"OAMS[{self.oams_idx}]: Aborting current action {self.action_status} with code {code} - waiting for MCU to complete"
             )
 
@@ -840,7 +840,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             pause_delay = 0.5
             while self.action_status is not None:
                 if self.reactor.monotonic() > timeout:
-                    self.logger.error(f"OAMS[{self.oams_idx}]: Abort timeout - MCU did not respond, forcing clear")
+                    self.logger.debug(
+                        f"OAMS[{self.oams_idx}]: Abort timeout - MCU did not respond, forcing clear"
+                    )
                     break
                 # Use reactor.pause to wait without queueing into toolhead
                 # Increased from 0.05s to 0.5s to reduce reactor pressure during MCU communication issues
