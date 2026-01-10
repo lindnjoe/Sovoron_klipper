@@ -859,6 +859,16 @@ class OAMSManager:
             monitor = self.runout_monitors.get(fps_name)
             is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
             was_loaded = (fps_state.state == FPSLoadState.LOADED)
+            is_printing = False
+            try:
+                idle_timeout = self._idle_timeout_obj
+                if idle_timeout is None:
+                    idle_timeout = self.printer.lookup_object("idle_timeout")
+                    self._idle_timeout_obj = idle_timeout
+                if idle_timeout is not None:
+                    is_printing = idle_timeout.get_status(self.reactor.monotonic())["state"] == "Printing"
+            except Exception:
+                is_printing = False
 
             # Check F1S sensor state if we have OAMS and spool info
             # This helps detect runout conditions before monitor transitions state
@@ -882,6 +892,20 @@ class OAMSManager:
             detected_lane, current_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
 
             if current_oams is not None and detected_spool_idx is not None:
+                same_fps_runout_configured = False
+                if is_printing and detected_lane:
+                    afc = self._get_afc()
+                    if afc is not None and hasattr(afc, "lanes"):
+                        source_lane = afc.lanes.get(detected_lane)
+                        if source_lane is not None:
+                            raw_runout_lane = getattr(source_lane, "runout_lane", None)
+                            runout_lane_name = self._resolve_afc_lane_name(afc, raw_runout_lane)
+                            target_lane = afc.lanes.get(runout_lane_name) if runout_lane_name else None
+                            source_extruder = self._get_lane_extruder_name(source_lane)
+                            target_extruder = self._get_lane_extruder_name(target_lane)
+                            same_fps_runout_configured = bool(
+                                source_extruder and target_extruder and source_extruder == target_extruder
+                            )
                 hardware_empty = False
                 try:
                     hub_values = getattr(current_oams, 'hub_hes_value', None)
@@ -894,8 +918,10 @@ class OAMSManager:
                 except Exception:
                     hardware_empty = False
 
-                if hardware_empty and not is_runout_active and fps_state.state not in (
-                        FPSLoadState.LOADING, FPSLoadState.UNLOADING):
+                if (hardware_empty and not same_fps_runout_configured and not is_runout_active and
+                        fps_state.state not in (
+                            FPSLoadState.LOADING, FPSLoadState.UNLOADING
+                        )):
                     self.logger.info(
                         "State detection: Hardware reports hub and F1S empty for %s (bay %s) on %s; clearing AFC loaded lane %s",
                         getattr(current_oams, "name", "<unknown>"),
