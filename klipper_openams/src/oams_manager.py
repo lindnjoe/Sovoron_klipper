@@ -3695,13 +3695,13 @@ class OAMSManager:
                 # If filament barely engaged the extruder, we want the follower helping with
                 # the retraction, not fighting against it
                 try:
-                    self._set_follower_if_changed(
-                        fps_state.current_oams,
-                        oam,
-                        1,
-                        0,
-                        "before stuck spool retry",
-                        force=True,
+                    gcode = self._gcode_obj
+                    if gcode is None:
+                        gcode = self.printer.lookup_object("gcode")
+                        self._gcode_obj = gcode
+                    fps_param = fps_name.replace("fps ", "", 1)
+                    gcode.run_script_from_command(
+                        f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
                     )
                     fps_state.following = True
                     fps_state.direction = 0
