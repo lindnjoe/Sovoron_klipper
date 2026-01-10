@@ -3684,6 +3684,21 @@ class OAMSManager:
                         f"Filament may be tangled or spool not feeding properly. "
                         f"Please manually correct the issue, then run: SET_LANE_LOADED LANE={lane_name}, followed by OAMSM_CLEAR_ERRORS"
                     )
+                    try:
+                        gcode = self._gcode_obj
+                        if gcode is None:
+                            gcode = self.printer.lookup_object("gcode")
+                            self._gcode_obj = gcode
+                        fps_param = fps_name.replace("fps ", "", 1)
+                        gcode.run_script_from_command(
+                            f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
+                        )
+                        gcode.run_script_from_command("M400")
+                        gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
+                        gcode.run_script_from_command("M400")
+                        gcode.run_script_from_command("OAMSM_CLEAR_ERRORS")
+                    except Exception:
+                        self.logger.error(f"Failed to unwind stuck spool before pausing on {fps_name}")
                     self.logger.error(error_msg)
                     self._pause_printer_message(error_msg, oams_name)
                     return False, error_msg
