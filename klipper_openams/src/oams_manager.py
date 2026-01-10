@@ -1440,6 +1440,13 @@ class OAMSManager:
                 fps_state.reset_engagement_tracking()  # Clear engagement state too
                 fps_state.afc_delegation_active = False
                 fps_state.afc_delegation_until = 0.0
+                fps_state.state = FPSLoadState.UNLOADED
+                fps_state.current_lane = None
+                fps_state.current_oams = None
+                fps_state.current_spool_idx = None
+                fps_state.following = False
+                fps_state.direction = 0
+                fps_state.since = self.reactor.monotonic()
                 self._cancel_post_load_pressure_check(fps_state)
 
             # Clear OAMS hardware errors and LEDs
@@ -1450,6 +1457,10 @@ class OAMSManager:
                     restart_monitors = False
                     continue
                 try:
+                    # Step 0: Abort any in-flight action to clear "busy" state
+                    oam.abort_current_action()
+                    self.reactor.pause(self.reactor.monotonic() + 0.1)
+
                     # Step 1: Clear hardware errors
                     oam.clear_errors()
                     self.reactor.pause(self.reactor.monotonic() + 0.1)  # Wait for MCU
