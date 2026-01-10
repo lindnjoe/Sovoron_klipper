@@ -311,7 +311,7 @@ class OAMSRunoutMonitor:
                         self.runout_after_position = None
                         self.coasting_start_time = None
                         self.state = OAMSRunoutState.COASTING
-                        self.logger.info(
+                        self.logger.debug(
                             f"OAMS: Pause complete, entering COASTING (waiting for hub to clear before counting) on {self.fps_name}"
                         )
 
@@ -329,7 +329,7 @@ class OAMSRunoutMonitor:
                             else:
                                 elapsed = self.reactor.monotonic() - self.coasting_start_time
                                 if elapsed >= COASTING_TIMEOUT:
-                                    self.logger.info(
+                                    self.logger.debug(
                                         f"OAMS: COASTING timeout reached ({elapsed:.1f}s) on {self.fps_name}; proceeding to reload"
                                     )
                                     self.state = OAMSRunoutState.RELOADING
@@ -345,7 +345,7 @@ class OAMSRunoutMonitor:
                             self.hub_clear_position = fps.extruder.last_position
                             self.runout_after_position = 0.0
                             self.coasting_start_time = None
-                            self.logger.info(
+                            self.logger.debug(
                                 f"OAMS: Hub sensor cleared at position {self.hub_clear_position:.1f}, starting shared PTFE countdown"
                             )
 
@@ -380,7 +380,7 @@ class OAMSRunoutMonitor:
 
                 if not hasattr(self, '_last_coast_log_position'):
                     self._last_coast_log_position = 0.0
-                    self.logger.info(
+                    self.logger.debug(
                         "OAMS: COASTING - path_length="
                         f"{path_length:.1f}, effective_path_length={effective_path_length:.1f}, "
                         f"reload_margin={self.reload_before_toolhead_distance:.1f}"
@@ -389,14 +389,14 @@ class OAMSRunoutMonitor:
                 if self.hub_cleared and runout_after_position - self._last_coast_log_position >= 100.0:
                     self._last_coast_log_position = runout_after_position
                     remaining = effective_path_length - consumed_with_margin
-                    self.logger.info(
+                    self.logger.debug(
                         "OAMS: COASTING progress (after hub clear) - "
                         f"runout_after={runout_after_position:.1f}, "
                         f"consumed_with_margin={consumed_with_margin:.1f}, remaining={remaining:.1f}"
                     )
 
                 if self.hub_cleared and consumed_with_margin >= effective_path_length:
-                    self.logger.info(
+                    self.logger.debug(
                         "OAMS: Old filament cleared shared PTFE "
                         f"({runout_after_position:.2f} mm after hub clear, "
                         f"{effective_path_length:.2f} mm effective path), loading new lane"
@@ -1361,7 +1361,10 @@ class OAMSManager:
             last_logged = self._last_logged_detected_lane.get(extruder_name)
             if last_logged != loaded_lane_name:
                 self._last_logged_detected_lane[extruder_name] = loaded_lane_name
-                self.logger.info(f"Detected {loaded_lane_name} loaded to {extruder_name} (bay {bay_index} on {oams_name})")
+                self.logger.debug(
+                    f"Detected {loaded_lane_name} loaded to {extruder_name} "
+                    f"(bay {bay_index} on {oams_name})"
+                )
 
             return loaded_lane_name, oam, bay_index
 
@@ -2429,7 +2432,7 @@ class OAMSManager:
                 f"reload_length={post_length_display}mm reload_speed={post_speed_display}mm/min"
             )
 
-            self.logger.info(
+            self.logger.debug(
                 f"Verifying filament engagement for {lane_name}: "
                 f"extruding {engagement_length:.1f}mm at {engagement_speed:.0f}mm/min"
             )
@@ -2499,7 +2502,7 @@ class OAMSManager:
                                 f"(encoder moved {encoder_delta} clicks during {engagement_length:.1f}mm extrusion)"
                             )
                             if post_length is not None and post_speed is not None and post_length > 0:
-                                self.logger.info(
+                                self.logger.debug(
                                     f"Completing reload for {lane_name}: extruding {post_length:.1f}mm "
                                     f"at {post_speed:.0f}mm/min"
                                 )
@@ -2524,7 +2527,7 @@ class OAMSManager:
                                 f"(FPS pressure {fps_pressure:.2f}, encoder unavailable)"
                             )
                             if post_length is not None and post_speed is not None and post_length > 0:
-                                self.logger.info(
+                                self.logger.debug(
                                     f"Completing reload for {lane_name}: extruding {post_length:.1f}mm "
                                     f"at {post_speed:.0f}mm/min"
                                 )
@@ -3589,7 +3592,7 @@ class OAMSManager:
             return False, f"Bay {bay_index} on {oams_name} is not ready (no spool detected)"
 
         # Load the filament
-        self.logger.info(f"Loading lane {lane_name}: {oams_name} bay {bay_index} via {fps_name}")
+        self.logger.debug(f"Loading lane {lane_name}: {oams_name} bay {bay_index} via {fps_name}")
 
         if getattr(oam, "dock_load", False):
             try:
@@ -3630,18 +3633,25 @@ class OAMSManager:
         load_success = False
         last_error = None
 
-        self.logger.info(f"Starting load attempts for {lane_name} (max {max_engagement_retries} engagement attempts, {STUCK_SPOOL_MAX_ATTEMPTS} stuck spool attempts per engagement try)")
+        self.logger.debug(
+            f"Starting load attempts for {lane_name} (max {max_engagement_retries} engagement attempts, "
+            f"{STUCK_SPOOL_MAX_ATTEMPTS} stuck spool attempts per engagement try)"
+        )
 
         # Outer loop: Engagement retries (uses configured max_engagement_retries)
         for engagement_attempt in range(max_engagement_retries):
-            self.logger.info(f"Engagement attempt {engagement_attempt + 1}/{max_engagement_retries} for {lane_name}")
+            self.logger.debug(
+                f"Engagement attempt {engagement_attempt + 1}/{max_engagement_retries} for {lane_name}"
+            )
 
             # Inner loop: Stuck spool retries (hardcoded to 2 attempts)
             # This loop tries to get a successful OAMS load (filament in buffer)
             oams_load_succeeded = False
             for stuck_attempt in range(STUCK_SPOOL_MAX_ATTEMPTS):
                 if stuck_attempt > 0:
-                    self.logger.info(f"Stuck spool retry {stuck_attempt + 1}/{STUCK_SPOOL_MAX_ATTEMPTS} for {lane_name}")
+                    self.logger.debug(
+                        f"Stuck spool retry {stuck_attempt + 1}/{STUCK_SPOOL_MAX_ATTEMPTS} for {lane_name}"
+                    )
 
                 # Only set state after all preliminary operations succeed
                 fps_state.state = FPSLoadState.LOADING
@@ -3978,7 +3988,9 @@ class OAMSManager:
                         # Call _set_virtual_tool_sensor_state directly with force=True
                         # This is the same approach used in SET_LANE_LOADED wrapper
                         unit_obj._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
-                        self.logger.info(f"Updated virtual tool sensor to LOADED for {lane_name} after successful load")
+                        self.logger.debug(
+                            f"Updated virtual tool sensor to LOADED for {lane_name} after successful load"
+                        )
 
                         # CRITICAL: Notify AFC that lane is loaded to toolhead
                         # This calls handle_openams_lane_tool_state which sets extruder.lane_loaded
