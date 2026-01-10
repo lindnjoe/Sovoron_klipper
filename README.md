@@ -38,6 +38,7 @@ This repository tracks the live Klipper and Moonraker setup that powers a CoreXY
 ### OpenAMS integration
 - `oamsc.cfg` describes both AMS MCUs, pressure sensors, cutter macros, PID targets, optional inlet sensors, and spool group assignments for the dual-hub setup.
 - `oams_manager.py` (under `klipper_openams/src/`) monitors runout, stuck spools, clog detection, and post-load pressure validation, surfacing alerts to Moonraker and coordinating with AFC macros.
+- Load/unload retries use a fixed delay per attempt (configured in `printer_data/config/AFC/AFC_oams.cfg` via `retry_backoff_base`, capped by `retry_backoff_max`) rather than an exponential backoff.
 
 ## Adapting to other machines
 
