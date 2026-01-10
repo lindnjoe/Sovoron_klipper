@@ -348,6 +348,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             ("OAMS_PID_AUTOTUNE", self.cmd_OAMS_PID_AUTOTUNE, self.cmd_OAMS_PID_AUTOTUNE_help),
             ("OAMS_PID_SET", self.cmd_OAMS_PID_SET, self.cmd_OAMS_PID_SET_help),
             ("OAMS_CURRENT_PID_SET", self.cmd_OAMS_CURRENT_PID_SET, self.cmd_OAMS_CURRENT_PID_SET_help),
+            ("OAMS_ABORT_ACTION", self.cmd_OAMS_ABORT_ACTION, self.cmd_OAMS_ABORT_ACTION_help),
             ("OAMS_RETRY_STATUS", self.cmd_OAMS_RETRY_STATUS, self.cmd_OAMS_RETRY_STATUS_help),
             (
                 "OAMS_RESET_RETRY_COUNTS",
@@ -795,11 +796,17 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
     cmd_OAMS_UNLOAD_SPOOL_help = "Unload a spool of filament"
     def cmd_OAMS_UNLOAD_SPOOL(self, gcmd):
-        success, message = self.unload_spool_with_retry()
+        max_retries = gcmd.get_int("MAX_RETRIES", None)
+        success, message = self.unload_spool_with_retry(max_retries=max_retries)
         if success:
             gcmd.respond_info(message)
         else:
             gcmd.error(message)
+
+    cmd_OAMS_ABORT_ACTION_help = "Abort the current OAMS action"
+    def cmd_OAMS_ABORT_ACTION(self, gcmd):
+        code = gcmd.get_int("CODE", OAMSOpCode.ERROR_KLIPPER_CALL)
+        self.abort_current_action(code=code)
 
     def set_oams_follower(self, enable, direction):
         self.oams_follower_cmd.send([enable, direction])
