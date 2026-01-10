@@ -3616,6 +3616,11 @@ class OAMSManager:
             if not success:
                 last_error = message
                 fps_state.state = FPSLoadState.UNLOADED
+                # BUG FIX: Save spool index BEFORE clearing fps_state for LED clearing
+                # User insight: "its not clearing the led after the first detection"
+                # Root cause: We were checking fps_state.current_spool_idx after setting it to None
+                failed_spool_idx = fps_state.current_spool_idx
+                failed_oams_name = fps_state.current_oams
                 fps_state.current_spool_idx = None
                 fps_state.current_oams = None
                 fps_state.current_lane = None
@@ -3628,18 +3633,18 @@ class OAMSManager:
                     # CRITICAL: Clear error state set by stuck detection (line 5043)
                     # User insight: "maybe we need to clear error state between attempts?"
                     # LED error blocks subsequent operations - must clear before retry
-                    if fps_state.current_spool_idx is not None:
-                        try:
-                            # Force LED clear by invalidating tracking state first
-                            led_key = f"{fps_state.current_oams}:{fps_state.current_spool_idx}"
-                            self.led_error_state.pop(led_key, None)
-                            # Now send clear command - will always go through since tracking was cleared
-                            oam.set_led_error(fps_state.current_spool_idx, 0)
-                            # Update tracking to reflect new state
-                            self.led_error_state[led_key] = 0
-                            self.logger.info(f"Cleared error LED for spool {fps_state.current_spool_idx} before retry")
-                        except Exception as e:
-                            self.logger.warning(f"Could not clear error LED: {e}")
+                    # Use saved spool index (bay_index) since fps_state was just cleared
+                    try:
+                        # Force LED clear by invalidating tracking state first
+                        led_key = f"{oams_name}:{bay_index}"
+                        self.led_error_state.pop(led_key, None)
+                        # Now send clear command - will always go through since tracking was cleared
+                        oam.set_led_error(bay_index, 0)
+                        # Update tracking to reflect new state
+                        self.led_error_state[led_key] = 0
+                        self.logger.info(f"Cleared error LED for spool {bay_index} before retry")
+                    except Exception as e:
+                        self.logger.warning(f"Could not clear error LED: {e}")
 
                     # Step 1: Retract extruder to relieve any pressure buildup
                     # This matches engagement retry pattern (retract before unload)
@@ -3663,18 +3668,18 @@ class OAMSManager:
                     # CRITICAL: Clear error LED again after unload completes
                     # User: "it isn't clearing the error after unloading during the retry"
                     # Unload may re-set error state if it encounters issues - clear again
-                    if fps_state.current_spool_idx is not None:
-                        try:
-                            # Force LED clear by invalidating tracking state first
-                            led_key = f"{fps_state.current_oams}:{fps_state.current_spool_idx}"
-                            self.led_error_state.pop(led_key, None)
-                            # Now send clear command - will always go through since tracking was cleared
-                            oam.set_led_error(fps_state.current_spool_idx, 0)
-                            # Update tracking to reflect new state
-                            self.led_error_state[led_key] = 0
-                            self.logger.info(f"Cleared error LED after unload for spool {fps_state.current_spool_idx}")
-                        except Exception as e:
-                            self.logger.warning(f"Could not clear error LED after unload: {e}")
+                    # Use bay_index since fps_state was cleared earlier
+                    try:
+                        # Force LED clear by invalidating tracking state first
+                        led_key = f"{oams_name}:{bay_index}"
+                        self.led_error_state.pop(led_key, None)
+                        # Now send clear command - will always go through since tracking was cleared
+                        oam.set_led_error(bay_index, 0)
+                        # Update tracking to reflect new state
+                        self.led_error_state[led_key] = 0
+                        self.logger.info(f"Cleared error LED after unload for spool {bay_index}")
+                    except Exception as e:
+                        self.logger.warning(f"Could not clear error LED after unload: {e}")
 
                     # Step 3: Brief cooldown after unload (matches engagement retry timing)
                     # Now that LED error is cleared, MCU doesn't need long waits - just brief window
