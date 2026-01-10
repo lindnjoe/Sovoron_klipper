@@ -394,9 +394,8 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         gcmd.respond_info(f"OAMS[{self.oams_idx}]: Reset all retry counters")
 
     def _calculate_retry_delay(self, attempt_number: int) -> float:
-        """Calculate exponential backoff delay with max cap."""
-        delay = self.retry_backoff_base * (2 ** max(attempt_number - 1, 0))
-        return min(delay, self.retry_backoff_max)
+        """Calculate constant retry delay with max cap."""
+        return min(self.retry_backoff_base, self.retry_backoff_max)
 
     def _reset_load_retry_count(self, spool_idx: int) -> None:
         """Clear retry tracking for a specific spool."""
