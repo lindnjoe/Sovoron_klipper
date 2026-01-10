@@ -848,12 +848,17 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 # Gradually stretch the pause during longer waits to avoid tight loops when firmware is unresponsive
                 pause_delay = min(pause_delay + 0.25, 1.5)
 
-        # Now clear the status (may already be None if MCU responded)
-        self.action_status_code = code
-        self.action_status_value = None
-        self.action_status = None
+            # Now clear the status (may already be None if MCU responded)
+            self.action_status_code = code
+            self.action_status_value = None
+            self.action_status = None
 
-        self.logger.info(f"OAMS[{self.oams_idx}]: Abort complete - ready for new operations")
+            self.logger.info(f"OAMS[{self.oams_idx}]: Abort complete - ready for new operations")
+        else:
+            self.action_status_code = code
+            self.logger.debug(
+                f"OAMS[{self.oams_idx}]: Abort requested without waiting; awaiting MCU completion"
+            )
     cmd_OAMS_FOLLOWER_help = "Enable or disable follower and set its direction"
     def cmd_OAMS_FOLLOWER(self, gcmd):
         enable = gcmd.get_int("ENABLE", None)
