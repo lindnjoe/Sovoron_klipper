@@ -2580,6 +2580,53 @@ class OAMSManager:
             if oams:
                 self._ensure_forward_follower(fps_name, fps_state, "after infinite runout reload")
 
+                # CRITICAL: Force update target lane's loaded_to_hub to match current hub sensor state
+                # During same-FPS runout, hub sensor may stay True throughout (Lane A unload → Lane B load)
+                # The hub_changed event won't fire because hardware value didn't change
+                # So new lane's loaded_to_hub won't get updated, causing Mainsail to show stale status
+                try:
+                    hub_hes_values = getattr(oams, "hub_hes_value", None)
+                    if hub_hes_values is not None and fps_state.current_spool_idx < len(hub_hes_values):
+                        hub_sensor_state = bool(hub_hes_values[fps_state.current_spool_idx])
+                        afc = self._get_afc()
+                        if afc and hasattr(afc, 'lanes') and target_lane:
+                            target_lane_obj = afc.lanes.get(target_lane)
+                            if target_lane_obj:
+                                # Force update loaded_to_hub to match actual hub sensor
+                                target_lane_obj.loaded_to_hub = hub_sensor_state
+                                self.logger.info(f"Force updated loaded_to_hub={hub_sensor_state} for {target_lane} after same-FPS runout")
+                except Exception as e:
+                    self.logger.warning(f"Failed to force update loaded_to_hub for {target_lane}: {e}")
+
+
+        # Clear LED error for source lane if any error was set
+        # During same-FPS runout, the old lane might have had stuck detection or other error
+        # Clear its LED so it shows normal state after unload
+        if source_lane_name and fps_state.current_oams:
+            try:
+                # Find the bay index for source lane to clear its LED
+                afc = self._get_afc()
+                if afc and hasattr(afc, 'lanes'):
+                    source_lane_obj = afc.lanes.get(source_lane_name)
+                    if source_lane_obj:
+                        unit_str = getattr(source_lane_obj, "unit", None)
+                        source_bay_idx = None
+                        if isinstance(unit_str, str) and ':' in unit_str:
+                            _, slot_str = unit_str.split(':', 1)
+                            try:
+                                source_bay_idx = int(slot_str) - 1
+                            except ValueError:
+                                pass
+                        elif hasattr(source_lane_obj, "index"):
+                            source_bay_idx = getattr(source_lane_obj, "index") - 1
+
+                        if source_bay_idx is not None and source_bay_idx >= 0:
+                            oams = self.oams.get(fps_state.current_oams)
+                            if oams and hasattr(oams, "set_led_error"):
+                                oams.set_led_error(source_bay_idx, 0)
+                                self.logger.info(f"Cleared LED error for source lane {source_lane_name} (bay {source_bay_idx}) after runout swap")
+            except Exception as e:
+                self.logger.warning(f"Failed to clear LED for source lane {source_lane_name}: {e}")
 
         # Clear the source lane's state in AFC so it shows as EMPTY and can detect new filament
         # FPS state stays LOADED with the new target lane, but old lane needs to be cleared
@@ -2839,6 +2886,13 @@ class OAMSManager:
         fps_state_obj.current_spool_idx = bay_index
         fps_state_obj.since = self.reactor.monotonic()
         fps_state_obj.clear_encoder_samples()
+
+        # CRITICAL: Reset stuck spool attempt counter during runout lane swap
+        # If Lane A had stuck detection then ran out, Lane B needs a fresh counter
+        # Otherwise Lane B would immediately pause instead of retry if it has any stuck detection
+        if not hasattr(fps_state_obj, 'stuck_spool_attempt_count'):
+            fps_state_obj.stuck_spool_attempt_count = 0
+        fps_state_obj.stuck_spool_attempt_count = 0
 
         # Start load operation (non-blocking - just sends MCU command)
         self.logger.info(f"Starting async load for lane {target_lane} (bay {bay_index}) on {oams_name}")
