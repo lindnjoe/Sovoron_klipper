@@ -1851,6 +1851,31 @@ class OAMSManager:
             if gcmd is not None:
                 gcmd.respond_info("  Error during virtual sensor sync - check klippy.log")
 
+    def _sync_openams_sensors_for_oams(
+        self,
+        oams_name: str,
+        eventtime: float,
+        *,
+        allow_f1s_updates: bool,
+        allow_lane_clear: bool,
+    ) -> None:
+        afc = self._get_afc()
+        if afc is None or not hasattr(afc, "units"):
+            return
+        for unit_obj in afc.units.values():
+            if not hasattr(unit_obj, "oams_name") or unit_obj.oams_name != oams_name:
+                continue
+            if hasattr(unit_obj, "sync_openams_sensors"):
+                try:
+                    unit_obj.sync_openams_sensors(
+                        eventtime,
+                        sync_hub=True,
+                        sync_f1s=allow_f1s_updates,
+                        allow_lane_clear=allow_lane_clear,
+                    )
+                except Exception:
+                    self.logger.error(f"Failed to sync OpenAMS sensors for {oams_name}")
+
     def _refresh_state_from_afc_snapshot(self) -> None:
         """Update FPS state from the latest AFC.var.unit snapshot."""
 
@@ -5293,6 +5318,24 @@ class OAMSManager:
                         self.logger.error(f"Failed to read sensors for {fps_name}")
                         return eventtime + MONITOR_ENCODER_PERIOD_IDLE
 
+                monitor = self.runout_monitors.get(fps_name)
+                is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
+                allow_f1s_updates = not (
+                    monitor and monitor.state in (OAMSRunoutState.DETECTED, OAMSRunoutState.COASTING)
+                )
+                allow_lane_clear = (
+                    not is_runout_active
+                    and fps_state.state not in (FPSLoadState.LOADING, FPSLoadState.UNLOADING)
+                )
+                oams_name = fps_state.current_oams or getattr(oams, "name", None)
+                if oams_name:
+                    self._sync_openams_sensors_for_oams(
+                        oams_name,
+                        eventtime,
+                        allow_f1s_updates=allow_f1s_updates,
+                        allow_lane_clear=allow_lane_clear,
+                    )
+
                 now = self.reactor.monotonic()
                 state_changed = False
 
@@ -5308,8 +5351,6 @@ class OAMSManager:
                     # AFC updates lane_loaded when filament is detected, so we need to check determine_state()
                     # to pick up the new lane_loaded and update current_spool_idx
                     # Skip auto-detect if there's an active runout in progress to avoid interference
-                    monitor = self.runout_monitors.get(fps_name)
-                    is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
                     if not is_runout_active and fps_state.consecutive_idle_polls % 2 == 0:  # Check every 2 polls (4 seconds)
                         old_lane = fps_state.current_lane
                         old_spool_idx = fps_state.current_spool_idx
