@@ -471,8 +471,8 @@ class OAMSRunoutMonitor:
             target_lane_name = None
 
         try:
-            current_extruder = getattr(current_lane_obj, 'extruder_name', None) if current_lane_obj else None
-            target_extruder = getattr(target_lane_obj, 'extruder_name', None) if target_lane_obj else None
+            current_extruder = self._get_lane_extruder_name(current_lane_obj)
+            target_extruder = self._get_lane_extruder_name(target_lane_obj)
 
             if current_lane_obj and target_lane_obj and current_extruder and target_extruder and current_extruder != target_extruder:
                 self.is_cross_extruder_runout = True
@@ -859,6 +859,16 @@ class OAMSManager:
             monitor = self.runout_monitors.get(fps_name)
             is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
             was_loaded = (fps_state.state == FPSLoadState.LOADED)
+            is_printing = False
+            try:
+                idle_timeout = self._idle_timeout_obj
+                if idle_timeout is None:
+                    idle_timeout = self.printer.lookup_object("idle_timeout")
+                    self._idle_timeout_obj = idle_timeout
+                if idle_timeout is not None:
+                    is_printing = idle_timeout.get_status(self.reactor.monotonic())["state"] == "Printing"
+            except Exception:
+                is_printing = False
 
             # Check F1S sensor state if we have OAMS and spool info
             # This helps detect runout conditions before monitor transitions state
@@ -880,6 +890,49 @@ class OAMSManager:
 
             # Query what AFC thinks is loaded (don't assign yet!)
             detected_lane, current_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
+
+            if current_oams is not None and detected_spool_idx is not None:
+                same_fps_runout_configured = False
+                if is_printing and detected_lane:
+                    afc = self._get_afc()
+                    if afc is not None and hasattr(afc, "lanes"):
+                        source_lane = afc.lanes.get(detected_lane)
+                        if source_lane is not None:
+                            raw_runout_lane = getattr(source_lane, "runout_lane", None)
+                            runout_lane_name = self._resolve_afc_lane_name(afc, raw_runout_lane)
+                            target_lane = afc.lanes.get(runout_lane_name) if runout_lane_name else None
+                            source_extruder = self._get_lane_extruder_name(source_lane)
+                            target_extruder = self._get_lane_extruder_name(target_lane)
+                            same_fps_runout_configured = bool(
+                                source_extruder and target_extruder and source_extruder == target_extruder
+                            )
+                hardware_empty = False
+                try:
+                    hub_values = getattr(current_oams, 'hub_hes_value', None)
+                    f1s_values = getattr(current_oams, 'f1s_hes_value', None)
+                    if (hub_values is not None and f1s_values is not None and
+                            detected_spool_idx < len(hub_values) and detected_spool_idx < len(f1s_values)):
+                        hub_has_filament = bool(hub_values[detected_spool_idx])
+                        f1s_present = bool(f1s_values[detected_spool_idx])
+                        hardware_empty = (not hub_has_filament and not f1s_present)
+                except Exception:
+                    hardware_empty = False
+
+                if (hardware_empty and not same_fps_runout_configured and not is_runout_active and
+                        fps_state.state not in (
+                            FPSLoadState.LOADING, FPSLoadState.UNLOADING
+                        )):
+                    self.logger.info(
+                        "State detection: Hardware reports hub and F1S empty for %s (bay %s) on %s; clearing AFC loaded lane %s",
+                        getattr(current_oams, "name", "<unknown>"),
+                        detected_spool_idx,
+                        fps_name,
+                        detected_lane,
+                    )
+                    self._clear_afc_loaded_lane(detected_lane)
+                    detected_lane = None
+                    current_oams = None
+                    detected_spool_idx = None
 
             if current_oams is not None and detected_spool_idx is not None:
                 # Lane is detected as loaded - update state normally
@@ -989,6 +1042,29 @@ class OAMSManager:
                             self.logger.debug(f"Notified AFC that {old_lane_name} unloaded during state detection (clears virtual sensor)")
                         except Exception:
                             self.logger.error(f"Failed to notify AFC about {old_lane_name} unload during state detection")
+
+    def _clear_afc_loaded_lane(self, lane_name: Optional[str]) -> None:
+        if not lane_name:
+            return
+        try:
+            afc = self._get_afc()
+            if afc is None or not hasattr(afc, 'lanes'):
+                return
+            lane_obj = afc.lanes.get(lane_name)
+            if lane_obj is None:
+                return
+            extruder_obj = getattr(lane_obj, 'extruder_obj', None)
+            if extruder_obj is not None:
+                extruder_obj.lane_loaded = None
+            if getattr(lane_obj, 'tool_loaded', False):
+                lane_obj.tool_loaded = False
+            if hasattr(afc, 'save_vars') and callable(afc.save_vars):
+                try:
+                    afc.save_vars()
+                except Exception:
+                    self.logger.error(f"Failed to save AFC vars after clearing loaded lane {lane_name}")
+        except Exception:
+            self.logger.error(f"Failed to clear AFC loaded lane for {lane_name}")
 
     def sync_state_with_afc(self) -> None:
         """Synchronize OAMS manager state with AFC's current state.
@@ -1775,6 +1851,31 @@ class OAMSManager:
             if gcmd is not None:
                 gcmd.respond_info("  Error during virtual sensor sync - check klippy.log")
 
+    def _sync_openams_sensors_for_oams(
+        self,
+        oams_name: str,
+        eventtime: float,
+        *,
+        allow_f1s_updates: bool,
+        allow_lane_clear: bool,
+    ) -> None:
+        afc = self._get_afc()
+        if afc is None or not hasattr(afc, "units"):
+            return
+        for unit_obj in afc.units.values():
+            if not hasattr(unit_obj, "oams_name") or unit_obj.oams_name != oams_name:
+                continue
+            if hasattr(unit_obj, "sync_openams_sensors"):
+                try:
+                    unit_obj.sync_openams_sensors(
+                        eventtime,
+                        sync_hub=True,
+                        sync_f1s=allow_f1s_updates,
+                        allow_lane_clear=allow_lane_clear,
+                    )
+                except Exception:
+                    self.logger.error(f"Failed to sync OpenAMS sensors for {oams_name}")
+
     def _refresh_state_from_afc_snapshot(self) -> None:
         """Update FPS state from the latest AFC.var.unit snapshot."""
 
@@ -2308,6 +2409,18 @@ class OAMSManager:
                 return located_lane, None
 
         return None, None
+
+    def _get_lane_extruder_name(self, lane) -> Optional[str]:
+        if lane is None:
+            return None
+        extruder_obj = getattr(lane, "extruder_obj", None)
+        extruder_name = getattr(lane, "extruder_name", None)
+        name = None
+        if extruder_obj is not None:
+            name = getattr(extruder_obj, "name", None)
+        if not name and extruder_name:
+            name = extruder_name
+        return _normalize_extruder_name(name)
 
     def _get_afc(self):
         # OPTIMIZATION: Cache AFC object lookup with validation
@@ -3086,8 +3199,8 @@ class OAMSManager:
         # Check if source and target lanes are on the same FPS/extruder
         # If SAME FPS: OpenAMS handles reload internally (coast, PTFE calc, load new spool)
         # If DIFFERENT FPS: AFC handles via CHANGE_TOOL (full runout, then switch tools)
-        source_extruder = _normalize_extruder_name(getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None)
-        target_extruder = _normalize_extruder_name(getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None)
+        source_extruder = self._get_lane_extruder_name(lane)
+        target_extruder = self._get_lane_extruder_name(target_lane)
 
         same_fps = bool(source_extruder and target_extruder and source_extruder == target_extruder)
         delegate_to_afc = not same_fps  # Only delegate if different FPS
@@ -5205,6 +5318,24 @@ class OAMSManager:
                         self.logger.error(f"Failed to read sensors for {fps_name}")
                         return eventtime + MONITOR_ENCODER_PERIOD_IDLE
 
+                monitor = self.runout_monitors.get(fps_name)
+                is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
+                allow_f1s_updates = not (
+                    monitor and monitor.state in (OAMSRunoutState.DETECTED, OAMSRunoutState.COASTING)
+                )
+                allow_lane_clear = (
+                    not is_runout_active
+                    and fps_state.state not in (FPSLoadState.LOADING, FPSLoadState.UNLOADING)
+                )
+                oams_name = fps_state.current_oams or getattr(oams, "name", None)
+                if oams_name:
+                    self._sync_openams_sensors_for_oams(
+                        oams_name,
+                        eventtime,
+                        allow_f1s_updates=allow_f1s_updates,
+                        allow_lane_clear=allow_lane_clear,
+                    )
+
                 now = self.reactor.monotonic()
                 state_changed = False
 
@@ -5220,8 +5351,6 @@ class OAMSManager:
                     # AFC updates lane_loaded when filament is detected, so we need to check determine_state()
                     # to pick up the new lane_loaded and update current_spool_idx
                     # Skip auto-detect if there's an active runout in progress to avoid interference
-                    monitor = self.runout_monitors.get(fps_name)
-                    is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
                     if not is_runout_active and fps_state.consecutive_idle_polls % 2 == 0:  # Check every 2 polls (4 seconds)
                         old_lane = fps_state.current_lane
                         old_spool_idx = fps_state.current_spool_idx
