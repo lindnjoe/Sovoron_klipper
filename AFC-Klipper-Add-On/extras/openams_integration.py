@@ -801,6 +801,8 @@ class AMSHardwareService:
         """
         if spool_index is None:
             return None
+        if isinstance(unit_name, str) and unit_name.startswith("oams "):
+            unit_name = unit_name[5:]
         try:
             normalized = int(spool_index)
         except (TypeError, ValueError):

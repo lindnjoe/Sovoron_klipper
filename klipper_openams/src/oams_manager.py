@@ -1959,15 +1959,22 @@ class OAMSManager:
             oams_obj = self.oams.get(fps_state.current_oams)
             if oams_obj:
                 try:
-                    state = self._get_follower_state(fps_state.current_oams)
-                    oams_obj.set_oams_follower(0, direction)
+                    self._set_follower_if_changed(
+                        fps_state.current_oams,
+                        oams_obj,
+                        0,
+                        direction,
+                        "manual follower disable",
+                        force=True,
+                        fps_name=fps_name,
+                        use_gcode=False,
+                    )
                     fps_state.following = False
-                    # Update state tracker to avoid redundant commands
-                    state.last_state = (0, direction)
+                    fps_state.direction = direction
                     self.logger.debug(f"Disabled follower on {fps_name}")
                 except Exception:
                     self.logger.error(f"Failed to disable follower on {fps_state.current_oams}")
-                    gcmd.respond_info(f"Failed to disable follower. Check logs.")
+                    gcmd.respond_info("Failed to disable follower. Check logs.")
 
             else:
                 # OAMS not found but mark as not following anyway
@@ -1983,17 +1990,23 @@ class OAMSManager:
             return
 
         try:
-            self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={fps_name}")
-            state = self._get_follower_state(fps_state.current_oams)
-            oams_obj.set_oams_follower(enable, direction)
+            self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={direction}")
+            self._set_follower_if_changed(
+                fps_state.current_oams,
+                oams_obj,
+                enable,
+                direction,
+                "manual follower enable",
+                force=True,
+                fps_name=fps_name,
+                use_gcode=False,
+            )
             fps_state.following = bool(enable)
             fps_state.direction = direction
-            # Update state tracker to avoid redundant commands
-            state.last_state = (enable, direction)
             self.logger.debug(f"OAMSM_FOLLOWER: successfully enabled follower on {fps_name}")
         except Exception:
             self.logger.error(f"Failed to set follower on {fps_state.current_oams}")
-            gcmd.respond_info(f"Failed to set follower. Check logs.")
+            gcmd.respond_info("Failed to set follower. Check logs.")
 
     cmd_FOLLOWER_RESET_help = "Return follower to automatic control based on hub sensors"
     def cmd_FOLLOWER_RESET(self, gcmd):
@@ -3209,6 +3222,8 @@ class OAMSManager:
                 0,
                 "before unload",
                 force=True,
+                fps_name=fps_name,
+                use_gcode=False,
             )
             fps_state.following = True
             fps_state.direction = 0
@@ -3244,6 +3259,7 @@ class OAMSManager:
                     1,
                     "unload retry recovery",
                     force=True,
+                    fps_name=fps_name,
                 )
                 fps_state.following = True
                 fps_state.direction = 1
@@ -3264,6 +3280,8 @@ class OAMSManager:
                     0,
                     "unload retry recovery",
                     force=True,
+                    fps_name=fps_name,
+                    use_gcode=False,
                 )
                 fps_state.following = True
                 fps_state.direction = 0
@@ -3365,6 +3383,7 @@ class OAMSManager:
                     0,
                     "unload retry",
                     force=True,
+                    fps_name=fps_name,
                 )
 
         return False, message
@@ -3688,6 +3707,7 @@ class OAMSManager:
                         1,
                         "before load",
                         force=True,
+                        fps_name=fps_name,
                     )
                     fps_state.following = True
                     fps_state.direction = 1
@@ -4441,7 +4461,14 @@ class OAMSManager:
         direction = direction if direction in (0, 1) else 1
 
         # Use state-tracked helper to avoid overwhelming MCU with redundant commands
-        self._set_follower_if_changed(fps_state.current_oams, oams, 1, direction, context)
+        self._set_follower_if_changed(
+            fps_state.current_oams,
+            oams,
+            1,
+            direction,
+            context,
+            fps_name=fps_name,
+        )
 
         # Update FPS state to reflect follower is now enabled
         # Note: _set_follower_if_changed updates follower_last_state tracking
@@ -4618,6 +4645,8 @@ class OAMSManager:
         direction: int,
         context: str = "",
         force: bool = False,
+        fps_name: Optional[str] = None,
+        use_gcode: bool = True,
     ) -> None:
         """
         Send follower command only if state has changed to avoid overwhelming MCU with redundant commands.
@@ -4648,8 +4677,22 @@ class OAMSManager:
         # Only send command if state changed or this is the first command
         if force or state.last_state != desired_state:
             try:
-                # Use rate limiting to prevent MCU queue overflow
-                self._rate_limited_mcu_command(oams_name, oams.set_oams_follower, enable, direction)
+                if use_gcode and fps_name:
+                    try:
+                        gcode = self._gcode_obj
+                        if gcode is None:
+                            gcode = self.printer.lookup_object("gcode")
+                            self._gcode_obj = gcode
+                        fps_param = fps_name.replace("fps ", "", 1)
+                        gcode.run_script_from_command(
+                            f"OAMSM_FOLLOWER ENABLE={enable} DIRECTION={direction} FPS={fps_param}"
+                        )
+                    except Exception:
+                        # Fall back to direct MCU command if gcode dispatch fails.
+                        self._rate_limited_mcu_command(oams_name, oams.set_oams_follower, enable, direction)
+                else:
+                    # Use rate limiting to prevent MCU queue overflow
+                    self._rate_limited_mcu_command(oams_name, oams.set_oams_follower, enable, direction)
                 state.last_state = desired_state
                 # Log follower disable at INFO level to track what's disabling it during clogs
                 if enable:
@@ -4929,6 +4972,7 @@ class OAMSManager:
                 0,
                 "stuck spool retry recovery",
                 force=True,
+                fps_name=fps_name,
             )
             fps_state.following = True
             fps_state.direction = 0
@@ -4949,6 +4993,7 @@ class OAMSManager:
                 1,
                 "stuck spool retry recovery",
                 force=True,
+                fps_name=fps_name,
             )
             fps_state.following = True
             fps_state.direction = 1
