@@ -471,8 +471,8 @@ class OAMSRunoutMonitor:
             target_lane_name = None
 
         try:
-            current_extruder = getattr(current_lane_obj, 'extruder_name', None) if current_lane_obj else None
-            target_extruder = getattr(target_lane_obj, 'extruder_name', None) if target_lane_obj else None
+            current_extruder = self._get_lane_extruder_name(current_lane_obj)
+            target_extruder = self._get_lane_extruder_name(target_lane_obj)
 
             if current_lane_obj and target_lane_obj and current_extruder and target_extruder and current_extruder != target_extruder:
                 self.is_cross_extruder_runout = True
