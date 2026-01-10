@@ -1903,7 +1903,7 @@ class OAMSManager:
         # Allow enabling follower when UNLOADED (before load starts) or LOADED
         # Only block during active LOADING/UNLOADING operations
         if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
-            gcmd.respond_info(f"FPS {fps_name} is currently busy")
+            self.logger.debug(f"OAMSM_FOLLOWER ignored because {fps_name} is busy")
 
             return
 
@@ -4046,7 +4046,7 @@ class OAMSManager:
 
             return
         if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
-            gcmd.respond_info(f"FPS {fps_name} is currently busy")
+            self.logger.debug(f"OAMSM_UNLOAD_FILAMENT ignored because {fps_name} is busy")
 
             return
 
