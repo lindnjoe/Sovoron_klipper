@@ -1501,9 +1501,8 @@ class afcAMS(afcUnit):
         if not _has_openams_hardware(self.printer):
             self.logger.info(
                 "No OpenAMS hardware found in configuration. "
-                "Skipping OpenAMS integration for AFC unit '%s'. "
-                "This is normal if you are using Box Turtle or other non-AMS hardware.",
-                self.name
+                f"Skipping OpenAMS integration for AFC unit '{self.name}'. "
+                "This is normal if you are using Box Turtle or other non-AMS hardware."
             )
             # Skip all OpenAMS initialization if no hardware is present
             return
@@ -1521,10 +1520,10 @@ class afcAMS(afcUnit):
         # Check if OAMS hardware was found for THIS specific unit
         if self.oams is None:
             self.logger.warning(
-                "OpenAMS hardware '[oams %s]' not found for AFC unit '%s'. "
+                "OpenAMS hardware '[oams "
+                f"{self.oams_name}]' not found for AFC unit '{self.name}'. "
                 "If you are using Box Turtle or other non-AMS hardware, "
-                "remove the '[afc_openams %s]' section from your config.",
-                self.oams_name, self.name, self.name
+                f"remove the '[afc_openams {self.name}]' section from your config."
             )
             # Don't start polling if no OAMS hardware
             return
@@ -1532,8 +1531,8 @@ class afcAMS(afcUnit):
         # Subscribe to hardware sensor events (requires AMSHardwareService)
         if self.hardware_service is None:
             self.logger.error(
-                "AMSHardwareService not available for %s - OpenAMS requires openams_integration.py. "
-                "Sensor updates will not work!", self.name
+                f"AMSHardwareService not available for {self.name} - OpenAMS requires openams_integration.py. "
+                "Sensor updates will not work!"
             )
             return
 
@@ -1732,7 +1731,7 @@ class afcAMS(afcUnit):
             # Check if this lane is already loaded to toolhead
             # If so, skip load and just sync state
             if cur_lane.get_toolhead_pre_sensor_state() and hasattr(cur_lane, 'tool_loaded') and cur_lane.tool_loaded:
-                afc_self.logger.info(f"Lane {cur_lane.name} already loaded to toolhead, skipping load")
+                afc_self.logger.debug(f"Lane {cur_lane.name} already loaded to toolhead, skipping load")
                 cur_lane.set_tool_loaded()
                 cur_lane.enable_buffer()
                 afc_self.save_vars()
@@ -1742,8 +1741,8 @@ class afcAMS(afcUnit):
                 afc_self.afcDeltaTime.log_with_time("Done heating toolhead")
 
             try:
-                afc_self.logger.info(
-                    "OpenAMS load: delegating to OAMSM_LOAD_FILAMENT for lane {}".format(cur_lane.name)
+                afc_self.logger.debug(
+                    f"OpenAMS load: delegating to OAMSM_LOAD_FILAMENT for lane {cur_lane.name}"
                 )
                 oams_manager = afc_self.printer.lookup_object("oams_manager", None)
                 if oams_manager is not None:
@@ -1897,11 +1896,9 @@ class afcAMS(afcUnit):
                     self.handle_runout_detected(bay, None, lane_name=lane.name)
                 except Exception:
                     self.logger.error(
-                        "Failed to handle runout detection for %s (spool_index=%s, runout_lane=%s)",
-                        lane.name,
-                        bay,
-                        getattr(lane, "runout_lane", None),
-                        exc_info=True,
+                        f"Failed to handle runout detection for {lane.name} "
+                        f"(spool_index={bay}, runout_lane={getattr(lane, 'runout_lane', None)})\n"
+                        f"{traceback.format_exc()}"
                     )
             else:
                 self.logger.debug("F1S sensor False for {} but not printing - skipping runout detection (likely filament insertion/removal)".format(lane.name))
@@ -2096,9 +2093,8 @@ class afcAMS(afcUnit):
                             self.logger.debug(f"Unsynced lane {lane.name} and cleared extruder.lane_loaded when sensor went False")
                 except Exception:
                     self.logger.error(
-                        "Failed to unsync lane %s from extruder when sensor cleared",
-                        lane.name,
-                        exc_info=True,
+                        f"Failed to unsync lane {lane.name} from extruder when sensor cleared\n"
+                        f"{traceback.format_exc()}"
                     )
             elif is_shared_extruder and not is_same_fps_runout:
                 self.logger.debug(f"Skipping lane_loaded clear for {lane.name} - shared extruder (only UNLOAD/RUNOUT commands should clear)")
@@ -2302,27 +2298,21 @@ class afcAMS(afcUnit):
         target_extruder = _normalize_extruder_name(getattr(target_lane, "extruder_obj", None) if hasattr(target_lane, "extruder_obj") else None) if target_lane else None
 
         self.logger.debug(
-            "Runout classification for %s: spool_index=%s, runout_lane=%s -> %s, source_extruder=%s, target_extruder=%s",
-            lane.name,
-            spool_index,
-            runout_lane_name,
-            getattr(target_lane, "name", None) if target_lane else None,
-            source_extruder,
-            target_extruder,
+            f"Runout classification for {lane.name}: spool_index={spool_index}, "
+            f"runout_lane={runout_lane_name} -> "
+            f"{getattr(target_lane, 'name', None) if target_lane else None}, "
+            f"source_extruder={source_extruder}, target_extruder={target_extruder}"
         )
         if runout_lane_name:
             self.logger.debug(
-                "Runout handoff resolution trace for %s: %s",
-                lane.name,
-                " > ".join(handoff_trace) if handoff_trace else "(no trace)",
+                f"Runout handoff resolution trace for {lane.name}: "
+                f"{' > '.join(handoff_trace) if handoff_trace else '(no trace)'}"
             )
 
         if runout_lane_name and not target_lane and saved_runout_lane and saved_runout_lane != runout_lane_name:
             self.logger.info(
-                "Runout lane %s for %s could not be resolved; falling back to saved AFC state %s",
-                runout_lane_name,
-                lane.name,
-                saved_runout_lane,
+                f"Runout lane {runout_lane_name} for {lane.name} could not be resolved; "
+                f"falling back to saved AFC state {saved_runout_lane}"
             )
             runout_lane_name = saved_runout_lane
             runout_from_saved = True
@@ -2350,9 +2340,8 @@ class afcAMS(afcUnit):
 
             if runout_lane_name and not target_lane:
                 self.logger.warning(
-                    "Runout handoff lane %s not found for %s; deferring to AFC's native runout handling",
-                    runout_lane_name,
-                    lane.name,
+                    f"Runout handoff lane {runout_lane_name} not found for {lane.name}; "
+                    "deferring to AFC's native runout handling"
                 )
             elif target_lane:
                 # Box Turtle infinite-runout behavior: when a handoff lane is configured on a
@@ -2376,27 +2365,22 @@ class afcAMS(afcUnit):
                         if current_lane != lane.name:
                             if current_lane not in getattr(self.afc, "lanes", {}):
                                 self.logger.info(
-                                    "Cross-extruder runout: AFC current lane %s invalid; overriding to %s",
-                                    current_lane,
-                                    lane.name,
+                                    f"Cross-extruder runout: AFC current lane {current_lane} invalid; "
+                                    f"overriding to {lane.name}"
                                 )
                             try:
                                 self.afc.current = lane.name
                             except Exception:
                                 self.logger.debug(f"Unable to set AFC current lane to {lane.name} before infinite runout")
                         self.logger.info(
-                            "Cross-extruder runout: invoking infinite spool handoff from %s to %s",
-                            lane.name,
-                            resolved_name,
+                            f"Cross-extruder runout: invoking infinite spool handoff from {lane.name} to {resolved_name}"
                         )
                         perform_infinite()
                         return
                     except Exception:
                         self.logger.error(
-                            "Failed infinite spool handoff for %s -> %s; falling back to AFC runout handler",
-                            lane.name,
-                            resolved_name,
-                            exc_info=True,
+                            f"Failed infinite spool handoff for {lane.name} -> {resolved_name}; "
+                            f"falling back to AFC runout handler\n{traceback.format_exc()}"
                         )
             else:
                 try:
@@ -2405,8 +2389,7 @@ class afcAMS(afcUnit):
                     pass
 
                 self.logger.info(
-                    "Runout for %s does not target same extruder; letting AFC handle it normally",
-                    lane.name,
+                    f"Runout for {lane.name} does not target same extruder; letting AFC handle it normally"
                 )
 
             # Allow AFC's built-in runout handler to pause or swap as configured
@@ -2419,16 +2402,14 @@ class afcAMS(afcUnit):
                     runout_cb(eventtime=eventtime)
                 except Exception:
                     self.logger.error(
-                        "Extruder runout handler failed for %s (spool_index=%s, runout_lane=%s)",
-                        lane.name,
-                        spool_index,
-                        runout_lane_name,
-                        exc_info=True,
+                        f"Extruder runout handler failed for {lane.name} "
+                        f"(spool_index={spool_index}, runout_lane={runout_lane_name})\n"
+                        f"{traceback.format_exc()}"
                     )
             else:
                 self.logger.warning(
-                    "Runout detected for %s but no extruder runout handler is available; AFC must handle downstream",
-                    lane.name,
+                    f"Runout detected for {lane.name} but no extruder runout handler is available; "
+                    "AFC must handle downstream"
                 )
             return
 
@@ -2441,8 +2422,8 @@ class afcAMS(afcUnit):
             lane._oams_runout_detected = True
             lane._oams_cross_extruder_runout = False
             self.logger.info(
-                "Same-extruder runout: Marked lane %s for runout (oams_manager monitor will handle reload)",
-                lane.name,
+                f"Same-extruder runout: Marked lane {lane.name} for runout "
+                "(oams_manager monitor will handle reload)"
             )
         except Exception:
             self.logger.error(f"Failed to mark lane {lane.name} for runout tracking")
@@ -2588,9 +2569,7 @@ class afcAMS(afcUnit):
         lane = self._resolve_lane_reference(lane_name)
         if lane is None:
             self.logger.warning(
-                "Requested cross-extruder runout mark for %s but AFC unit %s cannot resolve it",
-                lane_name,
-                self.name,
+                f"Requested cross-extruder runout mark for {lane_name} but AFC unit {self.name} cannot resolve it"
             )
             return False
 
@@ -2599,8 +2578,7 @@ class afcAMS(afcUnit):
                 lane._oams_runout_detected = False
             lane._oams_cross_extruder_runout = True
             self.logger.info(
-                "Marked lane %s as cross-extruder runout participant for shared sensor bypass",
-                lane.name,
+                f"Marked lane {lane.name} as cross-extruder runout participant for shared sensor bypass"
             )
             return True
         except Exception:
@@ -3360,15 +3338,11 @@ def _patch_infinite_runout_handler() -> None:
         change_lane = lanes.get(runout_target)
 
         self.logger.debug(
-            "Invoking AFC infinite runout from %s (map=%s, extruder=%s) to %s (map=%s, extruder=%s) with current=%s" % (
-                lane_name,
-                getattr(empty_lane, "map", None),
-                getattr(empty_lane, "extruder", None),
-                getattr(change_lane, "name", None),
-                getattr(change_lane, "map", None),
-                getattr(change_lane, "extruder", None),
-                getattr(afc, "current", None),
-            )
+            f"Invoking AFC infinite runout from {lane_name} "
+            f"(map={getattr(empty_lane, 'map', None)}, extruder={getattr(empty_lane, 'extruder', None)}) "
+            f"to {getattr(change_lane, 'name', None)} "
+            f"(map={getattr(change_lane, 'map', None)}, extruder={getattr(change_lane, 'extruder', None)}) "
+            f"with current={getattr(afc, 'current', None)}"
         )
 
         if not callable(_ORIGINAL_PERFORM_INFINITE_RUNOUT):
@@ -3379,16 +3353,10 @@ def _patch_infinite_runout_handler() -> None:
             return _ORIGINAL_PERFORM_INFINITE_RUNOUT(self, *args, **kwargs)
         except Exception:
             self.logger.error(
-                "Infinite runout failed at step %s for %s -> %s (current=%s, empty_map=%s, target_map=%s, empty_extruder=%s, target_extruder=%s)" % (
-                    step,
-                    lane_name,
-                    runout_target,
-                    getattr(afc, "current", None),
-                    getattr(empty_lane, "map", None),
-                    getattr(change_lane, "map", None),
-                    getattr(empty_lane, "extruder", None),
-                    getattr(change_lane, "extruder", None),
-                )
+                f"Infinite runout failed at step {step} for {lane_name} -> {runout_target} "
+                f"(current={getattr(afc, 'current', None)}, empty_map={getattr(empty_lane, 'map', None)}, "
+                f"target_map={getattr(change_lane, 'map', None)}, empty_extruder={getattr(empty_lane, 'extruder', None)}, "
+                f"target_extruder={getattr(change_lane, 'extruder', None)})"
             )
             raise
 
