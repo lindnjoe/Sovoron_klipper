@@ -246,6 +246,7 @@ class afcAMS(afcUnit):
     def __init__(self, config):
         super().__init__(config)
         self.type = "OpenAMS"
+        self.logger = self.afc.logger
 
         # Ensure LED attributes are set (inherited from AFC_unit but may not be set if AFC base is missing)
         # These are needed by AFC_lane.py handle_unit_connect (lines 391-393)
