@@ -2905,16 +2905,15 @@ class OAMSManager:
         # before the BLDC motor starts rewinding (following user's requirement:
         # "we have to first tell the follower what direction to be going in")
         try:
-            gcode = self._gcode_obj
-            if gcode is None:
-                gcode = self.printer.lookup_object("gcode")
-                self._gcode_obj = gcode
-            fps_param = fps_name.replace("fps ", "", 1)
-            gcode.run_script_from_command(
-                f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
+            self._set_follower_state(
+                fps_name,
+                fps_state_obj,
+                oams_unload,
+                1,
+                0,
+                "async unload",
+                force=True,
             )
-            fps_state_obj.following = True
-            fps_state_obj.direction = 0
             self.logger.debug(f"Set follower reverse before async unload on {fps_name}")
         except Exception:
             self.logger.warning(f"Failed to set follower reverse before async unload on {fps_name}")
@@ -3387,25 +3386,15 @@ class OAMSManager:
 
         # Ensure follower is set to reverse before starting unload
         try:
-            gcode = self._gcode_obj
-            if gcode is None:
-                gcode = self.printer.lookup_object("gcode")
-                self._gcode_obj = gcode
-            fps_param = fps_name.replace("fps ", "", 1)
-            gcode.run_script_from_command(
-                f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
-            )
-            gcode.run_script_from_command("M400")
-            self._set_follower_if_changed(
-                fps_state.current_oams,
+            self._set_follower_state(
+                fps_name,
+                fps_state,
                 oams,
                 1,
                 0,
                 "before unload",
                 force=True,
             )
-            fps_state.following = True
-            fps_state.direction = 0
         except Exception:
             self.logger.warning(f"Failed to set follower reverse before unload on {fps_name}")
 
@@ -3417,17 +3406,7 @@ class OAMSManager:
             self.logger.debug(f"Using AFC retry config for unload: {max_retries} attempts")
 
         try:
-            gcode = self._gcode_obj
-            if gcode is None:
-                gcode = self.printer.lookup_object("gcode")
-                self._gcode_obj = gcode
-            max_retries_arg = f" MAX_RETRIES={max_retries}" if max_retries is not None else ""
-            gcode.run_script_from_command(
-                f"OAMS_UNLOAD_SPOOL OAMS={oams.oams_idx}{max_retries_arg}"
-            )
-            gcode.run_script_from_command("M400")
-            success = True
-            message = "Spool unloaded successfully"
+            success, message = oams.unload_spool_with_retry(max_retries=max_retries)
         except Exception:
             success = False
             message = f"Exception unloading filament on {fps_name}"
@@ -3452,25 +3431,15 @@ class OAMSManager:
                 fps_state.following = True
                 fps_state.direction = 1
                 self.reactor.pause(self.reactor.monotonic() + 1.0)
-                gcode = self._gcode_obj
-                if gcode is None:
-                    gcode = self.printer.lookup_object("gcode")
-                    self._gcode_obj = gcode
-                fps_param = fps_name.replace("fps ", "", 1)
-                gcode.run_script_from_command(
-                    f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
-                )
-                gcode.run_script_from_command("M400")
-                self._set_follower_if_changed(
-                    fps_state.current_oams,
+                self._set_follower_state(
+                    fps_name,
+                    fps_state,
                     oams,
                     1,
                     0,
                     "unload retry recovery",
                     force=True,
                 )
-                fps_state.following = True
-                fps_state.direction = 0
                 gcode = self._gcode_obj
                 if gcode is None:
                     gcode = self.printer.lookup_object("gcode")
@@ -3480,10 +3449,7 @@ class OAMSManager:
                 gcode.run_script_from_command(f"G1 E-5.00 F{retract_feed:.0f}")
                 gcode.run_script_from_command("M400")
                 self.reactor.pause(self.reactor.monotonic() + 1.0)
-                gcode.run_script_from_command(f"OAMS_UNLOAD_SPOOL OAMS={oams.oams_idx}")
-                gcode.run_script_from_command("M400")
-                success = True
-                message = "Spool unloaded successfully"
+                success, message = oams.unload_spool_with_retry()
             except Exception:
                 self.logger.error(f"Exception while retrying unload on {fps_name}")
 
@@ -3884,32 +3850,21 @@ class OAMSManager:
                 # CRITICAL: Enable follower BEFORE starting the OAMS load command
                 # The follower motor must be set to forward so filament can flow during load.
                 try:
-                    gcode = self._gcode_obj
-                    if gcode is None:
-                        gcode = self.printer.lookup_object("gcode")
-                        self._gcode_obj = gcode
-                    fps_param = fps_name.replace("fps ", "", 1)
-                    gcode.run_script_from_command(
-                        f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=1 FPS={fps_param}"
+                    self._set_follower_state(
+                        fps_name,
+                        fps_state,
+                        oam,
+                        1,
+                        1,
+                        "before load",
+                        force=True,
                     )
-                    gcode.run_script_from_command("M400")
-                    fps_state.following = True
-                    fps_state.direction = 1
                 except Exception:
                     self.logger.warning(f"Failed to set follower forward before load on {fps_name}")
 
                 # Try to load filament into buffer via gcode
                 try:
-                    gcode = self._gcode_obj
-                    if gcode is None:
-                        gcode = self.printer.lookup_object("gcode")
-                        self._gcode_obj = gcode
-                    gcode.run_script_from_command(
-                        f"OAMS_LOAD_SPOOL OAMS={oam.oams_idx} SPOOL={bay_index} QUIET=1"
-                    )
-                    gcode.run_script_from_command("M400")
-                    success = True
-                    message = "Spool loaded successfully"
+                    success, message = oam.load_spool_with_retry(bay_index)
                 except Exception:
                     success = False
                     message = f"Failed to load bay {bay_index} on {oams_name}"
@@ -3945,18 +3900,22 @@ class OAMSManager:
                     )
                     if self._is_oams_mcu_ready(oam):
                         try:
+                            self._set_follower_state(
+                                fps_name,
+                                fps_state,
+                                oam,
+                                1,
+                                0,
+                                "stuck spool max retry",
+                                force=True,
+                            )
+                            fps_param = fps_name.replace("fps ", "", 1)
                             gcode = self._gcode_obj
                             if gcode is None:
                                 gcode = self.printer.lookup_object("gcode")
                                 self._gcode_obj = gcode
-                            fps_param = fps_name.replace("fps ", "", 1)
-                            gcode.run_script_from_command(
-                                f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
-                            )
-                            gcode.run_script_from_command("M400")
                             gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
                             gcode.run_script_from_command("M400")
-                            gcode.run_script_from_command("OAMSM_CLEAR_ERRORS")
                         except Exception:
                             self.logger.error(f"Failed to unwind stuck spool before pausing on {fps_name}")
                     else:
@@ -3975,16 +3934,15 @@ class OAMSManager:
                 # If filament barely engaged the extruder, we want the follower helping with
                 # the retraction, not fighting against it
                 try:
-                    gcode = self._gcode_obj
-                    if gcode is None:
-                        gcode = self.printer.lookup_object("gcode")
-                        self._gcode_obj = gcode
-                    fps_param = fps_name.replace("fps ", "", 1)
-                    gcode.run_script_from_command(
-                        f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
+                    self._set_follower_state(
+                        fps_name,
+                        fps_state,
+                        oam,
+                        1,
+                        0,
+                        "stuck spool retry",
+                        force=True,
                     )
-                    fps_state.following = True
-                    fps_state.direction = 0
                     self.logger.info(f"Set follower to reverse before stuck spool retry on {fps_name}")
                 except Exception:
                     self.logger.warning(f"Failed to set follower reverse before stuck spool retry on {fps_name}")
@@ -4007,24 +3965,14 @@ class OAMSManager:
                 # Must abort here in command context to clear action_status before unload can proceed
                 # Without this, unload fails with "OAMS is busy" because action_status is still LOADING
                 try:
-                    gcode = self._gcode_obj
-                    if gcode is None:
-                        gcode = self.printer.lookup_object("gcode")
-                        self._gcode_obj = gcode
-                    gcode.run_script_from_command(f"OAMS_ABORT_ACTION OAMS={oam.oams_idx}")
-                    gcode.run_script_from_command("M400")
+                    oam.abort_current_action()
                     self.logger.info(f"Aborted stuck load operation for {lane_name} before unload")
                 except Exception:
                     self.logger.error(f"Failed to abort stuck load operation for {lane_name}")
 
                 # STEP 4: Unload the stuck filament
                 try:
-                    gcode = self._gcode_obj
-                    if gcode is None:
-                        gcode = self.printer.lookup_object("gcode")
-                        self._gcode_obj = gcode
-                    gcode.run_script_from_command(f"OAMS_UNLOAD_SPOOL OAMS={oam.oams_idx}")
-                    gcode.run_script_from_command("M400")
+                    oam.unload_spool_with_retry()
                     # STEP 4a: Clear error LED after successful unload
                     # User requirement: LED must be cleared for hardware to operate properly
                     if fps_state.stuck_spool.active and fps_state.current_spool_idx is not None:
@@ -4114,23 +4062,13 @@ class OAMSManager:
             # Normally action_status should be None by now (load completed), but if engagement
             # check happened quickly the MCU might not have cleared it yet
             try:
-                gcode = self._gcode_obj
-                if gcode is None:
-                    gcode = self.printer.lookup_object("gcode")
-                    self._gcode_obj = gcode
-                gcode.run_script_from_command(f"OAMS_ABORT_ACTION OAMS={oam.oams_idx}")
-                gcode.run_script_from_command("M400")
+                oam.abort_current_action()
             except Exception:
                 self.logger.error(f"Failed to abort load operation before engagement retry for {lane_name}")
 
             # Unload the filament since it didn't engage properly before letting retry logic run
             try:
-                gcode = self._gcode_obj
-                if gcode is None:
-                    gcode = self.printer.lookup_object("gcode")
-                    self._gcode_obj = gcode
-                gcode.run_script_from_command(f"OAMS_UNLOAD_SPOOL OAMS={oam.oams_idx}")
-                gcode.run_script_from_command("M400")
+                oam.unload_spool_with_retry()
             except Exception:
                 self.logger.error(f"Exception during unload after engagement failure for {lane_name}")
             # Give the MCU a brief window to finish the unload before the next retry
@@ -4332,16 +4270,16 @@ class OAMSManager:
 
             # Ensure follower is enabled in reverse before the initial unload retract
             try:
-                gcode = self._gcode_obj
-                if gcode is None:
-                    gcode = self.printer.lookup_object("gcode")
-                    self._gcode_obj = gcode
-                gcode.run_script_from_command(
-                    f"OAMSM_FOLLOWER ENABLE=1 DIRECTION={reverse_direction} FPS={fps_param}"
+                oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+                self._set_follower_state(
+                    fps_name,
+                    fps_state,
+                    oams_obj,
+                    1,
+                    reverse_direction,
+                    "unload preretract",
+                    force=True,
                 )
-                gcode.run_script_from_command("M400")
-                fps_state.following = True
-                fps_state.direction = reverse_direction
             except Exception:
                 self.logger.warning(f"Unable to set follower reverse before preretract on {fps_name}")
 
@@ -4686,6 +4624,33 @@ class OAMSManager:
         fps_state.following = True
         fps_state.direction = direction
 
+    def _set_follower_state(
+        self,
+        fps_name: str,
+        fps_state: "FPSState",
+        oams: Optional[Any],
+        enable: int,
+        direction: int,
+        context: str,
+        force: bool = False,
+    ) -> None:
+        """Set follower state directly and update cached FPS state."""
+        if oams is None and fps_state.current_oams is not None:
+            oams = self.oams.get(fps_state.current_oams)
+        if oams is None:
+            self.logger.warning(f"Cannot set follower state for {fps_name}: OAMS not found")
+            return
+
+        oams_name = fps_state.current_oams or getattr(oams, "name", None)
+        if not oams_name:
+            self.logger.warning(f"Cannot set follower state for {fps_name}: OAMS name unavailable")
+            return
+
+        direction = direction if direction in (0, 1) else 1
+        self._set_follower_if_changed(oams_name, oams, enable, direction, context, force=force)
+        fps_state.following = bool(enable)
+        fps_state.direction = direction if enable else 0
+
     def _ensure_forward_follower(self, fps_name: str, fps_state: "FPSState", context: str) -> None:
         """No-op: follower direction is manually controlled."""
         return
@@ -4706,6 +4671,9 @@ class OAMSManager:
         oams = self.oams.get(oams_name)
         if oams is None:
             self.logger.error(f"Cannot send command to {oams_name} - OAMS not found")
+            return
+        if not self._is_oams_mcu_ready(oams):
+            self.logger.debug(f"Skipping command for {oams_name} - MCU not ready")
             return
 
         # Initialize queue if needed
@@ -5224,14 +5192,8 @@ class OAMSManager:
 
         # Abort current action (unload/load)
         if oams is not None:
-            # Use gcode to abort so the command queues safely
             try:
-                gcode = self._gcode_obj
-                if gcode is None:
-                    gcode = self.printer.lookup_object("gcode")
-                    self._gcode_obj = gcode
-                gcode.run_script_from_command(f"OAMS_ABORT_ACTION OAMS={oams.oams_idx} WAIT=0")
-                gcode.run_script_from_command("M400")
+                oams.abort_current_action(wait=False)
             except Exception:
                 self.logger.error(f"Failed to abort current action on {fps_name} during stuck spool pause")
 
@@ -5458,11 +5420,7 @@ class OAMSManager:
 
             # Abort the current unload operation cleanly
             try:
-                gcode = self._gcode_obj
-                if gcode is None:
-                    gcode = self.printer.lookup_object("gcode")
-                    self._gcode_obj = gcode
-                gcode.run_script_from_command(f"OAMS_ABORT_ACTION OAMS={oams.oams_idx} WAIT=0")
+                oams.abort_current_action(wait=False)
                 self.logger.info(f"Aborted stuck spool unload operation on {fps_name}")
                 # NOTE: Cannot use reactor.pause() in timer callback - it doesn't work properly
             except Exception:
@@ -5566,11 +5524,7 @@ class OAMSManager:
             try:
                 self.logger.info(f"Detected stuck spool on {fps_name}: {stuck_reason}")
                 if fps_state.current_oams and oams is not None:
-                    gcode = self._gcode_obj
-                    if gcode is None:
-                        gcode = self.printer.lookup_object("gcode")
-                        self._gcode_obj = gcode
-                    gcode.run_script_from_command(f"OAMS_ABORT_ACTION OAMS={oams.oams_idx} WAIT=1")
+                    oams.abort_current_action(wait=True)
                     self.logger.info(f"Requested abort for stuck load operation on {fps_name}")
             except Exception:
                 self.logger.error(f"Failed to abort load operation on {fps_name}")
