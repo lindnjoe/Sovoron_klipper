@@ -3626,64 +3626,47 @@ class OAMSManager:
                 fps_state.current_lane = None
 
                 # If this is not the last attempt, execute stuck spool retry sequence
-                # REFACTOR: Mimics engagement retry pattern (lines 3707-3745) for consistency
+                # REFACTOR: Use G-code commands for retry to ensure proper follower and MCU state
+                # User insight: "its not setting the follower before trying to unload on stuck spool pre engagement retry"
                 if attempt + 1 < max_engagement_retries:
                     self.logger.warning(f"Stuck spool detected for {lane_name}, unloading before retry (attempt {attempt + 1}/{max_engagement_retries})")
 
-                    # CRITICAL: Clear error state set by stuck detection (line 5043)
-                    # User insight: "maybe we need to clear error state between attempts?"
-                    # LED error blocks subsequent operations - must clear before retry
-                    # Use saved spool index (bay_index) since fps_state was just cleared
-                    try:
-                        # Force LED clear by invalidating tracking state first
-                        led_key = f"{oams_name}:{bay_index}"
-                        self.led_error_state.pop(led_key, None)
-                        # Now send clear command - will always go through since tracking was cleared
-                        oam.set_led_error(bay_index, 0)
-                        # Update tracking to reflect new state
-                        self.led_error_state[led_key] = 0
-                        self.logger.info(f"Cleared error LED for spool {bay_index} before retry")
-                    except Exception as e:
-                        self.logger.warning(f"Could not clear error LED: {e}")
-
-                    # Step 1: Retract extruder to relieve any pressure buildup
-                    # This matches engagement retry pattern (retract before unload)
                     try:
                         gcode = self.printer.lookup_object('gcode')
+                        # Extract FPS parameter (remove "fps " prefix) for G-code commands
+                        fps_param = fps_name.replace("fps ", "", 1)
+
+                        # Step 1: Clear errors and LED using OAMSM_CLEAR_ERRORS
+                        # This ensures clean state before retry, clearing any LED errors
+                        self.logger.info(f"Clearing errors for {oams_name} before retry")
+                        gcode.run_script_from_command("OAMSM_CLEAR_ERRORS")
+                        gcode.run_script_from_command("M400")
+
+                        # Step 2: Retract extruder to relieve any pressure buildup
+                        self.logger.info(f"Retracting extruder for {lane_name}")
                         gcode.run_script_from_command("M83")  # Relative extrusion mode
                         gcode.run_script_from_command("G1 E-10 F300")  # Retract 10mm slowly
                         gcode.run_script_from_command("M400")  # Wait for moves to complete
-                    except Exception:
-                        self.logger.error(f"Failed to retract extruder after stuck spool detection for {lane_name}")
 
-                    # Step 2: Unload the stuck filament
-                    # Use unload_spool_with_retry() to match engagement retry pattern
-                    try:
-                        unload_success, unload_msg = oam.unload_spool_with_retry()
-                        if not unload_success:
-                            self.logger.error(f"Failed to unload after stuck spool detection for {lane_name}: {unload_msg}")
-                    except Exception:
-                        self.logger.error(f"Exception during unload after stuck spool detection for {lane_name}")
+                        # Step 3: Set follower to reverse (DIRECTION=0) for unload
+                        self.logger.info(f"Setting follower to reverse for unload on {fps_name}")
+                        gcode.run_script_from_command(f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}")
+                        gcode.run_script_from_command("M400")
 
-                    # CRITICAL: Clear error LED again after unload completes
-                    # User: "it isn't clearing the error after unloading during the retry"
-                    # Unload may re-set error state if it encounters issues - clear again
-                    # Use bay_index since fps_state was cleared earlier
-                    try:
-                        # Force LED clear by invalidating tracking state first
-                        led_key = f"{oams_name}:{bay_index}"
-                        self.led_error_state.pop(led_key, None)
-                        # Now send clear command - will always go through since tracking was cleared
-                        oam.set_led_error(bay_index, 0)
-                        # Update tracking to reflect new state
-                        self.led_error_state[led_key] = 0
-                        self.logger.info(f"Cleared error LED after unload for spool {bay_index}")
+                        # Step 4: Unload the stuck filament using G-code
+                        self.logger.info(f"Unloading stuck filament from {fps_name}")
+                        gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
+                        gcode.run_script_from_command("M400")
+
+                        # Step 5: Set follower to forward (DIRECTION=1) for next load attempt
+                        self.logger.info(f"Setting follower to forward for next load on {fps_name}")
+                        gcode.run_script_from_command(f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=1 FPS={fps_param}")
+                        gcode.run_script_from_command("M400")
+
                     except Exception as e:
-                        self.logger.warning(f"Could not clear error LED after unload: {e}")
+                        self.logger.error(f"Failed to execute G-code retry sequence for {lane_name}: {e}")
 
-                    # Step 3: Brief cooldown after unload (matches engagement retry timing)
-                    # Now that LED error is cleared, MCU doesn't need long waits - just brief window
-                    # to finish unload before next attempt (same 0.5s as engagement retry line 3758)
+                    # Step 6: Brief cooldown after unload (matches engagement retry timing)
                     cooldown = 0.5
                     self.logger.debug(f"Cooling {cooldown:.1f}s after stuck spool unload for {lane_name}")
                     try:
@@ -3691,9 +3674,7 @@ class OAMSManager:
                     except Exception:
                         pass
 
-                    # Step 4: Clear fps_state so retry starts fresh (matches engagement retry)
-                    # Note: fps_state was already cleared at lines 3628-3631, but re-clear here
-                    # to ensure clean state, matching the engagement retry pattern
+                    # Step 7: Clear fps_state so retry starts fresh (matches engagement retry)
                     fps_state.state = FPSLoadState.UNLOADED
                     fps_state.current_spool_idx = None
                     fps_state.current_oams = None
