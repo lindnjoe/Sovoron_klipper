@@ -1097,6 +1097,11 @@ class OAMSManager:
         self.determine_state()
 
         try:
+            self._sync_virtual_tool_sensors()
+        except Exception:
+            self.logger.error("Failed to sync virtual tool sensors during startup")
+
+        try:
             self._ensure_followers_for_loaded_hubs()
         except Exception:
             self.logger.error("Failed to enable followers for loaded hubs during startup")
@@ -1613,6 +1618,13 @@ class OAMSManager:
                 restart_monitors = False
                 self.logger.error("Failed to refresh state from AFC.var.unit during OAMSM_CLEAR_ERRORS")
 
+            # Sync virtual tool sensors to match the refreshed lane state.
+            try:
+                self._sync_virtual_tool_sensors()
+            except Exception:
+                restart_monitors = False
+                self.logger.error("Failed to sync virtual tool sensors during OAMSM_CLEAR_ERRORS")
+
 
             # Clear all manual follower overrides and coast state - return to automatic hub sensor control
             # Also clear last state tracking so follower state is refreshed from actual sensors
@@ -1688,6 +1700,41 @@ class OAMSManager:
 
 
         return None
+
+    def _sync_virtual_tool_sensors(self, gcmd: Optional[Any] = None) -> None:
+        """Sync AFC virtual tool sensors based on current lane state."""
+        afc = self._get_afc()
+        if afc is None:
+            if gcmd is not None:
+                gcmd.respond_info("AFC: Not found!")
+            return
+
+        synced_count = 0
+        try:
+            units = getattr(afc, 'units', {})
+            eventtime = self.reactor.monotonic()
+
+            for unit_name, unit_obj in units.items():
+                # Check if this is an OpenAMS unit with virtual sensor sync capability
+                if hasattr(unit_obj, '_sync_virtual_tool_sensor'):
+                    try:
+                        # Force update to ensure sensor state is corrected after reboot
+                        unit_obj._sync_virtual_tool_sensor(eventtime, force=True)
+                        synced_count += 1
+                    except Exception:
+                        self.logger.error(f"Failed to sync virtual tool sensor for unit {unit_name}")
+                        if gcmd is not None:
+                            gcmd.respond_info(f"  Warning: Failed to sync virtual sensor for {unit_name}")
+
+            if gcmd is not None:
+                if synced_count > 0:
+                    gcmd.respond_info(f"Successfully synced {synced_count} virtual tool sensor(s)")
+                else:
+                    gcmd.respond_info("No OpenAMS units found with virtual sensors to sync")
+        except Exception:
+            self.logger.error("Failed to sync virtual tool sensors")
+            if gcmd is not None:
+                gcmd.respond_info("  Error during virtual sensor sync - check klippy.log")
 
     def _refresh_state_from_afc_snapshot(self) -> None:
         """Update FPS state from the latest AFC.var.unit snapshot."""
@@ -1895,35 +1942,7 @@ class OAMSManager:
         # Sync virtual tool sensors based on which lanes are actually loaded
         # This fixes virtual sensor state after reboot (e.g., extruder4 showing filament when empty)
         gcmd.respond_info("\n=== Syncing Virtual Tool Sensors ===")
-
-        if afc is not None:
-            synced_count = 0
-            try:
-                units = getattr(afc, 'units', {})
-                eventtime = self.reactor.monotonic()
-
-                for unit_name, unit_obj in units.items():
-                    # Check if this is an OpenAMS unit with virtual sensor sync capability
-                    if hasattr(unit_obj, '_sync_virtual_tool_sensor'):
-                        try:
-                            # Force update to ensure sensor state is corrected after reboot
-                            unit_obj._sync_virtual_tool_sensor(eventtime, force=True)
-                            synced_count += 1
-                        except Exception:
-                            self.logger.error(f"Failed to sync virtual tool sensor for unit {unit_name}")
-                            gcmd.respond_info(f"  Warning: Failed to sync virtual sensor for {unit_name}")
-
-
-                if synced_count > 0:
-                    gcmd.respond_info(f"Successfully synced {synced_count} virtual tool sensor(s)")
-
-                else:
-                    gcmd.respond_info("No OpenAMS units found with virtual sensors to sync")
-
-            except Exception:
-                self.logger.error("Failed to sync virtual tool sensors")
-
-                gcmd.respond_info("  Error during virtual sensor sync - check klippy.log")
+        self._sync_virtual_tool_sensors(gcmd)
 
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
     def cmd_FOLLOWER(self, gcmd):
