@@ -2514,8 +2514,8 @@ class OAMSManager:
                                 f"(encoder moved {encoder_delta} clicks during {engagement_length:.1f}mm extrusion)"
                             )
                             if post_length is not None and post_speed is not None and post_length > 0:
-                                self.logger.info(
-                                    f"Completing reload for {lane_name}: extruding {post_length:.1f}mm "
+                                self.logger.debug(
+                                    f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
                                     f"at {post_speed:.0f}mm/min"
                                 )
                                 gcode.run_script_from_command(f"G1 E{post_length:.2f} F{post_speed:.0f}")
@@ -2539,8 +2539,8 @@ class OAMSManager:
                                 f"(FPS pressure {fps_pressure:.2f}, encoder unavailable)"
                             )
                             if post_length is not None and post_speed is not None and post_length > 0:
-                                self.logger.info(
-                                    f"Completing reload for {lane_name}: extruding {post_length:.1f}mm "
+                                self.logger.debug(
+                                    f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
                                     f"at {post_speed:.0f}mm/min"
                                 )
                                 gcode.run_script_from_command(f"G1 E{post_length:.2f} F{post_speed:.0f}")
@@ -3639,7 +3639,7 @@ class OAMSManager:
             return False, f"Bay {bay_index} on {oams_name} is not ready (no spool detected)"
 
         # Load the filament
-        self.logger.info(f"Loading lane {lane_name}: {oams_name} bay {bay_index} via {fps_name}")
+        self.logger.debug(f"Loading lane {lane_name}: {oams_name} bay {bay_index} via {fps_name}")
 
         if getattr(oam, "dock_load", False):
             try:
@@ -3680,11 +3680,16 @@ class OAMSManager:
         load_success = False
         last_error = None
 
-        self.logger.info(f"Starting load attempts for {lane_name} (max {max_engagement_retries} engagement attempts, {STUCK_SPOOL_MAX_ATTEMPTS} stuck spool attempts per engagement try)")
+        self.logger.debug(
+            f"Starting load attempts for {lane_name} (max {max_engagement_retries} engagement attempts, "
+            f"{STUCK_SPOOL_MAX_ATTEMPTS} stuck spool attempts per engagement try)"
+        )
 
         # Outer loop: Engagement retries (uses configured max_engagement_retries)
         for engagement_attempt in range(max_engagement_retries):
-            self.logger.info(f"Engagement attempt {engagement_attempt + 1}/{max_engagement_retries} for {lane_name}")
+            self.logger.debug(
+                f"Engagement attempt {engagement_attempt + 1}/{max_engagement_retries} for {lane_name}"
+            )
 
             # Inner loop: Stuck spool retries (hardcoded to 2 attempts)
             # This loop tries to get a successful OAMS load (filament in buffer)
@@ -3748,7 +3753,9 @@ class OAMSManager:
                 if success:
                     # OAMS load succeeded! Break out of stuck spool retry loop
                     oams_load_succeeded = True
-                    self.logger.info(f"OAMS load succeeded for {lane_name} on stuck attempt {stuck_attempt + 1}")
+                    self.logger.debug(
+                        f"OAMS load succeeded for {lane_name} on stuck attempt {stuck_attempt + 1}"
+                    )
                     break
 
                 # Load failed (stuck spool detected)
@@ -4045,7 +4052,9 @@ class OAMSManager:
                         # Call _set_virtual_tool_sensor_state directly with force=True
                         # This is the same approach used in SET_LANE_LOADED wrapper
                         unit_obj._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
-                        self.logger.info(f"Updated virtual tool sensor to LOADED for {lane_name} after successful load")
+                        self.logger.debug(
+                            f"Updated virtual tool sensor to LOADED for {lane_name} after successful load"
+                        )
 
                         # CRITICAL: Notify AFC that lane is loaded to toolhead
                         # This calls handle_openams_lane_tool_state which sets extruder.lane_loaded
