@@ -1445,30 +1445,43 @@ class OAMSManager:
                 "No OAMS MCUs ready; skipping hardware clears and leaving monitors paused until connectivity returns"
             )
         with self._monitors_suspended("OAMSM_CLEAR_ERRORS", restart_on_exit=False):
-            # CRITICAL: Clear AFC lane_loaded state FIRST to enable bidirectional sync
+            # Clear AFC lane_loaded state first to enable bidirectional sync, but only if
+            # we have MCU connectivity and no active loaded state to preserve.
             #
             # State Sync Flow:
-            # 1. UNSET_LANE_LOADED ? clears AFC extruder.lane_loaded (breaks stale state)
-            # 2. determine_state() ? reads hardware sensors (F1S, hub, etc.)
-            # 3. If sensors show lane loaded ? _sync_afc_lane_loaded() writes back to AFC
-            # 4. If sensors show empty ? AFC stays unset
-            #
-            # This ensures AFC state matches hardware reality, whether loaded or empty
-            try:
-                afc = self._get_afc()
-                afc_function = getattr(afc, "function", None) if afc is not None else None
-                unset_fn = getattr(afc_function, "unset_lane_loaded", None)
-                if unset_fn is not None:
-                    unset_fn()
-                    self.logger.info("Cleared AFC lane_loaded state - will resync from hardware sensors")
-                else:
-                    gcode = self.printer.lookup_object("gcode")
-                    if gcode:
-                        gcode.run_script_from_command("UNSET_LANE_LOADED")
-                        self.logger.info("Cleared AFC lane_loaded state via G-code fallback")
-            except Exception as e:
-                # Don't block CLEAR_ERRORS if UNSET fails, but log it
-                self.logger.warning(f"Failed to clear AFC lane state during OAMSM_CLEAR_ERRORS: {e}")
+            # 1. UNSET_LANE_LOADED -> clears AFC extruder.lane_loaded (breaks stale state)
+            # 2. determine_state() -> reads hardware sensors (F1S, hub, etc.)
+            # 3. If sensors show lane loaded -> _sync_afc_lane_loaded() writes back to AFC
+            # 4. If sensors show empty -> AFC stays unset
+            has_loaded_state = any(
+                state.state == FPSLoadState.LOADED
+                for state in self.current_state.fps_state.values()
+            )
+            has_loaded_state = has_loaded_state or any(
+                getattr(oam, "current_spool", None) is not None
+                for oam in ready_oams.values()
+            )
+            if ready_oams and not has_loaded_state:
+                try:
+                    afc = self._get_afc()
+                    afc_function = getattr(afc, "function", None) if afc is not None else None
+                    unset_fn = getattr(afc_function, "unset_lane_loaded", None)
+                    if unset_fn is not None:
+                        unset_fn()
+                        self.logger.info("Cleared AFC lane_loaded state - will resync from hardware sensors")
+                    else:
+                        gcode = self.printer.lookup_object("gcode")
+                        if gcode:
+                            gcode.run_script_from_command("UNSET_LANE_LOADED")
+                            self.logger.info("Cleared AFC lane_loaded state via G-code fallback")
+                except Exception as e:
+                    # Don't block CLEAR_ERRORS if UNSET fails, but log it
+                    self.logger.warning(f"Failed to clear AFC lane state during OAMSM_CLEAR_ERRORS: {e}")
+            else:
+                self.logger.info(
+                    "Preserving AFC lane_loaded state during OAMSM_CLEAR_ERRORS "
+                    "(hardware not ready or lane already loaded)"
+                )
 
             # Reset all runout monitors to clear COASTING and other states
             for fps_name, monitor in list(self.runout_monitors.items()):
