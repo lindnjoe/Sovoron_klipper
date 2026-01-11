@@ -2489,6 +2489,42 @@ class OAMSManager:
             name = extruder_name
         return _normalize_extruder_name(name)
 
+    def _get_oams_object(self, oams_name: Optional[str]):
+        if not oams_name:
+            return None
+        if oams_name in self.oams:
+            return self.oams.get(oams_name)
+        prefixed = f"oams {oams_name}"
+        if prefixed in self.oams:
+            return self.oams.get(prefixed)
+        if oams_name.startswith("oams "):
+            unprefixed = oams_name[5:]
+            return self.oams.get(unprefixed)
+        return None
+
+    def _normalize_oams_name(self, oams_name: Optional[str], oams_obj: Optional[Any] = None) -> Optional[str]:
+        if not oams_name:
+            return oams_name
+
+        if oams_name in self.oams:
+            return oams_name
+
+        if oams_obj is not None:
+            obj_name = getattr(oams_obj, "name", None)
+            if obj_name in self.oams:
+                return obj_name
+
+        prefixed = f"oams {oams_name}"
+        if prefixed in self.oams:
+            return prefixed
+
+        if oams_name.startswith("oams "):
+            unprefixed = oams_name[5:]
+            if unprefixed in self.oams:
+                return unprefixed
+
+        return oams_name
+
     def _get_afc(self):
         # OPTIMIZATION: Cache AFC object lookup with validation
         if self.afc is not None:
