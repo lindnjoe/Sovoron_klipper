@@ -175,7 +175,6 @@ class OAMS:
         self._unload_retry_failures: int = 0
         self._last_load_failure_time: Optional[float] = None
         self._last_unload_failure_time: Optional[float] = None
-        self.hardware_service = None
 
         # Expose the underlying hardware controller to AFC when available
         if AMSHardwareService is not None:
@@ -184,7 +183,6 @@ class OAMS:
                     self.printer, self.section_name
                 )
                 service.attach_controller(self)
-                self.hardware_service = service
             except Exception:
                 self.logger.error(
                     "Failed to register OAMS controller with AMSHardwareService"
@@ -452,12 +450,8 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 else:
                     self._last_load_was_retry[spool_idx] = False
                 self._reset_load_retry_count(spool_idx)
-                lane_name = None
-                if self.hardware_service is not None:
-                    lane_name = self.hardware_service.resolve_lane_for_spool(self.name, spool_idx)
-                lane_label = f"lane {lane_name}" if lane_name else f"spool {spool_idx}"
                 self.logger.info(
-                    f"OAMS[{self.oams_idx}]: Successfully loaded {lane_label} on attempt {retry_count + 1}"
+                    f"OAMS[{self.oams_idx}]: Successfully loaded spool {spool_idx} on attempt {retry_count + 1}"
                 )
                 return True, message
 
