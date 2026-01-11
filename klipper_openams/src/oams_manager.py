@@ -6384,15 +6384,21 @@ class OAMSManager:
                         # Get current extruder temp to use for target
                         current_extruder = self.printer.lookup_object('toolhead').get_extruder()
                         target_temp = current_extruder.get_heater().target_temp
-                        if target_temp <= 0:
+                        try:
+                            target_temp_value = float(target_temp)
+                        except (TypeError, ValueError):
+                            raise Exception(f"Current extruder has invalid target temp: {target_temp}")
+                        if target_temp_value <= 0:
                             raise Exception(f"Current extruder has no target temp set")
 
 
                         # 5. Set target extruder temp before CHANGE_TOOL (so it knows what temp to heat to)
-                        self.logger.info(f"OAMS: Step 5 - Setting target temp for {target_extruder_name} to {target_temp:.1f}")
+                        self.logger.info(
+                            f"OAMS: Step 5 - Setting target temp for {target_extruder_name} to {target_temp_value:.1f}"
+                        )
                         target_extruder_obj = self.printer.lookup_object(target_extruder_name)
                         target_heater = target_extruder_obj.get_heater()
-                        target_heater.set_temp(target_temp)
+                        target_heater.set_temp(target_temp_value)
 
                         # 6. Use AFC's CHANGE_TOOL Python method (like box turtle does)
                         # This should handle tool switching, heating, and loading
