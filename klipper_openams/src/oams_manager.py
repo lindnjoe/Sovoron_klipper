@@ -158,6 +158,7 @@ class OAMSRunoutMonitor:
                  oams: Dict[str, Any],
                  reload_callback: Callable,
                  logger: logging.Logger,
+                 follower_callback: Optional[Callable[..., None]] = None,
                  reload_before_toolhead_distance: float = 0.0,
                  debounce_delay: float = 0.0):
         self.oams = oams
@@ -166,6 +167,7 @@ class OAMSRunoutMonitor:
         self.fps_state = fps_state
         self.fps = fps
         self.logger = logger
+        self._follower_callback = follower_callback
 
         self.state = OAMSRunoutState.STOPPED
         self.runout_position: Optional[float] = None
@@ -533,6 +535,21 @@ class OAMSRunoutMonitor:
             self.logger.info(
                 f"OAMS: Same-extruder runout detected on FPS {self.fps_name} (F1S empty), pausing for {PAUSE_DISTANCE} mm"
             )
+            if self._follower_callback is not None:
+                try:
+                    self._follower_callback(
+                        self.fps_name,
+                        fps_state,
+                        oams_obj,
+                        1,
+                        1,
+                        "same-FPS runout coast",
+                        True,
+                    )
+                except Exception:
+                    self.logger.error(
+                        f"Failed to keep follower enabled for {self.fps_name} during same-FPS runout"
+                    )
 
 
         if AMSRunoutCoordinator is not None:
@@ -4297,9 +4314,11 @@ class OAMSManager:
                     gcode.run_script_from_command(f"G1 E-{unload_length:.2f} F{unload_feed:.0f}")
                     gcode.run_script_from_command("M400")
 
-                # Then issue the overlapped preretract (no M400 so unload can overlap)
+                # Wait for retract moves to complete before preretract/unload
+                gcode.run_script_from_command("M400")
+
+                # Then issue the preretract before unload
                 gcode.run_script_from_command(f"G1 E{preretract:.2f} F{preretract_feed_rate:.0f}")
-                # Intentionally skip M400 so moves overlap the unload
             except Exception:
                 self.logger.warning(f"Skipping preretract before unload on {fps_name}: unable to queue gcode")
         else:
@@ -4845,7 +4864,7 @@ class OAMSManager:
         # Allow follower changes during error recovery (clog, stuck spool) even if OAMS is busy
         # User needs manual extrusion capability to fix issues
         is_error_recovery = "clog" in context.lower() or "stuck" in context.lower() or "recovery" in context.lower()
-        if not is_error_recovery and getattr(oams, "action_status", None) is not None:
+        if not force and not is_error_recovery and getattr(oams, "action_status", None) is not None:
             self.logger.debug(
                 f"Skipping follower change for {oams_name} ({context or 'no context'}) because OAMS is busy"
             )
@@ -6280,6 +6299,7 @@ class OAMSManager:
                 self.current_state.fps_state[fps_name],
                 self.oams,
                 _reload_callback,
+                follower_callback=self._set_follower_state,
                 logger=self.logger,
                 reload_before_toolhead_distance=fps_reload_margin,
                 debounce_delay=self.debounce_delay,
