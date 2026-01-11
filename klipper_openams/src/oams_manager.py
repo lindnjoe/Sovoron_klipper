@@ -4839,8 +4839,25 @@ class OAMSManager:
         fps_state.direction = direction if enable else 0
 
     def _ensure_forward_follower(self, fps_name: str, fps_state: "FPSState", context: str) -> None:
-        """No-op: follower direction is manually controlled."""
-        return
+        """Ensure follower is enabled forward when filament is present."""
+        if fps_state.current_spool_idx is None:
+            return
+
+        oams = None
+        if fps_state.current_oams is not None:
+            oams = self._get_oams_object(fps_state.current_oams)
+        if oams is None:
+            return
+
+        self._set_follower_state(
+            fps_name,
+            fps_state,
+            oams,
+            1,
+            1,
+            context,
+            force=True,
+        )
 
     def _rate_limited_mcu_command(self, oams_name: str, command_fn: Callable, *args, **kwargs) -> None:
         """
