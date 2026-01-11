@@ -594,6 +594,38 @@ class OAMSRunoutMonitor:
 
         return oams_name
 
+    def _get_lane_extruder_name(self, lane) -> Optional[str]:
+        if lane is None:
+            return None
+        extruder_obj = getattr(lane, "extruder_obj", None)
+        extruder_name = getattr(lane, "extruder_name", None)
+        lane_name = getattr(lane, "name", None)
+        name = None
+        if extruder_obj is not None:
+            name = getattr(extruder_obj, "name", None)
+        if not name and extruder_name:
+            name = extruder_name
+        if not name and lane_name:
+            try:
+                afc = self.printer.lookup_object("AFC", None)
+                var_obj = getattr(afc, "var", None) if afc else None
+                if isinstance(var_obj, dict):
+                    snapshot = var_obj.get("unit")
+                else:
+                    snapshot = getattr(var_obj, "unit", None)
+                if isinstance(snapshot, dict):
+                    for unit_name, unit_data in snapshot.items():
+                        if unit_name == "system" or not isinstance(unit_data, dict):
+                            continue
+                        lane_data = unit_data.get(lane_name)
+                        if isinstance(lane_data, dict):
+                            name = lane_data.get("extruder")
+                            if name:
+                                break
+            except Exception:
+                self.logger.debug(f"OAMS: Failed to read AFC.var.unit extruder for {lane_name}")
+        return _normalize_extruder_name(name)
+
     def _resolve_oams_for_lane(self, lane_name: Optional[str]) -> Optional[Any]:
         if not lane_name:
             return None
