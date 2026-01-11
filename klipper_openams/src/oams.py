@@ -160,7 +160,6 @@ class OAMS:
         )
         self.dock_load: bool = config.getboolean("dock_load", False)
         self.post_load_purge: float = config.getfloat("post_load_purge", 0.0)
-        self.extra_retract: float = config.getfloat("extra_retract", 10.0)
 
         # Retry state tracking
         self._load_retry_count: Dict[int, int] = {}
