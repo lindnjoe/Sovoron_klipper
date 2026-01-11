@@ -2395,8 +2395,6 @@ class afcAMS(afcUnit):
                 )
             except Exception:
                 self.logger.error("Failed to issue PAUSE after runout classification failure")
-            self.state = OAMSRunoutState.PAUSED
-            self.runout_position = self.fps.extruder.last_position
             return
 
         self.logger.debug(
