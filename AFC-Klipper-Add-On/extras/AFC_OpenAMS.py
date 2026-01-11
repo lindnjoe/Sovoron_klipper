@@ -1196,7 +1196,12 @@ class afcAMS(afcUnit):
     def _get_saved_lane_field(self, lane_name: Optional[str], field: str) -> Optional[Any]:
         """Fetch a field for a lane from the AFC.var.unit snapshot."""
 
-        unit_key = getattr(self, "name", None)
+        unit_key = None
+        lane_obj = self._get_lane_object(lane_name)
+        if lane_obj is not None:
+            unit_key = getattr(lane_obj, "unit", None)
+        if unit_key is None:
+            unit_key = getattr(self, "name", None)
         lane_data = self._find_lane_snapshot(lane_name, unit_name=unit_key)
         if not isinstance(lane_data, dict):
             return None
