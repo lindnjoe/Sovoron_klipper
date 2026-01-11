@@ -6384,6 +6384,15 @@ class OAMSManager:
                         # Get current extruder temp to use for target
                         current_extruder = self.printer.lookup_object('toolhead').get_extruder()
                         target_temp = current_extruder.get_heater().target_temp
+                        lane_snapshot = self._get_lane_snapshot(
+                            target_lane_name,
+                            unit_name=getattr(target_lane, "unit", None),
+                        )
+                        lane_extruder_temp = None
+                        if isinstance(lane_snapshot, dict):
+                            lane_extruder_temp = lane_snapshot.get("extruder_temp")
+                        if lane_extruder_temp is not None:
+                            target_temp = lane_extruder_temp
                         try:
                             target_temp_value = float(target_temp)
                         except (TypeError, ValueError):
