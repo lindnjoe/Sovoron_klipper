@@ -4424,12 +4424,6 @@ class OAMSManager:
 
             return
 
-        extra_retract_raw = gcmd.get('EXTRA_RETRACT', None)
-        try:
-            extra_retract = float(extra_retract_raw) if extra_retract_raw is not None else self.extra_retract_default
-        except Exception:
-            raise gcmd.error("EXTRA_RETRACT must be a number")
-
         fps_state = self.current_state.fps_state[fps_name]
         if fps_state.state == FPSLoadState.UNLOADED:
             gcmd.respond_info(f"FPS {fps_name} is already unloaded")
@@ -4439,6 +4433,18 @@ class OAMSManager:
             self.logger.debug(f"OAMSM_UNLOAD_FILAMENT ignored because {fps_name} is busy")
 
             return
+
+        extra_retract_raw = gcmd.get('EXTRA_RETRACT', None)
+        if extra_retract_raw is not None:
+            try:
+                extra_retract = float(extra_retract_raw)
+            except Exception:
+                raise gcmd.error("EXTRA_RETRACT must be a number")
+        else:
+            oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+            extra_retract = getattr(oams_obj, "extra_retract", None)
+            if extra_retract is None:
+                extra_retract = self.extra_retract_default
 
         # Queue a small extra retract move to overlap with the unload sequence
         extra_retract_lane = fps_state.current_lane
