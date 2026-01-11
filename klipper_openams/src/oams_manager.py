@@ -4817,17 +4817,14 @@ class OAMSManager:
                 return False
 
             serial = getattr(mcu, "serial", None)
-            if serial is None:
-                return False
-
-            if hasattr(serial, "is_shutdown") and serial.is_shutdown():
-                return False
+            if serial is not None:
+                if hasattr(serial, "is_shutdown") and serial.is_shutdown():
+                    return False
 
             if hasattr(mcu, "is_connected"):
                 if not mcu.is_connected():
                     return False
-
-            if hasattr(serial, "is_connected"):
+            elif serial is not None and hasattr(serial, "is_connected"):
                 return bool(serial.is_connected())
         except Exception:
             self.logger.debug(f"Could not read MCU state for {getattr(oams, 'name', '<unknown>')}")
