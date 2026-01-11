@@ -1140,23 +1140,64 @@ class afcAMS(afcUnit):
         self._saved_unit_mtime = mtime
         return self._saved_unit_cache
 
-    def _get_saved_lane_field(self, lane_name: Optional[str], field: str) -> Optional[Any]:
-        """Fetch a field for a lane from the persisted AFC.var.unit snapshot."""
+    def _get_live_unit_snapshot(self) -> Optional[Dict[str, Any]]:
+        afc = self.printer.lookup_object("AFC", None)
+        if afc is None:
+            return None
 
+        try:
+            var_obj = getattr(afc, "var", None)
+            if isinstance(var_obj, dict):
+                snapshot = var_obj.get("unit")
+            else:
+                snapshot = getattr(var_obj, "unit", None)
+            if isinstance(snapshot, dict):
+                return snapshot
+        except Exception:
+            return None
+
+        return None
+
+    def _get_unit_snapshot(self) -> Optional[Dict[str, Any]]:
+        snapshot = self._get_live_unit_snapshot()
+        if isinstance(snapshot, dict):
+            return snapshot
+        return self._load_saved_unit_snapshot()
+
+    def _find_lane_snapshot(self, lane_name: Optional[str], unit_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         canonical = self._canonical_lane_name(lane_name)
         if canonical is None:
             return None
 
-        snapshot = self._load_saved_unit_snapshot()
-        if not snapshot:
+        snapshot = self._get_unit_snapshot()
+        if not isinstance(snapshot, dict):
             return None
+
+        unit_key = unit_name
+        if isinstance(unit_key, str) and ":" in unit_key:
+            unit_key = unit_key.split(":", 1)[0]
+
+        if unit_key:
+            unit_data = snapshot.get(unit_key)
+            if isinstance(unit_data, dict):
+                lane_data = unit_data.get(canonical)
+                if isinstance(lane_data, dict):
+                    return lane_data
+
+        for unit_key, unit_data in snapshot.items():
+            if unit_key in ("system", "Tools") or not isinstance(unit_data, dict):
+                continue
+            lane_data = unit_data.get(canonical)
+            if isinstance(lane_data, dict):
+                return lane_data
+
+        return None
+
+    def _get_saved_lane_field(self, lane_name: Optional[str], field: str) -> Optional[Any]:
+        """Fetch a field for a lane from the AFC.var.unit snapshot."""
 
         unit_key = getattr(self, "name", None)
-        unit_data = snapshot.get(str(unit_key)) if unit_key is not None else None
-        if not isinstance(unit_data, dict):
-            return None
-
-        lane_data = unit_data.get(canonical)
+        lane_data = self._find_lane_snapshot(lane_name, unit_name=unit_key)
         if not isinstance(lane_data, dict):
             return None
 
@@ -1167,7 +1208,7 @@ class afcAMS(afcUnit):
         if not extruder_name:
             return None
 
-        snapshot = self._load_saved_unit_snapshot()
+        snapshot = self._get_unit_snapshot()
         system = snapshot.get("system") if isinstance(snapshot, dict) else None
         if not isinstance(system, dict):
             return None
@@ -1340,6 +1381,8 @@ class afcAMS(afcUnit):
         """Return the saved runout target for a lane from AFC.var.unit, if available."""
 
         saved_value = self._get_saved_lane_field(lane_name, "runout_lane")
+        return saved_value
+
     def record_load(self, extruder: Optional[str] = None, lane_name: Optional[str] = None) -> Optional[str]:
         extruder_name = extruder or getattr(self, "extruder", None)
         canonical = self._canonical_lane_name(lane_name)
@@ -2328,21 +2371,14 @@ class afcAMS(afcUnit):
         return None, trace
 
     def _get_snapshot_lane_extruder(self, lane_name: str) -> Optional[str]:
-        afc = self.printer.lookup_object("AFC", None)
-        var_obj = getattr(afc, "var", None) if afc else None
-        if isinstance(var_obj, dict):
-            snapshot = var_obj.get("unit")
-        else:
-            snapshot = getattr(var_obj, "unit", None)
-        if not isinstance(snapshot, dict):
-            return None
+        unit_name = None
+        lane_obj = self._get_lane_object(lane_name)
+        if lane_obj is not None:
+            unit_name = getattr(lane_obj, "unit", None)
 
-        for unit_name, unit_data in snapshot.items():
-            if unit_name == "system" or not isinstance(unit_data, dict):
-                continue
-            lane_data = unit_data.get(lane_name)
-            if isinstance(lane_data, dict):
-                return lane_data.get("extruder")
+        lane_data = self._find_lane_snapshot(lane_name, unit_name=unit_name)
+        if isinstance(lane_data, dict):
+            return lane_data.get("extruder")
         return None
 
     def handle_runout_detected(self, spool_index: Optional[int], monitor=None, *, lane_name: Optional[str] = None) -> None:
