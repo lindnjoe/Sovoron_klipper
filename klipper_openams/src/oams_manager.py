@@ -2795,7 +2795,9 @@ class OAMSManager:
                 fps_state.engagement_in_progress = False  # Clear flag now that verification is complete
 
         except Exception:
-            self.logger.error(f"Failed to verify engagement for {lane_name}")
+            self.logger.error(
+                f"Failed to verify engagement for {lane_name}\n{traceback.format_exc()}"
+            )
             return True  # Assume success to avoid false failures
 
     def _handle_successful_reload(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
@@ -3930,8 +3932,10 @@ class OAMSManager:
                         "before load",
                         force=True,
                     )
-                except Exception:
-                    self.logger.warning(f"Failed to set follower forward before load on {fps_name}")
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to set follower forward before load on {fps_name}: {e}"
+                    )
 
                 # Try to load filament into buffer via gcode
                 try:
@@ -4944,6 +4948,8 @@ class OAMSManager:
         # Only send command if state changed or this is the first command
         if force or state.last_state != desired_state:
             try:
+                if oams_name not in self.oams and oams is not None:
+                    self.oams[oams_name] = oams
                 self._log_follower_change(oams_name, enable, direction, context, forced=force)
                 # Use rate limiting to prevent MCU queue overflow
                 self._rate_limited_mcu_command(oams_name, oams.set_oams_follower, enable, direction)
