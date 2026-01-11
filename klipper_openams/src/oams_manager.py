@@ -22,7 +22,7 @@
 # - post_load_pressure_dwell: Duration (seconds) to monitor pressure after load (default: 15.0)
 # - load_fps_stuck_threshold: FPS pressure above which load is considered failed (default: 0.75)
 # - clog_sensitivity: Detection sensitivity level - "low", "medium", "high" (default: "medium")
-# - preretract: Default preretract distance (mm) applied before unload (default: -10.0)
+# - extra_retract: Default extra retract distance (mm) applied before unload (default: 10.0)
 
 import json
 import logging
@@ -896,7 +896,7 @@ class OAMSManager:
         self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL, minval=0.0, maxval=60.0)
         self.load_fps_stuck_threshold = config.getfloat("load_fps_stuck_threshold", LOAD_FPS_STUCK_THRESHOLD, minval=0.0, maxval=1.0)
         self.engagement_pressure_threshold = config.getfloat("engagement_pressure_threshold", 0.6, minval=0.0, maxval=1.0)
-        self.preretract_default = config.getfloat("preretract", -10.0)
+        self.extra_retract_default = config.getfloat("extra_retract", 10.0)
 
         # Validate hysteresis: clear threshold must be > trigger threshold
         if self.stuck_spool_pressure_clear_threshold <= self.stuck_spool_pressure_threshold:
@@ -4410,11 +4410,11 @@ class OAMSManager:
 
             return
 
-        preretract_raw = gcmd.get('PRERETRACT', None)
+        extra_retract_raw = gcmd.get('EXTRA_RETRACT', None)
         try:
-            preretract = float(preretract_raw) if preretract_raw is not None else self.preretract_default
+            extra_retract = float(extra_retract_raw) if extra_retract_raw is not None else self.extra_retract_default
         except Exception:
-            raise gcmd.error("PRERETRACT must be a number")
+            raise gcmd.error("EXTRA_RETRACT must be a number")
 
         fps_state = self.current_state.fps_state[fps_name]
         if fps_state.state == FPSLoadState.UNLOADED:
@@ -4426,12 +4426,12 @@ class OAMSManager:
 
             return
 
-        # Queue a small preretract move to overlap with the unload sequence
-        preretract_lane = fps_state.current_lane
-        if preretract_lane is not None:
-            _, reload_speed = self._get_reload_params(preretract_lane)
-            unload_length, unload_speed = self._get_unload_params(preretract_lane)
-            preretract_feed_rate = (
+        # Queue a small extra retract move to overlap with the unload sequence
+        extra_retract_lane = fps_state.current_lane
+        if extra_retract_lane is not None:
+            _, reload_speed = self._get_reload_params(extra_retract_lane)
+            unload_length, unload_speed = self._get_unload_params(extra_retract_lane)
+            extra_retract_feed_rate = (
                 unload_speed
                 if unload_speed is not None
                 else (reload_speed if reload_speed is not None else 1500.0)
@@ -4439,9 +4439,9 @@ class OAMSManager:
             unload_length_display = f"{unload_length:.2f}" if unload_length is not None else "None"
             unload_speed_display = f"{unload_speed:.0f}" if unload_speed is not None else "None"
             self.logger.debug(
-                f"Unload params for {preretract_lane} on {fps_name}: "
+                f"Unload params for {extra_retract_lane} on {fps_name}: "
                 f"unload_length={unload_length_display}mm unload_speed={unload_speed_display}mm/min "
-                f"preretract={preretract:.2f}mm feed_rate={preretract_feed_rate:.0f}mm/min"
+                f"extra_retract={extra_retract:.2f}mm feed_rate={extra_retract_feed_rate:.0f}mm/min"
             )
             reverse_direction = 0  # Pull back during unload overlap
 
@@ -4449,7 +4449,7 @@ class OAMSManager:
             try:
                 oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
                 if oams_obj is None:
-                    oams_obj = self._resolve_oams_for_lane(preretract_lane)
+                    oams_obj = self._resolve_oams_for_lane(extra_retract_lane)
                     if oams_obj is not None and fps_state.current_oams is None:
                         fps_state.current_oams = oams_obj.name
                 self._set_follower_state(
@@ -4458,11 +4458,11 @@ class OAMSManager:
                     oams_obj,
                     1,
                     reverse_direction,
-                    "unload preretract",
+                    "unload extra retract",
                     force=True,
                 )
             except Exception:
-                self.logger.warning(f"Unable to set follower reverse before preretract on {fps_name}")
+                self.logger.warning(f"Unable to set follower reverse before extra retract on {fps_name}")
 
             try:
                 gcode = self._gcode_obj
@@ -4474,19 +4474,19 @@ class OAMSManager:
 
                 # First retract by the configured unload length (if available)
                 if unload_length is not None:
-                    unload_feed = unload_speed if unload_speed is not None else preretract_feed_rate
+                    unload_feed = unload_speed if unload_speed is not None else extra_retract_feed_rate
                     gcode.run_script_from_command(f"G1 E-{unload_length:.2f} F{unload_feed:.0f}")
                     gcode.run_script_from_command("M400")
 
-                # Wait for retract moves to complete before preretract/unload
+                # Wait for retract moves to complete before extra retract/unload
                 gcode.run_script_from_command("M400")
 
-                # Then issue the preretract before unload
-                gcode.run_script_from_command(f"G1 E{preretract:.2f} F{preretract_feed_rate:.0f}")
+                # Then issue the extra retract before unload
+                gcode.run_script_from_command(f"G1 E{extra_retract:.2f} F{extra_retract_feed_rate:.0f}")
             except Exception:
-                self.logger.warning(f"Skipping preretract before unload on {fps_name}: unable to queue gcode")
+                self.logger.warning(f"Skipping extra retract before unload on {fps_name}: unable to queue gcode")
         else:
-            self.logger.info(f"Skipping preretract before unload on {fps_name}: no lane resolved")
+            self.logger.info(f"Skipping extra retract before unload on {fps_name}: no lane resolved")
 
         success, message = self._unload_filament_for_fps(fps_name)
 
