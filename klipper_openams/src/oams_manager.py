@@ -6222,6 +6222,20 @@ class OAMSManager:
                 # Keep it set so follower stays enabled during manual intervention
                 # User can run CLEAR_ERRORS to return to automatic control
 
+                is_printing = False
+                if self._idle_timeout_obj is not None:
+                    try:
+                        is_printing = self._idle_timeout_obj.get_status(now)["state"] == "Printing"
+                    except Exception:
+                        is_printing = False
+                if (
+                    is_printing
+                    and oams is not None
+                    and fps_state.current_spool_idx is not None
+                    and (not fps_state.following or fps_state.direction != 1)
+                ):
+                    self._ensure_forward_follower(fps_name, fps_state, "clog auto-recovery")
+
                 fps_state.reset_clog_tracker()
 
             fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
