@@ -1884,7 +1884,7 @@ class afcAMS(afcUnit):
                     return False
 
                 fps_id = fps_name.split(" ", 1)[1] if fps_name.startswith("fps ") else fps_name
-                afc_self.logger.info(
+                afc_self.logger.debug(
                     "OpenAMS unload: delegating to OAMSM_UNLOAD_FILAMENT for lane {} (FPS {})".format(
                         cur_lane.name, fps_id
                     )
