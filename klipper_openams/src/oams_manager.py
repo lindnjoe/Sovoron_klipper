@@ -2861,7 +2861,7 @@ class OAMSManager:
                         else:
                             # Encoder didn't move - filament not engaged
                             fps_state.engaged_with_extruder = False
-                            self.logger.warning(
+                            self.logger.info(
                                 f"Filament failed to engage extruder for {lane_name} "
                                 f"(encoder only moved {encoder_delta} clicks, expected >={min_encoder_movement})"
                             )
@@ -4216,7 +4216,7 @@ class OAMSManager:
                 break
 
             # Filament reached extruder but didn't engage - unload and retry (up to max_engagement_retries)
-            self.logger.warning(f"Filament engagement failed for {lane_name}, unloading before retry (engagement attempt {engagement_attempt + 1}/{max_engagement_retries})")
+            self.logger.info(f"Filament engagement failed for {lane_name}, unloading before retry (engagement attempt {engagement_attempt + 1}/{max_engagement_retries})")
 
             # Retract extruder by reload distance to back out the filament that was extruded during engagement
             # This ensures filament position is correct for the next load attempt
