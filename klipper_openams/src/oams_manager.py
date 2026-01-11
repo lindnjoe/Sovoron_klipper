@@ -4858,6 +4858,18 @@ class OAMSManager:
         desired_state = (enable, direction)
 
         if not self._is_oams_mcu_ready(oams):
+            if force:
+                try:
+                    oams.set_oams_follower(enable, direction)
+                    state.last_state = desired_state
+                    self.logger.debug(
+                        f"Forced follower change for {oams_name} ({context or 'no context'}) while MCU not ready"
+                    )
+                except Exception:
+                    self.logger.error(
+                        f"Failed to force follower change for {oams_name} ({context or 'no context'}) while MCU not ready"
+                    )
+                return
             self.logger.debug(f"Skipping follower change for {oams_name} ({context or 'no context'}) because MCU is not ready")
             return
 
