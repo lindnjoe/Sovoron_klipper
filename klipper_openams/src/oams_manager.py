@@ -571,6 +571,29 @@ class OAMSRunoutMonitor:
             return self.oams.get(unprefixed)
         return None
 
+    def _normalize_oams_name(self, oams_name: Optional[str], oams_obj: Optional[Any] = None) -> Optional[str]:
+        if not oams_name:
+            return oams_name
+
+        if oams_name in self.oams:
+            return oams_name
+
+        if oams_obj is not None:
+            obj_name = getattr(oams_obj, "name", None)
+            if obj_name in self.oams:
+                return obj_name
+
+        prefixed = f"oams {oams_name}"
+        if prefixed in self.oams:
+            return prefixed
+
+        if oams_name.startswith("oams "):
+            unprefixed = oams_name[5:]
+            if unprefixed in self.oams:
+                return unprefixed
+
+        return oams_name
+
     def _resolve_oams_for_lane(self, lane_name: Optional[str]) -> Optional[Any]:
         if not lane_name:
             return None
@@ -4701,6 +4724,7 @@ class OAMSManager:
             return
 
         direction = direction if direction in (0, 1) else 1
+        oams_name = self._normalize_oams_name(oams_name, oams)
         self._set_follower_if_changed(oams_name, oams, enable, direction, context, force=force)
         fps_state.following = bool(enable)
         fps_state.direction = direction if enable else 0
@@ -4886,6 +4910,7 @@ class OAMSManager:
             direction: 0 for reverse, 1 for forward
             context: Description for logging (optional)
         """
+        oams_name = self._normalize_oams_name(oams_name, oams)
         state = self._get_follower_state(oams_name)
         desired_state = (enable, direction)
         self._log_follower_request(oams_name, desired_state, context, force=force)
