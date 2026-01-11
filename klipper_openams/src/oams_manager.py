@@ -568,21 +568,16 @@ class OAMSRunoutMonitor:
                 self.logger.error("Failed to notify AFC about OpenAMS runout")
 
     def _get_runout_lane_from_snapshot(self, lane_name: str) -> Optional[str]:
+        unit_name = None
         afc = self.printer.lookup_object("AFC", None)
-        var_obj = getattr(afc, "var", None) if afc else None
-        if isinstance(var_obj, dict):
-            snapshot = var_obj.get("unit")
-        else:
-            snapshot = getattr(var_obj, "unit", None)
-        if not isinstance(snapshot, dict):
-            return None
+        if afc is not None:
+            lane_obj = getattr(afc, "lanes", {}).get(lane_name)
+            if lane_obj is not None:
+                unit_name = getattr(lane_obj, "unit", None)
 
-        for unit_name, unit_data in snapshot.items():
-            if unit_name == "system" or not isinstance(unit_data, dict):
-                continue
-            lane_data = unit_data.get(lane_name)
-            if isinstance(lane_data, dict):
-                return lane_data.get("runout_lane")
+        lane_data = self._get_lane_snapshot(lane_name, unit_name=unit_name)
+        if isinstance(lane_data, dict):
+            return lane_data.get("runout_lane")
         return None
 
     def _get_oams_object(self, oams_name: Optional[str]):
@@ -634,21 +629,10 @@ class OAMSRunoutMonitor:
             name = extruder_name
         if not name and lane_name:
             try:
-                afc = self.printer.lookup_object("AFC", None)
-                var_obj = getattr(afc, "var", None) if afc else None
-                if isinstance(var_obj, dict):
-                    snapshot = var_obj.get("unit")
-                else:
-                    snapshot = getattr(var_obj, "unit", None)
-                if isinstance(snapshot, dict):
-                    for unit_name, unit_data in snapshot.items():
-                        if unit_name == "system" or not isinstance(unit_data, dict):
-                            continue
-                        lane_data = unit_data.get(lane_name)
-                        if isinstance(lane_data, dict):
-                            name = lane_data.get("extruder")
-                            if name:
-                                break
+                unit_name = getattr(lane, "unit", None)
+                lane_data = self._get_lane_snapshot(lane_name, unit_name=unit_name)
+                if isinstance(lane_data, dict):
+                    name = lane_data.get("extruder")
             except Exception:
                 self.logger.debug(f"OAMS: Failed to read AFC.var.unit extruder for {lane_name}")
         return _normalize_extruder_name(name)
@@ -1973,6 +1957,34 @@ class OAMSManager:
             if gcmd is not None:
                 gcmd.respond_info("  Error during virtual sensor sync - check klippy.log")
 
+    def _get_lane_snapshot(self, lane_name: Optional[str], unit_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        if not lane_name:
+            return None
+
+        snapshot = self._load_afc_var_unit_snapshot()
+        if not isinstance(snapshot, dict):
+            return None
+
+        unit_key = unit_name
+        if isinstance(unit_key, str) and ":" in unit_key:
+            unit_key = unit_key.split(":", 1)[0]
+
+        if unit_key:
+            unit_data = snapshot.get(unit_key)
+            if isinstance(unit_data, dict):
+                lane_data = unit_data.get(lane_name)
+                if isinstance(lane_data, dict):
+                    return lane_data
+
+        for unit_key, unit_data in snapshot.items():
+            if unit_key in ("system", "Tools") or not isinstance(unit_data, dict):
+                continue
+            lane_data = unit_data.get(lane_name)
+            if isinstance(lane_data, dict):
+                return lane_data
+
+        return None
+
     def _sync_openams_sensors_for_oams(
         self,
         oams_name: str,
@@ -2033,16 +2045,8 @@ class OAMSManager:
                 continue
 
             lane_obj = getattr(afc, "lanes", {}).get(lane_name) if afc else None
-            lane_data = None
-
-            # Find lane data in the snapshot for spool index fallback
-            for unit_name, unit_data in snapshot.items():
-                if not isinstance(unit_data, dict) or unit_name == "system":
-                    continue
-                candidate = unit_data.get(lane_name)
-                if isinstance(candidate, dict):
-                    lane_data = candidate
-                    break
+            lane_unit = getattr(lane_obj, "unit", None) if lane_obj is not None else None
+            lane_data = self._get_lane_snapshot(lane_name, unit_name=lane_unit)
 
             spool_idx = None
             if lane_obj is not None:
@@ -2857,7 +2861,7 @@ class OAMSManager:
                         else:
                             # Encoder didn't move - filament not engaged
                             fps_state.engaged_with_extruder = False
-                            self.logger.warning(
+                            self.logger.info(
                                 f"Filament failed to engage extruder for {lane_name} "
                                 f"(encoder only moved {encoder_delta} clicks, expected >={min_encoder_movement})"
                             )
@@ -2926,7 +2930,7 @@ class OAMSManager:
                     if handled:
                         self.logger.info(f"Notified AFC that lane {target_lane} is loaded via AMSRunoutCoordinator (updates virtual sensor state)")
                     else:
-                        self.logger.warning(f"AMSRunoutCoordinator.notify_lane_tool_state returned False for lane {target_lane}, trying fallback")
+                        self.logger.info(f"AMSRunoutCoordinator.notify_lane_tool_state returned False for lane {target_lane}, trying fallback")
                 except Exception as e:
                     self.logger.error(f"Failed to notify AFC lane {target_lane} after infinite runout on {fps_name}: {e}")
                     handled = False
@@ -4212,7 +4216,7 @@ class OAMSManager:
                 break
 
             # Filament reached extruder but didn't engage - unload and retry (up to max_engagement_retries)
-            self.logger.warning(f"Filament engagement failed for {lane_name}, unloading before retry (engagement attempt {engagement_attempt + 1}/{max_engagement_retries})")
+            self.logger.info(f"Filament engagement failed for {lane_name}, unloading before retry (engagement attempt {engagement_attempt + 1}/{max_engagement_retries})")
 
             # Retract extruder by reload distance to back out the filament that was extruded during engagement
             # This ensures filament position is correct for the next load attempt
@@ -5262,6 +5266,8 @@ class OAMSManager:
 
             self.start_monitors()
 
+        now = self.reactor.monotonic()
+
         # Clear any error LEDs on resume (error flags already cleared when pause was triggered)
         for fps_name, fps_state in self.current_state.fps_state.items():
             oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
@@ -5281,6 +5287,9 @@ class OAMSManager:
             if fps_state.clog.active:
                 fps_state.reset_clog_tracker()
                 self.logger.info(f"Cleared clog state for {fps_name} on print resume")
+                if fps_state.current_lane is not None:
+                    fps_state.engaged_with_extruder = True
+                    fps_state.engagement_checked_at = now
                 # Clear the error LED if we have an OAMS and spool index
                 if oams is not None and fps_state.current_spool_idx is not None:
                     try:
@@ -5290,12 +5299,9 @@ class OAMSManager:
 
             if fps_state.stuck_spool.restore_follower:
                 self._restore_follower_if_needed(fps_name, fps_state, oams, "print resume")
-            elif (
-                fps_state.current_oams is not None
-                and fps_state.current_spool_idx is not None
-                and not fps_state.following
-            ):
-                self._ensure_forward_follower(fps_name, fps_state, "print resume")
+            elif fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
+                if not fps_state.following or fps_state.direction != 1:
+                    self._ensure_forward_follower(fps_name, fps_state, "print resume")
 
 
         # Update all followers based on hub sensors
@@ -5874,6 +5880,15 @@ class OAMSManager:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, reason)
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
             return
+
+        if (
+            is_printing
+            and fps_state.state == FPSLoadState.LOADED
+            and fps_state.current_lane is not None
+            and not fps_state.engaged_with_extruder
+        ):
+            fps_state.engaged_with_extruder = True
+            fps_state.engagement_checked_at = now
 
         # Skip stuck spool detection if AFC bypass is enabled
         # User is manually controlling filament, FPS pressure will be abnormal
