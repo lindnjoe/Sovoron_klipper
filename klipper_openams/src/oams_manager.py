@@ -2186,9 +2186,11 @@ class OAMSManager:
                 self.logger.info(f"Follower disable requested on {fps_name} but no OAMS loaded, marking as not following")
                 return
 
-            oams_obj = self.oams.get(fps_state.current_oams)
+            oams_obj = self._get_oams_object(fps_state.current_oams)
             if oams_obj:
                 try:
+                    if fps_state.current_oams != oams_obj.name:
+                        fps_state.current_oams = oams_obj.name
                     state = self._get_follower_state(fps_state.current_oams)
                     oams_obj.set_oams_follower(0, direction)
                     fps_state.following = False
@@ -2206,14 +2208,16 @@ class OAMSManager:
             return
 
         # When enabling, we need a valid OAMS
-        oams_obj = self.oams.get(fps_state.current_oams)
+        oams_obj = self._get_oams_object(fps_state.current_oams)
         if oams_obj is None:
             gcmd.respond_info(f"OAMS {fps_state.current_oams} is not available")
 
             return
 
         try:
-            self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={fps_name}")
+            self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={direction}")
+            if fps_state.current_oams != oams_obj.name:
+                fps_state.current_oams = oams_obj.name
             state = self._get_follower_state(fps_state.current_oams)
             oams_obj.set_oams_follower(enable, direction)
             fps_state.following = bool(enable)
@@ -2790,7 +2794,7 @@ class OAMSManager:
 
                 except Exception:
                     self.logger.error(f"Failed to check encoder for engagement verification on {fps_name}")
-                    return True  # Assume success to avoid false failures
+                    return False
             finally:
                 fps_state.engagement_in_progress = False  # Clear flag now that verification is complete
 
@@ -2798,7 +2802,7 @@ class OAMSManager:
             self.logger.error(
                 f"Failed to verify engagement for {lane_name}\n{traceback.format_exc()}"
             )
-            return True  # Assume success to avoid false failures
+            return False
 
     def _handle_successful_reload(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
                                    target_lane_map: str, source_lane_name: Optional[str],
@@ -4689,11 +4693,14 @@ class OAMSManager:
             return
 
         if oams is None and fps_state.current_oams is not None:
-            oams = self.oams.get(fps_state.current_oams)
+            oams = self._get_oams_object(fps_state.current_oams)
         if oams is None:
             self.logger.warning("Cannot enable follower: OAMS not found")
 
             return
+
+        if fps_state.current_oams != oams.name:
+            fps_state.current_oams = oams.name
 
         direction = direction if direction in (0, 1) else 1
 
@@ -4717,10 +4724,13 @@ class OAMSManager:
     ) -> None:
         """Set follower state directly and update cached FPS state."""
         if oams is None and fps_state.current_oams is not None:
-            oams = self.oams.get(fps_state.current_oams)
+            oams = self._get_oams_object(fps_state.current_oams)
         if oams is None:
             self.logger.warning(f"Cannot set follower state for {fps_name}: OAMS not found")
             return
+
+        if fps_state.current_oams != oams.name:
+            fps_state.current_oams = oams.name
 
         oams_name = fps_state.current_oams or getattr(oams, "name", None)
         if not oams_name:
@@ -4936,23 +4946,13 @@ class OAMSManager:
             self.logger.debug(f"Skipping follower change for {oams_name} ({context or 'no context'}) because MCU is not ready")
             return
 
-        # Allow follower changes during error recovery (clog, stuck spool) even if OAMS is busy
-        # User needs manual extrusion capability to fix issues
-        is_error_recovery = "clog" in context.lower() or "stuck" in context.lower() or "recovery" in context.lower()
-        if not force and not is_error_recovery and getattr(oams, "action_status", None) is not None:
-            self.logger.debug(
-                f"Skipping follower change for {oams_name} ({context or 'no context'}) because OAMS is busy"
-            )
-            return
-
         # Only send command if state changed or this is the first command
         if force or state.last_state != desired_state:
             try:
                 if oams_name not in self.oams and oams is not None:
                     self.oams[oams_name] = oams
                 self._log_follower_change(oams_name, enable, direction, context, forced=force)
-                # Use rate limiting to prevent MCU queue overflow
-                self._rate_limited_mcu_command(oams_name, oams.set_oams_follower, enable, direction)
+                oams.set_oams_follower(enable, direction)
                 state.last_state = desired_state
                 # Log follower disable at INFO level to track what's disabling it during clogs
                 if enable:
