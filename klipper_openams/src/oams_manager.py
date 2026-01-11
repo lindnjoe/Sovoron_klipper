@@ -5011,12 +5011,8 @@ class OAMSManager:
         state = self._get_follower_state(oams_name)
         if force or state.last_state != desired_state:
             self.logger.debug(
-                "Follower request for %s: enable=%d direction=%d context=%s force=%s",
-                oams_name,
-                desired_state[0],
-                desired_state[1],
-                context or "no context",
-                force,
+                f"Follower request for {oams_name}: enable={desired_state[0]} "
+                f"direction={desired_state[1]} context={context or 'no context'} force={force}"
             )
 
     def _log_follower_change(
@@ -5030,12 +5026,8 @@ class OAMSManager:
     ) -> None:
         """Debug log actual follower commands sent."""
         self.logger.debug(
-            "Follower command for %s: enable=%d direction=%d context=%s forced=%s",
-            oams_name,
-            enable,
-            direction,
-            context or "no context",
-            forced,
+            f"Follower command for {oams_name}: enable={enable} direction={direction} "
+            f"context={context or 'no context'} forced={forced}"
         )
 
     def _update_follower_for_oams(self, oams_name: str, oams: Any) -> None:
