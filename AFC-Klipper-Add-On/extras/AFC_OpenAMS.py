@@ -2327,6 +2327,24 @@ class afcAMS(afcUnit):
         trace.append("no lane resolved")
         return None, trace
 
+    def _get_snapshot_lane_extruder(self, lane_name: str) -> Optional[str]:
+        afc = self.printer.lookup_object("AFC", None)
+        var_obj = getattr(afc, "var", None) if afc else None
+        if isinstance(var_obj, dict):
+            snapshot = var_obj.get("unit")
+        else:
+            snapshot = getattr(var_obj, "unit", None)
+        if not isinstance(snapshot, dict):
+            return None
+
+        for unit_name, unit_data in snapshot.items():
+            if unit_name == "system" or not isinstance(unit_data, dict):
+                continue
+            lane_data = unit_data.get(lane_name)
+            if isinstance(lane_data, dict):
+                return lane_data.get("extruder")
+        return None
+
     def handle_runout_detected(self, spool_index: Optional[int], monitor=None, *, lane_name: Optional[str] = None) -> None:
         """Handle runout notifications coming from OpenAMS monitors."""
         lane = None
@@ -2358,8 +2376,16 @@ class afcAMS(afcUnit):
         target_lane, handoff_trace = self._resolve_lane_reference_with_trace(runout_lane_name) if runout_lane_name else (None, [])
         same_extruder_handoff = False
 
-        source_extruder = _normalize_extruder_name(getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None)
-        target_extruder = _normalize_extruder_name(getattr(target_lane, "extruder_obj", None) if hasattr(target_lane, "extruder_obj") else None) if target_lane else None
+        source_extruder = _normalize_extruder_name(
+            getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
+        )
+        target_extruder = _normalize_extruder_name(
+            getattr(target_lane, "extruder_obj", None) if hasattr(target_lane, "extruder_obj") else None
+        ) if target_lane else None
+        if not source_extruder:
+            source_extruder = _normalize_extruder_name(self._get_snapshot_lane_extruder(lane.name))
+        if target_lane and not target_extruder:
+            target_extruder = _normalize_extruder_name(self._get_snapshot_lane_extruder(target_lane.name))
 
         self.logger.debug(
             f"Runout classification for {lane.name}: spool_index={spool_index}, "

@@ -471,6 +471,15 @@ class OAMSRunoutMonitor:
             current_lane_obj = None
             target_lane_obj = None
             target_lane_name = None
+        if target_lane_name is None and lane_name:
+            try:
+                target_lane_name = self._get_runout_lane_from_snapshot(lane_name)
+                if target_lane_name:
+                    afc = self.printer.lookup_object('AFC', None)
+                    if afc and hasattr(afc, 'lanes'):
+                        target_lane_obj = afc.lanes.get(target_lane_name)
+            except Exception:
+                self.logger.debug(f"OAMS: Failed to read AFC.var.unit runout_lane for {lane_name}")
 
         try:
             current_extruder = self._get_lane_extruder_name(current_lane_obj)
@@ -557,6 +566,24 @@ class OAMSRunoutMonitor:
                 AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=lane_name)
             except Exception:
                 self.logger.error("Failed to notify AFC about OpenAMS runout")
+
+    def _get_runout_lane_from_snapshot(self, lane_name: str) -> Optional[str]:
+        afc = self.printer.lookup_object("AFC", None)
+        var_obj = getattr(afc, "var", None) if afc else None
+        if isinstance(var_obj, dict):
+            snapshot = var_obj.get("unit")
+        else:
+            snapshot = getattr(var_obj, "unit", None)
+        if not isinstance(snapshot, dict):
+            return None
+
+        for unit_name, unit_data in snapshot.items():
+            if unit_name == "system" or not isinstance(unit_data, dict):
+                continue
+            lane_data = unit_data.get(lane_name)
+            if isinstance(lane_data, dict):
+                return lane_data.get("runout_lane")
+        return None
 
     def _get_oams_object(self, oams_name: Optional[str]):
         if not oams_name:
