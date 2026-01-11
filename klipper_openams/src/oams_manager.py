@@ -5266,6 +5266,8 @@ class OAMSManager:
 
             self.start_monitors()
 
+        now = self.reactor.monotonic()
+
         # Clear any error LEDs on resume (error flags already cleared when pause was triggered)
         for fps_name, fps_state in self.current_state.fps_state.items():
             oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
@@ -5285,6 +5287,9 @@ class OAMSManager:
             if fps_state.clog.active:
                 fps_state.reset_clog_tracker()
                 self.logger.info(f"Cleared clog state for {fps_name} on print resume")
+                if fps_state.current_lane is not None:
+                    fps_state.engaged_with_extruder = True
+                    fps_state.engagement_checked_at = now
                 # Clear the error LED if we have an OAMS and spool index
                 if oams is not None and fps_state.current_spool_idx is not None:
                     try:
@@ -5875,6 +5880,15 @@ class OAMSManager:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, reason)
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
             return
+
+        if (
+            is_printing
+            and fps_state.state == FPSLoadState.LOADED
+            and fps_state.current_lane is not None
+            and not fps_state.engaged_with_extruder
+        ):
+            fps_state.engaged_with_extruder = True
+            fps_state.engagement_checked_at = now
 
         # Skip stuck spool detection if AFC bypass is enabled
         # User is manually controlling filament, FPS pressure will be abnormal
