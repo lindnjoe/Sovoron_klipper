@@ -6375,7 +6375,7 @@ class OAMSManager:
 
 
                         # 5. Set target extruder temp before CHANGE_TOOL (so it knows what temp to heat to)
-                        self.logger.info(f"OAMS: Step 5 - Setting target temp for {target_extruder_name} to {target_extruder_name:.1f}")
+                        self.logger.info(f"OAMS: Step 5 - Setting target temp for {target_extruder_name} to {target_temp:.1f}")
                         target_extruder_obj = self.printer.lookup_object(target_extruder_name)
                         target_heater = target_extruder_obj.get_heater()
                         target_heater.set_temp(target_temp)
