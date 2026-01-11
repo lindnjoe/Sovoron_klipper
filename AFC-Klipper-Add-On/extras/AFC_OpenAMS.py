@@ -2376,16 +2376,28 @@ class afcAMS(afcUnit):
         target_lane, handoff_trace = self._resolve_lane_reference_with_trace(runout_lane_name) if runout_lane_name else (None, [])
         same_extruder_handoff = False
 
-        source_extruder = _normalize_extruder_name(
-            getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
-        )
-        target_extruder = _normalize_extruder_name(
-            getattr(target_lane, "extruder_obj", None) if hasattr(target_lane, "extruder_obj") else None
-        ) if target_lane else None
-        if not source_extruder:
-            source_extruder = _normalize_extruder_name(self._get_snapshot_lane_extruder(lane.name))
-        if target_lane and not target_extruder:
+        source_extruder = _normalize_extruder_name(self._get_snapshot_lane_extruder(lane.name))
+        target_extruder = None
+        if target_lane:
             target_extruder = _normalize_extruder_name(self._get_snapshot_lane_extruder(target_lane.name))
+
+        if not source_extruder or (target_lane and not target_extruder):
+            self.logger.error(
+                f"Runout classification failed for {lane.name}: AFC.var.unit missing extruder data "
+                f"(source={source_extruder}, target={target_extruder}); pausing for user intervention"
+            )
+            try:
+                gcode = self.printer.lookup_object('gcode')
+                gcode.run_script_from_command("PAUSE")
+                gcode.respond_info(
+                    f"Runout classification failed for {lane.name}: AFC.var.unit missing extruder data. "
+                    "Please check AFC.var.unit and lane mappings."
+                )
+            except Exception:
+                self.logger.error("Failed to issue PAUSE after runout classification failure")
+            self.state = OAMSRunoutState.PAUSED
+            self.runout_position = self.fps.extruder.last_position
+            return
 
         self.logger.debug(
             f"Runout classification for {lane.name}: spool_index={spool_index}, "
@@ -2415,8 +2427,9 @@ class afcAMS(afcUnit):
         if runout_from_saved:
             self.logger.info(f"Resolved runout lane for {lane.name} from saved AFC.var.unit state: {runout_lane_name}")
         if target_lane:
-            if source_extruder and target_extruder and source_extruder == target_extruder:
-                same_extruder_handoff = True
+            if source_extruder and target_extruder:
+                if source_extruder == target_extruder:
+                    same_extruder_handoff = True
 
         if not same_extruder_handoff:
             # Only block shared sensor transitions for same-FPS handoffs. For any other runout, keep
