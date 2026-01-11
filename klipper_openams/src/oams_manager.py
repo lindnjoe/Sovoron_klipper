@@ -571,6 +571,29 @@ class OAMSRunoutMonitor:
             return self.oams.get(unprefixed)
         return None
 
+    def _resolve_oams_for_lane(self, lane_name: Optional[str]) -> Optional[Any]:
+        if not lane_name:
+            return None
+
+        afc = self._get_afc()
+        if afc is None or not hasattr(afc, "lanes"):
+            return None
+
+        lane = afc.lanes.get(lane_name)
+        if lane is None:
+            return None
+
+        unit_obj = getattr(lane, "unit_obj", None)
+        if unit_obj is None:
+            base_unit_name = getattr(lane, "unit", None)
+            if isinstance(base_unit_name, str) and ":" in base_unit_name:
+                base_unit_name = base_unit_name.split(":", 1)[0]
+            if base_unit_name and hasattr(afc, "units"):
+                unit_obj = afc.units.get(str(base_unit_name))
+
+        oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
+        return self._get_oams_object(oams_name)
+
     def start(self) -> None:
         if self.timer is None:
             self.timer = self.reactor.register_timer(self._timer_callback, self.reactor.NOW)
@@ -3346,11 +3369,19 @@ class OAMSManager:
             return False, f"FPS {fps_name} is in unexpected state {fps_state.state.name}"
 
         if fps_state.current_oams is None:
-            return False, f"FPS {fps_name} has no OAMS loaded"
+            oams_from_lane = self._resolve_oams_for_lane(fps_state.current_lane)
+            if oams_from_lane is not None:
+                fps_state.current_oams = oams_from_lane.name
+            else:
+                return False, f"FPS {fps_name} has no OAMS loaded"
 
         oams = self.oams.get(fps_state.current_oams)
         if oams is None:
-            return False, f"OAMS {fps_state.current_oams} not found for FPS {fps_name}"
+            oams = self._resolve_oams_for_lane(fps_state.current_lane)
+            if oams is not None:
+                fps_state.current_oams = oams.name
+            else:
+                return False, f"OAMS {fps_state.current_oams} not found for FPS {fps_name}"
 
         if oams.current_spool is None:
             fps_state.state = FPSLoadState.UNLOADED
@@ -4288,6 +4319,10 @@ class OAMSManager:
             # Ensure follower is enabled in reverse before the initial unload retract
             try:
                 oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+                if oams_obj is None:
+                    oams_obj = self._resolve_oams_for_lane(preretract_lane)
+                    if oams_obj is not None and fps_state.current_oams is None:
+                        fps_state.current_oams = oams_obj.name
                 self._set_follower_state(
                     fps_name,
                     fps_state,
