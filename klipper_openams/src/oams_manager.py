@@ -4853,10 +4853,12 @@ class OAMSManager:
         """
         state = self._get_follower_state(oams_name)
         desired_state = (enable, direction)
+        self._log_follower_request(oams_name, desired_state, context, force=force)
 
         if not self._is_oams_mcu_ready(oams):
             if force:
                 try:
+                    self._log_follower_change(oams_name, enable, direction, context, forced=True)
                     oams.set_oams_follower(enable, direction)
                     state.last_state = desired_state
                     self.logger.debug(
@@ -4882,6 +4884,7 @@ class OAMSManager:
         # Only send command if state changed or this is the first command
         if force or state.last_state != desired_state:
             try:
+                self._log_follower_change(oams_name, enable, direction, context, forced=force)
                 # Use rate limiting to prevent MCU queue overflow
                 self._rate_limited_mcu_command(oams_name, oams.set_oams_follower, enable, direction)
                 state.last_state = desired_state
@@ -4893,6 +4896,45 @@ class OAMSManager:
 
             except Exception:
                 self.logger.error(f"Failed to {'enable' if enable else 'disable'} follower for {oams_name}{f' ({context})' if context else ''}")
+
+    def _log_follower_request(
+        self,
+        oams_name: str,
+        desired_state: Tuple[int, int],
+        context: str,
+        *,
+        force: bool = False,
+    ) -> None:
+        """Debug log follower requests only when state changes or forced."""
+        state = self._get_follower_state(oams_name)
+        if force or state.last_state != desired_state:
+            self.logger.debug(
+                "Follower request for %s: enable=%d direction=%d context=%s force=%s",
+                oams_name,
+                desired_state[0],
+                desired_state[1],
+                context or "no context",
+                force,
+            )
+
+    def _log_follower_change(
+        self,
+        oams_name: str,
+        enable: int,
+        direction: int,
+        context: str,
+        *,
+        forced: bool = False,
+    ) -> None:
+        """Debug log actual follower commands sent."""
+        self.logger.debug(
+            "Follower command for %s: enable=%d direction=%d context=%s forced=%s",
+            oams_name,
+            enable,
+            direction,
+            context or "no context",
+            forced,
+        )
 
     def _update_follower_for_oams(self, oams_name: str, oams: Any) -> None:
         """Follower is manually controlled; no automatic updates."""

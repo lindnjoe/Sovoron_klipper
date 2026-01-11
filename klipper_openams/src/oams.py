@@ -917,9 +917,20 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         elif code == OAMSOpCode.ERROR_KLIPPER_CALL:
             self.action_status = None
             self.action_status_code = code
+        elif action in (
+            OAMSStatus.FORWARD_FOLLOWING,
+            OAMSStatus.REVERSE_FOLLOWING,
+            OAMSStatus.COASTING,
+            OAMSStatus.STOPPED,
+        ):
+            self.logger.debug(
+                "OAMS status update (non-action) code=%d action=%d",
+                code,
+                action,
+            )
         else:
-            self.logger.error(
-                "Spurious response from AMS with code %d and action %d",
+            self.logger.debug(
+                "OAMS status update (unhandled) code=%d action=%d",
                 code,
                 action,
             )
