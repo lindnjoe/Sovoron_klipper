@@ -5,11 +5,10 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 
-import logging
 import mcu
 import struct
 from math import pi
-from typing import Tuple, List, Optional, Any, Dict
+from typing import Tuple, List, Optional, Dict
 
 try:  # pragma: no cover - optional dependency during unit tests
     from extras.openams_integration import AMSHardwareService
@@ -153,8 +152,7 @@ class OAMS:
         # Retry configuration
         self.load_retry_max: int = config.getint("load_retry_max", 3, minval=1, maxval=5)
         self.unload_retry_max: int = config.getint("unload_retry_max", 2, minval=1, maxval=3)
-        self.retry_backoff_base: float = config.getfloat("retry_backoff_base", 1.0, above=0.0)
-        self.retry_backoff_max: float = config.getfloat("retry_backoff_max", 5.0, above=0.0)
+        self.retry_delay: float = config.getfloat("retry_delay", 1.0, above=0.0)
         self.auto_unload_on_failed_load: bool = config.getboolean(
             "auto_unload_on_failed_load", True
         )
@@ -370,7 +368,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             f"OAMS[{self.oams_idx}] Retry Status:",
             f"  Load retry max: {self.load_retry_max}",
             f"  Unload retry max: {self.unload_retry_max}",
-            f"  Backoff: {self.retry_backoff_base:.1f}s (max {self.retry_backoff_max:.1f}s)",
+            f"  Retry delay: {self.retry_delay:.1f}s",
             f"  Auto-unload on failed load: {self.auto_unload_on_failed_load}",
             f"  Current unload retry count: {self._unload_retry_count}",
         ]
@@ -401,8 +399,8 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         gcmd.respond_info(f"OAMS[{self.oams_idx}]: Reset all retry counters")
 
     def _calculate_retry_delay(self, attempt_number: int) -> float:
-        """Calculate constant retry delay with max cap."""
-        return min(self.retry_backoff_base, self.retry_backoff_max)
+        """Return constant retry delay."""
+        return self.retry_delay
 
     def _reset_load_retry_count(self, spool_idx: int) -> None:
         """Clear retry tracking for a specific spool."""
@@ -879,7 +877,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         if direction is None:
             raise gcmd.error("DIRECTION is required")
 
-        self.oams_follower_cmd.send([enable, direction])
+        self.set_oams_follower(enable, direction)
         if enable == 1 and direction == 0:
             gcmd.respond_info("Follower enable in reverse direction")
 
