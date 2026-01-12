@@ -386,7 +386,7 @@ class OAMSRunoutMonitor:
 
                 if not hasattr(self, '_last_coast_log_position'):
                     self._last_coast_log_position = 0.0
-                    self.logger.info(
+                    self.logger.debug(
                         "OAMS: COASTING - path_length="
                         f"{path_length:.1f}, effective_path_length={effective_path_length:.1f}, "
                         f"reload_margin={self.reload_before_toolhead_distance:.1f}"
@@ -395,7 +395,7 @@ class OAMSRunoutMonitor:
                 if self.hub_cleared and runout_after_position - self._last_coast_log_position >= 100.0:
                     self._last_coast_log_position = runout_after_position
                     remaining = effective_path_length - consumed_with_margin
-                    self.logger.info(
+                    self.logger.debug(
                         "OAMS: COASTING progress (after hub clear) - "
                         f"runout_after={runout_after_position:.1f}, "
                         f"consumed_with_margin={consumed_with_margin:.1f}, remaining={remaining:.1f}"
