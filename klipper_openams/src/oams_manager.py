@@ -1316,6 +1316,33 @@ class OAMSManager:
         for name, oam in self.printer.lookup_objects(module="oams"):
             self.oams[name] = oam
 
+    def _resolve_oams_name(
+        self,
+        oams_name: Optional[str],
+        oams_obj: Optional[Any] = None,
+    ) -> Tuple[Optional[str], Optional[Any]]:
+        if not oams_name:
+            return None, None
+
+        if oams_name in self.oams:
+            return oams_name, self.oams.get(oams_name)
+
+        if oams_obj is not None:
+            obj_name = getattr(oams_obj, "name", None)
+            if obj_name in self.oams:
+                return obj_name, self.oams.get(obj_name)
+
+        prefixed = f"oams {oams_name}"
+        if prefixed in self.oams:
+            return prefixed, self.oams.get(prefixed)
+
+        if oams_name.startswith("oams "):
+            unprefixed = oams_name[5:]
+            if unprefixed in self.oams:
+                return unprefixed, self.oams.get(unprefixed)
+
+        return oams_name, None
+
 
     def _get_follower_state(self, oams_name: str) -> FollowerState:
         """Get or create FollowerState for an OAMS unit."""
