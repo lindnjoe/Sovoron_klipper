@@ -2876,7 +2876,17 @@ class OAMSManager:
                         min_encoder_movement = 10
 
                         if encoder_delta >= min_encoder_movement:
-                            # Encoder moved - filament engaged successfully!
+                            fps_pressure = oams.fps_value
+                            if fps_pressure >= self.engagement_pressure_threshold:
+                                fps_state.engaged_with_extruder = False
+                                self.logger.warning(
+                                    f"Filament failed to engage for {lane_name} "
+                                    f"(encoder moved {encoder_delta} clicks but FPS pressure stayed high at "
+                                    f"{fps_pressure:.2f})"
+                                )
+                                return False
+
+                            # Encoder moved and pressure dropped - filament engaged successfully.
                             fps_state.engaged_with_extruder = True
                             self.logger.debug(
                                 f"Filament engagement verified for {lane_name} "
