@@ -7,4 +7,5 @@ axiscope.bak
 *.bkp
 *.csv
 *.zip
+!mainsail2.17.zip
 *.git
