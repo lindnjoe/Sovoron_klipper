@@ -75,7 +75,7 @@
             "empty_spool_weight": 250.0,
             "spool_id": 9,
             "color": "#0A2989",
-            "weight": 124.91121602154251,
+            "weight": 124.90914401176428,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "Ready",
@@ -103,7 +103,7 @@
             "empty_spool_weight": 170.0,
             "spool_id": 42,
             "color": "#ffffff",
-            "weight": 379.575956859303,
+            "weight": 379.5759572919832,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "Ready",
@@ -125,20 +125,20 @@
             "map": "T5",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
-            "loaded_to_hub": true,
+            "tool_loaded": false,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
             "empty_spool_weight": 250.0,
             "spool_id": 40,
             "color": "#d69090",
-            "weight": 763.9121573903244,
+            "weight": 776.6554489465368,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -263,7 +263,7 @@
             "hub": "direct_load",
             "extruder": "extruder1",
             "buffer": "TN1",
-            "buffer_status": "Advancing",
+            "buffer_status": "Trailing",
             "lane": 2,
             "map": "T1",
             "load": true,
@@ -364,7 +364,7 @@
                 "lane_loaded": null
             },
             "extruder5": {
-                "lane_loaded": "lane5"
+                "lane_loaded": null
             }
         },
         "bypass": {
