@@ -49,6 +49,8 @@ except Exception:
     OAMSStatus = None
     OAMSOpCode = None
 
+OPENAMS_VERSION = "0.0.1"
+
 # Configuration constants
 PAUSE_DISTANCE = 60
 MIN_ENCODER_DIFF = 3  # Increased from 1 to 3 - prevents false positives during print stalls/brief pauses

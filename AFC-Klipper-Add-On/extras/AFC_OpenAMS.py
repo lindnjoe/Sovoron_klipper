@@ -55,6 +55,8 @@ except Exception:
     AMSEventBus = None
     normalize_extruder_name = None
 
+OPENAMS_VERSION = "0.0.1"
+
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 _ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
 
