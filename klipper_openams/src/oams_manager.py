@@ -2871,9 +2871,9 @@ class OAMSManager:
 
                     if encoder_before is not None:
                         encoder_delta = abs(encoder_after - encoder_before)
-                        # Expect significant encoder movement for reload_length (typically 50-100mm)
-                        # Minimum threshold: at least 10 encoder clicks
-                        min_encoder_movement = 10
+                        # Expect encoder movement for at least half of the engagement extrusion.
+                        # engagement_length is tool_stn / 2, so this checks for tool_stn / 4.
+                        min_encoder_movement = max(1.0, engagement_length / 2.0)
 
                         if encoder_delta >= min_encoder_movement:
                             fps_pressure = oams.fps_value
@@ -2905,7 +2905,7 @@ class OAMSManager:
                             fps_state.engaged_with_extruder = False
                             self.logger.info(
                                 f"Filament failed to engage extruder for {lane_name} "
-                                f"(encoder only moved {encoder_delta} clicks, expected >={min_encoder_movement})"
+                                f"(encoder only moved {encoder_delta} clicks, expected >={min_encoder_movement:.1f})"
                             )
                             return False
                     else:
