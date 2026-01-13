@@ -2871,9 +2871,9 @@ class OAMSManager:
 
                     if encoder_before is not None:
                         encoder_delta = abs(encoder_after - encoder_before)
-                        # Expect encoder movement for at least 40% of the engagement extrusion.
-                        # engagement_length is tool_stn / 2, so this checks for tool_stn / 5.
-                        min_encoder_movement = max(1.0, engagement_length * 0.4)
+                        # Expect encoder movement for at least 20% of the engagement extrusion.
+                        # engagement_length is tool_stn / 2, so this checks for tool_stn / 10.
+                        min_encoder_movement = max(1.0, engagement_length * 0.2)
 
                         if encoder_delta >= min_encoder_movement:
                             fps_pressure = oams.fps_value
