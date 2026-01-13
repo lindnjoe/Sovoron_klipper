@@ -35,8 +35,8 @@ class ToolheadTuner:
         except Exception:
             logging.exception("Toolhead Tuner: error running script")
 
-    def _respond_command(self, gcmd, message):
-        gcmd.respond_raw(f"// {message}")
+    def _respond_command(self, message):
+        self.gcode.respond_raw(f"// {message}")
 
     def _extruder_num_from_name(self, name):
         if name == 'extruder':
@@ -75,31 +75,28 @@ class ToolheadTuner:
         active_extruder = toolhead.get_extruder().get_name()
         return self._extruder_num_from_name(active_extruder)
 
-    def _show_prompt(self, gcmd):
+    def _show_prompt(self):
         if self.extruder_num < 0:
             self.extruder_num = self._get_active_extruder_num()
         selected_extruder = self._extruder_name_from_num(self.extruder_num)
         self.extrude_len, self.retract_len = self._normalize_lengths(
             self.extrude_len, self.retract_len, selected_extruder)
-        self._respond_command(gcmd, 'action:prompt_begin Toolhead Tuner')
+        self._respond_command('action:prompt_begin Toolhead Tuner')
         self._respond_command(
-            gcmd,
             'action:prompt_text Choose extruder and adjust distances (mm)')
         self._respond_command(
-            gcmd,
             'action:prompt_text Extruder buttons switch to the selected tool.')
         self._respond_command(
-            gcmd,
             'action:prompt_text Test Settings buttons heat the extruder if '
             f'needed (default: {int(self.extrude_temp)}C), then move using '
             'the values.')
         extruder_label = (
             'Extruder' if self.extruder_num == 0
             else f'Extruder {self.extruder_num}')
-        self._respond_command(gcmd, f'action:prompt_text {extruder_label}')
+        self._respond_command(f'action:prompt_text {extruder_label}')
         extruder_sections = self._get_extruder_sections()
         if extruder_sections:
-            self._respond_command(gcmd, 'action:prompt_button_group_start')
+            self._respond_command('action:prompt_button_group_start')
             for name in extruder_sections:
                 name_num = self._extruder_num_from_name(name)
                 button_label = (
@@ -107,88 +104,71 @@ class ToolheadTuner:
                     else f'Extruder {name_num}')
                 style = 'primary' if name_num == self.extruder_num else 'secondary'
                 self._respond_command(
-                    gcmd,
                     f'action:prompt_button {button_label}|'
                     f'_TOOLHEAD_TUNER_SELECT EXTRUDER={name_num}|{style}')
-            self._respond_command(gcmd, 'action:prompt_button_group_end')
+            self._respond_command('action:prompt_button_group_end')
         self._respond_command(
-            gcmd,
             f'action:prompt_text Extrude (tool_stn): {self.extrude_len}')
-        self._respond_command(gcmd, 'action:prompt_button_group_start')
+        self._respond_command('action:prompt_button_group_start')
         self._respond_command(
-            gcmd,
             f'action:prompt_button -5|_TOOLHEAD_TUNER_SET '
             f'EXTRUDE_LEN={self.extrude_len - 5}|secondary')
         self._respond_command(
-            gcmd,
             f'action:prompt_button -1|_TOOLHEAD_TUNER_SET '
             f'EXTRUDE_LEN={self.extrude_len - 1}|secondary')
         self._respond_command(
-            gcmd,
             f'action:prompt_button +1|_TOOLHEAD_TUNER_SET '
             f'EXTRUDE_LEN={self.extrude_len + 1}|secondary')
         self._respond_command(
-            gcmd,
             f'action:prompt_button +5|_TOOLHEAD_TUNER_SET '
             f'EXTRUDE_LEN={self.extrude_len + 5}|secondary')
-        self._respond_command(gcmd, 'action:prompt_button_group_end')
+        self._respond_command('action:prompt_button_group_end')
         self._respond_command(
-            gcmd,
             f'action:prompt_text Retract (tool_stn_unload): {self.retract_len}')
-        self._respond_command(gcmd, 'action:prompt_button_group_start')
+        self._respond_command('action:prompt_button_group_start')
         self._respond_command(
-            gcmd,
             f'action:prompt_button -5|_TOOLHEAD_TUNER_SET '
             f'RETRACT_LEN={self.retract_len - 5}|secondary')
         self._respond_command(
-            gcmd,
             f'action:prompt_button -1|_TOOLHEAD_TUNER_SET '
             f'RETRACT_LEN={self.retract_len - 1}|secondary')
         self._respond_command(
-            gcmd,
             f'action:prompt_button +1|_TOOLHEAD_TUNER_SET '
             f'RETRACT_LEN={self.retract_len + 1}|secondary')
         self._respond_command(
-            gcmd,
             f'action:prompt_button +5|_TOOLHEAD_TUNER_SET '
             f'RETRACT_LEN={self.retract_len + 5}|secondary')
-        self._respond_command(gcmd, 'action:prompt_button_group_end')
-        self._respond_command(gcmd, 'action:prompt_text Test Settings:')
-        self._respond_command(gcmd, 'action:prompt_button_group_start')
+        self._respond_command('action:prompt_button_group_end')
+        self._respond_command('action:prompt_text Test Settings:')
+        self._respond_command('action:prompt_button_group_start')
         self._respond_command(
-            gcmd,
             f'action:prompt_button EXTRUDE |_TOOLHEAD_TUNER_MOVE '
             f'EXTRUDER={self.extruder_num} DIST={self.extrude_len}|primary')
         self._respond_command(
-            gcmd,
             f'action:prompt_button +1 |_TOOLHEAD_TUNER_MOVE '
             f'EXTRUDER={self.extruder_num} DIST=1|secondary')
-        self._respond_command(gcmd, 'action:prompt_button_group_end')
-        self._respond_command(gcmd, 'action:prompt_button_group_start')
+        self._respond_command('action:prompt_button_group_end')
+        self._respond_command('action:prompt_button_group_start')
         self._respond_command(
-            gcmd,
             f'action:prompt_button RETRACT |_TOOLHEAD_TUNER_MOVE '
             f'EXTRUDER={self.extruder_num} DIST=-{self.retract_len}|primary')
         self._respond_command(
-            gcmd,
             f'action:prompt_button -1 |_TOOLHEAD_TUNER_MOVE '
             f'EXTRUDER={self.extruder_num} DIST=-1|secondary')
-        self._respond_command(gcmd, 'action:prompt_button_group_end')
+        self._respond_command('action:prompt_button_group_end')
         self._respond_command(
-            gcmd,
             f'action:prompt_footer_button Update Toolhead Values|'
             f'_TOOLHEAD_TUNER_SAVE EXTRUDER={self.extruder_num} '
             f'EXTRUDE_LEN={self.extrude_len} RETRACT_LEN={self.retract_len}|'
             'success')
         self._respond_command(
-            gcmd,
             'action:prompt_footer_button Cancel|RESPOND TYPE=command '
             'MSG="action:prompt_end"|error')
-        self._respond_command(gcmd, 'action:prompt_show')
+        self._respond_command('action:prompt_show')
 
     cmd_TOOLHEAD_TUNER_help = "Popup UI for manual extruder tuning"
     def cmd_TOOLHEAD_TUNER(self, gcmd):
-        self._show_prompt(gcmd)
+        self._show_prompt()
 
     cmd_TOOLHEAD_TUNER_SET_help = "Update Toolhead_Tuner values and refresh"
     def cmd_TOOLHEAD_TUNER_SET(self, gcmd):
@@ -213,7 +193,7 @@ class ToolheadTuner:
             self.extrude_len = 0.1
         if self.retract_len <= 0:
             self.retract_len = 0.1
-        self._show_prompt(gcmd)
+        self._show_prompt()
 
     cmd_TOOLHEAD_TUNER_SELECT_help = "Select an extruder with AFC"
     def cmd_TOOLHEAD_TUNER_SELECT(self, gcmd):
@@ -284,7 +264,7 @@ class ToolheadTuner:
             f'UPDATE_TOOLHEAD_SENSORS EXTRUDER={extruder_name} '
             f'TOOL_STN={extrude_len} TOOL_STN_UNLOAD={retract_len}')
         self._run_script(f'SAVE_EXTRUDER_VALUES EXTRUDER={extruder_name}')
-        gcmd.respond_raw("// action:prompt_end")
+        self._respond_command('action:prompt_end')
 
 
 def load_config(config):
