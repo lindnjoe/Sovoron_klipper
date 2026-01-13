@@ -2852,10 +2852,11 @@ class OAMSManager:
 
                 # Run the engagement extrusion using gcode command
                 # M83: relative extrusion, G92 E0: reset position, G1: extrude
-                remaining_length = max(0.0, engagement_length - 3.0)
+                prime_length = 5.0
+                remaining_length = max(0.0, engagement_length - prime_length)
                 gcode.run_script_from_command("M83")  # Relative extrusion mode
                 gcode.run_script_from_command("G92 E0")  # Reset extruder position
-                gcode.run_script_from_command(f"G1 E3.00 F{engagement_speed:.0f}")  # Prime to help engagement
+                gcode.run_script_from_command(f"G1 E{prime_length:.2f} F{engagement_speed:.0f}")  # Prime to help engagement
                 gcode.run_script_from_command("M400")  # Wait for moves to complete
                 self.reactor.pause(self.reactor.monotonic() + 0.2)
                 if remaining_length > 0.0:
@@ -2876,9 +2877,11 @@ class OAMSManager:
 
                     if encoder_before is not None:
                         encoder_delta = abs(encoder_after - encoder_before)
-                        # Expect encoder movement for at least 20% of the engagement extrusion.
-                        # engagement_length is tool_stn / 2, so this checks for tool_stn / 10.
-                        min_encoder_movement = max(1.0, engagement_length * 0.2)
+                        # Expect encoder movement for at least 20% of the post-prime extrusion.
+                        # engagement_length is tool_stn / 2, so this checks for tool_stn / 10,
+                        # minus the prime length. Apply slight leeway.
+                        expected_movement = max(1.0, remaining_length * 0.2)
+                        min_encoder_movement = max(1.0, expected_movement * 0.9)
 
                         if encoder_delta >= min_encoder_movement:
                             fps_pressure = oams.fps_value
