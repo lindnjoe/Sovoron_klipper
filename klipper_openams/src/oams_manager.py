@@ -2901,7 +2901,39 @@ class OAMSManager:
                                 gcode.run_script_from_command("M400")
                             return True
                         else:
-                            # Encoder didn't move - filament not engaged
+                            # Encoder didn't move enough - re-check after a short delay
+                            self.reactor.pause(self.reactor.monotonic() + 0.3)
+                            try:
+                                encoder_retry = oams.encoder_clicks
+                            except Exception:
+                                encoder_retry = encoder_after
+                            encoder_delta = abs(encoder_retry - encoder_before)
+                            if encoder_delta >= min_encoder_movement:
+                                fps_pressure = oams.fps_value
+                                if fps_pressure >= self.engagement_pressure_threshold:
+                                    fps_state.engaged_with_extruder = False
+                                    self.logger.warning(
+                                        f"Filament failed to engage for {lane_name} "
+                                        f"(encoder moved {encoder_delta} clicks after retry but FPS pressure stayed high at "
+                                        f"{fps_pressure:.2f})"
+                                    )
+                                    return False
+                                fps_state.engaged_with_extruder = True
+                                self.logger.debug(
+                                    f"Filament engagement verified for {lane_name} "
+                                    f"(encoder moved {encoder_delta} clicks after retry during "
+                                    f"{engagement_length:.1f}mm extrusion)"
+                                )
+                                if post_length is not None and post_speed is not None and post_length > 0:
+                                    self.logger.debug(
+                                        f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
+                                        f"at {post_speed:.0f}mm/min"
+                                    )
+                                    gcode.run_script_from_command(f"G1 E{post_length:.2f} F{post_speed:.0f}")
+                                    gcode.run_script_from_command("M400")
+                                return True
+
+                            # Encoder didn't move enough - filament not engaged
                             fps_state.engaged_with_extruder = False
                             self.logger.info(
                                 f"Filament failed to engage extruder for {lane_name} "
