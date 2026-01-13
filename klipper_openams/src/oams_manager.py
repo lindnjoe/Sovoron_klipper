@@ -2854,6 +2854,9 @@ class OAMSManager:
                 # M83: relative extrusion, G92 E0: reset position, G1: extrude
                 gcode.run_script_from_command("M83")  # Relative extrusion mode
                 gcode.run_script_from_command("G92 E0")  # Reset extruder position
+                gcode.run_script_from_command(f"G1 E3.00 F{engagement_speed:.0f}")  # Prime to help engagement
+                gcode.run_script_from_command("M400")  # Wait for moves to complete
+                self.reactor.pause(self.reactor.monotonic() + 0.2)
                 gcode.run_script_from_command(f"G1 E{engagement_length:.2f} F{engagement_speed:.0f}")  # Extrude to nozzle tip
                 gcode.run_script_from_command("M400")  # Wait for moves to complete
 
