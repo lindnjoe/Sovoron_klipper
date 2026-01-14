@@ -1598,13 +1598,23 @@ class afcAMS(afcUnit):
         compare_time = datetime.now()
         td1_timeout = self.afc.reactor.monotonic() + 180.0
         td1_detected = False
+        burst_duration = 4.0
+        rest_duration = 1.0
 
         while self.afc.reactor.monotonic() < td1_timeout:
+            gcode.run_script_from_command(
+                f"OAMS_FOLLOWER OAMS={self.oams_name} ENABLE=1 DIRECTION=1"
+            )
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + burst_duration)
+            gcode.run_script_from_command(
+                f"OAMS_FOLLOWER OAMS={self.oams_name} ENABLE=0 DIRECTION=1"
+            )
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + rest_duration)
+
             if self.get_td1_data(cur_lane, compare_time):
                 td1_detected = True
                 break
             compare_time = datetime.now()
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.0)
 
         gcode.run_script_from_command(
             f"OAMS_ABORT_ACTION OAMS={self.oams_name} CODE=5 WAIT=1"
