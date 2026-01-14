@@ -1209,11 +1209,14 @@ class afcFunction:
                 self.afc.gcode.run_script_from_command(f"AFC_CALI_FAIL TITLE='{title} Failed' FAIL={td1} DISTANCE=0 msg='{msg}' RESET=0")
                 return
 
-            checked, msg, pos = td1_lane.unit_obj.calibrate_td1( td1_lane, dis, tol)
+            checked, msg, pos = td1_lane.unit_obj.calibrate_td1(td1_lane, dis, tol)
             if not checked:
                 fail_string = f"{td1} failed to calibrate TD-1 bowden length, {msg}"
                 self.afc.error.AFC_error(fail_string, pause=False)
-                self.afc.gcode.run_script_from_command(f"AFC_CALI_FAIL TITLE='{title} Failed' FAIL={td1} DISTANCE={pos} msg='{fail_string}' RESET=1")
+                reset_prompt = 0 if getattr(td1_lane.unit_obj, "type", None) == "OpenAMS" else 1
+                self.afc.gcode.run_script_from_command(
+                    f"AFC_CALI_FAIL TITLE='{title} Failed' FAIL={td1} DISTANCE={pos} msg='{fail_string}' RESET={reset_prompt}"
+                )
                 return
             else:
                 calibrated.append(f"'TD1_Bowden_length: {td1}'")
