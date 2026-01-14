@@ -318,6 +318,7 @@ class afcAMS(afcUnit):
 
         self._register_sync_dispatcher()
         self._patch_td1_capture()
+        self._patch_td1_cali_fail_prompt()
 
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES, desc="calibrate the OpenAMS HUB HES value for a specific lane")
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES_ALL", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL, desc="calibrate the OpenAMS HUB HES value for every loaded lane")
@@ -357,6 +358,72 @@ class afcAMS(afcUnit):
         AFCLane.get_td1_data = _patched_get_td1_data
         AFCLane._ams_td1_capture_patched = True
 
+    def _patch_td1_cali_fail_prompt(self):
+        afc_function = getattr(self.afc, "function", None)
+        if afc_function is None:
+            return
+        if getattr(afc_function, "_openams_cali_fail_patched", False):
+            return
+
+        original_cmd = getattr(afc_function, "cmd_AFC_CALI_FAIL", None)
+        if original_cmd is None:
+            return
+
+        def _openams_cmd_AFC_CALI_FAIL(afc_func_self, gcmd):
+            cali = gcmd.get("FAIL", None)
+            title = gcmd.get("TITLE", "AFC Calibration Failed")
+            reset_lane = bool(gcmd.get_int("RESET", 1))
+
+            lane = None
+            if cali is not None:
+                lane = afc_func_self.afc.lanes.get(str(cali))
+
+            if (
+                reset_lane
+                and lane is not None
+                and getattr(lane.unit_obj, "type", None) == "OpenAMS"
+                and "TD-1" in title
+            ):
+                fail_message = gcmd.get("MSG", "")
+                prompt = AFCprompt(gcmd, afc_func_self.logger)
+                buttons = []
+                footer = []
+                text = f"{title} for {cali}. "
+                fps_id = None
+                if lane is not None:
+                    fps_id = lane.unit_obj._get_fps_id_for_lane(lane.name)
+                if fps_id:
+                    text += "First: reset lane, Second: review messages in console and take necessary action and re-run calibration."
+                    buttons.append(
+                        (
+                            "Reset lane",
+                            f"OAMSM_UNLOAD_FILAMENT FPS={fps_id}",
+                            "primary",
+                        )
+                    )
+                if fail_message:
+                    text += f" Fail message: {fail_message}"
+                footer.append(("EXIT", "prompt_end", "info"))
+                prompt.create_custom_p(title, text, buttons, True, None, footer)
+                return
+
+            return original_cmd(gcmd)
+
+        afc_function.cmd_AFC_CALI_FAIL = MethodType(
+            _openams_cmd_AFC_CALI_FAIL,
+            afc_function,
+        )
+        afc_function._openams_cali_fail_patched = True
+
+    def _get_fps_id_for_lane(self, lane_name: str) -> Optional[str]:
+        oams_manager = self.printer.lookup_object("oams_manager", None)
+        if oams_manager is None:
+            return None
+        fps_name = oams_manager.get_fps_for_afc_lane(lane_name)
+        if not fps_name:
+            return None
+        return fps_name.split(" ", 1)[1] if fps_name.startswith("fps ") else fps_name
+
     def _format_openams_calibration_command(self, base_command, lane):
         if base_command not in {"OAMS_CALIBRATE_HUB_HES", "OAMS_CALIBRATE_PTFE_LENGTH"}:
             return super()._format_openams_calibration_command(base_command, lane)
@@ -392,7 +459,7 @@ class afcAMS(afcUnit):
         buttons.append(("Calibrate PTFE Length", f"UNIT_PTFE_CALIBRATION UNIT={self.name}", "secondary"))
 
         any_lane_has_td1_ids = any(lane.td1_device_id for lane in self.lanes.values())
-        if self.afc.td1_defined and any_lane_has_td1_ids:
+        if self.afc.td1_defined and (self.td1_device_id or any_lane_has_td1_ids):
             buttons.append(("Calibrate TD-1 Length", f"AFC_UNIT_TD_ONE_CALIBRATION UNIT={self.name}", "secondary"))
 
         # Back button
@@ -1591,13 +1658,9 @@ class afcAMS(afcUnit):
 
         self.logger.raw(f"Calibrating bowden length to TD-1 device with {cur_lane.name}")
         gcode = self.gcode
-
-        try:
-            gcode.run_script_from_command(
-                f"OAMS_LOAD_SPOOL OAMS={self.oams_name} SPOOL={spool_index} QUIET=1"
-            )
-        except Exception:
-            msg = f"Failed to start OAMS load for {cur_lane.name}"
+        fps_id = self._get_fps_id_for_lane(cur_lane.name)
+        if fps_id is None:
+            msg = f"Unable to resolve FPS for {cur_lane.name}"
             self.logger.error(msg)
             return False, msg, 0
 
@@ -1616,11 +1679,14 @@ class afcAMS(afcUnit):
             if hub_loaded:
                 hub_detected = True
                 break
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+            gcode.run_script_from_command(
+                f"OAMSM_PULSE_FOLLOWER FPS={fps_id} DURATION=0.5 DIRECTION=1"
+            )
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.7)
 
         if not hub_detected:
             gcode.run_script_from_command(
-                f"OAMS_ABORT_ACTION OAMS={self.oams_name} CODE=5 WAIT=1"
+                f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1"
             )
             msg = f"Hub sensor did not trigger during TD-1 calibration for {cur_lane.name}"
             self.logger.error(msg)
@@ -1639,13 +1705,9 @@ class afcAMS(afcUnit):
 
         while self.afc.reactor.monotonic() < td1_timeout:
             gcode.run_script_from_command(
-                f"OAMS_FOLLOWER OAMS={self.oams_name} ENABLE=1 DIRECTION=1"
+                f"OAMSM_PULSE_FOLLOWER FPS={fps_id} DURATION={burst_duration} DIRECTION=1"
             )
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + burst_duration)
-            gcode.run_script_from_command(
-                f"OAMS_FOLLOWER OAMS={self.oams_name} ENABLE=0 DIRECTION=1"
-            )
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + rest_duration)
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + burst_duration + rest_duration)
 
             if self.get_td1_data(cur_lane, compare_time):
                 td1_detected = True
@@ -1653,10 +1715,7 @@ class afcAMS(afcUnit):
             compare_time = datetime.now()
 
         gcode.run_script_from_command(
-            f"OAMS_ABORT_ACTION OAMS={self.oams_name} CODE=5 WAIT=1"
-        )
-        gcode.run_script_from_command(
-            f"OAMS_UNLOAD_SPOOL OAMS={self.oams_name} MAX_RETRIES=1"
+            f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1"
         )
 
         if not td1_detected:
@@ -1722,13 +1781,10 @@ class afcAMS(afcUnit):
             return False, "Unable to resolve spool index"
 
         gcode = self.gcode
-        try:
-            gcode.run_script_from_command(
-                f"OAMS_LOAD_SPOOL OAMS={self.oams_name} SPOOL={spool_index} QUIET=1"
-            )
-        except Exception:
-            self.logger.error(f"Failed to start OAMS load for {cur_lane.name}")
-            return False, "Failed to start OAMS load"
+        fps_id = self._get_fps_id_for_lane(cur_lane.name)
+        if fps_id is None:
+            self.logger.error(f"Unable to resolve FPS for {cur_lane.name}")
+            return False, "Unable to resolve FPS"
 
         hub_timeout = self.afc.reactor.monotonic() + 90.0
         hub_detected = False
@@ -1739,11 +1795,14 @@ class afcAMS(afcUnit):
                 hub_detected = False
             if hub_detected:
                 break
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+            gcode.run_script_from_command(
+                f"OAMSM_PULSE_FOLLOWER FPS={fps_id} DURATION=0.5 DIRECTION=1"
+            )
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.7)
 
         if not hub_detected:
             gcode.run_script_from_command(
-                f"OAMS_ABORT_ACTION OAMS={self.oams_name} CODE=5 WAIT=1"
+                f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1"
             )
             self.logger.error(
                 f"Hub sensor did not trigger during TD-1 capture for {cur_lane.name}"
@@ -1774,21 +1833,18 @@ class afcAMS(afcUnit):
                 break
 
             gcode.run_script_from_command(
-                f"OAMS_FOLLOWER OAMS={self.oams_name} ENABLE=1 DIRECTION=1"
+                f"OAMSM_PULSE_FOLLOWER FPS={fps_id} DURATION=0.5 DIRECTION=1"
             )
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
 
         gcode.run_script_from_command(
-            f"OAMS_FOLLOWER OAMS={self.oams_name} ENABLE=0 DIRECTION=1"
+            f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1"
         )
         self.afc.reactor.pause(self.afc.reactor.monotonic() + 3.5)
         self.get_td1_data(cur_lane, compare_time)
 
         gcode.run_script_from_command(
-            f"OAMS_ABORT_ACTION OAMS={self.oams_name} CODE=5 WAIT=1"
-        )
-        gcode.run_script_from_command(
-            f"OAMS_UNLOAD_SPOOL OAMS={self.oams_name} MAX_RETRIES=1"
+            f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1"
         )
         return True, "TD-1 data captured"
 
@@ -3039,6 +3095,8 @@ class afcAMS(afcUnit):
         # - Calls self.afc.spool._set_values(self) for spool metadata
         # This eliminates manual state management and ensures proper state transitions
         lane.set_loaded()
+        if not previous_loaded and getattr(lane, "td1_when_loaded", False):
+            lane._prep_capture_td1()
         extruder_name = getattr(lane, "extruder_name", None)
         if extruder_name is None and self.registry is not None:
             try:
