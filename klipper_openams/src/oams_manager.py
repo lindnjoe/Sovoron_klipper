@@ -2879,11 +2879,12 @@ class OAMSManager:
 
                     if encoder_before is not None:
                         encoder_delta = abs(encoder_after - encoder_before)
-                        # Expect encoder movement for at least 20% of the post-prime extrusion.
-                        # engagement_length is tool_stn / 2, so this checks for tool_stn / 10,
-                        # minus the prime length. Apply slight leeway.
-                        expected_movement = max(1.0, remaining_length * 0.2)
-                        min_encoder_movement = max(1.0, expected_movement * 0.9)
+                        # Expect encoder movement for at least 50% of the post-prime extrusion,
+                        # then allow a small fixed slack to reduce false failures.
+                        # engagement_length is tool_stn / 2, so this checks for tool_stn / 4,
+                        # minus the prime length. Allow 3 clicks of slack.
+                        expected_movement = max(1.0, remaining_length * 0.5)
+                        min_encoder_movement = max(1.0, expected_movement - 3.0)
 
                         if encoder_delta >= min_encoder_movement:
                             fps_pressure = oams.fps_value
