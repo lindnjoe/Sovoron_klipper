@@ -49,7 +49,7 @@ except Exception:
     OAMSStatus = None
     OAMSOpCode = None
 
-OPENAMS_VERSION = "0.0.1"
+OPENAMS_VERSION = "0.0.2"
 
 # Configuration constants
 PAUSE_DISTANCE = 60
