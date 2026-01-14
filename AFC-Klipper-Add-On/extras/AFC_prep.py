@@ -77,8 +77,11 @@ class afcPrep:
                 else:
                     self.logger.info("Capturing TD-1 data for all loaded lanes")
                     for lane in self.afc.lanes.values():
+                        prep_ready = lane.prep_state
+                        if getattr(lane.unit_obj, "type", None) == "OpenAMS":
+                            prep_ready = lane.load_state
                         if (lane.td1_device_id
-                            and lane.load_state and lane.prep_state):
+                            and lane.load_state and prep_ready):
                             return_status, msg = lane.get_td1_data()
                             if not return_status:
                                 break
@@ -252,4 +255,3 @@ class afcPrep:
 
 def load_config(config):
     return afcPrep(config)
-
