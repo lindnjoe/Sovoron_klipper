@@ -318,6 +318,7 @@ class afcAMS(afcUnit):
 
         self._register_sync_dispatcher()
         self._patch_td1_capture()
+        self._patch_td1_cali_fail_prompt()
 
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES, desc="calibrate the OpenAMS HUB HES value for a specific lane")
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES_ALL", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL, desc="calibrate the OpenAMS HUB HES value for every loaded lane")
@@ -356,6 +357,56 @@ class afcAMS(afcUnit):
         AFCLane._prep_capture_td1 = _patched_prep_capture_td1
         AFCLane.get_td1_data = _patched_get_td1_data
         AFCLane._ams_td1_capture_patched = True
+
+    def _patch_td1_cali_fail_prompt(self):
+        afc_function = getattr(self.afc, "function", None)
+        if afc_function is None:
+            return
+        if getattr(afc_function, "_openams_cali_fail_patched", False):
+            return
+
+        original_cmd = getattr(afc_function, "cmd_AFC_CALI_FAIL", None)
+        if original_cmd is None:
+            return
+
+        def _openams_cmd_AFC_CALI_FAIL(afc_func_self, gcmd):
+            cali = gcmd.get("FAIL", None)
+            title = gcmd.get("TITLE", "AFC Calibration Failed")
+            reset_lane = bool(gcmd.get_int("RESET", 1))
+
+            lane = None
+            if cali is not None:
+                lane = afc_func_self.afc.lanes.get(str(cali))
+
+            if (
+                reset_lane
+                and lane is not None
+                and getattr(lane.unit_obj, "type", None) == "OpenAMS"
+                and "TD-1" in title
+            ):
+                fail_message = gcmd.get("MSG", "")
+                prompt = AFCprompt(gcmd, afc_func_self.logger)
+                buttons = []
+                footer = []
+                text = f"{title} for {cali}. "
+                if fail_message:
+                    text += f" Fail message: {fail_message}"
+                footer.append(("EXIT", "prompt_end", "info"))
+                prompt.create_custom_p(title, text, buttons, True, None, footer)
+                return
+
+            return original_cmd(gcmd)
+
+        afc_function.cmd_AFC_CALI_FAIL = MethodType(
+            _openams_cmd_AFC_CALI_FAIL,
+            afc_function,
+        )
+        afc_function.afc.gcode.register_command(
+            "AFC_CALI_FAIL",
+            afc_function.cmd_AFC_CALI_FAIL,
+            desc=afc_function.cmd_AFC_CALI_FAIL_help,
+        )
+        afc_function._openams_cali_fail_patched = True
 
     def _format_openams_calibration_command(self, base_command, lane):
         if base_command not in {"OAMS_CALIBRATE_HUB_HES", "OAMS_CALIBRATE_PTFE_LENGTH"}:
