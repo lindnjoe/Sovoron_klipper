@@ -209,10 +209,16 @@ class OAMS:
     
     def is_bay_ready(self, bay_index: int) -> bool:
         """Check if a spool bay has filament ready to load."""
+        if not (0 <= bay_index < len(self.f1s_hes_value)):
+            self.logger.error(f"Invalid bay_index {bay_index}, must be 0-{len(self.f1s_hes_value)-1}")
+            return False
         return bool(self.f1s_hes_value[bay_index])
     
     def is_bay_loaded(self, bay_index: int) -> bool:
         """Check if a spool bay has filament loaded into the hub."""
+        if not (0 <= bay_index < len(self.hub_hes_value)):
+            self.logger.error(f"Invalid bay_index {bay_index}, must be 0-{len(self.hub_hes_value)-1}")
+            return False
         return bool(self.hub_hes_value[bay_index])
     
     def stats(self, eventtime):
@@ -285,6 +291,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self.action_status_value = None
         self.logger.info(f"OAMS[{self.oams_idx}]: Cleared software error states on ready")
     def get_spool_status(self, bay_index):
+        if not (0 <= bay_index < len(self.f1s_hes_value)):
+            self.logger.error(f"Invalid bay_index {bay_index}, must be 0-{len(self.f1s_hes_value)-1}")
+            return 0
         return self.f1s_hes_value[bay_index]
             
     def clear_errors(self):

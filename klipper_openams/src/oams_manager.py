@@ -5164,9 +5164,17 @@ class OAMSManager:
         # Schedule completion check after short delay (50ms) to allow command to process
         # Then check if action_status changed (command started processing)
         def _check_completion(eventtime):
+            # Check if OAMS MCU is still available
+            current_oams = self.oams.get(oams_name)
+            if current_oams is None or not self._is_oams_mcu_ready(current_oams):
+                self.logger.debug(f"OAMS {oams_name} no longer available, clearing command queue")
+                self._mcu_command_in_flight[oams_name] = False
+                self._mcu_command_queue.pop(oams_name, None)
+                return self.reactor.NEVER
+
             # If action_status is still None, command completed immediately (like set_led)
             # If action_status is set, need to wait for it to return to None
-            if getattr(oams, "action_status", None) is None:
+            if getattr(current_oams, "action_status", None) is None:
                 # Command completed - mark as not in flight and process next
                 self._mcu_command_in_flight[oams_name] = False
                 self._process_mcu_command_queue(oams_name)
