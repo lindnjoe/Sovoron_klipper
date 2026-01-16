@@ -3839,11 +3839,7 @@ class OAMSManager:
 
             # Clear LED error state if stuck spool was active before resetting state
             if fps_state.stuck_spool.active and oams is not None and spool_index is not None:
-                try:
-                    oams.set_led_error(spool_index, 0)
-                    self.logger.info(f"Cleared stuck spool LED for {fps_name} spool {fps_name} after successful unload")
-                except Exception:
-                    self.logger.error(f"Failed to clear LED on {fps_name} spool {fps_name} after successful unload")
+                self._clear_error_led(oams, spool_index, fps_name, "successful unload")
 
             fps_state.current_lane = None
             fps_state.current_spool_idx = None
@@ -3937,6 +3933,39 @@ class OAMSManager:
                 self.logger.info(f"Notified AFC coordinator that lane {lane_name} unloaded from toolhead after runout")
             except Exception:
                 self.logger.error(f"Failed to notify AFC coordinator about lane {lane_name} unload after runout")
+    def _clear_error_led(
+        self,
+        oam: object,
+        spool_idx: int,
+        fps_name: str,
+        context: str = "operation"
+    ) -> bool:
+        """Centralized LED clearing with consistent error handling.
+
+        Args:
+            oam: OAMS object with set_led_error method
+            spool_idx: Spool index (0-3) to clear LED for
+            fps_name: FPS name for logging
+            context: Context description for logging (e.g., "stuck spool retry", "successful load")
+
+        Returns:
+            True if LED cleared successfully, False otherwise
+        """
+        if oam is None or spool_idx is None:
+            return False
+
+        try:
+            if hasattr(oam, "set_led_error"):
+                oam.set_led_error(spool_idx, 0)
+                self.logger.info(f"Cleared LED for {fps_name} spool {spool_idx} after {context}")
+                return True
+            else:
+                self.logger.warning(f"OAMS {getattr(oam, 'name', 'unknown')} does not have set_led_error method")
+                return False
+        except Exception as e:
+            self.logger.error(f"Failed to clear LED for {fps_name} spool {spool_idx} after {context}: {e}")
+            return False
+
     def _perform_stuck_spool_recovery(
         self,
         fps_name: str,
@@ -3982,11 +4011,7 @@ class OAMSManager:
             oam.unload_spool_with_retry()
             # Clear error LED after successful unload
             if fps_state.stuck_spool.active and fps_state.current_spool_idx is not None:
-                try:
-                    oam.set_led_error(fps_state.current_spool_idx, 0)
-                    self.logger.info(f"Cleared stuck spool LED for {fps_name} after successful retry unload")
-                except Exception:
-                    self.logger.error(f"Failed to clear LED after retry unload on {fps_name}")
+                self._clear_error_led(oam, fps_state.current_spool_idx, fps_name, "stuck spool retry unload")
         except Exception:
             self.logger.error(f"Exception during unload after stuck spool detection for {lane_name}")
             return False
@@ -4470,11 +4495,7 @@ class OAMSManager:
 
         # Clear LED error state if stuck spool was active
         if fps_state.stuck_spool.active:
-            try:
-                oam.set_led_error(bay_index, 0)
-                self.logger.info(f"Cleared stuck spool LED for {fps_name} spool {fps_name} after successful load")
-            except Exception:
-                self.logger.error(f"Failed to clear LED on {fps_name} spool {fps_name} after successful load")
+            self._clear_error_led(oam, bay_index, fps_name, "successful load")
 
         fps_state.reset_stuck_spool_state()
         fps_state.reset_clog_tracker()
@@ -5437,10 +5458,7 @@ class OAMSManager:
                 self.logger.info(f"Cleared stuck spool state for {fps_name} on print resume")
                 # Clear the error LED if we have an OAMS and spool index
                 if oams is not None and fps_state.current_spool_idx is not None:
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 0)
-                    except Exception:
-                        self.logger.error(f"Failed to clear stuck spool LED on {fps_name} after resume")
+                    self._clear_error_led(oams, fps_state.current_spool_idx, fps_name, "print resume (stuck spool)")
 
             # Clear clog_active on resume and reset tracker
             if fps_state.clog.active:
@@ -5451,10 +5469,7 @@ class OAMSManager:
                     fps_state.engagement_checked_at = now
                 # Clear the error LED if we have an OAMS and spool index
                 if oams is not None and fps_state.current_spool_idx is not None:
-                    try:
-                        oams.set_led_error(fps_state.current_spool_idx, 0)
-                    except Exception:
-                        self.logger.error(f"Failed to clear clog LED on {fps_name} after resume")
+                    self._clear_error_led(oams, fps_state.current_spool_idx, fps_name, "print resume (clog)")
 
             if fps_state.stuck_spool.restore_follower:
                 self._restore_follower_if_needed(fps_name, fps_state, oams, "print resume")
