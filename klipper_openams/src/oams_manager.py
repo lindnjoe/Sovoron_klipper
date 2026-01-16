@@ -237,17 +237,27 @@ class OAMSRunoutMonitor:
         
                     lane_name = None
                     spool_empty = None
-                    unit_name = getattr(fps_state, "current_oams", None) or self.fps_name
-        
+                    # Get OAMS name - strip "oams " prefix if present for hardware service lookup
+                    # fps_state.current_oams is "oams oams1" but hardware service expects "oams1"
+                    oams_full_name = getattr(fps_state, "current_oams", None) or self.fps_name
+                    unit_name = oams_full_name
+                    if isinstance(unit_name, str) and unit_name.startswith("oams "):
+                        unit_name = unit_name[5:]  # Strip "oams " prefix
+
                     if self.hardware_service is not None:
                         try:
                             lane_name = self.hardware_service.resolve_lane_for_spool(unit_name, spool_idx)
                             # Successfully resolved - clear fallback flag so we log if it fails again
                             if lane_name is not None and self._logged_lane_resolution_fallback:
-                                self.logger.debug(f"OAMS: Hardware service lane resolution recovered for {self.fps_name}")
+                                self.logger.info(f"OAMS: Hardware service lane resolution recovered for {self.fps_name}")
                                 self._logged_lane_resolution_fallback = False
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            # Log exception details for debugging (only once)
+                            if not self._logged_lane_resolution_fallback:
+                                self.logger.error(
+                                    f"OAMS: Hardware service resolve_lane_for_spool failed for {self.fps_name} "
+                                    f"(unit_name={unit_name}, spool_idx={spool_idx}): {e}"
+                                )
 
                     if lane_name is None and fps_state.current_lane is not None:
                         lane_name = fps_state.current_lane
