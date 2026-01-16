@@ -3937,6 +3937,255 @@ class OAMSManager:
                 self.logger.info(f"Notified AFC coordinator that lane {lane_name} unloaded from toolhead after runout")
             except Exception:
                 self.logger.error(f"Failed to notify AFC coordinator about lane {lane_name} unload after runout")
+    def _perform_stuck_spool_recovery(
+        self,
+        fps_name: str,
+        fps_state: 'FPSState',
+        oam: object,
+        lane_name: str,
+        stuck_attempt: int
+    ) -> bool:
+        """Perform stuck spool recovery sequence: reverse follower, retract, abort, unload.
+
+        Returns True if recovery completed successfully, False otherwise.
+        """
+        self.logger.warning(f"Stuck spool detected for {lane_name}, unloading before retry")
+
+        # STEP 1: Set follower to reverse BEFORE extruder retraction
+        try:
+            self._set_follower_state(fps_name, fps_state, oam, 1, 0, "stuck spool retry", force=True)
+            self.logger.info(f"Set follower to reverse before stuck spool retry on {fps_name}")
+        except Exception:
+            self.logger.warning(f"Failed to set follower reverse before stuck spool retry on {fps_name}")
+
+        # STEP 2: Retract extruder in case filament barely engaged
+        try:
+            engagement_length, engagement_speed = self._get_engagement_params(lane_name)
+            if engagement_length is not None and engagement_speed is not None:
+                gcode = self.printer.lookup_object('gcode')
+                gcode.run_script_from_command("M83")  # Relative extrusion mode
+                gcode.run_script_from_command(f"G1 E-{engagement_length:.2f} F{engagement_speed:.0f}")
+                gcode.run_script_from_command("M400")  # Wait for moves to complete
+                gcode.run_script_from_command(f"G1 E-10.00 F{engagement_speed:.0f}")  # Overlap retract
+        except Exception:
+            self.logger.error(f"Failed to retract extruder after stuck spool detection for {lane_name}")
+
+        # STEP 3: Abort the stuck load operation
+        try:
+            oam.abort_current_action()
+            self.logger.info(f"Aborted stuck load operation for {lane_name} before unload")
+        except Exception:
+            self.logger.error(f"Failed to abort stuck load operation for {lane_name}")
+
+        # STEP 4: Unload the stuck filament
+        try:
+            oam.unload_spool_with_retry()
+            # Clear error LED after successful unload
+            if fps_state.stuck_spool.active and fps_state.current_spool_idx is not None:
+                try:
+                    oam.set_led_error(fps_state.current_spool_idx, 0)
+                    self.logger.info(f"Cleared stuck spool LED for {fps_name} after successful retry unload")
+                except Exception:
+                    self.logger.error(f"Failed to clear LED after retry unload on {fps_name}")
+        except Exception:
+            self.logger.error(f"Exception during unload after stuck spool detection for {lane_name}")
+            return False
+
+        # Brief cooldown after unload
+        try:
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
+        except Exception:
+            pass
+
+        # Notify AFC that lane is unloaded
+        if fps_state.current_lane and AMSRunoutCoordinator is not None:
+            try:
+                AMSRunoutCoordinator.notify_lane_tool_state(
+                    self.printer,
+                    fps_state.current_oams or oam.name,
+                    fps_state.current_lane,
+                    loaded=False,
+                    spool_index=fps_state.current_spool_idx,
+                    eventtime=self.reactor.monotonic()
+                )
+                self.logger.info(f"Notified AFC that {fps_state.current_lane} is unloaded after stuck spool retry")
+            except Exception:
+                self.logger.error(f"Failed to notify AFC about unload for {fps_state.current_lane}")
+
+        # Clear fps_state so retry starts fresh
+        fps_state.state = FPSLoadState.UNLOADED
+        fps_state.current_spool_idx = None
+        fps_state.current_oams = None
+        fps_state.current_lane = None
+        fps_state.since = self.reactor.monotonic()
+        fps_state.stuck_spool.active = False
+        fps_state.stuck_spool.start_time = None
+
+        return True
+
+    def _attempt_oams_load_with_stuck_retry(
+        self,
+        fps_name: str,
+        fps_state: 'FPSState',
+        fps: object,
+        oam: object,
+        oams_name: str,
+        bay_index: int,
+        lane_name: str,
+        encoder: object,
+        current_time: float
+    ) -> Tuple[bool, Optional[str]]:
+        """Attempt OAMS load with stuck spool retry logic (up to STUCK_SPOOL_MAX_ATTEMPTS).
+
+        Returns (success, error_message)
+        """
+        for stuck_attempt in range(STUCK_SPOOL_MAX_ATTEMPTS):
+            if stuck_attempt > 0:
+                self.logger.info(f"Stuck spool retry {stuck_attempt + 1}/{STUCK_SPOOL_MAX_ATTEMPTS} for {lane_name}")
+
+            # Set up FPS state for this load attempt
+            fps_state.state = FPSLoadState.LOADING
+            fps_state.encoder = encoder
+            fps_state.current_oams = oam.name
+            fps_state.current_spool_idx = bay_index
+            fps_state.current_lane = lane_name
+            fps_state.since = current_time
+            fps_state.clear_encoder_samples()
+            fps_state.reset_engagement_tracking()
+
+            # Enable follower forward before load
+            try:
+                self._set_follower_state(fps_name, fps_state, oam, 1, 1, "before load", force=True)
+            except Exception as e:
+                self.logger.warning(f"Failed to set follower forward before load on {fps_name}: {e}")
+
+            # Try to load filament into buffer
+            try:
+                success, message = oam.load_spool_with_retry(bay_index)
+            except Exception:
+                success = False
+                message = f"Failed to load bay {bay_index} on {oams_name}"
+                self.logger.error(message)
+                fps_state.state = FPSLoadState.UNLOADED
+                self._pause_on_critical_failure(message, oams_name)
+                fps_state.engagement_retry_active = False
+                return False, message
+
+            if success:
+                # OAMS load succeeded!
+                self.logger.debug(f"OAMS load succeeded for {lane_name} on stuck attempt {stuck_attempt + 1}")
+                return True, None
+
+            # Load failed (stuck spool detected)
+            self.logger.warning(f"Stuck spool detected on attempt {stuck_attempt + 1}/{STUCK_SPOOL_MAX_ATTEMPTS} for {lane_name}")
+
+            # Check if we've exhausted stuck spool retries
+            if stuck_attempt + 1 >= STUCK_SPOOL_MAX_ATTEMPTS:
+                error_msg = (
+                    f"Stuck spool detected on {lane_name} after {STUCK_SPOOL_MAX_ATTEMPTS} attempts. "
+                    f"Filament may be tangled or spool not feeding properly. "
+                    f"Please manually correct the issue, then run: SET_LANE_LOADED LANE={lane_name}, followed by OAMSM_CLEAR_ERRORS"
+                )
+                self.logger.error(error_msg)
+                self._pause_printer_message(error_msg, oams_name)
+
+                # Attempt recovery before pausing
+                if self._is_oams_mcu_ready(oam):
+                    try:
+                        self._set_follower_state(fps_name, fps_state, oam, 1, 0, "stuck spool max retry", force=True)
+                        fps_param = fps_name.replace("fps ", "", 1)
+                        gcode = self._gcode_obj or self.printer.lookup_object("gcode")
+                        self._gcode_obj = gcode
+                        gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
+                    except Exception:
+                        self.logger.error(f"Failed to unwind stuck spool before pausing on {fps_name}")
+                else:
+                    self.logger.error(f"Skipping stuck spool recovery commands for {fps_name} because OAMS MCU is not ready")
+
+                fps_state.engagement_retry_active = False
+                return False, error_msg
+
+            # Not max retries yet - perform recovery sequence
+            if not self._perform_stuck_spool_recovery(fps_name, fps_state, oam, lane_name, stuck_attempt):
+                return False, f"Failed to recover from stuck spool on {lane_name}"
+
+        return False, f"Failed to load {lane_name} after {STUCK_SPOOL_MAX_ATTEMPTS} stuck spool attempts"
+
+    def _perform_engagement_retry_cleanup(
+        self,
+        fps_name: str,
+        fps_state: 'FPSState',
+        oam: object,
+        lane_name: str,
+        engagement_attempt: int
+    ) -> bool:
+        """Perform cleanup after engagement failure: retract, abort, unload.
+
+        Returns True if cleanup completed successfully, False otherwise.
+        """
+        self.logger.info(
+            f"Filament engagement failed for {lane_name}, unloading before retry "
+            f"(engagement attempt {engagement_attempt + 1})"
+        )
+
+        # Retract extruder to back out the filament extruded during engagement
+        try:
+            engagement_length, engagement_speed = self._get_engagement_params(lane_name)
+            if engagement_length is not None and engagement_speed is not None:
+                self.logger.info(f"Retracting extruder {engagement_length:.1f}mm to reverse engagement extrusion for {lane_name}")
+                gcode = self.printer.lookup_object('gcode')
+                gcode.run_script_from_command("M83")  # Relative extrusion mode
+                gcode.run_script_from_command(f"G1 E-{engagement_length:.2f} F{engagement_speed:.0f}")
+                gcode.run_script_from_command("M400")  # Wait for moves to complete
+                gcode.run_script_from_command(f"G1 E-10.00 F{engagement_speed:.0f}")  # Overlap retract
+            else:
+                self.logger.warning(f"Could not get engagement params for {lane_name}, skipping extruder retraction")
+        except Exception:
+            self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}")
+
+        # Abort any lingering load operation
+        try:
+            oam.abort_current_action()
+        except Exception:
+            self.logger.error(f"Failed to abort load operation before engagement retry for {lane_name}")
+
+        # Unload the filament
+        try:
+            oam.unload_spool_with_retry()
+        except Exception:
+            self.logger.error(f"Exception during unload after engagement failure for {lane_name}")
+            return False
+
+        # Brief cooldown
+        try:
+            self.reactor.pause(self.reactor.monotonic() + 0.5)
+        except Exception:
+            pass
+
+        # Notify AFC that lane is unloaded
+        if fps_state.current_lane and AMSRunoutCoordinator is not None:
+            try:
+                AMSRunoutCoordinator.notify_lane_tool_state(
+                    self.printer,
+                    fps_state.current_oams or oam.name,
+                    fps_state.current_lane,
+                    loaded=False,
+                    spool_index=fps_state.current_spool_idx,
+                    eventtime=self.reactor.monotonic()
+                )
+                self.logger.info(f"Notified AFC that {fps_state.current_lane} is unloaded after engagement retry")
+            except Exception:
+                self.logger.error(f"Failed to notify AFC about unload for {fps_state.current_lane}")
+
+        # Clear fps_state for next retry
+        fps_state.state = FPSLoadState.UNLOADED
+        fps_state.current_spool_idx = None
+        fps_state.current_oams = None
+        fps_state.current_lane = None
+        fps_state.since = self.reactor.monotonic()
+
+        return True
+
     def _load_filament_for_lane(self, lane_name: str) -> Tuple[bool, str]:
         """Load filament for a lane by deriving OAMS and bay from the lane's unit configuration.
 
@@ -4157,284 +4406,37 @@ class OAMSManager:
                 f"Engagement attempt {engagement_attempt + 1}/{max_engagement_retries} for {lane_name}"
             )
 
-            # Inner loop: Stuck spool retries (hardcoded to 2 attempts)
-            # This loop tries to get a successful OAMS load (filament in buffer)
-            oams_load_succeeded = False
-            for stuck_attempt in range(STUCK_SPOOL_MAX_ATTEMPTS):
-                if stuck_attempt > 0:
-                    self.logger.info(f"Stuck spool retry {stuck_attempt + 1}/{STUCK_SPOOL_MAX_ATTEMPTS} for {lane_name}")
+            # Attempt OAMS load with stuck spool retry logic (inner loop)
+            oams_load_succeeded, error_msg = self._attempt_oams_load_with_stuck_retry(
+                fps_name=fps_name,
+                fps_state=fps_state,
+                fps=fps,
+                oam=oam,
+                oams_name=oams_name,
+                bay_index=bay_index,
+                lane_name=lane_name,
+                encoder=encoder,
+                current_time=current_time
+            )
 
-                # Only set state after all preliminary operations succeed
-                fps_state.state = FPSLoadState.LOADING
-                fps_state.encoder = encoder
-                fps_state.current_oams = oam_name
-                fps_state.current_spool_idx = bay_index
-                fps_state.current_lane = lane_name  # Set lane name at start of load attempt for error reporting
-                # Set since to now for THIS load attempt (will be updated on success)
-                fps_state.since = current_time
-                fps_state.clear_encoder_samples()
-                fps_state.reset_engagement_tracking()  # Reset engagement state for clean load attempt
-
-                # CRITICAL: Enable follower BEFORE starting the OAMS load command
-                # The follower motor must be set to forward so filament can flow during load.
-                try:
-                    self._set_follower_state(
-                        fps_name,
-                        fps_state,
-                        oam,
-                        1,
-                        1,
-                        "before load",
-                        force=True,
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"Failed to set follower forward before load on {fps_name}: {e}"
-                    )
-
-                # Try to load filament into buffer via gcode
-                try:
-                    success, message = oam.load_spool_with_retry(bay_index)
-                except Exception:
-                    success = False
-                    message = f"Failed to load bay {bay_index} on {oams_name}"
-                    self.logger.error(message)
-                    fps_state.state = FPSLoadState.UNLOADED
-                    error_msg = message
-
-                    # CRITICAL: Pause printer if load fails during printing
-                    # This prevents printing without filament loaded
-                    self._pause_on_critical_failure(error_msg, oams_name)
-                    fps_state.engagement_retry_active = False
-                    return False, error_msg
-
-                if success:
-                    # OAMS load succeeded! Break out of stuck spool retry loop
-                    oams_load_succeeded = True
-                    self.logger.debug(
-                        f"OAMS load succeeded for {lane_name} on stuck attempt {stuck_attempt + 1}"
-                    )
-                    break
-
-                # Load failed (stuck spool detected)
-                last_error = message
-                self.logger.warning(f"Stuck spool detected on attempt {stuck_attempt + 1}/{STUCK_SPOOL_MAX_ATTEMPTS} for {lane_name}")
-
-                # Check if we've exhausted stuck spool retries
-                if stuck_attempt + 1 >= STUCK_SPOOL_MAX_ATTEMPTS:
-                    # Max stuck spool retries reached - pause for user intervention
-                    error_msg = (
-                        f"Stuck spool detected on {lane_name} after {STUCK_SPOOL_MAX_ATTEMPTS} attempts. "
-                        f"Filament may be tangled or spool not feeding properly. "
-                        f"Please manually correct the issue, then run: SET_LANE_LOADED LANE={lane_name}, followed by OAMSM_CLEAR_ERRORS"
-                    )
-                    self.logger.error(error_msg)
-                    self._pause_printer_message(error_msg, oams_name)
-                    if self._is_oams_mcu_ready(oam):
-                        try:
-                            self._set_follower_state(
-                                fps_name,
-                                fps_state,
-                                oam,
-                                1,
-                                0,
-                                "stuck spool max retry",
-                                force=True,
-                            )
-                            fps_param = fps_name.replace("fps ", "", 1)
-                            gcode = self._gcode_obj
-                            if gcode is None:
-                                gcode = self.printer.lookup_object("gcode")
-                                self._gcode_obj = gcode
-                            gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
-                        except Exception:
-                            self.logger.error(f"Failed to unwind stuck spool before pausing on {fps_name}")
-                    else:
-                        self.logger.error(
-                            f"Skipping stuck spool recovery commands for {fps_name} because OAMS MCU is not ready"
-                        )
-                    fps_state.engagement_retry_active = False
-                    return False, error_msg
-
-                # Not max retries yet - do stuck spool retry sequence
-                self.logger.warning(f"Stuck spool detected for {lane_name}, unloading before retry")
-
-                # STEP 1: Set follower to reverse BEFORE extruder retraction
-                # If filament barely engaged the extruder, we want the follower helping with
-                # the retraction, not fighting against it
-                try:
-                    self._set_follower_state(
-                        fps_name,
-                        fps_state,
-                        oam,
-                        1,
-                        0,
-                        "stuck spool retry",
-                        force=True,
-                    )
-                    self.logger.info(f"Set follower to reverse before stuck spool retry on {fps_name}")
-                except Exception:
-                    self.logger.warning(f"Failed to set follower reverse before stuck spool retry on {fps_name}")
-
-                # STEP 2: Retract extruder in case filament barely engaged
-                # With follower now in reverse, this helps pull filament back cleanly
-                try:
-                    engagement_length, engagement_speed = self._get_engagement_params(lane_name)
-                    if engagement_length is not None and engagement_speed is not None:
-                        gcode = self.printer.lookup_object('gcode')
-                        gcode.run_script_from_command("M83")  # Relative extrusion mode
-                        gcode.run_script_from_command(f"G1 E-{engagement_length:.2f} F{engagement_speed:.0f}")  # Retract
-                        gcode.run_script_from_command("M400")  # Wait for moves to complete
-                        gcode.run_script_from_command(f"G1 E-10.00 F{engagement_speed:.0f}")  # Overlap retract
-                except Exception:
-                    self.logger.error(f"Failed to retract extruder after stuck spool detection for {lane_name}")
-
-                # STEP 3: Abort the stuck load operation via gcode to clear action_status
-                # The monitor detected stuck condition but can't abort from timer callback context
-                # Must abort here in command context to clear action_status before unload can proceed
-                # Without this, unload fails with "OAMS is busy" because action_status is still LOADING
-                try:
-                    oam.abort_current_action()
-                    self.logger.info(f"Aborted stuck load operation for {lane_name} before unload")
-                except Exception:
-                    self.logger.error(f"Failed to abort stuck load operation for {lane_name}")
-
-                # STEP 4: Unload the stuck filament
-                try:
-                    oam.unload_spool_with_retry()
-                    # STEP 4a: Clear error LED after successful unload
-                    # User requirement: LED must be cleared for hardware to operate properly
-                    if fps_state.stuck_spool.active and fps_state.current_spool_idx is not None:
-                        try:
-                            oam.set_led_error(fps_state.current_spool_idx, 0)
-                            self.logger.info(f"Cleared stuck spool LED for {fps_name} after successful retry unload")
-                        except Exception:
-                            self.logger.error(f"Failed to clear LED after retry unload on {fps_name}")
-                except Exception:
-                    self.logger.error(f"Exception during unload after stuck spool detection for {lane_name}")
-
-                # Brief cooldown after unload
-                cooldown = 0.5
-                self.logger.debug(f"Cooling {cooldown:.1f}s after stuck spool unload for {lane_name}")
-                try:
-                    self.reactor.pause(self.reactor.monotonic() + cooldown)
-                except Exception:
-                    pass
-
-                # CRITICAL: Notify AFC that lane is unloaded before clearing fps_state
-                # This keeps AFC state in sync - without this, AFC still thinks the old lane
-                # is loaded, causing future load attempts to skip the unload step
-                if fps_state.current_lane and AMSRunoutCoordinator is not None:
-                    try:
-                        AMSRunoutCoordinator.notify_lane_tool_state(
-                            self.printer,
-                            fps_state.current_oams or oam.name,
-                            fps_state.current_lane,
-                            loaded=False,
-                            spool_index=fps_state.current_spool_idx,
-                            eventtime=self.reactor.monotonic()
-                        )
-                        self.logger.info(f"Notified AFC that {fps_state.current_lane} is unloaded after stuck spool retry")
-                    except Exception:
-                        self.logger.error(f"Failed to notify AFC about unload for {fps_state.current_lane}")
-
-                # Clear fps_state so retry starts fresh
-                fps_state.state = FPSLoadState.UNLOADED
-                fps_state.current_spool_idx = None
-                fps_state.current_oams = None
-                fps_state.current_lane = None
-                fps_state.since = self.reactor.monotonic()
-
-                # CRITICAL: Clear stuck spool flag so detection can run on next attempt
-                fps_state.stuck_spool.active = False
-                fps_state.stuck_spool.start_time = None
-
-                # Continue to next stuck spool attempt
-                continue
-
-            # Check if we broke out of stuck spool loop successfully
             if not oams_load_succeeded:
-                # Should not reach here - we would have paused above
-                last_error = f"Failed to load {lane_name} after {STUCK_SPOOL_MAX_ATTEMPTS} stuck spool attempts"
+                # Stuck spool max retries reached or critical failure
+                last_error = error_msg
                 break
 
             # OAMS load succeeded - now verify filament engaged extruder
-            # Extrude the configured reload length and check FPS pressure drop
             engagement_ok = self._verify_engagement_with_extrude(fps_name, fps_state, fps, lane_name, oam)
             if engagement_ok:
                 load_success = True
-                # Engagement verified! Track lane transitions for runout recovery protection
                 break
 
-            # Filament reached extruder but didn't engage - unload and retry (up to max_engagement_retries)
-            self.logger.info(f"Filament engagement failed for {lane_name}, unloading before retry (engagement attempt {engagement_attempt + 1}/{max_engagement_retries})")
-
-            # Retract extruder by reload distance to back out the filament that was extruded during engagement
-            # This ensures filament position is correct for the next load attempt
-            try:
-                engagement_length, engagement_speed = self._get_engagement_params(lane_name)
-                if engagement_length is not None and engagement_speed is not None:
-                    self.logger.info(
-                        f"Retracting extruder {engagement_length:.1f}mm to reverse engagement extrusion for {lane_name}"
-                    )
-                    gcode = self.printer.lookup_object('gcode')
-                    gcode.run_script_from_command("M83")  # Relative extrusion mode
-                    gcode.run_script_from_command(f"G1 E-{engagement_length:.2f} F{engagement_speed:.0f}")  # Retract
-                    gcode.run_script_from_command("M400")  # Wait for moves to complete
-                    gcode.run_script_from_command(f"G1 E-10.00 F{engagement_speed:.0f}")  # Overlap retract with unload
-                else:
-                    self.logger.warning(f"Could not get engagement params for {lane_name}, skipping extruder retraction")
-            except Exception:
-                self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}")
-
-            # Abort any lingering load operation before unload (defensive programming)
-            # Normally action_status should be None by now (load completed), but if engagement
-            # check happened quickly the MCU might not have cleared it yet
-            try:
-                oam.abort_current_action()
-            except Exception:
-                self.logger.error(f"Failed to abort load operation before engagement retry for {lane_name}")
-
-            # Unload the filament since it didn't engage properly before letting retry logic run
-            try:
-                oam.unload_spool_with_retry()
-            except Exception:
-                self.logger.error(f"Exception during unload after engagement failure for {lane_name}")
-            # Give the MCU a brief window to finish the unload before the next retry
-            cooldown = 0.5
-            self.logger.debug(f"Cooling {cooldown:.1f}s after failed engagement unload for {lane_name}")
-            try:
-                self.reactor.pause(self.reactor.monotonic() + cooldown)
-            except Exception:
-                pass
-
-            # CRITICAL: Notify AFC that lane is unloaded before clearing fps_state
-            # This keeps AFC state in sync - without this, AFC still thinks the old lane
-            # is loaded, causing future load attempts to skip the unload step
-            if fps_state.current_lane and AMSRunoutCoordinator is not None:
-                try:
-                    AMSRunoutCoordinator.notify_lane_tool_state(
-                        self.printer,
-                        fps_state.current_oams or oam.name,
-                        fps_state.current_lane,
-                        loaded=False,
-                        spool_index=fps_state.current_spool_idx,
-                        eventtime=self.reactor.monotonic()
-                    )
-                    self.logger.info(f"Notified AFC that {fps_state.current_lane} is unloaded after engagement retry")
-                except Exception:
-                    self.logger.error(f"Failed to notify AFC about unload for {fps_state.current_lane}")
-
-            # Clear fps_state so retry starts fresh
-            fps_state.state = FPSLoadState.UNLOADED
-            fps_state.current_spool_idx = None
-            fps_state.current_oams = None
-            fps_state.current_lane = None
-            fps_state.since = self.reactor.monotonic()
+            # Filament reached extruder but didn't engage - perform cleanup and retry
+            if not self._perform_engagement_retry_cleanup(fps_name, fps_state, oam, lane_name, engagement_attempt):
+                last_error = f"Failed to clean up after engagement failure for {lane_name}"
+                break
 
             if engagement_attempt + 1 >= max_engagement_retries:
                 last_error = f"Filament failed to engage extruder for {lane_name} after {max_engagement_retries} attempts"
-            # Otherwise loop for another engagement attempt (which starts a fresh stuck spool retry sequence)
 
         fps_state.engagement_retry_active = False
 
