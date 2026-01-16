@@ -4289,19 +4289,22 @@ class OAMSManager:
 
         # Find which FPS has this OAMS
         fps_name = None
-        for fps_name_candidate, fps in self.fpss.items():
-            if hasattr(fps, "oams"):
-                fps_oams = fps.oams
+        fps = None
+        for fps_name_candidate, fps_candidate in self.fpss.items():
+            if hasattr(fps_candidate, "oams"):
+                fps_oams = fps_candidate.oams
                 if isinstance(fps_oams, list):
                     if oam in fps_oams:
                         fps_name = fps_name_candidate
+                        fps = fps_candidate
                         break
                 else:
                     if fps_oams == oam:
                         fps_name = fps_name_candidate
+                        fps = fps_candidate
                         break
 
-        if not fps_name:
+        if not fps_name or fps is None:
             return False, f"No FPS found for OAMS {oams_name}"
 
         fps_state = self.current_state.fps_state[fps_name]
@@ -6208,7 +6211,7 @@ class OAMSManager:
 
                 # Clear the stuck_spool_active flag BEFORE trying to restore follower
                 fps_state.reset_stuck_spool_state(preserve_restore=True)
-                self.logger.info(f"Cleared stuck spool state for {fps_name}, pressure restored to {fps_name:.2f}")
+                self.logger.info(f"Cleared stuck spool state for {fps_name}, pressure restored to {pressure:.2f}")
 
             # Also clear timer if it was running but not yet triggered
             if fps_state.stuck_spool.start_time is not None and not fps_state.stuck_spool.active:
