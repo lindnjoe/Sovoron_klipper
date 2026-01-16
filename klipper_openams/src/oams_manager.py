@@ -49,7 +49,7 @@ except Exception:
     OAMSStatus = None
     OAMSOpCode = None
 
-OPENAMS_VERSION = "0.0.2"
+OPENAMS_VERSION = "0.0.3"
 
 # Configuration constants
 PAUSE_DISTANCE = 60
@@ -69,7 +69,7 @@ STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
 STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
 STUCK_SPOOL_DWELL = 5.0  # Increased from 3.5 to 5.0 - debouncing for high-speed printing with fast extrudes/retracts (FPS is slow to react)
 STUCK_SPOOL_LOAD_GRACE = 8.0
-STUCK_SPOOL_MAX_ATTEMPTS = 2  # User requirement: max 2 attempts for stuck spool pre-engagement detection
+self.stuck_spool_max_attempts = 2  # User requirement: max 2 attempts for stuck spool pre-engagement detection
 
 CLOG_PRESSURE_TARGET = 0.50
 CLOG_SENSITIVITY_LEVELS = {
@@ -891,6 +891,7 @@ class OAMSManager:
 
         # Configurable detection thresholds and timing parameters with validation
         self.stuck_spool_load_grace = config.getfloat("stuck_spool_load_grace", STUCK_SPOOL_LOAD_GRACE, minval=0.0, maxval=60.0)
+        self.stuck_spool_max_attempts = config.getint("stuck_spool_max_attempts", self.stuck_spool_max_attempts, minval=1, maxval=5)
         self.stuck_spool_pressure_threshold = config.getfloat("stuck_spool_pressure_threshold", STUCK_SPOOL_PRESSURE_THRESHOLD, minval=0.0, maxval=1.0)
         self.stuck_spool_pressure_clear_threshold = config.getfloat("stuck_spool_pressure_clear_threshold", STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD, minval=0.0, maxval=1.0)
         self.clog_pressure_target = config.getfloat("clog_pressure_target", CLOG_PRESSURE_TARGET, minval=0.0, maxval=1.0)
@@ -924,6 +925,7 @@ class OAMSManager:
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
         self.printer.register_event_handler("idle_timeout:printing", self._handle_printing_resumed)
         self.printer.register_event_handler("pause:resume", self._handle_printing_resumed)
+        self.printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
 
         self.printer.add_object("oams_manager", self)
         self.register_commands()
@@ -1271,6 +1273,38 @@ class OAMSManager:
                 f"Failed to sync state with AFC: {e}",
                 traceback=traceback.format_exc(),
             )
+
+    def _handle_disconnect(self) -> None:
+        """Cleanup timers and resources on disconnect/shutdown."""
+        self.logger.info("OAMS Manager shutting down, cleaning up timers...")
+
+        # Clean up MCU command poll timers
+        for oams_name, timer in list(self._mcu_command_poll_timers.items()):
+            try:
+                self.reactor.unregister_timer(timer)
+                self.logger.debug(f"Unregistered MCU poll timer for {oams_name}")
+            except Exception as e:
+                self.logger.warning(f"Failed to unregister MCU poll timer for {oams_name}: {e}")
+        self._mcu_command_poll_timers.clear()
+
+        # Clean up follower pulse timers
+        for fps_name, timer in list(self._follower_pulse_timers.items()):
+            try:
+                self.reactor.unregister_timer(timer)
+                self.logger.debug(f"Unregistered follower pulse timer for {fps_name}")
+            except Exception as e:
+                self.logger.warning(f"Failed to unregister follower pulse timer for {fps_name}: {e}")
+        self._follower_pulse_timers.clear()
+
+        # Clean up monitor timers
+        for timer in self.monitor_timers:
+            try:
+                self.reactor.unregister_timer(timer)
+            except Exception as e:
+                self.logger.warning(f"Failed to unregister monitor timer: {e}")
+        self.monitor_timers.clear()
+
+        self.logger.info("OAMS Manager cleanup complete")
 
     def handle_ready(self) -> None:
         """Initialize system when printer is ready."""
@@ -4061,13 +4095,13 @@ class OAMSManager:
         encoder: object,
         current_time: float
     ) -> Tuple[bool, Optional[str]]:
-        """Attempt OAMS load with stuck spool retry logic (up to STUCK_SPOOL_MAX_ATTEMPTS).
+        """Attempt OAMS load with stuck spool retry logic (up to self.stuck_spool_max_attempts).
 
         Returns (success, error_message)
         """
-        for stuck_attempt in range(STUCK_SPOOL_MAX_ATTEMPTS):
+        for stuck_attempt in range(self.stuck_spool_max_attempts):
             if stuck_attempt > 0:
-                self.logger.info(f"Stuck spool retry {stuck_attempt + 1}/{STUCK_SPOOL_MAX_ATTEMPTS} for {lane_name}")
+                self.logger.info(f"Stuck spool retry {stuck_attempt + 1}/{self.stuck_spool_max_attempts} for {lane_name}")
 
             # Set up FPS state for this load attempt
             fps_state.state = FPSLoadState.LOADING
@@ -4103,12 +4137,12 @@ class OAMSManager:
                 return True, None
 
             # Load failed (stuck spool detected)
-            self.logger.warning(f"Stuck spool detected on attempt {stuck_attempt + 1}/{STUCK_SPOOL_MAX_ATTEMPTS} for {lane_name}")
+            self.logger.warning(f"Stuck spool detected on attempt {stuck_attempt + 1}/{self.stuck_spool_max_attempts} for {lane_name}")
 
             # Check if we've exhausted stuck spool retries
-            if stuck_attempt + 1 >= STUCK_SPOOL_MAX_ATTEMPTS:
+            if stuck_attempt + 1 >= self.stuck_spool_max_attempts:
                 error_msg = (
-                    f"Stuck spool detected on {lane_name} after {STUCK_SPOOL_MAX_ATTEMPTS} attempts. "
+                    f"Stuck spool detected on {lane_name} after {self.stuck_spool_max_attempts} attempts. "
                     f"Filament may be tangled or spool not feeding properly. "
                     f"Please manually correct the issue, then run: SET_LANE_LOADED LANE={lane_name}, followed by OAMSM_CLEAR_ERRORS"
                 )
@@ -4135,7 +4169,7 @@ class OAMSManager:
             if not self._perform_stuck_spool_recovery(fps_name, fps_state, oam, lane_name, stuck_attempt):
                 return False, f"Failed to recover from stuck spool on {lane_name}"
 
-        return False, f"Failed to load {lane_name} after {STUCK_SPOOL_MAX_ATTEMPTS} stuck spool attempts"
+        return False, f"Failed to load {lane_name} after {self.stuck_spool_max_attempts} stuck spool attempts"
 
     def _perform_engagement_retry_cleanup(
         self,
@@ -4289,19 +4323,22 @@ class OAMSManager:
 
         # Find which FPS has this OAMS
         fps_name = None
-        for fps_name_candidate, fps in self.fpss.items():
-            if hasattr(fps, "oams"):
-                fps_oams = fps.oams
+        fps = None
+        for fps_name_candidate, fps_candidate in self.fpss.items():
+            if hasattr(fps_candidate, "oams"):
+                fps_oams = fps_candidate.oams
                 if isinstance(fps_oams, list):
                     if oam in fps_oams:
                         fps_name = fps_name_candidate
+                        fps = fps_candidate
                         break
                 else:
                     if fps_oams == oam:
                         fps_name = fps_name_candidate
+                        fps = fps_candidate
                         break
 
-        if not fps_name:
+        if not fps_name or fps is None:
             return False, f"No FPS found for OAMS {oams_name}"
 
         fps_state = self.current_state.fps_state[fps_name]
@@ -4401,10 +4438,24 @@ class OAMSManager:
             self.logger.error(f"Failed to capture load state for lane {lane_name} bay {bay_index}")
             return False, f"Failed to capture load state for lane {lane_name}"
 
-        # REFACTOR: Use AFC's tool_max_unload_attempts config for ENGAGEMENT retries only
-        # Stuck spool retries are separate (hardcoded to 2 attempts)
-        # This ensures consistent retry behavior across AFC and OAMS, using AFC as the single
-        # source of truth for retry configuration.
+        # =======================================================================================
+        # CONFIGURATION PRECEDENCE: Engagement Retry Count
+        # =======================================================================================
+        # Uses AFC's tool_max_unload_attempts for engagement retries (semantic repurposing)
+        #
+        # Priority Order:
+        #   1. AFC.tool_max_unload_attempts (if AFC available) - USED FOR ENGAGEMENT RETRIES
+        #   2. OAMS.load_retry_max (fallback if AFC not available)
+        #
+        # Note: AFC's "tool_max_unload_attempts" is semantically an unload config but
+        # repurposed here for load engagement retries to maintain AFC as single source of truth.
+        # This creates some semantic confusion but ensures consistent retry counts across system.
+        #
+        # Stuck Spool Retries (separate pool):
+        #   - Configured via OAMSM.stuck_spool_max_attempts (default: 2)
+        #   - Independent from engagement retries (nested loop structure)
+        #   - Each engagement attempt gets fresh stuck spool retry budget
+        # =======================================================================================
         afc = self._get_afc()
         if afc is not None and hasattr(afc, 'tool_max_unload_attempts'):
             max_engagement_retries = afc.tool_max_unload_attempts
@@ -4419,7 +4470,7 @@ class OAMSManager:
 
         self.logger.debug(
             f"Starting load attempts for {lane_name} (max {max_engagement_retries} engagement attempts, "
-            f"{STUCK_SPOOL_MAX_ATTEMPTS} stuck spool attempts per engagement try)"
+            f"{self.stuck_spool_max_attempts} stuck spool attempts per engagement try)"
         )
 
         # Outer loop: Engagement retries (uses configured max_engagement_retries)
@@ -5128,9 +5179,17 @@ class OAMSManager:
         # Schedule completion check after short delay (50ms) to allow command to process
         # Then check if action_status changed (command started processing)
         def _check_completion(eventtime):
+            # Check if OAMS MCU is still available
+            current_oams = self.oams.get(oams_name)
+            if current_oams is None or not self._is_oams_mcu_ready(current_oams):
+                self.logger.debug(f"OAMS {oams_name} no longer available, clearing command queue")
+                self._mcu_command_in_flight[oams_name] = False
+                self._mcu_command_queue.pop(oams_name, None)
+                return self.reactor.NEVER
+
             # If action_status is still None, command completed immediately (like set_led)
             # If action_status is set, need to wait for it to return to None
-            if getattr(oams, "action_status", None) is None:
+            if getattr(current_oams, "action_status", None) is None:
                 # Command completed - mark as not in flight and process next
                 self._mcu_command_in_flight[oams_name] = False
                 self._process_mcu_command_queue(oams_name)
@@ -6141,6 +6200,27 @@ class OAMSManager:
         encoder_diff = fps_state.record_encoder_sample(encoder_value)
         encoder_moving = encoder_diff is not None and encoder_diff >= MIN_ENCODER_DIFF
 
+        # =======================================================================================
+        # HYSTERESIS STATE MACHINE: Stuck Spool Detection
+        # =======================================================================================
+        # Uses dual-threshold hysteresis to prevent flapping between stuck/unstuck states:
+        #
+        # State Transitions:
+        #   IDLE ? TIMER_RUNNING: pressure <= stuck_spool_pressure_threshold (0.08) AND encoder stopped
+        #   TIMER_RUNNING ? ACTIVE: timer exceeds STUCK_SPOOL_DWELL (5.0s)
+        #   ACTIVE ? IDLE: pressure >= stuck_spool_pressure_clear_threshold (0.12) OR encoder moving
+        #   TIMER_RUNNING ? IDLE: encoder moving OR pressure restored
+        #
+        # Hysteresis prevents oscillation:
+        #   - Lower threshold (0.08) to START detection
+        #   - Upper threshold (0.12) to CLEAR detection
+        #   - Gap of 0.04 provides ~50% margin to prevent rapid state changes
+        #
+        # Why Both Conditions Required:
+        #   During normal printing pauses/retracts, pressure may drop but encoder naturally stops.
+        #   Requiring BOTH conditions prevents false positives from these normal printer states.
+        # =======================================================================================
+
         # Hysteresis logic: Use lower threshold to start timer, upper threshold to clear
         # CRITICAL: Require BOTH low pressure AND encoder stopped to prevent false positives
         if pressure <= self.stuck_spool_pressure_threshold and not encoder_moving:
@@ -6208,7 +6288,7 @@ class OAMSManager:
 
                 # Clear the stuck_spool_active flag BEFORE trying to restore follower
                 fps_state.reset_stuck_spool_state(preserve_restore=True)
-                self.logger.info(f"Cleared stuck spool state for {fps_name}, pressure restored to {fps_name:.2f}")
+                self.logger.info(f"Cleared stuck spool state for {fps_name}, pressure restored to {pressure:.2f}")
 
             # Also clear timer if it was running but not yet triggered
             if fps_state.stuck_spool.start_time is not None and not fps_state.stuck_spool.active:
@@ -6228,7 +6308,49 @@ class OAMSManager:
         # else: Pressure is in hysteresis band (between thresholds) - maintain current state
 
     def _check_clog(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
-        """Check for clog conditions (OPTIMIZED)."""
+        """Check for clog conditions (OPTIMIZED).
+
+        =======================================================================================
+        CLOG DETECTION ALGORITHM
+        =======================================================================================
+        Detects filament path blockages by monitoring extruder motion vs encoder response.
+
+        Detection Window:
+          - Configurable per sensitivity level (low/medium/high)
+          - Medium: 24mm extruder extrusion window
+          - Tracks extruder movement and encoder clicks over this distance
+
+        Detection Criteria (ALL must be true):
+          1. Extruder moved >= extrusion_window mm (e.g., 24mm)
+          2. Encoder clicks < encoder_slack threshold (e.g., 8 clicks)
+          3. FPS pressure within normal band around target (0.50 ± 0.06)
+          4. Sustained for >= dwell time (e.g., 10.0s)
+
+        Pressure Band Check:
+          - Prevents false positives from stuck spool (pressure too low)
+          - Prevents false positives from active extrusion (pressure too high)
+          - Band width varies by sensitivity: low=0.08, medium=0.06, high=0.04
+          - Center target: 0.50 (configurable via clog_pressure_target)
+
+        Sensitivity Levels:
+          low:    window=48mm, slack=15, band=±0.08, dwell=12s (fewest false positives)
+          medium: window=24mm, slack=8,  band=±0.06, dwell=10s (balanced - default)
+          high:   window=12mm, slack=4,  band=±0.04, dwell=8s  (earliest detection)
+
+        Rate Limiting:
+          - Checks throttled to CLOG_CHECK_INTERVAL (8.0s) when not active
+          - Reduces CPU/log churn during normal printing
+          - Active clogs checked every monitor cycle for recovery detection
+
+        Suppression Windows (prevent false positives):
+          - During engagement verification
+          - During engagement retries
+          - 5s after lane transitions (allows new filament to engage)
+          - When AFC bypass enabled (manual control)
+          - When runout monitoring inactive
+          - When pressure too low (indicates stuck spool, not clog)
+        =======================================================================================
+        """
         # OPTIMIZATION: Use cached idle_timeout object
         is_printing = False
         if self._idle_timeout_obj is not None:
