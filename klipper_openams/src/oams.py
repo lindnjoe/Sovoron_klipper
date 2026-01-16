@@ -1,15 +1,14 @@
-# OpenAMS Mainboard
+## OpenAMS Mainboard
 #
 # Copyright (C) 2025 JR Lomas <lomas.jr@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 
-import logging
 import mcu
 import struct
 from math import pi
-from typing import Tuple, List, Optional, Any, Dict
+from typing import Tuple, List, Optional, Dict
 
 try:  # pragma: no cover - optional dependency during unit tests
     from extras.openams_integration import AMSHardwareService
@@ -19,6 +18,8 @@ except Exception:  # pragma: no cover - best-effort integration only
 # Pre-compiled struct formats for float conversions 
 _FLOAT_STRUCT = struct.Struct("f")
 _U32_STRUCT = struct.Struct("I")
+
+OPENAMS_VERSION = "0.0.2"
 
 # OAMS Hardware Status Constants
 class OAMSStatus:
@@ -67,6 +68,8 @@ class OAMS:
         self.section_name = config.get_name().split()[-1]
         self.mcu = mcu.get_printer_mcu(self.printer, config.get("mcu", "mcu"))
         self.reactor = self.printer.get_reactor()
+        afc_obj = self.printer.lookup_object("AFC")
+        self.logger = afc_obj.logger
 
         # OPTIMIZATION: Cache gcode object
         self._cached_gcode = None
@@ -151,13 +154,13 @@ class OAMS:
         # Retry configuration
         self.load_retry_max: int = config.getint("load_retry_max", 3, minval=1, maxval=5)
         self.unload_retry_max: int = config.getint("unload_retry_max", 2, minval=1, maxval=3)
-        self.retry_backoff_base: float = config.getfloat("retry_backoff_base", 1.0, above=0.0)
-        self.retry_backoff_max: float = config.getfloat("retry_backoff_max", 5.0, above=0.0)
+        self.retry_delay: float = config.getfloat("retry_delay", 3.0, above=0.0)
         self.auto_unload_on_failed_load: bool = config.getboolean(
             "auto_unload_on_failed_load", True
         )
         self.dock_load: bool = config.getboolean("dock_load", False)
         self.post_load_purge: float = config.getfloat("post_load_purge", 0.0)
+        self.extra_retract: float = config.getfloat("extra_retract", -10.0)
 
         # Retry state tracking
         self._load_retry_count: Dict[int, int] = {}
@@ -173,6 +176,7 @@ class OAMS:
         self._unload_retry_failures: int = 0
         self._last_load_failure_time: Optional[float] = None
         self._last_unload_failure_time: Optional[float] = None
+        self.hardware_service = None
 
         # Expose the underlying hardware controller to AFC when available
         if AMSHardwareService is not None:
@@ -181,8 +185,9 @@ class OAMS:
                     self.printer, self.section_name
                 )
                 service.attach_controller(self)
+                self.hardware_service = service
             except Exception:
-                logging.getLogger(__name__).error(
+                self.logger.error(
                     "Failed to register OAMS controller with AMSHardwareService"
                 )
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
@@ -265,7 +270,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             self.clear_errors()
             
         except Exception as e:
-            logging.error(f"Failed to initialize OAMS commands: {e}")
+            self.logger.error(f"Failed to initialize OAMS commands: {e}")
     def handle_ready(self):
         """Clear software error states when klippy is ready.
 
@@ -278,7 +283,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self.action_status = None
         self.action_status_code = None
         self.action_status_value = None
-        logging.info(f"OAMS[{self.oams_idx}]: Cleared software error states on ready")
+        self.logger.info(f"OAMS[{self.oams_idx}]: Cleared software error states on ready")
     def get_spool_status(self, bay_index):
         return self.f1s_hes_value[bay_index]
             
@@ -290,7 +295,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             try:
                 self.set_led_error(i, 0)
             except Exception as e:
-                logging.error(f"Failed to clear LED error for bay {i} on {getattr(self, 'name', 'unknown')}: {e}")
+                self.logger.error(f"Failed to clear LED error for bay {i} on {getattr(self, 'name', 'unknown')}: {e}")
 
         # Clear any stale action status from previous operations
         self.action_status = None
@@ -301,21 +306,20 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         try:
             self.current_spool = self.determine_current_spool()
         except Exception as e:
-            logging.error(f"Failed to determine current spool during clear_errors on {getattr(self, 'name', 'unknown')}: {e}")
+            self.logger.error(f"Failed to determine current spool during clear_errors on {getattr(self, 'name', 'unknown')}: {e}")
             
     def set_led_error(self, idx, value):
-        if logging.getLogger(__name__).isEnabledFor(logging.DEBUG):
-            logging.debug(f"Setting LED {idx} to {value}")
+        self.logger.debug(f"Setting LED {idx} to {value}")
         self.oams_set_led_error_cmd.send([idx, value])
         
     def determine_current_spool(self):
         params = self.oams_spool_query_spool_cmd.send()
         if params is None:
-            logging.warning(f"OAMS[{self.oams_idx}]: Failed to query current spool - no response from MCU")
+            self.logger.warning(f"OAMS[{self.oams_idx}]: Failed to query current spool - no response from MCU")
             return None
 
         if "spool" not in params:
-            logging.warning(f"OAMS[{self.oams_idx}]: Spool query response missing 'spool' field")
+            self.logger.warning(f"OAMS[{self.oams_idx}]: Spool query response missing 'spool' field")
 
             return None
 
@@ -323,7 +327,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         if 0 <= spool_val <= 3:
             return spool_val
 
-        logging.error(f"OAMS[{self.oams_idx}]: Hardware reported invalid spool index {spool_val} (expected 0-3)")
+        self.logger.info(
+            f"OAMS[{self.oams_idx}]: Hardware reported invalid spool index {spool_val} (expected 0-3); treating as no spool loaded"
+        )
         return None
         
 
@@ -345,6 +351,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             ("OAMS_PID_AUTOTUNE", self.cmd_OAMS_PID_AUTOTUNE, self.cmd_OAMS_PID_AUTOTUNE_help),
             ("OAMS_PID_SET", self.cmd_OAMS_PID_SET, self.cmd_OAMS_PID_SET_help),
             ("OAMS_CURRENT_PID_SET", self.cmd_OAMS_CURRENT_PID_SET, self.cmd_OAMS_CURRENT_PID_SET_help),
+            ("OAMS_ABORT_ACTION", self.cmd_OAMS_ABORT_ACTION, self.cmd_OAMS_ABORT_ACTION_help),
             ("OAMS_RETRY_STATUS", self.cmd_OAMS_RETRY_STATUS, self.cmd_OAMS_RETRY_STATUS_help),
             (
                 "OAMS_RESET_RETRY_COUNTS",
@@ -363,7 +370,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             f"OAMS[{self.oams_idx}] Retry Status:",
             f"  Load retry max: {self.load_retry_max}",
             f"  Unload retry max: {self.unload_retry_max}",
-            f"  Backoff: {self.retry_backoff_base:.1f}s (max {self.retry_backoff_max:.1f}s)",
+            f"  Retry delay: {self.retry_delay:.1f}s",
             f"  Auto-unload on failed load: {self.auto_unload_on_failed_load}",
             f"  Current unload retry count: {self._unload_retry_count}",
         ]
@@ -394,9 +401,8 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         gcmd.respond_info(f"OAMS[{self.oams_idx}]: Reset all retry counters")
 
     def _calculate_retry_delay(self, attempt_number: int) -> float:
-        """Calculate exponential backoff delay with max cap."""
-        delay = self.retry_backoff_base * (2 ** max(attempt_number - 1, 0))
-        return min(delay, self.retry_backoff_max)
+        """Calculate constant retry delay."""
+        return self.retry_delay
 
     def _reset_load_retry_count(self, spool_idx: int) -> None:
         """Clear retry tracking for a specific spool."""
@@ -428,7 +434,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         while retry_count < retry_limit:
             if retry_count > 0:
                 delay = self._calculate_retry_delay(retry_count)
-                logging.info(
+                self.logger.info(
                     f"OAMS[{self.oams_idx}]: Load retry {retry_count + 1}/{retry_limit} for spool {spool_idx}, waiting {delay:.1f}s"
                 )
                 self.reactor.pause(self.reactor.monotonic() + delay)
@@ -447,8 +453,12 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 else:
                     self._last_load_was_retry[spool_idx] = False
                 self._reset_load_retry_count(spool_idx)
-                logging.info(
-                    f"OAMS[{self.oams_idx}]: Successfully loaded spool {spool_idx} on attempt {retry_count + 1}"
+                lane_name = None
+                if self.hardware_service is not None:
+                    lane_name = self.hardware_service.resolve_lane_for_spool(self.name, spool_idx)
+                lane_label = f"lane {lane_name}" if lane_name else f"spool {spool_idx}"
+                self.logger.info(
+                    f"OAMS[{self.oams_idx}]: Successfully loaded {lane_label} on attempt {retry_count + 1}"
                 )
                 return True, message
 
@@ -457,15 +467,15 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
 
             if retry_count + 1 < retry_limit:
-                logging.warning(
+                self.logger.warning(
                     f"OAMS[{self.oams_idx}]: Load failed for spool {spool_idx}: {message}. Attempt {retry_count + 1}/{retry_limit}"
                 )
 
                 if self.auto_unload_on_failed_load:
-                    logging.info(f"OAMS[{self.oams_idx}]: Auto-unloading before retry")
+                    self.logger.info(f"OAMS[{self.oams_idx}]: Auto-unloading before retry")
                     unload_success, unload_msg = self.unload_spool_with_retry()
                     if not unload_success:
-                        logging.error(
+                        self.logger.error(
                             f"OAMS[{self.oams_idx}]: Failed to unload before retry: {unload_msg}"
                         )
                         # FIX: Abort load retry sequence if auto-unload fails
@@ -531,10 +541,23 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         while self._unload_retry_count < retry_limit:
             if self._unload_retry_count > 0:
                 delay = self._calculate_retry_delay(self._unload_retry_count)
-                logging.info(
+                self.logger.info(
                     f"OAMS[{self.oams_idx}]: Unload retry {self._unload_retry_count + 1}/{retry_limit}, waiting {delay:.1f}s"
                 )
                 self.reactor.pause(self.reactor.monotonic() + delay)
+                try:
+                    gcode = self._cached_gcode
+                    if gcode is None:
+                        gcode = self.printer.lookup_object("gcode")
+                        self._cached_gcode = gcode
+                    gcode.run_script_from_command("M83")
+                    gcode.run_script_from_command("G92 E0")
+                    gcode.run_script_from_command("G1 E-5.00 F1200")
+                    gcode.run_script_from_command("M400")
+                except Exception:
+                    self.logger.warning(
+                        f"OAMS[{self.oams_idx}]: Failed to retract extruder before unload retry"
+                    )
 
             self._unload_retry_count += 1
             attempt_number = self._unload_retry_count
@@ -544,7 +567,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
             if success:
                 self._reset_unload_retry_count()
-                logging.info(
+                self.logger.info(
                     f"OAMS[{self.oams_idx}]: Successfully unloaded spool on attempt {attempt_number}"
                 )
                 return True, message
@@ -554,7 +577,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
 
             if self._unload_retry_count < retry_limit:
-                logging.warning(
+                self.logger.warning(
                     f"OAMS[{self.oams_idx}]: Unload failed: {message}. Attempt {self._unload_retry_count}/{retry_limit}"
                 )
                 # Continue loop for retry
@@ -711,7 +734,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         # reactor.pause() waits without affecting toolhead command stream
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
-                logging.error(f"OAMS[{self.oams_idx}]: Load operation timed out after 30 seconds")
+                self.logger.error(f"OAMS[{self.oams_idx}]: Load operation timed out after 30 seconds")
                 self.action_status = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS load operation timed out (MCU unresponsive)"
@@ -742,11 +765,12 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             raise gcmd.error("Invalid SPOOL index")
 
         
+        quiet = gcmd.get_int("QUIET", 0)
         success, message = self.load_spool_with_retry(spool_idx)
         
-        if success:
+        if success and not quiet:
             gcmd.respond_info(message)
-        else:
+        elif not success:
             gcmd.error(message)
             
     def unload_spool(self):
@@ -759,7 +783,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         # reactor.pause() waits without affecting toolhead command stream
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
-                logging.error(f"OAMS[{self.oams_idx}]: Unload operation timed out after 60 seconds")
+                self.logger.error(f"OAMS[{self.oams_idx}]: Unload operation timed out after 60 seconds")
                 self.action_status = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS unload operation timed out (MCU unresponsive)"
@@ -780,16 +804,27 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
     cmd_OAMS_UNLOAD_SPOOL_help = "Unload a spool of filament"
     def cmd_OAMS_UNLOAD_SPOOL(self, gcmd):
-        success, message = self.unload_spool_with_retry()
+        max_retries = gcmd.get_int("MAX_RETRIES", None)
+        success, message = self.unload_spool_with_retry(max_retries=max_retries)
         if success:
             gcmd.respond_info(message)
         else:
             gcmd.error(message)
 
+    cmd_OAMS_ABORT_ACTION_help = "Abort the current OAMS action"
+    def cmd_OAMS_ABORT_ACTION(self, gcmd):
+        code = gcmd.get_int("CODE", OAMSOpCode.ERROR_KLIPPER_CALL)
+        wait = gcmd.get_int("WAIT", 1)
+        self.abort_current_action(code=code, wait=bool(wait))
+
     def set_oams_follower(self, enable, direction):
         self.oams_follower_cmd.send([enable, direction])
 
-    def abort_current_action(self, code: int = OAMSOpCode.ERROR_KLIPPER_CALL) -> None:
+    def abort_current_action(
+        self,
+        code: int = OAMSOpCode.ERROR_KLIPPER_CALL,
+        wait: bool = True,
+    ) -> None:
         """Abort any in-flight hardware action initiated by Klipper helpers.
 
         IMPORTANT: This waits for the MCU to finish the current operation before
@@ -800,31 +835,40 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         if self.action_status is None:
             return
 
-        logging.warning(
-            f"OAMS[{self.oams_idx}]: Aborting current action {self.action_status} with code {code} - waiting for MCU to complete"
-        )
+        if wait:
+            self.logger.debug(
+                f"OAMS[{self.oams_idx}]: Aborting current action {self.action_status} with code {code} - waiting for MCU to complete"
+            )
 
-        # Wait for MCU to finish the current operation (max 5 seconds)
-        # The MCU will send an oams_action_status response when done
-        timeout = self.reactor.monotonic() + 5.0
-        pause_delay = 0.5
-        while self.action_status is not None:
-            if self.reactor.monotonic() > timeout:
-                logging.error(f"OAMS[{self.oams_idx}]: Abort timeout - MCU did not respond, forcing clear")
-                break
-            # Use reactor.pause to wait without queueing into toolhead
-            # Increased from 0.05s to 0.5s to reduce reactor pressure during MCU communication issues
-            # Using 0.5s provides good balance between responsiveness and reducing MCU load
-            self.reactor.pause(self.reactor.monotonic() + pause_delay)
-            # Gradually stretch the pause during longer waits to avoid tight loops when firmware is unresponsive
-            pause_delay = min(pause_delay + 0.25, 1.5)
+        if wait:
+            # Wait for MCU to finish the current operation (max 5 seconds)
+            # The MCU will send an oams_action_status response when done
+            timeout = self.reactor.monotonic() + 5.0
+            pause_delay = 0.5
+            while self.action_status is not None:
+                if self.reactor.monotonic() > timeout:
+                    self.logger.debug(
+                        f"OAMS[{self.oams_idx}]: Abort timeout - MCU did not respond, forcing clear"
+                    )
+                    break
+                # Use reactor.pause to wait without queueing into toolhead
+                # Increased from 0.05s to 0.5s to reduce reactor pressure during MCU communication issues
+                # Using 0.5s provides good balance between responsiveness and reducing MCU load
+                self.reactor.pause(self.reactor.monotonic() + pause_delay)
+                # Gradually stretch the pause during longer waits to avoid tight loops when firmware is unresponsive
+                pause_delay = min(pause_delay + 0.25, 1.5)
 
-        # Now clear the status (may already be None if MCU responded)
-        self.action_status_code = code
-        self.action_status_value = None
-        self.action_status = None
+            # Now clear the status (may already be None if MCU responded)
+            self.action_status_code = code
+            self.action_status_value = None
+            self.action_status = None
 
-        logging.info(f"OAMS[{self.oams_idx}]: Abort complete - ready for new operations")
+            self.logger.info(f"OAMS[{self.oams_idx}]: Abort complete - ready for new operations")
+        else:
+            self.action_status_code = code
+            self.logger.debug(
+                f"OAMS[{self.oams_idx}]: Abort requested without waiting; awaiting MCU completion"
+            )
     cmd_OAMS_FOLLOWER_help = "Enable or disable follower and set its direction"
     def cmd_OAMS_FOLLOWER(self, gcmd):
         enable = gcmd.get_int("ENABLE", None)
@@ -835,7 +879,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         if direction is None:
             raise gcmd.error("DIRECTION is required")
 
-        self.oams_follower_cmd.send([enable, direction])
+        self.set_oams_follower(enable, direction)
         if enable == 1 and direction == 0:
             gcmd.respond_info("Follower enable in reverse direction")
 
@@ -864,8 +908,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         return self.i_value
 
     def _oams_action_status(self, params):
-        if logging.getLogger(__name__).isEnabledFor(logging.DEBUG):
-            logging.debug("OAMS status received")
+        self.logger.debug("OAMS status received")
 
         
         action = params["action"]
@@ -881,9 +924,20 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         elif code == OAMSOpCode.ERROR_KLIPPER_CALL:
             self.action_status = None
             self.action_status_code = code
+        elif action in (
+            OAMSStatus.FORWARD_FOLLOWING,
+            OAMSStatus.REVERSE_FOLLOWING,
+            OAMSStatus.COASTING,
+            OAMSStatus.STOPPED,
+        ):
+            self.logger.debug(
+                "OAMS status update (non-action) code=%d action=%d",
+                code,
+                action,
+            )
         else:
-            logging.error(
-                "Spurious response from AMS with code %d and action %d",
+            self.logger.debug(
+                "OAMS status update (unhandled) code=%d action=%d",
                 code,
                 action,
             )

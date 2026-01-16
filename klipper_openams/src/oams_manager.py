@@ -22,14 +22,12 @@
 # - post_load_pressure_dwell: Duration (seconds) to monitor pressure after load (default: 15.0)
 # - load_fps_stuck_threshold: FPS pressure above which load is considered failed (default: 0.75)
 # - clog_sensitivity: Detection sensitivity level - "low", "medium", "high" (default: "medium")
-# - preretract: Default preretract distance (mm) applied before unload (default: -10.0)
+# - extra_retract: Default extra retract distance (mm) applied before unload (default: 10.0)
 
-import json
 import logging
-import time
 import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
@@ -51,6 +49,8 @@ except Exception:
     OAMSStatus = None
     OAMSOpCode = None
 
+OPENAMS_VERSION = "0.0.2"
+
 # Configuration constants
 PAUSE_DISTANCE = 60
 MIN_ENCODER_DIFF = 3  # Increased from 1 to 3 - prevents false positives during print stalls/brief pauses
@@ -60,6 +60,7 @@ MONITOR_ENCODER_PERIOD_IDLE = 4.0  # OPTIMIZATION: Longer interval when idle
 MONITOR_ENCODER_SPEED_GRACE = 3.0  # Increased from 2.0 to 3.0 - more grace time before stuck detection
 MIN_EXTRUDER_ENGAGEMENT_DELTA = 0.5  # Minimum extruder movement to confirm engagement
 ENGAGEMENT_SUPPRESSION_WINDOW = 10.0  # Increased from 6.0 to 10.0 - longer suppression after engagement to prevent false clog detection
+CLOG_CHECK_INTERVAL = 8.0  # Minimum seconds between clog checks to reduce log/CPU churn
 AFC_DELEGATION_TIMEOUT = 30.0
 COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
@@ -142,6 +143,8 @@ class ClogState:
     min_pressure: Optional[float] = None        # Minimum FPS pressure observed during clog
     max_pressure: Optional[float] = None        # Maximum FPS pressure observed during clog
     last_extruder: Optional[float] = None       # Last extruder position checked
+    last_wait_log_time: Optional[float] = None  # Last time we logged a wait for extrusion window
+    last_check_time: Optional[float] = None     # Last time clog detection ran
 
 
 class OAMSRunoutMonitor:
@@ -154,6 +157,8 @@ class OAMSRunoutMonitor:
                  fps_state,
                  oams: Dict[str, Any],
                  reload_callback: Callable,
+                 logger: logging.Logger,
+                 follower_callback: Optional[Callable[..., None]] = None,
                  reload_before_toolhead_distance: float = 0.0,
                  debounce_delay: float = 0.0):
         self.oams = oams
@@ -161,6 +166,8 @@ class OAMSRunoutMonitor:
         self.fps_name = fps_name
         self.fps_state = fps_state
         self.fps = fps
+        self.logger = logger
+        self._follower_callback = follower_callback
 
         self.state = OAMSRunoutState.STOPPED
         self.runout_position: Optional[float] = None
@@ -190,9 +197,9 @@ class OAMSRunoutMonitor:
             try:
                 self.hardware_service = AMSRunoutCoordinator.register_runout_monitor(self)
             except Exception as e:
-                logging.getLogger(__name__).error(
+                self.logger.error(
                     "CRITICAL: Failed to register OpenAMS monitor with AFC (AMSRunoutCoordinator). "
-                    "Infinite runout and AFC integration will not function. Error: %s", e
+                    f"Infinite runout and AFC integration will not function. Error: {e}"
                 )
                 self.hardware_service = None
         
@@ -217,7 +224,7 @@ class OAMSRunoutMonitor:
                         fps_state.afc_delegation_active = False
                         fps_state.afc_delegation_until = 0.0
         
-                    oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+                    oams_obj = self._get_oams_object(fps_state.current_oams)
                     if oams_obj is None:
                         return eventtime + MONITOR_ENCODER_PERIOD
         
@@ -238,7 +245,9 @@ class OAMSRunoutMonitor:
         
                     if lane_name is None and fps_state.current_lane is not None:
                         lane_name = fps_state.current_lane
-                        logging.debug(f"OAMS: Using fps_state.current_lane '{lane_name}' (hardware_service didn't resolve lane name)")
+                        self.logger.debug(
+                            f"OAMS: Using fps_state.current_lane '{lane_name}' (hardware_service didn't resolve lane name)"
+                        )
 
         
                     try:
@@ -247,11 +256,11 @@ class OAMSRunoutMonitor:
                             return eventtime + MONITOR_ENCODER_PERIOD
                         spool_empty = not bool(f1s_values[spool_idx])
                         if self._logged_f1s_error:
-                            logging.debug(f"OAMS: F1S values recovered for {self.fps_name}")
+                            self.logger.debug(f"OAMS: F1S values recovered for {self.fps_name}")
                             self._logged_f1s_error = False
                     except Exception:
                         if not self._logged_f1s_error:
-                            logging.error(f"OAMS: Failed to read F1S values for {self.fps_name} - runout detection paused")
+                            self.logger.error(f"OAMS: Failed to read F1S values for {self.fps_name} - runout detection paused")
                             self._logged_f1s_error = True
                         return eventtime + MONITOR_ENCODER_PERIOD
         
@@ -267,7 +276,9 @@ class OAMSRunoutMonitor:
                             # First time seeing empty, start debounce timer
                             self.f1s_empty_start = current_time
                             if self.debounce_delay > 0.0:
-                                logging.debug(f"OAMS: F1S reports empty on {self.fps_name} spool {spool_idx}, starting {self.debounce_delay:.1f}s debounce timer")
+                                self.logger.debug(
+                                    f"OAMS: F1S reports empty on {self.fps_name} spool {spool_idx}, starting {self.debounce_delay:.1f}s debounce timer"
+                                )
 
                         elif current_time - self.f1s_empty_start >= self.debounce_delay:
                             # Debounce duration elapsed, trigger runout
@@ -278,7 +289,9 @@ class OAMSRunoutMonitor:
                         # F1S shows filament present, reset debounce timer
                         if self.f1s_empty_start is not None:
                             if self.debounce_delay > 0.0:
-                                logging.debug(f"OAMS: F1S shows filament present again on {self.fps_name} spool {spool_idx}, resetting debounce timer")
+                                self.logger.debug(
+                                    f"OAMS: F1S shows filament present again on {self.fps_name} spool {spool_idx}, resetting debounce timer"
+                                )
 
                             self.f1s_empty_start = None
         
@@ -303,16 +316,18 @@ class OAMSRunoutMonitor:
                         self.runout_after_position = None
                         self.coasting_start_time = None
                         self.state = OAMSRunoutState.COASTING
-                        logging.info(
-                            "OAMS: Pause complete, entering COASTING (waiting for hub to clear before counting)",
-                            self.fps_name,
+                        self.logger.info(
+                            f"OAMS: Pause complete, entering COASTING (waiting for hub to clear before counting) on {self.fps_name}"
                         )
 
+                    oams_obj = self._get_oams_object(fps_state.current_oams)
+                    if oams_obj is None:
+                        return eventtime + MONITOR_ENCODER_PERIOD
                     try:
-                        hub_values = self.oams[fps_state.current_oams].hub_hes_value
+                        hub_values = oams_obj.hub_hes_value
                         spool_present = bool(hub_values[spool_idx])
                     except Exception as e:
-                        logging.error(f"OAMS: Failed to read hub HES values during COASTING on {self.fps_name}: {e}")
+                        self.logger.error(f"OAMS: Failed to read hub HES values during COASTING on {self.fps_name}: {e}")
                         return eventtime + MONITOR_ENCODER_PERIOD
         
                     if spool_present:
@@ -322,7 +337,9 @@ class OAMSRunoutMonitor:
                             else:
                                 elapsed = self.reactor.monotonic() - self.coasting_start_time
                                 if elapsed >= COASTING_TIMEOUT:
-                                    logging.info(f"OAMS: COASTING timeout reached ({elapsed:.1f}s) on {elapsed}; proceeding to reload")
+                                    self.logger.info(
+                                        f"OAMS: COASTING timeout reached ({elapsed:.1f}s) on {self.fps_name}; proceeding to reload"
+                                    )
                                     self.state = OAMSRunoutState.RELOADING
                                     self.reload_callback()
                         # If we previously cleared the hub but sensor reports present again,
@@ -336,9 +353,8 @@ class OAMSRunoutMonitor:
                             self.hub_clear_position = fps.extruder.last_position
                             self.runout_after_position = 0.0
                             self.coasting_start_time = None
-                            logging.info(
-                                "OAMS: Hub sensor cleared at position %.1f, starting shared PTFE countdown",
-                                self.hub_clear_position,
+                            self.logger.info(
+                                f"OAMS: Hub sensor cleared at position {self.hub_clear_position:.1f}, starting shared PTFE countdown"
                             )
 
                     if self.hub_clear_position is not None:
@@ -351,9 +367,9 @@ class OAMSRunoutMonitor:
                         self.runout_after_position = 0.0
 
                 try:
-                    path_length = getattr(self.oams[fps_state.current_oams], "filament_path_length", 0.0)
+                    path_length = getattr(oams_obj, "filament_path_length", 0.0)
                 except Exception as e:
-                    logging.error(f"OAMS: Failed to read filament path length while coasting on {self.fps_name}: {e}")
+                    self.logger.error(f"OAMS: Failed to read filament path length while coasting on {self.fps_name}: {e}")
                     return eventtime + MONITOR_ENCODER_PERIOD
 
                 effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
@@ -372,25 +388,37 @@ class OAMSRunoutMonitor:
 
                 if not hasattr(self, '_last_coast_log_position'):
                     self._last_coast_log_position = 0.0
-                    logging.info("OAMS: COASTING - path_length=%.1f, effective_path_length=%.1f, reload_margin=%.1f",
-                               path_length, effective_path_length, self.reload_before_toolhead_distance)
+                    self.logger.debug(
+                        "OAMS: COASTING - path_length="
+                        f"{path_length:.1f}, effective_path_length={effective_path_length:.1f}, "
+                        f"reload_margin={self.reload_before_toolhead_distance:.1f}"
+                    )
 
                 if self.hub_cleared and runout_after_position - self._last_coast_log_position >= 100.0:
                     self._last_coast_log_position = runout_after_position
                     remaining = effective_path_length - consumed_with_margin
-                    logging.info("OAMS: COASTING progress (after hub clear) - runout_after=%.1f, consumed_with_margin=%.1f, remaining=%.1f",
-                               runout_after_position, consumed_with_margin, remaining)
+                    self.logger.debug(
+                        "OAMS: COASTING progress (after hub clear) - "
+                        f"runout_after={runout_after_position:.1f}, "
+                        f"consumed_with_margin={consumed_with_margin:.1f}, remaining={remaining:.1f}"
+                    )
 
                 if self.hub_cleared and consumed_with_margin >= effective_path_length:
-                    logging.info("OAMS: Old filament cleared shared PTFE (%.2f mm after hub clear, %.2f mm effective path), loading new lane",
-                               runout_after_position, effective_path_length)
+                    self.logger.info(
+                        "OAMS: Old filament cleared shared PTFE "
+                        f"({runout_after_position:.2f} mm after hub clear, "
+                        f"{effective_path_length:.2f} mm effective path), loading new lane"
+                    )
                     self._last_coast_log_position = 0.0  # Reset for next runout
                     self.state = OAMSRunoutState.RELOADING
                     self.reload_callback()
         
                 return eventtime + MONITOR_ENCODER_PERIOD
-            except Exception:
-                logging.exception(f"Runout monitor crashed for {self.fps_name}; continuing after backoff")
+            except Exception as e:
+                self.logger.error(
+                    f"Runout monitor crashed for {self.fps_name}; continuing after backoff: {e}",
+                    traceback=traceback.format_exc(),
+                )
                 return eventtime + MONITOR_ENCODER_PERIOD_IDLE
 
         self._timer_callback = _monitor_runout
@@ -425,7 +453,7 @@ class OAMSRunoutMonitor:
 
                     # If no runout lane is configured, pause immediately without reload attempt
                     if target_lane_name is None:
-                        logging.info(f"OAMS: No runout_lane configured for {lane_name} - pausing without reload")
+                        self.logger.info(f"OAMS: No runout_lane configured for {lane_name} - pausing without reload")
                         self.state = OAMSRunoutState.PAUSED
                         self.runout_position = fps.extruder.last_position
                         fps_state.is_cross_extruder_runout = False
@@ -439,23 +467,36 @@ class OAMSRunoutMonitor:
 
                     target_lane_obj = afc.lanes.get(target_lane_name)
         except Exception as e:
-            logging.error(f"OAMS: Failed to resolve runout lane mapping for {lane_name}: {e}")
+            self.logger.error(f"OAMS: Failed to resolve runout lane mapping for {lane_name}: {e}")
             current_lane_obj = None
             target_lane_obj = None
             target_lane_name = None
+        if target_lane_name is None and lane_name:
+            try:
+                target_lane_name = self._get_runout_lane_from_snapshot(lane_name)
+                if target_lane_name:
+                    afc = self.printer.lookup_object('AFC', None)
+                    if afc and hasattr(afc, 'lanes'):
+                        target_lane_obj = afc.lanes.get(target_lane_name)
+            except Exception:
+                self.logger.debug(f"OAMS: Failed to read AFC.var.unit runout_lane for {lane_name}")
 
         try:
-            current_extruder = getattr(current_lane_obj, 'extruder_name', None) if current_lane_obj else None
-            target_extruder = getattr(target_lane_obj, 'extruder_name', None) if target_lane_obj else None
+            current_extruder = self._get_lane_extruder_name(current_lane_obj)
+            target_extruder = self._get_lane_extruder_name(target_lane_obj)
 
             if current_lane_obj and target_lane_obj and current_extruder and target_extruder and current_extruder != target_extruder:
                 self.is_cross_extruder_runout = True
-                logging.info(f"OAMS: Detected cross-extruder runout: {lane_name} (extruder {current_extruder}) -> {target_lane_name} (extruder {target_extruder})")
+                self.logger.info(
+                    f"OAMS: Detected cross-extruder runout: {lane_name} (extruder {current_extruder}) -> {target_lane_name} (extruder {target_extruder})"
+                )
 
             else:
                 self.is_cross_extruder_runout = False
                 if current_lane_obj and target_lane_obj and current_extruder == target_extruder:
-                    logging.info(f"OAMS: Detected same-extruder runout: {lane_name} -> {target_lane_name} (both on extruder {current_extruder})")
+                    self.logger.info(
+                        f"OAMS: Detected same-extruder runout: {lane_name} -> {target_lane_name} (both on extruder {current_extruder})"
+                    )
 
 
                     # Set flag on current lane to allow lane_loaded clearing during sensor callback
@@ -463,14 +504,16 @@ class OAMSRunoutMonitor:
                     if current_lane_obj:
                         current_lane_obj._oams_same_fps_runout = True
                 elif current_lane_obj or target_lane_obj:
-                    logging.warning(f"OAMS: Defaulting to same-extruder runout (missing extruder info): {lane_name} -> {target_lane_name or 'unknown'}")
+                    self.logger.warning(
+                        f"OAMS: Defaulting to same-extruder runout (missing extruder info): {lane_name} -> {target_lane_name or 'unknown'}"
+                    )
 
 
                     # Set flag anyway for default case
                     if current_lane_obj:
                         current_lane_obj._oams_same_fps_runout = True
         except Exception as e:
-            logging.error(f"OAMS: Failed to determine cross-extruder runout status, defaulting to same-FPS: {e}")
+            self.logger.error(f"OAMS: Failed to determine cross-extruder runout status, defaulting to same-FPS: {e}")
             self.is_cross_extruder_runout = False
 
         self.state = OAMSRunoutState.DETECTED
@@ -482,26 +525,139 @@ class OAMSRunoutMonitor:
             try:
                 afc = self.printer.lookup_object('AFC')
                 if afc and hasattr(afc, 'lanes'):
-                    lane_obj = afc.lanes.get(lane_name)
-                    if lane_obj:
-                        lane_obj._oams_cross_extruder_runout = True
-                        logging.info(f"OAMS: Set cross-extruder runout flag on lane {lane_name} to bypass shared load/prep validation")
+                        lane_obj = afc.lanes.get(lane_name)
+                        if lane_obj:
+                            lane_obj._oams_cross_extruder_runout = True
+                        self.logger.info(
+                            f"OAMS: Set cross-extruder runout flag on lane {lane_name} to bypass shared load/prep validation"
+                        )
 
             except Exception as e:
-                logging.error(f"OAMS: Failed to set cross-extruder runout flag on lane {lane_name}: {e}")
+                self.logger.error(f"OAMS: Failed to set cross-extruder runout flag on lane {lane_name}: {e}")
 
         if self.is_cross_extruder_runout:
-            logging.info(f"OAMS: Cross-extruder runout detected on FPS {self.fps_name} (F1S empty, target on different extruder) - will trigger immediate tool change")
+            self.logger.info(
+                f"OAMS: Cross-extruder runout detected on FPS {self.fps_name} (F1S empty, target on different extruder) - will trigger immediate tool change"
+            )
 
         else:
-            logging.info(f"OAMS: Same-extruder runout detected on FPS {self.fps_name} (F1S empty), pausing for {PAUSE_DISTANCE} mm")
+            self.logger.info(
+                f"OAMS: Same-extruder runout detected on FPS {self.fps_name} (F1S empty), pausing for {PAUSE_DISTANCE} mm"
+            )
+            if self._follower_callback is not None:
+                try:
+                    self._follower_callback(
+                        self.fps_name,
+                        fps_state,
+                        oams_obj,
+                        1,
+                        1,
+                        "same-FPS runout coast",
+                        True,
+                    )
+                except Exception:
+                    self.logger.error(
+                        f"Failed to keep follower enabled for {self.fps_name} during same-FPS runout"
+                    )
 
 
         if AMSRunoutCoordinator is not None:
             try:
                 AMSRunoutCoordinator.notify_runout_detected(self, spool_idx, lane_name=lane_name)
             except Exception:
-                logging.getLogger(__name__).exception("Failed to notify AFC about OpenAMS runout")
+                self.logger.error("Failed to notify AFC about OpenAMS runout")
+
+    def _get_runout_lane_from_snapshot(self, lane_name: str) -> Optional[str]:
+        unit_name = None
+        afc = self.printer.lookup_object("AFC", None)
+        if afc is not None:
+            lane_obj = getattr(afc, "lanes", {}).get(lane_name)
+            if lane_obj is not None:
+                unit_name = getattr(lane_obj, "unit", None)
+
+        lane_data = self._get_lane_snapshot(lane_name, unit_name=unit_name)
+        if isinstance(lane_data, dict):
+            return lane_data.get("runout_lane")
+        return None
+
+    def _resolve_oams_name(
+        self,
+        oams_name: Optional[str],
+        oams_obj: Optional[Any] = None,
+    ) -> Tuple[Optional[str], Optional[Any]]:
+        if not oams_name:
+            return None, None
+
+        if oams_name in self.oams:
+            return oams_name, self.oams.get(oams_name)
+
+        if oams_obj is not None:
+            obj_name = getattr(oams_obj, "name", None)
+            if obj_name in self.oams:
+                return obj_name, self.oams.get(obj_name)
+
+        prefixed = f"oams {oams_name}"
+        if prefixed in self.oams:
+            return prefixed, self.oams.get(prefixed)
+
+        if oams_name.startswith("oams "):
+            unprefixed = oams_name[5:]
+            if unprefixed in self.oams:
+                return unprefixed, self.oams.get(unprefixed)
+
+        return oams_name, None
+
+    def _get_oams_object(self, oams_name: Optional[str]):
+        _, oams_obj = self._resolve_oams_name(oams_name)
+        return oams_obj
+
+    def _normalize_oams_name(self, oams_name: Optional[str], oams_obj: Optional[Any] = None) -> Optional[str]:
+        resolved_name, _ = self._resolve_oams_name(oams_name, oams_obj)
+        return resolved_name
+
+    def _get_lane_extruder_name(self, lane) -> Optional[str]:
+        if lane is None:
+            return None
+        extruder_obj = getattr(lane, "extruder_obj", None)
+        extruder_name = getattr(lane, "extruder_name", None)
+        lane_name = getattr(lane, "name", None)
+        name = None
+        if extruder_obj is not None:
+            name = getattr(extruder_obj, "name", None)
+        if not name and extruder_name:
+            name = extruder_name
+        if not name and lane_name:
+            try:
+                unit_name = getattr(lane, "unit", None)
+                lane_data = self._get_lane_snapshot(lane_name, unit_name=unit_name)
+                if isinstance(lane_data, dict):
+                    name = lane_data.get("extruder")
+            except Exception:
+                self.logger.debug(f"OAMS: Failed to read AFC.var.unit extruder for {lane_name}")
+        return _normalize_extruder_name(name)
+
+    def _resolve_oams_for_lane(self, lane_name: Optional[str]) -> Optional[Any]:
+        if not lane_name:
+            return None
+
+        afc = self._get_afc()
+        if afc is None or not hasattr(afc, "lanes"):
+            return None
+
+        lane = afc.lanes.get(lane_name)
+        if lane is None:
+            return None
+
+        unit_obj = getattr(lane, "unit_obj", None)
+        if unit_obj is None:
+            base_unit_name = getattr(lane, "unit", None)
+            if isinstance(base_unit_name, str) and ":" in base_unit_name:
+                base_unit_name = base_unit_name.split(":", 1)[0]
+            if base_unit_name and hasattr(afc, "units"):
+                unit_obj = afc.units.get(str(base_unit_name))
+
+        oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
+        return self._get_oams_object(oams_name)
 
     def start(self) -> None:
         if self.timer is None:
@@ -613,6 +769,7 @@ class FPSState:
         self.engagement_extruder_pos: Optional[float] = None
         self.load_pressure_dropped: bool = False
         self.engagement_in_progress: bool = False  # Set during engagement verification to suppress stuck detection
+        self.engagement_retry_active: bool = False  # Suppress clog detection during engagement retry flow
 
     def record_encoder_sample(self, value: int) -> Optional[int]:
         """Record encoder sample and return diff if we have 2 samples."""
@@ -649,6 +806,8 @@ class FPSState:
         self.clog.min_pressure = None
         self.clog.max_pressure = None
         self.clog.last_extruder = None
+        self.clog.last_wait_log_time = None
+        self.clog.last_check_time = None
 
     def reset_engagement_tracking(self) -> None:
         """Reset engagement tracking state for clean retry attempts."""
@@ -665,6 +824,8 @@ class FPSState:
         self.clog.start_time = timestamp
         self.clog.min_pressure = pressure
         self.clog.max_pressure = pressure
+        self.clog.last_wait_log_time = None
+        self.clog.last_check_time = timestamp
         
     def __repr__(self) -> str:
         state_names = {0: "UNLOADED", 1: "LOADED", 2: "LOADING", 3: "UNLOADING"}
@@ -678,13 +839,13 @@ class OAMSManager:
         self.config = config
         self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
-        self.logger = logging.getLogger(__name__)
+        self.afc = self.printer.lookup_object("AFC")
+        self.logger = self.afc.logger
 
         self.oams: Dict[str, Any] = {}
         self.fpss: Dict[str, Any] = {}
 
         self.current_state = OAMSState()
-        self.afc = None
         self._afc_logged = False
 
         self.monitor_timers: List[Any] = []
@@ -694,6 +855,7 @@ class OAMSManager:
         # Follower coast tracking: when all hub sensors go empty, coast 50mm before disabling
         self.follower_coast_distance = 50.0  # mm to coast after hub empties
         self.follower_state: Dict[str, FollowerState] = {}  # oams_name -> FollowerState (consolidated tracking)
+        self._follower_pulse_timers: Dict[str, Any] = {}
 
         # LED state tracking: avoid sending redundant LED commands to MCU
         # Key format: "oams_name:spool_idx" -> error_state (0 or 1)
@@ -734,7 +896,7 @@ class OAMSManager:
         self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL, minval=0.0, maxval=60.0)
         self.load_fps_stuck_threshold = config.getfloat("load_fps_stuck_threshold", LOAD_FPS_STUCK_THRESHOLD, minval=0.0, maxval=1.0)
         self.engagement_pressure_threshold = config.getfloat("engagement_pressure_threshold", 0.6, minval=0.0, maxval=1.0)
-        self.preretract_default = config.getfloat("preretract", -10.0)
+        self.extra_retract_default = config.getfloat("extra_retract", 10.0)
 
         # Validate hysteresis: clear threshold must be > trigger threshold
         if self.stuck_spool_pressure_clear_threshold <= self.stuck_spool_pressure_threshold:
@@ -803,6 +965,16 @@ class OAMSManager:
             monitor = self.runout_monitors.get(fps_name)
             is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
             was_loaded = (fps_state.state == FPSLoadState.LOADED)
+            is_printing = False
+            try:
+                idle_timeout = self._idle_timeout_obj
+                if idle_timeout is None:
+                    idle_timeout = self.printer.lookup_object("idle_timeout")
+                    self._idle_timeout_obj = idle_timeout
+                if idle_timeout is not None:
+                    is_printing = idle_timeout.get_status(self.reactor.monotonic())["state"] == "Printing"
+            except Exception:
+                is_printing = False
 
             # Check F1S sensor state if we have OAMS and spool info
             # This helps detect runout conditions before monitor transitions state
@@ -824,6 +996,49 @@ class OAMSManager:
 
             # Query what AFC thinks is loaded (don't assign yet!)
             detected_lane, current_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
+
+            if current_oams is not None and detected_spool_idx is not None:
+                same_fps_runout_configured = False
+                if is_printing and detected_lane:
+                    afc = self._get_afc()
+                    if afc is not None and hasattr(afc, "lanes"):
+                        source_lane = afc.lanes.get(detected_lane)
+                        if source_lane is not None:
+                            raw_runout_lane = getattr(source_lane, "runout_lane", None)
+                            runout_lane_name = self._resolve_afc_lane_name(afc, raw_runout_lane)
+                            target_lane = afc.lanes.get(runout_lane_name) if runout_lane_name else None
+                            source_extruder = self._get_lane_extruder_name(source_lane)
+                            target_extruder = self._get_lane_extruder_name(target_lane)
+                            same_fps_runout_configured = bool(
+                                source_extruder and target_extruder and source_extruder == target_extruder
+                            )
+                hardware_empty = False
+                try:
+                    hub_values = getattr(current_oams, 'hub_hes_value', None)
+                    f1s_values = getattr(current_oams, 'f1s_hes_value', None)
+                    if (hub_values is not None and f1s_values is not None and
+                            detected_spool_idx < len(hub_values) and detected_spool_idx < len(f1s_values)):
+                        hub_has_filament = bool(hub_values[detected_spool_idx])
+                        f1s_present = bool(f1s_values[detected_spool_idx])
+                        hardware_empty = (not hub_has_filament and not f1s_present)
+                except Exception:
+                    hardware_empty = False
+
+                if (hardware_empty and not same_fps_runout_configured and not is_runout_active and
+                        fps_state.state not in (
+                            FPSLoadState.LOADING, FPSLoadState.UNLOADING
+                        )):
+                    self.logger.info(
+                        "State detection: Hardware reports hub and F1S empty for %s (bay %s) on %s; clearing AFC loaded lane %s",
+                        getattr(current_oams, "name", "<unknown>"),
+                        detected_spool_idx,
+                        fps_name,
+                        detected_lane,
+                    )
+                    self._clear_afc_loaded_lane(detected_lane)
+                    detected_lane = None
+                    current_oams = None
+                    detected_spool_idx = None
 
             if current_oams is not None and detected_spool_idx is not None:
                 # Lane is detected as loaded - update state normally
@@ -934,6 +1149,29 @@ class OAMSManager:
                         except Exception:
                             self.logger.error(f"Failed to notify AFC about {old_lane_name} unload during state detection")
 
+    def _clear_afc_loaded_lane(self, lane_name: Optional[str]) -> None:
+        if not lane_name:
+            return
+        try:
+            afc = self._get_afc()
+            if afc is None or not hasattr(afc, 'lanes'):
+                return
+            lane_obj = afc.lanes.get(lane_name)
+            if lane_obj is None:
+                return
+            extruder_obj = getattr(lane_obj, 'extruder_obj', None)
+            if extruder_obj is not None:
+                extruder_obj.lane_loaded = None
+            if getattr(lane_obj, 'tool_loaded', False):
+                lane_obj.tool_loaded = False
+            if hasattr(afc, 'save_vars') and callable(afc.save_vars):
+                try:
+                    afc.save_vars()
+                except Exception:
+                    self.logger.error(f"Failed to save AFC vars after clearing loaded lane {lane_name}")
+        except Exception:
+            self.logger.error(f"Failed to clear AFC loaded lane for {lane_name}")
+
     def sync_state_with_afc(self) -> None:
         """Synchronize OAMS manager state with AFC's current state.
 
@@ -1028,7 +1266,10 @@ class OAMSManager:
             self.determine_state()
 
         except Exception as e:
-            self.logger.error(f"Failed to sync state with AFC: {e}", exc_info=True)
+            self.logger.error(
+                f"Failed to sync state with AFC: {e}",
+                traceback=traceback.format_exc(),
+            )
 
     def handle_ready(self) -> None:
         """Initialize system when printer is ready."""
@@ -1061,6 +1302,16 @@ class OAMSManager:
 
         self.determine_state()
 
+        try:
+            self._sync_virtual_tool_sensors()
+        except Exception:
+            self.logger.error("Failed to sync virtual tool sensors during startup")
+
+        try:
+            self._ensure_followers_for_loaded_hubs()
+        except Exception:
+            self.logger.error("Failed to enable followers for loaded hubs during startup")
+
         self.start_monitors()
         self.ready = True
 
@@ -1068,18 +1319,39 @@ class OAMSManager:
         for name, oam in self.printer.lookup_objects(module="oams"):
             self.oams[name] = oam
 
+    def _resolve_oams_name(
+        self,
+        oams_name: Optional[str],
+        oams_obj: Optional[Any] = None,
+    ) -> Tuple[Optional[str], Optional[Any]]:
+        if not oams_name:
+            return None, None
+
+        if oams_name in self.oams:
+            return oams_name, self.oams.get(oams_name)
+
+        if oams_obj is not None:
+            obj_name = getattr(oams_obj, "name", None)
+            if obj_name in self.oams:
+                return obj_name, self.oams.get(obj_name)
+
+        prefixed = f"oams {oams_name}"
+        if prefixed in self.oams:
+            return prefixed, self.oams.get(prefixed)
+
+        if oams_name.startswith("oams "):
+            unprefixed = oams_name[5:]
+            if unprefixed in self.oams:
+                return unprefixed, self.oams.get(unprefixed)
+
+        return oams_name, None
+
 
     def _get_follower_state(self, oams_name: str) -> FollowerState:
         """Get or create FollowerState for an OAMS unit."""
-        resolved_name = oams_name
-        if oams_name not in self.oams:
-            prefixed = f"oams {oams_name}"
-            if prefixed in self.oams:
-                resolved_name = prefixed
-            elif oams_name.startswith("oams "):
-                unprefixed = oams_name[5:]
-                if unprefixed in self.oams:
-                    resolved_name = unprefixed
+        resolved_name, _ = self._resolve_oams_name(oams_name)
+        if resolved_name is None:
+            resolved_name = oams_name
 
         if resolved_name != oams_name and oams_name in self.follower_state:
             if resolved_name not in self.follower_state:
@@ -1139,23 +1411,22 @@ class OAMSManager:
                 try:
                     afc.save_vars()
                     self.logger.info(
-                        "Synced AFC: %s.lane_loaded = %s (was %s, detected via sensors)",
-                        extruder_name, detected_lane, current_lane_loaded
+                        f"Synced AFC: {extruder_name}.lane_loaded = {detected_lane} "
+                        f"(was {current_lane_loaded}, detected via sensors)"
                     )
                 except Exception:
                     self.logger.error(
-                        "Failed to save AFC vars after syncing %s.lane_loaded to %s",
-                        extruder_name, detected_lane
+                        f"Failed to save AFC vars after syncing {extruder_name}.lane_loaded to {detected_lane}"
                     )
             else:
                 self.logger.debug(
-                    "Updated AFC: %s.lane_loaded = %s (vars not saved - AFC has no save_vars method)",
-                    extruder_name, detected_lane
+                    f"Updated AFC: {extruder_name}.lane_loaded = {detected_lane} "
+                    "(vars not saved - AFC has no save_vars method)"
                 )
         except Exception:
             self.logger.error(
-                "Failed to sync AFC lane_loaded for %s detected on %s",
-                detected_lane, fps_name, exc_info=True
+                f"Failed to sync AFC lane_loaded for {detected_lane} detected on {fps_name}",
+                traceback=traceback.format_exc(),
             )
 
     def _fix_afc_runout_helper_time(self, lane_name: str) -> None:
@@ -1333,7 +1604,9 @@ class OAMSManager:
             last_logged = self._last_logged_detected_lane.get(extruder_name)
             if last_logged != loaded_lane_name:
                 self._last_logged_detected_lane[extruder_name] = loaded_lane_name
-                self.logger.info(f"Detected {loaded_lane_name} loaded to {extruder_name} (bay {bay_index} on {oams_name})")
+                self.logger.debug(
+                    f"Detected {loaded_lane_name} loaded to {extruder_name} (bay {bay_index} on {oams_name})"
+                )
 
             return loaded_lane_name, oam, bay_index
 
@@ -1380,6 +1653,7 @@ class OAMSManager:
             ("OAMSM_UNLOAD_FILAMENT", self.cmd_UNLOAD_FILAMENT, self.cmd_UNLOAD_FILAMENT_help),
             ("OAMSM_LOAD_FILAMENT", self.cmd_LOAD_FILAMENT, self.cmd_LOAD_FILAMENT_help),
             ("OAMSM_FOLLOWER", self.cmd_FOLLOWER, self.cmd_FOLLOWER_help),
+            ("OAMSM_PULSE_FOLLOWER", self.cmd_PULSE_FOLLOWER, self.cmd_PULSE_FOLLOWER_help),
             ("OAMSM_FOLLOWER_RESET", self.cmd_FOLLOWER_RESET, self.cmd_FOLLOWER_RESET_help),
             ("OAMSM_CLEAR_ERRORS", self.cmd_CLEAR_ERRORS, self.cmd_CLEAR_ERRORS_help),
             ("OAMSM_CLEAR_LANE_MAPPINGS", self.cmd_CLEAR_LANE_MAPPINGS, self.cmd_CLEAR_LANE_MAPPINGS_help),
@@ -1395,27 +1669,47 @@ class OAMSManager:
         ready_oams = {name: oam for name, oam in self.oams.items() if self._is_oams_mcu_ready(oam)}
         if not ready_oams:
             restart_monitors = False
-            self.logger.warning(
+            self.logger.info(
                 "No OAMS MCUs ready; skipping hardware clears and leaving monitors paused until connectivity returns"
             )
         with self._monitors_suspended("OAMSM_CLEAR_ERRORS", restart_on_exit=False):
-            # CRITICAL: Clear AFC lane_loaded state FIRST to enable bidirectional sync
+            # Clear AFC lane_loaded state first to enable bidirectional sync, but only if
+            # we have MCU connectivity and no active loaded state to preserve.
             #
             # State Sync Flow:
-            # 1. UNSET_LANE_LOADED ? clears AFC extruder.lane_loaded (breaks stale state)
-            # 2. determine_state() ? reads hardware sensors (F1S, hub, etc.)
-            # 3. If sensors show lane loaded ? _sync_afc_lane_loaded() writes back to AFC
-            # 4. If sensors show empty ? AFC stays unset
-            #
-            # This ensures AFC state matches hardware reality, whether loaded or empty
-            try:
-                gcode = self.printer.lookup_object("gcode")
-                if gcode:
-                    gcode.run_script_from_command("UNSET_LANE_LOADED")
-                    self.logger.info("Cleared AFC lane_loaded state - will resync from hardware sensors")
-            except Exception as e:
-                # Don't block CLEAR_ERRORS if UNSET fails, but log it
-                self.logger.warning(f"Failed to clear AFC lane state during OAMSM_CLEAR_ERRORS: {e}")
+            # 1. UNSET_LANE_LOADED -> clears AFC extruder.lane_loaded (breaks stale state)
+            # 2. determine_state() -> reads hardware sensors (F1S, hub, etc.)
+            # 3. If sensors show lane loaded -> _sync_afc_lane_loaded() writes back to AFC
+            # 4. If sensors show empty -> AFC stays unset
+            has_loaded_state = any(
+                state.state == FPSLoadState.LOADED
+                for state in self.current_state.fps_state.values()
+            )
+            has_loaded_state = has_loaded_state or any(
+                getattr(oam, "current_spool", None) is not None
+                for oam in ready_oams.values()
+            )
+            if ready_oams and not has_loaded_state:
+                try:
+                    afc = self._get_afc()
+                    afc_function = getattr(afc, "function", None) if afc is not None else None
+                    unset_fn = getattr(afc_function, "unset_lane_loaded", None)
+                    if unset_fn is not None:
+                        unset_fn()
+                        self.logger.info("Cleared AFC lane_loaded state - will resync from hardware sensors")
+                    else:
+                        gcode = self.printer.lookup_object("gcode")
+                        if gcode:
+                            gcode.run_script_from_command("UNSET_LANE_LOADED")
+                            self.logger.info("Cleared AFC lane_loaded state via G-code fallback")
+                except Exception as e:
+                    # Don't block CLEAR_ERRORS if UNSET fails, but log it
+                    self.logger.warning(f"Failed to clear AFC lane state during OAMSM_CLEAR_ERRORS: {e}")
+            else:
+                self.logger.info(
+                    "Preserving AFC lane_loaded state during OAMSM_CLEAR_ERRORS "
+                    "(hardware not ready or lane already loaded)"
+                )
 
             # Reset all runout monitors to clear COASTING and other states
             for fps_name, monitor in list(self.runout_monitors.items()):
@@ -1433,6 +1727,13 @@ class OAMSManager:
                 fps_state.reset_engagement_tracking()  # Clear engagement state too
                 fps_state.afc_delegation_active = False
                 fps_state.afc_delegation_until = 0.0
+                fps_state.state = FPSLoadState.UNLOADED
+                fps_state.current_lane = None
+                fps_state.current_oams = None
+                fps_state.current_spool_idx = None
+                fps_state.following = False
+                fps_state.direction = 0
+                fps_state.since = self.reactor.monotonic()
                 self._cancel_post_load_pressure_check(fps_state)
 
             # Clear OAMS hardware errors and LEDs
@@ -1443,22 +1744,40 @@ class OAMSManager:
                     restart_monitors = False
                     continue
                 try:
+                    # Step 0: Abort any in-flight action to clear "busy" state
+                    oam.abort_current_action()
+                    self.reactor.pause(self.reactor.monotonic() + 0.1)
+                    if not self._is_oams_mcu_ready(oam):
+                        restart_monitors = False
+                        continue
+
                     # Step 1: Clear hardware errors
                     oam.clear_errors()
                     self.reactor.pause(self.reactor.monotonic() + 0.1)  # Wait for MCU
+                    if not self._is_oams_mcu_ready(oam):
+                        restart_monitors = False
+                        continue
 
                     # Step 2: Explicitly clear all spool LED errors
                     # This ensures LEDs are actually off, not just tracked as off
                     bay_count = getattr(oam, "num_spools", 4) or 4
                     for bay_idx in range(bay_count):
+                        if not self._is_oams_mcu_ready(oam):
+                            restart_monitors = False
+                            break
                         try:
                             if hasattr(oam, "set_led_error"):
                                 oam.set_led_error(bay_idx, 0)
                         except Exception:
                             self.logger.warning(f"Failed to clear LED {bay_idx} on {oams_name}")
+                    if not self._is_oams_mcu_ready(oam):
+                        continue
 
                     # Wait for all LED commands to complete
                     self.reactor.pause(self.reactor.monotonic() + 0.2)
+                    if not self._is_oams_mcu_ready(oam):
+                        restart_monitors = False
+                        continue
 
                     # Step 3: Clear LED tracking state
                     for bay_idx in range(bay_count):
@@ -1556,6 +1875,13 @@ class OAMSManager:
                 restart_monitors = False
                 self.logger.error("Failed to refresh state from AFC.var.unit during OAMSM_CLEAR_ERRORS")
 
+            # Sync virtual tool sensors to match the refreshed lane state.
+            try:
+                self._sync_virtual_tool_sensors()
+            except Exception:
+                restart_monitors = False
+                self.logger.error("Failed to sync virtual tool sensors during OAMSM_CLEAR_ERRORS")
+
 
             # Clear all manual follower overrides and coast state - return to automatic hub sensor control
             # Also clear last state tracking so follower state is refreshed from actual sensors
@@ -1603,7 +1929,7 @@ class OAMSManager:
                     self.logger.error("Failed to restart monitors after OAMSM_CLEAR_ERRORS")
 
             else:
-                self.logger.warning(
+                self.logger.info(
                     "Leaving monitors paused after OAMSM_CLEAR_ERRORS due to earlier errors; run OAMSM_STATUS once issues are resolved"
                 )
 
@@ -1631,6 +1957,94 @@ class OAMSManager:
 
 
         return None
+
+    def _sync_virtual_tool_sensors(self, gcmd: Optional[Any] = None) -> None:
+        """Sync AFC virtual tool sensors based on current lane state."""
+        afc = self._get_afc()
+        if afc is None:
+            if gcmd is not None:
+                gcmd.respond_info("AFC: Not found!")
+            return
+
+        synced_count = 0
+        try:
+            units = getattr(afc, 'units', {})
+            eventtime = self.reactor.monotonic()
+
+            for unit_name, unit_obj in units.items():
+                # Check if this is an OpenAMS unit with virtual sensor sync capability
+                if hasattr(unit_obj, '_sync_virtual_tool_sensor'):
+                    try:
+                        # Force update to ensure sensor state is corrected after reboot
+                        unit_obj._sync_virtual_tool_sensor(eventtime, force=True)
+                        synced_count += 1
+                    except Exception:
+                        self.logger.error(f"Failed to sync virtual tool sensor for unit {unit_name}")
+                        if gcmd is not None:
+                            gcmd.respond_info(f"  Warning: Failed to sync virtual sensor for {unit_name}")
+
+            if gcmd is not None:
+                if synced_count > 0:
+                    gcmd.respond_info(f"Successfully synced {synced_count} virtual tool sensor(s)")
+                else:
+                    gcmd.respond_info("No OpenAMS units found with virtual sensors to sync")
+        except Exception:
+            self.logger.error("Failed to sync virtual tool sensors")
+            if gcmd is not None:
+                gcmd.respond_info("  Error during virtual sensor sync - check klippy.log")
+
+    def _get_lane_snapshot(self, lane_name: Optional[str], unit_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        if not lane_name:
+            return None
+
+        snapshot = self._load_afc_var_unit_snapshot()
+        if not isinstance(snapshot, dict):
+            return None
+
+        unit_key = unit_name
+        if isinstance(unit_key, str) and ":" in unit_key:
+            unit_key = unit_key.split(":", 1)[0]
+
+        if unit_key:
+            unit_data = snapshot.get(unit_key)
+            if isinstance(unit_data, dict):
+                lane_data = unit_data.get(lane_name)
+                if isinstance(lane_data, dict):
+                    return lane_data
+
+        for unit_key, unit_data in snapshot.items():
+            if unit_key in ("system", "Tools") or not isinstance(unit_data, dict):
+                continue
+            lane_data = unit_data.get(lane_name)
+            if isinstance(lane_data, dict):
+                return lane_data
+
+        return None
+
+    def _sync_openams_sensors_for_oams(
+        self,
+        oams_name: str,
+        eventtime: float,
+        *,
+        allow_f1s_updates: bool,
+        allow_lane_clear: bool,
+    ) -> None:
+        afc = self._get_afc()
+        if afc is None or not hasattr(afc, "units"):
+            return
+        for unit_obj in afc.units.values():
+            if not hasattr(unit_obj, "oams_name") or unit_obj.oams_name != oams_name:
+                continue
+            if hasattr(unit_obj, "sync_openams_sensors"):
+                try:
+                    unit_obj.sync_openams_sensors(
+                        eventtime,
+                        sync_hub=True,
+                        sync_f1s=allow_f1s_updates,
+                        allow_lane_clear=allow_lane_clear,
+                    )
+                except Exception:
+                    self.logger.error(f"Failed to sync OpenAMS sensors for {oams_name}")
 
     def _refresh_state_from_afc_snapshot(self) -> None:
         """Update FPS state from the latest AFC.var.unit snapshot."""
@@ -1667,16 +2081,8 @@ class OAMSManager:
                 continue
 
             lane_obj = getattr(afc, "lanes", {}).get(lane_name) if afc else None
-            lane_data = None
-
-            # Find lane data in the snapshot for spool index fallback
-            for unit_name, unit_data in snapshot.items():
-                if not isinstance(unit_data, dict) or unit_name == "system":
-                    continue
-                candidate = unit_data.get(lane_name)
-                if isinstance(candidate, dict):
-                    lane_data = candidate
-                    break
+            lane_unit = getattr(lane_obj, "unit", None) if lane_obj is not None else None
+            lane_data = self._get_lane_snapshot(lane_name, unit_name=lane_unit)
 
             spool_idx = None
             if lane_obj is not None:
@@ -1838,35 +2244,7 @@ class OAMSManager:
         # Sync virtual tool sensors based on which lanes are actually loaded
         # This fixes virtual sensor state after reboot (e.g., extruder4 showing filament when empty)
         gcmd.respond_info("\n=== Syncing Virtual Tool Sensors ===")
-
-        if afc is not None:
-            synced_count = 0
-            try:
-                units = getattr(afc, 'units', {})
-                eventtime = self.reactor.monotonic()
-
-                for unit_name, unit_obj in units.items():
-                    # Check if this is an OpenAMS unit with virtual sensor sync capability
-                    if hasattr(unit_obj, '_sync_virtual_tool_sensor'):
-                        try:
-                            # Force update to ensure sensor state is corrected after reboot
-                            unit_obj._sync_virtual_tool_sensor(eventtime, force=True)
-                            synced_count += 1
-                        except Exception:
-                            self.logger.error(f"Failed to sync virtual tool sensor for unit {unit_name}")
-                            gcmd.respond_info(f"  Warning: Failed to sync virtual sensor for {unit_name}")
-
-
-                if synced_count > 0:
-                    gcmd.respond_info(f"Successfully synced {synced_count} virtual tool sensor(s)")
-
-                else:
-                    gcmd.respond_info("No OpenAMS units found with virtual sensors to sync")
-
-            except Exception:
-                self.logger.error("Failed to sync virtual tool sensors")
-
-                gcmd.respond_info("  Error during virtual sensor sync - check klippy.log")
+        self._sync_virtual_tool_sensors(gcmd)
 
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
     def cmd_FOLLOWER(self, gcmd):
@@ -1885,7 +2263,7 @@ class OAMSManager:
         # Allow enabling follower when UNLOADED (before load starts) or LOADED
         # Only block during active LOADING/UNLOADING operations
         if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
-            gcmd.respond_info(f"FPS {fps_name} is currently busy")
+            self.logger.debug(f"OAMSM_FOLLOWER ignored because {fps_name} is busy")
 
             return
 
@@ -1907,9 +2285,11 @@ class OAMSManager:
                 self.logger.info(f"Follower disable requested on {fps_name} but no OAMS loaded, marking as not following")
                 return
 
-            oams_obj = self.oams.get(fps_state.current_oams)
+            oams_obj = self._get_oams_object(fps_state.current_oams)
             if oams_obj:
                 try:
+                    if fps_state.current_oams != oams_obj.name:
+                        fps_state.current_oams = oams_obj.name
                     state = self._get_follower_state(fps_state.current_oams)
                     oams_obj.set_oams_follower(0, direction)
                     fps_state.following = False
@@ -1927,14 +2307,16 @@ class OAMSManager:
             return
 
         # When enabling, we need a valid OAMS
-        oams_obj = self.oams.get(fps_state.current_oams)
+        oams_obj = self._get_oams_object(fps_state.current_oams)
         if oams_obj is None:
             gcmd.respond_info(f"OAMS {fps_state.current_oams} is not available")
 
             return
 
         try:
-            self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={fps_name}")
+            self.logger.debug(f"OAMSM_FOLLOWER: enabling follower on {fps_name}, direction={direction}")
+            if fps_state.current_oams != oams_obj.name:
+                fps_state.current_oams = oams_obj.name
             state = self._get_follower_state(fps_state.current_oams)
             oams_obj.set_oams_follower(enable, direction)
             fps_state.following = bool(enable)
@@ -1945,6 +2327,71 @@ class OAMSManager:
         except Exception:
             self.logger.error(f"Failed to set follower on {fps_state.current_oams}")
             gcmd.respond_info(f"Failed to set follower. Check logs.")
+
+    cmd_PULSE_FOLLOWER_help = "Pulse the follower for a short duration without blocking"
+    def cmd_PULSE_FOLLOWER(self, gcmd):
+        duration = gcmd.get_float("DURATION", 0.5)
+        direction = gcmd.get_int("DIRECTION", 1)
+        fps_name = "fps " + gcmd.get("FPS")
+
+        if fps_name not in self.fpss:
+            gcmd.respond_info(f"FPS {fps_name} does not exist")
+            return
+
+        if duration <= 0:
+            gcmd.respond_info("DURATION must be greater than 0")
+            return
+
+        fps_state = self.current_state.fps_state[fps_name]
+
+        if not fps_state.current_oams:
+            try:
+                detected_lane, detected_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
+            except Exception:
+                detected_lane, detected_oams, detected_spool_idx = None, None, None
+            if detected_oams is not None:
+                fps_state.current_oams = detected_oams.name
+                fps_state.current_spool_idx = detected_spool_idx
+                fps_state.current_lane = detected_lane
+
+        oams_name = fps_state.current_oams
+        if not oams_name:
+            gcmd.respond_info(f"No OAMS associated with {fps_name}")
+            return
+
+        oams_obj = self._get_oams_object(oams_name)
+        if oams_obj is None:
+            gcmd.respond_info(f"OAMS {oams_name} is not available")
+            return
+
+        timer = self._follower_pulse_timers.get(fps_name)
+        if timer is not None:
+            self.reactor.unregister_timer(timer)
+
+        try:
+            state = self._get_follower_state(oams_name)
+            oams_obj.set_oams_follower(1, direction)
+            fps_state.following = True
+            fps_state.direction = direction
+            state.last_state = (1, direction)
+        except Exception:
+            self.logger.error(f"Failed to pulse follower on {oams_name}")
+            gcmd.respond_info("Failed to pulse follower. Check logs.")
+            return
+
+        def _disable_pulse(eventtime):
+            try:
+                target_oams = self._get_oams_object(oams_name)
+                if target_oams is not None:
+                    target_oams.set_oams_follower(0, direction)
+                fps_state.following = False
+                state.last_state = (0, direction)
+            except Exception:
+                self.logger.error(f"Failed to disable follower pulse on {oams_name}")
+            return self.reactor.NEVER
+
+        timer = self.reactor.register_timer(_disable_pulse, self.reactor.monotonic() + duration)
+        self._follower_pulse_timers[fps_name] = timer
 
     cmd_FOLLOWER_RESET_help = "Return follower to automatic control based on hub sensors"
     def cmd_FOLLOWER_RESET(self, gcmd):
@@ -2194,6 +2641,54 @@ class OAMSManager:
 
         return None, None
 
+    def _get_lane_extruder_name(self, lane) -> Optional[str]:
+        if lane is None:
+            return None
+        extruder_obj = getattr(lane, "extruder_obj", None)
+        extruder_name = getattr(lane, "extruder_name", None)
+        name = None
+        if extruder_obj is not None:
+            name = getattr(extruder_obj, "name", None)
+        if not name and extruder_name:
+            name = extruder_name
+        return _normalize_extruder_name(name)
+
+    def _get_oams_object(self, oams_name: Optional[str]):
+        if not oams_name:
+            return None
+        if oams_name in self.oams:
+            return self.oams.get(oams_name)
+        prefixed = f"oams {oams_name}"
+        if prefixed in self.oams:
+            return self.oams.get(prefixed)
+        if oams_name.startswith("oams "):
+            unprefixed = oams_name[5:]
+            return self.oams.get(unprefixed)
+        return None
+
+    def _normalize_oams_name(self, oams_name: Optional[str], oams_obj: Optional[Any] = None) -> Optional[str]:
+        if not oams_name:
+            return oams_name
+
+        if oams_name in self.oams:
+            return oams_name
+
+        if oams_obj is not None:
+            obj_name = getattr(oams_obj, "name", None)
+            if obj_name in self.oams:
+                return obj_name
+
+        prefixed = f"oams {oams_name}"
+        if prefixed in self.oams:
+            return prefixed
+
+        if oams_name.startswith("oams "):
+            unprefixed = oams_name[5:]
+            if unprefixed in self.oams:
+                return unprefixed
+
+        return oams_name
+
     def _get_afc(self):
         # OPTIMIZATION: Cache AFC object lookup with validation
         if self.afc is not None:
@@ -2387,7 +2882,7 @@ class OAMSManager:
                 f"reload_length={post_length_display}mm reload_speed={post_speed_display}mm/min"
             )
 
-            self.logger.info(
+            self.logger.debug(
                 f"Verifying filament engagement for {lane_name}: "
                 f"extruding {engagement_length:.1f}mm at {engagement_speed:.0f}mm/min"
             )
@@ -2426,10 +2921,16 @@ class OAMSManager:
 
                 # Run the engagement extrusion using gcode command
                 # M83: relative extrusion, G92 E0: reset position, G1: extrude
+                prime_length = 5.0
+                remaining_length = max(0.0, engagement_length - prime_length)
                 gcode.run_script_from_command("M83")  # Relative extrusion mode
                 gcode.run_script_from_command("G92 E0")  # Reset extruder position
-                gcode.run_script_from_command(f"G1 E{engagement_length:.2f} F{engagement_speed:.0f}")  # Extrude to nozzle tip
+                gcode.run_script_from_command(f"G1 E{prime_length:.2f} F{engagement_speed:.0f}")  # Prime to help engagement
                 gcode.run_script_from_command("M400")  # Wait for moves to complete
+                self.reactor.pause(self.reactor.monotonic() + 0.2)
+                if remaining_length > 0.0:
+                    gcode.run_script_from_command(f"G1 E{remaining_length:.2f} F{engagement_speed:.0f}")  # Extrude to nozzle tip
+                    gcode.run_script_from_command("M400")  # Wait for moves to complete
 
                 # Small pause to let encoder reading settle
                 self.reactor.pause(self.reactor.monotonic() + 0.2)
@@ -2445,31 +2946,76 @@ class OAMSManager:
 
                     if encoder_before is not None:
                         encoder_delta = abs(encoder_after - encoder_before)
-                        # Expect significant encoder movement for reload_length (typically 50-100mm)
-                        # Minimum threshold: at least 10 encoder clicks
-                        min_encoder_movement = 10
+                        # Expect encoder movement for at least 50% of the post-prime extrusion,
+                        # then allow a small fixed slack to reduce false failures.
+                        # engagement_length is tool_stn / 2, so this checks for tool_stn / 4,
+                        # minus the prime length. Allow 3 clicks of slack.
+                        expected_movement = max(1.0, remaining_length * 0.5)
+                        min_encoder_movement = max(1.0, expected_movement - 3.0)
 
                         if encoder_delta >= min_encoder_movement:
-                            # Encoder moved - filament engaged successfully!
+                            fps_pressure = oams.fps_value
+                            if fps_pressure >= self.engagement_pressure_threshold:
+                                fps_state.engaged_with_extruder = False
+                                self.logger.warning(
+                                    f"Filament failed to engage for {lane_name} "
+                                    f"(encoder moved {encoder_delta} clicks but FPS pressure stayed high at "
+                                    f"{fps_pressure:.2f})"
+                                )
+                                return False
+
+                            # Encoder moved and pressure dropped - filament engaged successfully.
                             fps_state.engaged_with_extruder = True
-                            self.logger.info(
+                            self.logger.debug(
                                 f"Filament engagement verified for {lane_name} "
                                 f"(encoder moved {encoder_delta} clicks during {engagement_length:.1f}mm extrusion)"
                             )
                             if post_length is not None and post_speed is not None and post_length > 0:
-                                self.logger.info(
-                                    f"Completing reload for {lane_name}: extruding {post_length:.1f}mm "
+                                self.logger.debug(
+                                    f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
                                     f"at {post_speed:.0f}mm/min"
                                 )
                                 gcode.run_script_from_command(f"G1 E{post_length:.2f} F{post_speed:.0f}")
                                 gcode.run_script_from_command("M400")
                             return True
                         else:
-                            # Encoder didn't move - filament not engaged
+                            # Encoder didn't move enough - re-check after a short delay
+                            self.reactor.pause(self.reactor.monotonic() + 0.3)
+                            try:
+                                encoder_retry = oams.encoder_clicks
+                            except Exception:
+                                encoder_retry = encoder_after
+                            encoder_delta = abs(encoder_retry - encoder_before)
+                            if encoder_delta >= min_encoder_movement:
+                                fps_pressure = oams.fps_value
+                                if fps_pressure >= self.engagement_pressure_threshold:
+                                    fps_state.engaged_with_extruder = False
+                                    self.logger.warning(
+                                        f"Filament failed to engage for {lane_name} "
+                                        f"(encoder moved {encoder_delta} clicks after retry but FPS pressure stayed high at "
+                                        f"{fps_pressure:.2f})"
+                                    )
+                                    return False
+                                fps_state.engaged_with_extruder = True
+                                self.logger.debug(
+                                    f"Filament engagement verified for {lane_name} "
+                                    f"(encoder moved {encoder_delta} clicks after retry during "
+                                    f"{engagement_length:.1f}mm extrusion)"
+                                )
+                                if post_length is not None and post_speed is not None and post_length > 0:
+                                    self.logger.debug(
+                                        f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
+                                        f"at {post_speed:.0f}mm/min"
+                                    )
+                                    gcode.run_script_from_command(f"G1 E{post_length:.2f} F{post_speed:.0f}")
+                                    gcode.run_script_from_command("M400")
+                                return True
+
+                            # Encoder didn't move enough - filament not engaged
                             fps_state.engaged_with_extruder = False
-                            self.logger.warning(
+                            self.logger.info(
                                 f"Filament failed to engage extruder for {lane_name} "
-                                f"(encoder only moved {encoder_delta} clicks, expected >={min_encoder_movement})"
+                                f"(encoder only moved {encoder_delta} clicks, expected >={min_encoder_movement:.1f})"
                             )
                             return False
                     else:
@@ -2477,13 +3023,13 @@ class OAMSManager:
                         fps_pressure = oams.fps_value
                         if fps_pressure < self.engagement_pressure_threshold:
                             fps_state.engaged_with_extruder = True
-                            self.logger.info(
+                            self.logger.debug(
                                 f"Filament engagement verified for {lane_name} "
                                 f"(FPS pressure {fps_pressure:.2f}, encoder unavailable)"
                             )
                             if post_length is not None and post_speed is not None and post_length > 0:
-                                self.logger.info(
-                                    f"Completing reload for {lane_name}: extruding {post_length:.1f}mm "
+                                self.logger.debug(
+                                    f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
                                     f"at {post_speed:.0f}mm/min"
                                 )
                                 gcode.run_script_from_command(f"G1 E{post_length:.2f} F{post_speed:.0f}")
@@ -2499,13 +3045,15 @@ class OAMSManager:
 
                 except Exception:
                     self.logger.error(f"Failed to check encoder for engagement verification on {fps_name}")
-                    return True  # Assume success to avoid false failures
+                    return False
             finally:
                 fps_state.engagement_in_progress = False  # Clear flag now that verification is complete
 
         except Exception:
-            self.logger.error(f"Failed to verify engagement for {lane_name}")
-            return True  # Assume success to avoid false failures
+            self.logger.error(
+                f"Failed to verify engagement for {lane_name}\n{traceback.format_exc()}"
+            )
+            return False
 
     def _handle_successful_reload(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
                                    target_lane_map: str, source_lane_name: Optional[str],
@@ -2534,7 +3082,7 @@ class OAMSManager:
                     if handled:
                         self.logger.info(f"Notified AFC that lane {target_lane} is loaded via AMSRunoutCoordinator (updates virtual sensor state)")
                     else:
-                        self.logger.warning(f"AMSRunoutCoordinator.notify_lane_tool_state returned False for lane {target_lane}, trying fallback")
+                        self.logger.info(f"AMSRunoutCoordinator.notify_lane_tool_state returned False for lane {target_lane}, trying fallback")
                 except Exception as e:
                     self.logger.error(f"Failed to notify AFC lane {target_lane} after infinite runout on {fps_name}: {e}")
                     handled = False
@@ -2581,7 +3129,7 @@ class OAMSManager:
                 self._ensure_forward_follower(fps_name, fps_state, "after infinite runout reload")
 
                 # CRITICAL: Force update target lane's loaded_to_hub to match current hub sensor state
-                # During same-FPS runout, hub sensor may stay True throughout (Lane A unload → Lane B load)
+                # During same-FPS runout, hub sensor may stay True throughout (Lane A unload ? Lane B load)
                 # The hub_changed event won't fire because hardware value didn't change
                 # So new lane's loaded_to_hub won't get updated, causing Mainsail to show stale status
                 try:
@@ -2677,16 +3225,15 @@ class OAMSManager:
         # before the BLDC motor starts rewinding (following user's requirement:
         # "we have to first tell the follower what direction to be going in")
         try:
-            gcode = self._gcode_obj
-            if gcode is None:
-                gcode = self.printer.lookup_object("gcode")
-                self._gcode_obj = gcode
-            fps_param = fps_name.replace("fps ", "", 1)
-            gcode.run_script_from_command(
-                f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
+            self._set_follower_state(
+                fps_name,
+                fps_state_obj,
+                oams_unload,
+                1,
+                0,
+                "async unload",
+                force=True,
             )
-            fps_state_obj.following = True
-            fps_state_obj.direction = 0
             self.logger.debug(f"Set follower reverse before async unload on {fps_name}")
         except Exception:
             self.logger.warning(f"Failed to set follower reverse before async unload on {fps_name}")
@@ -2971,8 +3518,8 @@ class OAMSManager:
         # Check if source and target lanes are on the same FPS/extruder
         # If SAME FPS: OpenAMS handles reload internally (coast, PTFE calc, load new spool)
         # If DIFFERENT FPS: AFC handles via CHANGE_TOOL (full runout, then switch tools)
-        source_extruder = _normalize_extruder_name(getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None)
-        target_extruder = _normalize_extruder_name(getattr(target_lane.extruder_obj, "name", None) if hasattr(target_lane, "extruder_obj") else None)
+        source_extruder = self._get_lane_extruder_name(lane)
+        target_extruder = self._get_lane_extruder_name(target_lane)
 
         same_fps = bool(source_extruder and target_extruder and source_extruder == target_extruder)
         delegate_to_afc = not same_fps  # Only delegate if different FPS
@@ -3102,11 +3649,19 @@ class OAMSManager:
             return False, f"FPS {fps_name} is in unexpected state {fps_state.state.name}"
 
         if fps_state.current_oams is None:
-            return False, f"FPS {fps_name} has no OAMS loaded"
+            oams_from_lane = self._resolve_oams_for_lane(fps_state.current_lane)
+            if oams_from_lane is not None:
+                fps_state.current_oams = oams_from_lane.name
+            else:
+                return False, f"FPS {fps_name} has no OAMS loaded"
 
         oams = self.oams.get(fps_state.current_oams)
         if oams is None:
-            return False, f"OAMS {fps_state.current_oams} not found for FPS {fps_name}"
+            oams = self._resolve_oams_for_lane(fps_state.current_lane)
+            if oams is not None:
+                fps_state.current_oams = oams.name
+            else:
+                return False, f"OAMS {fps_state.current_oams} not found for FPS {fps_name}"
 
         if oams.current_spool is None:
             fps_state.state = FPSLoadState.UNLOADED
@@ -3159,16 +3714,15 @@ class OAMSManager:
 
         # Ensure follower is set to reverse before starting unload
         try:
-            self._set_follower_if_changed(
-                fps_state.current_oams,
+            self._set_follower_state(
+                fps_name,
+                fps_state,
                 oams,
                 1,
                 0,
                 "before unload",
                 force=True,
             )
-            fps_state.following = True
-            fps_state.direction = 0
         except Exception:
             self.logger.warning(f"Failed to set follower reverse before unload on {fps_name}")
 
@@ -3189,29 +3743,35 @@ class OAMSManager:
         if not success:
             self.logger.warning(f"Unload failed on {fps_name}, preparing retry: {message}")
             try:
-                fps_param = fps_name.replace("fps ", "", 1)
                 unload_lane = fps_state.current_lane or lane_name
                 unload_length, unload_speed = (
                     self._get_unload_params(unload_lane) if unload_lane else (None, None)
                 )
                 retract_feed = unload_speed if unload_speed is not None else 1200.0
+                self._set_follower_if_changed(
+                    fps_state.current_oams,
+                    oams,
+                    1,
+                    1,
+                    "unload retry recovery",
+                    force=True,
+                )
+                fps_state.following = True
+                fps_state.direction = 1
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
+                self._set_follower_state(
+                    fps_name,
+                    fps_state,
+                    oams,
+                    1,
+                    0,
+                    "unload retry recovery",
+                    force=True,
+                )
                 gcode = self._gcode_obj
                 if gcode is None:
                     gcode = self.printer.lookup_object("gcode")
                     self._gcode_obj = gcode
-                gcode.run_script_from_command(
-                    f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=1 FPS={fps_param}"
-                )
-                gcode.run_script_from_command("M400")
-                fps_state.following = True
-                fps_state.direction = 1
-                self.reactor.pause(self.reactor.monotonic() + 1.0)
-                gcode.run_script_from_command(
-                    f"OAMSM_FOLLOWER ENABLE=1 DIRECTION=0 FPS={fps_param}"
-                )
-                gcode.run_script_from_command("M400")
-                fps_state.following = True
-                fps_state.direction = 0
                 gcode.run_script_from_command("M83")  # Relative extrusion mode
                 gcode.run_script_from_command("G92 E0")  # Reset extruder position
                 gcode.run_script_from_command(f"G1 E-5.00 F{retract_feed:.0f}")
@@ -3508,9 +4068,16 @@ class OAMSManager:
                 if detected_lane == lane_name:
                     return False, f"Lane {lane_name} is already loaded to {fps_name}"
 
-                unload_success, unload_message = self._unload_filament_for_fps(fps_name)
-                if not unload_success:
-                    return False, f"Failed to unload existing lane {detected_lane} from {fps_name}: {unload_message}"
+                try:
+                    gcode = self._gcode_obj
+                    if gcode is None:
+                        gcode = self.printer.lookup_object("gcode")
+                        self._gcode_obj = gcode
+                    fps_param = fps_name.replace("fps ", "", 1)
+                    gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
+                    gcode.run_script_from_command("M400")
+                except Exception:
+                    return False, f"Failed to unload existing lane {detected_lane} from {fps_name}"
         else:
             # No lane detected as loaded - clear fps_state if it thinks it's loaded
             # This handles cases where fps_state is stale (e.g., load failed with clog)
@@ -3537,7 +4104,7 @@ class OAMSManager:
             return False, f"Bay {bay_index} on {oams_name} is not ready (no spool detected)"
 
         # Load the filament
-        self.logger.info(f"Loading lane {lane_name}: {oams_name} bay {bay_index} via {fps_name}")
+        self.logger.debug(f"Loading lane {lane_name}: {oams_name} bay {bay_index} via {fps_name}")
 
         if getattr(oam, "dock_load", False):
             try:
@@ -3578,11 +4145,17 @@ class OAMSManager:
         load_success = False
         last_error = None
 
-        self.logger.info(f"Starting load attempts for {lane_name} (max {max_engagement_retries} engagement attempts, {STUCK_SPOOL_MAX_ATTEMPTS} stuck spool attempts per engagement try)")
+        self.logger.debug(
+            f"Starting load attempts for {lane_name} (max {max_engagement_retries} engagement attempts, "
+            f"{STUCK_SPOOL_MAX_ATTEMPTS} stuck spool attempts per engagement try)"
+        )
 
         # Outer loop: Engagement retries (uses configured max_engagement_retries)
+        fps_state.engagement_retry_active = True
         for engagement_attempt in range(max_engagement_retries):
-            self.logger.info(f"Engagement attempt {engagement_attempt + 1}/{max_engagement_retries} for {lane_name}")
+            self.logger.debug(
+                f"Engagement attempt {engagement_attempt + 1}/{max_engagement_retries} for {lane_name}"
+            )
 
             # Inner loop: Stuck spool retries (hardcoded to 2 attempts)
             # This loop tries to get a successful OAMS load (filament in buffer)
@@ -3603,48 +4176,44 @@ class OAMSManager:
                 fps_state.reset_engagement_tracking()  # Reset engagement state for clean load attempt
 
                 # CRITICAL: Enable follower BEFORE starting the OAMS load command
-                # The OAMS BLDC will push filament through the buffer, and the follower
-                # must be tracking it in real-time, not after the load completes
-                # Without this, filament gets stuck in the buffer during the load
-                # NOTE: Follower is explicitly enabled forward (1) for load operations
-                self._enable_follower(
-                    fps_name,
-                    fps_state,
-                    oam,
-                    1,
-                    "before load - enable follower for buffer tracking",
-                )
+                # The follower motor must be set to forward so filament can flow during load.
                 try:
-                    self._set_follower_if_changed(
-                        fps_state.current_oams,
+                    self._set_follower_state(
+                        fps_name,
+                        fps_state,
                         oam,
                         1,
                         1,
                         "before load",
                         force=True,
                     )
-                    fps_state.following = True
-                    fps_state.direction = 1
-                except Exception:
-                    self.logger.warning(f"Failed to set follower forward before load on {fps_name}")
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to set follower forward before load on {fps_name}: {e}"
+                    )
 
-                # Try to load filament into buffer
+                # Try to load filament into buffer via gcode
                 try:
-                    success, message = oam.load_spool(bay_index)
+                    success, message = oam.load_spool_with_retry(bay_index)
                 except Exception:
-                    self.logger.error(f"Failed to load bay {bay_index} on {oams_name}")
+                    success = False
+                    message = f"Failed to load bay {bay_index} on {oams_name}"
+                    self.logger.error(message)
                     fps_state.state = FPSLoadState.UNLOADED
-                    error_msg = f"Failed to load bay {bay_index} on {oams_name}"
+                    error_msg = message
 
                     # CRITICAL: Pause printer if load fails during printing
                     # This prevents printing without filament loaded
                     self._pause_on_critical_failure(error_msg, oams_name)
+                    fps_state.engagement_retry_active = False
                     return False, error_msg
 
                 if success:
                     # OAMS load succeeded! Break out of stuck spool retry loop
                     oams_load_succeeded = True
-                    self.logger.info(f"OAMS load succeeded for {lane_name} on stuck attempt {stuck_attempt + 1}")
+                    self.logger.debug(
+                        f"OAMS load succeeded for {lane_name} on stuck attempt {stuck_attempt + 1}"
+                    )
                     break
 
                 # Load failed (stuck spool detected)
@@ -3661,6 +4230,30 @@ class OAMSManager:
                     )
                     self.logger.error(error_msg)
                     self._pause_printer_message(error_msg, oams_name)
+                    if self._is_oams_mcu_ready(oam):
+                        try:
+                            self._set_follower_state(
+                                fps_name,
+                                fps_state,
+                                oam,
+                                1,
+                                0,
+                                "stuck spool max retry",
+                                force=True,
+                            )
+                            fps_param = fps_name.replace("fps ", "", 1)
+                            gcode = self._gcode_obj
+                            if gcode is None:
+                                gcode = self.printer.lookup_object("gcode")
+                                self._gcode_obj = gcode
+                            gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
+                        except Exception:
+                            self.logger.error(f"Failed to unwind stuck spool before pausing on {fps_name}")
+                    else:
+                        self.logger.error(
+                            f"Skipping stuck spool recovery commands for {fps_name} because OAMS MCU is not ready"
+                        )
+                    fps_state.engagement_retry_active = False
                     return False, error_msg
 
                 # Not max retries yet - do stuck spool retry sequence
@@ -3670,16 +4263,15 @@ class OAMSManager:
                 # If filament barely engaged the extruder, we want the follower helping with
                 # the retraction, not fighting against it
                 try:
-                    self._set_follower_if_changed(
-                        fps_state.current_oams,
-                        oams,
+                    self._set_follower_state(
+                        fps_name,
+                        fps_state,
+                        oam,
                         1,
                         0,
-                        "before stuck spool retry",
+                        "stuck spool retry",
                         force=True,
                     )
-                    fps_state.following = True
-                    fps_state.direction = 0
                     self.logger.info(f"Set follower to reverse before stuck spool retry on {fps_name}")
                 except Exception:
                     self.logger.warning(f"Failed to set follower reverse before stuck spool retry on {fps_name}")
@@ -3697,7 +4289,7 @@ class OAMSManager:
                 except Exception:
                     self.logger.error(f"Failed to retract extruder after stuck spool detection for {lane_name}")
 
-                # STEP 3: Abort the stuck load operation to clear action_status
+                # STEP 3: Abort the stuck load operation via gcode to clear action_status
                 # The monitor detected stuck condition but can't abort from timer callback context
                 # Must abort here in command context to clear action_status before unload can proceed
                 # Without this, unload fails with "OAMS is busy" because action_status is still LOADING
@@ -3709,18 +4301,15 @@ class OAMSManager:
 
                 # STEP 4: Unload the stuck filament
                 try:
-                    unload_success, unload_msg = oam.unload_spool_with_retry()
-                    if not unload_success:
-                        self.logger.error(f"Failed to unload after stuck spool detection for {lane_name}: {unload_msg}")
-                    else:
-                        # STEP 4a: Clear error LED after successful unload
-                        # User requirement: LED must be cleared for hardware to operate properly
-                        if fps_state.stuck_spool.active and fps_state.current_spool_idx is not None:
-                            try:
-                                oam.set_led_error(fps_state.current_spool_idx, 0)
-                                self.logger.info(f"Cleared stuck spool LED for {fps_name} after successful retry unload")
-                            except Exception:
-                                self.logger.error(f"Failed to clear LED after retry unload on {fps_name}")
+                    oam.unload_spool_with_retry()
+                    # STEP 4a: Clear error LED after successful unload
+                    # User requirement: LED must be cleared for hardware to operate properly
+                    if fps_state.stuck_spool.active and fps_state.current_spool_idx is not None:
+                        try:
+                            oam.set_led_error(fps_state.current_spool_idx, 0)
+                            self.logger.info(f"Cleared stuck spool LED for {fps_name} after successful retry unload")
+                        except Exception:
+                            self.logger.error(f"Failed to clear LED after retry unload on {fps_name}")
                 except Exception:
                     self.logger.error(f"Exception during unload after stuck spool detection for {lane_name}")
 
@@ -3778,7 +4367,7 @@ class OAMSManager:
                 break
 
             # Filament reached extruder but didn't engage - unload and retry (up to max_engagement_retries)
-            self.logger.warning(f"Filament engagement failed for {lane_name}, unloading before retry (engagement attempt {engagement_attempt + 1}/{max_engagement_retries})")
+            self.logger.info(f"Filament engagement failed for {lane_name}, unloading before retry (engagement attempt {engagement_attempt + 1}/{max_engagement_retries})")
 
             # Retract extruder by reload distance to back out the filament that was extruded during engagement
             # This ensures filament position is correct for the next load attempt
@@ -3808,9 +4397,7 @@ class OAMSManager:
 
             # Unload the filament since it didn't engage properly before letting retry logic run
             try:
-                unload_success, unload_msg = oam.unload_spool_with_retry()
-                if not unload_success:
-                    self.logger.error(f"Failed to unload after engagement failure for {lane_name}: {unload_msg}")
+                oam.unload_spool_with_retry()
             except Exception:
                 self.logger.error(f"Exception during unload after engagement failure for {lane_name}")
             # Give the MCU a brief window to finish the unload before the next retry
@@ -3848,6 +4435,8 @@ class OAMSManager:
             if engagement_attempt + 1 >= max_engagement_retries:
                 last_error = f"Filament failed to engage extruder for {lane_name} after {max_engagement_retries} attempts"
             # Otherwise loop for another engagement attempt (which starts a fresh stuck spool retry sequence)
+
+        fps_state.engagement_retry_active = False
 
         if not load_success:
             return False, last_error or f"Failed to load lane {lane_name}"
@@ -3906,7 +4495,9 @@ class OAMSManager:
                         # Call _set_virtual_tool_sensor_state directly with force=True
                         # This is the same approach used in SET_LANE_LOADED wrapper
                         unit_obj._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
-                        self.logger.info(f"Updated virtual tool sensor to LOADED for {lane_name} after successful load")
+                        self.logger.debug(
+                            f"Updated virtual tool sensor to LOADED for {lane_name} after successful load"
+                        )
 
                         # CRITICAL: Notify AFC that lane is loaded to toolhead
                         # This calls handle_openams_lane_tool_state which sets extruder.lane_loaded
@@ -3971,28 +4562,34 @@ class OAMSManager:
 
             return
 
-        preretract_raw = gcmd.get('PRERETRACT', None)
-        try:
-            preretract = float(preretract_raw) if preretract_raw is not None else self.preretract_default
-        except Exception:
-            raise gcmd.error("PRERETRACT must be a number")
-
         fps_state = self.current_state.fps_state[fps_name]
         if fps_state.state == FPSLoadState.UNLOADED:
             gcmd.respond_info(f"FPS {fps_name} is already unloaded")
 
             return
         if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
-            gcmd.respond_info(f"FPS {fps_name} is currently busy")
+            self.logger.debug(f"OAMSM_UNLOAD_FILAMENT ignored because {fps_name} is busy")
 
             return
 
-        # Queue a small preretract move to overlap with the unload sequence
-        preretract_lane = fps_state.current_lane
-        if preretract_lane is not None:
-            _, reload_speed = self._get_reload_params(preretract_lane)
-            unload_length, unload_speed = self._get_unload_params(preretract_lane)
-            preretract_feed_rate = (
+        extra_retract_raw = gcmd.get('EXTRA_RETRACT', None)
+        if extra_retract_raw is not None:
+            try:
+                extra_retract = float(extra_retract_raw)
+            except Exception:
+                raise gcmd.error("EXTRA_RETRACT must be a number")
+        else:
+            oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+            extra_retract = getattr(oams_obj, "extra_retract", None)
+            if extra_retract is None:
+                extra_retract = self.extra_retract_default
+
+        # Queue a small extra retract move to overlap with the unload sequence
+        extra_retract_lane = fps_state.current_lane
+        if extra_retract_lane is not None:
+            _, reload_speed = self._get_reload_params(extra_retract_lane)
+            unload_length, unload_speed = self._get_unload_params(extra_retract_lane)
+            extra_retract_feed_rate = (
                 unload_speed
                 if unload_speed is not None
                 else (reload_speed if reload_speed is not None else 1500.0)
@@ -4000,26 +4597,30 @@ class OAMSManager:
             unload_length_display = f"{unload_length:.2f}" if unload_length is not None else "None"
             unload_speed_display = f"{unload_speed:.0f}" if unload_speed is not None else "None"
             self.logger.debug(
-                f"Unload params for {preretract_lane} on {fps_name}: "
+                f"Unload params for {extra_retract_lane} on {fps_name}: "
                 f"unload_length={unload_length_display}mm unload_speed={unload_speed_display}mm/min "
-                f"preretract={preretract:.2f}mm feed_rate={preretract_feed_rate:.0f}mm/min"
+                f"extra_retract={extra_retract:.2f}mm feed_rate={extra_retract_feed_rate:.0f}mm/min"
             )
             reverse_direction = 0  # Pull back during unload overlap
 
             # Ensure follower is enabled in reverse before the initial unload retract
             try:
-                gcode = self._gcode_obj
-                if gcode is None:
-                    gcode = self.printer.lookup_object("gcode")
-                    self._gcode_obj = gcode
-                gcode.run_script_from_command(
-                    f"OAMSM_FOLLOWER ENABLE=1 DIRECTION={reverse_direction} FPS={fps_param}"
+                oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+                if oams_obj is None:
+                    oams_obj = self._resolve_oams_for_lane(extra_retract_lane)
+                    if oams_obj is not None and fps_state.current_oams is None:
+                        fps_state.current_oams = oams_obj.name
+                self._set_follower_state(
+                    fps_name,
+                    fps_state,
+                    oams_obj,
+                    1,
+                    reverse_direction,
+                    "unload extra retract",
+                    force=True,
                 )
-                gcode.run_script_from_command("M400")
-                fps_state.following = True
-                fps_state.direction = reverse_direction
             except Exception:
-                self.logger.warning(f"Unable to set follower reverse before preretract on {fps_name}")
+                self.logger.warning(f"Unable to set follower reverse before extra retract on {fps_name}")
 
             try:
                 gcode = self._gcode_obj
@@ -4031,17 +4632,19 @@ class OAMSManager:
 
                 # First retract by the configured unload length (if available)
                 if unload_length is not None:
-                    unload_feed = unload_speed if unload_speed is not None else preretract_feed_rate
+                    unload_feed = unload_speed if unload_speed is not None else extra_retract_feed_rate
                     gcode.run_script_from_command(f"G1 E-{unload_length:.2f} F{unload_feed:.0f}")
                     gcode.run_script_from_command("M400")
 
-                # Then issue the overlapped preretract (no M400 so unload can overlap)
-                gcode.run_script_from_command(f"G1 E{preretract:.2f} F{preretract_feed_rate:.0f}")
-                # Intentionally skip M400 so moves overlap the unload
+                # Wait for retract moves to complete before extra retract/unload
+                gcode.run_script_from_command("M400")
+
+                # Then issue the extra retract before unload
+                gcode.run_script_from_command(f"G1 E{extra_retract:.2f} F{extra_retract_feed_rate:.0f}")
             except Exception:
-                self.logger.warning(f"Skipping preretract before unload on {fps_name}: unable to queue gcode")
+                self.logger.warning(f"Skipping extra retract before unload on {fps_name}: unable to queue gcode")
         else:
-            self.logger.info(f"Skipping preretract before unload on {fps_name}: no lane resolved")
+            self.logger.info(f"Skipping extra retract before unload on {fps_name}: no lane resolved")
 
         success, message = self._unload_filament_for_fps(fps_name)
 
@@ -4346,11 +4949,14 @@ class OAMSManager:
             return
 
         if oams is None and fps_state.current_oams is not None:
-            oams = self.oams.get(fps_state.current_oams)
+            oams = self._get_oams_object(fps_state.current_oams)
         if oams is None:
             self.logger.warning("Cannot enable follower: OAMS not found")
 
             return
+
+        if fps_state.current_oams != oams.name:
+            fps_state.current_oams = oams.name
 
         direction = direction if direction in (0, 1) else 1
 
@@ -4362,9 +4968,57 @@ class OAMSManager:
         fps_state.following = True
         fps_state.direction = direction
 
+    def _set_follower_state(
+        self,
+        fps_name: str,
+        fps_state: "FPSState",
+        oams: Optional[Any],
+        enable: int,
+        direction: int,
+        context: str,
+        force: bool = False,
+    ) -> None:
+        """Set follower state directly and update cached FPS state."""
+        if oams is None and fps_state.current_oams is not None:
+            oams = self._get_oams_object(fps_state.current_oams)
+        if oams is None:
+            self.logger.warning(f"Cannot set follower state for {fps_name}: OAMS not found")
+            return
+
+        if fps_state.current_oams != oams.name:
+            fps_state.current_oams = oams.name
+
+        oams_name = fps_state.current_oams or getattr(oams, "name", None)
+        if not oams_name:
+            self.logger.warning(f"Cannot set follower state for {fps_name}: OAMS name unavailable")
+            return
+
+        direction = direction if direction in (0, 1) else 1
+        oams_name = self._normalize_oams_name(oams_name, oams)
+        self._set_follower_if_changed(oams_name, oams, enable, direction, context, force=force)
+        fps_state.following = bool(enable)
+        fps_state.direction = direction if enable else 0
+
     def _ensure_forward_follower(self, fps_name: str, fps_state: "FPSState", context: str) -> None:
-        """No-op: follower direction is manually controlled."""
-        return
+        """Ensure follower is enabled forward when filament is present."""
+        if fps_state.current_spool_idx is None:
+            return
+
+        oams = None
+        if fps_state.current_oams is not None:
+            oams = self._get_oams_object(fps_state.current_oams)
+        if oams is None:
+            return
+
+        self._set_follower_state(
+            fps_name,
+            fps_state,
+            oams,
+            1,
+            1,
+            context,
+            force=True,
+        )
 
     def _rate_limited_mcu_command(self, oams_name: str, command_fn: Callable, *args, **kwargs) -> None:
         """
@@ -4382,6 +5036,9 @@ class OAMSManager:
         oams = self.oams.get(oams_name)
         if oams is None:
             self.logger.error(f"Cannot send command to {oams_name} - OAMS not found")
+            return
+        if not self._is_oams_mcu_ready(oams):
+            self.logger.debug(f"Skipping command for {oams_name} - MCU not ready")
             return
 
         # Initialize queue if needed
@@ -4491,7 +5148,7 @@ class OAMSManager:
             # Use rate limiting to prevent MCU queue overflow
             self._rate_limited_mcu_command(oams_name, oams.set_led_error, spool_idx, error_state)
             self.led_error_state[led_key] = error_state
-            if context and self.logger.isEnabledFor(logging.DEBUG):
+            if context:
                 self.logger.debug(f"LED error {'set' if error_state else 'cleared'} for {oams_name} spool {spool_idx} ({context})")
 
     def _is_oams_mcu_ready(self, oams: Any) -> bool:
@@ -4506,17 +5163,14 @@ class OAMSManager:
                 return False
 
             serial = getattr(mcu, "serial", None)
-            if serial is None:
-                return False
-
-            if hasattr(serial, "is_shutdown") and serial.is_shutdown():
-                return False
+            if serial is not None:
+                if hasattr(serial, "is_shutdown") and serial.is_shutdown():
+                    return False
 
             if hasattr(mcu, "is_connected"):
                 if not mcu.is_connected():
                     return False
-
-            if hasattr(serial, "is_connected"):
+            elif serial is not None and hasattr(serial, "is_connected"):
                 return bool(serial.is_connected())
         except Exception:
             self.logger.debug(f"Could not read MCU state for {getattr(oams, 'name', '<unknown>')}")
@@ -4543,27 +5197,35 @@ class OAMSManager:
             direction: 0 for reverse, 1 for forward
             context: Description for logging (optional)
         """
+        oams_name = self._normalize_oams_name(oams_name, oams)
         state = self._get_follower_state(oams_name)
         desired_state = (enable, direction)
+        self._log_follower_request(oams_name, desired_state, context, force=force)
 
         if not self._is_oams_mcu_ready(oams):
+            if force:
+                try:
+                    self._log_follower_change(oams_name, enable, direction, context, forced=True)
+                    oams.set_oams_follower(enable, direction)
+                    state.last_state = desired_state
+                    self.logger.debug(
+                        f"Forced follower change for {oams_name} ({context or 'no context'}) while MCU not ready"
+                    )
+                except Exception:
+                    self.logger.error(
+                        f"Failed to force follower change for {oams_name} ({context or 'no context'}) while MCU not ready"
+                    )
+                return
             self.logger.debug(f"Skipping follower change for {oams_name} ({context or 'no context'}) because MCU is not ready")
-            return
-
-        # Allow follower changes during error recovery (clog, stuck spool) even if OAMS is busy
-        # User needs manual extrusion capability to fix issues
-        is_error_recovery = "clog" in context.lower() or "stuck" in context.lower() or "recovery" in context.lower()
-        if not is_error_recovery and getattr(oams, "action_status", None) is not None:
-            self.logger.debug(
-                f"Skipping follower change for {oams_name} ({context or 'no context'}) because OAMS is busy"
-            )
             return
 
         # Only send command if state changed or this is the first command
         if force or state.last_state != desired_state:
             try:
-                # Use rate limiting to prevent MCU queue overflow
-                self._rate_limited_mcu_command(oams_name, oams.set_oams_follower, enable, direction)
+                if oams_name not in self.oams and oams is not None:
+                    self.oams[oams_name] = oams
+                self._log_follower_change(oams_name, enable, direction, context, forced=force)
+                oams.set_oams_follower(enable, direction)
                 state.last_state = desired_state
                 # Log follower disable at INFO level to track what's disabling it during clogs
                 if enable:
@@ -4573,6 +5235,37 @@ class OAMSManager:
 
             except Exception:
                 self.logger.error(f"Failed to {'enable' if enable else 'disable'} follower for {oams_name}{f' ({context})' if context else ''}")
+
+    def _log_follower_request(
+        self,
+        oams_name: str,
+        desired_state: Tuple[int, int],
+        context: str,
+        *,
+        force: bool = False,
+    ) -> None:
+        """Debug log follower requests only when state changes or forced."""
+        state = self._get_follower_state(oams_name)
+        if force or state.last_state != desired_state:
+            self.logger.debug(
+                f"Follower request for {oams_name}: enable={desired_state[0]} "
+                f"direction={desired_state[1]} context={context or 'no context'} force={force}"
+            )
+
+    def _log_follower_change(
+        self,
+        oams_name: str,
+        enable: int,
+        direction: int,
+        context: str,
+        *,
+        forced: bool = False,
+    ) -> None:
+        """Debug log actual follower commands sent."""
+        self.logger.debug(
+            f"Follower command for {oams_name}: enable={enable} direction={direction} "
+            f"context={context or 'no context'} forced={forced}"
+        )
 
     def _update_follower_for_oams(self, oams_name: str, oams: Any) -> None:
         """Follower is manually controlled; no automatic updates."""
@@ -4730,6 +5423,8 @@ class OAMSManager:
 
             self.start_monitors()
 
+        now = self.reactor.monotonic()
+
         # Clear any error LEDs on resume (error flags already cleared when pause was triggered)
         for fps_name, fps_state in self.current_state.fps_state.items():
             oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
@@ -4749,6 +5444,9 @@ class OAMSManager:
             if fps_state.clog.active:
                 fps_state.reset_clog_tracker()
                 self.logger.info(f"Cleared clog state for {fps_name} on print resume")
+                if fps_state.current_lane is not None:
+                    fps_state.engaged_with_extruder = True
+                    fps_state.engagement_checked_at = now
                 # Clear the error LED if we have an OAMS and spool index
                 if oams is not None and fps_state.current_spool_idx is not None:
                     try:
@@ -4758,12 +5456,9 @@ class OAMSManager:
 
             if fps_state.stuck_spool.restore_follower:
                 self._restore_follower_if_needed(fps_name, fps_state, oams, "print resume")
-            elif (
-                fps_state.current_oams is not None
-                and fps_state.current_spool_idx is not None
-                and not fps_state.following
-            ):
-                self._ensure_forward_follower(fps_name, fps_state, "print resume")
+            elif fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
+                if not fps_state.following or fps_state.direction != 1:
+                    self._ensure_forward_follower(fps_name, fps_state, "print resume")
 
 
         # Update all followers based on hub sensors
@@ -4792,6 +5487,11 @@ class OAMSManager:
 
         if oams is None:
             self.logger.error(f"Cannot retry stuck spool on {fps_name} - OAMS not found")
+            return
+
+        oams_name = oams_name or getattr(oams, "name", oams_name)
+        if not oams_name:
+            self.logger.error(f"Cannot retry stuck spool on {fps_name} - OAMS name unavailable")
             return
 
         if spool_idx is None:
@@ -4831,8 +5531,16 @@ class OAMSManager:
 
             # Step 2: Ensure follower is reverse for unload
             self.logger.debug(f"{fps_name}: Setting follower to reverse")
-            gcode.run_script_from_command(f"OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=0")
-            gcode.run_script_from_command("M400")
+            self._set_follower_if_changed(
+                oams_name,
+                oams,
+                1,
+                0,
+                "stuck spool retry recovery",
+                force=True,
+            )
+            fps_state.following = True
+            fps_state.direction = 0
             self.reactor.pause(self.reactor.monotonic() + 0.5)
 
             # Step 3: Unload the stuck filament
@@ -4843,8 +5551,16 @@ class OAMSManager:
 
             # Step 4: Ensure follower is forward for load
             self.logger.debug(f"{fps_name}: Setting follower to forward")
-            gcode.run_script_from_command(f"OAMSM_FOLLOWER FPS={fps_param} ENABLE=1 DIRECTION=1")
-            gcode.run_script_from_command("M400")
+            self._set_follower_if_changed(
+                oams_name,
+                oams,
+                1,
+                1,
+                "stuck spool retry recovery",
+                force=True,
+            )
+            fps_state.following = True
+            fps_state.direction = 1
             self.reactor.pause(self.reactor.monotonic() + 0.5)
 
             # Step 5: Retry load
@@ -4879,8 +5595,10 @@ class OAMSManager:
 
         # Abort current action (unload/load)
         if oams is not None:
-            # Use rate limiting to prevent MCU queue overflow
-            self._rate_limited_mcu_command(fps_state.current_oams, oams.abort_current_action)
+            try:
+                oams.abort_current_action(wait=False)
+            except Exception:
+                self.logger.error(f"Failed to abort current action on {fps_name} during stuck spool pause")
 
         # Pause printer with error message
         # SAFETY: Wrap pause in try/except to prevent crash if pause logic fails
@@ -4965,6 +5683,24 @@ class OAMSManager:
                         self.logger.error(f"Failed to read sensors for {fps_name}")
                         return eventtime + MONITOR_ENCODER_PERIOD_IDLE
 
+                monitor = self.runout_monitors.get(fps_name)
+                is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
+                allow_f1s_updates = not (
+                    monitor and monitor.state in (OAMSRunoutState.DETECTED, OAMSRunoutState.COASTING)
+                )
+                allow_lane_clear = (
+                    not is_runout_active
+                    and fps_state.state not in (FPSLoadState.LOADING, FPSLoadState.UNLOADING)
+                )
+                oams_name = fps_state.current_oams or getattr(oams, "name", None)
+                if oams_name:
+                    self._sync_openams_sensors_for_oams(
+                        oams_name,
+                        eventtime,
+                        allow_f1s_updates=allow_f1s_updates,
+                        allow_lane_clear=allow_lane_clear,
+                    )
+
                 now = self.reactor.monotonic()
                 state_changed = False
 
@@ -4980,8 +5716,6 @@ class OAMSManager:
                     # AFC updates lane_loaded when filament is detected, so we need to check determine_state()
                     # to pick up the new lane_loaded and update current_spool_idx
                     # Skip auto-detect if there's an active runout in progress to avoid interference
-                    monitor = self.runout_monitors.get(fps_name)
-                    is_runout_active = monitor and monitor.state != OAMSRunoutState.MONITORING
                     if not is_runout_active and fps_state.consecutive_idle_polls % 2 == 0:  # Check every 2 polls (4 seconds)
                         old_lane = fps_state.current_lane
                         old_spool_idx = fps_state.current_spool_idx
@@ -5049,8 +5783,11 @@ class OAMSManager:
                     return eventtime + interval
 
                 return eventtime + MONITOR_ENCODER_PERIOD
-            except Exception:
-                self.logger.error(f"Monitor loop crashed for {fps_name}; retrying after backoff")
+            except Exception as e:
+                self.logger.error(
+                    f"Monitor loop crashed for {fps_name}; retrying after backoff: {e}",
+                    traceback=traceback.format_exc(),
+                )
                 return eventtime + MONITOR_ENCODER_PERIOD_IDLE
 
         return partial(_unified_monitor, self)
@@ -5078,8 +5815,7 @@ class OAMSManager:
         if encoder_diff is None:
             return
 
-        if self.logger.isEnabledFor(logging.DEBUG):
-            self.logger.debug(f"OAMS[{getattr(oams, 'oams_idx', -1)}] Unload Monitor: Encoder diff {encoder_diff}")
+        self.logger.debug(f"OAMS[{getattr(oams, 'oams_idx', -1)}] Unload Monitor: Encoder diff {encoder_diff}")
 
         if encoder_diff < MIN_ENCODER_DIFF:
             lane_label = fps_state.current_lane or fps_name
@@ -5087,7 +5823,7 @@ class OAMSManager:
 
             # Abort the current unload operation cleanly
             try:
-                oams.abort_current_action()
+                oams.abort_current_action(wait=False)
                 self.logger.info(f"Aborted stuck spool unload operation on {fps_name}")
                 # NOTE: Cannot use reactor.pause() in timer callback - it doesn't work properly
             except Exception:
@@ -5135,8 +5871,7 @@ class OAMSManager:
         if encoder_diff is None:
             return
 
-        if self.logger.isEnabledFor(logging.DEBUG):
-            self.logger.debug(f"OAMS[{getattr(oams, 'oams_idx', -1)}] Load Monitor: Encoder diff {encoder_diff}, FPS pressure {pressure:.2f}")
+        self.logger.debug(f"OAMS[{getattr(oams, 'oams_idx', -1)}] Load Monitor: Encoder diff {encoder_diff}, FPS pressure {pressure:.2f}")
 
         # Track if pressure has dropped during load - proves filament is moving
         if pressure < self.load_fps_stuck_threshold and not fps_state.load_pressure_dropped:
@@ -5146,8 +5881,7 @@ class OAMSManager:
         # Suppress stuck detection DURING engagement verification
         # High FPS pressure during engagement extrusion is NORMAL and expected
         if fps_state.engagement_in_progress:
-            if self.logger.isEnabledFor(logging.DEBUG):
-                self.logger.debug(f"Suppressing stuck detection during engagement verification (high pressure is normal)")
+            self.logger.debug("Suppressing stuck detection during engagement verification (high pressure is normal)")
             return
 
         # Suppress stuck detection after successful engagement verification
@@ -5155,8 +5889,7 @@ class OAMSManager:
         if fps_state.engaged_with_extruder and fps_state.engagement_checked_at is not None:
             time_since_engagement = now - fps_state.engagement_checked_at
             if time_since_engagement < ENGAGEMENT_SUPPRESSION_WINDOW:
-                if self.logger.isEnabledFor(logging.DEBUG):
-                    self.logger.debug(f"Suppressing stuck detection for {ENGAGEMENT_SUPPRESSION_WINDOW - time_since_engagement:.1f}s after successful engagement")
+                self.logger.debug(f"Suppressing stuck detection for {ENGAGEMENT_SUPPRESSION_WINDOW - time_since_engagement:.1f}s after successful engagement")
                 return
 
         # Check for stuck spool conditions:
@@ -5181,7 +5914,7 @@ class OAMSManager:
         else:
             # Encoder IS moving - filament is flowing, not stuck
             # Pressure spikes during engagement extrusion are normal when filament is moving
-            if self.logger.isEnabledFor(logging.DEBUG) and pressure >= self.load_fps_stuck_threshold:
+            if pressure >= self.load_fps_stuck_threshold:
                 self.logger.debug(f"High pressure ({pressure:.2f}) but encoder moving ({encoder_diff}) - filament flowing correctly")
 
         if stuck_detected:
@@ -5193,10 +5926,9 @@ class OAMSManager:
             # This makes the load fail after ~3-5 seconds instead of waiting 30 seconds for timeout
             try:
                 self.logger.info(f"Detected stuck spool on {fps_name}: {stuck_reason}")
-                # Abort the load operation using rate-limited queue to prevent MCU overload
                 if fps_state.current_oams and oams is not None:
-                    self._rate_limited_mcu_command(fps_state.current_oams, oams.abort_current_action)
-                    self.logger.info(f"Queued abort for stuck load operation on {fps_name}")
+                    oams.abort_current_action(wait=True)
+                    self.logger.info(f"Requested abort for stuck load operation on {fps_name}")
             except Exception:
                 self.logger.error(f"Failed to abort load operation on {fps_name}")
 
@@ -5306,6 +6038,15 @@ class OAMSManager:
             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
             return
 
+        if (
+            is_printing
+            and fps_state.state == FPSLoadState.LOADED
+            and fps_state.current_lane is not None
+            and not fps_state.engaged_with_extruder
+        ):
+            fps_state.engaged_with_extruder = True
+            fps_state.engagement_checked_at = now
+
         # Skip stuck spool detection if AFC bypass is enabled
         # User is manually controlling filament, FPS pressure will be abnormal
         try:
@@ -5400,11 +6141,10 @@ class OAMSManager:
                 elapsed = now - fps_state.stuck_spool.start_time
                 remaining = STUCK_SPOOL_DWELL - elapsed
                 if remaining > 0:
-                    if self.logger.isEnabledFor(logging.DEBUG):
-                        self.logger.debug(
-                            f"{fps_name}: Stuck spool countdown - {remaining:.1f}s remaining "
-                            f"(pressure={pressure:.2f}, encoder_diff={encoder_diff})"
-                        )
+                    self.logger.debug(
+                        f"{fps_name}: Stuck spool countdown - {remaining:.1f}s remaining "
+                        f"(pressure={pressure:.2f}, encoder_diff={encoder_diff})"
+                    )
                 else:
                     # Detection triggered!
                     message = "Spool appears stuck"
@@ -5490,7 +6230,10 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             return
 
-        if not is_printing:
+        allow_clog_checks = is_printing or (
+            fps_state.state == FPSLoadState.LOADING and fps_state.engaged_with_extruder
+        )
+        if not allow_clog_checks:
             if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, "printer idle")
 
@@ -5519,6 +6262,23 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             return
 
+        if fps_state.engagement_retry_active:
+            fps_state.reset_clog_tracker()
+            return
+
+        # Suppress clog detection briefly after lane transitions (e.g., same-FPS runouts)
+        # so the new filament has time to engage the extruder before we evaluate encoder motion.
+        if fps_state.last_lane_change_time is not None and now - fps_state.last_lane_change_time < 5.0:
+            fps_state.reset_clog_tracker()
+            return
+
+        if (
+            not fps_state.clog.active
+            and fps_state.clog.last_check_time is not None
+            and now - fps_state.clog.last_check_time < CLOG_CHECK_INTERVAL
+        ):
+            return
+
         # Skip clog detection if FPS pressure is very low - indicates stuck spool, not clog
         # During lane loads, stuck spool should trigger retry logic, not clog pause
         # During normal printing, low pressure also indicates stuck spool (separate detection)
@@ -5535,6 +6295,8 @@ class OAMSManager:
         # During load purge: extruder advances + encoder doesn't move = genuine clog, detect it
         # Before purge starts: extruder not advancing = clog won't trigger (extrusion_delta < threshold)
         # The existing clog logic is already smart enough to handle this correctly
+
+        fps_state.clog.last_check_time = now
 
         try:
             extruder_pos = float(getattr(fps.extruder, "last_position", 0.0))
@@ -5563,7 +6325,11 @@ class OAMSManager:
         settings = self.clog_settings
         if extrusion_delta < settings["extrusion_window"]:
             # Not enough extrusion yet to check for clog
-            if self.logger.isEnabledFor(logging.DEBUG):
+            if (
+                fps_state.clog.last_wait_log_time is None
+                or now - fps_state.clog.last_wait_log_time >= 10.0
+            ):
+                fps_state.clog.last_wait_log_time = now
                 self.logger.debug(
                     f"{fps_name}: Clog detection waiting for extrusion window - "
                     f"extruded={extrusion_delta:.1f}mm (need {settings['extrusion_window']}mm)"
@@ -5572,12 +6338,11 @@ class OAMSManager:
 
         if (encoder_delta > settings["encoder_slack"] or pressure_span > settings["pressure_band"]):
             # Encoder is moving or pressure is varying - filament is flowing
-            if self.logger.isEnabledFor(logging.DEBUG):
-                self.logger.debug(
-                    f"{fps_name}: Clog detection OK - filament flowing "
-                    f"(encoder_delta={encoder_delta} vs slack={settings['encoder_slack']}, "
-                    f"pressure_span={pressure_span:.2f} vs band={settings['pressure_band']})"
-                )
+            self.logger.debug(
+                f"{fps_name}: Clog detection OK - filament flowing "
+                f"(encoder_delta={encoder_delta} vs slack={settings['encoder_slack']}, "
+                f"pressure_span={pressure_span:.2f} vs band={settings['pressure_band']})"
+            )
 
             # If clog was previously active, clear it and ensure follower keeps up
             if fps_state.clog.active:
@@ -5595,6 +6360,20 @@ class OAMSManager:
                 # Keep it set so follower stays enabled during manual intervention
                 # User can run CLEAR_ERRORS to return to automatic control
 
+                is_printing = False
+                if self._idle_timeout_obj is not None:
+                    try:
+                        is_printing = self._idle_timeout_obj.get_status(now)["state"] == "Printing"
+                    except Exception:
+                        is_printing = False
+                if (
+                    is_printing
+                    and oams is not None
+                    and fps_state.current_spool_idx is not None
+                    and (not fps_state.following or fps_state.direction != 1)
+                ):
+                    self._ensure_forward_follower(fps_name, fps_state, "clog auto-recovery")
+
                 fps_state.reset_clog_tracker()
 
             fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
@@ -5606,12 +6385,11 @@ class OAMSManager:
 
         if remaining > 0:
             # Timer is counting down
-            if self.logger.isEnabledFor(logging.DEBUG):
-                self.logger.debug(
-                    f"{fps_name}: CLOG COUNTDOWN - {remaining:.1f}s remaining "
-                    f"(extruded={extrusion_delta:.1f}mm, encoder_delta={encoder_delta}, "
-                    f"pressure_span={pressure_span:.2f})"
-                )
+            self.logger.debug(
+                f"{fps_name}: CLOG COUNTDOWN - {remaining:.1f}s remaining "
+                f"(extruded={extrusion_delta:.1f}mm, encoder_delta={encoder_delta}, "
+                f"pressure_span={pressure_span:.2f})"
+            )
             return
 
         if not fps_state.clog.active:
@@ -5652,24 +6430,20 @@ class OAMSManager:
                 self.logger.error(f"Failed to pause printer during clog on {fps_name} - continuing with error state")
                 # Keep active=True to prevent retriggering until user intervention
                 return
+            # Ensure the lane is ready to accept commands after the pause.
+            # If a clog is detected during a transient load/unload state, mark as LOADED
+            # so unload/recovery commands are not rejected as "busy."
+            if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
+                fps_state.state = FPSLoadState.LOADED
+                fps_state.since = self.reactor.monotonic()
+                fps_state.afc_delegation_active = False
+                fps_state.afc_delegation_until = 0.0
+                self.logger.info(
+                    f"Reset FPS state to LOADED after clog pause on {fps_name} to allow recovery commands"
+                )
 
-            # CRITICAL: Enable follower FORWARD for manual extrusion during clog recovery
-            # Clog detection ALWAYS pauses - user needs to manually extrude to clear the blockage
-            # Unlike pre-engagement stuck spool (which retries), clogs require user intervention
-            if fps_state.current_oams and fps_state.current_spool_idx is not None:
-                oams_obj = self.oams.get(fps_state.current_oams)
-                if oams_obj is not None:
-                    self._enable_follower(
-                        fps_name,
-                        fps_state,
-                        oams_obj,
-                        1,  # Always forward for clog - user needs to manually extrude to clear
-                        "clog detected - keep follower forward for manual recovery",
-                    )
-                else:
-                    self.logger.warning(f"Cannot enable follower during clog on {fps_name} - OAMS {fps_state.current_oams} not found")
-            else:
-                self.logger.warning(f"Cannot enable follower during clog on {fps_name} - no OAMS or spool loaded")
+            # Do not change follower direction during clog detection error flows.
+            # User can manually set follower direction as needed during recovery.
 
     def start_monitors(self):
         """Start all monitoring timers"""
@@ -5767,15 +6541,30 @@ class OAMSManager:
                         # Get current extruder temp to use for target
                         current_extruder = self.printer.lookup_object('toolhead').get_extruder()
                         target_temp = current_extruder.get_heater().target_temp
-                        if target_temp <= 0:
+                        lane_snapshot = self._get_lane_snapshot(
+                            target_lane_name,
+                            unit_name=getattr(target_lane, "unit", None),
+                        )
+                        lane_extruder_temp = None
+                        if isinstance(lane_snapshot, dict):
+                            lane_extruder_temp = lane_snapshot.get("extruder_temp")
+                        if lane_extruder_temp is not None:
+                            target_temp = lane_extruder_temp
+                        try:
+                            target_temp_value = float(target_temp)
+                        except (TypeError, ValueError):
+                            raise Exception(f"Current extruder has invalid target temp: {target_temp}")
+                        if target_temp_value <= 0:
                             raise Exception(f"Current extruder has no target temp set")
 
 
                         # 5. Set target extruder temp before CHANGE_TOOL (so it knows what temp to heat to)
-                        self.logger.info(f"OAMS: Step 5 - Setting target temp for {target_extruder_name} to {target_extruder_name:.1f}")
+                        self.logger.info(
+                            f"OAMS: Step 5 - Setting target temp for {target_extruder_name} to {target_temp_value:.1f}"
+                        )
                         target_extruder_obj = self.printer.lookup_object(target_extruder_name)
                         target_heater = target_extruder_obj.get_heater()
-                        target_heater.set_temp(target_temp)
+                        target_heater.set_temp(target_temp_value)
 
                         # 6. Use AFC's CHANGE_TOOL Python method (like box turtle does)
                         # This should handle tool switching, heating, and loading
@@ -5925,7 +6714,18 @@ class OAMSManager:
             if fps_reload_margin is None:
                 fps_reload_margin = self.reload_before_toolhead_distance
 
-            monitor = OAMSRunoutMonitor(self.printer, fps_name, self.fpss[fps_name], self.current_state.fps_state[fps_name], self.oams, _reload_callback, reload_before_toolhead_distance=fps_reload_margin, debounce_delay=self.debounce_delay)
+            monitor = OAMSRunoutMonitor(
+                self.printer,
+                fps_name,
+                self.fpss[fps_name],
+                self.current_state.fps_state[fps_name],
+                self.oams,
+                _reload_callback,
+                follower_callback=self._set_follower_state,
+                logger=self.logger,
+                reload_before_toolhead_distance=fps_reload_margin,
+                debounce_delay=self.debounce_delay,
+            )
             self.runout_monitors[fps_name] = monitor
             monitor.start()
 
