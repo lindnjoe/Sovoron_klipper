@@ -6323,7 +6323,7 @@ class OAMSManager:
         Detection Criteria (ALL must be true):
           1. Extruder moved >= extrusion_window mm (e.g., 24mm)
           2. Encoder clicks < encoder_slack threshold (e.g., 8 clicks)
-          3. FPS pressure within normal band around target (0.50 ± 0.06)
+          3. FPS pressure within normal band around target (0.50 +/- 0.06)
           4. Sustained for >= dwell time (e.g., 10.0s)
 
         Pressure Band Check:
@@ -6333,9 +6333,9 @@ class OAMSManager:
           - Center target: 0.50 (configurable via clog_pressure_target)
 
         Sensitivity Levels:
-          low:    window=48mm, slack=15, band=±0.08, dwell=12s (fewest false positives)
-          medium: window=24mm, slack=8,  band=±0.06, dwell=10s (balanced - default)
-          high:   window=12mm, slack=4,  band=±0.04, dwell=8s  (earliest detection)
+          low:    window=48mm, slack=15, band=+/-0.08, dwell=12s (fewest false positives)
+          medium: window=24mm, slack=8,  band=+/-0.06, dwell=10s (balanced - default)
+          high:   window=12mm, slack=4,  band=+/-0.04, dwell=8s  (earliest detection)
 
         Rate Limiting:
           - Checks throttled to CLOG_CHECK_INTERVAL (8.0s) when not active
