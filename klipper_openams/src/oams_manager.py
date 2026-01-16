@@ -69,7 +69,7 @@ STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
 STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
 STUCK_SPOOL_DWELL = 5.0  # Increased from 3.5 to 5.0 - debouncing for high-speed printing with fast extrudes/retracts (FPS is slow to react)
 STUCK_SPOOL_LOAD_GRACE = 8.0
-self.stuck_spool_max_attempts = 2  # User requirement: max 2 attempts for stuck spool pre-engagement detection
+STUCK_SPOOL_MAX_ATTEMPTS = 2  # User requirement: max 2 attempts for stuck spool pre-engagement detection
 
 CLOG_PRESSURE_TARGET = 0.50
 CLOG_SENSITIVITY_LEVELS = {
@@ -891,7 +891,7 @@ class OAMSManager:
 
         # Configurable detection thresholds and timing parameters with validation
         self.stuck_spool_load_grace = config.getfloat("stuck_spool_load_grace", STUCK_SPOOL_LOAD_GRACE, minval=0.0, maxval=60.0)
-        self.stuck_spool_max_attempts = config.getint("stuck_spool_max_attempts", self.stuck_spool_max_attempts, minval=1, maxval=5)
+        self.stuck_spool_max_attempts = config.getint("stuck_spool_max_attempts", STUCK_SPOOL_MAX_ATTEMPTS, minval=1, maxval=5)
         self.stuck_spool_pressure_threshold = config.getfloat("stuck_spool_pressure_threshold", STUCK_SPOOL_PRESSURE_THRESHOLD, minval=0.0, maxval=1.0)
         self.stuck_spool_pressure_clear_threshold = config.getfloat("stuck_spool_pressure_clear_threshold", STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD, minval=0.0, maxval=1.0)
         self.clog_pressure_target = config.getfloat("clog_pressure_target", CLOG_PRESSURE_TARGET, minval=0.0, maxval=1.0)
