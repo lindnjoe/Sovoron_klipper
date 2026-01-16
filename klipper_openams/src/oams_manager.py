@@ -249,12 +249,12 @@ class OAMSRunoutMonitor:
                             lane_name = self.hardware_service.resolve_lane_for_spool(unit_name, spool_idx)
                             # Successfully resolved - clear fallback flag so we log if it fails again
                             if lane_name is not None and self._logged_lane_resolution_fallback:
-                                self.logger.info(f"OAMS: Hardware service lane resolution recovered for {self.fps_name}")
+                                self.logger.debug(f"OAMS: Hardware service lane resolution recovered for {self.fps_name}")
                                 self._logged_lane_resolution_fallback = False
                         except Exception as e:
                             # Log exception details for debugging (only once)
                             if not self._logged_lane_resolution_fallback:
-                                self.logger.error(
+                                self.logger.debug(
                                     f"OAMS: Hardware service resolve_lane_for_spool failed for {self.fps_name} "
                                     f"(unit_name={unit_name}, spool_idx={spool_idx}): {e}"
                                 )
@@ -263,7 +263,7 @@ class OAMSRunoutMonitor:
                         lane_name = fps_state.current_lane
                         # Only log once to prevent log spam (like F1S error handling)
                         if not self._logged_lane_resolution_fallback:
-                            self.logger.warning(
+                            self.logger.debug(
                                 f"OAMS: Hardware service failed to resolve lane name for {self.fps_name}, "
                                 f"using fps_state.current_lane '{lane_name}' as fallback"
                             )
