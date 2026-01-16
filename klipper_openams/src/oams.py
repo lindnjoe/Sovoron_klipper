@@ -19,7 +19,7 @@ except Exception:  # pragma: no cover - best-effort integration only
 _FLOAT_STRUCT = struct.Struct("f")
 _U32_STRUCT = struct.Struct("I")
 
-OPENAMS_VERSION = "0.0.2"
+OPENAMS_VERSION = "0.0.3"
 
 # OAMS Hardware Status Constants
 class OAMSStatus:

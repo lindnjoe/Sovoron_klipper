@@ -13,6 +13,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
+OPENAMS_VERSION = "0.0.3"
 
 # ============================================================================
 # Shared Utility Functions
