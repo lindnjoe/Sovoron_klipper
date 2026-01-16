@@ -143,7 +143,7 @@ class OAMS:
 
         self.mcu.register_response(self._oams_cmd_stats, "oams_cmd_stats")
 
-        self.mcu.register_response(self._oams_cmd_current_stats, "oams_cmd_current_status")
+        self.mcu.register_response(self._oams_cmd_current_status, "oams_cmd_current_status")
 
         self.mcu.register_config_callback(self._build_config)
         
@@ -901,7 +901,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self.hub_hes_value[3] = params["hub_hes_value_3"]
         self.encoder_clicks = params["encoder_clicks"]
         
-    def _oams_cmd_current_stats(self, params):
+    def _oams_cmd_current_status(self, params):
         self.i_value = self.u32_to_float(params["current_value"])
 
     def get_current(self):

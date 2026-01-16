@@ -924,6 +924,7 @@ class OAMSManager:
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
         self.printer.register_event_handler("idle_timeout:printing", self._handle_printing_resumed)
         self.printer.register_event_handler("pause:resume", self._handle_printing_resumed)
+        self.printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
 
         self.printer.add_object("oams_manager", self)
         self.register_commands()
@@ -1271,6 +1272,38 @@ class OAMSManager:
                 f"Failed to sync state with AFC: {e}",
                 traceback=traceback.format_exc(),
             )
+
+    def _handle_disconnect(self) -> None:
+        """Cleanup timers and resources on disconnect/shutdown."""
+        self.logger.info("OAMS Manager shutting down, cleaning up timers...")
+
+        # Clean up MCU command poll timers
+        for oams_name, timer in list(self._mcu_command_poll_timers.items()):
+            try:
+                self.reactor.unregister_timer(timer)
+                self.logger.debug(f"Unregistered MCU poll timer for {oams_name}")
+            except Exception as e:
+                self.logger.warning(f"Failed to unregister MCU poll timer for {oams_name}: {e}")
+        self._mcu_command_poll_timers.clear()
+
+        # Clean up follower pulse timers
+        for fps_name, timer in list(self._follower_pulse_timers.items()):
+            try:
+                self.reactor.unregister_timer(timer)
+                self.logger.debug(f"Unregistered follower pulse timer for {fps_name}")
+            except Exception as e:
+                self.logger.warning(f"Failed to unregister follower pulse timer for {fps_name}: {e}")
+        self._follower_pulse_timers.clear()
+
+        # Clean up monitor timers
+        for timer in self.monitor_timers:
+            try:
+                self.reactor.unregister_timer(timer)
+            except Exception as e:
+                self.logger.warning(f"Failed to unregister monitor timer: {e}")
+        self.monitor_timers.clear()
+
+        self.logger.info("OAMS Manager cleanup complete")
 
     def handle_ready(self) -> None:
         """Initialize system when printer is ready."""

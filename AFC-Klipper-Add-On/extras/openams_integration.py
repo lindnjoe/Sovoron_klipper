@@ -317,6 +317,9 @@ class LaneRegistry:
         extruder_lanes = self._by_extruder.get(info.extruder, [])
         if info in extruder_lanes:
             extruder_lanes.remove(info)
+            # Remove empty list to prevent memory leak
+            if not extruder_lanes:
+                self._by_extruder.pop(info.extruder, None)
     
     def get_by_lane(self, lane_name: str) -> Optional[LaneInfo]:
         """Get lane info by AFC lane name (e.g., "lane4")."""
