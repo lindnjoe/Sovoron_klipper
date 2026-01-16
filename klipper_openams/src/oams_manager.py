@@ -69,6 +69,7 @@ STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
 STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
 STUCK_SPOOL_DWELL = 5.0  # Increased from 3.5 to 5.0 - debouncing for high-speed printing with fast extrudes/retracts (FPS is slow to react)
 STUCK_SPOOL_LOAD_GRACE = 8.0
+STUCK_SPOOL_MAX_ATTEMPTS = 2  # User requirement: max 2 attempts for stuck spool pre-engagement detection
 
 CLOG_PRESSURE_TARGET = 0.50
 CLOG_SENSITIVITY_LEVELS = {
@@ -4412,9 +4413,6 @@ class OAMSManager:
             # Fallback to OAMS config if AFC not available
             max_engagement_retries = getattr(oam, "load_retry_max", 3)
             self.logger.debug(f"Using OAMS retry config for engagement: {max_engagement_retries} attempts (AFC config not available)")
-
-        # Stuck spool gets its own hardcoded retry limit
-        STUCK_SPOOL_MAX_ATTEMPTS = 2  # User requirement: max 2 tries for stuck spool
 
         load_success = False
         last_error = None
