@@ -236,7 +236,7 @@ class OAMSRunoutMonitor:
         
                     lane_name = None
                     spool_empty = None
-                    unit_name = getattr(fps_state, "current_oams", None) or self.fps_name
+                    unit_name = self._normalize_oams_name(getattr(fps_state, "current_oams", None)) or self.fps_name
         
                     if self.hardware_service is not None:
                         try:
@@ -613,7 +613,23 @@ class OAMSRunoutMonitor:
         return oams_obj
 
     def _normalize_oams_name(self, oams_name: Optional[str], oams_obj: Optional[Any] = None) -> Optional[str]:
+        if not oams_name:
+            return oams_name
+
+        base_name = oams_name[5:] if oams_name.startswith("oams ") else oams_name
+        if base_name in self.oams:
+            return base_name
+
+        if oams_obj is not None:
+            obj_name = getattr(oams_obj, "name", None)
+            if isinstance(obj_name, str):
+                obj_base = obj_name[5:] if obj_name.startswith("oams ") else obj_name
+                if obj_base in self.oams:
+                    return obj_base
+
         resolved_name, _ = self._resolve_oams_name(oams_name, oams_obj)
+        if isinstance(resolved_name, str) and resolved_name.startswith("oams "):
+            return resolved_name[5:]
         return resolved_name
 
     def _get_lane_extruder_name(self, lane) -> Optional[str]:
@@ -2705,22 +2721,23 @@ class OAMSManager:
         if not oams_name:
             return oams_name
 
-        if oams_name in self.oams:
-            return oams_name
+        base_name = oams_name[5:] if oams_name.startswith("oams ") else oams_name
+        if base_name in self.oams:
+            return base_name
 
         if oams_obj is not None:
             obj_name = getattr(oams_obj, "name", None)
-            if obj_name in self.oams:
-                return obj_name
+            if isinstance(obj_name, str):
+                obj_base = obj_name[5:] if obj_name.startswith("oams ") else obj_name
+                if obj_base in self.oams:
+                    return obj_base
 
         prefixed = f"oams {oams_name}"
         if prefixed in self.oams:
-            return prefixed
+            return oams_name
 
         if oams_name.startswith("oams "):
-            unprefixed = oams_name[5:]
-            if unprefixed in self.oams:
-                return unprefixed
+            return oams_name[5:]
 
         return oams_name
 
