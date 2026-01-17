@@ -1691,11 +1691,22 @@ class afcAMS(afcUnit):
             msg = f"Unable to resolve spool index for {cur_lane.name}"
             return False, msg, 0
 
+        # Load the spool before starting TD-1 calibration
+        try:
+            self.oams.oams_load_spool_cmd.send([spool_index])
+        except Exception:
+            self.logger.error(f"Failed to start spool load for TD-1 calibration on {cur_lane.name}")
+            return False, "Failed to start spool load", 0
+
         # Verify TD-1 is still connected before trying to get data
         valid, msg = self.afc.function.check_for_td1_id(cur_lane.td1_device_id)
         if not valid:
             msg = f"TD-1 device(SN: {cur_lane.td1_device_id}) not detected anymore, "
             msg += "please check before continuing to calibrate TD-1 bowden length"
+            try:
+                self.oams.oams_unload_spool_cmd.send()
+            except Exception:
+                pass
             return valid, msg, 0
 
         self.logger.raw(f"Calibrating bowden length to TD-1 device with {cur_lane.name}")
@@ -1704,7 +1715,18 @@ class afcAMS(afcUnit):
         if fps_id is None:
             msg = f"Unable to resolve FPS for {cur_lane.name}"
             self.logger.error(msg)
+            try:
+                self.oams.oams_unload_spool_cmd.send()
+            except Exception:
+                pass
             return False, msg, 0
+
+        # Simulate lane loaded state so follower commands work
+        current_extruder = self.afc.function.get_current_extruder()
+        original_lane_loaded = None
+        if current_extruder and current_extruder in self.afc.tools:
+            original_lane_loaded = self.afc.tools[current_extruder].lane_loaded
+            self.afc.tools[current_extruder].lane_loaded = cur_lane.name
 
         hub_timeout = self.afc.reactor.monotonic() + 90.0
         hub_detected = False
@@ -1722,14 +1744,21 @@ class afcAMS(afcUnit):
                 hub_detected = True
                 break
             gcode.run_script_from_command(
-                f"OAMSM_PULSE_FOLLOWER FPS={fps_id} DURATION=0.5 DIRECTION=1"
+                f"OAMSM_PULSE_FOLLOWER FPS={fps_id} DURATION=0.5 DIRECTION=1 OAMS={self.oams_name}"
             )
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.7)
 
         if not hub_detected:
             gcode.run_script_from_command(
-                f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1"
+                f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1 OAMS={self.oams_name}"
             )
+            # Restore original lane loaded state
+            if current_extruder and current_extruder in self.afc.tools:
+                self.afc.tools[current_extruder].lane_loaded = original_lane_loaded
+            try:
+                self.oams.oams_unload_spool_cmd.send()
+            except Exception:
+                self.logger.error(f"Failed to stop spool after TD-1 calibration for {cur_lane.name}")
             msg = f"Hub sensor did not trigger during TD-1 calibration for {cur_lane.name}"
             self.logger.error(msg)
             return False, msg, 0
@@ -1747,7 +1776,7 @@ class afcAMS(afcUnit):
 
         while self.afc.reactor.monotonic() < td1_timeout:
             gcode.run_script_from_command(
-                f"OAMSM_PULSE_FOLLOWER FPS={fps_id} DURATION={burst_duration} DIRECTION=1"
+                f"OAMSM_PULSE_FOLLOWER FPS={fps_id} DURATION={burst_duration} DIRECTION=1 OAMS={self.oams_name}"
             )
             self.afc.reactor.pause(self.afc.reactor.monotonic() + burst_duration + rest_duration)
 
@@ -1757,10 +1786,17 @@ class afcAMS(afcUnit):
             compare_time = datetime.now()
 
         gcode.run_script_from_command(
-            f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1"
+            f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1 OAMS={self.oams_name}"
         )
 
         if not td1_detected:
+            # Restore original lane loaded state
+            if current_extruder and current_extruder in self.afc.tools:
+                self.afc.tools[current_extruder].lane_loaded = original_lane_loaded
+            try:
+                self.oams.oams_unload_spool_cmd.send()
+            except Exception:
+                self.logger.error(f"Failed to stop spool after TD-1 calibration for {cur_lane.name}")
             msg = f"TD-1 failed to detect filament for {cur_lane.name}"
             return False, msg, 0
 
@@ -1783,6 +1819,15 @@ class afcAMS(afcUnit):
         cur_lane.do_enable(False)
         cur_lane.unit_obj.return_to_home()
         self.afc.save_vars()
+
+        # Restore original lane loaded state
+        if current_extruder and current_extruder in self.afc.tools:
+            self.afc.tools[current_extruder].lane_loaded = original_lane_loaded
+        try:
+            self.oams.oams_unload_spool_cmd.send()
+        except Exception:
+            self.logger.error(f"Failed to stop spool after TD-1 calibration for {cur_lane.name}")
+
         return True, "td1_bowden_length calibration successful", encoder_delta
 
     def _capture_td1_with_oams(
@@ -1796,11 +1841,12 @@ class afcAMS(afcUnit):
             return False, "TD-1 capture disabled"
         if cur_lane.td1_device_id is None:
             return False, "TD-1 device ID not configured"
-        if cur_lane.hub_obj is None or cur_lane.hub_obj.state:
-            self.logger.info(
-                f"Cannot get TD-1 data for {cur_lane.name}, hub shows filament in path"
-            )
-            return False, "Hub shows filament in path"
+
+        # Fix hub state logic - only check if hub exists and is loaded
+        hub_state = False
+        if cur_lane.hub_obj is not None:
+            hub_state = bool(cur_lane.hub_obj.state)
+
         if self.afc.function.get_current_lane_obj() is not None:
             self.logger.info(
                 f"Cannot get TD-1 data for {cur_lane.name}, toolhead is loaded"
@@ -1822,16 +1868,61 @@ class afcAMS(afcUnit):
             self.logger.error(f"Unable to resolve spool index for {cur_lane.name}")
             return False, "Unable to resolve spool index"
 
+        # Check for conflicts with other OpenAMS units
+        hub_values = getattr(self.oams, "hub_hes_value", None)
+        current_hub_loaded = False
+        other_hub_loaded = False
+        try:
+            if hub_values and spool_index < len(hub_values):
+                current_hub_loaded = bool(hub_values[spool_index])
+                other_hub_loaded = any(
+                    bool(value) for idx, value in enumerate(hub_values) if idx != spool_index
+                )
+        except Exception:
+            current_hub_loaded = False
+            other_hub_loaded = False
+
+        if other_hub_loaded:
+            self.logger.info(
+                "Skipping TD-1 capture for %s because another OpenAMS hub is already loaded",
+                cur_lane.name,
+            )
+            return False, "Another OpenAMS hub already loaded"
+
+        if hub_state and not current_hub_loaded:
+            self.logger.info(
+                f"Cannot get TD-1 data for {cur_lane.name}, hub shows filament in path"
+            )
+            return False, "Hub shows filament in path"
+
+        # Load the spool before starting TD-1 capture
+        try:
+            self.oams.oams_load_spool_cmd.send([spool_index])
+        except Exception:
+            self.logger.error(f"Failed to start spool load for TD-1 capture on {cur_lane.name}")
+            return False, "Failed to start spool load"
+
         gcode = self.gcode
         fps_id = self._get_fps_id_for_lane(cur_lane.name)
         if fps_id is None:
             self.logger.error(f"Unable to resolve FPS for {cur_lane.name}")
+            try:
+                self.oams.oams_unload_spool_cmd.send()
+            except Exception:
+                pass
             return False, "Unable to resolve FPS"
+
+        # Simulate lane loaded state so follower commands work
+        current_extruder = self.afc.function.get_current_extruder()
+        original_lane_loaded = None
+        if current_extruder and current_extruder in self.afc.tools:
+            original_lane_loaded = self.afc.tools[current_extruder].lane_loaded
+            self.afc.tools[current_extruder].lane_loaded = cur_lane.name
 
         hub_timeout = self.afc.reactor.monotonic() + 90.0
         hub_detected = False
         gcode.run_script_from_command(
-            f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=1 DIRECTION=1"
+            f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=1 DIRECTION=1 OAMS={self.oams_name}"
         )
         while self.afc.reactor.monotonic() < hub_timeout:
             try:
@@ -1844,8 +1935,15 @@ class afcAMS(afcUnit):
 
         if not hub_detected:
             gcode.run_script_from_command(
-                f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1"
+                f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1 OAMS={self.oams_name}"
             )
+            # Restore original lane loaded state
+            if current_extruder and current_extruder in self.afc.tools:
+                self.afc.tools[current_extruder].lane_loaded = original_lane_loaded
+            try:
+                self.oams.oams_unload_spool_cmd.send()
+            except Exception:
+                self.logger.error(f"Failed to stop spool after TD-1 capture for {cur_lane.name}")
             self.logger.error(
                 f"Hub sensor did not trigger during TD-1 capture for {cur_lane.name}"
             )
@@ -1858,8 +1956,15 @@ class afcAMS(afcUnit):
 
         if encoder_before is None:
             gcode.run_script_from_command(
-                f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1"
+                f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1 OAMS={self.oams_name}"
             )
+            # Restore original lane loaded state
+            if current_extruder and current_extruder in self.afc.tools:
+                self.afc.tools[current_extruder].lane_loaded = original_lane_loaded
+            try:
+                self.oams.oams_unload_spool_cmd.send()
+            except Exception:
+                self.logger.error(f"Failed to stop spool after TD-1 capture for {cur_lane.name}")
             self.logger.error(
                 f"Unable to read encoder before TD-1 capture for {cur_lane.name}"
             )
@@ -1879,14 +1984,20 @@ class afcAMS(afcUnit):
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
 
         gcode.run_script_from_command(
-            f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1"
+            f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1 OAMS={self.oams_name}"
         )
+
+        # Restore original lane loaded state
+        if current_extruder and current_extruder in self.afc.tools:
+            self.afc.tools[current_extruder].lane_loaded = original_lane_loaded
+        try:
+            self.oams.oams_unload_spool_cmd.send()
+        except Exception:
+            self.logger.error(f"Failed to stop spool after TD-1 capture for {cur_lane.name}")
+
         self.afc.reactor.pause(self.afc.reactor.monotonic() + 3.5)
         self.get_td1_data(cur_lane, compare_time)
 
-        gcode.run_script_from_command(
-            f"OAMSM_FOLLOWER FPS={fps_id} ENABLE=0 DIRECTION=1"
-        )
         return True, "TD-1 data captured"
 
     def prep_capture_td1(self, cur_lane):
