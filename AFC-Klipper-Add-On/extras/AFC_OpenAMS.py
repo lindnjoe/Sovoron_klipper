@@ -1743,6 +1743,10 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.error(f"Failed to stop spool after TD-1 calibration for {cur_lane.name}")
             return False, msg, 0
+        try:
+            self.oams.oams_unload_spool_cmd.send()
+        except Exception:
+            self.logger.error(f"Failed to stop spool after hub detect for {cur_lane.name}")
 
         try:
             encoder_before = int(self.oams.encoder_clicks)
@@ -1878,6 +1882,10 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.error(f"Failed to stop spool after TD-1 capture for {cur_lane.name}")
             return False, "Hub sensor did not trigger"
+        try:
+            self.oams.oams_unload_spool_cmd.send()
+        except Exception:
+            self.logger.error(f"Failed to stop spool after hub detect for {cur_lane.name}")
 
         try:
             encoder_before = int(self.oams.encoder_clicks)
