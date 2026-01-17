@@ -1805,23 +1805,23 @@ class afcAMS(afcUnit):
         except Exception:
             encoder_before = None
 
-        # Now cycle follower: disable 3.5s, enable forward 3.5s, repeat
+        # Now cycle follower: disable 1s, enable forward 1s, repeat
         # This allows TD-1 to detect filament during the movement
         compare_time = datetime.now()
         td1_timeout = self.afc.reactor.monotonic() + 180.0
         td1_detected = False
-        cycle_duration = 3.5
+        cycle_duration = 1.0
 
         self.logger.debug(f"Starting follower cycling for TD-1 detection on {cur_lane.name}")
         while self.afc.reactor.monotonic() < td1_timeout:
-            # Disable follower for 3.5 seconds
+            # Disable follower for 1 second
             try:
                 self.oams.set_oams_follower(0, 0)
             except Exception:
                 self.logger.error(f"Failed to disable follower during TD-1 cycling for {cur_lane.name}")
             self.afc.reactor.pause(self.afc.reactor.monotonic() + cycle_duration)
 
-            # Enable follower forward for 3.5 seconds
+            # Enable follower forward for 1 second
             try:
                 self.oams.set_oams_follower(1, 1)
             except Exception:
