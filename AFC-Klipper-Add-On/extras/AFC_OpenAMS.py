@@ -1820,10 +1820,8 @@ class afcAMS(afcUnit):
         )
 
         if not td1_detected:
-            try:
-                self.oams.oams_unload_spool_cmd.send()
-            except Exception:
-                self.logger.error(f"Failed to stop spool after TD-1 calibration for {cur_lane.name}")
+            # Filament reached hub but not TD-1 - unload it
+            self._unload_after_td1(cur_lane, spool_index, fps_id)
             msg = f"TD-1 failed to detect filament for {cur_lane.name}"
             return False, msg, 0
 
