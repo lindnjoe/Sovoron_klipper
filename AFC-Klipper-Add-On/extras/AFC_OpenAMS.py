@@ -1800,15 +1800,17 @@ class afcAMS(afcUnit):
             self.logger.error(msg)
             return False, msg, 0
 
-        # Hub loaded successfully - now cancel the load command and take manual control
-        self.logger.debug(f"Hub loaded, canceling load command and taking manual follower control for {cur_lane.name}")
+        # Hub loaded successfully - stop the follower and take manual control
+        # Don't use oams_unload_spool_cmd as that would retract to AMS
+        # Just stop the follower directly - that stops filament movement
+        self.logger.debug(f"Hub loaded, stopping follower and taking manual control for {cur_lane.name}")
         try:
-            self.oams.oams_unload_spool_cmd.send()
+            self.oams.set_oams_follower(0, 0)
         except Exception:
-            self.logger.error(f"Failed to cancel load command for {cur_lane.name}")
+            self.logger.error(f"Failed to stop follower for {cur_lane.name}")
 
-        # Give it a moment for the unload command to take effect
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.3)
+        # Give it a moment for the follower to stop
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
 
         try:
             encoder_before = int(self.oams.encoder_clicks)
