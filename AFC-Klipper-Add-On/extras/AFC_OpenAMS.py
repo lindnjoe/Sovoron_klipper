@@ -1776,10 +1776,35 @@ class afcAMS(afcUnit):
             if hub_loaded:
                 hub_detected = True
                 break
+
+            # Send pulse command
             gcode.run_script_from_command(
                 f"OAMSM_PULSE_FOLLOWER FPS={fps_id} DURATION=0.5 DIRECTION=1 OAMS={self.oams_name}"
             )
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.7)
+
+            # Poll hub sensor frequently during pulse (check every 0.1s for 1 second total)
+            # This ensures we catch the hub trigger during the 0.5s pulse + buffer time
+            poll_end_time = self.afc.reactor.monotonic() + 1.0
+            while self.afc.reactor.monotonic() < poll_end_time:
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+
+                # Check hub sensor during pulse
+                hub_loaded = None
+                if cur_lane.hub_obj is not None:
+                    hub_loaded = bool(cur_lane.hub_obj.state)
+                else:
+                    try:
+                        hub_loaded = bool(self.oams.hub_hes_value[spool_index])
+                    except Exception:
+                        hub_loaded = None
+
+                if hub_loaded:
+                    hub_detected = True
+                    break
+
+            # If detected during polling, exit main loop
+            if hub_detected:
+                break
 
         if not hub_detected:
             gcode.run_script_from_command(
