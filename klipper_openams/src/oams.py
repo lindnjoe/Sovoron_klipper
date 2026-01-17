@@ -748,9 +748,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS load operation timed out (MCU unresponsive)"
             # Use reactor.pause to wait without queueing into toolhead
-            # Increased from 0.1s to 1.0s to significantly reduce reactor pressure
-            # 1 second interval is imperceptible for long operations, reduces iterations by 96%
-            self.reactor.pause(self.reactor.monotonic() + 1.0)
+            # Poll every 0.1s for responsive stuck spool detection and abort handling
+            # 0.1s interval allows stuck detection to abort and retry within ~1 second
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
 
         if self.action_status_code == OAMSOpCode.SUCCESS:
             self.current_spool = spool_idx
@@ -797,9 +797,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS unload operation timed out (MCU unresponsive)"
             # Use reactor.pause to wait without queueing into toolhead
-            # Increased from 0.1s to 1.0s to significantly reduce reactor pressure
-            # 1 second interval is imperceptible for long operations, reduces iterations by 96%
-            self.reactor.pause(self.reactor.monotonic() + 1.0)
+            # Poll every 0.1s for responsive stuck spool detection and abort handling
+            # 0.1s interval allows stuck detection to abort and retry within ~1 second
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
 
         if self.action_status_code == OAMSOpCode.SUCCESS:
             self.current_spool = None
