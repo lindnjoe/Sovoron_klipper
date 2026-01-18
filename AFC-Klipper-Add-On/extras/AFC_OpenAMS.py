@@ -2615,6 +2615,19 @@ class afcAMS(afcUnit):
                 lane.load_callback(eventtime, True)
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
+
+            # Publish spool_loaded event to trigger TD-1 capture if td1_when_loaded is enabled
+            # This was missing - causing td1_when_loaded feature to never trigger
+            if self.event_bus is not None:
+                try:
+                    spool_index = self._get_openams_spool_index(lane)
+                    self.event_bus.publish("spool_loaded", {
+                        "unit_name": self.name,
+                        "spool_index": spool_index,
+                        "eventtime": eventtime,
+                    })
+                except Exception as e:
+                    self.logger.error(f"Failed to publish spool_loaded event for {lane.name}: {e}")
         else:
             # Sensor False - filament left spool bay
             # Update sensor state but don't aggressively clear everything (align with Box Turtle behavior)
