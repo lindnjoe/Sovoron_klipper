@@ -919,6 +919,9 @@ class OAMSManager:
         self.load_fps_stuck_threshold = config.getfloat("load_fps_stuck_threshold", LOAD_FPS_STUCK_THRESHOLD, minval=0.0, maxval=1.0)
         self.engagement_pressure_threshold = config.getfloat("engagement_pressure_threshold", 0.6, minval=0.0, maxval=1.0)
         self.extra_retract_default = config.getfloat("extra_retract", 10.0)
+        self.td1_override_threshold = config.getfloat("td1_override_threshold", 0.01, minval=0.0, maxval=1.0)
+        self._td1_override_active = False
+        self._td1_override_saved_threshold = None
 
         # Validate hysteresis: clear threshold must be > trigger threshold
         if self.stuck_spool_pressure_clear_threshold <= self.stuck_spool_pressure_threshold:
@@ -949,6 +952,31 @@ class OAMSManager:
 
         self.printer.add_object("oams_manager", self)
         self.register_commands()
+
+    def set_td1_override(self, enable: bool, threshold: Optional[float] = None) -> None:
+        """Temporarily override FPS load threshold during TD-1 operations."""
+        if enable:
+            if not self._td1_override_active:
+                self._td1_override_saved_threshold = self.load_fps_stuck_threshold
+                self.load_fps_stuck_threshold = (
+                    self.td1_override_threshold if threshold is None else threshold
+                )
+                self._td1_override_active = True
+                self.logger.info(
+                    "TD-1 override enabled: load_fps_stuck_threshold=%.2f",
+                    self.load_fps_stuck_threshold,
+                )
+            return
+
+        if self._td1_override_active:
+            if self._td1_override_saved_threshold is not None:
+                self.load_fps_stuck_threshold = self._td1_override_saved_threshold
+            self._td1_override_saved_threshold = None
+            self._td1_override_active = False
+            self.logger.info(
+                "TD-1 override disabled: load_fps_stuck_threshold=%.2f",
+                self.load_fps_stuck_threshold,
+            )
 
     def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
         """Return current status of all FPS units and OAMS hardware."""
