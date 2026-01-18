@@ -1896,16 +1896,20 @@ class afcAMS(afcUnit):
         if cur_lane.td1_device_id is None:
             return False, "TD-1 device ID not configured"
 
+        # Check if toolhead actually has filament loaded (not just hub)
+        # tool_loaded indicates filament is loaded all the way to the toolhead
+        # This is different from the lane being "current" which just means it's in the hub
+        if getattr(cur_lane, "tool_loaded", False):
+            self.logger.info(
+                f"Cannot get TD-1 data for {cur_lane.name}, toolhead is loaded"
+            )
+            return False, "Toolhead is loaded"
+
         # Fix hub state logic - only check if hub exists and is loaded
         hub_state = False
         if cur_lane.hub_obj is not None:
             hub_state = bool(cur_lane.hub_obj.state)
 
-        if self.afc.function.get_current_lane_obj() is not None:
-            self.logger.info(
-                f"Cannot get TD-1 data for {cur_lane.name}, toolhead is loaded"
-            )
-            return False, "Toolhead is loaded"
         if cur_lane.td1_bowden_length is None:
             self.logger.info(
                 f"td1_bowden_length not set for {cur_lane.name}, skipping TD-1 capture"
