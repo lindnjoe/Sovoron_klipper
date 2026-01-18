@@ -6485,11 +6485,12 @@ class OAMSManager:
             fps_state.clog.retraction_count += 1
             fps_state.clog.last_retraction_time = now
 
-            # If we see 3+ retractions within the tracking window, this is likely a detailed print
+            # If we see very high retraction density, this is likely a detailed print
             # with lots of small moves/retracts, not a clog - reset tracker to prevent false positive
-            if fps_state.clog.retraction_count >= 3 and fps_state.clog.start_time is not None:
+            # Threshold: 5+ retractions in 10 seconds = very active detailed printing
+            if fps_state.clog.retraction_count >= 5 and fps_state.clog.start_time is not None:
                 window_duration = now - fps_state.clog.start_time
-                if window_duration < 30.0:  # 3+ retractions in 30 seconds = high activity
+                if window_duration < 10.0:  # 5+ retractions in 10 seconds = high density activity
                     self.logger.debug(
                         f"{fps_name}: Resetting clog tracker - high retraction density detected "
                         f"({fps_state.clog.retraction_count} retractions in {window_duration:.1f}s)"
