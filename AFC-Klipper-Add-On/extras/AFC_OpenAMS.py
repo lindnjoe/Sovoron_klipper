@@ -2048,8 +2048,8 @@ class afcAMS(afcUnit):
             self.logger.error(f"Failed to disable follower after TD-1 capture for {cur_lane.name}")
 
         # Wait for TD-1 to read data
-        # Reduced from 3.5s to 1.0s per user request - TD-1 reads fast enough
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.0)
+        # Allow extra time for TD-1 + OpenAMS to settle before unload
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 3.5)
         self.get_td1_data(cur_lane, compare_time)
 
         # Unload filament after successful TD-1 capture
@@ -3227,6 +3227,15 @@ class afcAMS(afcUnit):
 
         return str(unit_name).lower() in candidates
 
+    def _wait_for_insert_hub_ready(self, lane, spool_index: Optional[int]) -> bool:
+        """Wait for spool insert settle time before TD-1 capture."""
+        self.logger.debug(
+            "Spool insert: waiting 3s before TD-1 capture for %s",
+            lane.name,
+        )
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 3.0)
+        return True
+
     def _handle_spool_loaded_event(self, *, event_type=None, **kwargs):
         """Update local state in response to a spool_loaded event."""
         unit_name = kwargs.get("unit_name")
@@ -3256,7 +3265,8 @@ class afcAMS(afcUnit):
         # This eliminates manual state management and ensures proper state transitions
         lane.set_loaded()
         if not previous_loaded and getattr(lane, "td1_when_loaded", False):
-            lane._prep_capture_td1()
+            if self._wait_for_insert_hub_ready(lane, normalized_index):
+                lane._prep_capture_td1()
         extruder_name = getattr(lane, "extruder_name", None)
         if extruder_name is None and self.registry is not None:
             try:
