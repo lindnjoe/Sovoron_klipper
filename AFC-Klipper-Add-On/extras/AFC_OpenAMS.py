@@ -2048,7 +2048,8 @@ class afcAMS(afcUnit):
             self.logger.error(f"Failed to disable follower after TD-1 capture for {cur_lane.name}")
 
         # Wait for TD-1 to read data
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 3.5)
+        # Reduced from 3.5s to 1.0s per user request - TD-1 reads fast enough
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.0)
         self.get_td1_data(cur_lane, compare_time)
 
         # Unload filament after successful TD-1 capture
