@@ -146,6 +146,8 @@ class ClogState:
     last_extruder: Optional[float] = None       # Last extruder position checked
     last_wait_log_time: Optional[float] = None  # Last time we logged a wait for extrusion window
     last_check_time: Optional[float] = None     # Last time clog detection ran
+    retraction_count: int = 0                   # Number of retractions detected in current window
+    last_retraction_time: Optional[float] = None  # Timestamp of most recent retraction
 
 
 class OAMSRunoutMonitor:
@@ -830,6 +832,8 @@ class FPSState:
         self.clog.last_extruder = None
         self.clog.last_wait_log_time = None
         self.clog.last_check_time = None
+        self.clog.retraction_count = 0
+        self.clog.last_retraction_time = None
 
     def reset_engagement_tracking(self) -> None:
         """Reset engagement tracking state for clean retry attempts."""
@@ -848,6 +852,8 @@ class FPSState:
         self.clog.max_pressure = pressure
         self.clog.last_wait_log_time = None
         self.clog.last_check_time = timestamp
+        self.clog.retraction_count = 0
+        self.clog.last_retraction_time = None
         
     def __repr__(self) -> str:
         state_names = {0: "UNLOADED", 1: "LOADED", 2: "LOADING", 3: "UNLOADING"}
@@ -908,6 +914,15 @@ class OAMSManager:
             sensitivity = CLOG_SENSITIVITY_DEFAULT
         self.clog_sensitivity = sensitivity
         self.clog_settings = CLOG_SENSITIVITY_LEVELS[self.clog_sensitivity]
+
+        # Enable/disable flags for detection systems
+        self.enable_clog_detection = config.getboolean("enable_clog_detection", True)
+        self.enable_stuck_spool_detection = config.getboolean("enable_stuck_spool_detection", True)
+
+        if not self.enable_clog_detection:
+            self.logger.info("Clog detection is DISABLED by config")
+        if not self.enable_stuck_spool_detection:
+            self.logger.info("Stuck spool detection is DISABLED by config")
 
         # Configurable detection thresholds and timing parameters with validation
         self.stuck_spool_load_grace = config.getfloat("stuck_spool_load_grace", STUCK_SPOOL_LOAD_GRACE, minval=0.0, maxval=60.0)
@@ -5845,6 +5860,10 @@ class OAMSManager:
 
     def _check_unload_speed(self, fps_name, fps_state, oams, encoder_value, now):
         """Detect stalled unloads from encoder movement during active prints."""
+        # Check if stuck spool detection is disabled in config
+        if not self.enable_stuck_spool_detection:
+            return
+
         # Skip check if already handling a stuck spool
         if fps_state.stuck_spool.active:
             return
@@ -5907,6 +5926,10 @@ class OAMSManager:
             self.logger.info(f"Spool appears stuck while unloading {lane_label} spool {spool_label} - pausing for user intervention")
     def _check_load_speed(self, fps_name, fps_state, fps, oams, encoder_value, pressure, now):
         """Detect stalled loads by combining encoder deltas with FPS pressure feedback."""
+        # Check if stuck spool detection is disabled in config
+        if not self.enable_stuck_spool_detection:
+            return
+
         if fps_state.stuck_spool.active:
             return
 
@@ -6031,6 +6054,10 @@ class OAMSManager:
         This prevents false positives during print stalls where pressure may fluctuate
         but encoder naturally stops due to toolhead buffer underrun.
         """
+        # Check if stuck spool detection is disabled in config
+        if not self.enable_stuck_spool_detection:
+            return
+
         # Skip stuck spool detection if clog is active
         # Clog detection handles follower control during clog conditions
         if fps_state.clog.active:
@@ -6330,6 +6357,10 @@ class OAMSManager:
           - When pressure too low (indicates stuck spool, not clog)
         =======================================================================================
         """
+        # Check if clog detection is disabled in config
+        if not self.enable_clog_detection:
+            return
+
         # OPTIMIZATION: Use cached idle_timeout object
         is_printing = False
         if self._idle_timeout_obj is not None:
@@ -6450,6 +6481,24 @@ class OAMSManager:
             return
 
         if extruder_pos < (fps_state.clog.last_extruder or extruder_pos):
+            # Retraction detected - track retraction density to filter out fast detailed prints
+            fps_state.clog.retraction_count += 1
+            fps_state.clog.last_retraction_time = now
+
+            # If we see very high retraction density, this is likely a detailed print
+            # with lots of small moves/retracts, not a clog - reset tracker to prevent false positive
+            # Threshold: 5+ retractions in 10 seconds = very active detailed printing
+            if fps_state.clog.retraction_count >= 5 and fps_state.clog.start_time is not None:
+                window_duration = now - fps_state.clog.start_time
+                if window_duration < 10.0:  # 5+ retractions in 10 seconds = high density activity
+                    self.logger.debug(
+                        f"{fps_name}: Resetting clog tracker - high retraction density detected "
+                        f"({fps_state.clog.retraction_count} retractions in {window_duration:.1f}s)"
+                    )
+                    fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
+                    return
+
+            # Normal retraction - just reset tracker
             fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
             return
 
@@ -6475,6 +6524,23 @@ class OAMSManager:
                     f"{fps_name}: Clog detection waiting for extrusion window - "
                     f"extruded={extrusion_delta:.1f}mm (need {settings['extrusion_window']}mm)"
                 )
+            return
+
+        # CRITICAL: Check if average pressure is within the target band
+        # This prevents false positives when pressure is way above/below target
+        # (e.g., during long retracts, z-hops, or stuck spool conditions)
+        pressure_mid = (fps_state.clog.min_pressure + fps_state.clog.max_pressure) / 2.0
+        pressure_deviation = abs(pressure_mid - self.clog_pressure_target)
+
+        # If pressure is outside the target band, this is NOT a clog condition
+        # Could be stuck spool (too low), active heavy extrusion (too high), or other anomaly
+        if pressure_deviation > settings["pressure_band"]:
+            self.logger.debug(
+                f"{fps_name}: Clog detection OK - pressure outside target band "
+                f"(pressure_mid={pressure_mid:.2f}, target={self.clog_pressure_target:.2f}, "
+                f"deviation={pressure_deviation:.2f} > band={settings['pressure_band']})"
+            )
+            fps_state.prime_clog_tracker(extruder_pos, encoder_value, pressure, now)
             return
 
         if (encoder_delta > settings["encoder_slack"] or pressure_span > settings["pressure_band"]):
