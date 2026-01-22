@@ -1440,9 +1440,6 @@ class OAMSManager:
             detected_lane: Lane name that was detected (e.g., "lane7")
 
         """
-        if not detected_lane:
-            return
-
         try:
             afc = self._get_afc()
             if afc is None:
@@ -1452,41 +1449,89 @@ class OAMSManager:
             if not hasattr(afc, 'lanes'):
                 return
 
-            lane_obj = afc.lanes.get(detected_lane)
-            if lane_obj is None:
+            # First, find the extruder we're checking (either from detected_lane or from FPS)
+            extruder_obj = None
+            extruder_name = None
+
+            if detected_lane:
+                lane_obj = afc.lanes.get(detected_lane)
+                if lane_obj:
+                    extruder_obj = getattr(lane_obj, 'extruder_obj', None)
+                    if extruder_obj:
+                        extruder_name = getattr(extruder_obj, 'name', None)
+
+            # If we couldn't find extruder from detected_lane, can't proceed
+            if not extruder_obj or not extruder_name:
                 return
 
-            extruder_obj = getattr(lane_obj, 'extruder_obj', None)
-            if extruder_obj is None:
-                return
-
-            extruder_name = getattr(extruder_obj, 'name', None)
-            if not extruder_name:
-                return
-
-            # Check if AFC's lane_loaded matches what we detected
+            # Check what AFC currently thinks is loaded
             current_lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
-            if current_lane_loaded == detected_lane:
+
+            # Now check the actual sensor state - find lanes with loaded_to_hub=True for this extruder
+            sensor_detected_lanes = []
+            for lane_name, lane in afc.lanes.items():
+                try:
+                    # Only check lanes on this FPS
+                    lane_fps = self.get_fps_for_afc_lane(lane_name)
+                    if lane_fps != fps_name:
+                        continue
+
+                    # Only check lanes for this extruder
+                    lane_extruder = getattr(lane, 'extruder_obj', None)
+                    if lane_extruder != extruder_obj:
+                        continue
+
+                    # Check if hub sensor shows filament
+                    loaded_to_hub = getattr(lane, 'loaded_to_hub', False)
+                    if loaded_to_hub:
+                        sensor_detected_lanes.append(lane_name)
+                except Exception:
+                    continue
+
+            # Determine which lane should be loaded based on sensors
+            sensor_lane = None
+            if len(sensor_detected_lanes) == 1:
+                # Exactly one lane shows hub sensor active - use it as source of truth
+                sensor_lane = sensor_detected_lanes[0]
+            elif len(sensor_detected_lanes) > 1:
+                # Multiple lanes show hub sensor active - conflict, log warning
+                self.logger.warning(
+                    f"Multiple lanes show hub sensor active for {extruder_name} on {fps_name}: "
+                    f"{sensor_detected_lanes}. Cannot sync AFC state."
+                )
+                return
+            # If sensor_detected_lanes is empty, no lane has hub sensor active
+
+            # If we have a sensor-detected lane, use it. Otherwise fall back to detected_lane parameter
+            lane_to_sync = sensor_lane if sensor_lane else detected_lane
+
+            # If no lane to sync to, nothing to do
+            if not lane_to_sync:
+                return
+
+            # Check if AFC's lane_loaded matches what sensors show
+            if current_lane_loaded == lane_to_sync:
                 return  # Already in sync
 
             # Update AFC's lane_loaded
-            extruder_obj.lane_loaded = detected_lane
+            extruder_obj.lane_loaded = lane_to_sync
 
             # Persist to vars file
             if hasattr(afc, 'save_vars') and callable(afc.save_vars):
                 try:
                     afc.save_vars()
+                    source = "hub sensor" if sensor_lane else "AFC detection"
                     self.logger.info(
-                        f"Synced AFC: {extruder_name}.lane_loaded = {detected_lane} "
-                        f"(was {current_lane_loaded}, detected via sensors)"
+                        f"Synced AFC: {extruder_name}.lane_loaded = {lane_to_sync} "
+                        f"(was {current_lane_loaded}, detected via {source})"
                     )
                 except Exception:
                     self.logger.error(
-                        f"Failed to save AFC vars after syncing {extruder_name}.lane_loaded to {detected_lane}"
+                        f"Failed to save AFC vars after syncing {extruder_name}.lane_loaded to {lane_to_sync}"
                     )
             else:
                 self.logger.debug(
-                    f"Updated AFC: {extruder_name}.lane_loaded = {detected_lane} "
+                    f"Updated AFC: {extruder_name}.lane_loaded = {lane_to_sync} "
                     "(vars not saved - AFC has no save_vars method)"
                 )
         except Exception:

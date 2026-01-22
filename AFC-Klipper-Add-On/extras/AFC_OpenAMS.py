@@ -2100,7 +2100,6 @@ class afcAMS(afcUnit):
         self.logger.info(msg)
         return False, msg, 0
 
-
     def handle_ready(self):
         """Resolve the OpenAMS object once Klippy is ready."""
         # First check if ANY OpenAMS hardware exists in the system
