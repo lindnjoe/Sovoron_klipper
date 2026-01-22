@@ -2175,7 +2175,8 @@ class afcAMS(afcUnit):
                     f"but AFC thinks '{afc_lane_loaded}' is loaded. Setting AFC to {lane_name}."
                 )
                 try:
-                    # Set this lane as loaded - AFC will automatically handle unloading the old lane
+                    # Simply set the lane with hub_loaded=True as the loaded lane
+                    # AFC and hardware will handle the rest
                     extruder_obj.lane_loaded = lane_name
                     synced_count += 1
                     if hasattr(self.afc, 'save_vars'):
@@ -2281,8 +2282,8 @@ class afcAMS(afcUnit):
                 self.logger.error(traceback.format_exc())
             return self.reactor.NEVER  # Only run once
 
-        # Schedule sync for 2 seconds after initialization
-        self.reactor.register_timer(_delayed_sync, self.reactor.monotonic() + 2.0)
+        # Schedule sync for 5 seconds after initialization to allow sensors to stabilize
+        self.reactor.register_timer(_delayed_sync, self.reactor.monotonic() + 5.0)
 
     def _wrap_afc_lane_unload(self):
         """Wrap AFC's LANE_UNLOAD to handle cross-extruder runout scenarios."""
