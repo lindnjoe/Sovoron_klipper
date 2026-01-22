@@ -1446,12 +1446,16 @@ class OAMSManager:
 
         """
         try:
+            self.logger.debug(f"_sync_afc_lane_loaded called for {fps_name}, detected_lane={detected_lane}")
+
             afc = self._get_afc()
             if afc is None:
+                self.logger.debug("_sync_afc_lane_loaded: AFC not found")
                 return
 
             # Find which extruder this lane belongs to
             if not hasattr(afc, 'lanes'):
+                self.logger.debug("_sync_afc_lane_loaded: AFC has no lanes")
                 return
 
             # First, find the extruder we're checking (either from detected_lane or from FPS)
@@ -1467,12 +1471,14 @@ class OAMSManager:
 
             # If we couldn't find extruder from detected_lane, can't proceed
             if not extruder_obj or not extruder_name:
+                self.logger.debug(f"_sync_afc_lane_loaded: Could not find extruder for {detected_lane}")
                 return
 
             # Check what AFC currently thinks is loaded
             current_lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
 
-            # Now check the actual sensor state - find lanes with loaded_to_hub=True for this extruder
+            # Now check the actual HARDWARE sensor state - read OAMS hub sensors directly
+            # Don't trust lane.loaded_to_hub as it's stale at startup from vars file
             sensor_detected_lanes = []
             for lane_name, lane in afc.lanes.items():
                 try:
@@ -1486,18 +1492,41 @@ class OAMSManager:
                     if lane_extruder != extruder_obj:
                         continue
 
-                    # Check if hub sensor shows filament
-                    loaded_to_hub = getattr(lane, 'loaded_to_hub', False)
-                    if loaded_to_hub:
-                        sensor_detected_lanes.append(lane_name)
+                    # Read ACTUAL hardware sensor, not AFC's stale loaded_to_hub state
+                    unit_obj = getattr(lane, 'unit_obj', None)
+                    if unit_obj and getattr(unit_obj, 'type', None) == 'OpenAMS':
+                        # Get OAMS hardware object
+                        oams_name = getattr(unit_obj, 'oams_name', None)
+                        if oams_name:
+                            oams_obj = self.oams.get(f"oams {oams_name}")
+                            if not oams_obj:
+                                oams_obj = self.oams.get(oams_name)
+
+                            if oams_obj:
+                                # Get the bay/spool index for this lane
+                                lane_map = getattr(lane, 'map', None)
+                                if lane_map:
+                                    spool_idx = int(lane_map) if str(lane_map).isdigit() else None
+                                    if spool_idx is not None:
+                                        # Read hub sensor from hardware
+                                        hub_values = getattr(oams_obj, 'hub_hes_value', None)
+                                        if hub_values and spool_idx < len(hub_values):
+                                            hub_has_filament = bool(hub_values[spool_idx])
+                                            if hub_has_filament:
+                                                sensor_detected_lanes.append(lane_name)
                 except Exception:
                     continue
 
             # Determine which lane should be loaded based on sensors
+            self.logger.debug(
+                f"_sync_afc_lane_loaded: Found {len(sensor_detected_lanes)} lanes with hub sensor active: {sensor_detected_lanes}"
+            )
+
             sensor_lane = None
             if len(sensor_detected_lanes) == 1:
                 # Exactly one lane shows hub sensor active - use it as source of truth
                 sensor_lane = sensor_detected_lanes[0]
+                self.logger.debug(f"_sync_afc_lane_loaded: Using hardware sensor detection: {sensor_lane}")
             elif len(sensor_detected_lanes) > 1:
                 # Multiple lanes show hub sensor active - conflict, log warning
                 self.logger.warning(
@@ -1512,10 +1541,12 @@ class OAMSManager:
 
             # If no lane to sync to, nothing to do
             if not lane_to_sync:
+                self.logger.debug("_sync_afc_lane_loaded: No lane to sync to")
                 return
 
             # Check if AFC's lane_loaded matches what sensors show
             if current_lane_loaded == lane_to_sync:
+                self.logger.debug(f"_sync_afc_lane_loaded: Already in sync ({lane_to_sync})")
                 return  # Already in sync
 
             # Get the lane object to sync
@@ -1576,10 +1607,10 @@ class OAMSManager:
                 except Exception as e:
                     self.logger.error(f"Failed to select_lane for {lane_to_sync}: {e}")
 
-            source = "hub sensor" if sensor_lane else "AFC detection"
+            source = "OAMS hardware hub sensor" if sensor_lane else "AFC detection"
             self.logger.info(
-                f"Fully synced AFC: {lane_to_sync} set as tool loaded "
-                f"(was {current_lane_loaded}, detected via {source})"
+                f"Synced AFC lane mismatch: {lane_to_sync} set as tool loaded "
+                f"(AFC thought {current_lane_loaded} was loaded, but {source} shows {lane_to_sync})"
             )
         except Exception:
             self.logger.error(
