@@ -1099,9 +1099,8 @@ class OAMSManager:
                 fps_state.reset_clog_tracker()
                 self._ensure_forward_follower(fps_name, fps_state, "state detection")
 
-
-                # Sync AFC's lane_loaded with detected state to prevent stale vars file issues
-                self._sync_afc_lane_loaded(fps_name, detected_lane)
+                # Don't sync here - it's too early, hardware not ready yet
+                # Post-prep sync will handle this after all units are ready
             else:
                 # AFC says no lane loaded (lane_loaded = None)
                 if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
