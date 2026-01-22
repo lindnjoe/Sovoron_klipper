@@ -2106,10 +2106,8 @@ class afcAMS(afcUnit):
         After Klipper restarts, AFC.var.unit might have stale state (e.g., from a crash).
         This method uses hardware sensors as the source of truth to update AFC if needed.
 
-        Priority hierarchy:
-        1. Tool sensor (F1S/virtual) = Highest priority (actual filament in toolhead)
-        2. Hub sensor = Secondary (filament present in AMS)
-        3. AFC.var.unit = Lowest priority (might be stale after restart)
+        Uses hub sensor (real hardware) as the authoritative source to identify which lane
+        is loaded. Does NOT use virtual tool sensor as it's set by AFC (circular logic).
         """
         self.logger.info(f"_sync_afc_from_hardware_at_startup() called for {self.name}")
 
@@ -2128,12 +2126,12 @@ class afcAMS(afcUnit):
         skipped_count = 0
         conflict_count = 0
 
-        # Track extruders and their tool sensor states
-        extruder_has_filament = {}  # {extruder_name: bool}
+        # Track which extruders have lanes with hub filament (real hardware sensor)
         extruder_lanes_with_hub = {}  # {extruder_name: [lane_names with hub filament]}
-        extruder_afc_loaded = {}  # {extruder_name: afc_lane_loaded}
 
-        # First pass: gather sensor data for all lanes
+        # First pass: gather hub sensor data for all lanes
+        # Hub sensor is the ONLY source of truth - it knows which lane has filament
+        # Don't use virtual tool sensor - it's set by AFC and is circular logic
         lane_data = {}
         for lane in self.lanes.values():
             try:
@@ -2149,8 +2147,11 @@ class afcAMS(afcUnit):
 
                 extruder_name = getattr(extruder_obj, 'name', 'unknown')
 
-                # Read hub sensor (knows which lane has filament)
+                # Read REAL hardware sensors only:
+                # - Hub sensor: Knows which lane has filament loaded to hub
+                # - F1S sensor: Available via load_state, confirms filament in AMS bay
                 hub_loaded = getattr(lane, 'loaded_to_hub', False)
+                f1s_state = getattr(lane, 'load_state', False)
 
                 # Read what AFC thinks
                 afc_lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
@@ -2161,6 +2162,7 @@ class afcAMS(afcUnit):
                     'extruder_obj': extruder_obj,
                     'extruder_name': extruder_name,
                     'hub_loaded': hub_loaded,
+                    'f1s_state': f1s_state,
                     'afc_lane_loaded': afc_lane_loaded,
                 }
 
@@ -2170,48 +2172,36 @@ class afcAMS(afcUnit):
                 if hub_loaded:
                     extruder_lanes_with_hub[extruder_name].append(lane_name)
 
-                # Track AFC state per extruder
-                if extruder_name not in extruder_afc_loaded:
-                    extruder_afc_loaded[extruder_name] = afc_lane_loaded
-
-                # Check tool sensor once per extruder (it's shared)
-                if extruder_name not in extruder_has_filament:
-                    tool_loaded = False
-                    try:
-                        # Tool sensor just says "filament present" - doesn't know which lane
-                        tool_loaded = self._lane_reports_tool_filament(lane, sync_only=False)
-                    except Exception as e:
-                        self.logger.debug(f"Startup sync: Failed to read tool sensor for {extruder_name}: {e}")
-                    extruder_has_filament[extruder_name] = tool_loaded
-
             except Exception as e:
                 self.logger.error(f"Startup sync: Failed to gather data for lane {getattr(lane, 'name', 'unknown')}: {e}")
                 skipped_count += 1
 
-        # Second pass: reconcile using hub sensors to identify which lane
+        # Second pass: reconcile using ONLY hub sensors (real hardware)
+        # Logic: If hub shows loaded ? that lane is loaded to toolhead
         for lane_name, data in lane_data.items():
             try:
                 lane = data['lane']
                 extruder_obj = data['extruder_obj']
                 extruder_name = data['extruder_name']
                 hub_loaded = data['hub_loaded']
+                f1s_state = data['f1s_state']
                 afc_lane_loaded = data['afc_lane_loaded']
-                tool_has_filament = extruder_has_filament.get(extruder_name, False)
                 hub_lanes = extruder_lanes_with_hub.get(extruder_name, [])
 
-                # Debug log
+                # Debug log - only show real hardware sensors
                 self.logger.debug(
-                    f"Startup sync: {lane_name} - tool_has_filament={tool_has_filament}, "
-                    f"hub_loaded={hub_loaded}, afc_lane_loaded={afc_lane_loaded}, "
-                    f"hub_lanes_for_{extruder_name}={hub_lanes}"
+                    f"Startup sync: {lane_name} - hub_loaded={hub_loaded}, f1s_state={f1s_state}, "
+                    f"afc_lane_loaded={afc_lane_loaded}, hub_lanes_for_{extruder_name}={hub_lanes}"
                 )
 
-                # CRITICAL: Use hub sensor to identify which lane when tool sensor shows filament
-                if tool_has_filament and hub_loaded and afc_lane_loaded != lane_name:
-                    # Tool sensor shows filament AND this lane's hub shows filament
-                    # AND AFC thinks a different lane is loaded
+                # CRITICAL: Hub sensor is the ONLY identifier
+                # If hub shows loaded ? this lane is loaded to toolhead
+                # Don't check virtual tool sensor - it's set by AFC and is circular logic
+                if hub_loaded and afc_lane_loaded != lane_name:
+                    # Hub sensor shows this lane has filament loaded
+                    # AND AFC thinks a different lane (or none) is loaded
 
-                    # Check for conflicts (multiple lanes with hub filament)
+                    # Check for conflicts (multiple lanes with hub filament for same extruder)
                     if len(hub_lanes) > 1:
                         self.logger.error(
                             f"Startup sync: Multiple lanes show hub filament for {extruder_name}: "
@@ -2250,50 +2240,42 @@ class afcAMS(afcUnit):
                     except Exception as e:
                         self.logger.error(f"Startup sync: Failed to update AFC for {lane_name}: {e}")
 
-                elif not tool_has_filament and afc_lane_loaded == lane_name:
-                    # No filament in tool but AFC thinks this lane is loaded - clear it
-                    if not hub_loaded:
-                        self.logger.info(
-                            f"Startup sync: No filament in {extruder_name} and no hub filament for {lane_name}, "
-                            f"but AFC thinks it's loaded. Clearing stale AFC state."
-                        )
-                        try:
-                            extruder_obj.lane_loaded = None
-                            cleared_count += 1
-                            if hasattr(self.afc, 'save_vars'):
-                                self.afc.save_vars()
+                elif not hub_loaded and afc_lane_loaded == lane_name:
+                    # Hub sensor shows no filament but AFC thinks this lane is loaded - clear it
+                    self.logger.info(
+                        f"Startup sync: Hub sensor shows no filament for {lane_name}, "
+                        f"but AFC thinks it's loaded to {extruder_name}. Clearing stale AFC state."
+                    )
+                    try:
+                        extruder_obj.lane_loaded = None
+                        cleared_count += 1
+                        if hasattr(self.afc, 'save_vars'):
+                            self.afc.save_vars()
 
-                            # Notify OAMS manager that lane is unloaded
-                            if AMSRunoutCoordinator is not None:
-                                try:
-                                    AMSRunoutCoordinator.notify_lane_tool_state(
-                                        self.printer,
-                                        self.oams_name,
-                                        lane_name,
-                                        loaded=False,
-                                        spool_index=getattr(lane, 'index', 0) - 1,
-                                        eventtime=self.reactor.monotonic()
-                                    )
-                                    self.logger.debug(f"Startup sync: Notified OAMS manager that {lane_name} is unloaded")
-                                except Exception as e:
-                                    self.logger.warning(f"Startup sync: Failed to notify OAMS manager for {lane_name}: {e}")
+                        # Notify OAMS manager that lane is unloaded
+                        if AMSRunoutCoordinator is not None:
+                            try:
+                                AMSRunoutCoordinator.notify_lane_tool_state(
+                                    self.printer,
+                                    self.oams_name,
+                                    lane_name,
+                                    loaded=False,
+                                    spool_index=getattr(lane, 'index', 0) - 1,
+                                    eventtime=self.reactor.monotonic()
+                                )
+                                self.logger.debug(f"Startup sync: Notified OAMS manager that {lane_name} is unloaded")
+                            except Exception as e:
+                                self.logger.warning(f"Startup sync: Failed to notify OAMS manager for {lane_name}: {e}")
 
-                        except Exception as e:
-                            self.logger.error(f"Startup sync: Failed to clear AFC state for {lane_name}: {e}")
-                    else:
-                        # Has hub filament but no tool - mid-load state
-                        self.logger.debug(
-                            f"Startup sync: {lane_name} has hub filament but no tool filament. "
-                            f"Leaving AFC state as-is (mid-load state)."
-                        )
-                        skipped_count += 1
+                    except Exception as e:
+                        self.logger.error(f"Startup sync: Failed to clear AFC state for {lane_name}: {e}")
 
-                elif tool_has_filament and hub_loaded and afc_lane_loaded == lane_name:
-                    # Everything agrees
-                    self.logger.debug(f"Startup sync: {lane_name} state matches between hardware and AFC")
+                elif hub_loaded and afc_lane_loaded == lane_name:
+                    # Everything matches - hub and AFC agree this lane is loaded
+                    self.logger.debug(f"Startup sync: {lane_name} state matches between hub sensor and AFC")
 
-                elif not tool_has_filament and not hub_loaded and afc_lane_loaded != lane_name:
-                    # Both agree it's not this lane
+                elif not hub_loaded and afc_lane_loaded != lane_name:
+                    # Both agree this lane is not loaded
                     self.logger.debug(f"Startup sync: {lane_name} correctly shows as unloaded")
 
             except Exception as e:
