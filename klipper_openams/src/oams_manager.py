@@ -1369,6 +1369,11 @@ class OAMSManager:
         self.determine_state()
 
         try:
+            self._sync_all_fps_lanes_at_startup()
+        except Exception:
+            self.logger.error("Failed to sync all FPS lanes at startup")
+
+        try:
             self._sync_virtual_tool_sensors()
         except Exception:
             self.logger.error("Failed to sync virtual tool sensors during startup")
@@ -1579,6 +1584,29 @@ class OAMSManager:
         except Exception:
             self.logger.error(
                 f"Failed to sync AFC lane_loaded for {detected_lane} detected on {fps_name}",
+                traceback=traceback.format_exc(),
+            )
+
+    def _sync_all_fps_lanes_at_startup(self) -> None:
+        """Sync all FPS lane states with AFC at startup.
+
+        Called after determine_state() to ensure AFC's lane_loaded state matches
+        what the sensors show. This catches any mismatches from stale vars files
+        or manual changes that happened while Klipper was offline.
+        """
+        try:
+            for fps_name, fps_state in self.current_state.fps_state.items():
+                if fps_state.state == FPSLoadState.LOADED and fps_state.current_lane:
+                    try:
+                        self._sync_afc_lane_loaded(fps_name, fps_state.current_lane)
+                    except Exception as e:
+                        self.logger.error(
+                            f"Failed to sync AFC lane_loaded for {fps_state.current_lane} on {fps_name} at startup: {e}"
+                        )
+            self.logger.info("Completed startup sync of AFC lane states with sensor detection")
+        except Exception:
+            self.logger.error(
+                "Failed to sync all FPS lanes at startup",
                 traceback=traceback.format_exc(),
             )
 
