@@ -2271,10 +2271,15 @@ class afcAMS(afcUnit):
         self._patch_afc_sequences()
 
         # Sync AFC state with hardware sensors at startup
-        # Delay to ensure sensors are stable and hardware polling has started
+        # Wait for prep to complete before running sync to avoid conflicts
         def _delayed_sync(eventtime):
             try:
-                self.logger.info("Starting delayed startup sync after sensor stabilization")
+                # Check if prep is done
+                if not getattr(self.afc, 'prep_done', False):
+                    self.logger.debug("Startup sync: Waiting for AFC prep to complete...")
+                    return eventtime + 1.0  # Check again in 1 second
+
+                self.logger.info("Starting startup sync after AFC prep completion")
                 self._sync_afc_from_hardware_at_startup()
             except Exception as e:
                 self.logger.error(f"Startup sync failed with exception: {e}")
@@ -2282,7 +2287,7 @@ class afcAMS(afcUnit):
                 self.logger.error(traceback.format_exc())
             return self.reactor.NEVER  # Only run once
 
-        # Schedule sync for 5 seconds after initialization to allow sensors to stabilize
+        # Schedule sync to start checking 5 seconds after initialization
         self.reactor.register_timer(_delayed_sync, self.reactor.monotonic() + 5.0)
 
     def _wrap_afc_lane_unload(self):
