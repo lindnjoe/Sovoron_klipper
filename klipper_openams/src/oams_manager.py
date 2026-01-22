@@ -1513,27 +1513,69 @@ class OAMSManager:
             if current_lane_loaded == lane_to_sync:
                 return  # Already in sync
 
-            # Update AFC's lane_loaded
-            extruder_obj.lane_loaded = lane_to_sync
+            # Get the lane object to sync
+            lane_obj_to_sync = afc.lanes.get(lane_to_sync)
+            if not lane_obj_to_sync:
+                self.logger.error(f"Lane {lane_to_sync} not found in AFC lanes")
+                return
 
-            # Persist to vars file
+            # Check if lane is actually loaded (has load_state=True)
+            if not getattr(lane_obj_to_sync, 'load_state', False):
+                self.logger.warning(
+                    f"Lane {lane_to_sync} detected via sensors but load_state=False, cannot set as tool loaded"
+                )
+                return
+
+            # Fully set the lane as loaded, matching what SET_LANE_LOADED does:
+            # 1. Unset any currently loaded lane
+            afc_function = getattr(afc, 'function', None)
+            if afc_function and hasattr(afc_function, 'unset_lane_loaded'):
+                try:
+                    afc_function.unset_lane_loaded()
+                except Exception as e:
+                    self.logger.error(f"Failed to unset currently loaded lane: {e}")
+
+            # 2. Handle activate extruder
+            if afc_function and hasattr(afc_function, 'handle_activate_extruder'):
+                try:
+                    afc_function.handle_activate_extruder()
+                except Exception as e:
+                    self.logger.error(f"Failed to handle_activate_extruder: {e}")
+
+            # 3. Set tool loaded (sets lane.tool_loaded, extruder.lane_loaded, status, spool, LED)
+            if hasattr(lane_obj_to_sync, 'set_tool_loaded'):
+                try:
+                    lane_obj_to_sync.set_tool_loaded()
+                except Exception as e:
+                    self.logger.error(f"Failed to set_tool_loaded for {lane_to_sync}: {e}")
+
+            # 4. Sync lane stepper to extruder
+            if hasattr(lane_obj_to_sync, 'sync_to_extruder'):
+                try:
+                    lane_obj_to_sync.sync_to_extruder()
+                except Exception as e:
+                    self.logger.error(f"Failed to sync_to_extruder for {lane_to_sync}: {e}")
+
+            # 5. Persist to vars file
             if hasattr(afc, 'save_vars') and callable(afc.save_vars):
                 try:
                     afc.save_vars()
-                    source = "hub sensor" if sensor_lane else "AFC detection"
-                    self.logger.info(
-                        f"Synced AFC: {extruder_name}.lane_loaded = {lane_to_sync} "
-                        f"(was {current_lane_loaded}, detected via {source})"
-                    )
-                except Exception:
-                    self.logger.error(
-                        f"Failed to save AFC vars after syncing {extruder_name}.lane_loaded to {lane_to_sync}"
-                    )
-            else:
-                self.logger.debug(
-                    f"Updated AFC: {extruder_name}.lane_loaded = {lane_to_sync} "
-                    "(vars not saved - AFC has no save_vars method)"
-                )
+                except Exception as e:
+                    self.logger.error(f"Failed to save AFC vars after syncing {lane_to_sync}: {e}")
+
+            # 6. Select the lane in the unit (for units with selectors)
+            unit_obj = getattr(lane_obj_to_sync, 'unit_obj', None)
+            if unit_obj and hasattr(unit_obj, 'select_lane'):
+                try:
+                    unit_obj.select_lane(lane_obj_to_sync)
+                except Exception as e:
+                    self.logger.error(f"Failed to select_lane for {lane_to_sync}: {e}")
+
+            source = "hub sensor" if sensor_lane else "AFC detection"
+            self.logger.info(
+                f"Fully synced AFC: {lane_to_sync} set as tool loaded "
+                f"(was {current_lane_loaded}, detected via {source})"
+            )
         except Exception:
             self.logger.error(
                 f"Failed to sync AFC lane_loaded for {detected_lane} detected on {fps_name}",
