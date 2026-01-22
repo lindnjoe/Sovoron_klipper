@@ -2175,7 +2175,8 @@ class afcAMS(afcUnit):
                     f"but AFC thinks '{afc_lane_loaded}' is loaded. Setting AFC to {lane_name}."
                 )
                 try:
-                    # Set this lane as loaded - AFC will automatically handle unloading the old lane
+                    # Simply set the lane with hub_loaded=True as the loaded lane
+                    # AFC and hardware will handle the rest
                     extruder_obj.lane_loaded = lane_name
                     synced_count += 1
                     if hasattr(self.afc, 'save_vars'):
@@ -2270,10 +2271,15 @@ class afcAMS(afcUnit):
         self._patch_afc_sequences()
 
         # Sync AFC state with hardware sensors at startup
-        # Delay to ensure sensors are stable and hardware polling has started
+        # Wait for prep to complete before running sync to avoid conflicts
         def _delayed_sync(eventtime):
             try:
-                self.logger.info("Starting delayed startup sync after sensor stabilization")
+                # Check if prep is done
+                if not getattr(self.afc, 'prep_done', False):
+                    self.logger.debug("Startup sync: Waiting for AFC prep to complete...")
+                    return eventtime + 1.0  # Check again in 1 second
+
+                self.logger.info("Starting startup sync after AFC prep completion")
                 self._sync_afc_from_hardware_at_startup()
             except Exception as e:
                 self.logger.error(f"Startup sync failed with exception: {e}")
@@ -2281,8 +2287,8 @@ class afcAMS(afcUnit):
                 self.logger.error(traceback.format_exc())
             return self.reactor.NEVER  # Only run once
 
-        # Schedule sync for 2 seconds after initialization
-        self.reactor.register_timer(_delayed_sync, self.reactor.monotonic() + 2.0)
+        # Schedule sync to start checking 5 seconds after initialization
+        self.reactor.register_timer(_delayed_sync, self.reactor.monotonic() + 5.0)
 
     def _wrap_afc_lane_unload(self):
         """Wrap AFC's LANE_UNLOAD to handle cross-extruder runout scenarios."""
