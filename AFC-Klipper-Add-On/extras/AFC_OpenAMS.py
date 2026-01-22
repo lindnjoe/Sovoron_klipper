@@ -2230,6 +2230,23 @@ class afcAMS(afcUnit):
                         synced_count += 1
                         if hasattr(self.afc, 'save_vars'):
                             self.afc.save_vars()
+
+                        # Notify OAMS manager to sync its fps_state.current_lane
+                        # This ensures OAMS manager and AFC are aligned
+                        if AMSRunoutCoordinator is not None:
+                            try:
+                                AMSRunoutCoordinator.notify_lane_tool_state(
+                                    self.printer,
+                                    self.oams_name,
+                                    lane_name,
+                                    loaded=True,
+                                    spool_index=getattr(lane, 'index', 0) - 1,
+                                    eventtime=self.reactor.monotonic()
+                                )
+                                self.logger.debug(f"Startup sync: Notified OAMS manager that {lane_name} is loaded")
+                            except Exception as e:
+                                self.logger.warning(f"Startup sync: Failed to notify OAMS manager for {lane_name}: {e}")
+
                     except Exception as e:
                         self.logger.error(f"Startup sync: Failed to update AFC for {lane_name}: {e}")
 
@@ -2245,6 +2262,22 @@ class afcAMS(afcUnit):
                             cleared_count += 1
                             if hasattr(self.afc, 'save_vars'):
                                 self.afc.save_vars()
+
+                            # Notify OAMS manager that lane is unloaded
+                            if AMSRunoutCoordinator is not None:
+                                try:
+                                    AMSRunoutCoordinator.notify_lane_tool_state(
+                                        self.printer,
+                                        self.oams_name,
+                                        lane_name,
+                                        loaded=False,
+                                        spool_index=getattr(lane, 'index', 0) - 1,
+                                        eventtime=self.reactor.monotonic()
+                                    )
+                                    self.logger.debug(f"Startup sync: Notified OAMS manager that {lane_name} is unloaded")
+                                except Exception as e:
+                                    self.logger.warning(f"Startup sync: Failed to notify OAMS manager for {lane_name}: {e}")
+
                         except Exception as e:
                             self.logger.error(f"Startup sync: Failed to clear AFC state for {lane_name}: {e}")
                     else:
