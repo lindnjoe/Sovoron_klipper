@@ -2111,12 +2111,14 @@ class afcAMS(afcUnit):
         2. Hub sensor = Secondary (filament present in AMS)
         3. AFC.var.unit = Lowest priority (might be stale after restart)
         """
+        self.logger.info(f"_sync_afc_from_hardware_at_startup() called for {self.name}")
+
         if not hasattr(self, 'afc') or self.afc is None:
-            self.logger.debug("Startup sync: AFC not available, skipping")
+            self.logger.warning("Startup sync: AFC not available, skipping")
             return
 
         if not hasattr(self, 'lanes') or not self.lanes:
-            self.logger.debug("Startup sync: No lanes configured, skipping")
+            self.logger.warning("Startup sync: No lanes configured, skipping")
             return
 
         self.logger.info(f"Startup sync: Reconciling AFC state with {self.name} hardware sensors")
@@ -2148,8 +2150,8 @@ class afcAMS(afcUnit):
                 tool_loaded = False
                 try:
                     tool_loaded = self._lane_reports_tool_filament(lane, sync_only=False)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.logger.debug(f"Startup sync: Failed to read tool sensor for {lane_name}: {e}")
 
                 # Hub sensor shows filament in AMS (but not necessarily in toolhead)
                 hub_loaded = getattr(lane, 'loaded_to_hub', False)
@@ -2157,6 +2159,12 @@ class afcAMS(afcUnit):
                 # Read what AFC THINKS
                 afc_lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
                 afc_thinks_this_lane = (afc_lane_loaded == lane_name)
+
+                # Debug log for each lane
+                self.logger.debug(
+                    f"Startup sync: {lane_name} - tool_loaded={tool_loaded}, hub_loaded={hub_loaded}, "
+                    f"afc_lane_loaded={afc_lane_loaded}, afc_thinks_this_lane={afc_thinks_this_lane}"
+                )
 
                 # Track lanes that have tool filament for conflict detection
                 if tool_loaded:
@@ -2298,9 +2306,19 @@ class afcAMS(afcUnit):
         self._patch_afc_sequences()
 
         # Sync AFC state with hardware sensors at startup
-        # This should run after all initialization is complete and sensors are stable
-        # Delay slightly to ensure sensors have had time to stabilize
-        self.reactor.register_callback(lambda et: self._sync_afc_from_hardware_at_startup())
+        # Delay to ensure sensors are stable and hardware polling has started
+        def _delayed_sync(eventtime):
+            try:
+                self.logger.info("Starting delayed startup sync after sensor stabilization")
+                self._sync_afc_from_hardware_at_startup()
+            except Exception as e:
+                self.logger.error(f"Startup sync failed with exception: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+            return self.reactor.NEVER  # Only run once
+
+        # Schedule sync for 2 seconds after initialization
+        self.reactor.register_timer(_delayed_sync, self.reactor.monotonic() + 2.0)
 
     def _wrap_afc_lane_unload(self):
         """Wrap AFC's LANE_UNLOAD to handle cross-extruder runout scenarios."""
