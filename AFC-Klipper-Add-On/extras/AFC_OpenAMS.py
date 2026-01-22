@@ -2155,6 +2155,14 @@ class afcAMS(afcUnit):
         self._wrap_afc_unset_lane_loaded()
         self._patch_afc_sequences()
 
+        # Notify OAMS manager that this unit is ready (for post-prep sync)
+        try:
+            oams_manager = self.printer.lookup_object("oams_manager", None)
+            if oams_manager and hasattr(oams_manager, 'notify_openams_unit_ready'):
+                oams_manager.notify_openams_unit_ready(self.name)
+        except Exception:
+            self.logger.debug(f"Failed to notify OAMS manager that {self.name} is ready")
+
     def _wrap_afc_lane_unload(self):
         """Wrap AFC's LANE_UNLOAD to handle cross-extruder runout scenarios."""
         if not hasattr(self, 'afc') or self.afc is None:
