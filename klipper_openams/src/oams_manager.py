@@ -1683,14 +1683,14 @@ class OAMSManager:
     def _wrap_prep_command(self) -> None:
         """Wrap AFC's PREP command to trigger sync after PREP completes."""
         try:
-            afc = self._get_afc()
-            if not afc or not hasattr(afc, 'prep'):
-                self.logger.warning("Cannot wrap PREP command: AFC or AFC prep object not found")
+            # Look up the AFC_prep object (registered as 'AFC_prep')
+            prep_obj = self.printer.lookup_object('AFC_prep', None)
+            if prep_obj is None:
+                self.logger.warning("Cannot wrap PREP command: AFC_prep object not found")
                 return
 
-            prep_obj = afc.prep
-            if not prep_obj or not hasattr(prep_obj, 'PREP'):
-                self.logger.warning("Cannot wrap PREP command: PREP method not found")
+            if not hasattr(prep_obj, 'PREP'):
+                self.logger.warning("Cannot wrap PREP command: PREP method not found on AFC_prep object")
                 return
 
             # Store original PREP method if not already wrapped
