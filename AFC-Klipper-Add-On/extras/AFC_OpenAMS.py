@@ -1661,6 +1661,20 @@ class afcAMS(afcUnit):
         cur_lane.do_enable(False)
         self.logger.info('{lane_name} tool cmd: {tcmd:3} {msg}'.format(lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))
         cur_lane.set_afc_prep_done()
+
+        # Trigger lane sync after PREP completes for this lane
+        # The delay ensures hardware sensors have stabilized and all lanes have been tested
+        try:
+            oams_manager = self.printer.lookup_object("oams_manager", None)
+            if oams_manager and hasattr(oams_manager, '_sync_all_fps_lanes_after_prep'):
+                # 200ms delay allows all lanes to complete and hardware to stabilize
+                self.afc.reactor.register_callback(
+                    lambda et: oams_manager._sync_all_fps_lanes_after_prep(),
+                    self.afc.reactor.monotonic() + 0.2
+                )
+        except Exception as e:
+            self.logger.error(f"Failed to schedule post-PREP sync: {e}")
+
         return succeeded
 
     def calibrate_bowden(self, cur_lane, dis, tol):
