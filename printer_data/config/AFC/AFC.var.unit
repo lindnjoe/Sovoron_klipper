@@ -182,7 +182,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -194,7 +194,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -210,7 +210,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": true,
-            "loaded_to_hub": false,
+            "loaded_to_hub": true,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -343,7 +343,7 @@
         }
     },
     "system": {
-        "current_load": null,
+        "current_load": "lane11",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
