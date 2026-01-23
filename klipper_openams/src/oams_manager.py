@@ -1548,21 +1548,32 @@ class OAMSManager:
                 if unit_obj and getattr(unit_obj, 'type', None) == 'OpenAMS':
                     # Get OAMS hardware object
                     oams_name = getattr(unit_obj, 'oams_name', None)
+                    self.logger.debug(f"_sync_extruder: {lane_name} oams_name={oams_name}")
                     if oams_name:
                         oams_obj = self.oams.get(f"oams {oams_name}")
                         if not oams_obj:
                             oams_obj = self.oams.get(oams_name)
 
+                        self.logger.debug(f"_sync_extruder: {lane_name} oams_obj found={oams_obj is not None}")
                         if oams_obj:
                             # Get the bay/spool index for this lane
                             lane_map = getattr(lane, 'map', None)
+                            self.logger.debug(f"_sync_extruder: {lane_name} lane_map={lane_map}")
                             if lane_map:
                                 spool_idx = int(lane_map) if str(lane_map).isdigit() else None
                                 if spool_idx is not None:
                                     # Read hub sensor from hardware
                                     hub_values = getattr(oams_obj, 'hub_hes_value', None)
+                                    self.logger.debug(
+                                        f"_sync_extruder: {lane_name} bay{spool_idx} "
+                                        f"hub_hes_value={hub_values}"
+                                    )
                                     if hub_values and spool_idx < len(hub_values):
                                         hub_has_filament = bool(hub_values[spool_idx])
+                                        self.logger.debug(
+                                            f"_sync_extruder: {lane_name} bay{spool_idx} "
+                                            f"hub_has_filament={hub_has_filament}"
+                                        )
                                         if hub_has_filament:
                                             sensor_detected_lanes.append(lane_name)
             except Exception:
