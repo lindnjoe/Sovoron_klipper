@@ -1345,13 +1345,6 @@ class OAMSManager:
         if not self.fpss:
             raise ValueError("No FPS found in system, this is required for OAMS to work")
 
-        # Wrap PREP command to trigger sync after PREP completes
-        try:
-            self._wrap_prep_command()
-        except Exception as e:
-            self.logger.error(f"Failed to wrap PREP command: {e}")
-
-
         # OPTIMIZATION: Cache frequently accessed objects
         try:
             self._idle_timeout_obj = self.printer.lookup_object("idle_timeout")
@@ -1679,50 +1672,6 @@ class OAMSManager:
                 "Failed to sync all FPS lanes after prep",
                 traceback=traceback.format_exc(),
             )
-
-    def _wrap_prep_command(self) -> None:
-        """Wrap AFC's PREP command to trigger sync after PREP completes."""
-        try:
-            # Look up the AFC_prep object (registered as 'AFC_prep')
-            prep_obj = self.printer.lookup_object('AFC_prep', None)
-            if prep_obj is None:
-                self.logger.warning("Cannot wrap PREP command: AFC_prep object not found")
-                return
-
-            if not hasattr(prep_obj, 'PREP'):
-                self.logger.warning("Cannot wrap PREP command: PREP method not found on AFC_prep object")
-                return
-
-            # Store original PREP method if not already wrapped
-            if not hasattr(prep_obj, '_original_PREP'):
-                prep_obj._original_PREP = prep_obj.PREP
-                self.logger.info("Wrapping AFC PREP command to trigger post-prep sync")
-
-                # Create wrapper that runs sync after PREP completes
-                def wrapped_prep(gcmd):
-                    # Call original PREP
-                    prep_obj._original_PREP(gcmd)
-
-                    # After PREP completes, trigger sync with delay for hardware sensors
-                    self.logger.info("PREP completed, scheduling post-prep sync after hardware poll")
-                    self.reactor.register_callback(
-                        lambda et: self._sync_all_fps_lanes_after_prep(),
-                        self.reactor.monotonic() + 0.15
-                    )
-
-                # Replace PREP with wrapper
-                prep_obj.PREP = wrapped_prep
-
-                # Re-register the gcode command with the wrapped version
-                # The gcode system has a reference to the old method, so we need to re-register
-                afc = self._get_afc()
-                if afc and hasattr(afc, 'gcode'):
-                    afc.gcode.register_command('PREP', wrapped_prep, desc=None)
-                    self.logger.info("Re-registered PREP command with wrapper")
-
-                self.logger.info("AFC PREP command wrapped successfully")
-        except Exception as e:
-            self.logger.error(f"Failed to wrap PREP command: {e}")
 
     def _fix_afc_runout_helper_time(self, lane_name: str) -> None:
         """Workaround for AFC bug: Update min_event_systime after load operations.

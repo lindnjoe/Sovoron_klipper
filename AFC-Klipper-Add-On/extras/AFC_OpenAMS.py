@@ -2154,6 +2154,52 @@ class afcAMS(afcUnit):
         self._wrap_afc_lane_unload()
         self._wrap_afc_unset_lane_loaded()
         self._patch_afc_sequences()
+        self._wrap_prep_command()
+
+    def _wrap_prep_command(self):
+        """Wrap AFC_prep.PREP to trigger lane sync after PREP completes."""
+        try:
+            # Look up AFC_prep object
+            prep_obj = self.printer.lookup_object('AFC_prep', None)
+            if prep_obj is None or not hasattr(prep_obj, 'PREP'):
+                return
+
+            # Only wrap once (first OpenAMS unit that runs will wrap it)
+            if hasattr(prep_obj, '_original_PREP_for_sync'):
+                return
+
+            # Store original PREP
+            prep_obj._original_PREP_for_sync = prep_obj.PREP
+            self.logger.info("Wrapping AFC PREP command to trigger post-prep lane sync")
+
+            # Get oams_manager for sync callback
+            oams_manager = self.printer.lookup_object("oams_manager", None)
+            if not oams_manager:
+                self.logger.warning("Cannot wrap PREP: oams_manager not found")
+                return
+
+            # Create wrapper
+            def wrapped_prep(gcmd):
+                # Call original PREP
+                prep_obj._original_PREP_for_sync(gcmd)
+
+                # After PREP completes, trigger sync
+                self.logger.info("PREP completed, scheduling post-prep lane sync")
+                try:
+                    reactor = oams_manager.reactor
+                    reactor.register_callback(
+                        lambda et: oams_manager._sync_all_fps_lanes_after_prep(),
+                        reactor.monotonic() + 0.15
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to schedule post-prep sync: {e}")
+
+            # Replace PREP method
+            prep_obj.PREP = wrapped_prep
+            self.logger.info("AFC PREP command wrapped successfully")
+
+        except Exception as e:
+            self.logger.error(f"Failed to wrap PREP command: {e}")
 
     def _wrap_afc_lane_unload(self):
         """Wrap AFC's LANE_UNLOAD to handle cross-extruder runout scenarios."""
