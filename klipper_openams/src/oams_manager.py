@@ -1353,13 +1353,20 @@ class OAMSManager:
         # Discover expected OpenAMS units for post-prep sync
         try:
             afc = self._get_afc()
+            self.logger.info(f"Discovering OpenAMS units for post-prep sync, afc={afc is not None}")
             if afc and hasattr(afc, 'units'):
+                self.logger.debug(f"AFC has {len(afc.units)} units")
                 for unit_name, unit_obj in afc.units.items():
-                    if getattr(unit_obj, 'type', None) == 'OpenAMS':
+                    unit_type = getattr(unit_obj, 'type', None)
+                    self.logger.debug(f"Unit {unit_name} type={unit_type}")
+                    if unit_type == 'OpenAMS':
                         self._expected_openams_units.add(unit_name)
-                self.logger.debug(f"Expecting {len(self._expected_openams_units)} OpenAMS units: {self._expected_openams_units}")
-        except Exception:
-            self.logger.debug("Failed to discover OpenAMS units for post-prep sync")
+                        self.logger.info(f"Added {unit_name} to expected OpenAMS units")
+                self.logger.info(f"Expecting {len(self._expected_openams_units)} OpenAMS units: {self._expected_openams_units}")
+            else:
+                self.logger.warning("AFC has no units attribute or AFC is None")
+        except Exception as e:
+            self.logger.error(f"Failed to discover OpenAMS units for post-prep sync: {e}")
 
 
         # OPTIMIZATION: Cache frequently accessed objects
@@ -1398,6 +1405,7 @@ class OAMSManager:
 
         self.start_monitors()
         self.ready = True
+        self.logger.info(f"oams_manager.handle_ready() completed, waiting for {len(self._expected_openams_units)} units to report ready")
 
     def _initialize_oams(self) -> None:
         for name, oam in self.printer.lookup_objects(module="oams"):
@@ -1652,11 +1660,17 @@ class OAMSManager:
         Args:
             unit_name: Name of the AFC_OpenAMS unit (e.g., "AMS_1")
         """
+        self.logger.info(f"notify_openams_unit_ready called for {unit_name}")
         self._openams_units_ready.add(unit_name)
-        self.logger.debug(f"OpenAMS unit {unit_name} reported ready ({len(self._openams_units_ready)}/{len(self._expected_openams_units)})")
+        self.logger.info(
+            f"OpenAMS unit {unit_name} reported ready "
+            f"({len(self._openams_units_ready)}/{len(self._expected_openams_units)}) "
+            f"ready={self._openams_units_ready} expected={self._expected_openams_units}"
+        )
 
         # Check if all expected units are ready
         if self._expected_openams_units and self._openams_units_ready >= self._expected_openams_units:
+            self.logger.info("All expected units have reported ready, checking if sync already done")
             if not self._post_prep_sync_done:
                 self._post_prep_sync_done = True
                 self.logger.info("All OpenAMS units ready, performing post-prep lane state sync")
