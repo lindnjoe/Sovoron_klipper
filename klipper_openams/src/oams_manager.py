@@ -1368,11 +1368,11 @@ class OAMSManager:
                 if self._expected_openams_units and self._openams_units_ready >= self._expected_openams_units:
                     if not self._post_prep_sync_done:
                         self._post_prep_sync_done = True
-                        self.logger.info("Units already reported ready before discovery, performing post-prep sync now")
-                        try:
-                            self._sync_all_fps_lanes_after_prep()
-                        except Exception:
-                            self.logger.error("Failed to sync FPS lanes after prep", traceback=traceback.format_exc())
+                        self.logger.info("Units already reported ready before discovery, scheduling post-prep sync after hardware poll")
+                        # Delay sync by 150ms to allow hardware sensors to be read
+                        # Hardware polling takes ~80-100ms to complete first poll
+                        self.reactor.register_callback(lambda et: self._sync_all_fps_lanes_after_prep(),
+                                                      self.reactor.monotonic() + 0.15)
             else:
                 self.logger.warning("AFC has no units attribute or AFC is None")
         except Exception as e:
@@ -1683,11 +1683,11 @@ class OAMSManager:
             self.logger.info("All expected units have reported ready, checking if sync already done")
             if not self._post_prep_sync_done:
                 self._post_prep_sync_done = True
-                self.logger.info("All OpenAMS units ready, performing post-prep lane state sync")
-                try:
-                    self._sync_all_fps_lanes_after_prep()
-                except Exception:
-                    self.logger.error("Failed to sync FPS lanes after prep", traceback=traceback.format_exc())
+                self.logger.info("All OpenAMS units ready, scheduling post-prep lane state sync after hardware poll")
+                # Delay sync by 150ms to allow hardware sensors to be read
+                # Hardware polling takes ~80-100ms to complete first poll
+                self.reactor.register_callback(lambda et: self._sync_all_fps_lanes_after_prep(),
+                                              self.reactor.monotonic() + 0.15)
 
     def _sync_all_fps_lanes_after_prep(self) -> None:
         """Sync all FPS lane states with AFC after PREP completes.
