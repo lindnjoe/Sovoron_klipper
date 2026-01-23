@@ -2184,6 +2184,16 @@ class OAMSManager:
                     restart_monitors = False
                     self.logger.error("State sync with AFC failed during OAMSM_CLEAR_ERRORS")
 
+            # Perform hub sensor-based sync to catch any mismatches that current_spool-based
+            # sync might miss. This reads hub_hes_value directly for maximum accuracy.
+            if ready_oams:
+                try:
+                    self._sync_all_fps_lanes_after_prep()
+                    self.logger.info("Hub sensor-based lane sync completed during OAMSM_CLEAR_ERRORS")
+                except Exception as e:
+                    restart_monitors = False
+                    self.logger.error(f"Hub sensor sync failed during OAMSM_CLEAR_ERRORS: {e}")
+
             # Rehydrate state from AFC.var.unit so lane/tool status reflects the
             # latest AFC snapshot after clearing hardware state.
             try:
