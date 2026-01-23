@@ -960,11 +960,6 @@ class OAMSManager:
         # Prevent duplicate detection logs when the same lane remains loaded
         self._last_logged_detected_lane: Dict[str, Optional[str]] = {}
 
-        # Track OpenAMS units reporting ready for post-prep sync
-        self._openams_units_ready: set = set()
-        self._expected_openams_units: set = set()
-        self._post_prep_sync_done: bool = False
-
         self._initialize_oams()
 
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
@@ -1350,33 +1345,11 @@ class OAMSManager:
         if not self.fpss:
             raise ValueError("No FPS found in system, this is required for OAMS to work")
 
-        # Discover expected OpenAMS units for post-prep sync
+        # Wrap PREP command to trigger sync after PREP completes
         try:
-            afc = self._get_afc()
-            self.logger.info(f"Discovering OpenAMS units for post-prep sync, afc={afc is not None}")
-            if afc and hasattr(afc, 'units'):
-                self.logger.debug(f"AFC has {len(afc.units)} units")
-                for unit_name, unit_obj in afc.units.items():
-                    unit_type = getattr(unit_obj, 'type', None)
-                    self.logger.debug(f"Unit {unit_name} type={unit_type}")
-                    if unit_type == 'OpenAMS':
-                        self._expected_openams_units.add(unit_name)
-                        self.logger.info(f"Added {unit_name} to expected OpenAMS units")
-                self.logger.info(f"Expecting {len(self._expected_openams_units)} OpenAMS units: {self._expected_openams_units}")
-
-                # Check if units have already reported ready (race condition fix)
-                if self._expected_openams_units and self._openams_units_ready >= self._expected_openams_units:
-                    if not self._post_prep_sync_done:
-                        self._post_prep_sync_done = True
-                        self.logger.info("Units already reported ready before discovery, scheduling post-prep sync after hardware poll")
-                        # Delay sync by 150ms to allow hardware sensors to be read
-                        # Hardware polling takes ~80-100ms to complete first poll
-                        self.reactor.register_callback(lambda et: self._sync_all_fps_lanes_after_prep(),
-                                                      self.reactor.monotonic() + 0.15)
-            else:
-                self.logger.warning("AFC has no units attribute or AFC is None")
+            self._wrap_prep_command()
         except Exception as e:
-            self.logger.error(f"Failed to discover OpenAMS units for post-prep sync: {e}")
+            self.logger.error(f"Failed to wrap PREP command: {e}")
 
 
         # OPTIMIZATION: Cache frequently accessed objects
@@ -1415,7 +1388,7 @@ class OAMSManager:
 
         self.start_monitors()
         self.ready = True
-        self.logger.info(f"oams_manager.handle_ready() completed, waiting for {len(self._expected_openams_units)} units to report ready")
+        self.logger.info("oams_manager.handle_ready() completed, PREP wrapper installed")
 
     def _initialize_oams(self) -> None:
         for name, oam in self.printer.lookup_objects(module="oams"):
@@ -1677,33 +1650,6 @@ class OAMSManager:
             f"(was {current_lane_loaded}, OAMS hardware hub sensor detected {lane_to_sync})"
         )
 
-    def notify_openams_unit_ready(self, unit_name: str) -> None:
-        """Called by AFC_OpenAMS units after their handle_ready() completes.
-
-        Once all expected OpenAMS units have reported ready, perform post-prep sync.
-
-        Args:
-            unit_name: Name of the AFC_OpenAMS unit (e.g., "AMS_1")
-        """
-        self.logger.info(f"notify_openams_unit_ready called for {unit_name}")
-        self._openams_units_ready.add(unit_name)
-        self.logger.info(
-            f"OpenAMS unit {unit_name} reported ready "
-            f"({len(self._openams_units_ready)}/{len(self._expected_openams_units)}) "
-            f"ready={self._openams_units_ready} expected={self._expected_openams_units}"
-        )
-
-        # Check if all expected units are ready
-        if self._expected_openams_units and self._openams_units_ready >= self._expected_openams_units:
-            self.logger.info("All expected units have reported ready, checking if sync already done")
-            if not self._post_prep_sync_done:
-                self._post_prep_sync_done = True
-                self.logger.info("All OpenAMS units ready, scheduling post-prep lane state sync after hardware poll")
-                # Delay sync by 150ms to allow hardware sensors to be read
-                # Hardware polling takes ~80-100ms to complete first poll
-                self.reactor.register_callback(lambda et: self._sync_all_fps_lanes_after_prep(),
-                                              self.reactor.monotonic() + 0.15)
-
     def _sync_all_fps_lanes_after_prep(self) -> None:
         """Sync all FPS lane states with AFC after PREP completes.
 
@@ -1733,6 +1679,42 @@ class OAMSManager:
                 "Failed to sync all FPS lanes after prep",
                 traceback=traceback.format_exc(),
             )
+
+    def _wrap_prep_command(self) -> None:
+        """Wrap AFC's PREP command to trigger sync after PREP completes."""
+        try:
+            afc = self._get_afc()
+            if not afc or not hasattr(afc, 'prep'):
+                self.logger.warning("Cannot wrap PREP command: AFC or AFC prep object not found")
+                return
+
+            prep_obj = afc.prep
+            if not prep_obj or not hasattr(prep_obj, 'PREP'):
+                self.logger.warning("Cannot wrap PREP command: PREP method not found")
+                return
+
+            # Store original PREP method if not already wrapped
+            if not hasattr(prep_obj, '_original_PREP'):
+                prep_obj._original_PREP = prep_obj.PREP
+                self.logger.info("Wrapping AFC PREP command to trigger post-prep sync")
+
+                # Create wrapper that runs sync after PREP completes
+                def wrapped_prep(gcmd):
+                    # Call original PREP
+                    prep_obj._original_PREP(gcmd)
+
+                    # After PREP completes, trigger sync with delay for hardware sensors
+                    self.logger.info("PREP completed, scheduling post-prep sync after hardware poll")
+                    self.reactor.register_callback(
+                        lambda et: self._sync_all_fps_lanes_after_prep(),
+                        self.reactor.monotonic() + 0.15
+                    )
+
+                # Replace PREP with wrapper
+                prep_obj.PREP = wrapped_prep
+                self.logger.info("AFC PREP command wrapped successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to wrap PREP command: {e}")
 
     def _fix_afc_runout_helper_time(self, lane_name: str) -> None:
         """Workaround for AFC bug: Update min_event_systime after load operations.
