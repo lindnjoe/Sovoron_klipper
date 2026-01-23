@@ -1363,6 +1363,16 @@ class OAMSManager:
                         self._expected_openams_units.add(unit_name)
                         self.logger.info(f"Added {unit_name} to expected OpenAMS units")
                 self.logger.info(f"Expecting {len(self._expected_openams_units)} OpenAMS units: {self._expected_openams_units}")
+
+                # Check if units have already reported ready (race condition fix)
+                if self._expected_openams_units and self._openams_units_ready >= self._expected_openams_units:
+                    if not self._post_prep_sync_done:
+                        self._post_prep_sync_done = True
+                        self.logger.info("Units already reported ready before discovery, performing post-prep sync now")
+                        try:
+                            self._sync_all_fps_lanes_after_prep()
+                        except Exception:
+                            self.logger.error("Failed to sync FPS lanes after prep", traceback=traceback.format_exc())
             else:
                 self.logger.warning("AFC has no units attribute or AFC is None")
         except Exception as e:
