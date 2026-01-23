@@ -1712,6 +1712,14 @@ class OAMSManager:
 
                 # Replace PREP with wrapper
                 prep_obj.PREP = wrapped_prep
+
+                # Re-register the gcode command with the wrapped version
+                # The gcode system has a reference to the old method, so we need to re-register
+                afc = self._get_afc()
+                if afc and hasattr(afc, 'gcode'):
+                    afc.gcode.register_command('PREP', wrapped_prep, desc=None)
+                    self.logger.info("Re-registered PREP command with wrapper")
+
                 self.logger.info("AFC PREP command wrapped successfully")
         except Exception as e:
             self.logger.error(f"Failed to wrap PREP command: {e}")
