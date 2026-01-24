@@ -2564,7 +2564,8 @@ class afcAMS(afcUnit):
             cur_lane.select_lane()
 
             if afc_self.tool_cut:
-                # Note: increase_cut_total() removed from AFC_stats in upstream changes
+                # Stats moved from AFC_stats to AFC_extruder (AFCExtruderStats)
+                cur_lane.extruder_obj.estats.increase_cut_total()
                 afc_self.gcode.run_script_from_command(afc_self.tool_cut_cmd)
                 afc_self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After cut")
                 afc_self.function.log_toolhead_pos()
