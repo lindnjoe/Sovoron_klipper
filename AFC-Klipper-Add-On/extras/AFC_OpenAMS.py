@@ -2564,7 +2564,7 @@ class afcAMS(afcUnit):
             cur_lane.select_lane()
 
             if afc_self.tool_cut:
-                afc_self.afc_stats.increase_cut_total()
+                # Note: increase_cut_total() removed from AFC_stats in upstream changes
                 afc_self.gcode.run_script_from_command(afc_self.tool_cut_cmd)
                 afc_self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After cut")
                 afc_self.function.log_toolhead_pos()
