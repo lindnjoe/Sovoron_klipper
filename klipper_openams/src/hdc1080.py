@@ -19,9 +19,6 @@ DVID_REG = 0xFF  # device ID register
 
 HDC1080_I2C_ADDR = 0x40 # Device address, 64
 
-I2C_READ_DELAY = 0.0635
-I2C_READ_BYTES = 2
-
 CONFIG_RESET_BIT = 0x8000 # Reset bit
 CONFIG_BATTERY_STATUS_BIT = 0x0800 # Battery status bit
 HEATER_ENABLE_BIT = 0x2000 # Heater enable bit
@@ -51,19 +48,20 @@ class HDC1080:
         self.printer.register_event_handler("klippy:connect",
                                             self.handle_connect)
         self.temp_resolution = config.getint('temp_resolution',14,minval=11,maxval=14)
-        if self.temp_resolution not in TEMP_RES:
-            raise ValueError("Invalid temperature resolution, valid values are %s " % (", ".join(str(x) for x in TEMP_RES)))
+        if self.temp_resolution not in list(TEMP_RES.keys()):
+            raise ValueError("Invalid temperature resolution, valid values are %s " % (", ".join(str(x) for x in list(TEMP_RES.keys()))))
         self.temp_resolution = TEMP_RES[self.temp_resolution]
         
         self.humidity_resolution = config.getint('humidity_resolution',14,minval=8,maxval=14)
-        if self.humidity_resolution not in HUMI_RES:
-            raise ValueError("Invalid humidity resolution, valid values are %s " % (", ".join(str(x) for x in HUMI_RES)))
+        if self.humidity_resolution not in list(HUMI_RES.keys()):
+            raise ValueError("Invalid humidity resolution, valid values are %s " % (", ".join(str(x) for x in list(HUMI_RES.keys()))))
         self.humidity_resolution = HUMI_RES[self.humidity_resolution]
         
         self.temp_offset = config.getfloat('temp_offset',0.0)
         self.humidity_offset = config.getfloat('humidity_offset',0.0)
         self.heater_enabled = config.getboolean('heater_enabled',False)
                 
+        self.is_calibrated  = False
         self.init_sent = False
 
     def handle_connect(self):
@@ -79,13 +77,6 @@ class HDC1080:
 
     def get_report_time_delta(self):
         return self.report_time
-
-    def _read_register(self, register):
-        self.i2c.i2c_write([register])
-        self.reactor.pause(self.reactor.monotonic() + I2C_READ_DELAY)
-        read = self.i2c.i2c_read([], I2C_READ_BYTES)
-        data = bytearray(read['response'])
-        return (data[0] * 256) + data[1]
     
     def _init_device(self):
         # Reset the device
@@ -114,22 +105,34 @@ class HDC1080:
         
         self.init_sent = True
         
-    def _read_temp(self):
-        """Read the temperature in Celsius."""
+    def _read_temp(self, celsius=True):
+        """ Read the temperature
+
+        Keyword arguments:
+        celsius -- If the data is kept as celsius after reading (default False)
+        """
         # write to the pointer register, changing it to the temperature register
         try:
-            temp = self._read_register(TEMP_REG)
-            return (temp / 65536.0) * 165.0 - 40
-        except Exception:
-            logging.debug("hdc1080: failed to read temperature")
+            self.i2c.i2c_write([TEMP_REG])
+            self.reactor.pause(self.reactor.monotonic() + .0635)
+            read = self.i2c.i2c_read([], 2)
+            data = bytearray(read['response'])
+            temp = (data[0] * 256) + data[1]
+            cTemp = (temp / 65536.0) * 165.0 - 40
+            return cTemp
+        except:
             return 0.0
         
     def _read_humi(self):
         try:
-            humidity = self._read_register(HUMI_REG)
-            return (humidity / 65536.0) * 100.0
-        except Exception:
-            logging.debug("hdc1080: failed to read humidity")
+            self.i2c.i2c_write([HUMI_REG])
+            self.reactor.pause(self.reactor.monotonic() + .0635)
+            read = self.i2c.i2c_read([], 2)
+            data = bytearray(read['response'])
+            humidity = (data[0] * 256) + data[1]
+            percentHumidity = (humidity / 65536.0) * 100.0
+            return percentHumidity
+        except:
             return 0.0
 
     def _make_measurements(self):
@@ -161,22 +164,52 @@ class HDC1080:
         return measured_time + self.report_time
     
     def read_device_id(self):
-        return self._read_register(DVID_REG)
+        self.i2c.i2c_write([DVID_REG])
+        self.reactor.pause(self.reactor.monotonic() + .0635)
+        read = self.i2c.i2c_read([], 2)
+        data = bytearray(read['response'])
+        device_id = (data[0] * 256) + data[1]
+        return device_id
     
     def read_manufacturer_id(self):
-        return self._read_register(MFID_REG)
+        self.i2c.i2c_write([MFID_REG])
+        self.reactor.pause(self.reactor.monotonic() + .0635)
+        read = self.i2c.i2c_read([], 2)
+        data = bytearray(read['response'])
+        manufacturer_id = (data[0] * 256) + data[1]
+        return manufacturer_id
     
     def read_serial_id(self):
-        serial_id = self._read_register(FSER_REG)
-        serial_id = (serial_id * 256) + self._read_register(MSER_REG)
-        serial_id = (serial_id * 256) + self._read_register(LSER_REG)
+        self.i2c.i2c_write([FSER_REG])
+        self.reactor.pause(self.reactor.monotonic() + .0635)
+        read = self.i2c.i2c_read([], 2)
+        data = bytearray(read['response'])
+        serial_id = (data[0] * 256) + data[1]
+        
+        self.i2c.i2c_write([MSER_REG])
+        self.reactor.pause(self.reactor.monotonic() + .0635)
+        read = self.i2c.i2c_read([], 2)
+        data = bytearray(read['response'])
+        serial_id = serial_id*256 + (data[0] * 256) + data[1]
+        
+        self.i2c.i2c_write([LSER_REG])
+        self.reactor.pause(self.reactor.monotonic() + .0635)
+        read = self.i2c.i2c_read([], 2)
+        data = bytearray(read['response'])
+        serial_id = serial_id*256 + (data[0] * 256) + data[1]
+        
         return serial_id
     
     def read_config(self):
-        return self._read_register(CONF_REG)
+        self.i2c.i2c_write([CONF_REG])
+        self.reactor.pause(self.reactor.monotonic() + .0635)
+        read = self.i2c.i2c_read([], 2)
+        data = bytearray(read['response'])
+        config = (data[0] * 256) + data[1]
+        return config
     
     def set_humidity_resolution(self, resolution):
-        if resolution not in HUMI_RES.values():
+        if not resolution in list(HUMI_RES.values()):
             raise ValueError("Invalid humidity resolution, valid values are %s " % (", ".join(str(x) for x in HUMI_RES)))
         
         config = self.read_config()
@@ -186,7 +219,7 @@ class HDC1080:
         self.reactor.pause(self.reactor.monotonic() + .015)
         
     def set_temperature_resolution(self, resolution):
-        if resolution not in TEMP_RES.values():
+        if not resolution in list(TEMP_RES.values()):
             raise ValueError("Invalid temperature resolution, valid values are %s" % (", ".join(str(x) for x in TEMP_RES)))
         
         config = self.read_config()
