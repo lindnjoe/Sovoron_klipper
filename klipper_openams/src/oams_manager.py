@@ -2087,13 +2087,15 @@ class OAMSManager:
                         try:
                             if hasattr(oam, "set_led_error"):
                                 oam.set_led_error(bay_idx, 0)
+                                # Small delay between LED commands to avoid overwhelming MCU
+                                self.reactor.pause(self.reactor.monotonic() + 0.05)
                         except Exception:
                             self.logger.warning(f"Failed to clear LED {bay_idx} on {oams_name}")
                     if not self._is_oams_mcu_ready(oam):
                         continue
 
                     # Wait for all LED commands to complete
-                    self.reactor.pause(self.reactor.monotonic() + 0.2)
+                    self.reactor.pause(self.reactor.monotonic() + 0.1)
                     if not self._is_oams_mcu_ready(oam):
                         restart_monitors = False
                         continue
