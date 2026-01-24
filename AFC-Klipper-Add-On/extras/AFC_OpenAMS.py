@@ -2615,9 +2615,9 @@ class afcAMS(afcUnit):
                 )
                 afc_self.gcode.run_script_from_command("OAMSM_UNLOAD_FILAMENT FPS={}".format(fps_id))
 
-                # OpenAMS: After unload, filament retracts to f1s (shared prep/load sensor), not hub
-                # Hub sensor will be FALSE. Set loaded_to_hub accordingly.
-                cur_lane.loaded_to_hub = False
+                # After unload, filament is loaded in AMS (at f1s position), ready for next load
+                # loaded_to_hub means "loaded in system", not "triggering hub sensor"
+                cur_lane.loaded_to_hub = True
                 cur_lane.set_tool_unloaded()
                 cur_lane.status = AFCLaneState.LOADED
                 cur_lane.unit_obj.lane_tool_unloaded(cur_lane)
