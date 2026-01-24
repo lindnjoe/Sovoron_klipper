@@ -4623,13 +4623,18 @@ class OAMSManager:
                 if detected_lane == lane_name:
                     return False, f"Lane {lane_name} is already loaded to {fps_name}"
 
+                # Use AFC's TOOL_UNLOAD to properly unload with cut, form_tip, and retract
+                # instead of raw OAMSM_UNLOAD_FILAMENT which skips the cut sequence
                 try:
                     gcode = self._gcode_obj
                     if gcode is None:
                         gcode = self.printer.lookup_object("gcode")
                         self._gcode_obj = gcode
-                    fps_param = fps_name.replace("fps ", "", 1)
-                    gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
+                    self.logger.info(
+                        f"Auto-unloading {detected_lane} from {fps_name} before loading {lane_name} "
+                        f"(using TOOL_UNLOAD for proper cut/retract sequence)"
+                    )
+                    gcode.run_script_from_command(f"TOOL_UNLOAD LANE={detected_lane}")
                     gcode.run_script_from_command("M400")
                 except Exception:
                     return False, f"Failed to unload existing lane {detected_lane} from {fps_name}"
