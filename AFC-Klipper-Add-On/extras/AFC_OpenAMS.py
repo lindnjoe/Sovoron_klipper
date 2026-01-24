@@ -879,9 +879,7 @@ class afcAMS(afcUnit):
                     # Fall back to live OAMS sensors for this lane to avoid toolchanger prep clearing LEDs
                     try:
                         sensor_snapshot = self._get_oams_sensor_snapshot({lane_name: lane}, require_hub=True)
-                        # For OpenAMS, hub sensor alone is sufficient - don't require stale lane.tool_loaded
-                        # This allows saved state restoration after restart when shuttle is empty
-                        lane_has_filament = bool(sensor_snapshot.get(lane_name, False))
+                        lane_has_filament = bool(sensor_snapshot.get(lane_name, False) and getattr(lane, "tool_loaded", False))
                     except Exception:
                         lane_has_filament = False
 
