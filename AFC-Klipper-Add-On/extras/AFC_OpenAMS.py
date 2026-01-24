@@ -2592,6 +2592,11 @@ class afcAMS(afcUnit):
                     afc_self.function.log_toolhead_pos()
 
             try:
+                # CRITICAL: Unsync from extruder before OpenAMS unload
+                # After cut/form_tip, lane is synced to extruder. Must unsync before
+                # OAMSM_UNLOAD_FILAMENT can control the spool independently.
+                cur_lane.unsync_to_extruder()
+
                 oams_manager = afc_self.printer.lookup_object("oams_manager", None)
                 fps_name = None
                 if oams_manager is not None:
