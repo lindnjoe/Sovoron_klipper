@@ -2615,11 +2615,15 @@ class afcAMS(afcUnit):
                 )
                 afc_self.gcode.run_script_from_command("OAMSM_UNLOAD_FILAMENT FPS={}".format(fps_id))
 
-                # After unload, filament is loaded in AMS (at f1s position), ready for next load
-                # loaded_to_hub means "loaded in system", not "triggering hub sensor"
+                # OpenAMS: Filament stays in system at f1s, so DON'T clear spool metadata
+                # Manually update state instead of calling set_tool_unloaded() which clears spool
+                cur_lane.tool_loaded = False
+                cur_lane.extruder_obj.lane_loaded = None
+                afc_self.current_loading = None
                 cur_lane.loaded_to_hub = True
-                cur_lane.set_tool_unloaded()
                 cur_lane.status = AFCLaneState.LOADED
+                # NOTE: Do NOT call set_active_spool(None) - spool stays active in AMS
+
                 cur_lane.unit_obj.lane_tool_unloaded(cur_lane)
                 afc_self.save_vars()
             except Exception as e:
