@@ -1981,7 +1981,7 @@ class OAMSManager:
         for cmd_name, handler, help_text in commands:
             gcode.register_command(cmd_name, handler, desc=help_text)
 
-    cmd_CLEAR_ERRORS_help = "Clear the error state of the OAMS"
+    cmd_CLEAR_ERRORS_help = "Clear OAMS errors and sync all state (hardware sensors, AFC live state, AFC.var.unit)"
     def cmd_CLEAR_ERRORS(self, gcmd):
         monitors_were_running = bool(self.monitor_timers)
         restart_monitors = True
@@ -2165,6 +2165,41 @@ class OAMSManager:
                 except Exception:
                     restart_monitors = False
                     self.logger.error("State sync with AFC failed during OAMSM_CLEAR_ERRORS")
+
+            # Comprehensive 3-way state reconciliation (like PREP does at startup)
+            # This reconciles: Hardware sensors <-> AFC live state <-> AFC.var.unit
+            # Uses hardware sensors as ground truth to fix any stale state
+            if ready_oams:
+                try:
+                    afc = self._get_afc()
+                    if afc and hasattr(afc, 'units'):
+                        synced_units = 0
+                        for unit_name, unit_obj in afc.units.items():
+                            # Only sync OpenAMS units
+                            if not hasattr(unit_obj, 'oams_name'):
+                                continue
+
+                            oams_name = unit_obj.oams_name
+                            if oams_name not in ready_oams:
+                                self.logger.debug(f"Skipping state reconciliation for {unit_name} - MCU not ready")
+                                continue
+
+                            # Call the AFC_OpenAMS comprehensive sync method
+                            if hasattr(unit_obj, '_sync_afc_from_hardware_at_startup'):
+                                try:
+                                    unit_obj._sync_afc_from_hardware_at_startup()
+                                    synced_units += 1
+                                    self.logger.debug(f"Reconciled state for {unit_name} with hardware sensors")
+                                except Exception as e:
+                                    self.logger.warning(f"Failed to reconcile state for {unit_name}: {e}")
+
+                        if synced_units > 0:
+                            self.logger.info(f"Reconciled state for {synced_units} OpenAMS unit(s) with hardware sensors")
+                except Exception as e:
+                    restart_monitors = False
+                    self.logger.error(f"Failed to reconcile hardware/AFC state during OAMSM_CLEAR_ERRORS: {e}")
+                    import traceback
+                    self.logger.debug(f"Traceback: {traceback.format_exc()}")
 
             # Rehydrate state from AFC.var.unit so lane/tool status reflects the
             # latest AFC snapshot after clearing hardware state.
