@@ -2171,16 +2171,20 @@ class OAMSManager:
             # latest AFC snapshot after clearing hardware state.
             try:
                 self._refresh_state_from_afc_snapshot()
-            except Exception:
+            except Exception as e:
                 restart_monitors = False
-                self.logger.error("Failed to refresh state from AFC.var.unit during OAMSM_CLEAR_ERRORS")
+                self.logger.error(f"Failed to refresh state from AFC.var.unit during OAMSM_CLEAR_ERRORS: {e}")
+                import traceback
+                self.logger.debug(f"Traceback: {traceback.format_exc()}")
 
             # Sync virtual tool sensors to match the refreshed lane state.
             try:
                 self._sync_virtual_tool_sensors()
-            except Exception:
+            except Exception as e:
                 restart_monitors = False
-                self.logger.error("Failed to sync virtual tool sensors during OAMSM_CLEAR_ERRORS")
+                self.logger.error(f"Failed to sync virtual tool sensors during OAMSM_CLEAR_ERRORS: {e}")
+                import traceback
+                self.logger.debug(f"Traceback: {traceback.format_exc()}")
 
 
             # Clear all manual follower overrides and coast state - return to automatic hub sensor control
