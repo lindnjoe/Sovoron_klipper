@@ -4711,15 +4711,24 @@ class OAMSManager:
                     detected_lane = None
 
             if detected_lane is not None:
-                # During tool operations, trust AFC state machine - skip "already loaded" check
-                # (AFC might be in process of changing lanes)
-                if not is_tool_operation:
+                # During tool operations, trust AFC state machine - skip all detection-based actions
+                # AFC handles unload/load sequence, shuttle should be empty when we get here
+                # If we detect a lane, it's likely a timing/state issue - proceed anyway
+                if is_tool_operation:
+                    if detected_lane != lane_name:
+                        self.logger.debug(
+                            f"Detected {detected_lane} on {fps_name} during tool change to {lane_name} - "
+                            f"ignoring (AFC already unloaded, likely timing/state lag)"
+                        )
+                    # Skip checks and auto-unload during tool operations - trust AFC
+                else:
+                    # Outside tool change: enforce checks and auto-unload if needed
                     if detected_lane == lane_name:
                         return False, f"Lane {lane_name} is already loaded to {fps_name}"
 
-                # If a different lane is detected, auto-unload it before loading the new lane
-                # Always use TOOL_UNLOAD with full cut/form_tip/retract sequence
-                if detected_lane != lane_name:
+                    # Different lane detected - auto-unload it before loading new lane
+                    # This handles cases where user manually loads without unloading first
+                    # Auto-unload should only happen when starting from an empty shuttle normally
                     try:
                         gcode = self._gcode_obj
                         if gcode is None:
