@@ -2088,44 +2088,8 @@ class OAMSManager:
                     restart_monitors = False
                     self.logger.error(f"Failed to clear errors on {oams_name}: {e}")
 
-            # Restore normal LED states for all loaded spools
-            # After clearing error LEDs, we need to restore the proper LED state
-            # (green for loaded, blue for tool loaded, etc) based on current lane state
-            try:
-                afc = self.printer.lookup_object('AFC', None)
-                if afc and hasattr(afc, 'units'):
-                    for unit_name, unit_obj in afc.units.items():
-                        # Only process OpenAMS units
-                        if not hasattr(unit_obj, 'oams_name'):
-                            continue
-
-                        oams_name = unit_obj.oams_name
-                        if oams_name not in ready_oams:
-                            continue
-
-                        # Restore LED state for each lane based on its current state
-                        if hasattr(unit_obj, 'lanes'):
-                            for lane_name, lane in unit_obj.lanes.items():
-                                try:
-                                    # Check lane state and restore appropriate LED
-                                    if getattr(lane, 'tool_loaded', False):
-                                        # Lane is loaded to toolhead - set tool loaded LED
-                                        unit_obj.lane_tool_loaded(lane)
-                                        self.logger.debug(f"Restored tool loaded LED for {lane_name}")
-                                    elif getattr(lane, 'load_state', False):
-                                        # Lane is loaded to hub - set loaded LED
-                                        unit_obj.lane_loaded(lane)
-                                        self.logger.debug(f"Restored loaded LED for {lane_name}")
-                                    else:
-                                        # Lane is unloaded - set unloaded LED
-                                        unit_obj.lane_unloaded(lane)
-                                        self.logger.debug(f"Restored unloaded LED for {lane_name}")
-                                except Exception as e:
-                                    self.logger.warning(f"Failed to restore LED for {lane_name}: {e}")
-
-                    self.logger.debug("Restored normal LED states for all lanes after clearing errors")
-            except Exception as e:
-                self.logger.error(f"Failed to restore normal LED states: {e}")
+            # NOTE: LED restore moved to AFTER state sync so it uses correct hardware-reconciled state
+            # instead of potentially stale AFC state
 
             # Preserve lane mappings during error clearing to avoid losing lane state.
             # We still surface any active redirects so an operator can clear them explicitly
@@ -2201,15 +2165,11 @@ class OAMSManager:
                     import traceback
                     self.logger.debug(f"Traceback: {traceback.format_exc()}")
 
-            # Rehydrate state from AFC.var.unit so lane/tool status reflects the
-            # latest AFC snapshot after clearing hardware state.
-            try:
-                self._refresh_state_from_afc_snapshot()
-            except Exception as e:
-                restart_monitors = False
-                self.logger.error(f"Failed to refresh state from AFC.var.unit during OAMSM_CLEAR_ERRORS: {e}")
-                import traceback
-                self.logger.debug(f"Traceback: {traceback.format_exc()}")
+            # NOTE: We do NOT load from AFC.var.unit file here because:
+            # 1. determine_state() already read from hardware sensors (ground truth)
+            # 2. _sync_afc_from_hardware_at_startup() reconciled AFC with hardware
+            # 3. Loading from file would overwrite correct state with potentially stale data
+            # The hardware sensors are the authoritative source, not the saved file.
 
             # Sync virtual tool sensors to match the refreshed lane state.
             try:
@@ -2220,6 +2180,43 @@ class OAMSManager:
                 import traceback
                 self.logger.debug(f"Traceback: {traceback.format_exc()}")
 
+            # Restore normal LED states based on NOW-CORRECT hardware-reconciled state
+            # This happens AFTER state sync so LEDs reflect actual hardware state, not stale AFC state
+            try:
+                afc = self.printer.lookup_object('AFC', None)
+                if afc and hasattr(afc, 'units'):
+                    for unit_name, unit_obj in afc.units.items():
+                        # Only process OpenAMS units
+                        if not hasattr(unit_obj, 'oams_name'):
+                            continue
+
+                        oams_name = unit_obj.oams_name
+                        if oams_name not in ready_oams:
+                            continue
+
+                        # Restore LED state for each lane based on reconciled state
+                        if hasattr(unit_obj, 'lanes'):
+                            for lane_name, lane in unit_obj.lanes.items():
+                                try:
+                                    # Check lane state and restore appropriate LED
+                                    if getattr(lane, 'tool_loaded', False):
+                                        # Lane is loaded to toolhead - set tool loaded LED
+                                        unit_obj.lane_tool_loaded(lane)
+                                        self.logger.debug(f"Restored tool loaded LED for {lane_name}")
+                                    elif getattr(lane, 'load_state', False):
+                                        # Lane is loaded to hub - set loaded LED
+                                        unit_obj.lane_loaded(lane)
+                                        self.logger.debug(f"Restored loaded LED for {lane_name}")
+                                    else:
+                                        # Lane is unloaded - set unloaded LED
+                                        unit_obj.lane_unloaded(lane)
+                                        self.logger.debug(f"Restored unloaded LED for {lane_name}")
+                                except Exception as e:
+                                    self.logger.warning(f"Failed to restore LED for {lane_name}: {e}")
+
+                    self.logger.debug("Restored LED states based on hardware-reconciled state")
+            except Exception as e:
+                self.logger.error(f"Failed to restore LED states: {e}")
 
             # Clear all manual follower overrides and coast state - return to automatic hub sensor control
             # Also clear last state tracking so follower state is refreshed from actual sensors
