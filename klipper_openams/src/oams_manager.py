@@ -4572,7 +4572,7 @@ class OAMSManager:
             # Always clear the suppression flag, even if cleanup fails
             fps_state.engagement_in_progress = False
 
-    def _load_filament_for_lane(self, lane_name: str) -> Tuple[bool, str]:
+    def _load_filament_for_lane(self, lane_name: str, allow_tool_unload: bool = False) -> Tuple[bool, str]:
         """Load filament for a lane by deriving OAMS and bay from the lane's unit configuration.
 
         This eliminates the need for [filament_group] configs by directly using:
@@ -4675,6 +4675,7 @@ class OAMSManager:
         # Get tool operation status to suppress false positive state clearing messages
         afc = self.printer.lookup_object("AFC", None)
         is_tool_operation = getattr(afc, 'in_toolchange', False) if afc else False
+        allow_auto_unload = allow_tool_unload or not is_tool_operation
 
         if detected_lane is not None:
             fps_state.current_lane = detected_lane
@@ -4711,13 +4712,10 @@ class OAMSManager:
                     detected_lane = None
 
             if detected_lane is not None:
-                # During tool operations, trust AFC state machine - skip detection-based checks
-                if not is_tool_operation:
-                    if detected_lane == lane_name:
-                        return False, f"Lane {lane_name} is already loaded to {fps_name}"
+                if detected_lane == lane_name:
+                    return False, f"Lane {lane_name} is already loaded to {fps_name}"
 
-                # During tool operations, skip auto-unload - trust AFC state machine
-                if not is_tool_operation:
+                if allow_auto_unload:
                     # Use AFC's TOOL_UNLOAD to properly unload with cut, form_tip, and retract
                     # instead of raw OAMSM_UNLOAD_FILAMENT which skips the cut sequence
                     try:
@@ -4731,20 +4729,24 @@ class OAMSManager:
                         )
                         gcode.run_script_from_command(f"TOOL_UNLOAD LANE={detected_lane}")
                         gcode.run_script_from_command("M400")
+                        fps_state.state = FPSLoadState.UNLOADED
+                        fps_state.current_lane = None
+                        fps_state.current_oams = None
+                        fps_state.current_spool_idx = None
                     except Exception:
                         return False, f"Failed to unload existing lane {detected_lane} from {fps_name}"
         else:
             # No lane detected as loaded - clear fps_state if it thinks it's loaded
             # This handles cases where fps_state is stale (e.g., load failed with clog)
-            # Skip during tool operations - trust AFC state machine to manage transitions
-            if not is_tool_operation and fps_state.state == FPSLoadState.LOADED:
+            # Allow clearing stale state when auto-unload is permitted to keep FPS state consistent
+            if allow_auto_unload and fps_state.state == FPSLoadState.LOADED:
                 self.logger.info(f"Clearing stale LOADED state for {fps_name} - no lane detected by AFC")
                 fps_state.state = FPSLoadState.UNLOADED
                 fps_state.current_lane = None
                 fps_state.current_oams = None
                 fps_state.current_spool_idx = None
 
-        if fps_state.state == FPSLoadState.LOADED:
+        if fps_state.state == FPSLoadState.LOADED and not allow_auto_unload:
             return False, f"FPS {fps_name} is already loaded"
 
         self._cancel_post_load_pressure_check(fps_state)
