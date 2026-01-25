@@ -560,7 +560,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                         self.logger.error(
                             f"OAMS[{self.oams_idx}]: Failed to unload before retry: {unload_msg}"
                         )
-                        # FIX: Abort load retry sequence if auto-unload fails
+                        # Abort load retry sequence if auto-unload fails
                         # Filament is likely stuck in the tube - continuing load attempts will fail
                         self._reset_load_retry_count(spool_idx)
                         # Record retry failure for monitoring
