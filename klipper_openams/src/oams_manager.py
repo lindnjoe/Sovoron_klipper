@@ -2472,11 +2472,7 @@ class OAMSManager:
                     self.logger.debug(f"Skipping follower enable for {fps_name} - OAMS MCU not ready")
 
                 self.logger.info(
-                    "OAMSM_CLEAR_ERRORS: refreshed %s from AFC.var.unit (lane %s on %s slot %d)",
-                    fps_name,
-                    lane_name,
-                    fps_state.current_oams,
-                    spool_idx,
+                    f"OAMSM_CLEAR_ERRORS: refreshed {fps_name} from AFC.var.unit (lane {lane_name} on {fps_state.current_oams} slot {spool_idx})"
                 )
             except Exception as e:
                 # Don't let one lane failure abort the whole refresh
