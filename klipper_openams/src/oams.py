@@ -213,11 +213,11 @@ class OAMS:
                 return None
 
             # Find the AFC unit that corresponds to this OAMS
-            # self.name is like "oams1", unit.oams_name should match
+            # self.section_name is like "oams1", unit.oams_name should match
             for unit_name, unit_obj in afc.units.items():
                 if not hasattr(unit_obj, 'oams_name'):
                     continue
-                if unit_obj.oams_name != self.name:
+                if unit_obj.oams_name != self.section_name:
                     continue
 
                 # Found matching unit, now find lane with matching slot
@@ -500,7 +500,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 # Resolve lane name for retry message
                 lane_name = None
                 if self.hardware_service is not None:
-                    lane_name = self.hardware_service.resolve_lane_for_spool(self.name, spool_idx)
+                    lane_name = self.hardware_service.resolve_lane_for_spool(self.section_name, spool_idx)
                 if lane_name is None:
                     lane_name = self._resolve_lane_name_from_afc(spool_idx)
                 lane_label = f"lane {lane_name}" if lane_name else f"lane (spool {spool_idx})"
@@ -526,7 +526,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 # Try to resolve lane name for better user messaging
                 lane_name = None
                 if self.hardware_service is not None:
-                    lane_name = self.hardware_service.resolve_lane_for_spool(self.name, spool_idx)
+                    lane_name = self.hardware_service.resolve_lane_for_spool(self.section_name, spool_idx)
                 # Fallback to direct AFC lookup if hardware service didn't resolve
                 if lane_name is None:
                     lane_name = self._resolve_lane_name_from_afc(spool_idx)
@@ -543,7 +543,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             # Resolve lane name for error messages
             lane_name = None
             if self.hardware_service is not None:
-                lane_name = self.hardware_service.resolve_lane_for_spool(self.name, spool_idx)
+                lane_name = self.hardware_service.resolve_lane_for_spool(self.section_name, spool_idx)
             if lane_name is None:
                 lane_name = self._resolve_lane_name_from_afc(spool_idx)
             lane_label = f"lane {lane_name}" if lane_name else f"lane (spool {spool_idx})"
@@ -585,7 +585,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         # Resolve lane name for final error message
         lane_name = None
         if self.hardware_service is not None:
-            lane_name = self.hardware_service.resolve_lane_for_spool(self.name, spool_idx)
+            lane_name = self.hardware_service.resolve_lane_for_spool(self.section_name, spool_idx)
         if lane_name is None:
             lane_name = self._resolve_lane_name_from_afc(spool_idx)
         lane_label = f"lane {lane_name}" if lane_name else f"lane (spool {spool_idx})"
@@ -661,7 +661,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 lane_name = None
                 if self.current_spool is not None:
                     if self.hardware_service is not None:
-                        lane_name = self.hardware_service.resolve_lane_for_spool(self.name, self.current_spool)
+                        lane_name = self.hardware_service.resolve_lane_for_spool(self.section_name, self.current_spool)
                     # Fallback to direct AFC lookup if hardware service didn't resolve
                     if lane_name is None:
                         lane_name = self._resolve_lane_name_from_afc(self.current_spool)

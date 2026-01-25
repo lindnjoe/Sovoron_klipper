@@ -69,6 +69,8 @@ _ORIGINAL_LANE_UNLOAD = None  # Will be set during patching
 _ORIGINAL_BUFFER_SET_MULTIPLIER = None  # Will be set during patching
 _ORIGINAL_BUFFER_QUERY = None  # Will be set during patching
 _ORIGINAL_BUFFER_GET_STATUS = None  # Will be set during patching
+_ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE = None  # Will be set during patching
+_ORIGINAL_BUFFER_START_FAULT_DETECTION = None  # Will be set during patching
 
 class _VirtualRunoutHelper:
     """Minimal runout helper used by AMS-managed virtual sensors."""
@@ -4260,13 +4262,16 @@ def _patch_infinite_runout_handler() -> None:
     AFCLane._ams_infinite_runout_patched = True
 
 def _patch_buffer_for_ams() -> None:
-    """Patch AFC_buffer methods to handle None extruder_stepper safely.
+    """Patch AFC_buffer methods to handle None extruder_stepper and skip AMS lane monitoring.
 
-    The base AFCLane class can have extruder_stepper set to None, but some
-    buffer methods assume it's always available. This patch adds null checks
-    to prevent AttributeError crashes.
+    Patches buffer methods to:
+    1. Handle None extruder_stepper safely
+    2. Skip buffer monitoring entirely for AMS lanes (prevent recursive PAUSE crashes)
+
+    AMS lanes don't have physical buffers, so buffer fault detection should never run
+    for them even if a Box Turtle buffer is configured for the same extruder.
     """
-    global _ORIGINAL_BUFFER_SET_MULTIPLIER, _ORIGINAL_BUFFER_QUERY, _ORIGINAL_BUFFER_GET_STATUS
+    global _ORIGINAL_BUFFER_SET_MULTIPLIER, _ORIGINAL_BUFFER_QUERY, _ORIGINAL_BUFFER_GET_STATUS, _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE, _ORIGINAL_BUFFER_START_FAULT_DETECTION
 
     # Import here to avoid circular dependencies
     try:
@@ -4282,17 +4287,70 @@ def _patch_buffer_for_ams() -> None:
     _ORIGINAL_BUFFER_SET_MULTIPLIER = getattr(AFCTrigger, "set_multiplier", None)
     _ORIGINAL_BUFFER_QUERY = getattr(AFCTrigger, "cmd_QUERY_BUFFER", None)
     _ORIGINAL_BUFFER_GET_STATUS = getattr(AFCTrigger, "get_status", None)
+    _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE = getattr(AFCTrigger, "extruder_pos_update_event", None)
+    _ORIGINAL_BUFFER_START_FAULT_DETECTION = getattr(AFCTrigger, "start_fault_detection", None)
 
     if not callable(_ORIGINAL_BUFFER_SET_MULTIPLIER):
         return
 
+    def _is_ams_lane(afc_obj, lane_obj, logger, buffer_name):
+        """Check if lane is an AMS lane (no buffer support)."""
+        try:
+            if lane_obj is None:
+                logger.debug(f"Buffer {buffer_name}: AMS check - no current lane loaded")
+                return False
+
+            lane_name = getattr(lane_obj, 'name', 'unknown')
+
+            # Check if lane's unit is an OpenAMS unit (type == "OpenAMS")
+            unit_obj = getattr(lane_obj, 'unit_obj', None)
+            if unit_obj is None:
+                logger.debug(f"Buffer {buffer_name}: AMS check - lane {lane_name} has no unit_obj")
+                return False
+
+            unit_type = getattr(unit_obj, 'type', None)
+            is_ams = unit_type == "OpenAMS"
+            logger.debug(f"Buffer {buffer_name}: AMS check - lane {lane_name} unit type '{unit_type}' ? AMS={is_ams}")
+            return is_ams
+        except Exception as e:
+            logger.debug(f"Buffer {buffer_name}: AMS check failed with exception: {e}")
+            return False
+
+    def _patched_extruder_pos_update_event(self, eventtime):
+        """Patched extruder_pos_update_event to skip monitoring for AMS lanes."""
+        # CRITICAL: Skip buffer monitoring for AMS lanes - they don't have physical buffers
+        # This prevents recursive PAUSE crashes when Box Turtle buffers try to monitor
+        # extruders temporarily loaded with AMS filament
+        cur_lane = self.afc.function.get_current_lane_obj()
+        if _is_ams_lane(self.afc, cur_lane, self.logger, self.name):
+            return eventtime + 0.5  # CHECK_RUNOUT_TIMEOUT
+
+        # Call original method
+        return _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE(self, eventtime)
+
+    def _patched_start_fault_detection(self, eventtime, multiplier):
+        """Patched start_fault_detection to skip for AMS lanes."""
+        # Skip fault detection for AMS lanes - they don't have physical buffers
+        cur_lane = self.afc.function.get_current_lane_obj()
+        if _is_ams_lane(self.afc, cur_lane, self.logger, self.name):
+            return
+
+        # Call original method
+        return _ORIGINAL_BUFFER_START_FAULT_DETECTION(self, eventtime, multiplier)
+
     def _patched_set_multiplier(self, multiplier):
-        """Patched set_multiplier with null check for extruder_stepper."""
+        """Patched set_multiplier with null check for extruder_stepper and AMS lane check."""
         if not self.enable:
             return
+
         cur_stepper = self.afc.function.get_current_lane_obj()
         if cur_stepper is None:
             return
+
+        # Skip buffer multiplier adjustment for AMS lanes
+        if _is_ams_lane(self.afc, cur_stepper, self.logger, self.name):
+            return
+
         if cur_stepper.extruder_stepper is None:
             return
 
@@ -4369,6 +4427,8 @@ def _patch_buffer_for_ams() -> None:
         return self.response
 
     # Apply patches
+    AFCTrigger.extruder_pos_update_event = _patched_extruder_pos_update_event  # CRITICAL: Prevents recursive PAUSE
+    AFCTrigger.start_fault_detection = _patched_start_fault_detection
     AFCTrigger.set_multiplier = _patched_set_multiplier
     AFCTrigger.cmd_QUERY_BUFFER = _patched_cmd_query_buffer
     AFCTrigger.get_status = _patched_get_status
