@@ -2166,7 +2166,15 @@ class afcAMS(afcUnit):
                     pass
 
                 # Hub sensor shows filament in AMS (but not necessarily in toolhead)
-                hub_loaded = getattr(lane, 'loaded_to_hub', False)
+                # CRITICAL: Read ACTUAL hardware sensor, not AFC state!
+                hub_loaded = False
+                if self.oams is not None:
+                    try:
+                        spool_index = self._get_openams_spool_index(lane)
+                        if spool_index is not None:
+                            hub_loaded = bool(self.oams.hub_hes_value[spool_index])
+                    except Exception:
+                        pass
 
                 # Read what AFC THINKS
                 afc_lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
