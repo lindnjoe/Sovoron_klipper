@@ -2526,7 +2526,7 @@ class afcAMS(afcUnit):
                 )
                 oams_manager = afc_self.printer.lookup_object("oams_manager", None)
                 if oams_manager is not None:
-                    success, message = oams_manager._load_filament_for_lane(cur_lane.name)
+                    success, message = oams_manager._load_filament_for_lane(cur_lane.name, allow_tool_unload=True)
                     if not success:
                         message = message or f"OpenAMS load failed for {cur_lane.name}"
                         afc_self.error.handle_lane_failure(cur_lane, message)
