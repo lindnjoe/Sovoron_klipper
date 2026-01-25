@@ -6137,8 +6137,17 @@ class OAMSManager:
                     # When UNLOADED, periodically check if filament was newly inserted
                     # AFC updates lane_loaded when filament is detected, so we need to check determine_state()
                     # to pick up the new lane_loaded and update current_spool_idx
-                    # Skip auto-detect if there's an active runout in progress to avoid interference
-                    if not is_runout_active and fps_state.consecutive_idle_polls % 2 == 0:  # Check every 2 polls (4 seconds)
+                    # Skip auto-detect if:
+                    # - Active runout in progress (avoid interference)
+                    # - Tool change in progress (hub sensor hasn't cleared yet during unload)
+                    is_tool_operation = False
+                    try:
+                        afc = self._get_afc()
+                        is_tool_operation = getattr(afc, 'in_toolchange', False) if afc else False
+                    except Exception:
+                        pass
+
+                    if not is_runout_active and not is_tool_operation and fps_state.consecutive_idle_polls % 2 == 0:  # Check every 2 polls (4 seconds)
                         old_lane = fps_state.current_lane
                         old_spool_idx = fps_state.current_spool_idx
                         (
