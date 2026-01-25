@@ -342,6 +342,24 @@ class afcAMS(afcUnit):
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_PTFE", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_PTFE, desc="calibrate the OpenAMS PTFE length for a specific lane")
         self.gcode.register_mux_command("UNIT_PTFE_CALIBRATION", "UNIT", self.name, self.cmd_UNIT_PTFE_CALIBRATION, desc="show OpenAMS PTFE calibration menu")
 
+    def _disable_lane_buffer(self, cur_lane) -> None:
+        """Ensure OpenAMS lanes never keep buffer tracking active."""
+        if cur_lane is None:
+            return
+        buffer_obj = getattr(cur_lane, "buffer_obj", None)
+        if buffer_obj is not None:
+            try:
+                cur_lane.disable_buffer()
+            except Exception:
+                pass
+            try:
+                if hasattr(buffer_obj, "lanes"):
+                    buffer_obj.lanes.pop(cur_lane.name, None)
+            except Exception:
+                pass
+        cur_lane.buffer_obj = None
+        cur_lane.buffer_name = None
+
     def _is_openams_unit(self):
         """Check if this unit has OpenAMS hardware available."""
         return self.oams is not None
@@ -1620,13 +1638,8 @@ class afcAMS(afcUnit):
                 msg += '<span class=success--text> AND LOADED</span>'
                 self.lane_illuminate_spool(cur_lane)
 
-                # Enable buffer if: (prep AND hub sensor) OR tool_loaded
-                # Check hub sensor to distinguish loaded lanes from lanes with just filament present
-                hub_loaded = cur_lane.hub_obj and cur_lane.hub_obj.state
-                if hub_loaded or cur_lane.tool_loaded:
-                    cur_lane.enable_buffer()
-                else:
-                    cur_lane.disable_buffer()
+                # OpenAMS units should never enable buffer tracking; ensure it is disabled.
+                self._disable_lane_buffer(cur_lane)
 
                 if cur_lane.tool_loaded:
                     tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.tool_start == "buffer" or cur_lane.extruder_obj.tool_end_state)
@@ -2496,7 +2509,11 @@ class afcAMS(afcUnit):
             if cur_lane.get_toolhead_pre_sensor_state() and hasattr(cur_lane, 'tool_loaded') and cur_lane.tool_loaded:
                 afc_self.logger.debug(f"Lane {cur_lane.name} already loaded to toolhead, skipping load")
                 cur_lane.set_tool_loaded()
-                cur_lane.enable_buffer()
+                unit_obj = getattr(cur_lane, "unit_obj", None)
+                if unit_obj is not None and hasattr(unit_obj, "_disable_lane_buffer"):
+                    unit_obj._disable_lane_buffer(cur_lane)
+                else:
+                    cur_lane.disable_buffer()
                 afc_self.save_vars()
                 return True
 
@@ -2535,7 +2552,11 @@ class afcAMS(afcUnit):
                 return False
 
             cur_lane.set_tool_loaded()
-            cur_lane.enable_buffer()
+            unit_obj = getattr(cur_lane, "unit_obj", None)
+            if unit_obj is not None and hasattr(unit_obj, "_disable_lane_buffer"):
+                unit_obj._disable_lane_buffer(cur_lane)
+            else:
+                cur_lane.disable_buffer()
             afc_self.save_vars()
             return True
 
@@ -4259,6 +4280,38 @@ def _patch_infinite_runout_handler() -> None:
     AFCLane._perform_infinite_runout = _ams_perform_infinite_runout
     AFCLane._ams_infinite_runout_patched = True
 
+def _patch_lane_buffer_for_ams() -> None:
+    """Force OpenAMS lanes to detach buffer objects after connect."""
+    try:
+        from extras.AFC_lane import AFCLane
+    except Exception:
+        return
+
+    if getattr(AFCLane, "_ams_lane_buffer_patched", False):
+        return
+
+    original_handle_unit_connect = getattr(AFCLane, "handle_unit_connect", None)
+    if not callable(original_handle_unit_connect):
+        return
+
+    def _ams_handle_unit_connect(self, unit_obj):
+        original_handle_unit_connect(self, unit_obj)
+        unit_type = getattr(unit_obj, "type", None)
+        has_oams_name = hasattr(unit_obj, "oams_name")
+        if unit_type == "OpenAMS" or has_oams_name:
+            buffer_obj = getattr(self, "buffer_obj", None)
+            if buffer_obj is not None:
+                try:
+                    if hasattr(buffer_obj, "lanes"):
+                        buffer_obj.lanes.pop(self.name, None)
+                except Exception:
+                    pass
+            self.buffer_obj = None
+            self.buffer_name = None
+
+    AFCLane.handle_unit_connect = _ams_handle_unit_connect
+    AFCLane._ams_lane_buffer_patched = True
+
 def _patch_buffer_for_ams() -> None:
     """Patch AFC_buffer methods to handle None extruder_stepper safely.
 
@@ -4465,6 +4518,7 @@ def load_config_prefix(config):
     _patch_lane_pre_sensor_for_ams()
     _patch_extruder_for_virtual_ams()
     _patch_infinite_runout_handler()
+    _patch_lane_buffer_for_ams()
     _patch_lane_unload_for_ams()
     _patch_buffer_for_ams()
     return afcAMS(config)
