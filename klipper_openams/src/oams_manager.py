@@ -2025,9 +2025,8 @@ class OAMSManager:
                     # Don't block CLEAR_ERRORS if UNSET fails, but log it
                     self.logger.warning(f"Failed to clear AFC lane state during OAMSM_CLEAR_ERRORS: {e}")
             else:
-                self.logger.info(
-                    "Preserving AFC lane_loaded state during OAMSM_CLEAR_ERRORS "
-                    "(hardware not ready or lane already loaded)"
+                self.logger.debug(
+                    "Skipped clearing AFC lane_loaded state (filament already loaded or MCU not ready)"
                 )
 
             # Reset all runout monitors to clear COASTING and other states
@@ -2084,7 +2083,7 @@ class OAMSManager:
                         led_key = f"{oams_name}:{bay_idx}"
                         self.led_error_state[led_key] = 0
 
-                    self.logger.info(f"Cleared {bay_count} LED errors on {oams_name}")
+                    self.logger.debug(f"Cleared {bay_count} LED errors on {oams_name}")
                 except Exception as e:
                     restart_monitors = False
                     self.logger.error(f"Failed to clear errors on {oams_name}: {e}")
@@ -2124,7 +2123,7 @@ class OAMSManager:
                                 except Exception as e:
                                     self.logger.warning(f"Failed to restore LED for {lane_name}: {e}")
 
-                    self.logger.info("Restored normal LED states for all lanes after clearing errors")
+                    self.logger.debug("Restored normal LED states for all lanes after clearing errors")
             except Exception as e:
                 self.logger.error(f"Failed to restore normal LED states: {e}")
 
@@ -2199,8 +2198,8 @@ class OAMSManager:
             # Clear LED state tracking so LEDs are refreshed from actual state
             self.led_error_state.clear()
 
-            self.logger.info(
-                "Cleared all manual follower overrides, coast state, LED state, and state tracking - returning to automatic control"
+            self.logger.debug(
+                "Cleared all manual follower overrides, coast state, LED state, and state tracking"
             )
 
             # Force followers on so CLEAR_ERRORS never leaves them disabled, even if sensors
@@ -2237,7 +2236,37 @@ class OAMSManager:
                     "Leaving monitors paused after OAMSM_CLEAR_ERRORS due to earlier errors; run OAMSM_STATUS once issues are resolved"
                 )
 
-        gcmd.respond_info("OAMS errors cleared and system re-initialized")
+        # Build a helpful summary message
+        summary_parts = []
+        summary_parts.append("✓ OAMS system cleared and ready")
+
+        # Show how many OAMS units were cleared
+        if ready_oams:
+            oams_names = ", ".join(ready_oams.keys())
+            summary_parts.append(f"  Cleared {len(ready_oams)} unit(s): {oams_names}")
+        else:
+            summary_parts.append("  WARNING: No OAMS MCUs were ready - check connections")
+
+        # Show what's loaded
+        loaded_lanes = []
+        for fps_name, fps_state in self.current_state.fps_state.items():
+            if fps_state.state == FPSLoadState.LOADED and fps_state.current_lane:
+                loaded_lanes.append(f"{fps_state.current_lane}")
+
+        if loaded_lanes:
+            summary_parts.append(f"  Loaded: {', '.join(loaded_lanes)}")
+        else:
+            summary_parts.append("  No lanes loaded")
+
+        # Show monitor status
+        if restart_monitors and monitors_were_running:
+            summary_parts.append("  Monitors: Running")
+        elif not restart_monitors:
+            summary_parts.append("  Monitors: Paused (errors occurred)")
+        else:
+            summary_parts.append("  Monitors: Not running")
+
+        gcmd.respond_info("\n".join(summary_parts))
 
     def _load_afc_var_unit_snapshot(self) -> Optional[Dict[str, Any]]:
         """Load the current AFC.var.unit snapshot from the JSON file on disk."""
@@ -2471,8 +2500,8 @@ class OAMSManager:
                 else:
                     self.logger.debug(f"Skipping follower enable for {fps_name} - OAMS MCU not ready")
 
-                self.logger.info(
-                    f"OAMSM_CLEAR_ERRORS: refreshed {fps_name} from AFC.var.unit (lane {lane_name} on {fps_state.current_oams} slot {spool_idx})"
+                self.logger.debug(
+                    f"Restored state: {lane_name} loaded on {fps_state.current_oams} slot {spool_idx}"
                 )
             except Exception as e:
                 # Don't let one lane failure abort the whole refresh
