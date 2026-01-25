@@ -4670,16 +4670,11 @@ class OAMSManager:
         fps_state = self.current_state.fps_state[fps_name]
 
         # Synchronize with actual loaded lane before deciding how to handle the request
-        # Skip sync during tool operations - trust AFC state machine during tool changes
+        detected_lane, detected_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
+
+        # Get tool operation status to suppress false positive state clearing messages
         afc = self.printer.lookup_object("AFC", None)
         is_tool_operation = getattr(afc, 'in_toolchange', False) if afc else False
-
-        detected_lane = None
-        detected_oams = None
-        detected_spool_idx = None
-
-        if not is_tool_operation:
-            detected_lane, detected_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
 
         if detected_lane is not None:
             fps_state.current_lane = detected_lane
@@ -4690,11 +4685,13 @@ class OAMSManager:
             hub_hes_values = getattr(oam, "hub_hes_value", None)
             hub_has_filament = any(hub_hes_values) if hub_hes_values is not None else False
             if oam.current_spool is None and not hub_has_filament:
-                self.logger.info(
-                    f"Clearing stale AFC lane_loaded state for {detected_lane} on {fps_name} "
-                    f"(no spool detected in {oams_name})"
-                )
-                if AMSRunoutCoordinator is not None:
+                # Skip clearing state during tool operations - AFC state machine handles it
+                if not is_tool_operation:
+                    self.logger.info(
+                        f"Clearing stale AFC lane_loaded state for {detected_lane} on {fps_name} "
+                        f"(no spool detected in {oams_name})"
+                    )
+                if not is_tool_operation and AMSRunoutCoordinator is not None:
                     try:
                         AMSRunoutCoordinator.notify_lane_tool_state(
                             self.printer,
@@ -4706,35 +4703,39 @@ class OAMSManager:
                         )
                     except Exception:
                         self.logger.error(f"Failed to clear AFC lane_loaded for {detected_lane} on {fps_name}")
-                fps_state.state = FPSLoadState.UNLOADED
-                fps_state.current_lane = None
-                fps_state.current_oams = None
-                fps_state.current_spool_idx = None
-                detected_lane = None
+                if not is_tool_operation:
+                    fps_state.state = FPSLoadState.UNLOADED
+                    fps_state.current_lane = None
+                    fps_state.current_oams = None
+                    fps_state.current_spool_idx = None
+                    detected_lane = None
 
             if detected_lane is not None:
                 if detected_lane == lane_name:
                     return False, f"Lane {lane_name} is already loaded to {fps_name}"
 
-                # Use AFC's TOOL_UNLOAD to properly unload with cut, form_tip, and retract
-                # instead of raw OAMSM_UNLOAD_FILAMENT which skips the cut sequence
-                try:
-                    gcode = self._gcode_obj
-                    if gcode is None:
-                        gcode = self.printer.lookup_object("gcode")
-                        self._gcode_obj = gcode
-                    self.logger.info(
-                        f"Auto-unloading {detected_lane} from {fps_name} before loading {lane_name} "
-                        f"(using TOOL_UNLOAD for proper cut/retract sequence)"
-                    )
-                    gcode.run_script_from_command(f"TOOL_UNLOAD LANE={detected_lane}")
-                    gcode.run_script_from_command("M400")
-                except Exception:
-                    return False, f"Failed to unload existing lane {detected_lane} from {fps_name}"
+                # During tool operations, skip auto-unload - trust AFC state machine
+                if not is_tool_operation:
+                    # Use AFC's TOOL_UNLOAD to properly unload with cut, form_tip, and retract
+                    # instead of raw OAMSM_UNLOAD_FILAMENT which skips the cut sequence
+                    try:
+                        gcode = self._gcode_obj
+                        if gcode is None:
+                            gcode = self.printer.lookup_object("gcode")
+                            self._gcode_obj = gcode
+                        self.logger.info(
+                            f"Auto-unloading {detected_lane} from {fps_name} before loading {lane_name} "
+                            f"(using TOOL_UNLOAD for proper cut/retract sequence)"
+                        )
+                        gcode.run_script_from_command(f"TOOL_UNLOAD LANE={detected_lane}")
+                        gcode.run_script_from_command("M400")
+                    except Exception:
+                        return False, f"Failed to unload existing lane {detected_lane} from {fps_name}"
         else:
             # No lane detected as loaded - clear fps_state if it thinks it's loaded
             # This handles cases where fps_state is stale (e.g., load failed with clog)
-            if fps_state.state == FPSLoadState.LOADED:
+            # Skip during tool operations - trust AFC state machine to manage transitions
+            if not is_tool_operation and fps_state.state == FPSLoadState.LOADED:
                 self.logger.info(f"Clearing stale LOADED state for {fps_name} - no lane detected by AFC")
                 fps_state.state = FPSLoadState.UNLOADED
                 fps_state.current_lane = None
