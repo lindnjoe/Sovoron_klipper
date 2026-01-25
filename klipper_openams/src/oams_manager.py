@@ -2385,89 +2385,106 @@ class OAMSManager:
 
         afc = self._get_afc()
         for extruder_name, extruder_state in extruders.items():
-            if not isinstance(extruder_state, dict):
-                continue
+            try:
+                if not isinstance(extruder_state, dict):
+                    continue
 
-            lane_name = extruder_state.get("lane_loaded")
+                lane_name = extruder_state.get("lane_loaded")
 
-            if not lane_name:
-                continue
+                if not lane_name:
+                    continue
 
-            fps_name = self.get_fps_for_afc_lane(lane_name)
-            if not fps_name:
-                continue
+                fps_name = self.get_fps_for_afc_lane(lane_name)
+                if not fps_name:
+                    continue
 
-            fps_state = self.current_state.fps_state.get(fps_name)
-            if fps_state is None:
-                continue
+                fps_state = self.current_state.fps_state.get(fps_name)
+                if fps_state is None:
+                    continue
 
-            lane_obj = getattr(afc, "lanes", {}).get(lane_name) if afc else None
-            lane_unit = getattr(lane_obj, "unit", None) if lane_obj is not None else None
-            lane_data = self._get_lane_snapshot(lane_name, unit_name=lane_unit)
+                lane_obj = getattr(afc, "lanes", {}).get(lane_name) if afc else None
+                lane_unit = getattr(lane_obj, "unit", None) if lane_obj is not None else None
+                lane_data = self._get_lane_snapshot(lane_name, unit_name=lane_unit)
 
-            spool_idx = None
-            if lane_obj is not None:
-                unit_str = getattr(lane_obj, "unit", None)
-                if isinstance(unit_str, str) and ":" in unit_str:
-                    _, slot_str = unit_str.split(":", 1)
+                spool_idx = None
+                if lane_obj is not None:
+                    unit_str = getattr(lane_obj, "unit", None)
+                    if isinstance(unit_str, str) and ":" in unit_str:
+                        _, slot_str = unit_str.split(":", 1)
+                        try:
+                            spool_idx = int(slot_str) - 1
+                        except ValueError:
+                            spool_idx = None
+                    elif hasattr(lane_obj, "index"):
+                        try:
+                            spool_idx = int(getattr(lane_obj, "index")) - 1
+                        except Exception:
+                            spool_idx = None
+
+                if spool_idx is None and isinstance(lane_data, dict):
                     try:
-                        spool_idx = int(slot_str) - 1
-                    except ValueError:
-                        spool_idx = None
-                elif hasattr(lane_obj, "index"):
-                    try:
-                        spool_idx = int(getattr(lane_obj, "index")) - 1
+                        spool_idx = int(lane_data.get("lane", 0)) - 1
                     except Exception:
                         spool_idx = None
 
-            if spool_idx is None and isinstance(lane_data, dict):
-                try:
-                    spool_idx = int(lane_data.get("lane", 0)) - 1
-                except Exception:
-                    spool_idx = None
+                if spool_idx is None or spool_idx < 0:
+                    self.logger.debug(f"Skipping AFC.var.unit lane {lane_name} due to missing spool index")
+                    continue
 
-            if spool_idx is None or spool_idx < 0:
-                self.logger.debug(f"Skipping AFC.var.unit lane {lane_name} due to missing spool index")
+                # Resolve the OAMS object backing this lane
+                oams_obj = None
+                oams_name = None
+                if lane_obj is not None:
+                    unit_obj = getattr(lane_obj, "unit_obj", None)
+                    if unit_obj is None and afc is not None:
+                        unit_obj = getattr(afc, "units", {}).get(getattr(lane_obj, "unit", None))
+                    oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
+
+                if not oams_name and isinstance(lane_data, dict):
+                    oams_name = lane_data.get("unit")
+
+
+                if oams_name:
+                    oams_obj = self.oams.get(oams_name) or self.oams.get(f"oams {oams_name}")
+
+
+                if oams_obj is None:
+                    self.logger.debug(f"Could not resolve OAMS for lane {lane_name} from AFC.var.unit")
+                    continue
+
+                # Update FPS state tracking
+                fps_state.current_lane = lane_name
+                fps_state.current_oams = getattr(oams_obj, "name", oams_name)
+                fps_state.current_spool_idx = spool_idx
+                fps_state.state = FPSLoadState.LOADED
+                fps_state.since = self.reactor.monotonic()
+                fps_state.reset_stuck_spool_state()
+                fps_state.reset_clog_tracker()
+
+                # Only enable follower if OAMS MCU is ready
+                # During CLEAR_ERRORS, some MCUs might not be ready yet
+                if self._is_oams_mcu_ready(oams_obj):
+                    try:
+                        self._ensure_forward_follower(fps_name, fps_state, "AFC.var.unit refresh")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to enable follower for {fps_name} during state refresh: {e}")
+                else:
+                    self.logger.debug(f"Skipping follower enable for {fps_name} - OAMS MCU not ready")
+
+                self.logger.info(
+                    "OAMSM_CLEAR_ERRORS: refreshed %s from AFC.var.unit (lane %s on %s slot %d)",
+                    fps_name,
+                    lane_name,
+                    fps_state.current_oams,
+                    spool_idx,
+                )
+            except Exception as e:
+                # Don't let one lane failure abort the whole refresh
+                lane_info = extruder_state.get("lane_loaded", "unknown") if isinstance(extruder_state, dict) else "unknown"
+                self.logger.error(f"Failed to refresh state for extruder {extruder_name} lane {lane_info}: {e}")
+                import traceback
+                self.logger.debug(f"Traceback: {traceback.format_exc()}")
                 continue
-
-            # Resolve the OAMS object backing this lane
-            oams_obj = None
-            oams_name = None
-            if lane_obj is not None:
-                unit_obj = getattr(lane_obj, "unit_obj", None)
-                if unit_obj is None and afc is not None:
-                    unit_obj = getattr(afc, "units", {}).get(getattr(lane_obj, "unit", None))
-                oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
-
-            if not oams_name and isinstance(lane_data, dict):
-                oams_name = lane_data.get("unit")
-
-
-            if oams_name:
-                oams_obj = self.oams.get(oams_name) or self.oams.get(f"oams {oams_name}")
-
-
-            if oams_obj is None:
-                self.logger.debug(f"Could not resolve OAMS for lane {lane_name} from AFC.var.unit")
-                continue
-
-            fps_state.current_lane = lane_name
-            fps_state.current_oams = getattr(oams_obj, "name", oams_name)
-            fps_state.current_spool_idx = spool_idx
-            fps_state.state = FPSLoadState.LOADED
-            fps_state.since = self.reactor.monotonic()
-            fps_state.reset_stuck_spool_state()
-            fps_state.reset_clog_tracker()
-            self._ensure_forward_follower(fps_name, fps_state, "AFC.var.unit refresh")
-
-
-            self.logger.info(
-                "OAMSM_CLEAR_ERRORS: refreshed %s from AFC.var.unit (lane %s on %s slot %d)",
-                fps_name,
-                lane_name,
-                fps_state.current_oams,
-                spool_idx,
-            )
 
     cmd_CLEAR_LANE_MAPPINGS_help = "Clear OAMS cross-extruder lane mappings (call after RESET_AFC_MAPPING)"
     def cmd_CLEAR_LANE_MAPPINGS(self, gcmd):
