@@ -117,6 +117,32 @@ class AFCTrigger:
             if led is None:
                 raise error(error_string)
 
+    def _is_ams_lane_loaded(self):
+        """
+        Check if currently loaded lane is an AMS lane (no buffer support).
+
+        AMS lanes should never trigger buffer monitoring, even if a buffer is configured
+        for the extruder. This prevents recursive PAUSE crashes when Box Turtle buffers
+        monitor shared extruders that are temporarily loaded with AMS filament.
+
+        :return boolean: True if current lane is an AMS lane, False otherwise
+        """
+        try:
+            current_lane_obj = self.afc.function.get_current_lane_obj()
+            if current_lane_obj is None:
+                return False
+
+            # Check if lane's unit is an OpenAMS unit (type == "OpenAMS")
+            unit_obj = getattr(current_lane_obj, 'unit_obj', None)
+            if unit_obj is None:
+                return False
+
+            unit_type = getattr(unit_obj, 'type', None)
+            return unit_type == "OpenAMS"
+        except Exception:
+            # If we can't determine, assume not AMS (safer to check than skip)
+            return False
+
     # Fault detection
     # Sets up timers to check if the buffer has moved based on the distance the primary extruder has traveled
 
@@ -190,6 +216,10 @@ class AFCTrigger:
         :param eventtime: Current event time from reactor
         :param multiplier: Rotation distance multiplier to apply
         """
+        # Skip fault detection for AMS lanes - they don't have physical buffers
+        if self._is_ams_lane_loaded():
+            return
+
         self.set_multiplier( multiplier )
         self.update_filament_error_pos()
         self.start_fault_timer(eventtime)
@@ -220,6 +250,12 @@ class AFCTrigger:
         :param eventtime: Current event time from reactor
         :return float: Next scheduled event time (eventtime + CHECK_RUNOUT_TIMEOUT)
         """
+        # Skip buffer monitoring for AMS lanes - they don't have physical buffers
+        # This prevents recursive PAUSE crashes when Box Turtle buffers try to
+        # monitor extruders temporarily loaded with AMS filament
+        if self._is_ams_lane_loaded():
+            return eventtime + CHECK_RUNOUT_TIMEOUT
+
         extruder_pos = self.get_extruder_pos()
         # Check for filament problems
         if (self.afc.function.is_printing(check_movement=True)
@@ -293,6 +329,11 @@ class AFCTrigger:
         :param multiplier: Float value to multiply rotation distance (>1 advances, <1 trails)
         """
         if not self.enable: return
+
+        # Skip buffer multiplier adjustment for AMS lanes - they don't have physical buffers
+        if self._is_ams_lane_loaded():
+            return
+
         cur_stepper = self.afc.function.get_current_lane_obj()
         if cur_stepper is None: return
 
