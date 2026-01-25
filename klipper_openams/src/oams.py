@@ -445,18 +445,30 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             try:
                 afc = self.printer.lookup_object("AFC", None)
                 if afc is not None:
-                    target_slot = spool_idx + 1
-                    for lane in afc.lanes.values():
-                        unit_obj = getattr(lane, "unit_obj", None)
-                        unit_oams_name = getattr(unit_obj, "oams_name", None) if unit_obj else None
-                        if unit_oams_name is None:
+                    unit_name_variants = {self.name, self.name.replace("oams ", "")}
+                    for unit in getattr(afc, "units", {}).values():
+                        unit_oams_name = getattr(unit, "oams_name", None)
+                        if unit_oams_name not in unit_name_variants:
                             continue
-                        if unit_oams_name not in {self.name, self.name.replace("oams ", "")}:
-                            continue
-                        lane_index = getattr(lane, "index", None)
-                        if lane_index == target_slot:
-                            lane_name = lane.name
-                            break
+                        finder = getattr(unit, "_find_lane_by_spool", None)
+                        if callable(finder):
+                            lane = finder(spool_idx)
+                            if lane is not None:
+                                lane_name = lane.name
+                                break
+                    if lane_name is None:
+                        target_slot = spool_idx + 1
+                        for lane in afc.lanes.values():
+                            unit_obj = getattr(lane, "unit_obj", None)
+                            unit_oams_name = getattr(unit_obj, "oams_name", None) if unit_obj else None
+                            if unit_oams_name is None:
+                                continue
+                            if unit_oams_name not in unit_name_variants:
+                                continue
+                            lane_index = getattr(lane, "index", None)
+                            if lane_index == target_slot:
+                                lane_name = lane.name
+                                break
             except Exception:
                 pass
         return f"lane {lane_name}" if lane_name else f"spool {spool_idx}"

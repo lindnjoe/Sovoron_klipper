@@ -2488,6 +2488,23 @@ class afcAMS(afcUnit):
         afc_function.unset_lane_loaded = unset_lane_loaded_wrapper
         self.logger.debug("Wrapped AFC.function.unset_lane_loaded for OpenAMS state sync")
 
+    def _ensure_lane_extruder_temp(self, afc, lane) -> bool:
+        """Set the lane's extruder temperature during prints when AFC skips updates."""
+        try:
+            extruder_obj = getattr(lane, "extruder_obj", None)
+            toolhead_extruder = getattr(extruder_obj, "toolhead_extruder", None) if extruder_obj else None
+            if toolhead_extruder is None:
+                return False
+            heater = toolhead_extruder.get_heater()
+            afc.heater = heater
+            target_temp, _using_min_value = afc._get_default_material_temps(lane)
+            pheaters = self.printer.lookup_object("heaters")
+            pheaters.set_temperature(heater, target_temp, False)
+            return True
+        except Exception:
+            self.logger.error("Failed to set extruder temperature for OpenAMS lane {}".format(getattr(lane, "name", "unknown")))
+            return False
+
     def _patch_afc_sequences(self) -> None:
         """Patch AFC load/unload sequences to delegate OpenAMS lanes."""
         if not hasattr(self, "afc") or self.afc is None:
@@ -2521,8 +2538,12 @@ class afcAMS(afcUnit):
                 afc_self.save_vars()
                 return True
 
-            if afc_self._check_extruder_temp(cur_lane):
-                afc_self.afcDeltaTime.log_with_time("Done heating toolhead")
+            if afc_self.function.is_printing():
+                if self._ensure_lane_extruder_temp(afc_self, cur_lane):
+                    afc_self.afcDeltaTime.log_with_time("Done heating toolhead")
+            else:
+                if afc_self._check_extruder_temp(cur_lane):
+                    afc_self.afcDeltaTime.log_with_time("Done heating toolhead")
 
             try:
                 afc_self.logger.debug(
