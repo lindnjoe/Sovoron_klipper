@@ -263,6 +263,11 @@ class afcAMS(afcUnit):
         self.type = "OpenAMS"
         self.logger = self.afc.logger
 
+        # AMS units don't have physical buffers - force buffer_obj to None
+        # This prevents buffer monitoring/fault detection from running on AMS lanes
+        # even if user accidentally configured a buffer parameter
+        self.buffer_obj = None
+
         # Ensure LED attributes are set (inherited from AFC_unit but may not be set if AFC base is missing)
         # These are needed by AFC_lane.py handle_unit_connect (lines 391-393)
         if not hasattr(self, 'led_tool_loaded'):
