@@ -6163,35 +6163,34 @@ class OAMSManager:
                             state_changed = True
                 elif state == FPSLoadState.LOADED:
                     if is_printing:
-                        # CRITICAL: Only run stuck spool/clog detection for the ACTIVE extruder
-                        # Otherwise we trigger false positives on inactive lanes
-                        is_active_extruder = False
-                        try:
-                            afc = self._get_afc()
-                            if afc and hasattr(afc, 'function'):
-                                current_extruder = afc.function.get_current_extruder()
-                                if current_extruder and hasattr(afc, 'tools'):
-                                    extruder_obj = afc.tools.get(current_extruder)
-                                    if extruder_obj:
-                                        loaded_lane = getattr(extruder_obj, 'lane_loaded', None)
-                                        is_active_extruder = (loaded_lane == fps_state.current_lane)
-                        except Exception:
-                            # If we can't determine, assume active (safer to check than skip)
-                            is_active_extruder = True
+                        # CRITICAL: Skip stuck spool/clog detection during runout states FIRST
+                        # This must be checked BEFORE active extruder check because during
+                        # cross-extruder runouts, the old lane may no longer be "active" but
+                        # still needs protection while COASTING/DETECTED
+                        monitor = self.runout_monitors.get(fps_name)
+                        in_runout_state = monitor and monitor.state in (OAMSRunoutState.DETECTED, OAMSRunoutState.COASTING)
 
-                        if is_active_extruder:
-                            # Call stuck spool check with encoder value to prevent false positives
-                            # Requires BOTH low pressure AND encoder stopped (not just pressure alone)
-                            self._check_stuck_spool(fps_name, fps_state, fps, oams, encoder_value, pressure, hes_values, now)
+                        if not in_runout_state:
+                            # Only run stuck spool/clog detection for the ACTIVE extruder
+                            # Otherwise we trigger false positives on inactive lanes
+                            is_active_extruder = False
+                            try:
+                                afc = self._get_afc()
+                                if afc and hasattr(afc, 'function'):
+                                    current_extruder = afc.function.get_current_extruder()
+                                    if current_extruder and hasattr(afc, 'tools'):
+                                        extruder_obj = afc.tools.get(current_extruder)
+                                        if extruder_obj:
+                                            loaded_lane = getattr(extruder_obj, 'lane_loaded', None)
+                                            is_active_extruder = (loaded_lane == fps_state.current_lane)
+                            except Exception:
+                                # If we can't determine, assume active (safer to check than skip)
+                                is_active_extruder = True
 
-                            # Skip clog detection during AMS runout DETECTED/COASTING states
-                            # DETECTED: Old spool empty, no encoder movement expected
-                            # COASTING: New filament traveling through buffer, may not move encoder immediately
-                            monitor = self.runout_monitors.get(fps_name)
-                            if monitor and monitor.state in (OAMSRunoutState.DETECTED, OAMSRunoutState.COASTING):
-                                # Runout in progress - skip clog detection to prevent false positives
-                                pass
-                            else:
+                            if is_active_extruder:
+                                # Call stuck spool check with encoder value to prevent false positives
+                                # Requires BOTH low pressure AND encoder stopped (not just pressure alone)
+                                self._check_stuck_spool(fps_name, fps_state, fps, oams, encoder_value, pressure, hes_values, now)
                                 self._check_clog(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
 
                         state_changed = True
