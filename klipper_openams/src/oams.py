@@ -441,6 +441,24 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         lane_name = None
         if self.hardware_service is not None:
             lane_name = self.hardware_service.resolve_lane_for_spool(self.name, spool_idx)
+        if lane_name is None:
+            try:
+                afc = self.printer.lookup_object("AFC", None)
+                if afc is not None:
+                    target_slot = spool_idx + 1
+                    for lane in afc.lanes.values():
+                        unit_obj = getattr(lane, "unit_obj", None)
+                        unit_oams_name = getattr(unit_obj, "oams_name", None) if unit_obj else None
+                        if unit_oams_name is None:
+                            continue
+                        if unit_oams_name not in {self.name, self.name.replace("oams ", "")}:
+                            continue
+                        lane_index = getattr(lane, "index", None)
+                        if lane_index == target_slot:
+                            lane_name = lane.name
+                            break
+            except Exception:
+                pass
         return f"lane {lane_name}" if lane_name else f"spool {spool_idx}"
 
     def load_spool_with_retry(self, spool_idx: int, max_retries: Optional[int] = None) -> Tuple[bool, str]:
