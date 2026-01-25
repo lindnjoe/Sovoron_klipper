@@ -2199,6 +2199,25 @@ class afcAMS(afcUnit):
                         conflict_count += 1
                         continue
 
+                    # Check if AFC thinks a non-AMS lane is loaded - don't override non-AMS lanes!
+                    if afc_lane_loaded is not None:
+                        # Look up what AFC thinks is loaded and check if it's an AMS lane
+                        loaded_lane_obj = self.afc.lanes.get(afc_lane_loaded) if hasattr(self.afc, 'lanes') else None
+                        if loaded_lane_obj is not None:
+                            loaded_unit_obj = getattr(loaded_lane_obj, 'unit_obj', None)
+                            loaded_unit_type = getattr(loaded_unit_obj, 'type', None) if loaded_unit_obj else None
+
+                            if loaded_unit_type != "OpenAMS":
+                                # AFC thinks a non-AMS lane (Box Turtle, etc.) is loaded
+                                # Don't auto-correct based on AMS sensors!
+                                self.logger.debug(
+                                    f"State sync: AMS sensors show {lane_name} on {extruder_name}, "
+                                    f"but AFC thinks non-AMS lane '{afc_lane_loaded}' (type={loaded_unit_type}) is loaded. "
+                                    f"Skipping auto-correction to preserve non-AMS state."
+                                )
+                                skipped_count += 1
+                                continue
+
                     self.logger.info(
                         f"State sync: Sensors show {lane_name} loaded to {extruder_name}, "
                         f"but AFC thinks '{afc_lane_loaded}' is loaded. Updating AFC to match hardware."
