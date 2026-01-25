@@ -2672,14 +2672,19 @@ class OAMSManager:
             self.logger.info(f"OAMSM_FOLLOWER: overriding current_oams to {oams_override} for {fps_name}")
 
         if not fps_state.current_oams:
-            try:
-                detected_lane, detected_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
-            except Exception:
-                detected_lane, detected_oams, detected_spool_idx = None, None, None
-            if detected_oams is not None:
-                fps_state.current_oams = detected_oams.name
-                fps_state.current_spool_idx = detected_spool_idx
-                fps_state.current_lane = detected_lane
+            # Skip auto-detection during tool operations - trust AFC state machine
+            afc = self.printer.lookup_object("AFC", None)
+            is_tool_operation = getattr(afc, 'in_toolchange', False) if afc else False
+
+            if not is_tool_operation:
+                try:
+                    detected_lane, detected_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
+                except Exception:
+                    detected_lane, detected_oams, detected_spool_idx = None, None, None
+                if detected_oams is not None:
+                    fps_state.current_oams = detected_oams.name
+                    fps_state.current_spool_idx = detected_spool_idx
+                    fps_state.current_lane = detected_lane
 
         # When disabling (ENABLE=0), disable follower and keep state tracking
         if not enable:
@@ -4665,7 +4670,17 @@ class OAMSManager:
         fps_state = self.current_state.fps_state[fps_name]
 
         # Synchronize with actual loaded lane before deciding how to handle the request
-        detected_lane, detected_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
+        # Skip sync during tool operations - trust AFC state machine during tool changes
+        afc = self.printer.lookup_object("AFC", None)
+        is_tool_operation = getattr(afc, 'in_toolchange', False) if afc else False
+
+        detected_lane = None
+        detected_oams = None
+        detected_spool_idx = None
+
+        if not is_tool_operation:
+            detected_lane, detected_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
+
         if detected_lane is not None:
             fps_state.current_lane = detected_lane
             fps_state.current_oams = detected_oams.name if detected_oams else None
@@ -6137,8 +6152,17 @@ class OAMSManager:
                     # When UNLOADED, periodically check if filament was newly inserted
                     # AFC updates lane_loaded when filament is detected, so we need to check determine_state()
                     # to pick up the new lane_loaded and update current_spool_idx
-                    # Skip auto-detect if there's an active runout in progress to avoid interference
-                    if not is_runout_active and fps_state.consecutive_idle_polls % 2 == 0:  # Check every 2 polls (4 seconds)
+                    # Skip auto-detect if:
+                    # - Active runout in progress (avoid interference)
+                    # - Tool change in progress (hub sensor hasn't cleared yet during unload)
+                    is_tool_operation = False
+                    try:
+                        afc = self._get_afc()
+                        is_tool_operation = getattr(afc, 'in_toolchange', False) if afc else False
+                    except Exception:
+                        pass
+
+                    if not is_runout_active and not is_tool_operation and fps_state.consecutive_idle_polls % 2 == 0:  # Check every 2 polls (4 seconds)
                         old_lane = fps_state.current_lane
                         old_spool_idx = fps_state.current_spool_idx
                         (
