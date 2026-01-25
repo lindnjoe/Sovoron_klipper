@@ -4711,8 +4711,10 @@ class OAMSManager:
                     detected_lane = None
 
             if detected_lane is not None:
-                if detected_lane == lane_name:
-                    return False, f"Lane {lane_name} is already loaded to {fps_name}"
+                # During tool operations, trust AFC state machine - skip detection-based checks
+                if not is_tool_operation:
+                    if detected_lane == lane_name:
+                        return False, f"Lane {lane_name} is already loaded to {fps_name}"
 
                 # During tool operations, skip auto-unload - trust AFC state machine
                 if not is_tool_operation:
