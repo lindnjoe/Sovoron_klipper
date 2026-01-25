@@ -4718,8 +4718,7 @@ class OAMSManager:
                         return False, f"Lane {lane_name} is already loaded to {fps_name}"
 
                 # If a different lane is detected, auto-unload it before loading the new lane
-                # During tool operations, use OAMSM_UNLOAD_FILAMENT (AFC already did cut/form_tip)
-                # Outside tool operations, use TOOL_UNLOAD (includes cut/form_tip/retract)
+                # Always use TOOL_UNLOAD with full cut/form_tip/retract sequence
                 if detected_lane != lane_name:
                     try:
                         gcode = self._gcode_obj
@@ -4727,22 +4726,11 @@ class OAMSManager:
                             gcode = self.printer.lookup_object("gcode")
                             self._gcode_obj = gcode
 
-                        if is_tool_operation:
-                            # During tool change: AFC already did cut/form_tip, just retract to AMS
-                            fps_param = fps_name.replace("fps ", "", 1)
-                            self.logger.info(
-                                f"Auto-unloading {detected_lane} from {fps_name} before loading {lane_name} "
-                                f"(using OAMSM_UNLOAD_FILAMENT during tool change)"
-                            )
-                            gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
-                        else:
-                            # Outside tool change: use full TOOL_UNLOAD with cut/form_tip/retract
-                            self.logger.info(
-                                f"Auto-unloading {detected_lane} from {fps_name} before loading {lane_name} "
-                                f"(using TOOL_UNLOAD for proper cut/retract sequence)"
-                            )
-                            gcode.run_script_from_command(f"TOOL_UNLOAD LANE={detected_lane}")
-
+                        self.logger.info(
+                            f"Auto-unloading {detected_lane} from {fps_name} before loading {lane_name} "
+                            f"(using TOOL_UNLOAD for proper cut/form_tip/retract sequence)"
+                        )
+                        gcode.run_script_from_command(f"TOOL_UNLOAD LANE={detected_lane}")
                         gcode.run_script_from_command("M400")
                     except Exception as e:
                         return False, f"Failed to unload existing lane {detected_lane} from {fps_name}: {e}"
