@@ -4711,28 +4711,59 @@ class OAMSManager:
                     detected_lane = None
 
             if detected_lane is not None:
-                # During tool operations, trust AFC state machine - skip detection-based checks
-                if not is_tool_operation:
-                    if detected_lane == lane_name:
-                        return False, f"Lane {lane_name} is already loaded to {fps_name}"
+                # Check what AFC thinks is loaded for this extruder
+                # This determines if we need auto-unload or if AFC is handling the sequence
+                afc_lane_loaded = None
+                try:
+                    extruder_obj = getattr(lane, 'extruder_obj', None)
+                    if extruder_obj is not None:
+                        afc_lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
+                except Exception:
+                    pass
 
-                # During tool operations, skip auto-unload - trust AFC state machine
-                if not is_tool_operation:
-                    # Use AFC's TOOL_UNLOAD to properly unload with cut, form_tip, and retract
-                    # instead of raw OAMSM_UNLOAD_FILAMENT which skips the cut sequence
-                    try:
-                        gcode = self._gcode_obj
-                        if gcode is None:
-                            gcode = self.printer.lookup_object("gcode")
-                            self._gcode_obj = gcode
+                # "Already loaded" check - skip during tool changes or if same lane
+                if detected_lane == lane_name:
+                    if not is_tool_operation:
+                        return False, f"Lane {lane_name} is already loaded to {fps_name}"
+                    # During tool change: same lane detected, just proceed (timing issue)
+                    self.logger.debug(
+                        f"Detected {lane_name} already on {fps_name} during tool change - "
+                        f"proceeding (likely timing/state lag)"
+                    )
+                else:
+                    # Different lane detected (detected_lane != lane_name)
+                    # Decide if we need auto-unload based on what AFC knows
+
+                    if afc_lane_loaded is None:
+                        # AFC thinks extruder is EMPTY, but sensors detect a lane
+                        # This is "starting from empty shuttle" with stale state
+                        # NEED AUTO-UNLOAD to clean up before loading new lane
                         self.logger.info(
-                            f"Auto-unloading {detected_lane} from {fps_name} before loading {lane_name} "
-                            f"(using TOOL_UNLOAD for proper cut/retract sequence)"
+                            f"AFC thinks {fps_name} is empty, but sensors detect {detected_lane} - "
+                            f"auto-unloading (stale state from empty shuttle start)"
                         )
-                        gcode.run_script_from_command(f"TOOL_UNLOAD LANE={detected_lane}")
-                        gcode.run_script_from_command("M400")
-                    except Exception:
-                        return False, f"Failed to unload existing lane {detected_lane} from {fps_name}"
+                        try:
+                            gcode = self._gcode_obj
+                            if gcode is None:
+                                gcode = self.printer.lookup_object("gcode")
+                                self._gcode_obj = gcode
+
+                            self.logger.info(
+                                f"Auto-unloading {detected_lane} from {fps_name} before loading {lane_name} "
+                                f"(using TOOL_UNLOAD for proper cut/form_tip/retract sequence)"
+                            )
+                            gcode.run_script_from_command(f"TOOL_UNLOAD LANE={detected_lane}")
+                            gcode.run_script_from_command("M400")
+                        except Exception as e:
+                            return False, f"Failed to unload existing lane {detected_lane} from {fps_name}: {e}"
+                    else:
+                        # AFC knows something is loaded (afc_lane_loaded is not None)
+                        # AFC is handling the proper sequence (already called TOOL_UNLOAD)
+                        # Trust AFC - skip auto-unload, proceed with load
+                        self.logger.debug(
+                            f"Detected {detected_lane} on {fps_name} while loading {lane_name}, "
+                            f"but AFC knows {afc_lane_loaded} is loaded - trusting AFC sequence (already unloaded)"
+                        )
         else:
             # No lane detected as loaded - clear fps_state if it thinks it's loaded
             # This handles cases where fps_state is stale (e.g., load failed with clog)
@@ -4744,7 +4775,9 @@ class OAMSManager:
                 fps_state.current_oams = None
                 fps_state.current_spool_idx = None
 
-        if fps_state.state == FPSLoadState.LOADED:
+        # Final check: if fps_state still thinks something is loaded, error
+        # Skip during tool operations since we already handled auto-unload above
+        if not is_tool_operation and fps_state.state == FPSLoadState.LOADED:
             return False, f"FPS {fps_name} is already loaded"
 
         self._cancel_post_load_pressure_check(fps_state)
