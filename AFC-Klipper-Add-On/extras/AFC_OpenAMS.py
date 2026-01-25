@@ -2108,25 +2108,25 @@ class afcAMS(afcUnit):
         return False, msg, 0
 
     def _sync_afc_from_hardware_at_startup(self):
-        """Align AFC state with OpenAMS hardware sensors during startup.
+        """Align AFC state with OpenAMS hardware sensors.
 
-        After Klipper restarts, AFC.var.unit might have stale state (e.g., from a crash).
-        This method uses hardware sensors as the source of truth to update AFC if needed.
+        This reconciles AFC.var.unit and AFC live state with actual hardware sensors.
+        Can be called at startup or on-demand (e.g., OAMSM_CLEAR_ERRORS).
 
         Priority hierarchy:
         1. Tool sensor (F1S/virtual) = Highest priority (actual filament in toolhead)
         2. Hub sensor = Secondary (filament present in AMS)
-        3. AFC.var.unit = Lowest priority (might be stale after restart)
+        3. AFC.var.unit = Lowest priority (might be stale)
         """
         if not hasattr(self, 'afc') or self.afc is None:
-            self.logger.debug("Startup sync: AFC not available, skipping")
+            self.logger.debug("State sync: AFC not available, skipping")
             return
 
         if not hasattr(self, 'lanes') or not self.lanes:
-            self.logger.debug("Startup sync: No lanes configured, skipping")
+            self.logger.debug("State sync: No lanes configured, skipping")
             return
 
-        self.logger.info(f"Startup sync: Reconciling AFC state with {self.name} hardware sensors")
+        self.logger.info(f"State sync: Reconciling AFC state with {self.name} hardware sensors")
 
         synced_count = 0
         cleared_count = 0
@@ -2178,14 +2178,14 @@ class afcAMS(afcUnit):
                     if extruder_name in extruder_loaded_lanes and len(extruder_loaded_lanes[extruder_name]) > 1:
                         # Multiple lanes show loaded for same extruder - don't auto-fix
                         self.logger.error(
-                            f"Startup sync: Multiple lanes show tool filament for {extruder_name}: "
+                            f"State sync: Multiple lanes show tool filament for {extruder_name}: "
                             f"{extruder_loaded_lanes[extruder_name]}. Manual intervention required."
                         )
                         conflict_count += 1
                         continue
 
                     self.logger.info(
-                        f"Startup sync: Sensors show {lane_name} loaded to {extruder_name}, "
+                        f"State sync: Sensors show {lane_name} loaded to {extruder_name}, "
                         f"but AFC thinks '{afc_lane_loaded}' is loaded. Updating AFC to match hardware."
                     )
                     try:
@@ -2195,14 +2195,14 @@ class afcAMS(afcUnit):
                         if hasattr(self.afc, 'save_vars'):
                             self.afc.save_vars()
                     except Exception as e:
-                        self.logger.error(f"Startup sync: Failed to update AFC for {lane_name}: {e}")
+                        self.logger.error(f"State sync: Failed to update AFC for {lane_name}: {e}")
 
                 elif not tool_loaded and afc_thinks_this_lane:
                     # AFC thinks loaded but no filament detected
                     if not hub_loaded:
                         # Really empty - clear stale AFC state
                         self.logger.info(
-                            f"Startup sync: No filament detected for {lane_name}, but AFC thinks it's loaded. "
+                            f"State sync: No filament detected for {lane_name}, but AFC thinks it's loaded. "
                             f"Clearing stale AFC state."
                         )
                         try:
@@ -2212,30 +2212,30 @@ class afcAMS(afcUnit):
                             if hasattr(self.afc, 'save_vars'):
                                 self.afc.save_vars()
                         except Exception as e:
-                            self.logger.error(f"Startup sync: Failed to clear AFC state for {lane_name}: {e}")
+                            self.logger.error(f"State sync: Failed to clear AFC state for {lane_name}: {e}")
                     else:
                         # Filament in hub but not tool - this is a mid-load state, don't change it
                         self.logger.debug(
-                            f"Startup sync: {lane_name} has filament in hub but not tool. "
+                            f"State sync: {lane_name} has filament in hub but not tool. "
                             f"Leaving AFC state as-is (mid-load state)."
                         )
                         skipped_count += 1
 
                 elif tool_loaded and afc_thinks_this_lane:
                     # Hardware and AFC agree - all good
-                    self.logger.debug(f"Startup sync: {lane_name} state matches between hardware and AFC")
+                    self.logger.debug(f"State sync: {lane_name} state matches between hardware and AFC")
 
                 elif not tool_loaded and not afc_thinks_this_lane:
                     # Both agree it's not loaded - all good
-                    self.logger.debug(f"Startup sync: {lane_name} correctly shows as unloaded in both hardware and AFC")
+                    self.logger.debug(f"State sync: {lane_name} correctly shows as unloaded in both hardware and AFC")
 
             except Exception as e:
-                self.logger.error(f"Startup sync: Failed to process lane {getattr(lane, 'name', 'unknown')}: {e}")
+                self.logger.error(f"State sync: Failed to process lane {getattr(lane, 'name', 'unknown')}: {e}")
                 skipped_count += 1
 
         # Summary log
         self.logger.info(
-            f"Startup sync complete for {self.name}: "
+            f"State sync complete for {self.name}: "
             f"{synced_count} lanes synced to AFC, "
             f"{cleared_count} stale states cleared, "
             f"{skipped_count} skipped, "
@@ -2244,7 +2244,7 @@ class afcAMS(afcUnit):
 
         if conflict_count > 0:
             self.logger.error(
-                f"Startup sync: {conflict_count} conflicts detected. "
+                f"State sync: {conflict_count} conflicts detected. "
                 f"Multiple lanes show loaded for the same extruder. "
                 f"Use TOOL_UNLOAD and load the correct lane manually."
             )
