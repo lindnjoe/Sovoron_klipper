@@ -353,6 +353,10 @@ class afcAMS(afcUnit):
             except Exception:
                 pass
             try:
+                buffer_obj.filament_error_pos = None
+            except Exception:
+                pass
+            try:
                 if hasattr(buffer_obj, "lanes"):
                     buffer_obj.lanes.pop(cur_lane.name, None)
             except Exception:
@@ -4320,10 +4324,11 @@ def _patch_buffer_for_ams() -> None:
     to prevent AttributeError crashes.
     """
     global _ORIGINAL_BUFFER_SET_MULTIPLIER, _ORIGINAL_BUFFER_QUERY, _ORIGINAL_BUFFER_GET_STATUS
+    global _ORIGINAL_BUFFER_ENABLE, _ORIGINAL_BUFFER_START_FAULT, _ORIGINAL_BUFFER_EXTRUDER_EVENT
 
     # Import here to avoid circular dependencies
     try:
-        from extras.AFC_buffer import AFCTrigger
+        from extras.AFC_buffer import AFCTrigger, CHECK_RUNOUT_TIMEOUT
     except Exception:
         # If we can't import AFC_buffer, we can't patch it
         return
@@ -4335,9 +4340,19 @@ def _patch_buffer_for_ams() -> None:
     _ORIGINAL_BUFFER_SET_MULTIPLIER = getattr(AFCTrigger, "set_multiplier", None)
     _ORIGINAL_BUFFER_QUERY = getattr(AFCTrigger, "cmd_QUERY_BUFFER", None)
     _ORIGINAL_BUFFER_GET_STATUS = getattr(AFCTrigger, "get_status", None)
+    _ORIGINAL_BUFFER_ENABLE = getattr(AFCTrigger, "enable_buffer", None)
+    _ORIGINAL_BUFFER_START_FAULT = getattr(AFCTrigger, "start_fault_detection", None)
+    _ORIGINAL_BUFFER_EXTRUDER_EVENT = getattr(AFCTrigger, "extruder_pos_update_event", None)
 
     if not callable(_ORIGINAL_BUFFER_SET_MULTIPLIER):
         return
+
+    def _is_openams_lane(trigger_self):
+        lane = trigger_self.afc.function.get_current_lane_obj()
+        if lane is None:
+            return False
+        unit_obj = getattr(lane, "unit_obj", None)
+        return unit_obj is not None and (getattr(unit_obj, "type", None) == "OpenAMS" or hasattr(unit_obj, "oams_name"))
 
     def _patched_set_multiplier(self, multiplier):
         """Patched set_multiplier with null check for extruder_stepper."""
@@ -4362,6 +4377,28 @@ def _patch_buffer_for_ams() -> None:
         self.logger.debug("New rotation distance after applying factor: {:.4f}".format(
             cur_stepper.extruder_stepper.stepper.get_rotation_distance()[0]))
 
+    def _patched_enable_buffer(self):
+        """Patched enable_buffer that skips OpenAMS lanes."""
+        if _is_openams_lane(self):
+            try:
+                self.disable_buffer()
+            except Exception:
+                pass
+            return
+        if callable(_ORIGINAL_BUFFER_ENABLE):
+            return _ORIGINAL_BUFFER_ENABLE(self)
+
+    def _patched_start_fault_detection(self, eventtime, multiplier):
+        """Patched start_fault_detection that skips OpenAMS lanes."""
+        if _is_openams_lane(self):
+            try:
+                self.disable_buffer()
+            except Exception:
+                pass
+            return
+        if callable(_ORIGINAL_BUFFER_START_FAULT):
+            return _ORIGINAL_BUFFER_START_FAULT(self, eventtime, multiplier)
+
     def _patched_cmd_query_buffer(self, gcmd):
         """Patched cmd_QUERY_BUFFER with null check for extruder_stepper."""
         # We need to reimplement the method with the fix since we can't easily
@@ -4384,6 +4421,15 @@ def _patch_buffer_for_ams() -> None:
                 state_info += "\nFault detection enabled, sensitivity {}".format(self.error_sensitivity)
 
         self.logger.info("{} : {}".format(self.name, state_info))
+
+    def _patched_extruder_pos_update_event(self, eventtime):
+        """Patched extruder_pos_update_event that skips OpenAMS lanes."""
+        if _is_openams_lane(self):
+            self.filament_error_pos = None
+            return eventtime + CHECK_RUNOUT_TIMEOUT
+        if callable(_ORIGINAL_BUFFER_EXTRUDER_EVENT):
+            return _ORIGINAL_BUFFER_EXTRUDER_EVENT(self, eventtime)
+        return eventtime + CHECK_RUNOUT_TIMEOUT
 
     def _patched_get_status(self, eventtime=None):
         """Patched get_status with null check for extruder_stepper."""
@@ -4423,7 +4469,10 @@ def _patch_buffer_for_ams() -> None:
 
     # Apply patches
     AFCTrigger.set_multiplier = _patched_set_multiplier
+    AFCTrigger.enable_buffer = _patched_enable_buffer
+    AFCTrigger.start_fault_detection = _patched_start_fault_detection
     AFCTrigger.cmd_QUERY_BUFFER = _patched_cmd_query_buffer
+    AFCTrigger.extruder_pos_update_event = _patched_extruder_pos_update_event
     AFCTrigger.get_status = _patched_get_status
     AFCTrigger._ams_buffer_patched = True
 
