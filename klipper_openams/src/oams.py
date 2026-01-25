@@ -554,18 +554,11 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 )
 
                 if self.auto_unload_on_failed_load:
-                    # CRITICAL: Use TOOL_UNLOAD instead of raw unload for auto-unload
-                    # Raw unload tries to retract filament without cut/form_tip, jamming AMS
-                    self.logger.info(f"OAMS[{self.oams_idx}]: Auto-unloading before retry using TOOL_UNLOAD")
-                    try:
-                        # Get gcode object and run TOOL_UNLOAD for proper cut/form_tip/retract
-                        gcode = self.printer.lookup_object("gcode")
-                        gcode.run_script_from_command(f"TOOL_UNLOAD LANE={lane_name}")
-                        gcode.run_script_from_command("M400")
-                        self.logger.info(f"OAMS[{self.oams_idx}]: Auto-unload complete")
-                    except Exception as e:
+                    self.logger.info(f"OAMS[{self.oams_idx}]: Auto-unloading before retry")
+                    unload_success, unload_msg = self.unload_spool_with_retry()
+                    if not unload_success:
                         self.logger.error(
-                            f"OAMS[{self.oams_idx}]: Failed to unload before retry: {e}"
+                            f"OAMS[{self.oams_idx}]: Failed to unload before retry: {unload_msg}"
                         )
                         # Abort load retry sequence if auto-unload fails
                         # Filament is likely stuck in the tube - continuing load attempts will fail
@@ -575,7 +568,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                         self._last_load_failure_time = self.reactor.monotonic()
                         return False, (
                             f"Failed to unload {lane_label} back to AMS before retry. "
-                            f"Load aborted after {retry_count + 1} attempts. {str(e)}"
+                            f"Load aborted after {retry_count + 1} attempts. {unload_msg}"
                         )
 
                 # Increment and continue loop
