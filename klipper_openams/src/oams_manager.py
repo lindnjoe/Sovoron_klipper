@@ -2238,7 +2238,7 @@ class OAMSManager:
 
         # Build a helpful summary message
         summary_parts = []
-        summary_parts.append("? OAMS system cleared and ready")
+        summary_parts.append("[OK] OAMS system cleared and ready")
 
         # Show how many OAMS units were cleared
         if ready_oams:

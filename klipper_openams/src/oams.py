@@ -337,9 +337,16 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         if 0 <= spool_val <= 3:
             return spool_val
 
-        self.logger.info(
-            f"OAMS[{self.oams_idx}]: Hardware reported invalid spool index {spool_val} (expected 0-3); treating as no spool loaded"
-        )
+        # Spool index 255 (0xFF) is the hardware's way of saying "no spool loaded"
+        # Only log if it's an unexpected invalid value
+        if spool_val != 255:
+            self.logger.warning(
+                f"OAMS[{self.oams_idx}]: Unexpected spool index {spool_val} from hardware (expected 0-3 or 255); treating as no spool loaded"
+            )
+        else:
+            self.logger.debug(
+                f"OAMS[{self.oams_idx}]: No spool loaded (hardware returned 255)"
+            )
         return None
         
 
