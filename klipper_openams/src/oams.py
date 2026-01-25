@@ -435,6 +435,14 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         self._unload_retry_count = 0
         self._last_unload_attempt = 0.0
 
+    def _format_lane_label(self, spool_idx: Optional[int]) -> str:
+        if spool_idx is None:
+            return "unknown lane"
+        lane_name = None
+        if self.hardware_service is not None:
+            lane_name = self.hardware_service.resolve_lane_for_spool(self.name, spool_idx)
+        return f"lane {lane_name}" if lane_name else f"spool {spool_idx}"
+
     def load_spool_with_retry(self, spool_idx: int, max_retries: Optional[int] = None) -> Tuple[bool, str]:
         """Load spool with automatic retry on failure.
 
@@ -453,8 +461,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         while retry_count < retry_limit:
             if retry_count > 0:
                 delay = self._calculate_retry_delay(retry_count)
+                lane_label = self._format_lane_label(spool_idx)
                 self.logger.info(
-                    f"OAMS[{self.oams_idx}]: Load retry {retry_count + 1}/{retry_limit} for spool {spool_idx}, waiting {delay:.1f}s"
+                    f"OAMS[{self.oams_idx}]: Load retry {retry_count + 1}/{retry_limit} for {lane_label}, waiting {delay:.1f}s"
                 )
                 self.reactor.pause(self.reactor.monotonic() + delay)
 
@@ -472,10 +481,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 else:
                     self._last_load_was_retry[spool_idx] = False
                 self._reset_load_retry_count(spool_idx)
-                lane_name = None
-                if self.hardware_service is not None:
-                    lane_name = self.hardware_service.resolve_lane_for_spool(self.name, spool_idx)
-                lane_label = f"lane {lane_name}" if lane_name else f"spool {spool_idx}"
+                lane_label = self._format_lane_label(spool_idx)
                 self.logger.info(
                     f"OAMS[{self.oams_idx}]: Successfully loaded {lane_label} on attempt {retry_count + 1}"
                 )
@@ -486,8 +492,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
 
             if retry_count + 1 < retry_limit:
+                lane_label = self._format_lane_label(spool_idx)
                 self.logger.warning(
-                    f"OAMS[{self.oams_idx}]: Load failed for spool {spool_idx}: {message}. Attempt {retry_count + 1}/{retry_limit}"
+                    f"OAMS[{self.oams_idx}]: Load failed for {lane_label}: {message}. Attempt {retry_count + 1}/{retry_limit}"
                 )
 
                 if self.auto_unload_on_failed_load:
@@ -503,8 +510,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                         # Record retry failure for monitoring
                         self._load_retry_failures += 1
                         self._last_load_failure_time = self.reactor.monotonic()
+                        lane_label = self._format_lane_label(spool_idx)
                         return False, (
-                            f"Failed to unload spool {spool_idx} back to AMS before retry. "
+                            f"Failed to unload {lane_label} back to AMS before retry. "
                             f"Load aborted after {retry_count + 1} attempts. {unload_msg}"
                         )
 
@@ -521,8 +529,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
         # Build detailed error message with attempt history
         history_str = "; ".join(attempt_history) if attempt_history else message
+        lane_label = self._format_lane_label(spool_idx)
         return False, (
-            f"Failed to load spool {spool_idx} after {retry_limit} attempts. "
+            f"Failed to load {lane_label} after {retry_limit} attempts. "
             f"Attempt history: {history_str}"
         )
 
@@ -558,6 +567,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
         # Use a loop instead of recursion to prevent monitor state issues
         while self._unload_retry_count < retry_limit:
+            lane_label = self._format_lane_label(self.current_spool)
             if self._unload_retry_count > 0:
                 delay = self._calculate_retry_delay(self._unload_retry_count)
                 self.logger.info(
@@ -587,7 +597,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             if success:
                 self._reset_unload_retry_count()
                 self.logger.info(
-                    f"OAMS[{self.oams_idx}]: Successfully unloaded spool on attempt {attempt_number}"
+                    f"OAMS[{self.oams_idx}]: Successfully unloaded {lane_label} on attempt {attempt_number}"
                 )
                 return True, message
 
