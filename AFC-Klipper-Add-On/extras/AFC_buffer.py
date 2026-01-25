@@ -130,17 +130,24 @@ class AFCTrigger:
         try:
             current_lane_obj = self.afc.function.get_current_lane_obj()
             if current_lane_obj is None:
+                self.logger.debug(f"Buffer {self.name}: AMS check - no current lane loaded")
                 return False
+
+            lane_name = getattr(current_lane_obj, 'name', 'unknown')
 
             # Check if lane's unit is an OpenAMS unit (type == "OpenAMS")
             unit_obj = getattr(current_lane_obj, 'unit_obj', None)
             if unit_obj is None:
+                self.logger.debug(f"Buffer {self.name}: AMS check - lane {lane_name} has no unit_obj")
                 return False
 
             unit_type = getattr(unit_obj, 'type', None)
-            return unit_type == "OpenAMS"
-        except Exception:
+            is_ams = unit_type == "OpenAMS"
+            self.logger.debug(f"Buffer {self.name}: AMS check - lane {lane_name} unit type '{unit_type}' → AMS={is_ams}")
+            return is_ams
+        except Exception as e:
             # If we can't determine, assume not AMS (safer to check than skip)
+            self.logger.debug(f"Buffer {self.name}: AMS check failed with exception: {e}")
             return False
 
     # Fault detection
