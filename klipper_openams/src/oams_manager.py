@@ -32,9 +32,10 @@ from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 try:
-    from extras.openams_integration import AMSRunoutCoordinator, normalize_extruder_name as _normalize_extruder_name
+    from extras.openams_integration import AMSRunoutCoordinator, normalize_extruder_name as _normalize_extruder_name, OPENAMS_VERSION
 except Exception:
     AMSRunoutCoordinator = None
+    OPENAMS_VERSION = "0.0.3"  # Fallback if import fails
     # Fallback implementation if openams_integration not available
     def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
         """Fallback: Return a lowercase token for comparing extruder identifiers."""
@@ -48,8 +49,6 @@ try:
 except Exception:
     OAMSStatus = None
     OAMSOpCode = None
-
-OPENAMS_VERSION = "0.0.3"
 
 # Configuration constants
 PAUSE_DISTANCE = 60
@@ -176,7 +175,6 @@ class OAMSRunoutMonitor:
 
         self.state = OAMSRunoutState.STOPPED
         self.runout_position: Optional[float] = None
-        self.bldc_clear_position: Optional[float] = None
         self.runout_after_position: Optional[float] = None
         self.runout_spool_idx: Optional[int] = None
         self.is_cross_extruder_runout: bool = False  # Track if runout is cross-extruder
@@ -1962,6 +1960,69 @@ class OAMSManager:
                         f"Using fps_state fallback: {fps_state.current_lane} treated as loaded on {fps_name} (bay {bay_index} on {getattr(oam, 'name', 'unknown')})"
                     )
                     return fps_state.current_lane, oam, bay_index
+
+        # Third fallback: Check all lanes on this FPS for tool_loaded = True
+        # This handles "empty shuttle with stale loaded filament" scenario where:
+        # - AFC thinks lane_loaded = None (empty shuttle)
+        # - But filament is actually stuck in extruder from previous session
+        # - lane.tool_loaded = True indicates filament in extruder
+        if hasattr(afc, 'lanes'):
+            for lane_name, lane_obj in afc.lanes.items():
+                # Check if this lane is on the current FPS
+                try:
+                    lane_fps = self.get_fps_for_afc_lane(lane_name)
+                    if lane_fps != fps_name:
+                        continue  # Not on this FPS
+                except Exception:
+                    continue
+
+                # Check if tool_loaded flag is set
+                if not getattr(lane_obj, 'tool_loaded', False):
+                    continue
+
+                # Found a lane with tool_loaded = True on this FPS!
+                # Get OAMS and bay index for this lane
+                unit_str = getattr(lane_obj, "unit", None)
+                if not unit_str:
+                    continue
+
+                # Parse unit and slot
+                if isinstance(unit_str, str) and ':' in unit_str:
+                    base_unit_name, slot_str = unit_str.split(':', 1)
+                    try:
+                        bay_index = int(slot_str) - 1
+                    except ValueError:
+                        continue
+                else:
+                    base_unit_name = str(unit_str)
+                    slot_number = getattr(lane_obj, "index", None)
+                    if slot_number is None:
+                        continue
+                    bay_index = slot_number - 1
+
+                if bay_index < 0:
+                    continue
+
+                # Get OAMS object
+                unit_obj = getattr(lane_obj, "unit_obj", None)
+                if unit_obj is None:
+                    units = getattr(afc, "units", {})
+                    unit_obj = units.get(base_unit_name)
+
+                oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
+                if not oams_name:
+                    continue
+
+                oam = self.oams.get(oams_name) or self.oams.get(f"oams {oams_name}")
+                if oam is None:
+                    continue
+
+                # Found it! This lane has tool_loaded = True even though shuttle is empty
+                self.logger.info(
+                    f"Detected stale filament: {lane_name} has tool_loaded=True on {fps_name} "
+                    f"(bay {bay_index} on {oams_name}) but shuttle is empty - needs auto-unload"
+                )
+                return lane_name, oam, bay_index
 
         return None, None, None
         

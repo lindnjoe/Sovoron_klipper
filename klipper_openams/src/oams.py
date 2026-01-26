@@ -11,15 +11,14 @@ from math import pi
 from typing import Tuple, List, Optional, Dict
 
 try:  # pragma: no cover - optional dependency during unit tests
-    from extras.openams_integration import AMSHardwareService
+    from extras.openams_integration import AMSHardwareService, OPENAMS_VERSION
 except Exception:  # pragma: no cover - best-effort integration only
     AMSHardwareService = None
+    OPENAMS_VERSION = "0.0.3"  # Fallback if import fails
 
-# Pre-compiled struct formats for float conversions 
+# Pre-compiled struct formats for float conversions
 _FLOAT_STRUCT = struct.Struct("f")
 _U32_STRUCT = struct.Struct("I")
-
-OPENAMS_VERSION = "0.0.3"
 
 # OAMS Hardware Status Constants
 class OAMSStatus:
@@ -554,8 +553,11 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 )
 
                 if self.auto_unload_on_failed_load:
-                    self.logger.info(f"OAMS[{self.oams_idx}]: Auto-unloading before retry")
+                    # Unload retry: Always use raw unload (no cut needed)
+                    # This handles stuck spool during load - filament hasn't engaged with extruder yet
+                    self.logger.info(f"OAMS[{self.oams_idx}]: Auto-unloading before retry (raw unload, no cut)")
                     unload_success, unload_msg = self.unload_spool_with_retry()
+
                     if not unload_success:
                         self.logger.error(
                             f"OAMS[{self.oams_idx}]: Failed to unload before retry: {unload_msg}"
