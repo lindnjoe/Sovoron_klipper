@@ -4793,38 +4793,31 @@ class OAMSManager:
                     )
                 else:
                     # Different lane detected (detected_lane != lane_name)
-                    # Decide if we need auto-unload based on what AFC knows
-
+                    # We must auto-unload the lane currently in the toolhead before loading a new lane.
                     if afc_lane_loaded is None:
-                        # AFC thinks extruder is EMPTY, but sensors detect a lane
-                        # This is "starting from empty shuttle" with stale state
-                        # NEED AUTO-UNLOAD to clean up before loading new lane
                         self.logger.info(
                             f"AFC thinks {fps_name} is empty, but sensors detect {detected_lane} - "
                             f"auto-unloading (stale state from empty shuttle start)"
                         )
-                        try:
-                            gcode = self._gcode_obj
-                            if gcode is None:
-                                gcode = self.printer.lookup_object("gcode")
-                                self._gcode_obj = gcode
-
-                            self.logger.info(
-                                f"Auto-unloading {detected_lane} from {fps_name} before loading {lane_name} "
-                                f"(using TOOL_UNLOAD for proper cut/form_tip/retract sequence)"
-                            )
-                            gcode.run_script_from_command(f"TOOL_UNLOAD LANE={detected_lane}")
-                            gcode.run_script_from_command("M400")
-                        except Exception as e:
-                            return False, f"Failed to unload existing lane {detected_lane} from {fps_name}: {e}"
                     else:
-                        # AFC knows something is loaded (afc_lane_loaded is not None)
-                        # AFC is handling the proper sequence (already called TOOL_UNLOAD)
-                        # Trust AFC - skip auto-unload, proceed with load
-                        self.logger.debug(
-                            f"Detected {detected_lane} on {fps_name} while loading {lane_name}, "
-                            f"but AFC knows {afc_lane_loaded} is loaded - trusting AFC sequence (already unloaded)"
+                        self.logger.info(
+                            f"Sensors detect {detected_lane} loaded on {fps_name} while loading {lane_name} - "
+                            f"auto-unloading to clear the toolhead"
                         )
+                    try:
+                        gcode = self._gcode_obj
+                        if gcode is None:
+                            gcode = self.printer.lookup_object("gcode")
+                            self._gcode_obj = gcode
+
+                        self.logger.info(
+                            f"Auto-unloading {detected_lane} from {fps_name} before loading {lane_name} "
+                            f"(using TOOL_UNLOAD for proper cut/form_tip/retract sequence)"
+                        )
+                        gcode.run_script_from_command(f"TOOL_UNLOAD LANE={detected_lane}")
+                        gcode.run_script_from_command("M400")
+                    except Exception as e:
+                        return False, f"Failed to unload existing lane {detected_lane} from {fps_name}: {e}"
         else:
             # No lane detected as loaded - clear fps_state if it thinks it's loaded
             # This handles cases where fps_state is stale (e.g., load failed with clog)
