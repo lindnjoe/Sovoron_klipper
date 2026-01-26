@@ -656,6 +656,17 @@ class afcAMS(afcUnit):
 
         self._ensure_virtual_tool_sensor()
 
+        # CRITICAL: Ensure all AMS lanes have buffer_obj = None
+        # AMS units don't have physical buffers - this prevents buffer monitoring
+        # from running even if users accidentally configure buffers at lane level
+        for lane in self.lanes.values():
+            if lane.buffer_obj is not None:
+                self.logger.warning(
+                    f"Lane {lane.name} had buffer '{lane.buffer_obj.name}' configured, "
+                    f"but OpenAMS units don't have physical buffers. Removing buffer assignment."
+                )
+            lane.buffer_obj = None
+
         #  Register each lane with the shared registry
         for lane in self.lanes.values():
             lane.prep_state = False
