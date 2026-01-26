@@ -297,12 +297,12 @@ class afcAMS(afcUnit):
             except Exception:
                 self.logger.error("Failed to subscribe to AMS events")
 
-        # PHASE 2 REFACTOR: Remove duplicate state tracking dictionaries
-        # AFC native objects already track this state:
-        # - extruder.lane_loaded (replaces _last_loaded_lane_by_extruder)
-        # - lane.load_state (replaces _last_lane_states)
-        # - lane.loaded_to_hub (replaces _last_hub_states)
-        # - lane.tool_loaded (replaces _last_virtual_tool_state and _lane_tool_latches)
+        # NOTE: This class uses AFC native state exclusively (no duplicate tracking):
+        # - extruder.lane_loaded - which lane is loaded to toolhead
+        # - lane.load_state - filament at F1S sensor
+        # - lane.loaded_to_hub - filament at hub sensor
+        # - lane.tool_loaded - filament loaded to extruder
+        # Previous versions maintained local caches, now removed for single source of truth
 
         self._saved_unit_cache: Optional[Dict[str, Any]] = None
         self._saved_unit_mtime: Optional[float] = None

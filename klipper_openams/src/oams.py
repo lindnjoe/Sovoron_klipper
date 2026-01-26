@@ -553,8 +553,42 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 )
 
                 if self.auto_unload_on_failed_load:
-                    self.logger.info(f"OAMS[{self.oams_idx}]: Auto-unloading before retry")
-                    unload_success, unload_msg = self.unload_spool_with_retry()
+                    # Check if filament engaged with extruder before determining unload type
+                    # If tool is loaded → need full TOOL_UNLOAD with cut/form_tip
+                    # If tool not loaded → use raw unload (filament never reached extruder)
+                    lane_obj = None
+                    tool_is_loaded = False
+                    try:
+                        if lane_name:
+                            afc = self.printer.lookup_object("AFC", None)
+                            if afc is not None:
+                                lane_obj = afc.lanes.get(lane_name)
+                                if lane_obj is not None:
+                                    tool_is_loaded = getattr(lane_obj, 'tool_loaded', False)
+                    except Exception:
+                        # If we can't determine state, assume not loaded (safer to raw unload)
+                        pass
+
+                    if tool_is_loaded:
+                        # Filament engaged with extruder - need full TOOL_UNLOAD
+                        self.logger.info(f"OAMS[{self.oams_idx}]: Tool is loaded, using TOOL_UNLOAD (with cut/form_tip) before retry")
+                        try:
+                            gcode = self._cached_gcode
+                            if gcode is None:
+                                gcode = self.printer.lookup_object("gcode")
+                                self._cached_gcode = gcode
+                            gcode.run_script_from_command(f"TOOL_UNLOAD LANE={lane_name}")
+                            gcode.run_script_from_command("M400")  # Wait for moves to complete
+                            unload_success = True
+                            unload_msg = "Tool unloaded successfully"
+                        except Exception as e:
+                            unload_success = False
+                            unload_msg = f"TOOL_UNLOAD failed: {e}"
+                    else:
+                        # Filament never reached extruder - use raw unload (no cut needed)
+                        self.logger.info(f"OAMS[{self.oams_idx}]: Tool not loaded, using raw unload before retry")
+                        unload_success, unload_msg = self.unload_spool_with_retry()
+
                     if not unload_success:
                         self.logger.error(
                             f"OAMS[{self.oams_idx}]: Failed to unload before retry: {unload_msg}"
