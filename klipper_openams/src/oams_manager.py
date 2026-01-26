@@ -4772,16 +4772,6 @@ class OAMSManager:
                     detected_lane = None
 
             if detected_lane is not None:
-                # Check what AFC thinks is loaded for this extruder
-                # This determines if we need auto-unload or if AFC is handling the sequence
-                afc_lane_loaded = None
-                try:
-                    extruder_obj = getattr(lane, 'extruder_obj', None)
-                    if extruder_obj is not None:
-                        afc_lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
-                except Exception:
-                    pass
-
                 # "Already loaded" check - skip during tool changes or if same lane
                 if detected_lane == lane_name:
                     if not is_tool_operation:
@@ -4794,16 +4784,10 @@ class OAMSManager:
                 else:
                     # Different lane detected (detected_lane != lane_name)
                     # We must auto-unload the lane currently in the toolhead before loading a new lane.
-                    if afc_lane_loaded is None:
-                        self.logger.info(
-                            f"AFC thinks {fps_name} is empty, but sensors detect {detected_lane} - "
-                            f"auto-unloading (stale state from empty shuttle start)"
-                        )
-                    else:
-                        self.logger.info(
-                            f"Sensors detect {detected_lane} loaded on {fps_name} while loading {lane_name} - "
-                            f"auto-unloading to clear the toolhead"
-                        )
+                    self.logger.info(
+                        f"Sensors detect {detected_lane} loaded on {fps_name} while loading {lane_name} - "
+                        f"auto-unloading before load"
+                    )
                     try:
                         gcode = self._gcode_obj
                         if gcode is None:
