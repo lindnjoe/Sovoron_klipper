@@ -4478,12 +4478,7 @@ def _patch_buffer_fault_detection_for_ams() -> None:
             units = getattr(self.afc, "units", {})
             unit_obj = units.get(unit_name) if unit_name else None
         unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
-        unit_name = getattr(cur_lane, "unit", "")
-        is_openams = (
-            unit_type == "OpenAMS"
-            or hasattr(unit_obj, "oams_name")
-            or str(unit_name).upper().startswith("AMS")
-        )
+        is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
         if is_openams:
             return eventtime + timeout
 
