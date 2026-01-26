@@ -4380,7 +4380,10 @@ def _patch_buffer_multiplier_for_ams() -> None:
 
         unit_obj = getattr(cur_lane, "unit_obj", None)
         unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
-        is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
+        is_openams = (
+            unit_obj is not None
+            and (isinstance(unit_obj, afcAMS) or unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name"))
+        )
         if not is_openams:
             return _ORIGINAL_BUFFER_SET_MULTIPLIER(self, multiplier)
 
@@ -4419,7 +4422,10 @@ def _patch_buffer_status_for_missing_stepper() -> None:
         cur_lane = self.afc.function.get_current_lane_obj()
         unit_obj = getattr(cur_lane, "unit_obj", None) if cur_lane is not None else None
         unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
-        is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
+        is_openams = (
+            unit_obj is not None
+            and (isinstance(unit_obj, afcAMS) or unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name"))
+        )
         if not is_openams:
             return _ORIGINAL_BUFFER_GET_STATUS(self, eventtime)
         try:
@@ -4486,7 +4492,10 @@ def _patch_buffer_fault_detection_for_ams() -> None:
             units = getattr(self.afc, "units", {})
             unit_obj = units.get(unit_name) if unit_name else None
         unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
-        is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
+        is_openams = (
+            unit_obj is not None
+            and (isinstance(unit_obj, afcAMS) or unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name"))
+        )
         if is_openams:
             return eventtime + timeout
 
