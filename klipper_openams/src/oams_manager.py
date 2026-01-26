@@ -1935,10 +1935,8 @@ class OAMSManager:
                 lane_loaded_to_hub = bool(getattr(lane, "loaded_to_hub", False))
                 if not lane_tool_loaded and not lane_loaded_to_hub:
                     self.logger.debug(
-                        "Skipping fps_state fallback for %s on %s: %s has no tool_loaded/loaded_to_hub flags set",
-                        fps_state.current_lane,
-                        fps_name,
-                        fps_state.current_lane,
+                        f"Skipping fps_state fallback for {fps_state.current_lane} on {fps_name}: "
+                        f"{fps_state.current_lane} has no tool_loaded/loaded_to_hub flags set"
                     )
                     lane = None
 
