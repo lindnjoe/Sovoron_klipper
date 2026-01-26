@@ -4335,23 +4335,16 @@ def _patch_buffer_for_ams() -> None:
         """Check if lane is an AMS lane (no buffer support)."""
         try:
             if lane_obj is None:
-                logger.debug(f"Buffer {buffer_name}: AMS check - no current lane loaded")
                 return False
-
-            lane_name = getattr(lane_obj, 'name', 'unknown')
 
             # Check if lane's unit is an OpenAMS unit (type == "OpenAMS")
             unit_obj = getattr(lane_obj, 'unit_obj', None)
             if unit_obj is None:
-                logger.debug(f"Buffer {buffer_name}: AMS check - lane {lane_name} has no unit_obj")
                 return False
 
             unit_type = getattr(unit_obj, 'type', None)
-            is_ams = unit_type == "OpenAMS"
-            logger.debug(f"Buffer {buffer_name}: AMS check - lane {lane_name} unit type '{unit_type}' → AMS={is_ams}")
-            return is_ams
-        except Exception as e:
-            logger.debug(f"Buffer {buffer_name}: AMS check failed with exception: {e}")
+            return unit_type == "OpenAMS"
+        except Exception:
             return False
 
     def _patched_extruder_pos_update_event(self, eventtime):
