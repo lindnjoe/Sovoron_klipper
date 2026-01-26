@@ -4357,24 +4357,6 @@ def _patch_lane_unload_for_ams() -> None:
     AFC_Class.LANE_UNLOAD = _ams_lane_unload
     AFC_Class._ams_lane_unload_patched = True
 
-def _has_openams_hardware(printer):
-    """Check if any OpenAMS hardware is configured in the system.
-
-    Returns True if any [oams ...] sections are found in the configuration.
-    This prevents unnecessary OpenAMS initialization for users with other unit types.
-    """
-    try:
-        # Try to find any OAMS objects in the printer
-        # This will work after all configs have been loaded during handle_ready
-        for obj_name in printer.objects:
-            if obj_name.startswith('oams '):
-                return True
-        return False
-    except Exception:
-        # If we can't check, assume OAMS might be present to avoid breaking existing setups
-        return True
-
-
 def _patch_buffer_multiplier_for_ams() -> None:
     """Guard buffer multiplier updates when OpenAMS lanes lack an extruder stepper."""
     global _ORIGINAL_BUFFER_SET_MULTIPLIER
@@ -4522,6 +4504,24 @@ def _patch_buffer_fault_detection_for_ams() -> None:
     AFCTrigger.extruder_pos_update_event = _ams_extruder_pos_update_event
     AFCTrigger._ams_buffer_fault_patched = True
 
+def _has_openams_hardware(printer):
+    """Check if any OpenAMS hardware is configured in the system.
+
+    Returns True if any [oams ...] sections are found in the configuration.
+    This prevents unnecessary OpenAMS initialization for users with other unit types.
+    """
+    try:
+        # Try to find any OAMS objects in the printer
+        # This will work after all configs have been loaded during handle_ready
+        for obj_name in printer.objects:
+            if obj_name.startswith('oams '):
+                return True
+        return False
+    except Exception:
+        # If we can't check, assume OAMS might be present to avoid breaking existing setups
+        return True
+
+
 def load_config_prefix(config):
     """Load OpenAMS integration - actual hardware check happens at handle_ready."""
     # Note: We can't reliably check for OAMS sections during config load because
@@ -4537,4 +4537,6 @@ def load_config_prefix(config):
     _patch_buffer_multiplier_for_ams()
     _patch_buffer_status_for_missing_stepper()
     _patch_buffer_fault_detection_for_ams()
+    # Note: Buffer patching removed - AFC natively handles buffer_obj=None correctly
+    # We only need to ensure buffer_obj=None on AMS lanes (done in handle_ready)
     return afcAMS(config)
