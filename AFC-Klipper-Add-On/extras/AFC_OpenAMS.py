@@ -4376,7 +4376,7 @@ def _patch_buffer_multiplier_for_ams() -> None:
     def _ams_set_multiplier(self, multiplier):
         cur_lane = self.afc.function.get_current_lane_obj()
         if cur_lane is None:
-            return None
+            return _ORIGINAL_BUFFER_SET_MULTIPLIER(self, multiplier)
 
         unit_obj = getattr(cur_lane, "unit_obj", None)
         unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
@@ -4418,6 +4418,12 @@ def _patch_buffer_status_for_missing_stepper() -> None:
             return _ORIGINAL_BUFFER_GET_STATUS(self, eventtime)
         except AttributeError as exc:
             if "stepper" not in str(exc):
+                raise
+            cur_lane = self.afc.function.get_current_lane_obj()
+            unit_obj = getattr(cur_lane, "unit_obj", None) if cur_lane is not None else None
+            unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
+            is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
+            if not is_openams:
                 raise
 
         response = {}
