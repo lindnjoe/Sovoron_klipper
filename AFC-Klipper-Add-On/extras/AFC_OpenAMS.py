@@ -66,6 +66,7 @@ _ORIGINAL_PREP_CAPTURE_TD1 = getattr(AFCLane, "_prep_capture_td1", None)
 _ORIGINAL_GET_TD1_DATA = getattr(AFCLane, "get_td1_data", None)
 _ORIGINAL_TD1_PREP = getattr(afcPrep, "_td1_prep", None)
 _ORIGINAL_LANE_UNLOAD = None  # Will be set during patching
+_ORIGINAL_BUFFER_SET_MULTIPLIER = None  # Will be set during patching
 
 class _VirtualRunoutHelper:
     """Minimal runout helper used by AMS-managed virtual sensors."""
@@ -4354,6 +4355,46 @@ def _patch_lane_unload_for_ams() -> None:
     AFC_Class.LANE_UNLOAD = _ams_lane_unload
     AFC_Class._ams_lane_unload_patched = True
 
+def _patch_buffer_multiplier_for_ams() -> None:
+    """Guard buffer multiplier updates when OpenAMS lanes lack an extruder stepper."""
+    global _ORIGINAL_BUFFER_SET_MULTIPLIER
+
+    try:
+        from extras.AFC_buffer import AFCTrigger
+    except Exception:
+        return
+
+    if getattr(AFCTrigger, "_ams_buffer_multiplier_patched", False):
+        return
+
+    _ORIGINAL_BUFFER_SET_MULTIPLIER = getattr(AFCTrigger, "set_multiplier", None)
+    if not callable(_ORIGINAL_BUFFER_SET_MULTIPLIER):
+        return
+
+    def _ams_set_multiplier(self, multiplier):
+        cur_lane = self.afc.function.get_current_lane_obj()
+        if cur_lane is None:
+            return None
+
+        unit_obj = getattr(cur_lane, "unit_obj", None)
+        unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
+        is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
+
+        extruder_stepper = getattr(cur_lane, "extruder_stepper", None)
+        stepper = getattr(extruder_stepper, "stepper", None) if extruder_stepper is not None else None
+        if is_openams and stepper is None:
+            self.logger.debug(
+                "Skipping buffer multiplier update for OpenAMS lane {} (no extruder stepper)".format(
+                    cur_lane.name
+                )
+            )
+            return None
+
+        return _ORIGINAL_BUFFER_SET_MULTIPLIER(self, multiplier)
+
+    AFCTrigger.set_multiplier = _ams_set_multiplier
+    AFCTrigger._ams_buffer_multiplier_patched = True
+
 def _has_openams_hardware(printer):
     """Check if any OpenAMS hardware is configured in the system.
 
@@ -4384,6 +4425,7 @@ def load_config_prefix(config):
     _patch_extruder_for_virtual_ams()
     _patch_infinite_runout_handler()
     _patch_lane_unload_for_ams()
+    _patch_buffer_multiplier_for_ams()
     # Note: Buffer patching removed - AFC natively handles buffer_obj=None correctly
     # We only need to ensure buffer_obj=None on AMS lanes (done in handle_ready)
     return afcAMS(config)
