@@ -1612,7 +1612,6 @@ class afcAMS(afcUnit):
                 self.lane_fault(cur_lane)
                 msg += '<span class=error--text> NOT READY</span>'
                 cur_lane.do_enable(False)
-                cur_lane.disable_buffer()
                 msg = '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
                 succeeded = False
         else:
@@ -1621,20 +1620,11 @@ class afcAMS(afcUnit):
             if not cur_lane.load_state:
                 msg += '<span class=error--text> NOT LOADED</span>'
                 self.lane_not_ready(cur_lane)
-                cur_lane.disable_buffer()
                 succeeded = False
             else:
                 cur_lane.status = AFCLaneState.LOADED
                 msg += '<span class=success--text> AND LOADED</span>'
                 self.lane_illuminate_spool(cur_lane)
-
-                # Enable buffer if: (prep AND hub sensor) OR tool_loaded
-                # Check hub sensor to distinguish loaded lanes from lanes with just filament present
-                hub_loaded = cur_lane.hub_obj and cur_lane.hub_obj.state
-                if hub_loaded or cur_lane.tool_loaded:
-                    cur_lane.enable_buffer()
-                else:
-                    cur_lane.disable_buffer()
 
                 if cur_lane.tool_loaded:
                     tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.tool_start == "buffer" or cur_lane.extruder_obj.tool_end_state)
@@ -1659,8 +1649,6 @@ class afcAMS(afcUnit):
                     elif tool_ready:
                         msg += '<span class=error--text> error in ToolHead. Lane identified as loaded but not identified as loaded in extruder</span>'
                         succeeded = False
-                        # Disable buffer on error
-                        cur_lane.disable_buffer()
 
         if assignTcmd:
             self.afc.function.TcmdAssign(cur_lane)
@@ -2544,7 +2532,6 @@ class afcAMS(afcUnit):
             if cur_lane.get_toolhead_pre_sensor_state() and hasattr(cur_lane, 'tool_loaded') and cur_lane.tool_loaded:
                 afc_self.logger.debug(f"Lane {cur_lane.name} already loaded to toolhead, skipping load")
                 cur_lane.set_tool_loaded()
-                cur_lane.enable_buffer()
                 afc_self.save_vars()
                 return True
 
@@ -2583,7 +2570,6 @@ class afcAMS(afcUnit):
                 return False
 
             cur_lane.set_tool_loaded()
-            cur_lane.enable_buffer()
             afc_self.save_vars()
             return True
 
@@ -2600,7 +2586,6 @@ class afcAMS(afcUnit):
 
             afc_self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
             afc_self.function.log_toolhead_pos("TOOL_UNLOAD quick pull: ")
-            cur_lane.disable_buffer()
             cur_lane.unit_obj.lane_unloading(cur_lane)
             cur_lane.sync_to_extruder()
             cur_lane.do_enable(True)
