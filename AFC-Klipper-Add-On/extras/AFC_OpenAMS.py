@@ -656,6 +656,17 @@ class afcAMS(afcUnit):
 
         self._ensure_virtual_tool_sensor()
 
+        # CRITICAL: Ensure all AMS lanes have buffer_obj = None
+        # AMS units don't have physical buffers - this prevents buffer monitoring
+        # from running even if users accidentally configure buffers at lane level
+        for lane in self.lanes.values():
+            if lane.buffer_obj is not None:
+                self.logger.warning(
+                    f"Lane {lane.name} had buffer '{lane.buffer_obj.name}' configured, "
+                    f"but OpenAMS units don't have physical buffers. Removing buffer assignment."
+                )
+            lane.buffer_obj = None
+
         #  Register each lane with the shared registry
         for lane in self.lanes.values():
             lane.prep_state = False
@@ -4345,6 +4356,12 @@ def _patch_buffer_for_ams() -> None:
 
     def _patched_extruder_pos_update_event(self, eventtime):
         """Patched extruder_pos_update_event to skip monitoring for AMS lanes."""
+        # CRITICAL: Skip buffer monitoring during tool changes to prevent recursive PAUSE
+        # During tool changes, filament may not feed continuously (unload/load sequence)
+        # Buffer monitoring would trigger false "NOT FEEDING" errors
+        if getattr(self.afc, 'in_toolchange', False):
+            return eventtime + 0.5  # CHECK_RUNOUT_TIMEOUT
+
         # CRITICAL: Skip buffer monitoring for AMS lanes - they don't have physical buffers
         # This prevents recursive PAUSE crashes when Box Turtle buffers try to monitor
         # extruders temporarily loaded with AMS filament
@@ -4357,6 +4374,10 @@ def _patch_buffer_for_ams() -> None:
 
     def _patched_start_fault_detection(self, eventtime, multiplier):
         """Patched start_fault_detection to skip for AMS lanes."""
+        # Skip fault detection during tool changes
+        if getattr(self.afc, 'in_toolchange', False):
+            return
+
         # Skip fault detection for AMS lanes - they don't have physical buffers
         cur_lane = self.afc.function.get_current_lane_obj()
         if _is_ams_lane(self.afc, cur_lane, self.logger, self.name):
