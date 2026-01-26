@@ -32,9 +32,10 @@ from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 try:
-    from extras.openams_integration import AMSRunoutCoordinator, normalize_extruder_name as _normalize_extruder_name
+    from extras.openams_integration import AMSRunoutCoordinator, normalize_extruder_name as _normalize_extruder_name, OPENAMS_VERSION
 except Exception:
     AMSRunoutCoordinator = None
+    OPENAMS_VERSION = "0.0.3"  # Fallback if import fails
     # Fallback implementation if openams_integration not available
     def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
         """Fallback: Return a lowercase token for comparing extruder identifiers."""
@@ -48,8 +49,6 @@ try:
 except Exception:
     OAMSStatus = None
     OAMSOpCode = None
-
-OPENAMS_VERSION = "0.0.3"
 
 # Configuration constants
 PAUSE_DISTANCE = 60
@@ -176,7 +175,6 @@ class OAMSRunoutMonitor:
 
         self.state = OAMSRunoutState.STOPPED
         self.runout_position: Optional[float] = None
-        self.bldc_clear_position: Optional[float] = None
         self.runout_after_position: Optional[float] = None
         self.runout_spool_idx: Optional[int] = None
         self.is_cross_extruder_runout: bool = False  # Track if runout is cross-extruder

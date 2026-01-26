@@ -50,6 +50,7 @@ try:
         LaneRegistry,
         AMSEventBus,
         normalize_extruder_name,
+        OPENAMS_VERSION,
     )
 except Exception:
     AMSHardwareService = None
@@ -57,8 +58,7 @@ except Exception:
     LaneRegistry = None
     AMSEventBus = None
     normalize_extruder_name = None
-
-OPENAMS_VERSION = "0.0.3"
+    OPENAMS_VERSION = "0.0.3"  # Fallback if import fails
 
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 _ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
