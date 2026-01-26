@@ -2349,6 +2349,18 @@ class afcAMS(afcUnit):
         # Delay slightly to ensure sensors have had time to stabilize
         self.reactor.register_callback(lambda et: self._sync_afc_from_hardware_at_startup())
 
+        # CRITICAL: Re-enforce buffer_obj = None on all AMS lanes
+        # This runs during klippy:ready AFTER AFC_lane._handle_ready() has initialized lanes
+        # AFC_lane._handle_ready() may assign buffers from unit/extruder, we must override to None
+        for lane in self.lanes.values():
+            if lane.buffer_obj is not None:
+                buffer_name = getattr(lane.buffer_obj, 'name', 'unknown')
+                self.logger.warning(
+                    f"Lane {lane.name} was assigned buffer '{buffer_name}' during initialization, "
+                    f"but OpenAMS units don't have physical buffers. Removing buffer assignment."
+                )
+                lane.buffer_obj = None
+
     def _wrap_afc_lane_unload(self):
         """Wrap AFC's LANE_UNLOAD to handle cross-extruder runout scenarios."""
         if not hasattr(self, 'afc') or self.afc is None:
