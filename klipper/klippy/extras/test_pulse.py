@@ -123,9 +123,7 @@ class TestPulse:
                 encoder_before = None
 
             if encoder_before is None:
-                raise gcmd.error(
-                    "Unable to read encoder clicks before pulsing"
-                )
+                raise gcmd.error("Unable to read encoder clicks before pulsing")
 
             encoder_target = encoder_before + target_clicks
             while True:
