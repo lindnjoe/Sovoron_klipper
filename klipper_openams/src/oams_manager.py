@@ -63,6 +63,7 @@ CLOG_CHECK_INTERVAL = 8.0  # Minimum seconds between clog checks to reduce log/C
 AFC_DELEGATION_TIMEOUT = 30.0
 COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
+AUTO_DETECT_SUPPRESSION_WINDOW = 4.0  # Suppress auto-detect briefly after unload to avoid false positives
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
 STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
@@ -769,6 +770,9 @@ class FPSState:
         # AFC delegation
         self.afc_delegation_active: bool = False
         self.afc_delegation_until: float = 0.0
+
+        # Auto-detect suppression
+        self.auto_detect_suppressed_until: float = 0.0
 
         # Cross-extruder runout tracking
         self.is_cross_extruder_runout: bool = False
@@ -3698,6 +3702,9 @@ class OAMSManager:
                     fps_state_obj.following = False
                     fps_state_obj.direction = 0
                     fps_state_obj.since = self.reactor.monotonic()
+                    fps_state_obj.auto_detect_suppressed_until = (
+                        fps_state_obj.since + AUTO_DETECT_SUPPRESSION_WINDOW
+                    )
                     oams_unload.current_spool = None
 
                     # Now start load operation
@@ -4098,6 +4105,7 @@ class OAMSManager:
             fps_state.current_lane = None
             fps_state.current_spool_idx = None
             fps_state.since = self.reactor.monotonic()
+            fps_state.auto_detect_suppressed_until = fps_state.since + AUTO_DETECT_SUPPRESSION_WINDOW
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
             self._cancel_post_load_pressure_check(fps_state)
@@ -4214,6 +4222,7 @@ class OAMSManager:
             fps_state.following = False
             fps_state.direction = 0
             fps_state.since = self.reactor.monotonic()
+            fps_state.auto_detect_suppressed_until = fps_state.since + AUTO_DETECT_SUPPRESSION_WINDOW
 
             # Notify AFC that lane is unloaded from toolhead using the normal AFC process
             # This triggers AFC's _apply_lane_sensor_state() which handles everything properly:
@@ -4334,6 +4343,7 @@ class OAMSManager:
         fps_state.following = False
         fps_state.direction = 0
         fps_state.since = self.reactor.monotonic()
+        fps_state.auto_detect_suppressed_until = fps_state.since + AUTO_DETECT_SUPPRESSION_WINDOW
         fps_state.current_lane = None
         fps_state.current_spool_idx = None
         fps_state.current_oams = None
@@ -4471,6 +4481,7 @@ class OAMSManager:
         fps_state.current_oams = None
         fps_state.current_lane = None
         fps_state.since = self.reactor.monotonic()
+        fps_state.auto_detect_suppressed_until = fps_state.since + AUTO_DETECT_SUPPRESSION_WINDOW
         fps_state.stuck_spool.active = False
         fps_state.stuck_spool.start_time = None
 
@@ -4641,6 +4652,7 @@ class OAMSManager:
             fps_state.current_oams = None
             fps_state.current_lane = None
             fps_state.since = self.reactor.monotonic()
+            fps_state.auto_detect_suppressed_until = fps_state.since + AUTO_DETECT_SUPPRESSION_WINDOW
 
             return True
         finally:
@@ -6266,7 +6278,12 @@ class OAMSManager:
                     except Exception:
                         pass
 
-                    if not is_runout_active and not is_tool_operation and fps_state.consecutive_idle_polls % 2 == 0:  # Check every 2 polls (4 seconds)
+                    if (
+                        not is_runout_active
+                        and not is_tool_operation
+                        and now >= fps_state.auto_detect_suppressed_until
+                        and fps_state.consecutive_idle_polls % 2 == 0
+                    ):  # Check every 2 polls (4 seconds)
                         old_lane = fps_state.current_lane
                         old_spool_idx = fps_state.current_spool_idx
                         (
