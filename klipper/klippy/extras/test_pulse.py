@@ -85,25 +85,15 @@ class TestPulse:
         follower_enabled = False
         reached_target = False
         try:
+            try:
+                oams_obj.oams_load_spool_cmd.send([spool_index])
+            except Exception as exc:
+                raise gcmd.error(f"Failed to start spool load: {exc}") from exc
+
             hub_timeout = self.reactor.monotonic() + timeout
             hub_detected = False
             while self.reactor.monotonic() < hub_timeout:
-                try:
-                    oams_obj.set_oams_follower(1, 1)
-                    follower_enabled = True
-                except Exception as exc:
-                    raise gcmd.error(
-                        f"Failed to enable follower for hub load: {exc}"
-                    ) from exc
-                self.reactor.pause(self.reactor.monotonic() + pulse_on)
-
-                try:
-                    oams_obj.set_oams_follower(0, 0)
-                except Exception:
-                    pass
-                follower_enabled = False
-                self.reactor.pause(self.reactor.monotonic() + pulse_off)
-
+                self.reactor.pause(self.reactor.monotonic() + 0.1)
                 try:
                     hub_values = oams_obj.hub_hes_value
                     hub_detected = bool(hub_values[spool_index])
@@ -116,6 +106,11 @@ class TestPulse:
                 raise gcmd.error(
                     "Hub sensor did not trigger for lane {}".format(lane_name)
                 )
+
+            try:
+                oams_obj.abort_current_action(wait=True, code=0)
+            except Exception:
+                pass
 
             try:
                 encoder_before = int(oams_obj.encoder_clicks)
