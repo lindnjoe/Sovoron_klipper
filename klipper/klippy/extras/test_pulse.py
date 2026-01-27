@@ -87,34 +87,8 @@ class TestPulse:
                 oams_obj.action_status = 0
 
             load_deadline = self.reactor.monotonic() + load_timeout
-            load_stopped_early = False
             while self.reactor.monotonic() < load_deadline:
                 self.reactor.pause(self.reactor.monotonic() + 0.1)
-                if (
-                    fake_ptfe is not None
-                    and fake_fps is not None
-                    and getattr(oams_obj, "encoder_clicks", None) is not None
-                ):
-                    try:
-                        encoder_now = float(oams_obj.encoder_clicks)
-                    except Exception:
-                        encoder_now = None
-                    if (
-                        encoder_now is not None
-                        and encoder_now >= float(fake_ptfe)
-                        and float(getattr(oams_obj, "fps_value", 0.0))
-                        <= float(fake_fps)
-                    ):
-                        try:
-                            oams_obj.set_oams_follower(0, 0)
-                        except Exception:
-                            pass
-                        try:
-                            oams_obj.abort_current_action(wait=False, code=0)
-                        except Exception:
-                            pass
-                        load_stopped_early = True
-                        break
                 if getattr(oams_obj, "action_status", None) is None:
                     break
             else:
@@ -125,10 +99,7 @@ class TestPulse:
                 )
 
             gcmd.respond_info(
-                "TEST_PULSE: {} unloading lane {}".format(
-                    "load gate hit;" if load_stopped_early else "load complete;",
-                    lane_name,
-                )
+                "TEST_PULSE: load complete; unloading lane {}".format(lane_name)
             )
 
             try:
