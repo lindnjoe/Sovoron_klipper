@@ -103,6 +103,13 @@ class TestPulse:
             )
 
             try:
+                oams_obj.set_oams_follower(0, 0)
+            except Exception:
+                pass
+
+            self.reactor.pause(self.reactor.monotonic() + 10.1)
+
+            try:
                 oams_obj.oams_unload_spool_cmd.send()
             except Exception as exc:
                 raise gcmd.error(f"Failed to start unload: {exc}") from exc
