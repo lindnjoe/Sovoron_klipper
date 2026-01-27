@@ -27,6 +27,7 @@ class TestPulse:
         load_timeout = gcmd.get_float("LOAD_TIMEOUT", 30.0)
         unload_timeout = gcmd.get_float("UNLOAD_TIMEOUT", 60.0)
         fake_fps = gcmd.get_float("FAKE_FPS", None)
+        fake_ptfe = gcmd.get_float("FAKE_PTFE", 100.0)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -62,10 +63,14 @@ class TestPulse:
             raise gcmd.error(f"Lane {lane_name} has invalid spool index")
 
         original_fps = None
+        original_ptfe = None
         try:
             if fake_fps is not None:
                 original_fps = getattr(oams_obj, "fps_value", None)
                 oams_obj.fps_value = float(fake_fps)
+            if fake_ptfe is not None:
+                original_ptfe = getattr(oams_obj, "filament_path_length", None)
+                oams_obj.filament_path_length = float(fake_ptfe)
 
             gcmd.respond_info(
                 "TEST_PULSE: loading lane {} (spool {}) to extruder".format(
@@ -119,6 +124,8 @@ class TestPulse:
         finally:
             if original_fps is not None:
                 oams_obj.fps_value = original_fps
+            if original_ptfe is not None:
+                oams_obj.filament_path_length = original_ptfe
 
         gcmd.respond_info(f"TEST_PULSE complete for lane {lane_name}")
 
