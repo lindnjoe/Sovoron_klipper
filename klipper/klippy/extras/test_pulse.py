@@ -108,7 +108,12 @@ class TestPulse:
                 )
 
             try:
-                oams_obj.abort_current_action(wait=True, code=0)
+                oams_obj.set_oams_follower(0, 0)
+            except Exception:
+                pass
+
+            try:
+                oams_obj.abort_current_action(wait=False, code=0)
             except Exception:
                 pass
 
