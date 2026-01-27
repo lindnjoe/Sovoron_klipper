@@ -63,7 +63,6 @@ CLOG_CHECK_INTERVAL = 8.0  # Minimum seconds between clog checks to reduce log/C
 AFC_DELEGATION_TIMEOUT = 30.0
 COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
 IDLE_POLL_THRESHOLD = 3  # OPTIMIZATION: Polls before switching to idle interval
-AUTO_DETECT_SUPPRESSION_WINDOW = 4.0  # Suppress auto-detect briefly after unload to avoid false positives
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
 STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
@@ -771,9 +770,6 @@ class FPSState:
         self.afc_delegation_active: bool = False
         self.afc_delegation_until: float = 0.0
 
-        # Auto-detect suppression
-        self.auto_detect_suppressed_until: float = 0.0
-
         # Cross-extruder runout tracking
         self.is_cross_extruder_runout: bool = False
         self.last_lane_change_time: Optional[float] = None
@@ -1202,6 +1198,17 @@ class OAMSManager:
             afc = self._get_afc()
             if afc is None or not hasattr(afc, 'lanes'):
                 return
+            afc_function = getattr(afc, "function", None)
+            if afc_function is not None and hasattr(afc_function, "get_current_lane_obj"):
+                try:
+                    current_lane = afc_function.get_current_lane_obj()
+                except Exception:
+                    current_lane = None
+                if current_lane is not None and getattr(current_lane, "name", None) == lane_name:
+                    unset_lane_loaded = getattr(afc_function, "unset_lane_loaded", None)
+                    if callable(unset_lane_loaded):
+                        unset_lane_loaded()
+                        return
             lane_obj = afc.lanes.get(lane_name)
             if lane_obj is None:
                 return
@@ -3702,9 +3709,6 @@ class OAMSManager:
                     fps_state_obj.following = False
                     fps_state_obj.direction = 0
                     fps_state_obj.since = self.reactor.monotonic()
-                    fps_state_obj.auto_detect_suppressed_until = (
-                        fps_state_obj.since + AUTO_DETECT_SUPPRESSION_WINDOW
-                    )
                     oams_unload.current_spool = None
 
                     # Now start load operation
@@ -4105,7 +4109,6 @@ class OAMSManager:
             fps_state.current_lane = None
             fps_state.current_spool_idx = None
             fps_state.since = self.reactor.monotonic()
-            fps_state.auto_detect_suppressed_until = fps_state.since + AUTO_DETECT_SUPPRESSION_WINDOW
             fps_state.reset_stuck_spool_state()
             fps_state.reset_clog_tracker()
             self._cancel_post_load_pressure_check(fps_state)
@@ -4218,11 +4221,7 @@ class OAMSManager:
                 self.logger.error(f"Exception while retrying unload on {fps_name}")
 
         if success:
-            fps_state.state = FPSLoadState.UNLOADED
-            fps_state.following = False
-            fps_state.direction = 0
-            fps_state.since = self.reactor.monotonic()
-            fps_state.auto_detect_suppressed_until = fps_state.since + AUTO_DETECT_SUPPRESSION_WINDOW
+            since_time = self.reactor.monotonic()
 
             # Notify AFC that lane is unloaded from toolhead using the normal AFC process
             # This triggers AFC's _apply_lane_sensor_state() which handles everything properly:
@@ -4242,7 +4241,7 @@ class OAMSManager:
                         lane_name,
                         loaded=False,
                         spool_index=spool_index,
-                        eventtime=fps_state.since
+                        eventtime=since_time
                     )
                     lane_notified = True
                     self.logger.debug(f"Notified AFC coordinator that lane {lane_name} unloaded from toolhead")
@@ -4266,7 +4265,7 @@ class OAMSManager:
                                         afc_lane_name,
                                         loaded=False,
                                         spool_index=spool_index,
-                                        eventtime=fps_state.since
+                                        eventtime=since_time
                                     )
                                     self.logger.debug(f"Notified AFC coordinator (via location lookup) that lane {afc_lane_name} unloaded")
                                 except Exception:
@@ -4278,6 +4277,10 @@ class OAMSManager:
             if fps_state.stuck_spool.active and oams is not None and spool_index is not None:
                 self._clear_error_led(oams, spool_index, fps_name, "successful unload")
 
+            fps_state.state = FPSLoadState.UNLOADED
+            fps_state.following = False
+            fps_state.direction = 0
+            fps_state.since = since_time
             fps_state.current_lane = None
             fps_state.current_spool_idx = None
             fps_state.reset_stuck_spool_state()
@@ -4343,7 +4346,6 @@ class OAMSManager:
         fps_state.following = False
         fps_state.direction = 0
         fps_state.since = self.reactor.monotonic()
-        fps_state.auto_detect_suppressed_until = fps_state.since + AUTO_DETECT_SUPPRESSION_WINDOW
         fps_state.current_lane = None
         fps_state.current_spool_idx = None
         fps_state.current_oams = None
@@ -4481,7 +4483,6 @@ class OAMSManager:
         fps_state.current_oams = None
         fps_state.current_lane = None
         fps_state.since = self.reactor.monotonic()
-        fps_state.auto_detect_suppressed_until = fps_state.since + AUTO_DETECT_SUPPRESSION_WINDOW
         fps_state.stuck_spool.active = False
         fps_state.stuck_spool.start_time = None
 
@@ -4652,7 +4653,6 @@ class OAMSManager:
             fps_state.current_oams = None
             fps_state.current_lane = None
             fps_state.since = self.reactor.monotonic()
-            fps_state.auto_detect_suppressed_until = fps_state.since + AUTO_DETECT_SUPPRESSION_WINDOW
 
             return True
         finally:
@@ -6281,7 +6281,6 @@ class OAMSManager:
                     if (
                         not is_runout_active
                         and not is_tool_operation
-                        and now >= fps_state.auto_detect_suppressed_until
                         and fps_state.consecutive_idle_polls % 2 == 0
                     ):  # Check every 2 polls (4 seconds)
                         old_lane = fps_state.current_lane
