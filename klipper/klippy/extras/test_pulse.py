@@ -27,6 +27,7 @@ class TestPulse:
         pulse_on = gcmd.get_float("PULSE_ON", 1.0)
         pulse_off = gcmd.get_float("PULSE_OFF", 1.0)
         timeout = gcmd.get_float("HUB_TIMEOUT", 10.0)
+        stop_timeout = gcmd.get_float("STOP_TIMEOUT", 2.0)
         target_clicks = gcmd.get_int("TARGET_CLICKS", None)
         target_mm = gcmd.get_float("TARGET_MM", None)
 
@@ -124,6 +125,32 @@ class TestPulse:
 
             if encoder_before is None:
                 raise gcmd.error("Unable to read encoder clicks before pulsing")
+
+            stop_deadline = self.reactor.monotonic() + stop_timeout
+            while self.reactor.monotonic() < stop_deadline:
+                self.reactor.pause(self.reactor.monotonic() + 0.1)
+                try:
+                    encoder_now = int(oams_obj.encoder_clicks)
+                except Exception:
+                    encoder_now = encoder_before
+                if encoder_now == encoder_before:
+                    break
+                encoder_before = encoder_now
+                try:
+                    oams_obj.set_oams_follower(0, 0)
+                except Exception:
+                    pass
+
+            if self.reactor.monotonic() >= stop_deadline:
+                try:
+                    oams_obj.oams_unload_spool_cmd.send()
+                except Exception:
+                    pass
+                raise gcmd.error(
+                    "Load did not stop after hub detect; unload issued for lane {}".format(
+                        lane_name
+                    )
+                )
 
             encoder_target = encoder_before + target_clicks
             while True:
