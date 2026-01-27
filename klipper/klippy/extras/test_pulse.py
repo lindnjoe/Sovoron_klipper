@@ -24,17 +24,8 @@ class TestPulse:
         if not lane_name:
             raise gcmd.error("LANE is required for TEST_PULSE")
 
-        pulse_on = gcmd.get_float("PULSE_ON", 1.0)
-        pulse_off = gcmd.get_float("PULSE_OFF", 1.0)
-        timeout = gcmd.get_float("HUB_TIMEOUT", 10.0)
-        stop_timeout = gcmd.get_float("STOP_TIMEOUT", 2.0)
-        target_clicks = gcmd.get_int("TARGET_CLICKS", None)
-        target_mm = gcmd.get_float("TARGET_MM", None)
-
-        if pulse_on <= 0.0:
-            raise gcmd.error("PULSE_ON must be greater than 0")
-        if pulse_off < 0.0:
-            raise gcmd.error("PULSE_OFF must be zero or greater")
+        load_timeout = gcmd.get_float("LOAD_TIMEOUT", 30.0)
+        unload_timeout = gcmd.get_float("UNLOAD_TIMEOUT", 60.0)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -69,138 +60,55 @@ class TestPulse:
         if spool_index < 0:
             raise gcmd.error(f"Lane {lane_name} has invalid spool index")
 
-        if target_clicks is None:
-            if target_mm is None:
-                target_mm = (
-                    float(getattr(oams_obj, "filament_path_length", 0.0)) / 2.0
-                )
-            target_clicks = max(0, int(round(target_mm)))
-
-        message = "TEST_PULSE: loading lane {} (spool {}) to hub,".format(
-            lane_name, spool_index
-        )
         gcmd.respond_info(
-            "{} pulsing follower to {} clicks".format(message, target_clicks)
+            "TEST_PULSE: loading lane {} (spool {}) to extruder".format(
+                lane_name, spool_index
+            )
         )
 
-        follower_enabled = False
-        reached_target = False
         try:
-            try:
-                oams_obj.oams_load_spool_cmd.send([spool_index])
-            except Exception as exc:
-                raise gcmd.error(f"Failed to start spool load: {exc}") from exc
+            oams_obj.oams_load_spool_cmd.send([spool_index])
+        except Exception as exc:
+            raise gcmd.error(f"Failed to start spool load: {exc}") from exc
 
-            hub_timeout = self.reactor.monotonic() + timeout
-            hub_detected = False
-            while self.reactor.monotonic() < hub_timeout:
-                self.reactor.pause(self.reactor.monotonic() + 0.1)
-                try:
-                    hub_values = oams_obj.hub_hes_value
-                    hub_detected = bool(hub_values[spool_index])
-                except Exception:
-                    hub_detected = False
-                if hub_detected:
-                    break
+        if hasattr(oams_obj, "action_status"):
+            oams_obj.action_status = 0
 
-            if not hub_detected:
-                raise gcmd.error(
-                    "Hub sensor did not trigger for lane {}".format(lane_name)
+        load_deadline = self.reactor.monotonic() + load_timeout
+        while self.reactor.monotonic() < load_deadline:
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+            if getattr(oams_obj, "action_status", None) is None:
+                break
+        else:
+            raise gcmd.error(
+                "Load did not complete before timeout for lane {}".format(
+                    lane_name
                 )
+            )
 
-            try:
-                oams_obj.set_oams_follower(0, 0)
-            except Exception:
-                pass
+        gcmd.respond_info(
+            "TEST_PULSE: load complete; unloading lane {}".format(lane_name)
+        )
 
-            try:
-                oams_obj.abort_current_action(wait=False, code=0)
-            except Exception:
-                pass
+        try:
+            oams_obj.oams_unload_spool_cmd.send()
+        except Exception as exc:
+            raise gcmd.error(f"Failed to start unload: {exc}") from exc
 
-            try:
-                encoder_before = int(oams_obj.encoder_clicks)
-            except Exception:
-                encoder_before = None
+        if hasattr(oams_obj, "action_status"):
+            oams_obj.action_status = 1
 
-            if encoder_before is None:
-                raise gcmd.error("Unable to read encoder clicks before pulsing")
-
-            stop_deadline = self.reactor.monotonic() + stop_timeout
-            while self.reactor.monotonic() < stop_deadline:
-                self.reactor.pause(self.reactor.monotonic() + 0.1)
-                try:
-                    encoder_now = int(oams_obj.encoder_clicks)
-                except Exception:
-                    encoder_now = encoder_before
-                if encoder_now == encoder_before:
-                    break
-                encoder_before = encoder_now
-                try:
-                    oams_obj.set_oams_follower(0, 0)
-                except Exception:
-                    pass
-
-            if self.reactor.monotonic() >= stop_deadline:
-                try:
-                    oams_obj.oams_unload_spool_cmd.send()
-                except Exception:
-                    pass
-                raise gcmd.error(
-                    "Load did not stop after hub detect; unload issued for lane {}".format(
-                        lane_name
-                    )
+        unload_deadline = self.reactor.monotonic() + unload_timeout
+        while self.reactor.monotonic() < unload_deadline:
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+            if getattr(oams_obj, "action_status", None) is None:
+                break
+        else:
+            raise gcmd.error(
+                "Unload did not complete before timeout for lane {}".format(
+                    lane_name
                 )
-
-            encoder_target = encoder_before + target_clicks
-            while True:
-                try:
-                    oams_obj.set_oams_follower(1, 1)
-                    follower_enabled = True
-                except Exception as exc:
-                    raise gcmd.error(
-                        f"Failed to enable follower: {exc}"
-                    ) from exc
-                self.reactor.pause(self.reactor.monotonic() + pulse_on)
-
-                try:
-                    oams_obj.set_oams_follower(0, 0)
-                except Exception:
-                    pass
-                follower_enabled = False
-                self.reactor.pause(self.reactor.monotonic() + pulse_off)
-
-                try:
-                    encoder_now = int(oams_obj.encoder_clicks)
-                except Exception:
-                    encoder_now = encoder_before
-
-                if encoder_now >= encoder_target:
-                    reached_target = True
-                    break
-        finally:
-            if follower_enabled:
-                try:
-                    oams_obj.set_oams_follower(0, 0)
-                except Exception:
-                    pass
-            try:
-                if reached_target:
-                    gcmd.respond_info(
-                        "TEST_PULSE: target reached; unloading spool"
-                    )
-                oams_obj.oams_unload_spool_cmd.send()
-                hub_clear_timeout = self.reactor.monotonic() + timeout
-                while self.reactor.monotonic() < hub_clear_timeout:
-                    self.reactor.pause(self.reactor.monotonic() + 0.1)
-                    try:
-                        hub_values = oams_obj.hub_hes_value
-                        if not bool(hub_values[spool_index]):
-                            break
-                    except Exception:
-                        break
-            except Exception:
-                pass
+            )
 
         gcmd.respond_info(f"TEST_PULSE complete for lane {lane_name}")
 
