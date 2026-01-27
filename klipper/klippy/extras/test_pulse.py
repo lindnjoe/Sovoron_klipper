@@ -26,6 +26,7 @@ class TestPulse:
 
         load_timeout = gcmd.get_float("LOAD_TIMEOUT", 30.0)
         unload_timeout = gcmd.get_float("UNLOAD_TIMEOUT", 60.0)
+        fake_fps = gcmd.get_float("FAKE_FPS", None)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -60,55 +61,64 @@ class TestPulse:
         if spool_index < 0:
             raise gcmd.error(f"Lane {lane_name} has invalid spool index")
 
-        gcmd.respond_info(
-            "TEST_PULSE: loading lane {} (spool {}) to extruder".format(
-                lane_name, spool_index
-            )
-        )
-
+        original_fps = None
         try:
-            oams_obj.oams_load_spool_cmd.send([spool_index])
-        except Exception as exc:
-            raise gcmd.error(f"Failed to start spool load: {exc}") from exc
+            if fake_fps is not None:
+                original_fps = getattr(oams_obj, "fps_value", None)
+                oams_obj.fps_value = float(fake_fps)
 
-        if hasattr(oams_obj, "action_status"):
-            oams_obj.action_status = 0
-
-        load_deadline = self.reactor.monotonic() + load_timeout
-        while self.reactor.monotonic() < load_deadline:
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
-            if getattr(oams_obj, "action_status", None) is None:
-                break
-        else:
-            raise gcmd.error(
-                "Load did not complete before timeout for lane {}".format(
-                    lane_name
+            gcmd.respond_info(
+                "TEST_PULSE: loading lane {} (spool {}) to extruder".format(
+                    lane_name, spool_index
                 )
             )
 
-        gcmd.respond_info(
-            "TEST_PULSE: load complete; unloading lane {}".format(lane_name)
-        )
+            try:
+                oams_obj.oams_load_spool_cmd.send([spool_index])
+            except Exception as exc:
+                raise gcmd.error(f"Failed to start spool load: {exc}") from exc
 
-        try:
-            oams_obj.oams_unload_spool_cmd.send()
-        except Exception as exc:
-            raise gcmd.error(f"Failed to start unload: {exc}") from exc
+            if hasattr(oams_obj, "action_status"):
+                oams_obj.action_status = 0
 
-        if hasattr(oams_obj, "action_status"):
-            oams_obj.action_status = 1
-
-        unload_deadline = self.reactor.monotonic() + unload_timeout
-        while self.reactor.monotonic() < unload_deadline:
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
-            if getattr(oams_obj, "action_status", None) is None:
-                break
-        else:
-            raise gcmd.error(
-                "Unload did not complete before timeout for lane {}".format(
-                    lane_name
+            load_deadline = self.reactor.monotonic() + load_timeout
+            while self.reactor.monotonic() < load_deadline:
+                self.reactor.pause(self.reactor.monotonic() + 0.1)
+                if getattr(oams_obj, "action_status", None) is None:
+                    break
+            else:
+                raise gcmd.error(
+                    "Load did not complete before timeout for lane {}".format(
+                        lane_name
+                    )
                 )
+
+            gcmd.respond_info(
+                "TEST_PULSE: load complete; unloading lane {}".format(lane_name)
             )
+
+            try:
+                oams_obj.oams_unload_spool_cmd.send()
+            except Exception as exc:
+                raise gcmd.error(f"Failed to start unload: {exc}") from exc
+
+            if hasattr(oams_obj, "action_status"):
+                oams_obj.action_status = 1
+
+            unload_deadline = self.reactor.monotonic() + unload_timeout
+            while self.reactor.monotonic() < unload_deadline:
+                self.reactor.pause(self.reactor.monotonic() + 0.1)
+                if getattr(oams_obj, "action_status", None) is None:
+                    break
+            else:
+                raise gcmd.error(
+                    "Unload did not complete before timeout for lane {}".format(
+                        lane_name
+                    )
+                )
+        finally:
+            if original_fps is not None:
+                oams_obj.fps_value = original_fps
 
         gcmd.respond_info(f"TEST_PULSE complete for lane {lane_name}")
 
