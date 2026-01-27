@@ -167,3 +167,7 @@ class TestPulse:
 
 def load_config_prefix(config):
     return TestPulse(config)
+
+
+def load_config(config):
+    return TestPulse(config)
