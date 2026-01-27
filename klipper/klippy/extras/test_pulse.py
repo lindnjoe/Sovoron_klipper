@@ -82,20 +82,28 @@ class TestPulse:
             "{} pulsing follower to {} clicks".format(message, target_clicks)
         )
 
-        load_started = False
         follower_enabled = False
         reached_target = False
         try:
-            try:
-                oams_obj.oams_load_spool_cmd.send([spool_index])
-                load_started = True
-            except Exception as exc:
-                raise gcmd.error(f"Failed to start spool load: {exc}") from exc
-
             hub_timeout = self.reactor.monotonic() + timeout
             hub_detected = False
             while self.reactor.monotonic() < hub_timeout:
-                self.reactor.pause(self.reactor.monotonic() + 0.1)
+                try:
+                    oams_obj.set_oams_follower(1, 1)
+                    follower_enabled = True
+                except Exception as exc:
+                    raise gcmd.error(
+                        f"Failed to enable follower for hub load: {exc}"
+                    ) from exc
+                self.reactor.pause(self.reactor.monotonic() + pulse_on)
+
+                try:
+                    oams_obj.set_oams_follower(0, 0)
+                except Exception:
+                    pass
+                follower_enabled = False
+                self.reactor.pause(self.reactor.monotonic() + pulse_off)
+
                 try:
                     hub_values = oams_obj.hub_hes_value
                     hub_detected = bool(hub_values[spool_index])
@@ -105,18 +113,9 @@ class TestPulse:
                     break
 
             if not hub_detected:
-                try:
-                    oams_obj.abort_current_action(wait=True, code=0)
-                except Exception:
-                    pass
                 raise gcmd.error(
                     "Hub sensor did not trigger for lane {}".format(lane_name)
                 )
-
-            try:
-                oams_obj.abort_current_action(wait=True, code=0)
-            except Exception:
-                pass
 
             try:
                 encoder_before = int(oams_obj.encoder_clicks)
@@ -158,15 +157,23 @@ class TestPulse:
                     oams_obj.set_oams_follower(0, 0)
                 except Exception:
                     pass
-            if load_started:
-                try:
-                    if reached_target:
-                        gcmd.respond_info(
-                            "TEST_PULSE: target reached; unloading spool"
-                        )
-                    oams_obj.oams_unload_spool_cmd.send()
-                except Exception:
-                    pass
+            try:
+                if reached_target:
+                    gcmd.respond_info(
+                        "TEST_PULSE: target reached; unloading spool"
+                    )
+                oams_obj.oams_unload_spool_cmd.send()
+                hub_clear_timeout = self.reactor.monotonic() + timeout
+                while self.reactor.monotonic() < hub_clear_timeout:
+                    self.reactor.pause(self.reactor.monotonic() + 0.1)
+                    try:
+                        hub_values = oams_obj.hub_hes_value
+                        if not bool(hub_values[spool_index]):
+                            break
+                    except Exception:
+                        break
+            except Exception:
+                pass
 
         gcmd.respond_info(f"TEST_PULSE complete for lane {lane_name}")
 
