@@ -84,6 +84,7 @@ class TestPulse:
 
         load_started = False
         follower_enabled = False
+        reached_target = False
         try:
             try:
                 oams_obj.oams_load_spool_cmd.send([spool_index])
@@ -149,6 +150,7 @@ class TestPulse:
                     encoder_now = encoder_before
 
                 if encoder_now >= encoder_target:
+                    reached_target = True
                     break
         finally:
             if follower_enabled:
@@ -158,6 +160,10 @@ class TestPulse:
                     pass
             if load_started:
                 try:
+                    if reached_target:
+                        gcmd.respond_info(
+                            "TEST_PULSE: target reached; unloading spool"
+                        )
                     oams_obj.oams_unload_spool_cmd.send()
                 except Exception:
                     pass
