@@ -110,7 +110,9 @@ class TestPulse:
                         except Exception:
                             pass
                         try:
-                            oams_obj.abort_current_action(wait=False, code=0)
+                            oams_obj.oams_unload_spool_cmd.send()
+                            if hasattr(oams_obj, "action_status"):
+                                oams_obj.action_status = 1
                         except Exception:
                             pass
                         load_stopped_early = True
@@ -131,20 +133,21 @@ class TestPulse:
                 )
             )
 
-            try:
-                oams_obj.set_oams_follower(0, 0)
-            except Exception:
-                pass
+            if not load_stopped_early:
+                try:
+                    oams_obj.set_oams_follower(0, 0)
+                except Exception:
+                    pass
 
-            self.reactor.pause(self.reactor.monotonic() + 10.1)
+                self.reactor.pause(self.reactor.monotonic() + 0.1)
 
-            try:
-                oams_obj.oams_unload_spool_cmd.send()
-            except Exception as exc:
-                raise gcmd.error(f"Failed to start unload: {exc}") from exc
+                try:
+                    oams_obj.oams_unload_spool_cmd.send()
+                except Exception as exc:
+                    raise gcmd.error(f"Failed to start unload: {exc}") from exc
 
-            if hasattr(oams_obj, "action_status"):
-                oams_obj.action_status = 1
+                if hasattr(oams_obj, "action_status"):
+                    oams_obj.action_status = 1
 
             unload_deadline = self.reactor.monotonic() + unload_timeout
             while self.reactor.monotonic() < unload_deadline:
