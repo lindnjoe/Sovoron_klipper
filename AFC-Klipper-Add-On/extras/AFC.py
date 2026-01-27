@@ -547,7 +547,7 @@ class afc:
                     break
         return float(temp_value), using_min_value
 
-    def _check_extruder_temp(self, cur_lane: AFCLane, no_wait: bool=False):
+    def _check_extruder_temp(self, cur_lane: AFCLane, no_wait: bool=False, allow_printing: bool=False):
         """
         Helper function that check to see if extruder needs to be heated, and wait for hotend to get to temp if needed
         """
@@ -559,8 +559,9 @@ class afc:
         pheaters = self.printer.lookup_object('heaters')
         wait = False
 
-        # If extruder can extrude and printing, return and do not update temperature. Don't want to modify extruder temperature during prints
-        if self.heater.can_extrude and self.function.is_printing():
+        # If extruder can extrude and printing, return and do not update temperature.
+        # Skip this guard when explicitly allowing print-time temperature changes.
+        if self.heater.can_extrude and self.function.is_printing() and not allow_printing:
             return
         target_temp, using_min_value = self._get_default_material_temps(cur_lane)
 
@@ -1304,7 +1305,7 @@ class afc:
                 self.error.handle_lane_failure(cur_lane, message)
                 return False
         else:
-            if self._check_extruder_temp(cur_lane):
+            if self._check_extruder_temp(cur_lane, allow_printing=True):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
 
             # Move filament to the hub if it's not already loaded there.

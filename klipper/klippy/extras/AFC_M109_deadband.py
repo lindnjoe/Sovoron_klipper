@@ -116,23 +116,28 @@ class AFC_M109_Deadband:
                 # We need to handle the M109 logic ourselves with the deadband
                 # This replicates AFC's _cmd_AFC_M109 logic but with our deadband
 
-                # Determine which extruder to use (replicate AFC logic)
+                # Determine which extruder to use.
                 if toolnum is not None:
-                    map_str = "T{}".format(toolnum)
-                    lane = self.afc.function.get_lane_by_map(map_str)
-                    if lane is not None:
-                        extruder = lane.extruder_obj
-                        extruder_name = "extruder" if toolnum == 0 else "extruder%d" % toolnum
+                    extruder_name = "extruder" if toolnum == 0 else "extruder%d" % toolnum
+                    extruder = self.printer.lookup_object(extruder_name, None)
+                    if extruder is None:
+                        map_str = "T{}".format(toolnum)
+                        lane = self.afc.function.get_lane_by_map(map_str)
+                        if lane is not None:
+                            extruder = lane.extruder_obj
                         if extruder is None:
                             self.afc.logger.error("extruder not configured for T{}".format(toolnum))
                             return
-                    else:
-                        self.afc.logger.error("extruder not configured for T{}".format(toolnum))
-                        return
                 else:
-                    toolhead = self.printer.lookup_object('toolhead')
-                    extruder = toolhead.get_extruder()
-                    extruder_name = extruder.get_name()
+                    next_lane_name = getattr(afc_self, "next_lane_load", None)
+                    next_lane = afc_self.lanes.get(next_lane_name) if next_lane_name else None
+                    if next_lane is not None:
+                        extruder = next_lane.extruder_obj
+                        extruder_name = extruder.get_name()
+                    else:
+                        toolhead = self.printer.lookup_object('toolhead')
+                        extruder = toolhead.get_extruder()
+                        extruder_name = extruder.get_name()
 
                 # Get heater and set temperature
                 pheaters = self.printer.lookup_object('heaters')
