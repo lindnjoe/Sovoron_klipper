@@ -250,7 +250,7 @@ def _patch_extruder_for_virtual_ams() -> None:
         if not normalized:
             return
 
-        show_sensor = getattr(self, "enable_sensors_in_gui", True)
+        show_sensor = False
         enable_runout = getattr(self, "enable_runout", False)
         runout_cb = getattr(self, "handle_start_runout", None)
 
@@ -769,7 +769,7 @@ class afcAMS(afcUnit):
                 else:
                     self.afc._virtual_ams_chip_registered = True
 
-            enable_gui = getattr(extruder, "enable_sensors_in_gui", True)
+            enable_gui = False
             runout_cb = getattr(extruder, "handle_start_runout", None)
             enable_runout = getattr(extruder, "enable_runout", False)
             debounce = getattr(extruder, "debounce_delay", 0.0)
