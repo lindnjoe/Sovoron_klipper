@@ -205,12 +205,13 @@ def _patch_extruder_for_virtual_ams() -> None:
     base_init = extruder_cls.__init__
 
     class _ProxyConfig:
-        def __init__(self, original):
+        def __init__(self, original, pin_override):
             self._original = original
+            self._pin_override = pin_override
 
         def get(self, key, *args, **kwargs):
             if key == "pin_tool_start":
-                return "buffer"
+                return self._pin_override
             return self._original.get(key, *args, **kwargs)
 
         def __getattr__(self, item):
@@ -227,7 +228,19 @@ def _patch_extruder_for_virtual_ams() -> None:
 
         if normalized:
             if normalized.upper().startswith("AMS_"):
-                proxy_config = _ProxyConfig(config)
+                pin_override = "buffer"
+                try:
+                    printer = config.get_printer()
+                    afc_obj = printer.lookup_object("AFC", None)
+                    pins = printer.lookup_object("pins", None)
+                    if afc_obj is not None and pins is not None:
+                        if not getattr(afc_obj, "_virtual_ams_chip_registered", False):
+                            pins.register_chip("afc_virtual_ams", afc_obj)
+                            afc_obj._virtual_ams_chip_registered = True
+                        pin_override = f"afc_virtual_ams:{normalized}"
+                except Exception:
+                    pin_override = "buffer"
+                proxy_config = _ProxyConfig(config, pin_override)
             else:
                 normalized = None
 
@@ -4528,6 +4541,4 @@ def load_config_prefix(config):
     _patch_buffer_multiplier_for_ams()
     _patch_buffer_status_for_missing_stepper()
     _patch_buffer_fault_detection_for_ams()
-    # Note: Buffer patching removed - AFC natively handles buffer_obj=None correctly
-    # We only need to ensure buffer_obj=None on AMS lanes (done in handle_ready)
     return afcAMS(config)
