@@ -935,6 +935,48 @@ class FPSState:
 
 class OAMSManager:
     """Main coordinator for OpenAMS system"""
+
+    def _run_tool_crash_detection(self, enable: bool) -> bool:
+        if getattr(self, "crash_detection_mode", "disabled") == "disabled":
+            self.logger.debug("Tool crash detection disabled; skipping")
+            return True
+        gcode = self._gcode_obj
+        if gcode is None:
+            try:
+                gcode = self.printer.lookup_object("gcode")
+            except Exception as exc:
+                self.logger.debug(f"Skipping tool crash detection; no gcode object: {exc}")
+                return False
+            self._gcode_obj = gcode
+        if enable:
+            if self.crash_detection_mode == "probe":
+                commands = ("START_TOOL_PROBE_CRASH_DETECTION",)
+            else:
+                commands = ("START_TOOL_CRASH_DETECTION",)
+        else:
+            if self.crash_detection_mode == "probe":
+                commands = ("STOP_TOOL_PROBE_CRASH_DETECTION",)
+            else:
+                commands = ("STOP_TOOL_CRASH_DETECTION",)
+        last_exc = None
+        for command in commands:
+            for candidate in (command, command.lower()):
+                try:
+                    self.logger.debug(f"Running tool crash detection command: {candidate}")
+                    gcode.run_script_from_command(candidate)
+                    self.logger.debug(f"Tool crash detection command completed: {candidate}")
+                    return True
+                except Exception as exc:
+                    self.logger.debug(
+                        f"Tool crash detection command failed: {candidate} ({exc})"
+                    )
+                    last_exc = exc
+                    continue
+        if last_exc is not None:
+            self.logger.debug(f"Skipping tool crash detection; failed {commands}: {last_exc}")
+        else:
+            self.logger.debug("Skipping tool crash detection command; none available")
+        return False
     
     def __init__(self, config):
         self.config = config
