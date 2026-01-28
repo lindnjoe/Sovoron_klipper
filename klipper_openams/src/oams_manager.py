@@ -659,27 +659,47 @@ class OAMSRunoutMonitor:
                 return False
         return False
 
-    def _run_tool_crash_detection(self, enable: bool) -> None:
+    def _run_tool_crash_detection(self, enable: bool) -> bool:
+        if getattr(self, "crash_detection_mode", "disabled") == "disabled":
+            self.logger.debug("Tool crash detection disabled; skipping")
+            return True
         gcode = self._gcode_obj
         if gcode is None:
             try:
                 gcode = self.printer.lookup_object("gcode")
             except Exception as exc:
                 self.logger.debug(f"Skipping tool crash detection; no gcode object: {exc}")
-                return
+                return False
             self._gcode_obj = gcode
         if enable:
-            commands = ("START_TOOL_CRASH_DETECTION", "START_TOOL_PROBE_CRASH_DETECTION")
+            if self.crash_detection_mode == "probe":
+                commands = ("START_TOOL_PROBE_CRASH_DETECTION",)
+            else:
+                commands = ("START_TOOL_CRASH_DETECTION",)
         else:
-            commands = ("STOP_TOOL_CRASH_DETECTION", "STOP_TOOL_PROBE_CRASH_DETECTION")
+            if self.crash_detection_mode == "probe":
+                commands = ("STOP_TOOL_PROBE_CRASH_DETECTION",)
+            else:
+                commands = ("STOP_TOOL_CRASH_DETECTION",)
+        last_exc = None
         for command in commands:
-            if self._has_gcode_command(gcode, command):
+            for candidate in (command, command.lower()):
                 try:
-                    gcode.run_script_from_command(command)
+                    self.logger.debug(f"Running tool crash detection command: {candidate}")
+                    gcode.run_script_from_command(candidate)
+                    self.logger.debug(f"Tool crash detection command completed: {candidate}")
+                    return True
                 except Exception as exc:
-                    self.logger.debug(f"Skipping tool crash detection; failed {command}: {exc}")
-                return
-        self.logger.debug("Skipping tool crash detection command; none available")
+                    self.logger.debug(
+                        f"Tool crash detection command failed: {candidate} ({exc})"
+                    )
+                    last_exc = exc
+                    continue
+        if last_exc is not None:
+            self.logger.debug(f"Skipping tool crash detection; failed {commands}: {last_exc}")
+        else:
+            self.logger.debug("Skipping tool crash detection command; none available")
+        return False
 
     def _get_oams_object(self, oams_name: Optional[str]):
         _, oams_obj = self._resolve_oams_name(oams_name)
@@ -915,6 +935,48 @@ class FPSState:
 
 class OAMSManager:
     """Main coordinator for OpenAMS system"""
+
+    def _run_tool_crash_detection(self, enable: bool) -> bool:
+        if getattr(self, "crash_detection_mode", "disabled") == "disabled":
+            self.logger.debug("Tool crash detection disabled; skipping")
+            return True
+        gcode = self._gcode_obj
+        if gcode is None:
+            try:
+                gcode = self.printer.lookup_object("gcode")
+            except Exception as exc:
+                self.logger.debug(f"Skipping tool crash detection; no gcode object: {exc}")
+                return False
+            self._gcode_obj = gcode
+        if enable:
+            if self.crash_detection_mode == "probe":
+                commands = ("START_TOOL_PROBE_CRASH_DETECTION",)
+            else:
+                commands = ("START_TOOL_CRASH_DETECTION",)
+        else:
+            if self.crash_detection_mode == "probe":
+                commands = ("STOP_TOOL_PROBE_CRASH_DETECTION",)
+            else:
+                commands = ("STOP_TOOL_CRASH_DETECTION",)
+        last_exc = None
+        for command in commands:
+            for candidate in (command, command.lower()):
+                try:
+                    self.logger.debug(f"Running tool crash detection command: {candidate}")
+                    gcode.run_script_from_command(candidate)
+                    self.logger.debug(f"Tool crash detection command completed: {candidate}")
+                    return True
+                except Exception as exc:
+                    self.logger.debug(
+                        f"Tool crash detection command failed: {candidate} ({exc})"
+                    )
+                    last_exc = exc
+                    continue
+        if last_exc is not None:
+            self.logger.debug(f"Skipping tool crash detection; failed {commands}: {last_exc}")
+        else:
+            self.logger.debug("Skipping tool crash detection command; none available")
+        return False
     
     def __init__(self, config):
         self.config = config
@@ -977,6 +1039,19 @@ class OAMSManager:
             self.logger.info("Clog detection is DISABLED by config")
         if not self.enable_stuck_spool_detection:
             self.logger.info("Stuck spool detection is DISABLED by config")
+
+        crash_detection_raw = config.get("crash_detection", "0")
+        crash_detection_mode = str(crash_detection_raw).strip().lower()
+        if crash_detection_mode in {"0", "off", "false", "disabled", "disable"}:
+            crash_detection_mode = "disabled"
+        elif crash_detection_mode in {"tool", "probe"}:
+            pass
+        else:
+            self.logger.warning(
+                f"Unknown crash_detection '{crash_detection_raw}', defaulting to disabled."
+            )
+            crash_detection_mode = "disabled"
+        self.crash_detection_mode = crash_detection_mode
 
         # Configurable detection thresholds and timing parameters with validation
         self.stuck_spool_load_grace = config.getfloat("stuck_spool_load_grace", STUCK_SPOOL_LOAD_GRACE, minval=0.0, maxval=60.0)
@@ -4926,17 +5001,21 @@ class OAMSManager:
         self.logger.debug(f"Loading lane {lane_name}: {oams_name} bay {bay_index} via {fps_name}")
 
         if getattr(oam, "dock_load", False):
-            try:
-                gcode = self._gcode_obj
-                if gcode is None:
-                    gcode = self.printer.lookup_object("gcode")
-                    self._gcode_obj = gcode
+            gcode = self._gcode_obj
+            if gcode is None:
                 try:
-                    self._run_tool_crash_detection(False)
+                    gcode = self.printer.lookup_object("gcode")
                 except Exception:
+                    gcode = None
+                self._gcode_obj = gcode
+            if gcode is not None:
+                if not self._run_tool_crash_detection(False):
                     self.logger.warning("Failed to stop tool crash detection before dock unload")
-                gcode.run_script_from_command("AFC_UNSELECT_TOOL")
-            except Exception:
+                try:
+                    gcode.run_script_from_command("AFC_UNSELECT_TOOL")
+                except Exception:
+                    self.logger.warning(f"Failed to dock tool before loading {lane_name}")
+            else:
                 self.logger.warning(f"Failed to dock tool before loading {lane_name}")
 
         # Capture state BEFORE changing fps_state.state to avoid getting stuck
@@ -5123,9 +5202,7 @@ class OAMSManager:
                     if gcode is None:
                         gcode = self.printer.lookup_object("gcode")
                         self._gcode_obj = gcode
-                    try:
-                        self._run_tool_crash_detection(True)
-                    except Exception:
+                    if not self._run_tool_crash_detection(True):
                         self.logger.warning("Failed to start tool crash detection before tool select")
                     gcode.run_script_from_command(f"AFC_SELECT_TOOL TOOL={extruder_name}")
                 except Exception:

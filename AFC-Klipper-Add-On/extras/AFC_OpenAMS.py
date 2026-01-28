@@ -4528,7 +4528,13 @@ def _patch_buffer_fault_detection_for_ams() -> None:
         tool_pin = getattr(cur_extruder, "tool_start", None) if cur_extruder is not None else None
         is_virtual_tool = False
         try:
-            is_virtual_tool = bool(tool_pin) and str(tool_pin).startswith("afc_virtual_ams:")
+            if tool_pin:
+                tool_pin_str = str(tool_pin).lower()
+                is_virtual_tool = (
+                    tool_pin_str.startswith("afc_virtual_ams:")
+                    or tool_pin_str.startswith("ams_")
+                    or tool_pin_str.startswith("ams_extruder")
+                )
         except Exception:
             is_virtual_tool = False
         if is_openams or is_virtual_tool:
