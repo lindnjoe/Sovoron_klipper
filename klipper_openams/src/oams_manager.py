@@ -216,6 +216,9 @@ class OAMSRunoutMonitor:
                 is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
                 spool_idx = self.fps_state.current_spool_idx or self.runout_spool_idx
 
+                if not is_printing and self.state == OAMSRunoutState.MONITORING:
+                    return eventtime + MONITOR_ENCODER_PERIOD_IDLE
+
                 if self.state in (OAMSRunoutState.STOPPED, OAMSRunoutState.PAUSED, OAMSRunoutState.RELOADING):
                     # When not actively monitoring, use the idle interval to reduce timer churn
                     return eventtime + MONITOR_ENCODER_PERIOD_IDLE
@@ -630,6 +633,46 @@ class OAMSRunoutMonitor:
                 return unprefixed, self.oams.get(unprefixed)
 
         return oams_name, None
+
+    def _has_gcode_command(self, gcode, command: str) -> bool:
+        handlers = getattr(gcode, "ready_gcode_handlers", None)
+        if isinstance(handlers, dict):
+            return command in handlers
+        handlers = getattr(gcode, "gcode_handlers", None)
+        if isinstance(handlers, dict):
+            return command in handlers
+        handlers = getattr(gcode, "_gcode_handlers", None)
+        if isinstance(handlers, dict):
+            return command in handlers
+        get_command = getattr(gcode, "get_command", None)
+        if callable(get_command):
+            try:
+                return get_command(command) is not None
+            except Exception:
+                return False
+        lookup_command = getattr(gcode, "lookup_command", None)
+        if callable(lookup_command):
+            try:
+                lookup_command(command)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _run_tool_crash_detection(self, enable: bool) -> None:
+        gcode = self._gcode_obj
+        if gcode is None:
+            gcode = self.printer.lookup_object("gcode")
+            self._gcode_obj = gcode
+        if enable:
+            commands = ("START_TOOL_CRASH_DETECTION", "START_TOOL_PROBE_CRASH_DETECTION")
+        else:
+            commands = ("STOP_TOOL_CRASH_DETECTION", "STOP_TOOL_PROBE_CRASH_DETECTION")
+        for command in commands:
+            if self._has_gcode_command(gcode, command):
+                gcode.run_script_from_command(command)
+                return
+        self.logger.debug("Skipping tool crash detection command; none available")
 
     def _get_oams_object(self, oams_name: Optional[str]):
         _, oams_obj = self._resolve_oams_name(oams_name)
@@ -4881,7 +4924,7 @@ class OAMSManager:
                 if gcode is None:
                     gcode = self.printer.lookup_object("gcode")
                     self._gcode_obj = gcode
-                gcode.run_script_from_command("STOP_TOOL_CRASH_DETECTION")
+                self._run_tool_crash_detection(False)
                 gcode.run_script_from_command("AFC_UNSELECT_TOOL")
             except Exception:
                 self.logger.warning(f"Failed to dock tool before loading {lane_name}")
@@ -5070,8 +5113,8 @@ class OAMSManager:
                     if gcode is None:
                         gcode = self.printer.lookup_object("gcode")
                         self._gcode_obj = gcode
+                    self._run_tool_crash_detection(True)
                     gcode.run_script_from_command(f"AFC_SELECT_TOOL TOOL={extruder_name}")
-                    gcode.run_script_from_command("START_TOOL_CRASH_DETECTION")
                 except Exception:
                     self.logger.warning(f"Failed to select tool {extruder_name} after loading {lane_name}")
             else:
