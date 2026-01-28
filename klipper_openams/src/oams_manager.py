@@ -673,12 +673,13 @@ class OAMSRunoutMonitor:
         else:
             commands = ("STOP_TOOL_CRASH_DETECTION", "STOP_TOOL_PROBE_CRASH_DETECTION")
         for command in commands:
-            if self._has_gcode_command(gcode, command):
-                try:
-                    gcode.run_script_from_command(command)
-                except Exception as exc:
-                    self.logger.debug(f"Skipping tool crash detection; failed {command}: {exc}")
-                return
+            for candidate in (command, command.lower()):
+                if self._has_gcode_command(gcode, candidate):
+                    try:
+                        gcode.run_script_from_command(candidate)
+                    except Exception as exc:
+                        self.logger.debug(f"Skipping tool crash detection; failed {candidate}: {exc}")
+                    return
         self.logger.debug("Skipping tool crash detection command; none available")
 
     def _get_oams_object(self, oams_name: Optional[str]):
