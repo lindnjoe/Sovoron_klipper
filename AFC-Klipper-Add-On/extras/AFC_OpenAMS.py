@@ -2771,10 +2771,21 @@ class afcAMS(afcUnit):
             return
 
         hub = getattr(lane, "hub_obj", None)
+        hub_val = bool(value)
         if hub is None:
+            lane.loaded_to_hub = hub_val
+            if self.hardware_service is not None:
+                lane_state = getattr(lane, "load_state", False)
+                tool_state = self._lane_reports_tool_filament(lane)
+                try:
+                    self.hardware_service.update_lane_snapshot(
+                        self.oams_name, lane.name, lane_state, hub_val, eventtime,
+                        spool_index=bay, tool_state=tool_state
+                    )
+                except Exception:
+                    self.logger.error(f"Failed to update lane snapshot for {lane.name}")
             return
 
-        hub_val = bool(value)
         if hub_val != getattr(lane, "loaded_to_hub", False):
             hub.switch_pin_callback(eventtime, hub_val)
             # CRITICAL: Update lane.loaded_to_hub to match hub sensor state
