@@ -4502,7 +4502,20 @@ def _patch_buffer_fault_detection_for_ams() -> None:
 
     def _ams_extruder_pos_update_event(self, eventtime):
         cur_lane = self.afc.function.get_current_lane_obj()
+        cur_extruder = None
         if cur_lane is None:
+            try:
+                toolhead = getattr(self.afc, "toolhead", None)
+                extruder_name = toolhead.get_extruder().name if toolhead is not None else None
+                cur_extruder = self.afc.tools.get(extruder_name) if extruder_name else None
+            except Exception:
+                cur_extruder = None
+            if cur_extruder is not None:
+                lane_name = getattr(cur_extruder, "lane_loaded", None)
+                cur_lane = self.afc.lanes.get(lane_name) if lane_name else None
+        else:
+            cur_extruder = getattr(cur_lane, "extruder_obj", None)
+        if cur_lane is None and cur_extruder is None:
             return _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE(self, eventtime)
 
         unit_obj = getattr(cur_lane, "unit_obj", None)
@@ -4512,7 +4525,7 @@ def _patch_buffer_fault_detection_for_ams() -> None:
             unit_obj = units.get(unit_name) if unit_name else None
         unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
         is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
-        tool_pin = getattr(getattr(cur_lane, "extruder_obj", None), "tool_start", None)
+        tool_pin = getattr(cur_extruder, "tool_start", None) if cur_extruder is not None else None
         is_virtual_tool = False
         try:
             is_virtual_tool = bool(tool_pin) and str(tool_pin).startswith("afc_virtual_ams:")
