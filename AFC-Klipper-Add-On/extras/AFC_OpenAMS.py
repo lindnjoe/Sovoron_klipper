@@ -4371,6 +4371,144 @@ def _patch_lane_unload_for_ams() -> None:
     AFC_Class.LANE_UNLOAD = _ams_lane_unload
     AFC_Class._ams_lane_unload_patched = True
 
+def _patch_buffer_multiplier_for_ams() -> None:
+    """Guard buffer multiplier updates when OpenAMS lanes lack an extruder stepper."""
+    global _ORIGINAL_BUFFER_SET_MULTIPLIER
+
+    try:
+        from extras.AFC_buffer import AFCTrigger
+    except Exception:
+        return
+
+    if getattr(AFCTrigger, "_ams_buffer_multiplier_patched", False):
+        return
+
+    _ORIGINAL_BUFFER_SET_MULTIPLIER = getattr(AFCTrigger, "set_multiplier", None)
+    if not callable(_ORIGINAL_BUFFER_SET_MULTIPLIER):
+        return
+
+    def _ams_set_multiplier(self, multiplier):
+        cur_lane = self.afc.function.get_current_lane_obj()
+        if cur_lane is None:
+            return _ORIGINAL_BUFFER_SET_MULTIPLIER(self, multiplier)
+
+        unit_obj = getattr(cur_lane, "unit_obj", None)
+        unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
+        is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
+        if not is_openams:
+            return _ORIGINAL_BUFFER_SET_MULTIPLIER(self, multiplier)
+
+        extruder_stepper = getattr(cur_lane, "extruder_stepper", None)
+        stepper = getattr(extruder_stepper, "stepper", None) if extruder_stepper is not None else None
+        if is_openams and stepper is None:
+            self.logger.debug(
+                "Skipping buffer multiplier update for OpenAMS lane {} (no extruder stepper)".format(
+                    cur_lane.name
+                )
+            )
+            return None
+
+        return _ORIGINAL_BUFFER_SET_MULTIPLIER(self, multiplier)
+
+    AFCTrigger.set_multiplier = _ams_set_multiplier
+    AFCTrigger._ams_buffer_multiplier_patched = True
+
+def _patch_buffer_status_for_missing_stepper() -> None:
+    """Guard buffer status reporting when a lane lacks an extruder stepper."""
+    global _ORIGINAL_BUFFER_GET_STATUS
+
+    try:
+        from extras.AFC_buffer import AFCTrigger
+    except Exception:
+        return
+
+    if getattr(AFCTrigger, "_ams_buffer_status_patched", False):
+        return
+
+    _ORIGINAL_BUFFER_GET_STATUS = getattr(AFCTrigger, "get_status", None)
+    if not callable(_ORIGINAL_BUFFER_GET_STATUS):
+        return
+
+    def _ams_get_status(self, eventtime=None):
+        cur_lane = self.afc.function.get_current_lane_obj()
+        unit_obj = getattr(cur_lane, "unit_obj", None) if cur_lane is not None else None
+        unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
+        is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
+        if not is_openams:
+            return _ORIGINAL_BUFFER_GET_STATUS(self, eventtime)
+        try:
+            return _ORIGINAL_BUFFER_GET_STATUS(self, eventtime)
+        except AttributeError as exc:
+            if "stepper" not in str(exc):
+                raise
+
+        response = {}
+        response["state"] = self.last_state
+        response["lanes"] = [lane.name for lane in self.lanes.values()]
+        response["enabled"] = self.enable
+        response["rotation_distance"] = None
+        response["fault_detection_enabled"] = self.error_sensitivity > 0
+        response["error_sensitivity"] = self.error_sensitivity
+        response["fault_timer"] = self.fault_timer
+
+        if self.error_sensitivity > 0 and self.filament_error_pos is not None:
+            current_pos = self.get_extruder_pos()
+            if current_pos is not None:
+                response["distance_to_fault"] = self.filament_error_pos - current_pos
+                response["filament_error_pos"] = self.filament_error_pos
+                response["current_pos"] = current_pos
+            else:
+                response["distance_to_fault"] = None
+        else:
+            response["distance_to_fault"] = None
+
+        return response
+
+    AFCTrigger.get_status = _ams_get_status
+    AFCTrigger._ams_buffer_status_patched = True
+
+def _patch_buffer_fault_detection_for_ams() -> None:
+    """Skip buffer fault detection timers for OpenAMS lanes."""
+    global _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE
+
+    try:
+        import extras.AFC_buffer as _afc_buffer_mod
+    except Exception:
+        return
+
+    AFCTrigger = getattr(_afc_buffer_mod, "AFCTrigger", None)
+    if AFCTrigger is None:
+        return
+
+    if getattr(AFCTrigger, "_ams_buffer_fault_patched", False):
+        return
+
+    _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE = getattr(AFCTrigger, "extruder_pos_update_event", None)
+    if not callable(_ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE):
+        return
+
+    timeout = getattr(_afc_buffer_mod, "CHECK_RUNOUT_TIMEOUT", 0.5)
+
+    def _ams_extruder_pos_update_event(self, eventtime):
+        cur_lane = self.afc.function.get_current_lane_obj()
+        if cur_lane is None:
+            return _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE(self, eventtime)
+
+        unit_obj = getattr(cur_lane, "unit_obj", None)
+        if unit_obj is None:
+            unit_name = getattr(cur_lane, "unit", None)
+            units = getattr(self.afc, "units", {})
+            unit_obj = units.get(unit_name) if unit_name else None
+        unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
+        is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
+        if is_openams:
+            return eventtime + timeout
+
+        return _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE(self, eventtime)
+
+    AFCTrigger.extruder_pos_update_event = _ams_extruder_pos_update_event
+    AFCTrigger._ams_buffer_fault_patched = True
+
 def _has_openams_hardware(printer):
     """Check if any OpenAMS hardware is configured in the system.
 
@@ -4401,4 +4539,7 @@ def load_config_prefix(config):
     _patch_extruder_for_virtual_ams()
     _patch_infinite_runout_handler()
     _patch_lane_unload_for_ams()
+    _patch_buffer_multiplier_for_ams()
+    _patch_buffer_status_for_missing_stepper()
+    _patch_buffer_fault_detection_for_ams()
     return afcAMS(config)
