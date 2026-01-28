@@ -660,6 +660,8 @@ class OAMSRunoutMonitor:
         return False
 
     def _run_tool_crash_detection(self, enable: bool) -> None:
+        if getattr(self, "crash_detection_mode", "disabled") == "disabled":
+            return
         gcode = self._gcode_obj
         if gcode is None:
             try:
@@ -669,16 +671,23 @@ class OAMSRunoutMonitor:
                 return
             self._gcode_obj = gcode
         if enable:
-            commands = ("START_TOOL_CRASH_DETECTION", "START_TOOL_PROBE_CRASH_DETECTION")
+            if self.crash_detection_mode == "probe":
+                commands = ("START_TOOL_PROBE_CRASH_DETECTION",)
+            else:
+                commands = ("START_TOOL_CRASH_DETECTION",)
         else:
-            commands = ("STOP_TOOL_CRASH_DETECTION", "STOP_TOOL_PROBE_CRASH_DETECTION")
+            if self.crash_detection_mode == "probe":
+                commands = ("STOP_TOOL_PROBE_CRASH_DETECTION",)
+            else:
+                commands = ("STOP_TOOL_CRASH_DETECTION",)
         for command in commands:
-            if self._has_gcode_command(gcode, command):
-                try:
-                    gcode.run_script_from_command(command)
-                except Exception as exc:
-                    self.logger.debug(f"Skipping tool crash detection; failed {command}: {exc}")
-                return
+            for candidate in (command, command.lower()):
+                if self._has_gcode_command(gcode, candidate):
+                    try:
+                        gcode.run_script_from_command(candidate)
+                    except Exception as exc:
+                        self.logger.debug(f"Skipping tool crash detection; failed {candidate}: {exc}")
+                    return
         self.logger.debug("Skipping tool crash detection command; none available")
 
     def _get_oams_object(self, oams_name: Optional[str]):
@@ -977,6 +986,19 @@ class OAMSManager:
             self.logger.info("Clog detection is DISABLED by config")
         if not self.enable_stuck_spool_detection:
             self.logger.info("Stuck spool detection is DISABLED by config")
+
+        crash_detection_raw = config.get("crash_detection", "0")
+        crash_detection_mode = str(crash_detection_raw).strip().lower()
+        if crash_detection_mode in {"0", "off", "false", "disabled", "disable"}:
+            crash_detection_mode = "disabled"
+        elif crash_detection_mode in {"tool", "probe"}:
+            pass
+        else:
+            self.logger.warning(
+                f"Unknown crash_detection '{crash_detection_raw}', defaulting to disabled."
+            )
+            crash_detection_mode = "disabled"
+        self.crash_detection_mode = crash_detection_mode
 
         # Configurable detection thresholds and timing parameters with validation
         self.stuck_spool_load_grace = config.getfloat("stuck_spool_load_grace", STUCK_SPOOL_LOAD_GRACE, minval=0.0, maxval=60.0)
