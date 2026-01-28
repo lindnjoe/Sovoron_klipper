@@ -2533,6 +2533,24 @@ class afcAMS(afcUnit):
         if getattr(afc, "_oams_sequences_patched", False):
             return
 
+        if not getattr(afc, "_oams_tool_swap_timing_patched", False):
+            try:
+                from extras.AFC_Toolchanger import AfcToolchanger
+            except Exception:
+                AfcToolchanger = None
+
+            if AfcToolchanger is not None:
+                original_tool_swap = AfcToolchanger.tool_swap
+
+                def tool_swap_wrapper(toolchanger_self, lane, set_start_time=True):
+                    suppress = getattr(toolchanger_self.afc, "_oams_suppress_tool_swap_timer", False)
+                    if suppress:
+                        return original_tool_swap(toolchanger_self, lane, set_start_time=False)
+                    return original_tool_swap(toolchanger_self, lane, set_start_time=set_start_time)
+
+                AfcToolchanger.tool_swap = tool_swap_wrapper
+                afc._oams_tool_swap_timing_patched = True
+
         if not hasattr(afc, "load_sequence") or not hasattr(afc, "unload_sequence"):
             return
 
@@ -2556,6 +2574,8 @@ class afcAMS(afcUnit):
                 afc_self.afcDeltaTime.log_with_time("Done heating toolhead")
 
             try:
+                afc_self.afcDeltaTime.set_start_time()
+                afc_self._oams_suppress_tool_swap_timer = True
                 afc_self.logger.debug(
                     f"OpenAMS load: delegating to OAMSM_LOAD_FILAMENT for lane {cur_lane.name}"
                 )
@@ -2574,6 +2594,8 @@ class afcAMS(afcUnit):
                 message = "OpenAMS load failed for {}: {}".format(cur_lane.name, str(e))
                 afc_self.error.handle_lane_failure(cur_lane, message)
                 return False
+            finally:
+                afc_self._oams_suppress_tool_swap_timer = False
 
             if not cur_lane.get_toolhead_pre_sensor_state():
                 message = (
