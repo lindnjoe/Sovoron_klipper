@@ -2574,7 +2574,12 @@ class afcAMS(afcUnit):
                 afc_self.afcDeltaTime.log_with_time("Done heating toolhead")
 
             try:
-                afc_self.afcDeltaTime.set_start_time()
+                if afc_self.afcDeltaTime.start_time is None:
+                    afc_self.afcDeltaTime.set_start_time()
+                else:
+                    now = datetime.now()
+                    afc_self.afcDeltaTime.major_delta_time = now
+                    afc_self.afcDeltaTime.last_time = now
                 afc_self._oams_suppress_tool_swap_timer = True
                 afc_self.logger.debug(
                     f"OpenAMS load: delegating to OAMSM_LOAD_FILAMENT for lane {cur_lane.name}"
