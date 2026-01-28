@@ -661,6 +661,7 @@ class OAMSRunoutMonitor:
 
     def _run_tool_crash_detection(self, enable: bool) -> bool:
         if getattr(self, "crash_detection_mode", "disabled") == "disabled":
+            self.logger.debug("Tool crash detection disabled; skipping")
             return True
         gcode = self._gcode_obj
         if gcode is None:
@@ -684,9 +685,14 @@ class OAMSRunoutMonitor:
         for command in commands:
             for candidate in (command, command.lower()):
                 try:
+                    self.logger.debug(f"Running tool crash detection command: {candidate}")
                     gcode.run_script_from_command(candidate)
+                    self.logger.debug(f"Tool crash detection command completed: {candidate}")
                     return True
                 except Exception as exc:
+                    self.logger.debug(
+                        f"Tool crash detection command failed: {candidate} ({exc})"
+                    )
                     last_exc = exc
                     continue
         if last_exc is not None:
@@ -4953,15 +4959,21 @@ class OAMSManager:
         self.logger.debug(f"Loading lane {lane_name}: {oams_name} bay {bay_index} via {fps_name}")
 
         if getattr(oam, "dock_load", False):
-            try:
-                gcode = self._gcode_obj
-                if gcode is None:
+            gcode = self._gcode_obj
+            if gcode is None:
+                try:
                     gcode = self.printer.lookup_object("gcode")
-                    self._gcode_obj = gcode
+                except Exception:
+                    gcode = None
+                self._gcode_obj = gcode
+            if gcode is not None:
                 if not self._run_tool_crash_detection(False):
                     self.logger.warning("Failed to stop tool crash detection before dock unload")
-                gcode.run_script_from_command("AFC_UNSELECT_TOOL")
-            except Exception:
+                try:
+                    gcode.run_script_from_command("AFC_UNSELECT_TOOL")
+                except Exception:
+                    self.logger.warning(f"Failed to dock tool before loading {lane_name}")
+            else:
                 self.logger.warning(f"Failed to dock tool before loading {lane_name}")
 
         # Capture state BEFORE changing fps_state.state to avoid getting stuck
