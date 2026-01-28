@@ -216,6 +216,9 @@ class OAMSRunoutMonitor:
                 is_printing = idle_timeout.get_status(eventtime)["state"] == "Printing"
                 spool_idx = self.fps_state.current_spool_idx or self.runout_spool_idx
 
+                if not is_printing and self.state == OAMSRunoutState.MONITORING:
+                    return eventtime + MONITOR_ENCODER_PERIOD_IDLE
+
                 if self.state in (OAMSRunoutState.STOPPED, OAMSRunoutState.PAUSED, OAMSRunoutState.RELOADING):
                     # When not actively monitoring, use the idle interval to reduce timer churn
                     return eventtime + MONITOR_ENCODER_PERIOD_IDLE
