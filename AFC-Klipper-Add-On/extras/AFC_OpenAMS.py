@@ -205,12 +205,13 @@ def _patch_extruder_for_virtual_ams() -> None:
     base_init = extruder_cls.__init__
 
     class _ProxyConfig:
-        def __init__(self, original):
+        def __init__(self, original, pin_override):
             self._original = original
+            self._pin_override = pin_override
 
         def get(self, key, *args, **kwargs):
             if key == "pin_tool_start":
-                return "buffer"
+                return self._pin_override
             return self._original.get(key, *args, **kwargs)
 
         def __getattr__(self, item):
@@ -227,7 +228,20 @@ def _patch_extruder_for_virtual_ams() -> None:
 
         if normalized:
             if normalized.upper().startswith("AMS_"):
-                proxy_config = _ProxyConfig(config)
+                try:
+                    printer = config.get_printer()
+                    afc_obj = printer.lookup_object("AFC", None)
+                    pins = printer.lookup_object("pins", None)
+                    if afc_obj is not None and pins is not None:
+                        if not getattr(afc_obj, "_virtual_ams_chip_registered", False):
+                            pins.register_chip("afc_virtual_ams", afc_obj)
+                            afc_obj._virtual_ams_chip_registered = True
+                        pin_override = f"afc_virtual_ams:{normalized}"
+                        proxy_config = _ProxyConfig(config, pin_override)
+                    else:
+                        normalized = None
+                except Exception:
+                    normalized = None
             else:
                 normalized = None
 
@@ -236,7 +250,7 @@ def _patch_extruder_for_virtual_ams() -> None:
         if not normalized:
             return
 
-        show_sensor = getattr(self, "enable_sensors_in_gui", True)
+        show_sensor = False
         enable_runout = getattr(self, "enable_runout", False)
         runout_cb = getattr(self, "handle_start_runout", None)
 
@@ -755,7 +769,7 @@ class afcAMS(afcUnit):
                 else:
                     self.afc._virtual_ams_chip_registered = True
 
-            enable_gui = getattr(extruder, "enable_sensors_in_gui", True)
+            enable_gui = False
             runout_cb = getattr(extruder, "handle_start_runout", None)
             enable_runout = getattr(extruder, "enable_runout", False)
             debounce = getattr(extruder, "debounce_delay", 0.0)
@@ -4487,7 +4501,13 @@ def _patch_buffer_fault_detection_for_ams() -> None:
             unit_obj = units.get(unit_name) if unit_name else None
         unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
         is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
-        if is_openams:
+        tool_pin = getattr(getattr(cur_lane, "extruder_obj", None), "tool_start", None)
+        is_virtual_tool = False
+        try:
+            is_virtual_tool = bool(tool_pin) and str(tool_pin).startswith("afc_virtual_ams:")
+        except Exception:
+            is_virtual_tool = False
+        if is_openams or is_virtual_tool:
             return eventtime + timeout
 
         return _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE(self, eventtime)
@@ -4528,6 +4548,4 @@ def load_config_prefix(config):
     _patch_buffer_multiplier_for_ams()
     _patch_buffer_status_for_missing_stepper()
     _patch_buffer_fault_detection_for_ams()
-    # Note: Buffer patching removed - AFC natively handles buffer_obj=None correctly
-    # We only need to ensure buffer_obj=None on AMS lanes (done in handle_ready)
     return afcAMS(config)
