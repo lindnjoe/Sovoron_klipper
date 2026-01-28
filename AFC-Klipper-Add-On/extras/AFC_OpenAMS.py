@@ -4528,6 +4528,4 @@ def load_config_prefix(config):
     _patch_buffer_multiplier_for_ams()
     _patch_buffer_status_for_missing_stepper()
     _patch_buffer_fault_detection_for_ams()
-    # Note: Buffer patching removed - AFC natively handles buffer_obj=None correctly
-    # We only need to ensure buffer_obj=None on AMS lanes (done in handle_ready)
     return afcAMS(config)
