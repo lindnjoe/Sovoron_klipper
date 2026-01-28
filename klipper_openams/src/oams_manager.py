@@ -635,63 +635,74 @@ class OAMSRunoutMonitor:
         return oams_name, None
 
     def _has_gcode_command(self, gcode, command: str) -> bool:
+        candidates = (command, command.lower())
         handlers = getattr(gcode, "ready_gcode_handlers", None)
         if isinstance(handlers, dict):
-            return command in handlers
+            return any(candidate in handlers for candidate in candidates)
         handlers = getattr(gcode, "gcode_handlers", None)
         if isinstance(handlers, dict):
-            return command in handlers
+            return any(candidate in handlers for candidate in candidates)
         handlers = getattr(gcode, "_gcode_handlers", None)
         if isinstance(handlers, dict):
-            return command in handlers
+            return any(candidate in handlers for candidate in candidates)
         get_command = getattr(gcode, "get_command", None)
         if callable(get_command):
-            try:
-                return get_command(command) is not None
-            except Exception:
-                return False
+            for candidate in candidates:
+                try:
+                    if get_command(candidate) is not None:
+                        return True
+                except Exception:
+                    continue
+            return False
         lookup_command = getattr(gcode, "lookup_command", None)
         if callable(lookup_command):
-            try:
-                lookup_command(command)
-                return True
-            except Exception:
-                return False
+            for candidate in candidates:
+                try:
+                    lookup_command(candidate)
+                    return True
+                except Exception:
+                    continue
+            return False
         return False
 
-    def _run_tool_crash_detection(self, enable: bool) -> None:
+    def _run_tool_crash_detection(self, enable: bool) -> bool:
         gcode = self._gcode_obj
         if gcode is None:
             try:
                 gcode = self.printer.lookup_object("gcode")
             except Exception as exc:
                 self.logger.debug(f"Skipping tool crash detection; no gcode object: {exc}")
-                return
+                return False
             self._gcode_obj = gcode
-        run_script = getattr(gcode, "run_script_from_command", None)
+        run_script_from_command = getattr(gcode, "run_script_from_command", None)
+        run_script = getattr(gcode, "run_script", None)
         if enable:
             commands = ("START_TOOL_CRASH_DETECTION", "START_TOOL_PROBE_CRASH_DETECTION")
         else:
             commands = ("STOP_TOOL_CRASH_DETECTION", "STOP_TOOL_PROBE_CRASH_DETECTION")
         for command in commands:
-            if self._has_gcode_command(gcode, command):
+            has_command = self._has_gcode_command(gcode, command)
+            if not has_command and not callable(run_script_from_command) and not callable(run_script):
+                continue
+            if callable(run_script_from_command):
                 try:
-                    if callable(run_script):
-                        run_script(command)
-                    else:
-                        raise AttributeError("gcode.run_script_from_command unavailable")
+                    run_script_from_command(command)
+                    return True
                 except Exception as exc:
-                    self.logger.debug(f"Skipping tool crash detection; failed {command}: {exc}")
-                    continue
-                return
+                    self.logger.debug(
+                        f"Skipping tool crash detection; failed {command} via run_script_from_command: {exc}"
+                    )
             if callable(run_script):
                 try:
                     run_script(command)
+                    return True
                 except Exception as exc:
-                    self.logger.debug(f"Skipping tool crash detection; failed {command}: {exc}")
+                    self.logger.debug(
+                        f"Skipping tool crash detection; failed {command} via run_script: {exc}"
+                    )
                     continue
-                return
         self.logger.debug("Skipping tool crash detection command; none available")
+        return False
 
     def _get_oams_object(self, oams_name: Optional[str]):
         _, oams_obj = self._resolve_oams_name(oams_name)
@@ -4943,9 +4954,7 @@ class OAMSManager:
                 if gcode is None:
                     gcode = self.printer.lookup_object("gcode")
                     self._gcode_obj = gcode
-                try:
-                    self._run_tool_crash_detection(False)
-                except Exception:
+                if not self._run_tool_crash_detection(False):
                     self.logger.warning("Failed to stop tool crash detection before dock unload")
                 gcode.run_script_from_command("AFC_UNSELECT_TOOL")
             except Exception:
@@ -5135,9 +5144,7 @@ class OAMSManager:
                     if gcode is None:
                         gcode = self.printer.lookup_object("gcode")
                         self._gcode_obj = gcode
-                    try:
-                        self._run_tool_crash_detection(True)
-                    except Exception:
+                    if not self._run_tool_crash_detection(True):
                         self.logger.warning("Failed to start tool crash detection before tool select")
                     gcode.run_script_from_command(f"AFC_SELECT_TOOL TOOL={extruder_name}")
                 except Exception:
