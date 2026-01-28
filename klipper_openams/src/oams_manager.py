@@ -668,6 +668,7 @@ class OAMSRunoutMonitor:
                 self.logger.debug(f"Skipping tool crash detection; no gcode object: {exc}")
                 return
             self._gcode_obj = gcode
+        run_script = getattr(gcode, "run_script_from_command", None)
         if enable:
             commands = ("START_TOOL_CRASH_DETECTION", "START_TOOL_PROBE_CRASH_DETECTION")
         else:
@@ -675,9 +676,20 @@ class OAMSRunoutMonitor:
         for command in commands:
             if self._has_gcode_command(gcode, command):
                 try:
-                    gcode.run_script_from_command(command)
+                    if callable(run_script):
+                        run_script(command)
+                    else:
+                        raise AttributeError("gcode.run_script_from_command unavailable")
                 except Exception as exc:
                     self.logger.debug(f"Skipping tool crash detection; failed {command}: {exc}")
+                    continue
+                return
+            if callable(run_script):
+                try:
+                    run_script(command)
+                except Exception as exc:
+                    self.logger.debug(f"Skipping tool crash detection; failed {command}: {exc}")
+                    continue
                 return
         self.logger.debug("Skipping tool crash detection command; none available")
 
