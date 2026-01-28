@@ -57,6 +57,7 @@ FILAMENT_PATH_LENGTH_FACTOR = 1.14
 MONITOR_ENCODER_PERIOD = 2.0
 MONITOR_ENCODER_PERIOD_IDLE = 4.0  # OPTIMIZATION: Longer interval when idle
 MONITOR_ENCODER_SPEED_GRACE = 3.0  # Increased from 2.0 to 3.0 - more grace time before stuck detection
+AUTO_DETECT_INSERT_GRACE = 10.0  # Seconds to suppress auto-detect after unload completes
 MIN_EXTRUDER_ENGAGEMENT_DELTA = 0.5  # Minimum extruder movement to confirm engagement
 ENGAGEMENT_SUPPRESSION_WINDOW = 10.0  # Increased from 6.0 to 10.0 - longer suppression after engagement to prevent false clog detection
 CLOG_CHECK_INTERVAL = 8.0  # Minimum seconds between clog checks to reduce log/CPU churn
@@ -6411,9 +6412,14 @@ class OAMSManager:
                     except Exception:
                         pass
 
+                    recently_unloaded = (
+                        fps_state.since is not None
+                        and now - fps_state.since < AUTO_DETECT_INSERT_GRACE
+                    )
                     if (
                         not is_runout_active
                         and not is_tool_operation
+                        and not recently_unloaded
                         and fps_state.consecutive_idle_polls % 2 == 0
                     ):  # Check every 2 polls (4 seconds)
                         old_lane = fps_state.current_lane
