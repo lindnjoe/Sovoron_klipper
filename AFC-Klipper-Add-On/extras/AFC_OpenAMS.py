@@ -4501,7 +4501,13 @@ def _patch_buffer_fault_detection_for_ams() -> None:
             unit_obj = units.get(unit_name) if unit_name else None
         unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
         is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
-        if is_openams:
+        tool_pin = getattr(getattr(cur_lane, "extruder_obj", None), "tool_start", None)
+        is_virtual_tool = False
+        try:
+            is_virtual_tool = bool(tool_pin) and str(tool_pin).startswith("afc_virtual_ams:")
+        except Exception:
+            is_virtual_tool = False
+        if is_openams or is_virtual_tool:
             return eventtime + timeout
 
         return _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE(self, eventtime)
