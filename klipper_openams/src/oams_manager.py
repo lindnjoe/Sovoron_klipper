@@ -662,7 +662,11 @@ class OAMSRunoutMonitor:
     def _run_tool_crash_detection(self, enable: bool) -> None:
         gcode = self._gcode_obj
         if gcode is None:
-            gcode = self.printer.lookup_object("gcode")
+            try:
+                gcode = self.printer.lookup_object("gcode")
+            except Exception as exc:
+                self.logger.debug(f"Skipping tool crash detection; no gcode object: {exc}")
+                return
             self._gcode_obj = gcode
         if enable:
             commands = ("START_TOOL_CRASH_DETECTION", "START_TOOL_PROBE_CRASH_DETECTION")
@@ -670,7 +674,10 @@ class OAMSRunoutMonitor:
             commands = ("STOP_TOOL_CRASH_DETECTION", "STOP_TOOL_PROBE_CRASH_DETECTION")
         for command in commands:
             if self._has_gcode_command(gcode, command):
-                gcode.run_script_from_command(command)
+                try:
+                    gcode.run_script_from_command(command)
+                except Exception as exc:
+                    self.logger.debug(f"Skipping tool crash detection; failed {command}: {exc}")
                 return
         self.logger.debug("Skipping tool crash detection command; none available")
 
@@ -4924,7 +4931,10 @@ class OAMSManager:
                 if gcode is None:
                     gcode = self.printer.lookup_object("gcode")
                     self._gcode_obj = gcode
-                self._run_tool_crash_detection(False)
+                try:
+                    self._run_tool_crash_detection(False)
+                except Exception:
+                    self.logger.warning("Failed to stop tool crash detection before dock unload")
                 gcode.run_script_from_command("AFC_UNSELECT_TOOL")
             except Exception:
                 self.logger.warning(f"Failed to dock tool before loading {lane_name}")
@@ -5113,7 +5123,10 @@ class OAMSManager:
                     if gcode is None:
                         gcode = self.printer.lookup_object("gcode")
                         self._gcode_obj = gcode
-                    self._run_tool_crash_detection(True)
+                    try:
+                        self._run_tool_crash_detection(True)
+                    except Exception:
+                        self.logger.warning("Failed to start tool crash detection before tool select")
                     gcode.run_script_from_command(f"AFC_SELECT_TOOL TOOL={extruder_name}")
                 except Exception:
                     self.logger.warning(f"Failed to select tool {extruder_name} after loading {lane_name}")
