@@ -47,6 +47,7 @@ class ToolCrash:
         self.enabled = False
         self.expected_tool = None
         self.crash_mintime = config.getfloat('crash_mintime', 0.5, above=0.)
+        self.crash_confirm_time = config.getfloat('crash_confirm_time', 1.0, minval=0.0)
         self._watchdog_interval=config.getfloat('watchdog_interval',0.500, above=0.)
         self._watchdog_error_count=0
         self._watchdog_error_threshold=config.getint('watchdog_threshold',2);
@@ -54,6 +55,9 @@ class ToolCrash:
         self._home_timeblock=config.getfloat('home_timeblock',1.0, above=0.)
         self._state = STATE_IDLE
         self._watchdog_timer = None
+        self._crash_pending_timer = None
+        self._crash_pending_msg = None
+        self._crash_pending_time = None
         
         self.printer.register_event_handler('klippy:connect', self._on_connect)
         self.printer.register_event_handler('homing:homing_move_begin', self._on_homing_move_begin)
@@ -121,6 +125,35 @@ class ToolCrash:
         if self._watchdog_timer is not None:
             self.reactor.unregister_timer(self._watchdog_timer)
             self._watchdog_timer = None
+        self._cancel_pending_crash()
+
+    def _cancel_pending_crash(self):
+        self._crash_pending_msg = None
+        self._crash_pending_time = None
+        if self._crash_pending_timer is not None:
+            self.reactor.unregister_timer(self._crash_pending_timer)
+            self._crash_pending_timer = None
+
+    def _schedule_crash(self, msg, eventtime):
+        if self.crash_confirm_time <= 0.0:
+            self._do_crash(msg, eventtime)
+            return
+        self._crash_pending_msg = msg
+        self._crash_pending_time = eventtime
+        if self._crash_pending_timer is not None:
+            return
+
+        def _confirm(evt):
+            if not self.enabled or self._crash_pending_msg is None:
+                self._crash_pending_timer = None
+                return self.reactor.NEVER
+            self._crash_pending_timer = None
+            self._do_crash(self._crash_pending_msg, self._now_pt())
+            return self.reactor.NEVER
+
+        self._crash_pending_timer = self.reactor.register_timer(
+            _confirm, eventtime + self.crash_confirm_time
+        )
 
     # Watchdog consistency checks of toolchanger state
     def _sync_expected(self, initial=False):
@@ -148,7 +181,9 @@ class ToolCrash:
             
         # check to see if we've seen multiple consecutive failures
         if self._watchdog_error_count >= self._watchdog_error_threshold:
-            self._do_crash(err_msg,self._now_pt())
+            self._schedule_crash(err_msg, self.reactor.monotonic())
+        elif not err_msg:
+            self._cancel_pending_crash()
 
     # Edge detection checks basded on trigger of sensors
     def _on_detect_edge(self, eventtime, is_triggered):
@@ -164,11 +199,15 @@ class ToolCrash:
             if IGN_PROBING in self.ignore:
                 return
 
+        if not is_triggered:
+            self._cancel_pending_crash()
+            return
+
         err_msg = "tool_crash detected"
         if self.toolchanger.active_tool is not None:
             err_msg += ' ' + self.toolchanger.active_tool.name
 
-        self._do_crash(err_msg,eventtime)
+        self._schedule_crash(err_msg, eventtime)
 
     def _do_crash(self,msg, etime):
         self.enabled = False
