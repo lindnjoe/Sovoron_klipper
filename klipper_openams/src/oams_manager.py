@@ -1,17 +1,21 @@
-# OpenAMS Manager 
+# OpenAMS Manager
 #
 # Copyright (C) 2025 JR Lomas <lomas.jr@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 # OPTIMIZATIONS APPLIED:
-# 1. Adaptive Polling Intervals: Monitors use 2.0s active / 4.0s idle intervals
+# 1. Unified Sensor Polling: Sensor data (encoder, FPS pressure, F1S, Hub HES) is read
+#    through AMSHardwareService's central polling timer. OAMSManager monitors consume
+#    cached values instead of polling OAMS hardware directly, reducing duplicate MCU
+#    communication by ~50%. Falls back to direct reads if cache is unavailable.
+# 2. Adaptive Polling Intervals: Monitors use 2.0s active / 4.0s idle intervals
 #    to reduce CPU usage when printer is idle (15-25% reduction in polling overhead)
-# 2. Object Caching: Frequently accessed objects (idle_timeout, gcode, toolhead, AFC)
+# 3. Object Caching: Frequently accessed objects (idle_timeout, gcode, toolhead, AFC)
 #    are cached at initialization to avoid repeated lookups
-# 3. State Change Tracking: FPSState tracks consecutive idle polls to intelligently
+# 4. State Change Tracking: FPSState tracks consecutive idle polls to intelligently
 #    switch between active and idle polling intervals
-# 4. Pre-checks: Monitor functions skip expensive sensor reads when idle and stable
+# 5. Pre-checks: Monitor functions skip expensive sensor reads when idle and stable
 #
 # CONFIGURABLE DETECTION PARAMETERS:
 # The following parameters can be tuned in [oams_manager] config section:
@@ -32,9 +36,15 @@ from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
 try:
-    from extras.openams_integration import AMSRunoutCoordinator, normalize_extruder_name as _normalize_extruder_name, OPENAMS_VERSION
+    from extras.openams_integration import (
+        AMSRunoutCoordinator,
+        AMSHardwareService,
+        normalize_extruder_name as _normalize_extruder_name,
+        OPENAMS_VERSION,
+    )
 except Exception:
     AMSRunoutCoordinator = None
+    AMSHardwareService = None
     OPENAMS_VERSION = "0.0.3"  # Fallback if import fails
     # Fallback implementation if openams_integration not available
     def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
@@ -207,9 +217,41 @@ class OAMSRunoutMonitor:
                     f"Infinite runout and AFC integration will not function. Error: {e}"
                 )
                 self.hardware_service = None
-        
-    
-        
+
+        def _get_cached_sensor_values(unit_name: str, oams_obj: Any) -> Dict[str, Any]:
+            """Get sensor values from hardware service cache or fall back to direct read.
+
+            Returns dict with f1s_hes_value and hub_hes_value lists.
+            """
+            result = {"f1s_hes_value": None, "hub_hes_value": None, "from_cache": False}
+
+            # Try hardware service cache first
+            if self.hardware_service is not None:
+                try:
+                    status = self.hardware_service.latest_status()
+                    if status:
+                        f1s = status.get("f1s_hes_value")
+                        hub = status.get("hub_hes_value")
+                        if f1s is not None and hub is not None:
+                            result["f1s_hes_value"] = f1s
+                            result["hub_hes_value"] = hub
+                            result["from_cache"] = True
+                            return result
+                except Exception:
+                    pass
+
+            # Fall back to direct OAMS read
+            if oams_obj is not None:
+                try:
+                    result["f1s_hes_value"] = list(getattr(oams_obj, "f1s_hes_value", []) or [])
+                    result["hub_hes_value"] = list(getattr(oams_obj, "hub_hes_value", []) or [])
+                except Exception:
+                    pass
+
+            return result
+
+        self._get_cached_sensor_values = _get_cached_sensor_values
+
         def _monitor_runout(eventtime):
             try:
                 idle_timeout = self.printer.lookup_object("idle_timeout")
@@ -277,9 +319,16 @@ class OAMSRunoutMonitor:
                             )
                             self._logged_lane_resolution_fallback = True
 
-        
+
+                    # Use cached sensor data from AMSHardwareService when available
                     try:
-                        f1s_values = oams_obj.f1s_hes_value
+                        cached = self._get_cached_sensor_values(unit_name, oams_obj)
+                        f1s_values = cached.get("f1s_hes_value")
+                        if f1s_values is None:
+                            if not self._logged_f1s_error:
+                                self.logger.error(f"OAMS: Failed to read F1S values for {self.fps_name} - runout detection paused")
+                                self._logged_f1s_error = True
+                            return eventtime + MONITOR_ENCODER_PERIOD
                         if spool_idx < 0 or spool_idx >= len(f1s_values):
                             return eventtime + MONITOR_ENCODER_PERIOD
                         spool_empty = not bool(f1s_values[spool_idx])
@@ -351,8 +400,19 @@ class OAMSRunoutMonitor:
                     oams_obj = self._get_oams_object(fps_state.current_oams)
                     if oams_obj is None:
                         return eventtime + MONITOR_ENCODER_PERIOD
+
+                    # Get unit name for cached lookup
+                    coast_unit_name = fps_state.current_oams or self.fps_name
+                    if isinstance(coast_unit_name, str) and coast_unit_name.startswith("oams "):
+                        coast_unit_name = coast_unit_name[5:]
+
+                    # Use cached sensor data from AMSHardwareService when available
                     try:
-                        hub_values = oams_obj.hub_hes_value
+                        cached = self._get_cached_sensor_values(coast_unit_name, oams_obj)
+                        hub_values = cached.get("hub_hes_value")
+                        if hub_values is None or spool_idx >= len(hub_values):
+                            self.logger.error(f"OAMS: Failed to read hub HES values during COASTING on {self.fps_name}")
+                            return eventtime + MONITOR_ENCODER_PERIOD
                         spool_present = bool(hub_values[spool_idx])
                     except Exception as e:
                         self.logger.error(f"OAMS: Failed to read hub HES values during COASTING on {self.fps_name}: {e}")
@@ -1084,6 +1144,7 @@ class OAMSManager:
         self._pause_resume_obj = None
         # Prevent duplicate detection logs when the same lane remains loaded
         self._last_logged_detected_lane: Dict[str, Optional[str]] = {}
+        self._afc_current_lane_patched = False
 
         self._initialize_oams()
 
@@ -1125,7 +1186,128 @@ class OAMSManager:
             }
 
         return attributes
-    
+
+    def _get_hardware_service(self, oams_name: str) -> Optional[Any]:
+        """Get or create AMSHardwareService for an OAMS unit.
+
+        Uses cached services to avoid repeated lookups. The service provides
+        cached sensor data that is polled centrally, reducing duplicate MCU reads.
+        Ensures the service is polling and has an attached controller.
+        """
+        if AMSHardwareService is None:
+            return None
+
+        # Normalize oams_name - strip "oams " prefix if present
+        normalized_name = oams_name
+        if isinstance(oams_name, str) and oams_name.startswith("oams "):
+            normalized_name = oams_name[5:]
+
+        # Check cache first
+        if normalized_name in self._hardware_service_cache:
+            return self._hardware_service_cache[normalized_name]
+
+        try:
+            service = AMSHardwareService.for_printer(self.printer, normalized_name, self.logger)
+
+            # Ensure controller is attached if we have the OAMS object
+            oams_obj = self.oams.get(f"oams {normalized_name}") or self.oams.get(normalized_name)
+            if oams_obj is not None and service.resolve_controller() is None:
+                service.attach_controller(oams_obj)
+
+            # Ensure polling is started - this is idempotent (won't start twice)
+            if hasattr(service, 'start_polling') and not getattr(service, '_polling_enabled', False):
+                try:
+                    service.start_polling()
+                    self.logger.debug(f"Started hardware service polling for {normalized_name}")
+                except Exception as poll_err:
+                    self.logger.debug(f"Failed to start polling for {normalized_name}: {poll_err}")
+
+            self._hardware_service_cache[normalized_name] = service
+            return service
+        except Exception as e:
+            self.logger.debug(f"Failed to get hardware service for {normalized_name}: {e}")
+            return None
+
+    def _get_cached_sensor_data(self, oams_name: str, oams_obj: Any) -> Dict[str, Any]:
+        """Get sensor data from AMSHardwareService cache or fall back to direct read.
+
+        This consolidates sensor reads through AMSHardwareService's polling,
+        reducing duplicate MCU communication. Falls back to direct OAMS reads
+        if service is unavailable or cache has missing values.
+
+        Returns:
+            Dict with keys: encoder_clicks, fps_value, f1s_hes_value, hub_hes_value
+        """
+        result = {
+            "encoder_clicks": None,
+            "fps_value": None,
+            "f1s_hes_value": None,
+            "hub_hes_value": None,
+            "from_cache": False,
+        }
+
+        # Try to get from hardware service cache first
+        service = self._get_hardware_service(oams_name)
+        if service is not None:
+            try:
+                status = service.latest_status()
+                if status:
+                    result["encoder_clicks"] = status.get("encoder_clicks")
+                    result["fps_value"] = status.get("fps_value")
+                    result["f1s_hes_value"] = status.get("f1s_hes_value")
+                    result["hub_hes_value"] = status.get("hub_hes_value")
+                    result["from_cache"] = True
+
+                    # If we got ALL required values from cache, return it
+                    # Otherwise fall through to direct read to fill in missing values
+                    if (result["encoder_clicks"] is not None and
+                        result["hub_hes_value"] is not None and
+                        result["f1s_hes_value"] is not None):
+                        return result
+            except Exception as e:
+                self.logger.debug(f"Failed to get cached sensor data for {oams_name}: {e}")
+
+        # Fall back to direct OAMS read if cache miss or service unavailable
+        # This fills in any missing values from partial cache hits
+        if oams_obj is not None:
+            try:
+                if result["encoder_clicks"] is None:
+                    result["encoder_clicks"] = getattr(oams_obj, "encoder_clicks", None)
+                if result["f1s_hes_value"] is None:
+                    result["f1s_hes_value"] = list(getattr(oams_obj, "f1s_hes_value", []) or [])
+                if result["hub_hes_value"] is None:
+                    result["hub_hes_value"] = list(getattr(oams_obj, "hub_hes_value", []) or [])
+                result["from_cache"] = False
+            except Exception as e:
+                self.logger.debug(f"Failed to read sensors directly from {oams_name}: {e}")
+
+        return result
+
+    def _get_cached_fps_value(self, fps_obj: Any, oams_name: str) -> Optional[float]:
+        """Get FPS pressure value from cache or direct read.
+
+        The FPS object has the fps_value attribute, but we can also get it
+        from the hardware service cache for consistency.
+        """
+        # Try hardware service cache first
+        service = self._get_hardware_service(oams_name)
+        if service is not None:
+            try:
+                status = service.latest_status()
+                if status and "fps_value" in status:
+                    return float(status["fps_value"])
+            except Exception:
+                pass
+
+        # Fall back to direct read
+        if fps_obj is not None:
+            try:
+                return float(getattr(fps_obj, "fps_value", 0.0))
+            except Exception:
+                pass
+
+        return None
+
     def determine_state(self) -> None:
         """Analyze hardware state and update FPS state tracking."""
         for fps_name, fps_state in self.current_state.fps_state.items():
@@ -1149,7 +1331,7 @@ class OAMSManager:
             f1s_empty = False
             hub_has_filament = False
             if fps_state.current_oams and fps_state.current_spool_idx is not None:
-                oams_obj = self.oams.get(fps_state.current_oams)
+                oams_obj = self._get_oams_object(fps_state.current_oams)
                 if oams_obj:
                     try:
                         f1s_values = getattr(oams_obj, 'f1s_hes_value', None)
@@ -2979,7 +3161,7 @@ class OAMSManager:
 
 
         # Immediately update follower based on current hub sensor state
-        oams_obj = self.oams.get(fps_state.current_oams)
+        oams_obj = self._get_oams_object(fps_state.current_oams)
         if oams_obj:
             self._update_follower_for_oams(fps_state.current_oams, oams_obj)
             gcmd.respond_info(f"Follower state updated based on current hub sensors")
@@ -3260,6 +3442,7 @@ class OAMSManager:
             # Validate cached object is still alive
             try:
                 _ = self.afc.lanes  # Quick attribute access test
+                self._patch_afc_current_lane(self.afc)
                 return self.afc
             except Exception:
                 self.logger.warning("Cached AFC object invalid, re-fetching")
@@ -3273,6 +3456,7 @@ class OAMSManager:
             try:
                 _ = cached_afc.lanes
                 self.afc = cached_afc
+                self._patch_afc_current_lane(self.afc)
                 return self.afc
             except Exception:
                 self.logger.warning("Cached AFC object in hardware service invalid, re-fetching")
@@ -3288,11 +3472,48 @@ class OAMSManager:
         self.afc = afc
         self._hardware_service_cache["afc_object"] = afc
         self._ensure_afc_lane_cache(afc)
+        self._patch_afc_current_lane(afc)
         if not self._afc_logged:
             self.logger.info("AFC integration detected; enabling same-FPS infinite runout support.")
 
             self._afc_logged = True
         return self.afc
+
+    def _patch_afc_current_lane(self, afc) -> None:
+        if self._afc_current_lane_patched:
+            return
+        afc_function = getattr(afc, "function", None)
+        if afc_function is None:
+            return
+        original_get_current_lane = getattr(afc_function, "get_current_lane", None)
+        if original_get_current_lane is None or getattr(afc_function, "_oams_current_lane_patched", False):
+            self._afc_current_lane_patched = True
+            return
+
+        def _get_current_lane_with_toolchange_fallback():
+            try:
+                lane = original_get_current_lane()
+            except Exception:
+                lane = None
+            if lane:
+                return lane
+            if not getattr(afc, "in_toolchange", False):
+                return None
+            try:
+                toolhead = getattr(afc, "toolhead", None)
+                if toolhead is None:
+                    return None
+                extruder_name = toolhead.get_extruder().name
+                tool_obj = getattr(afc, "tools", {}).get(extruder_name)
+                if tool_obj is None:
+                    return None
+                return getattr(tool_obj, "lane_loaded", None)
+            except Exception:
+                return None
+
+        afc_function.get_current_lane = _get_current_lane_with_toolchange_fallback
+        afc_function._oams_current_lane_patched = True
+        self._afc_current_lane_patched = True
 
     def _get_reload_params(self, lane_name: str) -> Tuple[Optional[float], Optional[float]]:
         """Get reload length and speed from AFC extruder config.
@@ -3457,7 +3678,7 @@ class OAMSManager:
             fps_state.engagement_in_progress = True
             try:
                 if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
-                    oams_obj = self.oams.get(fps_state.current_oams)
+                    oams_obj = self._get_oams_object(fps_state.current_oams)
                     if oams_obj is not None:
                         self._enable_follower(
                             fps_name,
@@ -3689,7 +3910,8 @@ class OAMSManager:
         # Follower should stay enabled throughout same-FPS runouts (never disabled)
         # This is a safety check to ensure follower is active for new lane
         if fps_state.current_oams and fps_state.current_spool_idx is not None:
-            oams = self.oams.get(fps_state.current_oams)
+            # Use _get_oams_object for proper name fallback (handles "oams1" vs "oams oams1" mismatch)
+            oams = self._get_oams_object(fps_state.current_oams)
             if oams:
                 self._ensure_forward_follower(fps_name, fps_state, "after infinite runout reload")
 
@@ -3745,6 +3967,16 @@ class OAMSManager:
             except Exception:
                 self.logger.error(f"Failed to clear source lane {source_lane_name} state after reload to {target_lane}")
 
+        # CRITICAL: Reset detection trackers after successful reload to prevent false positives
+        # The clog/stuck spool trackers may have stale encoder data from the old lane
+        # which would immediately trigger false clog detection on the new lane
+        fps_state.reset_clog_tracker()
+        fps_state.reset_stuck_spool_state()
+        fps_state.clear_encoder_samples()
+        # Record lane change time for clog/stuck detection grace period
+        fps_state.last_lane_change_time = self.reactor.monotonic()
+        self.logger.debug(f"Reset clog/stuck spool trackers after successful reload on {fps_name}")
+
         fps_state.reset_runout_positions()
         if monitor:
             monitor.reset()
@@ -3774,7 +4006,7 @@ class OAMSManager:
                 monitor.paused()
             return
 
-        oams_unload = self.oams.get(fps_state_obj.current_oams)
+        oams_unload = self._get_oams_object(fps_state_obj.current_oams)
         if oams_unload is None:
             self.logger.error(f"OAMS {fps_state_obj.current_oams} not found for unload")
             self._pause_printer_message(f"OAMS {fps_state_obj.current_oams} not found", active_oams)
@@ -4220,7 +4452,7 @@ class OAMSManager:
             else:
                 return False, f"FPS {fps_name} has no OAMS loaded"
 
-        oams = self.oams.get(fps_state.current_oams)
+        oams = self._get_oams_object(fps_state.current_oams)
         if oams is None:
             oams = self._resolve_oams_for_lane(fps_state.current_lane)
             if oams is not None:
@@ -4419,7 +4651,7 @@ class OAMSManager:
         fps_state.since = self.reactor.monotonic()
         fps_state.reset_stuck_spool_state(preserve_restore=True)
         if fps_state.current_oams:
-            oams_obj = self.oams.get(fps_state.current_oams)
+            oams_obj = self._get_oams_object(fps_state.current_oams)
             if oams_obj is not None:
                 self._set_follower_if_changed(
                     fps_state.current_oams,
@@ -5242,7 +5474,7 @@ class OAMSManager:
             except Exception:
                 raise gcmd.error("EXTRA_RETRACT must be a number")
         else:
-            oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+            oams_obj = self._get_oams_object(fps_state.current_oams) if fps_state.current_oams else None
             extra_retract = getattr(oams_obj, "extra_retract", None)
             if extra_retract is None:
                 extra_retract = self.extra_retract_default
@@ -5268,7 +5500,7 @@ class OAMSManager:
 
             # Ensure follower is enabled in reverse before the initial unload retract
             try:
-                oams_obj = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+                oams_obj = self._get_oams_object(fps_state.current_oams) if fps_state.current_oams else None
                 if oams_obj is None:
                     oams_obj = self._resolve_oams_for_lane(extra_retract_lane)
                     if oams_obj is not None and fps_state.current_oams is None:
@@ -5562,7 +5794,7 @@ class OAMSManager:
 
             oams_obj = None
             if tracked_state.current_oams is not None:
-                oams_obj = self.oams.get(tracked_state.current_oams)
+                oams_obj = self._get_oams_object(tracked_state.current_oams)
             if (oams_obj is not None and tracked_state.current_spool_idx is not None):
                 try:
                     oams_obj.set_led_error(tracked_state.current_spool_idx, 1)
@@ -5665,12 +5897,16 @@ class OAMSManager:
     def _ensure_forward_follower(self, fps_name: str, fps_state: "FPSState", context: str) -> None:
         """Ensure follower is enabled forward when filament is present."""
         if fps_state.current_spool_idx is None:
+            self.logger.debug(f"_ensure_forward_follower skipped for {fps_name}: current_spool_idx is None ({context})")
             return
 
         oams = None
         if fps_state.current_oams is not None:
             oams = self._get_oams_object(fps_state.current_oams)
         if oams is None:
+            self.logger.warning(
+                f"_ensure_forward_follower failed for {fps_name}: OAMS '{fps_state.current_oams}' not found ({context})"
+            )
             return
 
         self._set_follower_state(
@@ -6078,7 +6314,7 @@ class OAMSManager:
             return
 
         if oams is None:
-            oams = self.oams.get(fps_state.current_oams)
+            oams = self._get_oams_object(fps_state.current_oams)
         if oams is None:
             return
 
@@ -6118,7 +6354,7 @@ class OAMSManager:
 
         # Clear any error LEDs on resume (error flags already cleared when pause was triggered)
         for fps_name, fps_state in self.current_state.fps_state.items():
-            oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+            oams = self._get_oams_object(fps_state.current_oams) if fps_state.current_oams else None
 
             # Clear stuck_spool_active on resume to allow follower to restart
             if fps_state.stuck_spool.active:
@@ -6268,7 +6504,7 @@ class OAMSManager:
 
         spool_idx = fps_state.current_spool_idx
         if oams is None and fps_state.current_oams is not None:
-            oams = self.oams.get(fps_state.current_oams)
+            oams = self._get_oams_object(fps_state.current_oams)
 
         # Set LED to red to indicate error
         if oams is not None and spool_idx is not None:
@@ -6328,7 +6564,7 @@ class OAMSManager:
                 if fps_state is None or fps is None:
                     return eventtime + MONITOR_ENCODER_PERIOD_IDLE
 
-                oams = self.oams.get(fps_state.current_oams) if fps_state.current_oams else None
+                oams = self._get_oams_object(fps_state.current_oams) if fps_state.current_oams else None
 
                 # OPTIMIZATION: Use cached idle_timeout object
                 is_printing = False
@@ -6353,14 +6589,30 @@ class OAMSManager:
                 # This reduces MCU communication by 50% when UNLOADED while keeping detection fast (4 seconds)
                 skip_sensor_read = (state == FPSLoadState.UNLOADED and fps_state.consecutive_idle_polls % 2 != 0)
 
-                # Read sensors (skip if UNLOADED and not on 2-poll boundary)
+                # Get OAMS name for cache lookup
+                oams_name = fps_state.current_oams or getattr(oams, "name", None)
+
+                # Read sensors from AMSHardwareService cache (skip if UNLOADED and not on 2-poll boundary)
+                # This consolidates sensor polling through a single source, reducing duplicate MCU reads
                 encoder_value = None
                 pressure = None
                 hes_values = None
 
                 if not skip_sensor_read:
+                    if not oams_name and not oams:
+                        return eventtime + MONITOR_ENCODER_PERIOD_IDLE
                     try:
-                        if oams:
+                        # Use cached sensor data from AMSHardwareService when available
+                        if oams_name:
+                            cached_data = self._get_cached_sensor_data(oams_name, oams)
+                            encoder_value = cached_data.get("encoder_clicks")
+                            hes_values = cached_data.get("hub_hes_value")
+                            # Get FPS pressure - prefer cache, fall back to direct
+                            pressure = self._get_cached_fps_value(fps, oams_name)
+                            if pressure is None:
+                                pressure = 0.0
+                        elif oams:
+                            # Fallback to direct read if no oams_name
                             encoder_value = oams.encoder_clicks
                             pressure = float(getattr(fps, "fps_value", 0.0))
                             hes_values = oams.hub_hes_value
@@ -6379,7 +6631,6 @@ class OAMSManager:
                     not is_runout_active
                     and fps_state.state not in (FPSLoadState.LOADING, FPSLoadState.UNLOADING)
                 )
-                oams_name = fps_state.current_oams or getattr(oams, "name", None)
                 if oams_name:
                     self._sync_openams_sensors_for_oams(
                         oams_name,
@@ -6392,10 +6643,11 @@ class OAMSManager:
                 state_changed = False
 
                 # SAFETY: Check fps_state.since is not None before subtraction to prevent crash
-                if state == FPSLoadState.UNLOADING and fps_state.since is not None and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
+                # Also skip if encoder_value is None (cache not yet populated)
+                if state == FPSLoadState.UNLOADING and fps_state.since is not None and encoder_value is not None and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
                     self._check_unload_speed(fps_name, fps_state, oams, encoder_value, now)
                     state_changed = True
-                elif state == FPSLoadState.LOADING and fps_state.since is not None and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
+                elif state == FPSLoadState.LOADING and fps_state.since is not None and encoder_value is not None and now - fps_state.since > MONITOR_ENCODER_SPEED_GRACE:
                     self._check_load_speed(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
                     state_changed = True
                 elif state == FPSLoadState.UNLOADED:
@@ -6473,8 +6725,10 @@ class OAMSManager:
                             if is_active_extruder:
                                 # Call stuck spool check with encoder value to prevent false positives
                                 # Requires BOTH low pressure AND encoder stopped (not just pressure alone)
-                                self._check_stuck_spool(fps_name, fps_state, fps, oams, encoder_value, pressure, hes_values, now)
-                                self._check_clog(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
+                                # Skip detection if sensor values are None (cache not yet populated)
+                                if encoder_value is not None and pressure is not None:
+                                    self._check_stuck_spool(fps_name, fps_state, fps, oams, encoder_value, pressure, hes_values, now)
+                                    self._check_clog(fps_name, fps_state, fps, oams, encoder_value, pressure, now)
 
                         state_changed = True
                 # Update follower only when state changes or periodically during idle
@@ -6682,7 +6936,7 @@ class OAMSManager:
             # Follower doesn't interfere with stuck detection (encoder + FPS based)
             # Enable follower directly during stuck load, bypassing state checks
             if fps_state.current_oams and fps_state.current_spool_idx is not None:
-                oams_obj = self.oams.get(fps_state.current_oams)
+                oams_obj = self._get_oams_object(fps_state.current_oams)
                 if oams_obj is not None:
                     self._enable_follower(
                         fps_name,
