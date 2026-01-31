@@ -3926,6 +3926,16 @@ class OAMSManager:
             except Exception:
                 self.logger.error(f"Failed to clear source lane {source_lane_name} state after reload to {target_lane}")
 
+        # CRITICAL: Reset detection trackers after successful reload to prevent false positives
+        # The clog/stuck spool trackers may have stale encoder data from the old lane
+        # which would immediately trigger false clog detection on the new lane
+        fps_state.reset_clog_tracker()
+        fps_state.reset_stuck_spool_state()
+        fps_state.clear_encoder_samples()
+        # Record lane change time for clog/stuck detection grace period
+        fps_state.last_lane_change_time = self.reactor.monotonic()
+        self.logger.debug(f"Reset clog/stuck spool trackers after successful reload on {fps_name}")
+
         fps_state.reset_runout_positions()
         if monitor:
             monitor.reset()
