@@ -8,3 +8,5 @@ axiscope.bak
 *.csv
 *.zip
 *.git
+__pycache__/
+*.pyc
