@@ -1888,7 +1888,12 @@ class afcAMS(afcUnit):
 
         if not td1_detected:
             # Filament reached hub but not TD-1 - unload it
-            self._unload_after_td1(cur_lane, spool_index, fps_id)
+            self.logger.info(f"TD-1 not detected, unloading filament for {cur_lane.name}")
+            try:
+                self.afc.gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_id}")
+            except Exception as e:
+                self.logger.error(f"Failed to unload after TD-1 calibration failure: {e}")
+                self._unload_after_td1(cur_lane, spool_index, fps_id)
             msg = f"TD-1 failed to detect filament for {cur_lane.name}"
             return False, msg, 0
 
@@ -1912,8 +1917,14 @@ class afcAMS(afcUnit):
         cur_lane.unit_obj.return_to_home()
         self.afc.save_vars()
 
-        # Unload filament after successful TD-1 calibration
-        self._unload_after_td1(cur_lane, spool_index, fps_id)
+        # Unload filament after successful TD-1 calibration using OAMSM_UNLOAD_FILAMENT
+        self.logger.info(f"Unloading filament after TD-1 calibration for {cur_lane.name}")
+        try:
+            self.afc.gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to unload after TD-1 calibration: {e}")
+            # Fallback to basic unload
+            self._unload_after_td1(cur_lane, spool_index, fps_id)
 
         return True, "td1_bowden_length calibration successful", encoder_delta
 
