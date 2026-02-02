@@ -1891,17 +1891,17 @@ class afcAMS(afcUnit):
             return False, msg, 0
 
         encoder_delta = abs(encoder_after - encoder_before)
-        cal_msg = f"\n td1_bowden_length: New: {encoder_delta} Old: {cur_lane.td1_bowden_length}"
 
+        # Unload filament after successful TD-1 calibration
+        self._unload_after_td1(cur_lane, spool_index, fps_id)
+
+        cal_msg = f"\n td1_bowden_length: New: {encoder_delta} Old: {cur_lane.td1_bowden_length}"
         cur_lane.td1_bowden_length = encoder_delta
         fullname = cur_lane.fullname
         self.afc.function.ConfigRewrite(fullname, "td1_bowden_length", encoder_delta, cal_msg)
         cur_lane.do_enable(False)
         cur_lane.unit_obj.return_to_home()
         self.afc.save_vars()
-
-        # Unload filament after successful TD-1 calibration
-        self._unload_after_td1(cur_lane, spool_index, fps_id)
 
         return True, "td1_bowden_length calibration successful", encoder_delta
 
