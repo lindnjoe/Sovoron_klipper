@@ -1849,41 +1849,30 @@ class afcAMS(afcUnit):
         except Exception:
             encoder_before = None
 
-        # Now cycle follower manually: off 1s, on 1s, repeat
-        # This allows TD-1 to detect filament during the movement cycles
         compare_time = datetime.now()
         td1_timeout = self.afc.reactor.monotonic() + 180.0
         td1_detected = False
-        cycle_duration = 1.0
 
-        self.logger.debug(f"Starting manual follower cycling for TD-1 detection on {cur_lane.name}")
+        self.logger.debug(f"Starting continuous follower feed for TD-1 detection on {cur_lane.name}")
+        try:
+            self.oams.set_oams_follower(1, 1)
+        except Exception:
+            self.logger.error(f"Failed to enable follower for TD-1 calibration on {cur_lane.name}")
+            return False, "Failed to enable follower", 0
+
         while self.afc.reactor.monotonic() < td1_timeout:
-            # Disable follower for 1 second
-            try:
-                self.oams.set_oams_follower(0, 0)
-            except Exception:
-                self.logger.error(f"Failed to disable follower during TD-1 cycling for {cur_lane.name}")
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + cycle_duration)
-
-            # Enable follower forward for 1 second
-            try:
-                self.oams.set_oams_follower(1, 1)
-            except Exception:
-                self.logger.error(f"Failed to enable follower during TD-1 cycling for {cur_lane.name}")
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + cycle_duration)
-
-            # Check for TD-1 data after each cycle
             if self.get_td1_data(cur_lane, compare_time):
                 td1_detected = True
                 self.logger.debug(f"TD-1 data detected for {cur_lane.name}")
                 break
             compare_time = datetime.now()
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
-        # Disable follower after cycling
+        # Disable follower after detection attempt
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception:
-            self.logger.error(f"Failed to disable follower after TD-1 cycling for {cur_lane.name}")
+            self.logger.error(f"Failed to disable follower after TD-1 calibration for {cur_lane.name}")
 
         if not td1_detected:
             # Filament reached hub but not TD-1 - unload it
