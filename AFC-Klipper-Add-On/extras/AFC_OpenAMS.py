@@ -1888,8 +1888,19 @@ class afcAMS(afcUnit):
 
         if not td1_detected:
             # Filament reached hub but not TD-1 - unload it
+            # Set FPS state to LOADED first so unload command doesn't skip
             self.logger.info(f"TD-1 not detected, unloading filament for {cur_lane.name}")
             try:
+                oams_manager = self.printer.lookup_object("oams_manager", None)
+                if oams_manager is not None:
+                    fps_state = oams_manager.current_state.fps_state.get(fps_id)
+                    if fps_state is not None:
+                        from oams_manager import FPSLoadState
+                        fps_state.state = FPSLoadState.LOADED
+                        fps_state.current_oams = self.oams.name if self.oams else None
+                        fps_state.current_spool_idx = spool_index
+                        fps_state.current_lane = cur_lane.name
+                        fps_state.since = self.afc.reactor.monotonic()
                 self.afc.gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_id}")
             except Exception as e:
                 self.logger.error(f"Failed to unload after TD-1 calibration failure: {e}")
@@ -1918,8 +1929,23 @@ class afcAMS(afcUnit):
         self.afc.save_vars()
 
         # Unload filament after successful TD-1 calibration using OAMSM_UNLOAD_FILAMENT
+        # First, set FPS state to LOADED so the unload command doesn't reject as "already unloaded"
+        # During calibration, we used raw OAMS commands that don't update FPS state tracking
         self.logger.info(f"Unloading filament after TD-1 calibration for {cur_lane.name}")
         try:
+            oams_manager = self.printer.lookup_object("oams_manager", None)
+            if oams_manager is not None:
+                fps_state = oams_manager.current_state.fps_state.get(fps_id)
+                if fps_state is not None:
+                    # Import FPSLoadState from oams_manager module
+                    from oams_manager import FPSLoadState
+                    # Set state to LOADED so OAMSM_UNLOAD_FILAMENT will process the unload
+                    fps_state.state = FPSLoadState.LOADED
+                    fps_state.current_oams = self.oams.name if self.oams else None
+                    fps_state.current_spool_idx = spool_index
+                    fps_state.current_lane = cur_lane.name
+                    fps_state.since = self.afc.reactor.monotonic()
+                    self.logger.debug(f"Set FPS {fps_id} state to LOADED for TD-1 calibration unload")
             self.afc.gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_id}")
         except Exception as e:
             self.logger.error(f"Failed to unload after TD-1 calibration: {e}")
