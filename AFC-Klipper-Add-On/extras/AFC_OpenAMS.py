@@ -64,6 +64,7 @@ _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", No
 _ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
 _ORIGINAL_PREP_CAPTURE_TD1 = getattr(AFCLane, "_prep_capture_td1", None)
 _ORIGINAL_GET_TD1_DATA = getattr(AFCLane, "get_td1_data", None)
+_ORIGINAL_GET_TD1_DATA_LOAD = getattr(AFCLane, "get_td1_data_load", None)
 _ORIGINAL_TD1_PREP = getattr(afcPrep, "_td1_prep", None)
 _ORIGINAL_LANE_UNLOAD = None  # Will be set during patching
 _ORIGINAL_BUFFER_SET_MULTIPLIER = None  # Will be set during patching
@@ -1887,7 +1888,12 @@ class afcAMS(afcUnit):
 
         if not td1_detected:
             # Filament reached hub but not TD-1 - unload it
-            self._unload_after_td1(cur_lane, spool_index, fps_id)
+            self.logger.info(f"TD-1 not detected, unloading filament for {cur_lane.name}")
+            try:
+                self.afc.gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_id}")
+            except Exception as e:
+                self.logger.error(f"Failed to unload after TD-1 calibration failure: {e}")
+                self._unload_after_td1(cur_lane, spool_index, fps_id)
             msg = f"TD-1 failed to detect filament for {cur_lane.name}"
             return False, msg, 0
 
@@ -1911,8 +1917,14 @@ class afcAMS(afcUnit):
         cur_lane.unit_obj.return_to_home()
         self.afc.save_vars()
 
-        # Unload filament after successful TD-1 calibration
-        self._unload_after_td1(cur_lane, spool_index, fps_id)
+        # Unload filament after successful TD-1 calibration using OAMSM_UNLOAD_FILAMENT
+        self.logger.info(f"Unloading filament after TD-1 calibration for {cur_lane.name}")
+        try:
+            self.afc.gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to unload after TD-1 calibration: {e}")
+            # Fallback to basic unload
+            self._unload_after_td1(cur_lane, spool_index, fps_id)
 
         return True, "td1_bowden_length calibration successful", encoder_delta
 
@@ -2113,6 +2125,82 @@ class afcAMS(afcUnit):
             require_loaded=True,
             require_enabled=False,
         )
+
+    def capture_td1_when_loaded(self, cur_lane) -> Tuple[bool, str]:
+        """Capture TD-1 data when filament is already loaded to toolhead.
+
+        This retracts filament back to TD-1 position, waits for TD-1 to read,
+        then feeds it back to toolhead. Uses the same approach as calibration.
+
+        Args:
+            cur_lane: The lane with filament loaded to toolhead
+
+        Returns:
+            (success, message) tuple
+        """
+        if not getattr(cur_lane, "td1_when_loaded", False):
+            return False, "TD-1 capture when loaded is disabled"
+        if cur_lane.td1_device_id is None:
+            return False, "TD-1 device ID not configured"
+        if cur_lane.td1_bowden_length is None:
+            self.logger.info(
+                f"td1_bowden_length not set for {cur_lane.name}, skipping TD-1 capture"
+            )
+            return False, "td1_bowden_length not set"
+        if not getattr(cur_lane, "tool_loaded", False):
+            return False, "Toolhead is not loaded"
+
+        # Get engagement params for retract/feed speeds
+        engagement_length, engagement_speed = None, None
+        try:
+            oams_manager = self.afc.printer.lookup_object("oams_manager", None)
+            if oams_manager is not None:
+                engagement_length, engagement_speed = oams_manager._get_engagement_params(cur_lane.name)
+        except Exception:
+            pass
+
+        if engagement_speed is None:
+            engagement_speed = 1200.0  # Default speed in mm/min
+
+        # Calculate retract distance: from toolhead back past TD-1
+        # td1_bowden_length is distance from hub to TD-1
+        # We need to retract enough to get filament tip back to TD-1 position
+        # Assuming filament tip is at nozzle, we retract by td1_bowden_length + some extra
+        retract_distance = float(cur_lane.td1_bowden_length) + 10.0  # Extra 10mm past TD-1
+
+        gcode = self.afc.gcode
+        compare_time = datetime.now()
+
+        self.logger.info(f"TD-1 capture when loaded: retracting {retract_distance:.1f}mm for {cur_lane.name}")
+
+        try:
+            # Save gcode state and retract
+            gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_td1_capture")
+            try:
+                gcode.run_script_from_command("M83")  # Relative extrusion
+                gcode.run_script_from_command(f"G1 E-{retract_distance:.2f} F{engagement_speed:.0f}")
+                gcode.run_script_from_command("M400")  # Wait for move
+
+                # Wait for TD-1 to read (same 3.5s as calibration)
+                self.logger.debug(f"TD-1 capture: waiting 3.5s for TD-1 read on {cur_lane.name}")
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 3.5)
+
+                # Fetch TD-1 data
+                self.get_td1_data(cur_lane, compare_time, ignore_time=True)
+
+                # Feed filament back to toolhead
+                self.logger.debug(f"TD-1 capture: feeding {retract_distance:.1f}mm back to toolhead for {cur_lane.name}")
+                gcode.run_script_from_command(f"G1 E{retract_distance:.2f} F{engagement_speed:.0f}")
+                gcode.run_script_from_command("M400")  # Wait for move
+            finally:
+                gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_td1_capture")
+
+        except Exception as e:
+            self.logger.error(f"TD-1 capture when loaded failed for {cur_lane.name}: {e}")
+            return False, f"TD-1 capture failed: {e}"
+
+        self.logger.info(f"TD-1 data captured for {cur_lane.name} after load")
+        return True, "TD-1 data captured"
 
     def calibrate_hub(self, cur_lane, tol):
         """OpenAMS units use different calibration commands."""

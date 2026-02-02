@@ -140,7 +140,12 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
-            "td1_data": {}
+            "td1_data": {
+                "td": 2.2,
+                "color": "FFFFFF",
+                "scan_time": "2026-02-02T22:28:27.014222+00:00Z",
+                "error": null
+            }
         },
         "lane9": {
             "name": "lane9",
@@ -154,7 +159,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -168,7 +173,12 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
-            "td1_data": {}
+            "td1_data": {
+                "td": 2.1,
+                "color": "3B8575",
+                "scan_time": "2026-02-02T22:30:20.189090+00:00Z",
+                "error": null
+            }
         },
         "lane10": {
             "name": "lane10",
@@ -182,7 +192,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -196,7 +206,12 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
-            "td1_data": {}
+            "td1_data": {
+                "td": 0.2,
+                "color": "111921",
+                "scan_time": "2026-02-02T22:30:49.694679+00:00Z",
+                "error": null
+            }
         },
         "lane11": {
             "name": "lane11",
@@ -224,7 +239,12 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
-            "td1_data": {}
+            "td1_data": {
+                "td": 1.1,
+                "color": "65C0FF",
+                "scan_time": "2026-02-02T22:31:31.588029+00:00Z",
+                "error": null
+            }
         }
     },
     "Tools": {},
@@ -235,7 +255,7 @@
             "hub": "direct_load",
             "extruder": "extruder",
             "buffer": "TN",
-            "buffer_status": "Advancing",
+            "buffer_status": "Unknown",
             "lane": 1,
             "map": "T0",
             "load": true,
@@ -263,7 +283,7 @@
             "hub": "direct_load",
             "extruder": "extruder1",
             "buffer": "TN1",
-            "buffer_status": "Advancing",
+            "buffer_status": "Unknown",
             "lane": 2,
             "map": "T1",
             "load": true,
@@ -291,7 +311,7 @@
             "hub": "direct_load",
             "extruder": "extruder2",
             "buffer": "TN2",
-            "buffer_status": "Advancing",
+            "buffer_status": "Unknown",
             "lane": 3,
             "map": "T2",
             "load": true,
@@ -319,7 +339,7 @@
             "hub": "direct_load",
             "extruder": "extruder3",
             "buffer": "TN3",
-            "buffer_status": "Advancing",
+            "buffer_status": "Unknown",
             "lane": 4,
             "map": "T3",
             "load": true,
