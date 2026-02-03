@@ -1737,7 +1737,7 @@ class afcAMS(afcUnit):
             if hub_cleared:
                 break
             if attempt == 0:
-                self.logger.warning(f"Hub still loaded after unload attempt for {cur_lane.name}, retrying")
+                self.logger.info(f"Hub still loaded after unload attempt for {cur_lane.name}, retrying")
 
         # Disable follower after initiating unload
         try:
