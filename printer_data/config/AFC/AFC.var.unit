@@ -125,7 +125,7 @@
             "map": "T8",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
+            "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
@@ -136,14 +136,14 @@
             "weight": 771.6237852973115,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 1.9,
-                "color": "E7DBFF",
-                "scan_time": "2026-02-03T05:54:50.759586+00:00Z",
+                "td": 2.0,
+                "color": "E7DAFF",
+                "scan_time": "2026-02-03T06:05:55.867138+00:00Z",
                 "error": null
             }
         },
@@ -175,8 +175,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 1.9,
-                "color": "24432E",
-                "scan_time": "2026-02-03T05:11:38.893113+00:00Z",
+                "color": "408778",
+                "scan_time": "2026-02-03T06:06:16.908198+00:00Z",
                 "error": null
             }
         },
@@ -208,8 +208,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.1,
-                "color": "040200",
-                "scan_time": "2026-02-03T05:11:57.806041+00:00Z",
+                "color": "0F171E",
+                "scan_time": "2026-02-03T06:06:36.386305+00:00Z",
                 "error": null
             }
         },
@@ -240,9 +240,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 1.1,
-                "color": "53A3FF",
-                "scan_time": "2026-02-03T05:55:28.672766+00:00Z",
+                "td": 1.0,
+                "color": "54A4FF",
+                "scan_time": "2026-02-03T06:06:59.403534+00:00Z",
                 "error": null
             }
         }
@@ -255,7 +255,7 @@
             "hub": "direct_load",
             "extruder": "extruder",
             "buffer": "TN",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 1,
             "map": "T0",
             "load": true,
@@ -283,7 +283,7 @@
             "hub": "direct_load",
             "extruder": "extruder1",
             "buffer": "TN1",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 2,
             "map": "T1",
             "load": true,
@@ -311,7 +311,7 @@
             "hub": "direct_load",
             "extruder": "extruder2",
             "buffer": "TN2",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 3,
             "map": "T2",
             "load": true,
@@ -339,7 +339,7 @@
             "hub": "direct_load",
             "extruder": "extruder3",
             "buffer": "TN3",
-            "buffer_status": "Unknown",
+            "buffer_status": "Advancing",
             "lane": 4,
             "map": "T3",
             "load": true,
@@ -363,7 +363,7 @@
         }
     },
     "system": {
-        "current_load": "lane8",
+        "current_load": null,
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
@@ -384,7 +384,7 @@
                 "lane_loaded": null
             },
             "extruder5": {
-                "lane_loaded": "lane8"
+                "lane_loaded": null
             }
         },
         "bypass": {
