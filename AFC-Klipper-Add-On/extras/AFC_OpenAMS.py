@@ -277,8 +277,6 @@ class afcAMS(afcUnit):
         self.type = "OpenAMS"
         self.logger = self.afc.logger
 
-        self.capture_td1_on_insert = config.getboolean("capture_td1_on_insert", False)
-
         # AMS units don't have physical buffers - force buffer_obj to None
         # This prevents buffer monitoring/fault detection from running on AMS lanes
         # even if user accidentally configured a buffer parameter
@@ -2075,9 +2073,9 @@ class afcAMS(afcUnit):
         return True, "TD-1 data captured"
 
     def prep_capture_td1(self, cur_lane):
-        return self._capture_td1_with_oams(
+        self._capture_td1_with_oams(
             cur_lane,
-            require_loaded=True,
+            require_loaded=False,
             require_enabled=True,
         )
 
@@ -2902,7 +2900,6 @@ class afcAMS(afcUnit):
             return
 
         if lane_val_bool:
-            previous_loaded = bool(getattr(lane, "load_state", False))
             # Defer metadata application (material, spoolman IDs, colors, etc.) to
             # AFC's callbacks. The callbacks will update prep/load state and apply lane data consistently for both
             # single- and shared-sensor lanes.
@@ -2921,7 +2918,6 @@ class afcAMS(afcUnit):
                         unit_name=self.name,
                         spool_index=spool_index,
                         eventtime=eventtime,
-                        previous_loaded=previous_loaded,
                     )
                 except Exception as e:
                     self.logger.error(f"Failed to publish spool_loaded event for {lane.name}: {e}")
@@ -3551,9 +3547,7 @@ class afcAMS(afcUnit):
             return
 
         # PHASE 2 REFACTOR: Use AFC native lane.load_state instead of dictionary
-        previous_loaded = kwargs.get("previous_loaded")
-        if previous_loaded is None:
-            previous_loaded = bool(getattr(lane, "load_state", False))
+        previous_loaded = bool(getattr(lane, "load_state", False))
 
         eventtime = kwargs.get("eventtime", 0.0)
 
@@ -3567,16 +3561,7 @@ class afcAMS(afcUnit):
 
         # Schedule TD-1 capture with 3-second delay if td1_when_loaded is enabled
         # The delay allows AMS auto-load sequence to complete (loads near hub ? retracts ? settles)
-        td1_when_loaded = getattr(lane, "td1_when_loaded", None)
-        if td1_when_loaded is None:
-            td1_when_loaded = getattr(self, "td1_when_loaded", False)
-
-        should_capture = (
-            not previous_loaded
-            and (td1_when_loaded or self.capture_td1_on_insert)
-            and getattr(lane, "td1_device_id", None)
-        )
-        if should_capture:
+        if not previous_loaded and getattr(lane, "td1_when_loaded", False):
             lane_name = lane.name
             try:
                 # Cancel any existing pending timer for this lane
