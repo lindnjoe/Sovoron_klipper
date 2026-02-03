@@ -225,7 +225,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -239,12 +239,7 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
-            "td1_data": {
-                "td": 1.0,
-                "color": "4D92F5",
-                "scan_time": "2026-02-03T14:22:11.854054+00:00Z",
-                "error": null
-            }
+            "td1_data": {}
         }
     },
     "Tools": {},

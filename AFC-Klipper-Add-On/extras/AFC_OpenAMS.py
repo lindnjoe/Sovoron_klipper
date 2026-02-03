@@ -2288,7 +2288,7 @@ class afcAMS(afcUnit):
         return True, "TD-1 data captured"
 
     def prep_capture_td1(self, cur_lane):
-        # require_enabled=False since capture decision is made by capture_td1_data in AFC_prep
+        # require_enabled=False - capture decision is made by capture_td1_data in AFC_prep
         return self._capture_td1_with_oams(
             cur_lane,
             require_loaded=True,
