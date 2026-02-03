@@ -293,9 +293,6 @@ class afcAMS(afcUnit):
 
         self.oams_name = config.get("oams", "oams1")
 
-        # TD-1 capture on insert: when True, automatically capture TD-1 data when filament is inserted into any lane on this unit
-        self.capture_td1_on_insert = config.getboolean("capture_td1_on_insert", False)
-
         self.reactor = self.printer.get_reactor()
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
@@ -3794,7 +3791,8 @@ class afcAMS(afcUnit):
             previous_loaded = bool(getattr(lane, "load_state", False))
         else:
             previous_loaded = bool(previous_loaded)
-        self.logger.debug(f"_handle_spool_loaded_event: lane={lane.name} previous_loaded={previous_loaded} capture_td1_on_insert={self.capture_td1_on_insert}")
+        td1_when_loaded = getattr(lane, "td1_when_loaded", False)
+        self.logger.debug(f"_handle_spool_loaded_event: lane={lane.name} previous_loaded={previous_loaded} td1_when_loaded={td1_when_loaded}")
 
         eventtime = kwargs.get("eventtime", 0.0)
 
@@ -3806,9 +3804,8 @@ class afcAMS(afcUnit):
         # This eliminates manual state management and ensures proper state transitions
         lane.set_loaded()
 
-        # Schedule TD-1 capture with 3-second delay if capture_td1_on_insert is enabled
-        # The delay allows AMS auto-load sequence to complete (loads near hub ? retracts ? settles)
-        # Note: td1_when_loaded is for toolhead loading, capture_td1_on_insert is for lane insertion
+        # Schedule TD-1 capture with 3-second delay if capture_td1_when_loaded is enabled
+        # The delay allows AMS auto-load sequence to complete (loads near hub -> retracts -> settles)
         # Check lane-level td1_device_id first, fall back to unit-level
         td1_device = getattr(lane, "td1_device_id", None) or getattr(self, "td1_device_id", None)
 
@@ -3825,11 +3822,11 @@ class afcAMS(afcUnit):
 
         should_capture = (
             not previous_loaded
-            and self.capture_td1_on_insert
+            and td1_when_loaded
             and td1_device
             and prep_allows_capture
         )
-        self.logger.debug(f"TD-1 capture decision: previous_loaded={previous_loaded} capture_td1_on_insert={self.capture_td1_on_insert} td1_device={td1_device} in_prep={in_prep} prep_allows_capture={prep_allows_capture} should_capture={should_capture}")
+        self.logger.debug(f"TD-1 capture decision: previous_loaded={previous_loaded} td1_when_loaded={td1_when_loaded} td1_device={td1_device} in_prep={in_prep} prep_allows_capture={prep_allows_capture} should_capture={should_capture}")
         if should_capture:
             lane_name = lane.name
             try:
