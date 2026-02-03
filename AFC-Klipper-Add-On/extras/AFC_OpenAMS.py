@@ -2202,11 +2202,16 @@ class afcAMS(afcUnit):
 
         def _capture_td1_if_fresh() -> bool:
             td1_data = self.afc.moonraker.get_td1_data()
-            if not td1_data or cur_lane.td1_device_id not in td1_data:
+            if not td1_data:
+                self.logger.debug(f"TD-1 capture: no TD-1 data available from moonraker")
+                return False
+            if cur_lane.td1_device_id not in td1_data:
+                self.logger.debug(f"TD-1 capture: device {cur_lane.td1_device_id} not in td1_data keys: {list(td1_data.keys())}")
                 return False
             data = td1_data[cur_lane.td1_device_id]
             scan_time = data.get("scan_time")
             if scan_time is None:
+                self.logger.debug(f"TD-1 capture: no scan_time in data for {cur_lane.td1_device_id}")
                 return False
             if scan_time.endswith("+00:00Z"):
                 scan_time = scan_time[:-1]
@@ -2214,18 +2219,22 @@ class afcAMS(afcUnit):
                 scan_time = scan_time[:-1] + "+00:00"
             try:
                 scan_time = datetime.fromisoformat(scan_time).astimezone()
-            except (AttributeError, ValueError):
+            except (AttributeError, ValueError) as e:
+                self.logger.debug(f"TD-1 capture: failed to parse scan_time: {e}")
                 return False
             if scan_time <= compare_time.astimezone():
+                self.logger.debug(f"TD-1 capture: scan_time {scan_time} is not newer than compare_time {compare_time.astimezone()}")
                 return False
             last_scan_time = last_scan_times.get(cur_lane.td1_device_id)
             if last_scan_time is not None and scan_time <= last_scan_time:
+                self.logger.debug(f"TD-1 capture: scan_time {scan_time} is not newer than last_scan_time {last_scan_time}")
                 return False
             if data.get("td") is None or data.get("color") is None:
+                self.logger.debug(f"TD-1 capture: data missing td or color fields: td={data.get('td')} color={data.get('color')}")
                 return False
             cur_lane.td1_data = data
             last_scan_times[cur_lane.td1_device_id] = scan_time
-            self.logger.info(f"{cur_lane.name} TD-1 data captured")
+            self.logger.info(f"{cur_lane.name} TD-1 data captured: td={data.get('td')} color={data.get('color')}")
             self.afc.save_vars()
             return True
 
