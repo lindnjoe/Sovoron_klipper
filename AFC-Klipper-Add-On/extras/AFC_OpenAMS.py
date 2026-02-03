@@ -1853,8 +1853,6 @@ class afcAMS(afcUnit):
         compare_time = datetime.now()
         td1_timeout = self.afc.reactor.monotonic() + 180.0
         td1_detected = False
-        td1_min_ready = self.afc.reactor.monotonic() + 0.5
-        td1_relaxed_ready = self.afc.reactor.monotonic() + 5.0
         last_scan_times = getattr(self, "_td1_last_scan_time_calibration", None)
         if last_scan_times is None:
             last_scan_times = {}
@@ -1886,30 +1884,6 @@ class afcAMS(afcUnit):
             last_scan_times[cur_lane.td1_device_id] = scan_time
             return True
 
-        def _capture_td1_relaxed() -> bool:
-            td1_data = self.afc.moonraker.get_td1_data()
-            if not td1_data or cur_lane.td1_device_id not in td1_data:
-                return False
-            data = td1_data[cur_lane.td1_device_id]
-            if data.get("td") is None or data.get("color") is None:
-                return False
-            scan_time = data.get("scan_time")
-            if scan_time:
-                if scan_time.endswith("+00:00Z"):
-                    scan_time = scan_time[:-1]
-                else:
-                    scan_time = scan_time[:-1] + "+00:00"
-                try:
-                    scan_time = datetime.fromisoformat(scan_time).astimezone()
-                except (AttributeError, ValueError):
-                    scan_time = None
-            last_scan_times[cur_lane.td1_device_id] = scan_time or datetime.now().astimezone()
-            self.logger.info(
-                "TD-1 calibration: using relaxed scan acceptance for %s",
-                cur_lane.name,
-            )
-            return True
-
         self.logger.debug(f"Starting continuous follower feed for TD-1 detection on {cur_lane.name}")
         try:
             self.oams.set_oams_follower(1, 1)
@@ -1919,17 +1893,11 @@ class afcAMS(afcUnit):
             return False, "Failed to enable follower", 0
 
         while self.afc.reactor.monotonic() < td1_timeout:
-            if self.afc.reactor.monotonic() >= td1_min_ready:
-                if _capture_td1_if_fresh():
-                    td1_detected = True
-                    self.logger.debug(f"TD-1 data detected for {cur_lane.name}")
-                    break
-            if self.afc.reactor.monotonic() >= td1_relaxed_ready:
-                if _capture_td1_relaxed():
-                    td1_detected = True
-                    self.logger.debug(f"TD-1 data detected (relaxed) for {cur_lane.name}")
-                    break
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+            if _capture_td1_if_fresh():
+                td1_detected = True
+                self.logger.debug(f"TD-1 data detected for {cur_lane.name}")
+                break
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 2.0)
 
         # Disable follower after detection attempt
         try:
