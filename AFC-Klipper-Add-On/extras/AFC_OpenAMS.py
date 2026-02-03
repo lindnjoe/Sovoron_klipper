@@ -2876,6 +2876,19 @@ class afcAMS(afcUnit):
             lane.prep_callback(eventtime, lane_val)
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
 
+            # Publish spool_loaded/spool_unloaded event for non-shared lanes
+            if self.event_bus is not None:
+                try:
+                    spool_index = self._get_openams_spool_index(lane)
+                    event_type_name = "spool_loaded" if lane_val else "spool_unloaded"
+                    self.event_bus.publish(event_type_name,
+                        unit_name=self.name,
+                        spool_index=spool_index,
+                        eventtime=eventtime,
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to publish {event_type_name} event for {lane.name}: {e}")
+
         # Detect F1S sensor going False (spool empty) - trigger runout detection AFTER sensor update
         # Only trigger if printer is actively printing (not during filament insertion/removal)
         if prev_val and not lane_val:
