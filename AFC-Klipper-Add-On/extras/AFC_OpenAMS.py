@@ -2073,9 +2073,9 @@ class afcAMS(afcUnit):
         return True, "TD-1 data captured"
 
     def prep_capture_td1(self, cur_lane):
-        self._capture_td1_with_oams(
+        return self._capture_td1_with_oams(
             cur_lane,
-            require_loaded=False,
+            require_loaded=True,
             require_enabled=True,
         )
 
@@ -3561,7 +3561,12 @@ class afcAMS(afcUnit):
 
         # Schedule TD-1 capture with 3-second delay if td1_when_loaded is enabled
         # The delay allows AMS auto-load sequence to complete (loads near hub ? retracts ? settles)
-        if not previous_loaded and getattr(lane, "td1_when_loaded", False):
+        should_capture = (
+            not previous_loaded
+            and getattr(lane, "td1_when_loaded", False)
+            and getattr(lane, "td1_device_id", None)
+        )
+        if should_capture:
             lane_name = lane.name
             try:
                 # Cancel any existing pending timer for this lane
