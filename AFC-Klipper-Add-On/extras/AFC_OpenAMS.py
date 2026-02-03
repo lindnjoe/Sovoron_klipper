@@ -1711,7 +1711,7 @@ class afcAMS(afcUnit):
 
         hub_cleared = False
         unload_wait = 5.0
-        for attempt in range(2):
+        for attempt in range(3):  # Increased to 3 attempts
             # Send unload command first to retract spool motor
             try:
                 self.oams.oams_unload_spool_cmd.send([])
@@ -1736,14 +1736,35 @@ class afcAMS(afcUnit):
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
             if hub_cleared:
                 break
-        # Disable follower after initiating unload
+            # Send another unload command between attempts
+            try:
+                self.oams.oams_unload_spool_cmd.send([])
+            except Exception:
+                pass
+
+        # Disable follower after unload completes or times out
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception:
             self.logger.error(f"Failed to disable follower after unload for {cur_lane.name}")
+
+        # If hub still not cleared, wait a bit longer for mechanical settling
         if not hub_cleared:
-            self.logger.debug(f"TD-1 unload did not clear hub for {cur_lane.name}")
-        self.logger.info(f"TD-1 unload initiated for {cur_lane.name}")
+            self.logger.debug(f"TD-1 unload did not clear hub for {cur_lane.name}, waiting for settle")
+            settle_deadline = self.afc.reactor.monotonic() + 3.0
+            while self.afc.reactor.monotonic() < settle_deadline:
+                try:
+                    hub_cleared = not bool(self.oams.hub_hes_value[spool_index])
+                except Exception:
+                    hub_cleared = False
+                if hub_cleared:
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+
+        if hub_cleared:
+            self.logger.info(f"TD-1 unload completed for {cur_lane.name}")
+        else:
+            self.logger.warning(f"TD-1 unload did not fully clear hub for {cur_lane.name}")
 
     def calibrate_td1(self, cur_lane, dis, tol):
         """
