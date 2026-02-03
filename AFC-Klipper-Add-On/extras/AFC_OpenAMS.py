@@ -2041,6 +2041,10 @@ class afcAMS(afcUnit):
         last_clicks_moved = 0
         last_progress_time = self.afc.reactor.monotonic()
         td1_min_ready = self.afc.reactor.monotonic() + 0.5
+        last_scan_times = getattr(self, "_td1_last_scan_time_by_device", None)
+        if last_scan_times is None:
+            last_scan_times = {}
+            self._td1_last_scan_time_by_device = last_scan_times
 
         def _capture_td1_if_fresh() -> bool:
             td1_data = self.afc.moonraker.get_td1_data()
@@ -2060,9 +2064,13 @@ class afcAMS(afcUnit):
                 return False
             if scan_time <= compare_time.astimezone():
                 return False
+            last_scan_time = last_scan_times.get(cur_lane.td1_device_id)
+            if last_scan_time is not None and scan_time <= last_scan_time:
+                return False
             if data.get("td") is None or data.get("color") is None:
                 return False
             cur_lane.td1_data = data
+            last_scan_times[cur_lane.td1_device_id] = scan_time
             self.logger.info(f"{cur_lane.name} TD-1 data captured")
             self.afc.save_vars()
             return True
