@@ -1925,7 +1925,7 @@ class afcAMS(afcUnit):
             if clicks_moved != last_clicks_moved:
                 last_clicks_moved = clicks_moved
                 last_progress_time = self.afc.reactor.monotonic()
-            elif (self.afc.reactor.monotonic() - last_progress_time) > 3.0:
+            elif (self.afc.reactor.monotonic() - last_progress_time) > 4.2:
                 if not stall_logged:
                     self.logger.info(
                         f"TD-1 calibration: follower stalled after {clicks_moved} clicks on {cur_lane.name}"
