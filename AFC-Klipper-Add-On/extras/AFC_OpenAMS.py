@@ -1897,6 +1897,7 @@ class afcAMS(afcUnit):
             self.oams.set_oams_follower(1, 1)
         except Exception:
             self.logger.error(f"Failed to enable follower for TD-1 calibration on {cur_lane.name}")
+            self._unload_after_td1(cur_lane, spool_index, fps_id)
             return False, "Failed to enable follower", 0
 
         while self.afc.reactor.monotonic() < td1_timeout:
@@ -1932,6 +1933,7 @@ class afcAMS(afcUnit):
         if encoder_before is None or encoder_after is None:
             msg = "Unable to read encoder clicks for TD-1 calibration"
             self.logger.error(msg)
+            self._unload_after_td1(cur_lane, spool_index, fps_id)
             return False, msg, 0
 
         encoder_delta = abs(encoder_after - encoder_before)
