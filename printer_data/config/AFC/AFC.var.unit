@@ -141,9 +141,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 2.0,
-                "color": "F0DEFF",
-                "scan_time": "2026-02-03T14:18:31.281506+00:00Z",
+                "td": 1.9,
+                "color": "E0CBFF",
+                "scan_time": "2026-02-03T14:40:22.864541+00:00Z",
                 "error": null
             }
         },
@@ -175,8 +175,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 2.0,
-                "color": "307055",
-                "scan_time": "2026-02-03T14:18:52.788651+00:00Z",
+                "color": "285D3F",
+                "scan_time": "2026-02-03T14:40:44.364423+00:00Z",
                 "error": null
             }
         },
@@ -208,8 +208,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.1,
-                "color": "0D1418",
-                "scan_time": "2026-02-03T14:19:12.658339+00:00Z",
+                "color": "080C0B",
+                "scan_time": "2026-02-03T14:41:04.275304+00:00Z",
                 "error": null
             }
         },
@@ -250,7 +250,7 @@
             "hub": "direct_load",
             "extruder": "extruder",
             "buffer": "TN",
-            "buffer_status": "Advancing",
+            "buffer_status": "Unknown",
             "lane": 1,
             "map": "T0",
             "load": true,
@@ -278,7 +278,7 @@
             "hub": "direct_load",
             "extruder": "extruder1",
             "buffer": "TN1",
-            "buffer_status": "Advancing",
+            "buffer_status": "Unknown",
             "lane": 2,
             "map": "T1",
             "load": true,
@@ -306,7 +306,7 @@
             "hub": "direct_load",
             "extruder": "extruder2",
             "buffer": "TN2",
-            "buffer_status": "Advancing",
+            "buffer_status": "Unknown",
             "lane": 3,
             "map": "T2",
             "load": true,
@@ -334,7 +334,7 @@
             "hub": "direct_load",
             "extruder": "extruder3",
             "buffer": "TN3",
-            "buffer_status": "Advancing",
+            "buffer_status": "Unknown",
             "lane": 4,
             "map": "T3",
             "load": true,
