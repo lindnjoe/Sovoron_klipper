@@ -1711,6 +1711,7 @@ class afcAMS(afcUnit):
 
         hub_cleared = False
         unload_wait = 5.0
+        initial_delay = 2.0  # Give filament time to start retracting before checking hub
         for attempt in range(3):  # Increased to 3 attempts
             # Send unload command first to retract spool motor
             try:
@@ -1723,6 +1724,9 @@ class afcAMS(afcUnit):
                 self.oams.set_oams_follower(1, 0)  # Enable reverse
             except Exception:
                 self.logger.error(f"Failed to enable reverse follower for {cur_lane.name}")
+
+            # Initial delay to let filament start retracting before checking hub
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + initial_delay)
 
             # Allow time for spool unload and reverse follower to clear the hub sensor.
             unload_deadline = self.afc.reactor.monotonic() + unload_wait
