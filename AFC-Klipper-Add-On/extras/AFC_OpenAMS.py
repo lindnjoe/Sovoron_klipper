@@ -1716,33 +1716,16 @@ class afcAMS(afcUnit):
         except Exception:
             self.logger.error(f"Failed to enable reverse follower for {cur_lane.name}")
 
-        # Wait for hub sensor to clear (timeout after 45 seconds)
-        # Increased timeout since spool motor retraction can take longer
-        hub_clear_timeout = self.afc.reactor.monotonic() + 45.0
-        hub_cleared = False
+        # Do not wait for hub to clear; unload must be initiated first so filament can
+        # retract back through TD-1 and the hub to the AMS.
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
 
-        while self.afc.reactor.monotonic() < hub_clear_timeout:
-            try:
-                hub_loaded = bool(self.oams.hub_hes_value[spool_index])
-            except Exception:
-                hub_loaded = True  # Assume loaded if we can't read
-
-            if not hub_loaded:
-                hub_cleared = True
-                self.logger.debug(f"Hub sensor cleared for {cur_lane.name}")
-                break
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.3)
-
-        # Disable follower after unload
+        # Disable follower after initiating unload
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception:
             self.logger.error(f"Failed to disable follower after unload for {cur_lane.name}")
-
-        if not hub_cleared:
-            self.logger.warning(f"Hub sensor did not clear after TD-1 unload for {cur_lane.name}")
-        else:
-            self.logger.info(f"TD-1 unload completed for {cur_lane.name}")
+        self.logger.info(f"TD-1 unload initiated for {cur_lane.name}")
 
     def calibrate_td1(self, cur_lane, dis, tol):
         """
@@ -1849,41 +1832,30 @@ class afcAMS(afcUnit):
         except Exception:
             encoder_before = None
 
-        # Now cycle follower manually: off 1s, on 1s, repeat
-        # This allows TD-1 to detect filament during the movement cycles
         compare_time = datetime.now()
         td1_timeout = self.afc.reactor.monotonic() + 180.0
         td1_detected = False
-        cycle_duration = 1.0
 
-        self.logger.debug(f"Starting manual follower cycling for TD-1 detection on {cur_lane.name}")
+        self.logger.debug(f"Starting continuous follower feed for TD-1 detection on {cur_lane.name}")
+        try:
+            self.oams.set_oams_follower(1, 1)
+        except Exception:
+            self.logger.error(f"Failed to enable follower for TD-1 calibration on {cur_lane.name}")
+            return False, "Failed to enable follower", 0
+
         while self.afc.reactor.monotonic() < td1_timeout:
-            # Disable follower for 1 second
-            try:
-                self.oams.set_oams_follower(0, 0)
-            except Exception:
-                self.logger.error(f"Failed to disable follower during TD-1 cycling for {cur_lane.name}")
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + cycle_duration)
-
-            # Enable follower forward for 1 second
-            try:
-                self.oams.set_oams_follower(1, 1)
-            except Exception:
-                self.logger.error(f"Failed to enable follower during TD-1 cycling for {cur_lane.name}")
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + cycle_duration)
-
-            # Check for TD-1 data after each cycle
             if self.get_td1_data(cur_lane, compare_time):
                 td1_detected = True
                 self.logger.debug(f"TD-1 data detected for {cur_lane.name}")
                 break
             compare_time = datetime.now()
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
-        # Disable follower after cycling
+        # Disable follower after detection attempt
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception:
-            self.logger.error(f"Failed to disable follower after TD-1 cycling for {cur_lane.name}")
+            self.logger.error(f"Failed to disable follower after TD-1 calibration for {cur_lane.name}")
 
         if not td1_detected:
             # Filament reached hub but not TD-1 - unload it
@@ -1902,17 +1874,17 @@ class afcAMS(afcUnit):
             return False, msg, 0
 
         encoder_delta = abs(encoder_after - encoder_before)
-        cal_msg = f"\n td1_bowden_length: New: {encoder_delta} Old: {cur_lane.td1_bowden_length}"
 
+        # Unload filament after successful TD-1 calibration
+        self._unload_after_td1(cur_lane, spool_index, fps_id)
+
+        cal_msg = f"\n td1_bowden_length: New: {encoder_delta} Old: {cur_lane.td1_bowden_length}"
         cur_lane.td1_bowden_length = encoder_delta
         fullname = cur_lane.fullname
         self.afc.function.ConfigRewrite(fullname, "td1_bowden_length", encoder_delta, cal_msg)
         cur_lane.do_enable(False)
         cur_lane.unit_obj.return_to_home()
         self.afc.save_vars()
-
-        # Unload filament after successful TD-1 calibration
-        self._unload_after_td1(cur_lane, spool_index, fps_id)
 
         return True, "td1_bowden_length calibration successful", encoder_delta
 
@@ -2101,9 +2073,9 @@ class afcAMS(afcUnit):
         return True, "TD-1 data captured"
 
     def prep_capture_td1(self, cur_lane):
-        self._capture_td1_with_oams(
+        return self._capture_td1_with_oams(
             cur_lane,
-            require_loaded=False,
+            require_loaded=True,
             require_enabled=True,
         )
 
@@ -3589,7 +3561,16 @@ class afcAMS(afcUnit):
 
         # Schedule TD-1 capture with 3-second delay if td1_when_loaded is enabled
         # The delay allows AMS auto-load sequence to complete (loads near hub ? retracts ? settles)
-        if not previous_loaded and getattr(lane, "td1_when_loaded", False):
+        td1_when_loaded = getattr(lane, "td1_when_loaded", None)
+        if td1_when_loaded is None:
+            td1_when_loaded = getattr(self, "td1_when_loaded", False)
+
+        should_capture = (
+            not previous_loaded
+            and td1_when_loaded
+            and getattr(lane, "td1_device_id", None)
+        )
+        if should_capture:
             lane_name = lane.name
             try:
                 # Cancel any existing pending timer for this lane
