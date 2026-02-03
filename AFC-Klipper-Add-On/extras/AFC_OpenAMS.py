@@ -337,7 +337,6 @@ class afcAMS(afcUnit):
 
         # Track pending TD-1 capture timers (delayed after spool insertion)
         self._pending_spool_loaded_timers: Dict[str, Any] = {}
-        self._td1_hub_to_scan_time: Dict[str, float] = {}
 
         self.oams = None
         self.hardware_service = None
@@ -1711,10 +1710,7 @@ class afcAMS(afcUnit):
             self.logger.debug(f"Failed to abort existing action before unload for {cur_lane.name}")
 
         hub_cleared = False
-        estimated_unload = self._td1_hub_to_scan_time.get(cur_lane.name)
-        unload_wait = 3.0
-        if estimated_unload is not None:
-            unload_wait = max(3.0, min(estimated_unload + 1.0, 12.0))
+        unload_wait = 5.0
         for attempt in range(2):
             # Send unload command first to retract spool motor
             try:
@@ -1796,7 +1792,6 @@ class afcAMS(afcUnit):
         # IMPORTANT: Always use OAMS hardware sensor, not hub_obj (which doesn't update in real-time)
         hub_timeout = self.afc.reactor.monotonic() + 10.0
         hub_detected = False
-        hub_detect_time = None
         check_count = 0
 
         self.logger.debug(f"TD-1 calibration: using OAMS hardware sensor hub_hes_value[{spool_index}] for {cur_lane.name}")
@@ -1818,7 +1813,6 @@ class afcAMS(afcUnit):
 
             if hub_loaded:
                 hub_detected = True
-                hub_detect_time = self.afc.reactor.monotonic()
                 self.logger.info(f"Hub sensor triggered for {cur_lane.name} after {check_count} checks (~{check_count * 0.1:.1f}s)")
                 break
 
@@ -1928,19 +1922,11 @@ class afcAMS(afcUnit):
             if self.afc.reactor.monotonic() >= td1_min_ready:
                 if _capture_td1_if_fresh():
                     td1_detected = True
-                    if hub_detect_time is not None:
-                        self._td1_hub_to_scan_time[cur_lane.name] = (
-                            self.afc.reactor.monotonic() - hub_detect_time
-                        )
                     self.logger.debug(f"TD-1 data detected for {cur_lane.name}")
                     break
             if self.afc.reactor.monotonic() >= td1_relaxed_ready:
                 if _capture_td1_relaxed():
                     td1_detected = True
-                    if hub_detect_time is not None:
-                        self._td1_hub_to_scan_time[cur_lane.name] = (
-                            self.afc.reactor.monotonic() - hub_detect_time
-                        )
                     self.logger.debug(f"TD-1 data detected (relaxed) for {cur_lane.name}")
                     break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
@@ -2077,7 +2063,6 @@ class afcAMS(afcUnit):
         # Use OAMS hardware sensor, not hub_obj
         hub_timeout = self.afc.reactor.monotonic() + 10.0
         hub_detected = False
-        hub_detect_time = None
         self.logger.debug(f"TD-1 capture: waiting for hub sensor on {cur_lane.name}")
 
         while self.afc.reactor.monotonic() < hub_timeout:
@@ -2086,7 +2071,6 @@ class afcAMS(afcUnit):
             except Exception:
                 hub_detected = False
             if hub_detected:
-                hub_detect_time = self.afc.reactor.monotonic()
                 self.logger.info(f"Hub sensor triggered for TD-1 capture on {cur_lane.name}")
                 break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
@@ -2199,10 +2183,6 @@ class afcAMS(afcUnit):
             if self.afc.reactor.monotonic() >= td1_min_ready:
                 if _capture_td1_if_fresh():
                     td1_detected = True
-                    if hub_detect_time is not None:
-                        self._td1_hub_to_scan_time[cur_lane.name] = (
-                            self.afc.reactor.monotonic() - hub_detect_time
-                        )
                     self.logger.debug(f"TD-1 capture: data detected early for {cur_lane.name}")
                     break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
@@ -2219,10 +2199,6 @@ class afcAMS(afcUnit):
             while self.afc.reactor.monotonic() < td1_wait_deadline:
                 if _capture_td1_if_fresh():
                     td1_detected = True
-                    if hub_detect_time is not None:
-                        self._td1_hub_to_scan_time[cur_lane.name] = (
-                            self.afc.reactor.monotonic() - hub_detect_time
-                        )
                     break
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
