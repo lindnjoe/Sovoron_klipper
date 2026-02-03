@@ -2040,6 +2040,32 @@ class afcAMS(afcUnit):
         td1_detected = False
         last_clicks_moved = 0
         last_progress_time = self.afc.reactor.monotonic()
+        td1_min_ready = self.afc.reactor.monotonic() + 0.5
+
+        def _capture_td1_if_fresh() -> bool:
+            td1_data = self.afc.moonraker.get_td1_data()
+            if not td1_data or cur_lane.td1_device_id not in td1_data:
+                return False
+            data = td1_data[cur_lane.td1_device_id]
+            scan_time = data.get("scan_time")
+            if scan_time is None:
+                return False
+            if scan_time.endswith("+00:00Z"):
+                scan_time = scan_time[:-1]
+            else:
+                scan_time = scan_time[:-1] + "+00:00"
+            try:
+                scan_time = datetime.fromisoformat(scan_time).astimezone()
+            except (AttributeError, ValueError):
+                return False
+            if scan_time <= compare_time.astimezone():
+                return False
+            if data.get("td") is None or data.get("color") is None:
+                return False
+            cur_lane.td1_data = data
+            self.logger.info(f"{cur_lane.name} TD-1 data captured")
+            self.afc.save_vars()
+            return True
 
         self.logger.debug(f"TD-1 capture: feeding {target_clicks} encoder clicks to TD-1 on {cur_lane.name}")
         try:
@@ -2065,10 +2091,11 @@ class afcAMS(afcUnit):
             if clicks_moved >= target_clicks:
                 self.logger.debug(f"TD-1 capture: reached {clicks_moved} clicks on {cur_lane.name}")
                 break
-            if self.get_td1_data(cur_lane, compare_time):
-                td1_detected = True
-                self.logger.debug(f"TD-1 capture: data detected early for {cur_lane.name}")
-                break
+            if self.afc.reactor.monotonic() >= td1_min_ready:
+                if _capture_td1_if_fresh():
+                    td1_detected = True
+                    self.logger.debug(f"TD-1 capture: data detected early for {cur_lane.name}")
+                    break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
         # Stop the load - disable follower
@@ -2081,7 +2108,7 @@ class afcAMS(afcUnit):
         if not td1_detected:
             td1_wait_deadline = self.afc.reactor.monotonic() + 3.5
             while self.afc.reactor.monotonic() < td1_wait_deadline:
-                if self.get_td1_data(cur_lane, compare_time):
+                if _capture_td1_if_fresh():
                     td1_detected = True
                     break
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
