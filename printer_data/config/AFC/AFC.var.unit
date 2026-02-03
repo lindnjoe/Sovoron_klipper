@@ -169,9 +169,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 2.0,
-                "color": "4CB979",
-                "scan_time": "2026-02-03T20:34:45.367445+00:00Z",
+                "td": 1.9,
+                "color": "57CE8F",
+                "scan_time": "2026-02-03T20:53:22.714754+00:00Z",
                 "error": null
             }
         },
@@ -203,8 +203,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.1,
-                "color": "101A19",
-                "scan_time": "2026-02-03T20:35:09.052698+00:00Z",
+                "color": "121E21",
+                "scan_time": "2026-02-03T20:53:48.785644+00:00Z",
                 "error": null
             }
         },
@@ -220,7 +220,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -234,12 +234,7 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
-            "td1_data": {
-                "td": 1.0,
-                "color": "6BE7FF",
-                "scan_time": "2026-02-03T20:39:40.341261+00:00Z",
-                "error": null
-            }
+            "td1_data": {}
         }
     },
     "Tools": {},
