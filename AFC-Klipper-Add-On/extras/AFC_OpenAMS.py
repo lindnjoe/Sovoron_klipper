@@ -293,6 +293,9 @@ class afcAMS(afcUnit):
 
         self.oams_name = config.get("oams", "oams1")
 
+        # TD-1 capture on insert: when True, automatically capture TD-1 data when filament is inserted into any lane on this unit
+        self.capture_td1_on_insert = config.getboolean("capture_td1_on_insert", False)
+
         self.reactor = self.printer.get_reactor()
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
@@ -3731,11 +3734,12 @@ class afcAMS(afcUnit):
         # This eliminates manual state management and ensures proper state transitions
         lane.set_loaded()
 
-        # Schedule TD-1 capture with 3-second delay if td1_when_loaded is enabled
+        # Schedule TD-1 capture with 3-second delay if capture_td1_on_insert is enabled
         # The delay allows AMS auto-load sequence to complete (loads near hub ? retracts ? settles)
+        # Note: td1_when_loaded is for toolhead loading, capture_td1_on_insert is for lane insertion
         should_capture = (
             not previous_loaded
-            and getattr(lane, "td1_when_loaded", False)
+            and self.capture_td1_on_insert
             and getattr(lane, "td1_device_id", None)
         )
         if should_capture:
