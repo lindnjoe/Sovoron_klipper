@@ -2867,6 +2867,7 @@ class afcAMS(afcUnit):
 
         lane_val = bool(value)
         prev_val = getattr(lane, "load_state", False)
+        self.logger.debug(f"_on_f1s_changed: lane={lane.name} value={lane_val} prev={prev_val} ams_share_prep_load={getattr(lane, 'ams_share_prep_load', False)}")
 
         # Update lane state based on sensor FIRST
         if getattr(lane, "ams_share_prep_load", False):
@@ -3072,6 +3073,7 @@ class afcAMS(afcUnit):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
         # Check if runout handling requires blocking this sensor update
         if self._should_block_sensor_update_for_runout(lane, lane_val):
+            self.logger.debug(f"_update_shared_lane: blocked by runout handling for {lane.name}")
             return
 
         previous = getattr(lane, "load_state", False)
@@ -3079,12 +3081,15 @@ class afcAMS(afcUnit):
         prep_state = getattr(lane, "prep_state", None)
         load_state = getattr(lane, "load_state", None)
 
+        self.logger.debug(f"_update_shared_lane: lane={lane.name} lane_val={lane_val_bool} previous={previous} prep_state={prep_state} load_state={load_state}")
+
         if (
             previous is not None
             and bool(previous) == lane_val_bool
             and (prep_state is None or bool(prep_state) == lane_val_bool)
             and (load_state is None or bool(load_state) == lane_val_bool)
         ):
+            self.logger.debug(f"_update_shared_lane: early return - state unchanged for {lane.name}")
             return
 
         if lane_val_bool:
@@ -3732,10 +3737,12 @@ class afcAMS(afcUnit):
 
         lane = self._find_lane_by_spool(normalized_index)
         if lane is None:
+            self.logger.debug(f"_handle_spool_loaded_event: lane not found for spool_index={spool_index}")
             return
 
         # PHASE 2 REFACTOR: Use AFC native lane.load_state instead of dictionary
         previous_loaded = bool(getattr(lane, "load_state", False))
+        self.logger.debug(f"_handle_spool_loaded_event: lane={lane.name} previous_loaded={previous_loaded} capture_td1_on_insert={self.capture_td1_on_insert}")
 
         eventtime = kwargs.get("eventtime", 0.0)
 
