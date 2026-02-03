@@ -1704,35 +1704,47 @@ class afcAMS(afcUnit):
         """
         Unload filament after TD-1 operation by reversing follower and spool motor until hub clears.
         """
-        # Send unload command first to retract spool motor
         try:
-            self.oams.oams_unload_spool_cmd.send([])
+            self.oams.abort_current_action(wait=True, code=0)
         except Exception:
-            self.logger.error(f"Failed to send unload command for {cur_lane.name}")
+            self.logger.debug(f"Failed to abort existing action before unload for {cur_lane.name}")
 
-        # Also reverse follower to help pull filament back
-        try:
-            self.oams.set_oams_follower(1, 0)  # Enable reverse
-        except Exception:
-            self.logger.error(f"Failed to enable reverse follower for {cur_lane.name}")
-
-        # Allow time for spool unload and reverse follower to clear the hub sensor.
-        unload_deadline = self.afc.reactor.monotonic() + 5.0
         hub_cleared = False
-        while self.afc.reactor.monotonic() < unload_deadline:
+        for attempt in range(2):
+            # Send unload command first to retract spool motor
             try:
-                hub_cleared = not bool(self.oams.hub_hes_value[spool_index])
+                self.oams.oams_unload_spool_cmd.send([])
             except Exception:
-                hub_cleared = False
+                self.logger.error(f"Failed to send unload command for {cur_lane.name}")
+
+            # Also reverse follower to help pull filament back
+            try:
+                self.oams.set_oams_follower(1, 0)  # Enable reverse
+            except Exception:
+                self.logger.error(f"Failed to enable reverse follower for {cur_lane.name}")
+
+            # Allow time for spool unload and reverse follower to clear the hub sensor.
+            unload_deadline = self.afc.reactor.monotonic() + 5.0
+            while self.afc.reactor.monotonic() < unload_deadline:
+                try:
+                    hub_cleared = not bool(self.oams.hub_hes_value[spool_index])
+                except Exception:
+                    hub_cleared = False
+                if hub_cleared:
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
             if hub_cleared:
                 break
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+            if attempt == 0:
+                self.logger.warning(f"Hub still loaded after unload attempt for {cur_lane.name}, retrying")
 
         # Disable follower after initiating unload
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception:
             self.logger.error(f"Failed to disable follower after unload for {cur_lane.name}")
+        if not hub_cleared:
+            self.logger.warning(f"TD-1 unload did not clear hub for {cur_lane.name}")
         self.logger.info(f"TD-1 unload initiated for {cur_lane.name}")
 
     def calibrate_td1(self, cur_lane, dis, tol):
