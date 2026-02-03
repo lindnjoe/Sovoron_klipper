@@ -1856,6 +1856,7 @@ class afcAMS(afcUnit):
         compare_time = datetime.now()
         td1_timeout = self.afc.reactor.monotonic() + 180.0
         td1_detected = False
+        td1_scan_time = None  # Will store actual TD-1 detection time
         next_td1_poll = self.afc.reactor.monotonic()
         last_clicks_moved = 0
         last_progress_time = self.afc.reactor.monotonic()
@@ -1866,14 +1867,15 @@ class afcAMS(afcUnit):
             last_scan_times = {}
             self._td1_last_scan_time_calibration = last_scan_times
 
-        def _capture_td1_if_fresh() -> bool:
+        def _capture_td1_if_fresh():
+            """Returns (detected, scan_time) tuple."""
             td1_data = self.afc.moonraker.get_td1_data()
             if not td1_data or cur_lane.td1_device_id not in td1_data:
-                return False
+                return False, None
             data = td1_data[cur_lane.td1_device_id]
             scan_time = data.get("scan_time")
             if scan_time is None:
-                return False
+                return False, None
             if scan_time.endswith("+00:00Z"):
                 scan_time = scan_time[:-1]
             else:
@@ -1881,28 +1883,31 @@ class afcAMS(afcUnit):
             try:
                 scan_time = datetime.fromisoformat(scan_time).astimezone()
             except (AttributeError, ValueError):
-                return False
+                return False, None
             if scan_time <= compare_time.astimezone():
-                return False
+                return False, None
             last_scan_time = last_scan_times.get(cur_lane.td1_device_id)
             if last_scan_time is not None and scan_time <= last_scan_time:
-                return False
+                return False, None
             if data.get("td") is None or data.get("color") is None:
-                return False
+                return False, None
             last_scan_times[cur_lane.td1_device_id] = scan_time
-            return True
+            return True, scan_time
 
-        def _capture_td1_relaxed() -> bool:
+        def _capture_td1_relaxed():
+            """Returns (detected, scan_time) tuple."""
             td1_data = self.afc.moonraker.get_td1_data()
             if not td1_data or cur_lane.td1_device_id not in td1_data:
-                return False
+                return False, None
             data = td1_data[cur_lane.td1_device_id]
             if data.get("td") is None or data.get("color") is None:
-                return False
-            last_scan_times[cur_lane.td1_device_id] = datetime.now().astimezone()
-            return True
+                return False, None
+            scan_time = datetime.now().astimezone()
+            last_scan_times[cur_lane.td1_device_id] = scan_time
+            return True, scan_time
 
         self.logger.debug(f"Starting continuous follower feed for TD-1 detection on {cur_lane.name}")
+        follower_start_time = datetime.now().astimezone()  # Track when follower started
         try:
             self.oams.set_oams_follower(1, 1)
         except Exception:
@@ -1929,20 +1934,25 @@ class afcAMS(afcUnit):
 
             if self.afc.reactor.monotonic() >= next_td1_poll:
                 next_td1_poll = self.afc.reactor.monotonic() + 2.0
-                if _capture_td1_if_fresh():
+                detected, scan_time = _capture_td1_if_fresh()
+                if detected:
                     td1_detected = True
-                    self.logger.debug(f"TD-1 data detected for {cur_lane.name}")
+                    td1_scan_time = scan_time
+                    self.logger.debug(f"TD-1 data detected for {cur_lane.name} at scan_time={scan_time}")
                     break
                 if self.afc.reactor.monotonic() >= td1_relaxed_ready:
-                    if _capture_td1_relaxed():
+                    detected, scan_time = _capture_td1_relaxed()
+                    if detected:
                         td1_detected = True
+                        td1_scan_time = scan_time
                         self.logger.debug(
-                            f"TD-1 data detected (relaxed) for {cur_lane.name}"
+                            f"TD-1 data detected (relaxed) for {cur_lane.name} at scan_time={scan_time}"
                         )
                         break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
         # Disable follower after detection attempt
+        follower_stop_time = datetime.now().astimezone()  # Track when follower stopped
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception:
@@ -1965,7 +1975,31 @@ class afcAMS(afcUnit):
             self._unload_after_td1(cur_lane, spool_index, fps_id)
             return False, msg, 0
 
-        encoder_delta = abs(encoder_after - encoder_before)
+        encoder_delta_raw = abs(encoder_after - encoder_before)
+
+        # Apply scan_time correction to account for detection latency
+        # The follower continues feeding between when TD-1 actually detected the filament
+        # and when we polled and stopped the follower. Use the scan_time to correct for this.
+        encoder_delta = encoder_delta_raw
+        if td1_scan_time is not None and follower_start_time is not None:
+            try:
+                total_duration = (follower_stop_time - follower_start_time).total_seconds()
+                actual_duration = (td1_scan_time - follower_start_time).total_seconds()
+
+                if total_duration > 0 and actual_duration > 0 and actual_duration < total_duration:
+                    correction_factor = actual_duration / total_duration
+                    encoder_delta = int(encoder_delta_raw * correction_factor)
+                    overshoot_clicks = encoder_delta_raw - encoder_delta
+                    self.logger.info(
+                        f"TD-1 calibration correction: raw={encoder_delta_raw} corrected={encoder_delta} "
+                        f"(removed {overshoot_clicks} clicks, {total_duration - actual_duration:.2f}s overshoot)"
+                    )
+                else:
+                    self.logger.debug(
+                        f"TD-1 calibration: no correction applied (total={total_duration:.2f}s actual={actual_duration:.2f}s)"
+                    )
+            except Exception as e:
+                self.logger.debug(f"TD-1 calibration: correction calculation failed: {e}")
 
         # Unload filament after successful TD-1 calibration
         self._unload_after_td1(cur_lane, spool_index, fps_id)
