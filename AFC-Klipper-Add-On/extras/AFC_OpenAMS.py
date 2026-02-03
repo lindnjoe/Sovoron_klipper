@@ -2902,6 +2902,7 @@ class afcAMS(afcUnit):
             return
 
         if lane_val_bool:
+            previous_loaded = bool(getattr(lane, "load_state", False))
             # Defer metadata application (material, spoolman IDs, colors, etc.) to
             # AFC's callbacks. The callbacks will update prep/load state and apply lane data consistently for both
             # single- and shared-sensor lanes.
@@ -2920,6 +2921,7 @@ class afcAMS(afcUnit):
                         unit_name=self.name,
                         spool_index=spool_index,
                         eventtime=eventtime,
+                        previous_loaded=previous_loaded,
                     )
                 except Exception as e:
                     self.logger.error(f"Failed to publish spool_loaded event for {lane.name}: {e}")
@@ -3549,7 +3551,9 @@ class afcAMS(afcUnit):
             return
 
         # PHASE 2 REFACTOR: Use AFC native lane.load_state instead of dictionary
-        previous_loaded = bool(getattr(lane, "load_state", False))
+        previous_loaded = kwargs.get("previous_loaded")
+        if previous_loaded is None:
+            previous_loaded = bool(getattr(lane, "load_state", False))
 
         eventtime = kwargs.get("eventtime", 0.0)
 
