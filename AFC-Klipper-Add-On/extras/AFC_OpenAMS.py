@@ -2037,6 +2037,9 @@ class afcAMS(afcUnit):
         target_clicks = max(0, int(cur_lane.td1_bowden_length) + 5)
         compare_time = datetime.now()
         td1_timeout = self.afc.reactor.monotonic() + 30.0
+        td1_detected = False
+        last_clicks_moved = 0
+        last_progress_time = self.afc.reactor.monotonic()
 
         self.logger.debug(f"TD-1 capture: feeding {target_clicks} encoder clicks to TD-1 on {cur_lane.name}")
         try:
@@ -2051,8 +2054,20 @@ class afcAMS(afcUnit):
                 encoder_now = encoder_before
 
             clicks_moved = abs(encoder_now - encoder_before)
+            if clicks_moved != last_clicks_moved:
+                last_clicks_moved = clicks_moved
+                last_progress_time = self.afc.reactor.monotonic()
+            elif (self.afc.reactor.monotonic() - last_progress_time) > 1.5:
+                self.logger.info(
+                    f"TD-1 capture: follower stalled after {clicks_moved} clicks on {cur_lane.name}"
+                )
+                break
             if clicks_moved >= target_clicks:
                 self.logger.debug(f"TD-1 capture: reached {clicks_moved} clicks on {cur_lane.name}")
+                break
+            if self.get_td1_data(cur_lane, compare_time):
+                td1_detected = True
+                self.logger.debug(f"TD-1 capture: data detected early for {cur_lane.name}")
                 break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
@@ -2062,10 +2077,14 @@ class afcAMS(afcUnit):
         except Exception:
             self.logger.error(f"Failed to disable follower after TD-1 capture for {cur_lane.name}")
 
-        # Wait for TD-1 to read data
-        # TD-1 needs full 3.5 seconds to properly read data before unload
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 3.5)
-        self.get_td1_data(cur_lane, compare_time)
+        # Wait for TD-1 to read data, but exit early if data arrives
+        if not td1_detected:
+            td1_wait_deadline = self.afc.reactor.monotonic() + 3.5
+            while self.afc.reactor.monotonic() < td1_wait_deadline:
+                if self.get_td1_data(cur_lane, compare_time):
+                    td1_detected = True
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
         # Unload filament after successful TD-1 capture
         self._unload_after_td1(cur_lane, spool_index, fps_id)
