@@ -1856,6 +1856,7 @@ class afcAMS(afcUnit):
         next_td1_poll = self.afc.reactor.monotonic()
         last_clicks_moved = 0
         last_progress_time = self.afc.reactor.monotonic()
+        stall_logged = False
         last_scan_times = getattr(self, "_td1_last_scan_time_calibration", None)
         if last_scan_times is None:
             last_scan_times = {}
@@ -1906,10 +1907,11 @@ class afcAMS(afcUnit):
                 last_clicks_moved = clicks_moved
                 last_progress_time = self.afc.reactor.monotonic()
             elif (self.afc.reactor.monotonic() - last_progress_time) > 3.0:
-                self.logger.info(
-                    f"TD-1 calibration: follower stalled after {clicks_moved} clicks on {cur_lane.name}"
-                )
-                break
+                if not stall_logged:
+                    self.logger.info(
+                        f"TD-1 calibration: follower stalled after {clicks_moved} clicks on {cur_lane.name}"
+                    )
+                    stall_logged = True
 
             if self.afc.reactor.monotonic() >= next_td1_poll:
                 next_td1_poll = self.afc.reactor.monotonic() + 2.0
@@ -1964,6 +1966,11 @@ class afcAMS(afcUnit):
         require_loaded: bool,
         require_enabled: bool,
     ) -> Tuple[bool, str]:
+        last_capture_time = getattr(self, "_td1_last_capture_time", None)
+        if last_capture_time is not None:
+            settle_delay = 3.0 - (self.afc.reactor.monotonic() - last_capture_time)
+            if settle_delay > 0:
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + settle_delay)
         if require_enabled and not cur_lane.td1_when_loaded:
             return False, "TD-1 capture disabled"
         if cur_lane.td1_device_id is None:
@@ -2192,6 +2199,7 @@ class afcAMS(afcUnit):
 
         # Unload filament after successful TD-1 capture
         self._unload_after_td1(cur_lane, spool_index, fps_id)
+        self._td1_last_capture_time = self.afc.reactor.monotonic()
 
         return True, "TD-1 data captured"
 

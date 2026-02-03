@@ -141,9 +141,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 2.0,
-                "color": "EDEFFF",
-                "scan_time": "2026-02-03T03:35:58.356204+00:00Z",
+                "td": 2.1,
+                "color": "FFFFFF",
+                "scan_time": "2026-02-03T04:41:37.388746+00:00Z",
                 "error": null
             }
         },
@@ -159,7 +159,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -174,9 +174,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 100.0,
-                "color": "382D3E",
-                "scan_time": "2026-02-03T03:39:30.856203+00:00Z",
+                "td": 2.0,
+                "color": "203E29",
+                "scan_time": "2026-02-03T04:42:01.464621+00:00Z",
                 "error": null
             }
         },
@@ -192,7 +192,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": false,
+            "loaded_to_hub": true,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -208,8 +208,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.1,
-                "color": "0B1212",
-                "scan_time": "2026-02-03T03:36:43.089464+00:00Z",
+                "color": "040100",
+                "scan_time": "2026-02-03T04:42:58.411506+00:00Z",
                 "error": null
             }
         },
@@ -225,7 +225,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -240,9 +240,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 1.1,
-                "color": "58B9FF",
-                "scan_time": "2026-02-03T03:27:34.681041+00:00Z",
+                "td": 1.0,
+                "color": "305295",
+                "scan_time": "2026-02-03T04:42:26.564001+00:00Z",
                 "error": null
             }
         }
