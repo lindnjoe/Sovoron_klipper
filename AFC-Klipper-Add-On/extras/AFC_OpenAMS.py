@@ -1853,6 +1853,9 @@ class afcAMS(afcUnit):
         compare_time = datetime.now()
         td1_timeout = self.afc.reactor.monotonic() + 180.0
         td1_detected = False
+        next_td1_poll = self.afc.reactor.monotonic()
+        last_clicks_moved = 0
+        last_progress_time = self.afc.reactor.monotonic()
         last_scan_times = getattr(self, "_td1_last_scan_time_calibration", None)
         if last_scan_times is None:
             last_scan_times = {}
@@ -1893,11 +1896,28 @@ class afcAMS(afcUnit):
             return False, "Failed to enable follower", 0
 
         while self.afc.reactor.monotonic() < td1_timeout:
-            if _capture_td1_if_fresh():
-                td1_detected = True
-                self.logger.debug(f"TD-1 data detected for {cur_lane.name}")
+            try:
+                encoder_now = int(self.oams.encoder_clicks)
+            except Exception:
+                encoder_now = encoder_before
+
+            clicks_moved = abs(encoder_now - encoder_before)
+            if clicks_moved != last_clicks_moved:
+                last_clicks_moved = clicks_moved
+                last_progress_time = self.afc.reactor.monotonic()
+            elif (self.afc.reactor.monotonic() - last_progress_time) > 3.0:
+                self.logger.info(
+                    f"TD-1 calibration: follower stalled after {clicks_moved} clicks on {cur_lane.name}"
+                )
                 break
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 2.0)
+
+            if self.afc.reactor.monotonic() >= next_td1_poll:
+                next_td1_poll = self.afc.reactor.monotonic() + 2.0
+                if _capture_td1_if_fresh():
+                    td1_detected = True
+                    self.logger.debug(f"TD-1 data detected for {cur_lane.name}")
+                    break
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
         # Disable follower after detection attempt
         try:
