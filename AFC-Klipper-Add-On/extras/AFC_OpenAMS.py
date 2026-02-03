@@ -2023,7 +2023,7 @@ class afcAMS(afcUnit):
     ) -> Tuple[bool, str]:
         last_capture_time = getattr(self, "_td1_last_capture_time", None)
         if last_capture_time is not None:
-            settle_delay = 3.0 - (self.afc.reactor.monotonic() - last_capture_time)
+            settle_delay = 4.2 - (self.afc.reactor.monotonic() - last_capture_time)
             if settle_delay > 0:
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + settle_delay)
         if require_enabled and not cur_lane.td1_when_loaded:
