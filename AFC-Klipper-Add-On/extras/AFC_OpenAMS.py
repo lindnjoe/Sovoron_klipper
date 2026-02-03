@@ -2027,6 +2027,17 @@ class afcAMS(afcUnit):
             )
             return False, "Another OpenAMS hub already loaded"
 
+        if last_capture_time is not None:
+            settle_deadline = self.afc.reactor.monotonic() + 5.0
+            while self.afc.reactor.monotonic() < settle_deadline:
+                try:
+                    hub_values = getattr(self.oams, "hub_hes_value", None)
+                    if hub_values and all(not bool(value) for value in hub_values):
+                        break
+                except Exception:
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+
         if hub_state and not current_hub_loaded:
             self.logger.info(
                 f"Cannot get TD-1 data for {cur_lane.name}, hub shows filament in path"

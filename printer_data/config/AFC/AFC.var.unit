@@ -126,7 +126,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": false,
+            "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -142,8 +142,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 2.1,
-                "color": "FFFFFF",
-                "scan_time": "2026-02-03T04:41:37.388746+00:00Z",
+                "color": "9877AA",
+                "scan_time": "2026-02-03T04:49:46.688566+00:00Z",
                 "error": null
             }
         },
