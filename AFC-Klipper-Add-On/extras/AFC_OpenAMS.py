@@ -1855,10 +1855,10 @@ class afcAMS(afcUnit):
         td1_detected = False
         td1_min_ready = self.afc.reactor.monotonic() + 0.5
         td1_relaxed_ready = self.afc.reactor.monotonic() + 5.0
-        last_scan_times = getattr(self, "_td1_last_scan_time_by_device", None)
+        last_scan_times = getattr(self, "_td1_last_scan_time_calibration", None)
         if last_scan_times is None:
             last_scan_times = {}
-            self._td1_last_scan_time_by_device = last_scan_times
+            self._td1_last_scan_time_calibration = last_scan_times
 
         def _capture_td1_if_fresh() -> bool:
             td1_data = self.afc.moonraker.get_td1_data()
@@ -2122,10 +2122,10 @@ class afcAMS(afcUnit):
         last_clicks_moved = 0
         last_progress_time = self.afc.reactor.monotonic()
         td1_min_ready = self.afc.reactor.monotonic() + 0.5
-        last_scan_times = getattr(self, "_td1_last_scan_time_by_device", None)
+        last_scan_times = getattr(self, "_td1_last_scan_time_capture", None)
         if last_scan_times is None:
             last_scan_times = {}
-            self._td1_last_scan_time_by_device = last_scan_times
+            self._td1_last_scan_time_capture = last_scan_times
 
         def _capture_td1_if_fresh() -> bool:
             td1_data = self.afc.moonraker.get_td1_data()
