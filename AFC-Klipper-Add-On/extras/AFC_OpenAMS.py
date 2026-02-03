@@ -3082,8 +3082,8 @@ class afcAMS(afcUnit):
 
     def _trigger_td1_capture_delayed(self, lane_name):
         """
-        Timer callback to trigger TD-1 capture after 3-second delay.
-        This allows the AMS auto-load sequence to complete (loads near hub ? retracts ? settles).
+        Timer callback to trigger TD-1 capture after 4.2-second delay.
+        This allows the AMS auto-load sequence to complete (pushes to hub sensor -> retracts -> settles).
 
         CRITICAL: This is called from timer context - must not use reactor.pause() or wait=True.
         """
@@ -3835,12 +3835,13 @@ class afcAMS(afcUnit):
                     except Exception:
                         pass  # Timer may have already fired
 
-                # Register new timer with 3-second delay for TD-1 capture
+                # Register new timer with 4.2-second delay for TD-1 capture
+                # AMS pushes filament to hub sensor then retracts - need time for this sequence
                 timer_callback = self._trigger_td1_capture_delayed(lane_name)
-                timer = self.reactor.register_timer(timer_callback, self.reactor.monotonic() + 3.0)
+                timer = self.reactor.register_timer(timer_callback, self.reactor.monotonic() + 4.2)
                 self._pending_spool_loaded_timers[lane_name] = timer
 
-                self.logger.info(f"Scheduled TD-1 capture for {lane_name} in 3 seconds (allowing AMS to settle)")
+                self.logger.info(f"Scheduled TD-1 capture for {lane_name} in 4.2 seconds (allowing AMS to settle)")
             except Exception as e:
                 self.logger.error(f"Failed to schedule TD-1 capture for {lane_name}: {e}")
         extruder_name = getattr(lane, "extruder_name", None)
