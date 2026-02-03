@@ -277,6 +277,8 @@ class afcAMS(afcUnit):
         self.type = "OpenAMS"
         self.logger = self.afc.logger
 
+        self.capture_td1_on_insert = config.getboolean("capture_td1_on_insert", False)
+
         # AMS units don't have physical buffers - force buffer_obj to None
         # This prevents buffer monitoring/fault detection from running on AMS lanes
         # even if user accidentally configured a buffer parameter
@@ -3567,7 +3569,7 @@ class afcAMS(afcUnit):
 
         should_capture = (
             not previous_loaded
-            and td1_when_loaded
+            and (td1_when_loaded or self.capture_td1_on_insert)
             and getattr(lane, "td1_device_id", None)
         )
         if should_capture:
