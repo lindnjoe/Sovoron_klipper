@@ -1706,7 +1706,7 @@ class afcAMS(afcUnit):
         """
         # Send unload command first to retract spool motor
         try:
-            self.oams.oams_unload_spool_cmd.send()
+            self.oams.oams_unload_spool_cmd.send([])
         except Exception:
             self.logger.error(f"Failed to send unload command for {cur_lane.name}")
 
@@ -2036,7 +2036,7 @@ class afcAMS(afcUnit):
             except Exception:
                 pass
             try:
-                self.oams.oams_unload_spool_cmd.send()
+                self.oams.oams_unload_spool_cmd.send([])
             except Exception:
                 pass
             return False, "Unable to resolve FPS"
