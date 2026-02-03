@@ -2038,6 +2038,18 @@ class afcAMS(afcUnit):
             current_hub_loaded = False
             other_hub_loaded = False
 
+        if other_hub_loaded and last_capture_time is not None:
+            settle_deadline = self.afc.reactor.monotonic() + 5.0
+            while self.afc.reactor.monotonic() < settle_deadline:
+                try:
+                    hub_values = getattr(self.oams, "hub_hes_value", None)
+                    if hub_values and all(not bool(value) for value in hub_values):
+                        other_hub_loaded = False
+                        break
+                except Exception:
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+
         if other_hub_loaded:
             self.logger.info(
                 "Skipping TD-1 capture for %s because another OpenAMS hub is already loaded",
