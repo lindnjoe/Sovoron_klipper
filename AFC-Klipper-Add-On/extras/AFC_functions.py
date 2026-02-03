@@ -1553,14 +1553,18 @@ class afcFunction:
         prompt.p_end()
         if lane.lower() == "all":
             self.logger.info("Capturing TD-1 data for all lanes")
-            for cur_lane in self.afc.lanes.values():
-                if (cur_lane.td1_device_id
-                    and cur_lane.load_state
-                    and cur_lane.prep_state):
-                    success, msg = cur_lane.get_td1_data()
-                    if not success:
-                        self.afc.gcode.run_script_from_command(f"AFC_CALI_FAIL TITLE='Get TD-1 data Failed' FAIL={cur_lane} DISTANCE=0 msg='{msg}' RESET=0")
-                        return
+            lanes_to_capture = [
+                cur_lane
+                for cur_lane in self.afc.lanes.values()
+                if cur_lane.td1_device_id and cur_lane.load_state and cur_lane.prep_state
+            ]
+            for idx, cur_lane in enumerate(lanes_to_capture):
+                success, msg = cur_lane.get_td1_data()
+                if not success:
+                    self.afc.gcode.run_script_from_command(f"AFC_CALI_FAIL TITLE='Get TD-1 data Failed' FAIL={cur_lane} DISTANCE=0 msg='{msg}' RESET=0")
+                    return
+                if idx < len(lanes_to_capture) - 1:
+                    self.afc.reactor.pause(self.afc.reactor.monotonic() + 3.0)
 
             lanes_captured = "'TD-1 Data captured for all lanes'"
         else:
