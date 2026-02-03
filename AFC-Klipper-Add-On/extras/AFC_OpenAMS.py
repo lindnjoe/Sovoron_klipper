@@ -1725,6 +1725,7 @@ class afcAMS(afcUnit):
 
             # Allow time for spool unload and reverse follower to clear the hub sensor.
             unload_deadline = self.afc.reactor.monotonic() + 5.0
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
             while self.afc.reactor.monotonic() < unload_deadline:
                 try:
                     hub_cleared = not bool(self.oams.hub_hes_value[spool_index])
