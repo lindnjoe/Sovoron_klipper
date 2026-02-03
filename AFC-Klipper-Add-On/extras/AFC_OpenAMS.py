@@ -3734,12 +3734,12 @@ class afcAMS(afcUnit):
         # This eliminates manual state management and ensures proper state transitions
         lane.set_loaded()
 
-        # Schedule TD-1 capture with 3-second delay if td1_when_loaded or capture_td1_on_insert is enabled
-        # The delay allows AMS auto-load sequence to complete (loads near hub ? retracts ? settles)
-        # capture_td1_on_insert (unit-level) or td1_when_loaded (lane-level) triggers TD-1 capture
+        # Schedule TD-1 capture with 3-second delay if capture_td1_on_insert is enabled
+        # The delay allows AMS auto-load sequence to complete (loads near hub → retracts → settles)
+        # Note: td1_when_loaded is for toolhead loading, capture_td1_on_insert is for lane insertion
         should_capture = (
             not previous_loaded
-            and (getattr(lane, "td1_when_loaded", False) or self.capture_td1_on_insert)
+            and self.capture_td1_on_insert
             and getattr(lane, "td1_device_id", None)
         )
         if should_capture:
