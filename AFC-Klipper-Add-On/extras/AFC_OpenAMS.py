@@ -3561,9 +3561,13 @@ class afcAMS(afcUnit):
 
         # Schedule TD-1 capture with 3-second delay if td1_when_loaded is enabled
         # The delay allows AMS auto-load sequence to complete (loads near hub ? retracts ? settles)
+        td1_when_loaded = getattr(lane, "td1_when_loaded", None)
+        if td1_when_loaded is None:
+            td1_when_loaded = getattr(self, "td1_when_loaded", False)
+
         should_capture = (
             not previous_loaded
-            and getattr(lane, "td1_when_loaded", False)
+            and td1_when_loaded
             and getattr(lane, "td1_device_id", None)
         )
         if should_capture:
