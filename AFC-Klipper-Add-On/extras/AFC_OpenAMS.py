@@ -1716,9 +1716,17 @@ class afcAMS(afcUnit):
         except Exception:
             self.logger.error(f"Failed to enable reverse follower for {cur_lane.name}")
 
-        # Do not wait for hub to clear; unload must be initiated first so filament can
-        # retract back through TD-1 and the hub to the AMS.
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+        # Allow time for spool unload and reverse follower to clear the hub sensor.
+        unload_deadline = self.afc.reactor.monotonic() + 5.0
+        hub_cleared = False
+        while self.afc.reactor.monotonic() < unload_deadline:
+            try:
+                hub_cleared = not bool(self.oams.hub_hes_value[spool_index])
+            except Exception:
+                hub_cleared = False
+            if hub_cleared:
+                break
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
         # Disable follower after initiating unload
         try:
