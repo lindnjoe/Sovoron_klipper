@@ -394,8 +394,7 @@ class afcAMS(afcUnit):
             return
 
         def _openams_td1_prep(prep_self, overrall_status):
-            # Check global capture_td1_data setting from AFC_prep config
-            global_capture = prep_self.get_td1_data and prep_self.afc.td1_present
+            capture_td1_data = prep_self.get_td1_data and prep_self.afc.td1_present
             any_td1_error = False
             if prep_self.afc.td1_present:
                 prep_self.logger.info("Found TD-1 device connected to printer")
@@ -404,39 +403,25 @@ class afcAMS(afcUnit):
             current_lane = prep_self.afc.function.get_current_lane_obj()
             if current_lane is not None:
                 current_lane.unit_obj.select_lane(current_lane)
-                if global_capture:
+                if capture_td1_data:
                     prep_self.logger.info("Cannot capture TD-1 data during PREP since toolhead is loaded")
-            elif not overrall_status:
-                if global_capture:
+            elif capture_td1_data:
+                if not overrall_status:
                     prep_self.logger.info("Cannot capture TD-1 data, not all of PREP succeeded")
-            elif any_td1_error:
-                prep_self.logger.error("Error with a TD-1 device, not collecting data during prep")
-            else:
-                # Capture TD-1 for lanes that have capture enabled (global or per-lane/unit)
-                lanes_to_capture = []
-                for lane in prep_self.afc.lanes.values():
-                    prep_ready = lane.prep_state
-                    if getattr(lane.unit_obj, "type", None) == "OpenAMS":
-                        prep_ready = lane.load_state
-
-                    # Check if lane has TD-1 capture enabled (lane or unit level)
-                    lane_capture = getattr(lane, "td1_when_loaded", None)
-                    if lane_capture is None:
-                        lane_capture = getattr(lane.unit_obj, "td1_when_loaded", False)
-
-                    # Capture if global setting OR per-lane setting is enabled
-                    should_capture = (global_capture or lane_capture) and prep_self.afc.td1_present
-
-                    if should_capture and lane.td1_device_id and lane.load_state and prep_ready:
-                        lanes_to_capture.append(lane)
-
-                if lanes_to_capture:
-                    prep_self.logger.info(f"Capturing TD-1 data for {len(lanes_to_capture)} loaded lanes")
-                    for lane in lanes_to_capture:
-                        return_status, _ = lane.get_td1_data()
-                        if not return_status:
-                            break
-                    prep_self.logger.info("Done capturing TD-1 data")
+                else:
+                    if any_td1_error:
+                        prep_self.logger.error("Error with a TD-1 device, not collecting data during prep")
+                    else:
+                        prep_self.logger.info("Capturing TD-1 data for all loaded lanes")
+                        for lane in prep_self.afc.lanes.values():
+                            prep_ready = lane.prep_state
+                            if getattr(lane.unit_obj, "type", None) == "OpenAMS":
+                                prep_ready = lane.load_state
+                            if lane.td1_device_id and lane.load_state and prep_ready:
+                                return_status, _ = lane.get_td1_data()
+                                if not return_status:
+                                    break
+                        prep_self.logger.info("Done capturing TD-1 data")
 
         if _ORIGINAL_TD1_PREP is None:
             return
