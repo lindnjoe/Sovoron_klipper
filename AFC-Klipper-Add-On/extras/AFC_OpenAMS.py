@@ -2878,6 +2878,7 @@ class afcAMS(afcUnit):
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
 
             # Publish spool_loaded/spool_unloaded event for non-shared lanes
+            # Pass previous_loaded state since lane.load_state is already updated by callbacks above
             if self.event_bus is not None:
                 try:
                     spool_index = self._get_openams_spool_index(lane)
@@ -2886,6 +2887,7 @@ class afcAMS(afcUnit):
                         unit_name=self.name,
                         spool_index=spool_index,
                         eventtime=eventtime,
+                        previous_loaded=prev_val,
                     )
                 except Exception as e:
                     self.logger.error(f"Failed to publish {event_type_name} event for {lane.name}: {e}")
@@ -3104,6 +3106,7 @@ class afcAMS(afcUnit):
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
 
             # Publish spool_loaded event immediately (TD-1 capture delay happens in event handler)
+            # Pass previous_loaded state since lane.load_state is already updated by callbacks above
             if self.event_bus is not None:
                 try:
                     spool_index = self._get_openams_spool_index(lane)
@@ -3111,6 +3114,7 @@ class afcAMS(afcUnit):
                         unit_name=self.name,
                         spool_index=spool_index,
                         eventtime=eventtime,
+                        previous_loaded=previous,
                     )
                 except Exception as e:
                     self.logger.error(f"Failed to publish spool_loaded event for {lane.name}: {e}")
@@ -3740,8 +3744,13 @@ class afcAMS(afcUnit):
             self.logger.debug(f"_handle_spool_loaded_event: lane not found for spool_index={spool_index}")
             return
 
-        # PHASE 2 REFACTOR: Use AFC native lane.load_state instead of dictionary
-        previous_loaded = bool(getattr(lane, "load_state", False))
+        # Use previous_loaded from event payload (passed before callbacks updated state)
+        # Fall back to lane.load_state for backwards compatibility
+        previous_loaded = kwargs.get("previous_loaded")
+        if previous_loaded is None:
+            previous_loaded = bool(getattr(lane, "load_state", False))
+        else:
+            previous_loaded = bool(previous_loaded)
         self.logger.debug(f"_handle_spool_loaded_event: lane={lane.name} previous_loaded={previous_loaded} capture_td1_on_insert={self.capture_td1_on_insert}")
 
         eventtime = kwargs.get("eventtime", 0.0)
