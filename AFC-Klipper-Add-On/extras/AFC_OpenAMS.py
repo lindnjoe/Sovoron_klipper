@@ -3768,11 +3768,25 @@ class afcAMS(afcUnit):
         # Note: td1_when_loaded is for toolhead loading, capture_td1_on_insert is for lane insertion
         # Check lane-level td1_device_id first, fall back to unit-level
         td1_device = getattr(lane, "td1_device_id", None) or getattr(self, "td1_device_id", None)
+
+        # During prep, only capture TD-1 if capture_td1_data is enabled in prep config
+        in_prep = not getattr(self.afc, "prep_done", True)
+        prep_allows_capture = True
+        if in_prep:
+            try:
+                prep_obj = self.printer.lookup_object('AFC_prep', None)
+                if prep_obj is not None:
+                    prep_allows_capture = getattr(prep_obj, "get_td1_data", False)
+            except Exception:
+                prep_allows_capture = False
+
         should_capture = (
             not previous_loaded
             and self.capture_td1_on_insert
             and td1_device
+            and prep_allows_capture
         )
+        self.logger.debug(f"TD-1 capture decision: previous_loaded={previous_loaded} capture_td1_on_insert={self.capture_td1_on_insert} td1_device={td1_device} in_prep={in_prep} prep_allows_capture={prep_allows_capture} should_capture={should_capture}")
         if should_capture:
             lane_name = lane.name
             try:
