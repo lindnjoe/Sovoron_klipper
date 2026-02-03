@@ -3791,12 +3791,16 @@ class afcAMS(afcUnit):
             previous_loaded = bool(getattr(lane, "load_state", False))
         else:
             previous_loaded = bool(previous_loaded)
-        # Check td1_when_loaded - fall back to unit level if lane level is None
-        td1_when_loaded = getattr(lane, "td1_when_loaded", None)
-        if td1_when_loaded is None:
-            td1_when_loaded = getattr(self, "td1_when_loaded", False)
-        td1_when_loaded = bool(td1_when_loaded)
-        self.logger.debug(f"_handle_spool_loaded_event: lane={lane.name} previous_loaded={previous_loaded} td1_when_loaded={td1_when_loaded}")
+
+        # Check global capture_td1_data setting from AFC_prep config
+        capture_td1_data = False
+        try:
+            prep_obj = self.printer.lookup_object('AFC_prep', None)
+            if prep_obj is not None:
+                capture_td1_data = getattr(prep_obj, "get_td1_data", False) and self.afc.td1_present
+        except Exception:
+            pass
+        self.logger.debug(f"_handle_spool_loaded_event: lane={lane.name} previous_loaded={previous_loaded} capture_td1_data={capture_td1_data}")
 
         eventtime = kwargs.get("eventtime", 0.0)
 
@@ -3808,8 +3812,8 @@ class afcAMS(afcUnit):
         # This eliminates manual state management and ensures proper state transitions
         lane.set_loaded()
 
-        # Schedule TD-1 capture with 3-second delay if capture_td1_when_loaded is enabled
-        # The delay allows AMS auto-load sequence to complete (loads near hub -> retracts -> settles)
+        # Schedule TD-1 capture with 4.2-second delay if capture_td1_data is enabled in AFC_prep
+        # The delay allows AMS auto-load sequence to complete (pushes to hub -> retracts -> settles)
         # Check lane-level td1_device_id first, fall back to unit-level
         td1_device = getattr(lane, "td1_device_id", None) or getattr(self, "td1_device_id", None)
 
@@ -3819,11 +3823,11 @@ class afcAMS(afcUnit):
 
         should_capture = (
             not previous_loaded
-            and td1_when_loaded
+            and capture_td1_data
             and td1_device
             and not in_prep  # Only capture via events after PREP is done
         )
-        self.logger.debug(f"TD-1 capture decision: previous_loaded={previous_loaded} td1_when_loaded={td1_when_loaded} td1_device={td1_device} in_prep={in_prep} should_capture={should_capture}")
+        self.logger.debug(f"TD-1 capture decision: previous_loaded={previous_loaded} capture_td1_data={capture_td1_data} td1_device={td1_device} in_prep={in_prep} should_capture={should_capture}")
         if should_capture:
             lane_name = lane.name
             try:
