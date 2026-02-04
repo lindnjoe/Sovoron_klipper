@@ -1018,17 +1018,23 @@ class afcAMS(afcUnit):
                         other_lane._oams_runout_detected = False
                     self.logger.debug(f"Cleared tool_loaded for {other_lane.name} on same FPS (new lane {lane.name} loaded)")
 
-        # Trigger OAMS state detection to sync FPS state with sensor readings
-        # This ensures FPS state is updated when manually setting lane as loaded
-        # NOTE: Use determine_state() for normal operations, not sync_state_with_afc()
-        # sync_state_with_afc() is only for error recovery (SET_LANE_LOADED, OAMSM_CLEAR_ERRORS)
+        # Sync OAMS MCU current_spool and FPS state when lane is set as loaded
+        # This is critical for SET_LANE_LOADED to work - without setting current_spool,
+        # oams_manager will say "Spool already unloaded" when trying to unload
         if self.oams is not None:
             try:
+                # Set OAMS MCU current_spool to this lane's spool index (0-based)
+                spool_index = getattr(lane, 'index', None)
+                if spool_index is not None:
+                    self.oams.current_spool = spool_index - 1
+                    self.logger.debug(f"Set OAMS current_spool to {spool_index - 1} for {getattr(lane, 'name', None)}")
+
+                # Use sync_state_with_afc for proper state sync (includes error recovery)
                 oams_manager = self.printer.lookup_object("oams_manager", None)
                 if oams_manager is not None:
-                    oams_manager.determine_state()
+                    oams_manager.sync_state_with_afc()
             except Exception as e:
-                self.logger.error(f"Failed to trigger OAMS state detection for {getattr(lane, 'name', None)}: {e}")
+                self.logger.error(f"Failed to sync OAMS state for {getattr(lane, 'name', None)}: {e}")
 
         if not self._lane_matches_extruder(lane):
             return
