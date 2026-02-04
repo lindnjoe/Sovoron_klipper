@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 class TestPulse:
-    """Provides a TEST_PULSE gcode command for OpenAMS pulsing tests."""
+    """Provides a TEST_PULSE gcode command for OpenAMS TD-1 capture testing."""
 
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -14,8 +14,8 @@ class TestPulse:
             "TEST_PULSE",
             self.cmd_TEST_PULSE,
             desc=(
-                "Test OpenAMS hub load and follower pulsing without TD-1 data "
-                "capture"
+                "Test OpenAMS hub load, TD-1 data read, and follower disable - "
+                "stops after disabling follower to test if filament stops"
             ),
         )
 
@@ -24,10 +24,8 @@ class TestPulse:
         if not lane_name:
             raise gcmd.error("LANE is required for TEST_PULSE")
 
-        load_timeout = gcmd.get_float("LOAD_TIMEOUT", 30.0)
-        unload_timeout = gcmd.get_float("UNLOAD_TIMEOUT", 60.0)
-        fake_fps = gcmd.get_float("FAKE_FPS", None)
-        fake_ptfe = gcmd.get_float("FAKE_PTFE", 100.0)
+        hub_timeout = gcmd.get_float("HUB_TIMEOUT", 30.0)
+        td1_timeout = gcmd.get_float("TD1_TIMEOUT", 10.0)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -62,79 +60,93 @@ class TestPulse:
         if spool_index < 0:
             raise gcmd.error(f"Lane {lane_name} has invalid spool index")
 
-        original_fps = None
-        original_ptfe = None
+        td1_device_id = getattr(lane, "td1_device_id", None) or getattr(unit_obj, "td1_device_id", None)
+        if not td1_device_id:
+            gcmd.respond_info(f"WARNING: No TD-1 device ID configured for {lane_name}")
+
+        # Step 1: Start loading the spool
+        gcmd.respond_info(
+            f"TEST_PULSE: Starting load for lane {lane_name} (spool {spool_index})"
+        )
+
         try:
-            if fake_fps is not None:
-                original_fps = getattr(oams_obj, "fps_value", None)
-                oams_obj.fps_value = float(fake_fps)
-            if fake_ptfe is not None:
-                original_ptfe = getattr(oams_obj, "filament_path_length", None)
-                oams_obj.filament_path_length = float(fake_ptfe)
+            oams_obj.oams_load_spool_cmd.send([spool_index])
+        except Exception as exc:
+            raise gcmd.error(f"Failed to start spool load: {exc}") from exc
 
-            gcmd.respond_info(
-                "TEST_PULSE: loading lane {} (spool {}) to extruder".format(
-                    lane_name, spool_index
-                )
-            )
+        # Step 2: Wait for hub sensor to trigger
+        gcmd.respond_info(f"TEST_PULSE: Waiting for hub sensor to trigger...")
 
+        hub_triggered = False
+        hub_deadline = self.reactor.monotonic() + hub_timeout
+        while self.reactor.monotonic() < hub_deadline:
             try:
-                oams_obj.oams_load_spool_cmd.send([spool_index])
-            except Exception as exc:
-                raise gcmd.error(f"Failed to start spool load: {exc}") from exc
-
-            if hasattr(oams_obj, "action_status"):
-                oams_obj.action_status = 0
-
-            load_deadline = self.reactor.monotonic() + load_timeout
-            while self.reactor.monotonic() < load_deadline:
-                self.reactor.pause(self.reactor.monotonic() + 0.1)
-                if getattr(oams_obj, "action_status", None) is None:
-                    break
-            else:
-                raise gcmd.error(
-                    "Load did not complete before timeout for lane {}".format(
-                        lane_name
-                    )
-                )
-
-            gcmd.respond_info(
-                "TEST_PULSE: load complete; unloading lane {}".format(lane_name)
-            )
-
-            try:
-                oams_obj.set_oams_follower(0, 0)
+                hub_values = getattr(oams_obj, "hub_hes_value", None)
+                if hub_values and spool_index < len(hub_values):
+                    if bool(hub_values[spool_index]):
+                        hub_triggered = True
+                        break
             except Exception:
                 pass
-
             self.reactor.pause(self.reactor.monotonic() + 0.1)
 
+        if not hub_triggered:
+            gcmd.respond_info(f"TEST_PULSE: Hub sensor did not trigger within timeout")
+            # Abort and return
             try:
-                oams_obj.oams_unload_spool_cmd.send()
-            except Exception as exc:
-                raise gcmd.error(f"Failed to start unload: {exc}") from exc
+                oams_obj.abort_current_action(wait=True, code=0)
+            except Exception:
+                pass
+            raise gcmd.error("Hub sensor did not trigger - aborting test")
 
-            if hasattr(oams_obj, "action_status"):
-                oams_obj.action_status = 1
+        gcmd.respond_info(f"TEST_PULSE: Hub sensor triggered!")
 
-            unload_deadline = self.reactor.monotonic() + unload_timeout
-            while self.reactor.monotonic() < unload_deadline:
-                self.reactor.pause(self.reactor.monotonic() + 0.1)
-                if getattr(oams_obj, "action_status", None) is None:
-                    break
-            else:
-                raise gcmd.error(
-                    "Unload did not complete before timeout for lane {}".format(
-                        lane_name
-                    )
-                )
-        finally:
-            if original_fps is not None:
-                oams_obj.fps_value = original_fps
-            if original_ptfe is not None:
-                oams_obj.filament_path_length = original_ptfe
+        # Step 3: Abort the load action to take manual control
+        gcmd.respond_info(f"TEST_PULSE: Aborting load to take manual control...")
+        try:
+            oams_obj.abort_current_action(wait=True, code=0)
+        except Exception as exc:
+            gcmd.respond_info(f"TEST_PULSE: Warning - abort failed: {exc}")
 
-        gcmd.respond_info(f"TEST_PULSE complete for lane {lane_name}")
+        # Step 4: Read TD-1 data
+        gcmd.respond_info(f"TEST_PULSE: Reading TD-1 data...")
+
+        td1_data = None
+        if td1_device_id and hasattr(afc, "moonraker"):
+            td1_deadline = self.reactor.monotonic() + td1_timeout
+            while self.reactor.monotonic() < td1_deadline:
+                try:
+                    data = afc.moonraker.get_td1_data()
+                    if data is not None and td1_device_id in data:
+                        device_data = data[td1_device_id]
+                        if "error" not in device_data or device_data.get("error") is None:
+                            td1_data = device_data
+                            break
+                except Exception as exc:
+                    gcmd.respond_info(f"TEST_PULSE: TD-1 read error: {exc}")
+                self.reactor.pause(self.reactor.monotonic() + 0.2)
+
+        if td1_data:
+            color = td1_data.get("color", "unknown")
+            td_value = td1_data.get("td", "unknown")
+            gcmd.respond_info(f"TEST_PULSE: TD-1 data - color={color}, td={td_value}")
+        else:
+            gcmd.respond_info(f"TEST_PULSE: Could not read TD-1 data")
+
+        # Step 5: Immediately disable follower
+        gcmd.respond_info(f"TEST_PULSE: Disabling follower...")
+        try:
+            oams_obj.set_oams_follower(0, 0)
+        except Exception as exc:
+            gcmd.respond_info(f"TEST_PULSE: Warning - disable follower failed: {exc}")
+
+        gcmd.respond_info(
+            f"TEST_PULSE: STOPPED - Follower disabled. "
+            f"Check if filament continues to advance or stops."
+        )
+        gcmd.respond_info(
+            f"TEST_PULSE: To unload, run: OAMS_UNLOAD_SPOOL OAMS={oams_name}"
+        )
 
 
 def load_config_prefix(config):
