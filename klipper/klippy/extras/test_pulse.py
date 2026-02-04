@@ -101,40 +101,22 @@ class TestPulse:
 
         gcmd.respond_info(f"TEST_PULSE: Hub sensor triggered!")
 
-        # Step 3: Abort the load action to take manual control
-        gcmd.respond_info(f"TEST_PULSE: Aborting load to take manual control...")
+        # Step 3: IMMEDIATELY disable follower to stop filament movement
+        gcmd.respond_info(f"TEST_PULSE: Immediately disabling follower...")
+        try:
+            oams_obj.set_oams_follower(0, 0)  # Disable follower first
+        except Exception as exc:
+            gcmd.respond_info(f"TEST_PULSE: Warning - disable follower failed: {exc}")
+
+        # Step 4: Then abort the load action
+        gcmd.respond_info(f"TEST_PULSE: Aborting load action...")
         try:
             oams_obj.abort_current_action(wait=True, code=0)
         except Exception as exc:
             gcmd.respond_info(f"TEST_PULSE: Warning - abort failed: {exc}")
 
-        # Step 4: Read TD-1 data
-        gcmd.respond_info(f"TEST_PULSE: Reading TD-1 data...")
-
-        td1_data = None
-        if td1_device_id and hasattr(afc, "moonraker"):
-            td1_deadline = self.reactor.monotonic() + td1_timeout
-            while self.reactor.monotonic() < td1_deadline:
-                try:
-                    data = afc.moonraker.get_td1_data()
-                    if data is not None and td1_device_id in data:
-                        device_data = data[td1_device_id]
-                        if "error" not in device_data or device_data.get("error") is None:
-                            td1_data = device_data
-                            break
-                except Exception as exc:
-                    gcmd.respond_info(f"TEST_PULSE: TD-1 read error: {exc}")
-                self.reactor.pause(self.reactor.monotonic() + 0.2)
-
-        if td1_data:
-            color = td1_data.get("color", "unknown")
-            td_value = td1_data.get("td", "unknown")
-            gcmd.respond_info(f"TEST_PULSE: TD-1 data - color={color}, td={td_value}")
-        else:
-            gcmd.respond_info(f"TEST_PULSE: Could not read TD-1 data")
-
-        # Step 5: Immediately send unload command to reverse AMS motor
-        gcmd.respond_info(f"TEST_PULSE: Sending unload command to reverse AMS...")
+        # Step 5: Send unload command to reverse AMS spool motor
+        gcmd.respond_info(f"TEST_PULSE: Sending unload command...")
         try:
             oams_obj.oams_unload_spool_cmd.send([])
         except Exception as exc:
@@ -148,8 +130,8 @@ class TestPulse:
             gcmd.respond_info(f"TEST_PULSE: Warning - follower reverse failed: {exc}")
 
         gcmd.respond_info(
-            f"TEST_PULSE: STOPPED - Unload sent, follower reversed. "
-            f"Check if filament retracts or continues forward."
+            f"TEST_PULSE: STOPPED - Follower disabled, abort sent, unload sent, follower reversed. "
+            f"Check if filament stops/retracts."
         )
 
 
