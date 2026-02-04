@@ -1361,6 +1361,25 @@ class AFCLane:
         self.unit_obj.select_lane(self)
         self.logger.info("Manually set {} loaded to toolhead".format(self.name))
 
+        # Sync with OpenAMS manager if this is an OpenAMS lane
+        if getattr(self.unit_obj, 'type', None) == 'OpenAMS':
+            try:
+                oams_obj = getattr(self.unit_obj, 'oams', None)
+                spool_index = getattr(self, 'index', None)
+                if oams_obj is not None and spool_index is not None:
+                    # Set OAMS MCU current_spool (0-based index)
+                    oams_obj.current_spool = spool_index - 1
+                    self.logger.debug(f"Set OAMS current_spool to {spool_index - 1} for {self.name}")
+
+                # Notify oams_manager to update FPS state
+                oams_manager = self.printer.lookup_object("oams_manager", None)
+                if oams_manager is not None:
+                    # Use sync_state_with_afc for error recovery scenarios like SET_LANE_LOADED
+                    oams_manager.sync_state_with_afc()
+                    self.logger.debug(f"Synced OAMS manager state for {self.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to sync OpenAMS state for {self.name}: {e}")
+
     cmd_SET_LONG_MOVE_SPEED_help = "Gives ability to set long_moves_speed or rev_long_moves_speed_factor values without having to update config and restart"
     def cmd_SET_LONG_MOVE_SPEED(self, gcmd):
         """
