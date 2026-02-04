@@ -25,6 +25,7 @@ class TestPulse:
 
         test_ptfe_length = gcmd.get_int("PTFE", 500)  # Default to 500 for testing
         hub_timeout = gcmd.get_float("HUB_TIMEOUT", 30.0)
+        test_fps_target = gcmd.get_float("FPS_TARGET", 0.01)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -59,10 +60,13 @@ class TestPulse:
         if spool_index < 0:
             raise gcmd.error(f"Lane {lane_name} has invalid spool index")
 
-        # Save original ptfe_length
+        # Save original ptfe_length and fps_target
         original_ptfe = getattr(oams_obj, "filament_path_length", 2087)
+        original_fps_target = getattr(oams_obj, "fps_target", 0.5)
         gcmd.respond_info(f"TEST_PULSE: Original ptfe_length: {original_ptfe}")
         gcmd.respond_info(f"TEST_PULSE: Setting temporary ptfe_length: {test_ptfe_length}")
+        gcmd.respond_info(f"TEST_PULSE: Original fps_target: {original_fps_target}")
+        gcmd.respond_info(f"TEST_PULSE: Setting temporary fps_target: {test_fps_target}")
 
         def restore_settings():
             # Restore original ptfe_length
@@ -78,6 +82,23 @@ class TestPulse:
             except Exception as exc:
                 gcmd.respond_info(f"TEST_PULSE: Could not restore ptfe_length: {exc}")
 
+            # Restore original fps_target
+            gcmd.respond_info(
+                f"TEST_PULSE: Restoring original fps_target: {original_fps_target}"
+            )
+            try:
+                kp = oams_obj.float_to_u32(oams_obj.kp)
+                ki = oams_obj.float_to_u32(oams_obj.ki)
+                kd = oams_obj.float_to_u32(oams_obj.kd)
+                kt = oams_obj.float_to_u32(original_fps_target)
+                oams_obj.oams_pid_cmd.send([kp, ki, kd, kt])
+                oams_obj.fps_target = original_fps_target
+                gcmd.respond_info(
+                    f"TEST_PULSE: Restored fps_target to {original_fps_target}"
+                )
+            except Exception as exc:
+                gcmd.respond_info(f"TEST_PULSE: Could not restore fps_target: {exc}")
+
         # Try to send config command to MCU with shorter ptfe_length
         try:
             mcu = oams_obj.mcu
@@ -89,6 +110,19 @@ class TestPulse:
             gcmd.respond_info("TEST_PULSE: Continuing with original ptfe_length...")
 
         try:
+            try:
+                kp = oams_obj.float_to_u32(oams_obj.kp)
+                ki = oams_obj.float_to_u32(oams_obj.ki)
+                kd = oams_obj.float_to_u32(oams_obj.kd)
+                kt = oams_obj.float_to_u32(test_fps_target)
+                oams_obj.oams_pid_cmd.send([kp, ki, kd, kt])
+                oams_obj.fps_target = test_fps_target
+                gcmd.respond_info(
+                    f"TEST_PULSE: Sent oams_pid_cmd with fps_target={test_fps_target}"
+                )
+            except Exception as exc:
+                gcmd.respond_info(f"TEST_PULSE: Could not update fps_target: {exc}")
+
             # Step 1: Start loading the spool
             gcmd.respond_info(
                 f"TEST_PULSE: Starting load for lane {lane_name} (spool {spool_index})"
