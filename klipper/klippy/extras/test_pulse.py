@@ -26,6 +26,7 @@ class TestPulse:
         test_ptfe_length = gcmd.get_int("PTFE", 500)  # Default to 500 for testing
         hub_timeout = gcmd.get_float("HUB_TIMEOUT", 30.0)
         test_fps_target = gcmd.get_float("FPS_TARGET", 0.01)
+        command_delay = gcmd.get_float("CMD_DELAY", 0.5)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -105,6 +106,7 @@ class TestPulse:
             config_cmd = mcu.lookup_command("config_oams_ptfe length=%u")
             config_cmd.send([test_ptfe_length])
             gcmd.respond_info(f"TEST_PULSE: Sent config_oams_ptfe command with length={test_ptfe_length}")
+            self.reactor.pause(self.reactor.monotonic() + command_delay)
         except Exception as exc:
             gcmd.respond_info(f"TEST_PULSE: Could not send config command: {exc}")
             gcmd.respond_info("TEST_PULSE: Continuing with original ptfe_length...")
@@ -120,6 +122,7 @@ class TestPulse:
                 gcmd.respond_info(
                     f"TEST_PULSE: Sent oams_pid_cmd with fps_target={test_fps_target}"
                 )
+                self.reactor.pause(self.reactor.monotonic() + command_delay)
             except Exception as exc:
                 gcmd.respond_info(f"TEST_PULSE: Could not update fps_target: {exc}")
 
@@ -130,6 +133,7 @@ class TestPulse:
 
             try:
                 oams_obj.oams_load_spool_cmd.send([spool_index])
+                self.reactor.pause(self.reactor.monotonic() + command_delay)
             except Exception as exc:
                 raise gcmd.error(f"Failed to start spool load: {exc}") from exc
 
@@ -160,6 +164,7 @@ class TestPulse:
                 raise gcmd.error("Hub sensor did not trigger - aborting test")
 
             gcmd.respond_info("TEST_PULSE: Hub sensor triggered!")
+            self.reactor.pause(self.reactor.monotonic() + command_delay)
 
             # Step 3: Trigger stuck spool recovery unload
             gcmd.respond_info("TEST_PULSE: Triggering stuck spool unload sequence...")
