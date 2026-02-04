@@ -25,6 +25,7 @@ class TestPulse:
 
         test_ptfe_length = gcmd.get_int("PTFE", 500)  # Default to 500 for testing
         hub_timeout = gcmd.get_float("HUB_TIMEOUT", 30.0)
+        test_fps_target = gcmd.get_float("FPS_TARGET", 0.01)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -59,10 +60,44 @@ class TestPulse:
         if spool_index < 0:
             raise gcmd.error(f"Lane {lane_name} has invalid spool index")
 
-        # Save original ptfe_length
+        # Save original ptfe_length and fps_target
         original_ptfe = getattr(oams_obj, "filament_path_length", 2087)
+        original_fps_target = getattr(oams_obj, "fps_target", 0.5)
         gcmd.respond_info(f"TEST_PULSE: Original ptfe_length: {original_ptfe}")
         gcmd.respond_info(f"TEST_PULSE: Setting temporary ptfe_length: {test_ptfe_length}")
+        gcmd.respond_info(f"TEST_PULSE: Original fps_target: {original_fps_target}")
+        gcmd.respond_info(f"TEST_PULSE: Setting temporary fps_target: {test_fps_target}")
+
+        def restore_settings():
+            # Restore original ptfe_length
+            gcmd.respond_info(
+                f"TEST_PULSE: Restoring original ptfe_length: {original_ptfe}"
+            )
+            try:
+                config_cmd = oams_obj.mcu.lookup_command("config_oams_ptfe length=%u")
+                config_cmd.send([int(original_ptfe)])
+                gcmd.respond_info(
+                    f"TEST_PULSE: Restored ptfe_length to {original_ptfe}"
+                )
+            except Exception as exc:
+                gcmd.respond_info(f"TEST_PULSE: Could not restore ptfe_length: {exc}")
+
+            # Restore original fps_target
+            gcmd.respond_info(
+                f"TEST_PULSE: Restoring original fps_target: {original_fps_target}"
+            )
+            try:
+                kp = oams_obj.float_to_u32(oams_obj.kp)
+                ki = oams_obj.float_to_u32(oams_obj.ki)
+                kd = oams_obj.float_to_u32(oams_obj.kd)
+                kt = oams_obj.float_to_u32(original_fps_target)
+                oams_obj.oams_pid_cmd.send([kp, ki, kd, kt])
+                oams_obj.fps_target = original_fps_target
+                gcmd.respond_info(
+                    f"TEST_PULSE: Restored fps_target to {original_fps_target}"
+                )
+            except Exception as exc:
+                gcmd.respond_info(f"TEST_PULSE: Could not restore fps_target: {exc}")
 
         # Try to send config command to MCU with shorter ptfe_length
         try:
@@ -72,93 +107,99 @@ class TestPulse:
             gcmd.respond_info(f"TEST_PULSE: Sent config_oams_ptfe command with length={test_ptfe_length}")
         except Exception as exc:
             gcmd.respond_info(f"TEST_PULSE: Could not send config command: {exc}")
-            gcmd.respond_info(f"TEST_PULSE: Continuing with original ptfe_length...")
-
-        # Step 1: Start loading the spool
-        gcmd.respond_info(
-            f"TEST_PULSE: Starting load for lane {lane_name} (spool {spool_index})"
-        )
+            gcmd.respond_info("TEST_PULSE: Continuing with original ptfe_length...")
 
         try:
-            oams_obj.oams_load_spool_cmd.send([spool_index])
-        except Exception as exc:
-            raise gcmd.error(f"Failed to start spool load: {exc}") from exc
-
-        # Step 2: Wait for hub sensor to trigger
-        gcmd.respond_info(f"TEST_PULSE: Waiting for hub sensor to trigger...")
-
-        hub_triggered = False
-        hub_deadline = self.reactor.monotonic() + hub_timeout
-        while self.reactor.monotonic() < hub_deadline:
             try:
-                hub_values = getattr(oams_obj, "hub_hes_value", None)
-                if hub_values and spool_index < len(hub_values):
-                    if bool(hub_values[spool_index]):
-                        hub_triggered = True
-                        break
-            except Exception:
-                pass
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
+                kp = oams_obj.float_to_u32(oams_obj.kp)
+                ki = oams_obj.float_to_u32(oams_obj.ki)
+                kd = oams_obj.float_to_u32(oams_obj.kd)
+                kt = oams_obj.float_to_u32(test_fps_target)
+                oams_obj.oams_pid_cmd.send([kp, ki, kd, kt])
+                oams_obj.fps_target = test_fps_target
+                gcmd.respond_info(
+                    f"TEST_PULSE: Sent oams_pid_cmd with fps_target={test_fps_target}"
+                )
+            except Exception as exc:
+                gcmd.respond_info(f"TEST_PULSE: Could not update fps_target: {exc}")
 
-        if not hub_triggered:
-            gcmd.respond_info(f"TEST_PULSE: Hub sensor did not trigger within timeout")
+            # Step 1: Start loading the spool
+            gcmd.respond_info(
+                f"TEST_PULSE: Starting load for lane {lane_name} (spool {spool_index})"
+            )
+
             try:
-                oams_obj.abort_current_action(wait=True, code=0)
-            except Exception:
-                pass
-            # Restore original ptfe_length
-            try:
-                config_cmd = oams_obj.mcu.lookup_command("config_oams_ptfe length=%u")
-                config_cmd.send([int(original_ptfe)])
-            except Exception:
-                pass
-            raise gcmd.error("Hub sensor did not trigger - aborting test")
+                oams_obj.oams_load_spool_cmd.send([spool_index])
+            except Exception as exc:
+                raise gcmd.error(f"Failed to start spool load: {exc}") from exc
 
-        gcmd.respond_info(f"TEST_PULSE: Hub sensor triggered!")
+            # Step 2: Wait for hub sensor to trigger
+            gcmd.respond_info("TEST_PULSE: Waiting for hub sensor to trigger...")
 
-        # Step 3: IMMEDIATELY disable follower to stop filament movement
-        gcmd.respond_info(f"TEST_PULSE: Immediately disabling follower...")
-        try:
-            oams_obj.set_oams_follower(0, 0)
-        except Exception as exc:
-            gcmd.respond_info(f"TEST_PULSE: Warning - disable follower failed: {exc}")
+            hub_triggered = False
+            hub_deadline = self.reactor.monotonic() + hub_timeout
+            while self.reactor.monotonic() < hub_deadline:
+                try:
+                    hub_values = getattr(oams_obj, "hub_hes_value", None)
+                    if hub_values and spool_index < len(hub_values):
+                        if bool(hub_values[spool_index]):
+                            hub_triggered = True
+                            break
+                except Exception:
+                    pass
+                self.reactor.pause(self.reactor.monotonic() + 0.1)
 
-        # Step 4: Send unload command to reverse AMS spool motor
-        gcmd.respond_info(f"TEST_PULSE: Sending unload command...")
-        try:
-            oams_obj.oams_unload_spool_cmd.send([])
-        except Exception as exc:
-            gcmd.respond_info(f"TEST_PULSE: Warning - unload command failed: {exc}")
+            if not hub_triggered:
+                gcmd.respond_info(
+                    "TEST_PULSE: Hub sensor did not trigger within timeout"
+                )
+                try:
+                    oams_obj.abort_current_action(wait=True, code=0)
+                except Exception:
+                    pass
+                raise gcmd.error("Hub sensor did not trigger - aborting test")
 
-        # Step 5: Enable follower in reverse to help retract
-        gcmd.respond_info(f"TEST_PULSE: Enabling follower reverse...")
-        try:
-            oams_obj.set_oams_follower(1, 0)
-        except Exception as exc:
-            gcmd.respond_info(f"TEST_PULSE: Warning - follower reverse failed: {exc}")
+            gcmd.respond_info("TEST_PULSE: Hub sensor triggered!")
 
-        # Wait a moment for retraction
-        self.reactor.pause(self.reactor.monotonic() + 2.0)
-
-        # Step 6: Disable follower
-        gcmd.respond_info(f"TEST_PULSE: Disabling follower...")
-        try:
-            oams_obj.set_oams_follower(0, 0)
-        except Exception as exc:
-            gcmd.respond_info(f"TEST_PULSE: Warning - disable follower failed: {exc}")
-
-        # Restore original ptfe_length
-        gcmd.respond_info(f"TEST_PULSE: Restoring original ptfe_length: {original_ptfe}")
-        try:
-            config_cmd = oams_obj.mcu.lookup_command("config_oams_ptfe length=%u")
-            config_cmd.send([int(original_ptfe)])
-            gcmd.respond_info(f"TEST_PULSE: Restored ptfe_length to {original_ptfe}")
-        except Exception as exc:
-            gcmd.respond_info(f"TEST_PULSE: Could not restore ptfe_length: {exc}")
-
-        gcmd.respond_info(
-            f"TEST_PULSE: DONE - Check if filament stopped at hub or went further."
-        )
+            # Step 3: Trigger stuck spool recovery unload
+            gcmd.respond_info("TEST_PULSE: Triggering stuck spool unload sequence...")
+            fps_name = oams_manager.get_fps_for_afc_lane(lane_name)
+            fps_state = None
+            if fps_name:
+                fps_state = oams_manager.current_state.fps_state.get(fps_name)
+            if fps_name and fps_state is not None:
+                if fps_state.current_spool_idx is None:
+                    fps_state.current_spool_idx = spool_index
+                if fps_state.current_lane is None:
+                    fps_state.current_lane = lane_name
+                if fps_state.current_oams is None:
+                    fps_state.current_oams = oams_obj.name
+                try:
+                    recovered = oams_manager._perform_stuck_spool_recovery(
+                        fps_name,
+                        fps_state,
+                        oams_obj,
+                        lane_name,
+                        0,
+                    )
+                    if recovered:
+                        gcmd.respond_info(
+                            "TEST_PULSE: Stuck spool recovery unload completed."
+                        )
+                    else:
+                        gcmd.respond_info(
+                            "TEST_PULSE: Stuck spool recovery unload failed."
+                        )
+                except Exception as exc:
+                    gcmd.respond_info(
+                        f"TEST_PULSE: Stuck spool recovery failed: {exc}"
+                    )
+            else:
+                gcmd.respond_info(
+                    "TEST_PULSE: Unable to resolve FPS state; skipping stuck spool unload."
+                )
+        finally:
+            restore_settings()
 
 
 def load_config_prefix(config):
