@@ -14,8 +14,8 @@ class TestPulse:
             "TEST_PULSE",
             self.cmd_TEST_PULSE,
             desc=(
-                "Test OpenAMS hub load, TD-1 data read, and follower disable - "
-                "stops after disabling follower to test if filament stops"
+                "Test OpenAMS hub load, TD-1 data read, and immediate unload - "
+                "stops after sending unload to test if filament retracts"
             ),
         )
 
@@ -133,19 +133,23 @@ class TestPulse:
         else:
             gcmd.respond_info(f"TEST_PULSE: Could not read TD-1 data")
 
-        # Step 5: Immediately disable follower
-        gcmd.respond_info(f"TEST_PULSE: Disabling follower...")
+        # Step 5: Immediately send unload command to reverse AMS motor
+        gcmd.respond_info(f"TEST_PULSE: Sending unload command to reverse AMS...")
         try:
-            oams_obj.set_oams_follower(0, 0)
+            oams_obj.oams_unload_spool_cmd.send([])
         except Exception as exc:
-            gcmd.respond_info(f"TEST_PULSE: Warning - disable follower failed: {exc}")
+            gcmd.respond_info(f"TEST_PULSE: Warning - unload command failed: {exc}")
+
+        # Step 6: Enable follower in reverse to help retract
+        gcmd.respond_info(f"TEST_PULSE: Enabling follower reverse...")
+        try:
+            oams_obj.set_oams_follower(1, 0)  # enable=1, direction=0 (reverse)
+        except Exception as exc:
+            gcmd.respond_info(f"TEST_PULSE: Warning - follower reverse failed: {exc}")
 
         gcmd.respond_info(
-            f"TEST_PULSE: STOPPED - Follower disabled. "
-            f"Check if filament continues to advance or stops."
-        )
-        gcmd.respond_info(
-            f"TEST_PULSE: To unload, run: OAMS_UNLOAD_SPOOL OAMS={oams_name}"
+            f"TEST_PULSE: STOPPED - Unload sent, follower reversed. "
+            f"Check if filament retracts or continues forward."
         )
 
 
