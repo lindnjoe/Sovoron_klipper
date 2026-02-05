@@ -562,12 +562,17 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         """
         return self._last_load_was_retry.get(spool_idx, False)
 
-    def unload_spool_with_retry(self, max_retries: Optional[int] = None) -> Tuple[bool, str]:
+    def unload_spool_with_retry(
+        self,
+        max_retries: Optional[int] = None,
+        retract_before_retry: bool = True,
+    ) -> Tuple[bool, str]:
         """Unload spool with automatic retry on failure.
 
         Args:
             max_retries: Override for unload_retry_max. If provided, uses this value instead
                         of the configured unload_retry_max. Allows AFC to control retry count.
+            retract_before_retry: Retract extruder before unload retries.
         """
         attempt_history = []  # Track failure reasons for diagnostic context
 
@@ -576,7 +581,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
         # Use a loop instead of recursion to prevent monitor state issues
         while self._unload_retry_count < retry_limit:
-            if self._unload_retry_count > 0:
+            if self._unload_retry_count > 0 and retract_before_retry:
                 delay = self._calculate_retry_delay(self._unload_retry_count)
                 self.logger.info(
                     f"OAMS[{self.oams_idx}]: Unload retry {self._unload_retry_count + 1}/{retry_limit}, waiting {delay:.1f}s"
