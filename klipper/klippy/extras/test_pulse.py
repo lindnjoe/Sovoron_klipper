@@ -158,7 +158,7 @@ class TestPulse:
                     "TEST_PULSE: Hub sensor did not trigger within timeout"
                 )
                 try:
-                    oams_obj.abort_current_action(wait=True, code=0)
+                    oams_obj.abort_current_action(wait=True)
                 except Exception:
                     pass
                 raise gcmd.error("Hub sensor did not trigger - aborting test")
@@ -169,7 +169,7 @@ class TestPulse:
             # Step 3: Abort current action and force reverse unload
             gcmd.respond_info("TEST_PULSE: Aborting current action before unload...")
             try:
-                oams_obj.abort_current_action(wait=True, code=0)
+                oams_obj.abort_current_action(wait=True)
                 self.reactor.pause(self.reactor.monotonic() + command_delay)
             except Exception as exc:
                 gcmd.respond_info(f"TEST_PULSE: Abort current action failed: {exc}")
