@@ -199,6 +199,27 @@ class TestPulse:
                     f"TEST_PULSE: Marked current_spool as {spool_index} before follower disable"
                 )
 
+            fps_state_key = (
+                follower_fps
+                if follower_fps.startswith("fps ")
+                else f"fps {follower_fps}"
+            )
+            try:
+                fps_state = oams_manager.current_state.fps_state.get(fps_state_key)
+                if fps_state is not None:
+                    fps_state.current_oams = getattr(oams_obj, "name", None)
+                    fps_state.current_lane = lane_name
+                    fps_state.current_spool_idx = spool_index
+                    gcmd.respond_info(
+                        "TEST_PULSE: Primed follower context "
+                        f"({fps_state_key} -> oams={fps_state.current_oams}, "
+                        f"lane={lane_name}, spool={spool_index})"
+                    )
+            except Exception as exc:
+                gcmd.respond_info(
+                    f"TEST_PULSE: Warning - could not prime follower context: {exc}"
+                )
+
             gcmd.respond_info(
                 "TEST_PULSE: Sending OAMSM_FOLLOWER disable command "
                 f"for FPS={follower_fps}..."
