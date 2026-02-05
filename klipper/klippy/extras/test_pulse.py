@@ -28,6 +28,7 @@ class TestPulse:
         test_fps_target = gcmd.get_float("FPS_TARGET", 0.01)
         command_delay = gcmd.get_float("CMD_DELAY", 1.0)
         busy_timeout = gcmd.get_float("BUSY_TIMEOUT", 15.0)
+        force_clear_busy = gcmd.get_int("FORCE_CLEAR_BUSY", 1)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -191,7 +192,12 @@ class TestPulse:
                         gcmd.respond_info(
                             f"TEST_PULSE: Abort retry failed: {exc}"
                         )
-                    wait_for_idle("abort retry", timeout=busy_timeout)
+                    idle = wait_for_idle("abort retry", timeout=busy_timeout)
+                if not idle and force_clear_busy:
+                    gcmd.respond_info(
+                        "TEST_PULSE: Forcing clear of busy state before unload..."
+                    )
+                    oams_obj.action_status = None
             except Exception as exc:
                 gcmd.respond_info(f"TEST_PULSE: Abort current action failed: {exc}")
 
