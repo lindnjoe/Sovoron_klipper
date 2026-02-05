@@ -30,7 +30,7 @@ class TestPulse:
         busy_timeout = gcmd.get_float("BUSY_TIMEOUT", 15.0)
         force_clear_busy = gcmd.get_int("FORCE_CLEAR_BUSY", 1)
         unload_retries = gcmd.get_int("UNLOAD_RETRIES", 1)
-        retract_on_retry = gcmd.get_int("RETRACT_ON_RETRY", 0)
+        unload_retry_delay = gcmd.get_float("UNLOAD_RETRY_DELAY", 3.0)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -213,14 +213,23 @@ class TestPulse:
                 )
 
             gcmd.respond_info("TEST_PULSE: Sending unload command...")
+            unload_success = False
+            unload_message = "Unload not attempted"
             try:
                 wait_for_idle("follower reverse", timeout=busy_timeout)
-                success, message = oams_obj.unload_spool_with_retry(
-                    max_retries=unload_retries,
-                    retract_before_retry=bool(retract_on_retry),
-                )
-                gcmd.respond_info(f"TEST_PULSE: Unload result: {message}")
-                if not success:
+                for attempt in range(unload_retries):
+                    if attempt > 0:
+                        gcmd.respond_info(
+                            f"TEST_PULSE: Unload retry {attempt + 1}/{unload_retries}"
+                        )
+                        self.reactor.pause(
+                            self.reactor.monotonic() + unload_retry_delay
+                        )
+                    unload_success, unload_message = oams_obj.unload_spool()
+                    if unload_success:
+                        break
+                gcmd.respond_info(f"TEST_PULSE: Unload result: {unload_message}")
+                if not unload_success:
                     gcmd.respond_info("TEST_PULSE: Unload command reported failure.")
                 self.reactor.pause(self.reactor.monotonic() + command_delay)
             except Exception as exc:
