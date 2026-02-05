@@ -36,7 +36,6 @@ class TestPulse:
         fake_encoder_delta = gcmd.get_int("FAKE_ENCODER_DELTA", 0)
         force_hub_trigger = gcmd.get_int("FORCE_HUB_TRIGGER", 0)
         follower_fps = gcmd.get("FOLLOWER_FPS", "fps2")
-        follower_oams = gcmd.get("FOLLOWER_OAMS", "")
         post_hub_follower_wait = gcmd.get_float("POST_HUB_FOLLOWER_WAIT", 20.0, minval=0.0)
         abort_settle_delay = gcmd.get_float("ABORT_SETTLE_DELAY", 5.0, minval=0.0)
         pre_unload_delay = gcmd.get_float("PRE_UNLOAD_DELAY", 5.0, minval=0.0)
@@ -68,8 +67,6 @@ class TestPulse:
         if oams_obj is None:
             raise gcmd.error(f"OAMS {oams_name} not found")
 
-        if not follower_oams:
-            follower_oams = getattr(oams_obj, "name", "")
 
         spool_index = getattr(lane, "index", None)
         if spool_index is None:
@@ -202,18 +199,14 @@ class TestPulse:
                     f"TEST_PULSE: Marked current_spool as {spool_index} before follower disable"
                 )
 
-            follower_cmd = (
-                f"OAMSM_FOLLOWER ENABLE=0 DIRECTION=1 FPS={follower_fps}"
-            )
-            if follower_oams:
-                follower_cmd += f" OAMS={follower_oams}"
-
             gcmd.respond_info(
                 "TEST_PULSE: Sending OAMSM_FOLLOWER disable command "
-                f"for FPS={follower_fps} OAMS={follower_oams or 'auto'}..."
+                f"for FPS={follower_fps}..."
             )
             try:
-                self.gcode.run_script_from_command(follower_cmd)
+                self.gcode.run_script_from_command(
+                    f"OAMSM_FOLLOWER ENABLE=0 DIRECTION=1 FPS={follower_fps}"
+                )
             except Exception as exc:
                 gcmd.respond_info(
                     f"TEST_PULSE: Warning - OAMSM_FOLLOWER command failed: {exc}"
