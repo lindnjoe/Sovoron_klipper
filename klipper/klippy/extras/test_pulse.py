@@ -185,7 +185,10 @@ class TestPulse:
 
             gcmd.respond_info("TEST_PULSE: Sending unload command...")
             try:
-                oams_obj.oams_unload_spool_cmd.send([])
+                success, message = oams_obj.unload_spool_with_retry()
+                gcmd.respond_info(f"TEST_PULSE: Unload result: {message}")
+                if not success:
+                    gcmd.respond_info("TEST_PULSE: Unload command reported failure.")
                 self.reactor.pause(self.reactor.monotonic() + command_delay)
             except Exception as exc:
                 gcmd.respond_info(f"TEST_PULSE: Unload command failed: {exc}")
