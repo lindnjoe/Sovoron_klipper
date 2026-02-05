@@ -100,6 +100,15 @@ class TestPulse:
             except Exception as exc:
                 gcmd.respond_info(f"TEST_PULSE: Could not restore fps_target: {exc}")
 
+        def wait_for_idle(label, timeout=5.0):
+            deadline = self.reactor.monotonic() + timeout
+            while self.reactor.monotonic() < deadline:
+                if getattr(oams_obj, "action_status", None) is None:
+                    return True
+                self.reactor.pause(self.reactor.monotonic() + 0.2)
+            gcmd.respond_info(f"TEST_PULSE: Timed out waiting for idle after {label}")
+            return False
+
         # Try to send config command to MCU with shorter ptfe_length
         try:
             mcu = oams_obj.mcu
@@ -171,6 +180,7 @@ class TestPulse:
             try:
                 oams_obj.abort_current_action(wait=True)
                 self.reactor.pause(self.reactor.monotonic() + command_delay)
+                wait_for_idle("abort")
             except Exception as exc:
                 gcmd.respond_info(f"TEST_PULSE: Abort current action failed: {exc}")
 
@@ -185,6 +195,7 @@ class TestPulse:
 
             gcmd.respond_info("TEST_PULSE: Sending unload command...")
             try:
+                wait_for_idle("follower reverse")
                 success, message = oams_obj.unload_spool_with_retry()
                 gcmd.respond_info(f"TEST_PULSE: Unload result: {message}")
                 if not success:
