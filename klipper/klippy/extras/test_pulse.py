@@ -35,6 +35,7 @@ class TestPulse:
         mark_spool_loaded = gcmd.get_int("MARK_SPOOL_LOADED", 1)
         fake_encoder_delta = gcmd.get_int("FAKE_ENCODER_DELTA", 0)
         force_hub_trigger = gcmd.get_int("FORCE_HUB_TRIGGER", 0)
+        restore_delay = gcmd.get_float("RESTORE_DELAY", 20.0, minval=0.0)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -277,6 +278,12 @@ class TestPulse:
                     f"TEST_PULSE: Warning - disable follower failed: {exc}"
                 )
         finally:
+            if restore_delay > 0.0:
+                gcmd.respond_info(
+                    "TEST_PULSE: Waiting "
+                    f"{restore_delay:.1f}s before restoring original settings..."
+                )
+                self.reactor.pause(self.reactor.monotonic() + restore_delay)
             restore_settings()
 
 
