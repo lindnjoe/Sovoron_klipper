@@ -31,6 +31,10 @@ class TestPulse:
         force_clear_busy = gcmd.get_int("FORCE_CLEAR_BUSY", 1)
         unload_retries = gcmd.get_int("UNLOAD_RETRIES", 1)
         unload_retry_delay = gcmd.get_float("UNLOAD_RETRY_DELAY", 3.0)
+        mark_load_complete = gcmd.get_int("MARK_LOAD_COMPLETE", 1)
+        mark_spool_loaded = gcmd.get_int("MARK_SPOOL_LOADED", 1)
+        fake_encoder_delta = gcmd.get_int("FAKE_ENCODER_DELTA", 0)
+        force_hub_trigger = gcmd.get_int("FORCE_HUB_TRIGGER", 0)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -156,6 +160,10 @@ class TestPulse:
             hub_triggered = False
             hub_deadline = self.reactor.monotonic() + hub_timeout
             while self.reactor.monotonic() < hub_deadline:
+                if force_hub_trigger:
+                    hub_values = getattr(oams_obj, "hub_hes_value", None)
+                    if hub_values and spool_index < len(hub_values):
+                        hub_values[spool_index] = 1
                 try:
                     hub_values = getattr(oams_obj, "hub_hes_value", None)
                     if hub_values and spool_index < len(hub_values):
@@ -178,6 +186,31 @@ class TestPulse:
 
             gcmd.respond_info("TEST_PULSE: Hub sensor triggered!")
             self.reactor.pause(self.reactor.monotonic() + command_delay)
+
+            if mark_spool_loaded:
+                oams_obj.current_spool = spool_index
+                gcmd.respond_info(
+                    f"TEST_PULSE: Marked current_spool as {spool_index}"
+                )
+
+            if fake_encoder_delta:
+                try:
+                    before_clicks = int(getattr(oams_obj, "encoder_clicks", 0))
+                except Exception:
+                    before_clicks = 0
+                oams_obj.encoder_clicks = before_clicks + fake_encoder_delta
+                gcmd.respond_info(
+                    "TEST_PULSE: Applied FAKE_ENCODER_DELTA "
+                    f"{fake_encoder_delta} (encoder_clicks={oams_obj.encoder_clicks})"
+                )
+
+            if mark_load_complete:
+                oams_obj.action_status = None
+                if getattr(oams_obj, "action_status_code", None) is None:
+                    oams_obj.action_status_code = 0
+                gcmd.respond_info(
+                    "TEST_PULSE: Marked load action complete before unload"
+                )
 
             # Step 3: Abort current action and force reverse unload
             gcmd.respond_info("TEST_PULSE: Aborting current action before unload...")
