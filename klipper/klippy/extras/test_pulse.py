@@ -26,7 +26,7 @@ class TestPulse:
         test_ptfe_length = gcmd.get_int("PTFE", 500)  # Default to 500 for testing
         hub_timeout = gcmd.get_float("HUB_TIMEOUT", 30.0)
         test_fps_target = gcmd.get_float("FPS_TARGET", 0.01)
-        command_delay = gcmd.get_float("CMD_DELAY", 0.5)
+        command_delay = gcmd.get_float("CMD_DELAY", 1.0)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -166,42 +166,37 @@ class TestPulse:
             gcmd.respond_info("TEST_PULSE: Hub sensor triggered!")
             self.reactor.pause(self.reactor.monotonic() + command_delay)
 
-            # Step 3: Trigger stuck spool recovery unload
-            gcmd.respond_info("TEST_PULSE: Triggering stuck spool unload sequence...")
-            fps_name = oams_manager.get_fps_for_afc_lane(lane_name)
-            fps_state = None
-            if fps_name:
-                fps_state = oams_manager.current_state.fps_state.get(fps_name)
-            if fps_name and fps_state is not None:
-                if fps_state.current_spool_idx is None:
-                    fps_state.current_spool_idx = spool_index
-                if fps_state.current_lane is None:
-                    fps_state.current_lane = lane_name
-                if fps_state.current_oams is None:
-                    fps_state.current_oams = oams_obj.name
-                try:
-                    recovered = oams_manager._perform_stuck_spool_recovery(
-                        fps_name,
-                        fps_state,
-                        oams_obj,
-                        lane_name,
-                        0,
-                    )
-                    if recovered:
-                        gcmd.respond_info(
-                            "TEST_PULSE: Stuck spool recovery unload completed."
-                        )
-                    else:
-                        gcmd.respond_info(
-                            "TEST_PULSE: Stuck spool recovery unload failed."
-                        )
-                except Exception as exc:
-                    gcmd.respond_info(
-                        f"TEST_PULSE: Stuck spool recovery failed: {exc}"
-                    )
-            else:
+            # Step 3: Abort current action and force reverse unload
+            gcmd.respond_info("TEST_PULSE: Aborting current action before unload...")
+            try:
+                oams_obj.abort_current_action(wait=True, code=0)
+                self.reactor.pause(self.reactor.monotonic() + command_delay)
+            except Exception as exc:
+                gcmd.respond_info(f"TEST_PULSE: Abort current action failed: {exc}")
+
+            gcmd.respond_info("TEST_PULSE: Enabling follower reverse...")
+            try:
+                oams_obj.set_oams_follower(1, 0)
+                self.reactor.pause(self.reactor.monotonic() + command_delay)
+            except Exception as exc:
                 gcmd.respond_info(
-                    "TEST_PULSE: Unable to resolve FPS state; skipping stuck spool unload."
+                    f"TEST_PULSE: Warning - follower reverse failed: {exc}"
+                )
+
+            gcmd.respond_info("TEST_PULSE: Sending unload command...")
+            try:
+                oams_obj.oams_unload_spool_cmd.send([])
+                self.reactor.pause(self.reactor.monotonic() + command_delay)
+            except Exception as exc:
+                gcmd.respond_info(f"TEST_PULSE: Unload command failed: {exc}")
+
+            gcmd.respond_info("TEST_PULSE: Disabling follower after unload...")
+            try:
+                oams_obj.set_oams_follower(0, 0)
+                self.reactor.pause(self.reactor.monotonic() + command_delay)
+            except Exception as exc:
+                gcmd.respond_info(
+                    f"TEST_PULSE: Warning - disable follower failed: {exc}"
                 )
         finally:
             restore_settings()
