@@ -192,6 +192,12 @@ class TestPulse:
             gcmd.respond_info("TEST_PULSE: Hub sensor triggered!")
             self.reactor.pause(self.reactor.monotonic() + command_delay)
 
+            if mark_spool_loaded:
+                oams_obj.current_spool = spool_index
+                gcmd.respond_info(
+                    f"TEST_PULSE: Marked current_spool as {spool_index} before follower disable"
+                )
+
             gcmd.respond_info(
                 "TEST_PULSE: Sending OAMSM_FOLLOWER disable command "
                 f"for FPS={follower_fps}..."
@@ -212,12 +218,6 @@ class TestPulse:
                 )
                 self.reactor.pause(
                     self.reactor.monotonic() + post_hub_follower_wait
-                )
-
-            if mark_spool_loaded:
-                oams_obj.current_spool = spool_index
-                gcmd.respond_info(
-                    f"TEST_PULSE: Marked current_spool as {spool_index}"
                 )
 
             if fake_encoder_delta:
