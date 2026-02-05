@@ -189,7 +189,10 @@ class Toolchanger:
     cmd_INITIALIZE_TOOLCHANGER_help = "Initialize the toolchanger"
 
     def cmd_INITIALIZE_TOOLCHANGER(self, gcmd):
-        tool = self.gcmd_tool(gcmd, self.detected_tool or self._get_probe_detected_tool())
+        tool = self.detected_tool or self._get_probe_detected_tool()
+        if tool is None and self.has_detection:
+            tool = self.require_detected_tool(gcmd.respond_info)
+        tool = self.gcmd_tool(gcmd, tool)
         was_error  = self.status == STATUS_ERROR
         self.initialize(tool)
         if was_error and gcmd.get_int("RECOVER", default=0) == 1:
@@ -291,6 +294,9 @@ class Toolchanger:
     def initialize(self, select_tool=None):
         if self.status == STATUS_CHANGING:
             raise Exception('Cannot initialize while changing tools')
+
+        if select_tool is None and self.has_detection:
+            select_tool = self.require_detected_tool(self.gcode.respond_info)
 
         # Initialize may be called from within the intialize gcode
         # to set active tool without performing a full change
