@@ -578,10 +578,14 @@ class Toolchanger:
     def _restore_axis(self, position, axis):
         pos = self._position_with_tool_offset(position, None)
         self.gcode.run_script_from_command("G90")
-        curtime = self.printer.get_reactor().monotonic()
-        max_velocity = self.toolhead.get_status(curtime)['max_velocity']
         restore_move = self._position_to_xyz(pos, axis)
-        restore_move['F'] = max_velocity * 60.0
+
+        # Use configured fast travel speed for restore moves.
+        # Klipper will still clamp to axis and acceleration limits.
+        restore_speed = self.params.get('params_fast_speed', None)
+        if restore_speed is not None:
+            restore_move['F'] = float(restore_speed)
+
         self.gcode_move.cmd_G1(self.gcode.create_gcode_command("G0", "G0", restore_move))
 
     def run_gcode(self, name, template, extra_context):
