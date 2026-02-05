@@ -35,6 +35,8 @@ class TestPulse:
         mark_spool_loaded = gcmd.get_int("MARK_SPOOL_LOADED", 1)
         fake_encoder_delta = gcmd.get_int("FAKE_ENCODER_DELTA", 0)
         force_hub_trigger = gcmd.get_int("FORCE_HUB_TRIGGER", 0)
+        follower_fps = gcmd.get("FOLLOWER_FPS", "fps2")
+        post_hub_follower_wait = gcmd.get_float("POST_HUB_FOLLOWER_WAIT", 20.0, minval=0.0)
         abort_settle_delay = gcmd.get_float("ABORT_SETTLE_DELAY", 5.0, minval=0.0)
         pre_unload_delay = gcmd.get_float("PRE_UNLOAD_DELAY", 5.0, minval=0.0)
         restore_delay = gcmd.get_float("RESTORE_DELAY", 20.0, minval=0.0)
@@ -189,6 +191,28 @@ class TestPulse:
 
             gcmd.respond_info("TEST_PULSE: Hub sensor triggered!")
             self.reactor.pause(self.reactor.monotonic() + command_delay)
+
+            gcmd.respond_info(
+                "TEST_PULSE: Sending OAMSM_FOLLOWER disable command "
+                f"for FPS={follower_fps}..."
+            )
+            try:
+                self.gcode.run_script_from_command(
+                    f"OAMSM_FOLLOWER ENABLE=0 DIRECTION=1 FPS={follower_fps}"
+                )
+            except Exception as exc:
+                gcmd.respond_info(
+                    f"TEST_PULSE: Warning - OAMSM_FOLLOWER command failed: {exc}"
+                )
+
+            if post_hub_follower_wait > 0.0:
+                gcmd.respond_info(
+                    "TEST_PULSE: Waiting "
+                    f"{post_hub_follower_wait:.1f}s after hub trigger before continuing..."
+                )
+                self.reactor.pause(
+                    self.reactor.monotonic() + post_hub_follower_wait
+                )
 
             if mark_spool_loaded:
                 oams_obj.current_spool = spool_index
