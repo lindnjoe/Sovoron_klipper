@@ -225,7 +225,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -268,7 +268,7 @@
             "empty_spool_weight": 130.0,
             "spool_id": 35,
             "color": "#328169",
-            "weight": 963.6080317312887,
+            "weight": 909.2839055590313,
             "extruder_temp": 210,
             "runout_lane": null,
             "filament_status": "In Tool",
@@ -363,7 +363,7 @@
         }
     },
     "system": {
-        "current_load": null,
+        "current_load": "lane0",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
