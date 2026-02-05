@@ -146,14 +146,24 @@ class Toolchanger:
         self.active_tool = None
         self.gcode_transform.tool = None
 
+    def _get_probe_detected_tool(self):
+        tool_probe_endstop = self.printer.lookup_object('tool_probe_endstop', default=None)
+        if not tool_probe_endstop:
+            return None
+        probe_tool_number = tool_probe_endstop.get_status(0).get('active_tool_number', -1)
+        if probe_tool_number is None or probe_tool_number < 0:
+            return None
+        return self.lookup_tool(probe_tool_number)
+
     def get_status(self, eventtime):
+        detected_tool = self.detected_tool or self._get_probe_detected_tool()
         return {**self.params,
                 'name': self.name,
                 'status': self.status,
                 'tool': self.active_tool.name if self.active_tool else None,
                 'tool_number': self.active_tool.tool_number if self.active_tool else -1,
-                'detected_tool': self.detected_tool.name if self.detected_tool else None,
-                'detected_tool_number': self.detected_tool.tool_number if self.detected_tool else -1,
+                'detected_tool': detected_tool.name if detected_tool else None,
+                'detected_tool_number': detected_tool.tool_number if detected_tool else -1,
                 'tool_numbers': self.tool_numbers,
                 'tool_names': self.tool_names,
                 'has_detection': self.has_detection,
@@ -179,7 +189,7 @@ class Toolchanger:
     cmd_INITIALIZE_TOOLCHANGER_help = "Initialize the toolchanger"
 
     def cmd_INITIALIZE_TOOLCHANGER(self, gcmd):
-        tool = self.gcmd_tool(gcmd, self.detected_tool)
+        tool = self.gcmd_tool(gcmd, self.detected_tool or self._get_probe_detected_tool())
         was_error  = self.status == STATUS_ERROR
         self.initialize(tool)
         if was_error and gcmd.get_int("RECOVER", default=0) == 1:
