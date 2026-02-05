@@ -31,6 +31,15 @@ class TestPulse:
         force_clear_busy = gcmd.get_int("FORCE_CLEAR_BUSY", 1)
         unload_retries = gcmd.get_int("UNLOAD_RETRIES", 1)
         unload_retry_delay = gcmd.get_float("UNLOAD_RETRY_DELAY", 3.0)
+        mark_load_complete = gcmd.get_int("MARK_LOAD_COMPLETE", 1)
+        mark_spool_loaded = gcmd.get_int("MARK_SPOOL_LOADED", 1)
+        fake_encoder_delta = gcmd.get_int("FAKE_ENCODER_DELTA", 0)
+        force_hub_trigger = gcmd.get_int("FORCE_HUB_TRIGGER", 0)
+        follower_fps = gcmd.get("FOLLOWER_FPS", "fps2")
+        post_hub_follower_wait = gcmd.get_float("POST_HUB_FOLLOWER_WAIT", 20.0, minval=0.0)
+        abort_settle_delay = gcmd.get_float("ABORT_SETTLE_DELAY", 5.0, minval=0.0)
+        pre_unload_delay = gcmd.get_float("PRE_UNLOAD_DELAY", 5.0, minval=0.0)
+        restore_delay = gcmd.get_float("RESTORE_DELAY", 20.0, minval=0.0)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -57,6 +66,7 @@ class TestPulse:
         )
         if oams_obj is None:
             raise gcmd.error(f"OAMS {oams_name} not found")
+
 
         spool_index = getattr(lane, "index", None)
         if spool_index is None:
@@ -156,6 +166,10 @@ class TestPulse:
             hub_triggered = False
             hub_deadline = self.reactor.monotonic() + hub_timeout
             while self.reactor.monotonic() < hub_deadline:
+                if force_hub_trigger:
+                    hub_values = getattr(oams_obj, "hub_hes_value", None)
+                    if hub_values and spool_index < len(hub_values):
+                        hub_values[spool_index] = 1
                 try:
                     hub_values = getattr(oams_obj, "hub_hes_value", None)
                     if hub_values and spool_index < len(hub_values):
@@ -178,6 +192,74 @@ class TestPulse:
 
             gcmd.respond_info("TEST_PULSE: Hub sensor triggered!")
             self.reactor.pause(self.reactor.monotonic() + command_delay)
+
+            if mark_spool_loaded:
+                oams_obj.current_spool = spool_index
+                gcmd.respond_info(
+                    f"TEST_PULSE: Marked current_spool as {spool_index} before follower disable"
+                )
+
+            fps_state_key = (
+                follower_fps
+                if follower_fps.startswith("fps ")
+                else f"fps {follower_fps}"
+            )
+            try:
+                fps_state = oams_manager.current_state.fps_state.get(fps_state_key)
+                if fps_state is not None:
+                    fps_state.current_oams = getattr(oams_obj, "name", None)
+                    fps_state.current_lane = lane_name
+                    fps_state.current_spool_idx = spool_index
+                    gcmd.respond_info(
+                        "TEST_PULSE: Primed follower context "
+                        f"({fps_state_key} -> oams={fps_state.current_oams}, "
+                        f"lane={lane_name}, spool={spool_index})"
+                    )
+            except Exception as exc:
+                gcmd.respond_info(
+                    f"TEST_PULSE: Warning - could not prime follower context: {exc}"
+                )
+
+            gcmd.respond_info(
+                "TEST_PULSE: Sending OAMSM_FOLLOWER disable command "
+                f"for FPS={follower_fps}..."
+            )
+            try:
+                self.gcode.run_script_from_command(
+                    f"OAMSM_FOLLOWER ENABLE=0 DIRECTION=1 FPS={follower_fps}"
+                )
+            except Exception as exc:
+                gcmd.respond_info(
+                    f"TEST_PULSE: Warning - OAMSM_FOLLOWER command failed: {exc}"
+                )
+
+            if post_hub_follower_wait > 0.0:
+                gcmd.respond_info(
+                    "TEST_PULSE: Waiting "
+                    f"{post_hub_follower_wait:.1f}s after hub trigger before continuing..."
+                )
+                self.reactor.pause(
+                    self.reactor.monotonic() + post_hub_follower_wait
+                )
+
+            if fake_encoder_delta:
+                try:
+                    before_clicks = int(getattr(oams_obj, "encoder_clicks", 0))
+                except Exception:
+                    before_clicks = 0
+                oams_obj.encoder_clicks = before_clicks + fake_encoder_delta
+                gcmd.respond_info(
+                    "TEST_PULSE: Applied FAKE_ENCODER_DELTA "
+                    f"{fake_encoder_delta} (encoder_clicks={oams_obj.encoder_clicks})"
+                )
+
+            if mark_load_complete:
+                oams_obj.action_status = None
+                if getattr(oams_obj, "action_status_code", None) is None:
+                    oams_obj.action_status_code = 0
+                gcmd.respond_info(
+                    "TEST_PULSE: Marked load action complete before unload"
+                )
 
             # Step 3: Abort current action and force reverse unload
             gcmd.respond_info("TEST_PULSE: Aborting current action before unload...")
@@ -203,6 +285,13 @@ class TestPulse:
             except Exception as exc:
                 gcmd.respond_info(f"TEST_PULSE: Abort current action failed: {exc}")
 
+            if abort_settle_delay > 0.0:
+                gcmd.respond_info(
+                    "TEST_PULSE: Waiting "
+                    f"{abort_settle_delay:.1f}s after abort before enabling follower..."
+                )
+                self.reactor.pause(self.reactor.monotonic() + abort_settle_delay)
+
             gcmd.respond_info("TEST_PULSE: Enabling follower reverse...")
             try:
                 oams_obj.set_oams_follower(1, 0)
@@ -211,6 +300,13 @@ class TestPulse:
                 gcmd.respond_info(
                     f"TEST_PULSE: Warning - follower reverse failed: {exc}"
                 )
+
+            if pre_unload_delay > 0.0:
+                gcmd.respond_info(
+                    "TEST_PULSE: Waiting "
+                    f"{pre_unload_delay:.1f}s after follower reverse before unload..."
+                )
+                self.reactor.pause(self.reactor.monotonic() + pre_unload_delay)
 
             gcmd.respond_info("TEST_PULSE: Sending unload command...")
             unload_success = False
@@ -244,6 +340,12 @@ class TestPulse:
                     f"TEST_PULSE: Warning - disable follower failed: {exc}"
                 )
         finally:
+            if restore_delay > 0.0:
+                gcmd.respond_info(
+                    "TEST_PULSE: Waiting "
+                    f"{restore_delay:.1f}s before restoring original settings..."
+                )
+                self.reactor.pause(self.reactor.monotonic() + restore_delay)
             restore_settings()
 
 
