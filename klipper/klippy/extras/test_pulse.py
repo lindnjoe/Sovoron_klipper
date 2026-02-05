@@ -35,6 +35,8 @@ class TestPulse:
         mark_spool_loaded = gcmd.get_int("MARK_SPOOL_LOADED", 1)
         fake_encoder_delta = gcmd.get_int("FAKE_ENCODER_DELTA", 0)
         force_hub_trigger = gcmd.get_int("FORCE_HUB_TRIGGER", 0)
+        abort_settle_delay = gcmd.get_float("ABORT_SETTLE_DELAY", 5.0, minval=0.0)
+        pre_unload_delay = gcmd.get_float("PRE_UNLOAD_DELAY", 5.0, minval=0.0)
         restore_delay = gcmd.get_float("RESTORE_DELAY", 20.0, minval=0.0)
 
         afc = self.printer.lookup_object("AFC", None)
@@ -237,6 +239,13 @@ class TestPulse:
             except Exception as exc:
                 gcmd.respond_info(f"TEST_PULSE: Abort current action failed: {exc}")
 
+            if abort_settle_delay > 0.0:
+                gcmd.respond_info(
+                    "TEST_PULSE: Waiting "
+                    f"{abort_settle_delay:.1f}s after abort before enabling follower..."
+                )
+                self.reactor.pause(self.reactor.monotonic() + abort_settle_delay)
+
             gcmd.respond_info("TEST_PULSE: Enabling follower reverse...")
             try:
                 oams_obj.set_oams_follower(1, 0)
@@ -245,6 +254,13 @@ class TestPulse:
                 gcmd.respond_info(
                     f"TEST_PULSE: Warning - follower reverse failed: {exc}"
                 )
+
+            if pre_unload_delay > 0.0:
+                gcmd.respond_info(
+                    "TEST_PULSE: Waiting "
+                    f"{pre_unload_delay:.1f}s after follower reverse before unload..."
+                )
+                self.reactor.pause(self.reactor.monotonic() + pre_unload_delay)
 
             gcmd.respond_info("TEST_PULSE: Sending unload command...")
             unload_success = False
