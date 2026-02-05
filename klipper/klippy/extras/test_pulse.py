@@ -27,6 +27,7 @@ class TestPulse:
         hub_timeout = gcmd.get_float("HUB_TIMEOUT", 30.0)
         test_fps_target = gcmd.get_float("FPS_TARGET", 0.01)
         command_delay = gcmd.get_float("CMD_DELAY", 1.0)
+        busy_timeout = gcmd.get_float("BUSY_TIMEOUT", 15.0)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -180,7 +181,17 @@ class TestPulse:
             try:
                 oams_obj.abort_current_action(wait=True)
                 self.reactor.pause(self.reactor.monotonic() + command_delay)
-                wait_for_idle("abort")
+                idle = wait_for_idle("abort", timeout=busy_timeout)
+                if not idle:
+                    gcmd.respond_info("TEST_PULSE: Retrying abort without wait...")
+                    try:
+                        oams_obj.abort_current_action(wait=False)
+                        self.reactor.pause(self.reactor.monotonic() + command_delay)
+                    except Exception as exc:
+                        gcmd.respond_info(
+                            f"TEST_PULSE: Abort retry failed: {exc}"
+                        )
+                    wait_for_idle("abort retry", timeout=busy_timeout)
             except Exception as exc:
                 gcmd.respond_info(f"TEST_PULSE: Abort current action failed: {exc}")
 
@@ -195,7 +206,7 @@ class TestPulse:
 
             gcmd.respond_info("TEST_PULSE: Sending unload command...")
             try:
-                wait_for_idle("follower reverse")
+                wait_for_idle("follower reverse", timeout=busy_timeout)
                 success, message = oams_obj.unload_spool_with_retry()
                 gcmd.respond_info(f"TEST_PULSE: Unload result: {message}")
                 if not success:
