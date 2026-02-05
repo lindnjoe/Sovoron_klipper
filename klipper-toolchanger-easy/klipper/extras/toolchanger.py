@@ -578,7 +578,11 @@ class Toolchanger:
     def _restore_axis(self, position, axis):
         pos = self._position_with_tool_offset(position, None)
         self.gcode.run_script_from_command("G90")
-        self.gcode_move.cmd_G1(self.gcode.create_gcode_command("G0", "G0", self._position_to_xyz(pos, axis)))
+        curtime = self.printer.get_reactor().monotonic()
+        max_velocity = self.toolhead.get_status(curtime)['max_velocity']
+        restore_move = self._position_to_xyz(pos, axis)
+        restore_move['F'] = max_velocity * 60.0
+        self.gcode_move.cmd_G1(self.gcode.create_gcode_command("G0", "G0", restore_move))
 
     def run_gcode(self, name, template, extra_context):
         curtime = self.printer.get_reactor().monotonic()
