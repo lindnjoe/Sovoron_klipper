@@ -25,7 +25,7 @@ class TestPulse:
 
         test_ptfe_length = gcmd.get_int("PTFE", 500)  # Default to 500 for testing
         hub_timeout = gcmd.get_float("HUB_TIMEOUT", 30.0)
-        test_fps_target = gcmd.get_float("FPS_TARGET", 0.01)
+        test_fps_target = gcmd.get_float("FPS_TARGET", 0.0)
         command_delay = gcmd.get_float("CMD_DELAY", 1.0)
         busy_timeout = gcmd.get_float("BUSY_TIMEOUT", 15.0)
         force_clear_busy = gcmd.get_int("FORCE_CLEAR_BUSY", 1)
