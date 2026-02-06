@@ -1775,7 +1775,7 @@ class afcAMS(afcUnit):
         if hub_cleared:
             self.logger.info(f"TD-1 unload completed for {cur_lane.name}")
         else:
-            self.logger.warning(f"TD-1 unload did not fully clear hub for {cur_lane.name}")
+            self.logger.debug(f"TD-1 unload did not fully clear hub for {cur_lane.name}")
 
     def calibrate_td1(self, cur_lane, dis, tol):
         """

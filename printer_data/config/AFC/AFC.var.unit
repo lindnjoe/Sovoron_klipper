@@ -142,8 +142,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.1,
-                "color": "636E6C",
-                "scan_time": "2026-02-06T02:24:26.198843+00:00Z",
+                "color": "545151",
+                "scan_time": "2026-02-06T02:35:08.621615+00:00Z",
                 "error": null
             }
         },
@@ -159,7 +159,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -175,8 +175,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 1.9,
-                "color": "429361",
-                "scan_time": "2026-02-06T02:27:44.132866+00:00Z",
+                "color": "419160",
+                "scan_time": "2026-02-06T02:35:29.983542+00:00Z",
                 "error": null
             }
         },
@@ -208,8 +208,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.1,
-                "color": "131A19",
-                "scan_time": "2026-02-06T02:25:18.487702+00:00Z",
+                "color": "121616",
+                "scan_time": "2026-02-06T02:35:52.718772+00:00Z",
                 "error": null
             }
         },
@@ -225,7 +225,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": false,
+            "loaded_to_hub": true,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -241,8 +241,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 1.0,
-                "color": "5BA8F8",
-                "scan_time": "2026-02-06T02:25:47.449345+00:00Z",
+                "color": "59A1F6",
+                "scan_time": "2026-02-06T02:36:19.910560+00:00Z",
                 "error": null
             }
         }
