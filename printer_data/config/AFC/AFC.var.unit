@@ -142,8 +142,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.1,
-                "color": "656E6A",
-                "scan_time": "2026-02-05T17:45:10.313740+00:00Z",
+                "color": "636E6C",
+                "scan_time": "2026-02-06T02:24:26.198843+00:00Z",
                 "error": null
             }
         },
@@ -159,7 +159,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": false,
+            "loaded_to_hub": true,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -175,8 +175,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 1.9,
-                "color": "53CE84",
-                "scan_time": "2026-02-05T17:44:13.316423+00:00Z",
+                "color": "429361",
+                "scan_time": "2026-02-06T02:27:44.132866+00:00Z",
                 "error": null
             }
         },
@@ -208,8 +208,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.1,
-                "color": "121E1A",
-                "scan_time": "2026-02-05T14:50:16.838907+00:00Z",
+                "color": "131A19",
+                "scan_time": "2026-02-06T02:25:18.487702+00:00Z",
                 "error": null
             }
         },
@@ -240,9 +240,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 1.1,
-                "color": "70EBFF",
-                "scan_time": "2026-02-05T17:44:41.046963+00:00Z",
+                "td": 1.0,
+                "color": "5BA8F8",
+                "scan_time": "2026-02-06T02:25:47.449345+00:00Z",
                 "error": null
             }
         }
