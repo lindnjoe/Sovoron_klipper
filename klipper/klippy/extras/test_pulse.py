@@ -24,6 +24,7 @@ class TestPulse:
             raise gcmd.error("LANE is required for TEST_PULSE")
 
         hub_timeout = gcmd.get_float("HUB_TIMEOUT", 30.0)
+        td1_timeout = gcmd.get_float("TD1_TIMEOUT", 30.0)
         load_timeout = gcmd.get_float("LOAD_TIMEOUT", 30.0)
         command_delay = gcmd.get_float("CMD_DELAY", 0.5)
 
@@ -60,6 +61,18 @@ class TestPulse:
         if spool_index < 0:
             raise gcmd.error(f"Lane {lane_name} has invalid spool index")
 
+        td1_bowden_length = getattr(lane, "td1_bowden_length", None)
+        if td1_bowden_length is None:
+            td1_bowden_length = getattr(unit_obj, "td1_bowden_length", None)
+        if td1_bowden_length is None:
+            td1_bowden_length = gcmd.get_int("TD1_BOWDEN_LENGTH", 0)
+        try:
+            td1_bowden_length = int(td1_bowden_length)
+        except Exception as exc:
+            raise gcmd.error(f"Invalid td1_bowden_length for {lane_name}: {exc}") from exc
+        if td1_bowden_length < 0:
+            raise gcmd.error("TD1 bowden length must be >= 0")
+
         gcmd.respond_info(
             f"TEST_PULSE: Start load for lane {lane_name} (spool {spool_index})"
         )
@@ -86,6 +99,29 @@ class TestPulse:
             raise gcmd.error("Hub sensor did not trigger - aborting test")
 
         gcmd.respond_info("TEST_PULSE: Hub sensor triggered")
+
+        try:
+            encoder_start = int(getattr(oams_obj, "encoder_clicks", 0))
+        except Exception:
+            encoder_start = 0
+        gcmd.respond_info(
+            f"TEST_PULSE: Tracking encoder from {encoder_start} toward td1_bowden_length={td1_bowden_length}"
+        )
+
+        td1_deadline = self.reactor.monotonic() + td1_timeout
+        while self.reactor.monotonic() < td1_deadline:
+            try:
+                encoder_now = int(getattr(oams_obj, "encoder_clicks", encoder_start))
+            except Exception:
+                encoder_now = encoder_start
+            encoder_delta = abs(encoder_now - encoder_start)
+            if encoder_delta >= td1_bowden_length:
+                break
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+        else:
+            gcmd.respond_info(
+                "TEST_PULSE: Timed out waiting for encoder to reach td1_bowden_length"
+            )
 
         td1_data = None
         try:
