@@ -27,6 +27,7 @@ class TestPulse:
         td1_timeout = gcmd.get_float("TD1_TIMEOUT", 30.0)
         load_timeout = gcmd.get_float("LOAD_TIMEOUT", 30.0)
         command_delay = gcmd.get_float("CMD_DELAY", 0.5)
+        unload_settle = gcmd.get_float("UNLOAD_SETTLE", 1.5, minval=0.0)
 
         afc = self.printer.lookup_object("AFC", None)
         if afc is None or not hasattr(afc, "lanes"):
@@ -161,6 +162,7 @@ class TestPulse:
 
             load_registered = (
                 action_status is None
+                and action_status_code == 0
                 and (current_spool == spool_index or queried_spool == spool_index)
             )
             if load_registered:
@@ -188,6 +190,18 @@ class TestPulse:
             )
 
         self.reactor.pause(self.reactor.monotonic() + command_delay)
+
+        gcmd.respond_info("TEST_PULSE: Pre-unload sync")
+        try:
+            oams_obj.abort_current_action(wait=True, code=0)
+        except Exception as exc:
+            gcmd.respond_info(f"TEST_PULSE: Pre-unload abort warning: {exc}")
+
+        if unload_settle > 0.0:
+            gcmd.respond_info(
+                f"TEST_PULSE: Waiting {unload_settle:.1f}s before unload"
+            )
+            self.reactor.pause(self.reactor.monotonic() + unload_settle)
 
         gcmd.respond_info("TEST_PULSE: Unloading spool")
         try:
