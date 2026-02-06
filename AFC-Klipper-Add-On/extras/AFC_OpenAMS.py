@@ -2291,13 +2291,13 @@ class afcAMS(afcUnit):
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
 
-        if not td1_detected:
-            self.logger.warning(f"TD-1 data not captured for {cur_lane.name}")
-            return False, "TD-1 data not captured"
-
-        # Unload filament after successful TD-1 capture
+        # Always unload after capture attempt, regardless of TD-1 read result
         self._unload_after_td1(cur_lane, spool_index, fps_id)
         self._td1_last_capture_time = self.afc.reactor.monotonic()
+
+        if not td1_detected:
+            self.logger.debug(f"TD-1 data not captured for {cur_lane.name}")
+            return False, "TD-1 data not captured (unload completed)"
 
         return True, "TD-1 data captured"
 
