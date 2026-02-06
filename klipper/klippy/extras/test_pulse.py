@@ -144,19 +144,48 @@ class TestPulse:
         else:
             gcmd.respond_info("TEST_PULSE: No TD-1 data available")
 
+        gcmd.respond_info("TEST_PULSE: Waiting for load to register before unload")
         loaded_deadline = self.reactor.monotonic() + load_timeout
+        last_log = 0.0
         while self.reactor.monotonic() < loaded_deadline:
             current_spool = getattr(oams_obj, "current_spool", None)
             action_status = getattr(oams_obj, "action_status", None)
             action_status_code = getattr(oams_obj, "action_status_code", None)
-            if current_spool == spool_index:
+
+            queried_spool = None
+            try:
+                if hasattr(oams_obj, "determine_current_spool"):
+                    queried_spool = oams_obj.determine_current_spool()
+            except Exception:
+                queried_spool = None
+
+            load_registered = (
+                action_status is None
+                and (current_spool == spool_index or queried_spool == spool_index)
+            )
+            if load_registered:
+                if current_spool != spool_index:
+                    oams_obj.current_spool = spool_index
+                gcmd.respond_info(
+                    "TEST_PULSE: Load registered "
+                    f"(current_spool={current_spool}, queried_spool={queried_spool}, "
+                    f"action_status_code={action_status_code})"
+                )
                 break
-            if action_status is None and action_status_code == 0:
-                oams_obj.current_spool = spool_index
-                break
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
+
+            now = self.reactor.monotonic()
+            if now - last_log >= 1.0:
+                gcmd.respond_info(
+                    "TEST_PULSE: Waiting load register "
+                    f"(current_spool={current_spool}, queried_spool={queried_spool}, "
+                    f"action_status={action_status}, action_status_code={action_status_code})"
+                )
+                last_log = now
+            self.reactor.pause(now + 0.1)
         else:
-            gcmd.respond_info("TEST_PULSE: Load-ready state timeout, unloading anyway")
+            raise gcmd.error(
+                "Load did not register before timeout; refusing unload while OAMS may still be busy"
+            )
 
         self.reactor.pause(self.reactor.monotonic() + command_delay)
 
