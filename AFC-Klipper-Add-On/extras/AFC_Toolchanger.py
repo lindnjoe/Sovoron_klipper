@@ -72,7 +72,8 @@ class AfcToolchanger(afcUnit):
 
     cmd_AFC_SELECT_TOOL_help = "Select specified tool"
     cmd_AFC_SELECT_TOOL_options = {
-        "TOOL": {"type": "string", "default": "extruder"}
+        "TOOL": {"type": "string", "default": "extruder"},
+        "SET_START_TIME": {"type": "int", "default": 1},
     }
     def cmd_AFC_SELECT_TOOL(self, gcmd: GCodeCommand):
         """
@@ -89,11 +90,12 @@ class AfcToolchanger(afcUnit):
         ```
         """
         tool_key = gcmd.get("TOOL")
+        set_start_time = gcmd.get_int("SET_START_TIME", 1)
         tool = self.afc.tools.get(tool_key)
 
         if tool:
             if hasattr(tool, 'tc_lane') and tool.tc_lane is not None:
-                self.tool_swap(tool.tc_lane)
+                self.tool_swap(tool.tc_lane, set_start_time=bool(set_start_time))
             else:
                 self.logger.error(f"Tool '{tool_key}' does not have a valid 'tc_lane' attribute.")
         else:
