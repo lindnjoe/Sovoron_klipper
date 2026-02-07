@@ -1,6 +1,12 @@
 """Test pulsing helper for OpenAMS TD-1 capture workflows."""
 
 from __future__ import annotations
+import struct
+
+
+def float_to_u32(value):
+    """Convert float to u32 for MCU commands."""
+    return struct.unpack('I', struct.pack('f', float(value)))[0]
 
 
 class TestPulse:
@@ -14,7 +20,7 @@ class TestPulse:
             "TEST_PULSE",
             self.cmd_TEST_PULSE,
             desc=(
-                "Test OpenAMS with short ptfe_length to see if commands work"
+                "Test OpenAMS with short ptfe_length and low fps_target"
             ),
         )
 
@@ -24,6 +30,7 @@ class TestPulse:
             raise gcmd.error("LANE is required for TEST_PULSE")
 
         test_ptfe_length = gcmd.get_int("PTFE", 500)  # Default to 500 for testing
+        test_fps_target = gcmd.get_float("FPS_TARGET", 0.01)  # Very low target
         hub_timeout = gcmd.get_float("HUB_TIMEOUT", 30.0)
 
         afc = self.printer.lookup_object("AFC", None)
@@ -59,20 +66,37 @@ class TestPulse:
         if spool_index < 0:
             raise gcmd.error(f"Lane {lane_name} has invalid spool index")
 
-        # Save original ptfe_length
+        # Save original values
         original_ptfe = getattr(oams_obj, "filament_path_length", 2087)
+        original_kp = getattr(oams_obj, "kp", 6.0)
+        original_ki = getattr(oams_obj, "ki", 0.0)
+        original_kd = getattr(oams_obj, "kd", 0.0)
+        original_fps_target = getattr(oams_obj, "fps_target", 0.5)
+
         gcmd.respond_info(f"TEST_PULSE: Original ptfe_length: {original_ptfe}")
+        gcmd.respond_info(f"TEST_PULSE: Original fps_target: {original_fps_target}")
         gcmd.respond_info(f"TEST_PULSE: Setting temporary ptfe_length: {test_ptfe_length}")
+        gcmd.respond_info(f"TEST_PULSE: Setting temporary fps_target: {test_fps_target}")
 
         # Try to send config command to MCU with shorter ptfe_length
         try:
             mcu = oams_obj.mcu
             config_cmd = mcu.lookup_command("config_oams_ptfe length=%u")
             config_cmd.send([test_ptfe_length])
-            gcmd.respond_info(f"TEST_PULSE: Sent config_oams_ptfe command with length={test_ptfe_length}")
+            gcmd.respond_info(f"TEST_PULSE: Sent config_oams_ptfe with length={test_ptfe_length}")
         except Exception as exc:
-            gcmd.respond_info(f"TEST_PULSE: Could not send config command: {exc}")
-            gcmd.respond_info(f"TEST_PULSE: Continuing with original ptfe_length...")
+            gcmd.respond_info(f"TEST_PULSE: Could not send ptfe config: {exc}")
+
+        # Set low fps_target using the PID command
+        try:
+            kp_u32 = float_to_u32(original_kp)
+            ki_u32 = float_to_u32(original_ki)
+            kd_u32 = float_to_u32(original_kd)
+            target_u32 = float_to_u32(test_fps_target)
+            oams_obj.oams_pid_cmd.send([kp_u32, ki_u32, kd_u32, target_u32])
+            gcmd.respond_info(f"TEST_PULSE: Sent PID command with fps_target={test_fps_target}")
+        except Exception as exc:
+            gcmd.respond_info(f"TEST_PULSE: Could not send PID command: {exc}")
 
         # Step 1: Start loading the spool
         gcmd.respond_info(
@@ -102,53 +126,57 @@ class TestPulse:
 
         if not hub_triggered:
             gcmd.respond_info(f"TEST_PULSE: Hub sensor did not trigger within timeout")
-            try:
-                oams_obj.abort_current_action(wait=True, code=0)
-            except Exception:
-                pass
-            # Restore original ptfe_length
-            try:
-                config_cmd = oams_obj.mcu.lookup_command("config_oams_ptfe length=%u")
-                config_cmd.send([int(original_ptfe)])
-            except Exception:
-                pass
+            self._restore_settings(gcmd, oams_obj, original_ptfe, original_kp, original_ki, original_kd, original_fps_target)
             raise gcmd.error("Hub sensor did not trigger - aborting test")
 
         gcmd.respond_info(f"TEST_PULSE: Hub sensor triggered!")
 
-        # Step 3: IMMEDIATELY disable follower to stop filament movement
-        gcmd.respond_info(f"TEST_PULSE: Immediately disabling follower...")
-        try:
-            oams_obj.set_oams_follower(0, 0)
-        except Exception as exc:
-            gcmd.respond_info(f"TEST_PULSE: Warning - disable follower failed: {exc}")
+        # Wait a moment to see if it stops on its own (fps_target reached)
+        gcmd.respond_info(f"TEST_PULSE: Waiting to see if AMS stops at fps_target...")
+        self.reactor.pause(self.reactor.monotonic() + 3.0)
 
-        # Step 4: Send unload command to reverse AMS spool motor
-        gcmd.respond_info(f"TEST_PULSE: Sending unload command...")
-        try:
-            oams_obj.oams_unload_spool_cmd.send([])
-        except Exception as exc:
-            gcmd.respond_info(f"TEST_PULSE: Warning - unload command failed: {exc}")
-
-        # Step 5: Enable follower in reverse to help retract
-        gcmd.respond_info(f"TEST_PULSE: Enabling follower reverse...")
-        try:
-            oams_obj.set_oams_follower(1, 0)
-        except Exception as exc:
-            gcmd.respond_info(f"TEST_PULSE: Warning - follower reverse failed: {exc}")
-
-        # Wait a moment for retraction
-        self.reactor.pause(self.reactor.monotonic() + 2.0)
-
-        # Step 6: Disable follower
+        # Step 3: Disable follower
         gcmd.respond_info(f"TEST_PULSE: Disabling follower...")
         try:
             oams_obj.set_oams_follower(0, 0)
         except Exception as exc:
             gcmd.respond_info(f"TEST_PULSE: Warning - disable follower failed: {exc}")
 
-        # Restore original ptfe_length
-        gcmd.respond_info(f"TEST_PULSE: Restoring original ptfe_length: {original_ptfe}")
+        # Step 4: Send unload command
+        gcmd.respond_info(f"TEST_PULSE: Sending unload command...")
+        try:
+            oams_obj.oams_unload_spool_cmd.send([])
+        except Exception as exc:
+            gcmd.respond_info(f"TEST_PULSE: Warning - unload command failed: {exc}")
+
+        # Step 5: Enable follower in reverse
+        gcmd.respond_info(f"TEST_PULSE: Enabling follower reverse...")
+        try:
+            oams_obj.set_oams_follower(1, 0)
+        except Exception as exc:
+            gcmd.respond_info(f"TEST_PULSE: Warning - follower reverse failed: {exc}")
+
+        # Wait for retraction
+        self.reactor.pause(self.reactor.monotonic() + 2.0)
+
+        # Step 6: Disable follower
+        try:
+            oams_obj.set_oams_follower(0, 0)
+        except Exception:
+            pass
+
+        # Restore original settings
+        self._restore_settings(gcmd, oams_obj, original_ptfe, original_kp, original_ki, original_kd, original_fps_target)
+
+        gcmd.respond_info(
+            f"TEST_PULSE: DONE - Check if filament stopped after ptfe_length or continued."
+        )
+
+    def _restore_settings(self, gcmd, oams_obj, original_ptfe, original_kp, original_ki, original_kd, original_fps_target):
+        """Restore original OAMS settings."""
+        gcmd.respond_info(f"TEST_PULSE: Restoring original settings...")
+
+        # Restore ptfe_length
         try:
             config_cmd = oams_obj.mcu.lookup_command("config_oams_ptfe length=%u")
             config_cmd.send([int(original_ptfe)])
@@ -156,9 +184,16 @@ class TestPulse:
         except Exception as exc:
             gcmd.respond_info(f"TEST_PULSE: Could not restore ptfe_length: {exc}")
 
-        gcmd.respond_info(
-            f"TEST_PULSE: DONE - Check if filament stopped at hub or went further."
-        )
+        # Restore PID settings
+        try:
+            kp_u32 = float_to_u32(original_kp)
+            ki_u32 = float_to_u32(original_ki)
+            kd_u32 = float_to_u32(original_kd)
+            target_u32 = float_to_u32(original_fps_target)
+            oams_obj.oams_pid_cmd.send([kp_u32, ki_u32, kd_u32, target_u32])
+            gcmd.respond_info(f"TEST_PULSE: Restored fps_target to {original_fps_target}")
+        except Exception as exc:
+            gcmd.respond_info(f"TEST_PULSE: Could not restore PID settings: {exc}")
 
 
 def load_config_prefix(config):
