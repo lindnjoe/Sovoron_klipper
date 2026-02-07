@@ -225,7 +225,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": false,
+            "loaded_to_hub": true,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -241,8 +241,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 1.0,
-                "color": "446FAD",
-                "scan_time": "2026-02-06T21:14:26.121673+00:00Z",
+                "color": "416A99",
+                "scan_time": "2026-02-07T07:50:23.111417+00:00Z",
                 "error": null
             }
         }
