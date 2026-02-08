@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 # This file includes code modified from the Shaketune Project. https://github.com/Frix-x/klippain-shaketune
-# Originally authored by F�lix Boisselier and licensed under the GNU General Public License v3.0.
+# Originally authored by Félix Boisselier and licensed under the GNU General Public License v3.0.
 #
 # Full license text available at: https://www.gnu.org/licenses/gpl-3.0.html
 from __future__ import annotations
@@ -1600,7 +1600,7 @@ class afcFunction:
 
         self.logger.info(f"Sending reboot command to TD-1 serial: {serial_number}")
         status = self.afc.moonraker.reboot_td1(serial_number)
-        if status is not None and "status" in status:
+        if "status" in status:
             if status['status'] == "ok":
                 self.logger.info("Waiting up to 30 seconds for device to reboot")
                 while True:
@@ -1801,7 +1801,7 @@ class afcDeltaTime:
             curr_time = datetime.now()
             self.delta_time = (curr_time - self.last_time ).total_seconds()
             total_time = (curr_time - self.start_time).total_seconds()
-            msg = "{} (?t:{:.3f}s, t:{:.3f})".format( msg, self.delta_time, total_time )
+            msg = "{} (Δt:{:.3f}s, t:{:.3f})".format( msg, self.delta_time, total_time )
             if debug:
                 self.logger.debug( msg )
             else:
