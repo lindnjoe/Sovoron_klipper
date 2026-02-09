@@ -2089,6 +2089,14 @@ class afcAMS(afcUnit):
         if spool_index is None:
             self.logger.error(f"Unable to resolve spool index for {cur_lane.name}")
             return False, "Unable to resolve spool index"
+        gcode = getattr(self, "gcode", None)
+        if gcode is not None:
+            try:
+                gcode.respond_info(
+                    f"OpenAMS: starting TD-1 capture for {cur_lane.name} (spool {spool_index})"
+                )
+            except Exception:
+                pass
 
         # Check for conflicts with other OpenAMS units
         hub_values = getattr(self.oams, "hub_hes_value", None)
@@ -2242,6 +2250,14 @@ class afcAMS(afcUnit):
             self.logger.info(
                 f"{cur_lane.name} TD-1 data captured: td={data.get('td')} color={data.get('color')}"
             )
+            if gcode is not None:
+                try:
+                    gcode.respond_info(
+                        f"OpenAMS: TD-1 data captured for {cur_lane.name} "
+                        f"(td={data.get('td')} color={data.get('color')})"
+                    )
+                except Exception:
+                    pass
             self.afc.save_vars()
             return True
 
