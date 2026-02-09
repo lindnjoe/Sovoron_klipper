@@ -5394,6 +5394,27 @@ class OAMSManager:
         except Exception:
             self.logger.warning(f"Failed to update virtual tool sensor for {lane_name} after load")
 
+        # Force-update loaded_to_hub from hardware hub sensor after successful load.
+        # During engagement retries, set_unloaded() clears loaded_to_hub but the hub_changed
+        # event may not re-fire if the hardware sensor didn't change between polling cycles
+        # (edge-triggered polling misses software-only state changes).
+        try:
+            afc = self._get_afc()
+            if afc is not None:
+                lane_obj = afc.lanes.get(lane_name)
+                if lane_obj is not None:
+                    hub_hes_values = getattr(oam, "hub_hes_value", None)
+                    if hub_hes_values is not None and bay_index < len(hub_hes_values):
+                        hub_sensor_state = bool(hub_hes_values[bay_index])
+                        if lane_obj.loaded_to_hub != hub_sensor_state:
+                            lane_obj.loaded_to_hub = hub_sensor_state
+                            self.logger.debug(
+                                f"Force-updated loaded_to_hub={hub_sensor_state} for {lane_name} "
+                                f"from hardware after successful load"
+                            )
+        except Exception:
+            pass
+
         # Monitors are already running globally, no need to restart them
         if getattr(oam, "dock_load", False):
             extruder_obj = getattr(lane, "extruder_obj", None)
