@@ -2089,6 +2089,14 @@ class afcAMS(afcUnit):
         if spool_index is None:
             self.logger.error(f"Unable to resolve spool index for {cur_lane.name}")
             return False, "Unable to resolve spool index"
+        gcode = getattr(self, "gcode", None)
+        if gcode is not None:
+            try:
+                gcode.respond_info(
+                    f"OpenAMS: starting TD-1 capture for {cur_lane.name} (spool {spool_index})"
+                )
+            except Exception:
+                pass
 
         # Check for conflicts with other OpenAMS units
         hub_values = getattr(self.oams, "hub_hes_value", None)
@@ -2242,6 +2250,14 @@ class afcAMS(afcUnit):
             self.logger.info(
                 f"{cur_lane.name} TD-1 data captured: td={data.get('td')} color={data.get('color')}"
             )
+            if gcode is not None:
+                try:
+                    gcode.respond_info(
+                        f"OpenAMS: TD-1 data captured for {cur_lane.name} "
+                        f"(td={data.get('td')} color={data.get('color')})"
+                    )
+                except Exception:
+                    pass
             self.afc.save_vars()
             return True
 
@@ -2299,6 +2315,9 @@ class afcAMS(afcUnit):
             self.logger.debug(f"TD-1 data not captured for {cur_lane.name}")
             return False, "TD-1 data not captured (unload completed)"
 
+        if "color" in cur_lane.td1_data:
+            cur_lane.color = f"#{cur_lane.td1_data['color']}"
+        cur_lane.send_lane_data()
         return True, "TD-1 data captured"
 
     def prep_capture_td1(self, cur_lane):
@@ -3815,7 +3834,12 @@ class afcAMS(afcUnit):
                 capture_td1_data = getattr(prep_obj, "get_td1_data", False) and self.afc.td1_present
         except Exception:
             pass
-        self.logger.debug(f"_handle_spool_loaded_event: lane={lane.name} previous_loaded={previous_loaded} capture_td1_data={capture_td1_data}")
+        capture_td1_when_loaded = bool(getattr(lane, "td1_when_loaded", False)) and self.afc.td1_present
+        capture_td1_requested = capture_td1_data or capture_td1_when_loaded
+        self.logger.debug(
+            f"_handle_spool_loaded_event: lane={lane.name} previous_loaded={previous_loaded} "
+            f"capture_td1_data={capture_td1_data} capture_td1_when_loaded={capture_td1_when_loaded}"
+        )
 
         eventtime = kwargs.get("eventtime", 0.0)
 
@@ -3838,11 +3862,14 @@ class afcAMS(afcUnit):
 
         should_capture = (
             not previous_loaded
-            and capture_td1_data
+            and capture_td1_requested
             and td1_device
             and not in_prep  # Only capture via events after PREP is done
         )
-        self.logger.debug(f"TD-1 capture decision: previous_loaded={previous_loaded} capture_td1_data={capture_td1_data} td1_device={td1_device} in_prep={in_prep} should_capture={should_capture}")
+        self.logger.debug(
+            f"TD-1 capture decision: previous_loaded={previous_loaded} capture_td1_requested={capture_td1_requested} "
+            f"td1_device={td1_device} in_prep={in_prep} should_capture={should_capture}"
+        )
         if should_capture:
             lane_name = lane.name
             try:
