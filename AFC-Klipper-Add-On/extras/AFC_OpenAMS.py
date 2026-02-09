@@ -2299,6 +2299,9 @@ class afcAMS(afcUnit):
             self.logger.debug(f"TD-1 data not captured for {cur_lane.name}")
             return False, "TD-1 data not captured (unload completed)"
 
+        if "color" in cur_lane.td1_data:
+            cur_lane.color = f"#{cur_lane.td1_data['color']}"
+        cur_lane.send_lane_data()
         return True, "TD-1 data captured"
 
     def prep_capture_td1(self, cur_lane):
