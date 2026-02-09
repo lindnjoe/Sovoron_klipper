@@ -3724,8 +3724,11 @@ class OAMSManager:
                                     f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
                                     f"at {post_speed:.0f}mm/min"
                                 )
+                                gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_post_load")
+                                gcode.run_script_from_command("M83")  # Relative extrusion mode
                                 gcode.run_script_from_command(f"G1 E{post_length:.2f} F{post_speed:.0f}")
                                 gcode.run_script_from_command("M400")
+                                gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_post_load")
                             return True
                         else:
                             # Encoder didn't move enough - re-check after a short delay
@@ -3756,8 +3759,11 @@ class OAMSManager:
                                         f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
                                         f"at {post_speed:.0f}mm/min"
                                     )
+                                    gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_post_load")
+                                    gcode.run_script_from_command("M83")  # Relative extrusion mode
                                     gcode.run_script_from_command(f"G1 E{post_length:.2f} F{post_speed:.0f}")
                                     gcode.run_script_from_command("M400")
+                                    gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_post_load")
                                 return True
 
                             # Encoder didn't move enough - filament not engaged
@@ -3781,8 +3787,11 @@ class OAMSManager:
                                     f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
                                     f"at {post_speed:.0f}mm/min"
                                 )
+                                gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_post_load")
+                                gcode.run_script_from_command("M83")  # Relative extrusion mode
                                 gcode.run_script_from_command(f"G1 E{post_length:.2f} F{post_speed:.0f}")
                                 gcode.run_script_from_command("M400")
+                                gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_post_load")
                             return True
                         else:
                             fps_state.engaged_with_extruder = False
