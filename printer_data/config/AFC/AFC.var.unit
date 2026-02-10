@@ -47,7 +47,7 @@
             "empty_spool_weight": 250.0,
             "spool_id": 18,
             "color": "#00AE42",
-            "weight": 250.0,
+            "weight": 197.45798765641348,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "Ready",
@@ -96,14 +96,14 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": false,
+            "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.23,
             "diameter": 1.75,
             "empty_spool_weight": 170.0,
             "spool_id": 42,
             "color": "#ffffff",
-            "weight": 279.26270148389017,
+            "weight": 268.0358248371782,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "Ready",
@@ -126,7 +126,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": false,
+            "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.21,
             "diameter": 1.75,
@@ -142,8 +142,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.1,
-                "color": "302020",
-                "scan_time": "2026-02-08T19:14:36.051134+00:00Z",
+                "color": "5D6060",
+                "scan_time": "2026-02-10T01:57:12.936216+00:00Z",
                 "error": null
             }
         },
@@ -174,9 +174,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 1.7,
-                "color": "285031",
-                "scan_time": "2026-02-08T15:40:17.220470+00:00Z",
+                "td": 1.8,
+                "color": "53C68C",
+                "scan_time": "2026-02-10T01:56:06.448430+00:00Z",
                 "error": null
             }
         },
@@ -241,8 +241,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 1.0,
-                "color": "75FDFF",
-                "scan_time": "2026-02-09T12:40:35.253222+00:00Z",
+                "color": "6EF8FF",
+                "scan_time": "2026-02-10T01:55:37.014048+00:00Z",
                 "error": null
             }
         }
@@ -363,7 +363,7 @@
         }
     },
     "system": {
-        "current_load": "lane2",
+        "current_load": null,
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
