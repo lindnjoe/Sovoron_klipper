@@ -222,6 +222,7 @@ class Toolchanger:
         self.gcode_transform.tool = None
 
     def get_status(self, eventtime):
+        active_tool_offset = self.active_tool.get_offset() if self.active_tool else [0.0, 0.0, 0.0]
         return {**self.params,
                 'name': self.name,
                 'status': self.status,
@@ -232,6 +233,9 @@ class Toolchanger:
                 'tool_numbers': self.tool_numbers,
                 'tool_names': self.tool_names,
                 'has_detection': self.has_detection,
+                'active_tool_gcode_x_offset': active_tool_offset[0],
+                'active_tool_gcode_y_offset': active_tool_offset[1],
+                'active_tool_gcode_z_offset': active_tool_offset[2],
                 }
 
     def assign_tool(self, tool, number, prev_number, replace=False):

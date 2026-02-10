@@ -45,6 +45,7 @@ class Tool:
         self.extruder = None
         self.extruder_stepper = None
         self.fan_name = self._config_get(config, 'fan', None)
+        self.resonance_chip = self._config_get(config, 'resonance_chip', None)
         self.fan = None
         if self.fan_name:
             self.toolchanger.require_fan_switcher()
@@ -117,6 +118,7 @@ class Tool:
                 'gcode_x_offset': self.gcode_x_offset if self.gcode_x_offset else 0.0,
                 'gcode_y_offset': self.gcode_y_offset if self.gcode_y_offset else 0.0,
                 'gcode_z_offset': self.gcode_z_offset if self.gcode_z_offset else 0.0,
+                'resonance_chip': self.resonance_chip if self.resonance_chip else '',
                 }
 
     def get_offset(self):
@@ -154,6 +156,7 @@ class Tool:
     def activate(self):
         toolhead = self.printer.lookup_object('toolhead')
         gcode = self.printer.lookup_object('gcode')
+        resonance_tester = self.printer.lookup_object('resonance_tester', None)
         hotend_extruder = toolhead.get_extruder().name
         if self.extruder_name and self.extruder_name != hotend_extruder:
             gcode.run_script_from_command(
@@ -166,6 +169,8 @@ class Tool:
                     "SYNC_EXTRUDER_MOTION EXTRUDER='%s' MOTION_QUEUE='%s'" % (self.extruder_stepper_name, hotend_extruder, ))
         if self.fan:
             self.toolchanger.fan_switcher.activate_fan(self.fan)
+        if self.resonance_chip and resonance_tester:
+            resonance_tester.accel_chip_names = [["xy", self.resonance_chip]]
     def deactivate(self):
         if self.extruder_stepper:
             toolhead = self.printer.lookup_object('toolhead')
