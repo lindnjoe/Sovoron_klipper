@@ -1600,7 +1600,7 @@ class afcFunction:
 
         self.logger.info(f"Sending reboot command to TD-1 serial: {serial_number}")
         status = self.afc.moonraker.reboot_td1(serial_number)
-        if "status" in status:
+        if status is not None and "status" in status:
             if status['status'] == "ok":
                 self.logger.info("Waiting up to 30 seconds for device to reboot")
                 while True:
