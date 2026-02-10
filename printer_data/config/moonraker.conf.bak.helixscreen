@@ -43,16 +43,13 @@ path: ~/crowsnest
 origin: https://github.com/mainsail-crew/crowsnest.git
 managed_services: crowsnest
 install_script: tools/pkglist.sh
-[update_manager klipper-toolchanger-easy]
+[update_manager klipper-toolchanger]
 type: git_repo
 channel: dev
-path: ~/klipper-toolchanger-easy
-origin: https://github.com/jwellman80/klipper-toolchanger-easy.git
+path: ~/klipper-toolchanger
+origin: https://github.com/viesturz/klipper-toolchanger.git
 managed_services: klipper
 primary_branch: main
-# [timelapse]
-# output_path: ~/printer_data/timelapse/
-# frame_path: /tmp/timelapse/printer
 [include octoeverywhere-system.cfg]
 ## Klippain Shake&Tune automatic update management
 [update_manager Klippain-ShakeTune]
@@ -136,3 +133,14 @@ info_tags: desc=Cartographer Alpha
 
 
 
+
+# # HelixScreen Update Manager
+# # Added by HelixScreen installer - enables one-click updates from Mainsail/Fluidd
+# [update_manager helixscreen]
+# type: git_repo
+# channel: stable
+# path: /home/pii/helixscreen
+# origin: https://github.com/prestonbrown/helixscreen.git
+# primary_branch: main
+# managed_services: helixscreen
+# install_script: scripts/install.sh
