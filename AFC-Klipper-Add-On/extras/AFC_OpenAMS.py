@@ -3857,7 +3857,12 @@ class afcAMS(afcUnit):
                 capture_td1_data = getattr(prep_obj, "get_td1_data", False) and self.afc.td1_present
         except Exception:
             pass
-        self.logger.debug(f"_handle_spool_loaded_event: lane={lane.name} previous_loaded={previous_loaded} capture_td1_data={capture_td1_data}")
+        capture_td1_when_loaded = bool(getattr(lane, "td1_when_loaded", False)) and self.afc.td1_present
+        capture_td1_requested = capture_td1_data or capture_td1_when_loaded
+        self.logger.debug(
+            f"_handle_spool_loaded_event: lane={lane.name} previous_loaded={previous_loaded} "
+            f"capture_td1_data={capture_td1_data} capture_td1_when_loaded={capture_td1_when_loaded}"
+        )
 
         eventtime = kwargs.get("eventtime", 0.0)
 
@@ -3880,11 +3885,14 @@ class afcAMS(afcUnit):
 
         should_capture = (
             not previous_loaded
-            and capture_td1_data
+            and capture_td1_requested
             and td1_device
             and not in_prep  # Only capture via events after PREP is done
         )
-        self.logger.debug(f"TD-1 capture decision: previous_loaded={previous_loaded} capture_td1_data={capture_td1_data} td1_device={td1_device} in_prep={in_prep} should_capture={should_capture}")
+        self.logger.debug(
+            f"TD-1 capture decision: previous_loaded={previous_loaded} capture_td1_requested={capture_td1_requested} "
+            f"td1_device={td1_device} in_prep={in_prep} should_capture={should_capture}"
+        )
         if should_capture:
             lane_name = lane.name
             try:
