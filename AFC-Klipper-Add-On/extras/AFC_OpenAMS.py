@@ -280,8 +280,12 @@ def _patch_extruder_on_shuttle_detection() -> None:
 
     def _openams_on_shuttle(self):
         try:
-            if self.tool_obj is not None and hasattr(self.tool_obj, "detect_state"):
-                detect_state = getattr(self.tool_obj, "detect_state", None)
+            # Match AFC semantics: only use detection-pin state for toolchanger setups.
+            # Single-tool printers have no shuttle/detection pin and should stay on AFC default path.
+            tc_unit_name = getattr(self, "tc_unit_name", None)
+            tool_obj = getattr(self, "tool_obj", None)
+            if tc_unit_name and tool_obj is not None and hasattr(tool_obj, "detect_state"):
+                detect_state = getattr(tool_obj, "detect_state", None)
                 detect_present = (
                     detect_state == 1
                     or detect_state is True
