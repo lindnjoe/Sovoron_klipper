@@ -791,6 +791,20 @@ class OAMSRunoutMonitor:
                 self.logger.debug(f"OAMS: Failed to read AFC.var.unit extruder for {lane_name}")
         return _normalize_extruder_name(name)
 
+    def _get_current_toolhead_extruder(self) -> Optional[str]:
+        toolhead = self._toolhead_obj
+        if toolhead is None:
+            try:
+                toolhead = self.printer.lookup_object("toolhead")
+                self._toolhead_obj = toolhead
+            except Exception:
+                return None
+        try:
+            extruder = toolhead.get_extruder()
+        except Exception:
+            return None
+        return _normalize_extruder_name(getattr(extruder, "name", None))
+
     def _resolve_oams_for_lane(self, lane_name: Optional[str]) -> Optional[Any]:
         if not lane_name:
             return None
@@ -7102,7 +7116,27 @@ class OAMSManager:
             try:
                 afc = self._get_afc()
                 if afc is not None:
-                    extruder_obj = getattr(afc, 'extruder', None)
+                    lane_obj = None
+                    if hasattr(afc, "lanes"):
+                        lane_obj = afc.lanes.get(fps_state.current_lane)
+                    current_extruder = self._get_current_toolhead_extruder()
+                    lane_extruder = self._get_lane_extruder_name(lane_obj)
+                    if current_extruder and lane_extruder and current_extruder != lane_extruder:
+                        fps_state.stuck_spool.start_time = None
+                        if fps_state.stuck_spool.active and oams is not None and fps_state.current_spool_idx is not None:
+                            self._set_led_error_if_changed(
+                                oams,
+                                fps_state.current_oams,
+                                fps_state.current_spool_idx,
+                                0,
+                                f"active extruder {current_extruder} differs from lane extruder {lane_extruder}",
+                            )
+                        fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
+                        return
+
+                    extruder_obj = getattr(lane_obj, "extruder_obj", None) if lane_obj is not None else None
+                    if extruder_obj is None:
+                        extruder_obj = getattr(afc, 'extruder', None)
                     if extruder_obj is not None:
                         lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
                         if lane_loaded is None:
@@ -7370,7 +7404,26 @@ class OAMSManager:
             try:
                 afc = self._get_afc()
                 if afc is not None:
-                    extruder_obj = getattr(afc, 'extruder', None)
+                    lane_obj = None
+                    if hasattr(afc, "lanes"):
+                        lane_obj = afc.lanes.get(fps_state.current_lane)
+                    current_extruder = self._get_current_toolhead_extruder()
+                    lane_extruder = self._get_lane_extruder_name(lane_obj)
+                    if current_extruder and lane_extruder and current_extruder != lane_extruder:
+                        if fps_state.clog.active and oams is not None and fps_state.current_spool_idx is not None:
+                            self._set_led_error_if_changed(
+                                oams,
+                                fps_state.current_oams,
+                                fps_state.current_spool_idx,
+                                0,
+                                f"active extruder {current_extruder} differs from lane extruder {lane_extruder}",
+                            )
+                        fps_state.reset_clog_tracker()
+                        return
+
+                    extruder_obj = getattr(lane_obj, "extruder_obj", None) if lane_obj is not None else None
+                    if extruder_obj is None:
+                        extruder_obj = getattr(afc, 'extruder', None)
                     if extruder_obj is not None:
                         lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
                         if lane_loaded is not None and lane_loaded != fps_state.current_lane:
