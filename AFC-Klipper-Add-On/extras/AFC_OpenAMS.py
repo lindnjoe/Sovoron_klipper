@@ -334,7 +334,16 @@ def _patch_current_extruder_detection_for_openams() -> None:
                 or tool_obj.tool_start == "buffer"
                 or tool_obj.tool_end_state
             )
-            if tool_ready:
+            # Startup fallback for OpenAMS: when toolchanger detection is not yet
+            # initialized, virtual sensor states can lag briefly even though AFC's
+            # lane state is already internally consistent.
+            lane_state_ready = (
+                getattr(lane_obj, "prep_state", False)
+                and getattr(lane_obj, "load_state", False)
+                and getattr(lane_obj, "extruder_name", None) == current_extruder
+            )
+
+            if tool_ready or (not self.afc.prep_done and lane_state_ready):
                 return current_extruder
 
         return None
