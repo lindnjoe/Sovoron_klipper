@@ -109,7 +109,7 @@ class Tool:
         return {**self.params,
                 'name': self.name,
                 'toolchanger': self.toolchanger.name,
-                'detect_state': self.detect_state,
+                'detect_state': toolchanger.detect_state_name(self.detect_state),
                 'tool_number': self.tool_number,
                 'extruder': self.extruder_name,
                 'extruder_stepper': self.extruder_stepper_name,
