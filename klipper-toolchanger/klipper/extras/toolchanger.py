@@ -20,9 +20,17 @@ ON_AXIS_NOT_HOMED_ABORT = 0
 ON_AXIS_NOT_HOMED_HOME = 1
 XYZ_TO_INDEX = {'x': 0, 'X': 0, 'y': 1, 'Y': 1, 'z': 2, 'Z': 2}
 INDEX_TO_XYZ = 'XYZ'
-DETECT_UNAVAILABLE = "unavailable"
-DETECT_ABSENT = "absent"
-DETECT_PRESENT = "mounted"
+DETECT_UNAVAILABLE = -1
+DETECT_ABSENT = 0
+DETECT_PRESENT = 1
+
+
+def detect_state_name(state):
+    if state == DETECT_PRESENT:
+        return "mounted"
+    if state == DETECT_ABSENT:
+        return "absent"
+    return "unavailable"
 
 _FUTURE = 9999999999999999.
 
