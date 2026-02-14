@@ -1144,8 +1144,6 @@ class OAMSManager:
         self._pause_resume_obj = None
         # Prevent duplicate detection logs when the same lane remains loaded
         self._last_logged_detected_lane: Dict[str, Optional[str]] = {}
-        self._toolchange_wrappers_registered = False
-        self._original_toolchange_commands: Dict[str, Any] = {}
 
         self._initialize_oams()
 
@@ -1685,8 +1683,6 @@ class OAMSManager:
         except Exception:
             self._toolhead_obj = None
 
-        self._register_toolchange_command_wrappers()
-
         self.determine_state()
 
         try:
@@ -1701,71 +1697,6 @@ class OAMSManager:
 
         self.start_monitors()
         self.ready = True
-
-    def _register_toolchange_command_wrappers(self) -> None:
-        """Wrap AFC toolchange commands so quiet-speed logic applies globally."""
-        if self._toolchange_wrappers_registered:
-            return
-
-        gcode = self._gcode_obj
-        if gcode is None:
-            return
-
-        handler_maps = []
-        for attr in ("ready_gcode_handlers", "gcode_handlers", "_gcode_handlers"):
-            handlers = getattr(gcode, attr, None)
-            if isinstance(handlers, dict):
-                handler_maps.append(handlers)
-
-        if not handler_maps:
-            return
-
-        for command_name in ("AFC_SELECT_TOOL", "AFC_UNSELECT_TOOL"):
-            original = None
-            for handlers in handler_maps:
-                candidate = handlers.get(command_name)
-                if candidate is None:
-                    continue
-                if getattr(candidate, "_oams_quiet_wrapper", False):
-                    original = self._original_toolchange_commands.get(command_name)
-                    break
-                original = candidate
-                break
-
-            if original is None:
-                continue
-
-            self._original_toolchange_commands[command_name] = original
-
-            def _make_wrapper(cmd_name: str):
-                def _wrapped(gcmd):
-                    self._run_toolchanger_command_with_quiet_speed(
-                        gcode,
-                        "",
-                        command_name=cmd_name,
-                        gcmd=gcmd,
-                    )
-
-                _wrapped._oams_quiet_wrapper = True
-                return _wrapped
-
-            wrapper = _make_wrapper(command_name)
-
-            # Remove existing registration from all known handler maps first so
-            # register_command() can install wrapper in the canonical map used by dispatch.
-            for handlers in handler_maps:
-                if handlers.get(command_name) is not None:
-                    handlers.pop(command_name, None)
-
-            try:
-                gcode.register_command(command_name, wrapper)
-            except Exception:
-                # Fallback for forks that reject registration despite manual map cleanup.
-                # In that case, patch known maps directly.
-                for handlers in handler_maps:
-                    handlers[command_name] = wrapper
-
-        self._toolchange_wrappers_registered = bool(self._original_toolchange_commands)
 
     def _initialize_oams(self) -> None:
         for name, oam in self.printer.lookup_objects(module="oams"):
@@ -3544,77 +3475,6 @@ class OAMSManager:
 
             self._afc_logged = True
         return self.afc
-
-    def _quiet_toolchange_speed_adjust_enabled(self) -> bool:
-        """Return True when any OAMS unit enables quiet toolchange speed adjust."""
-        if not self.oams:
-            return False
-
-        for oam in self.oams.values():
-            if bool(getattr(oam, "quiet_toolchange_speed_adjust", True)):
-                return True
-        return False
-
-    def _run_toolchanger_command_with_quiet_speed(
-        self,
-        gcode,
-        command: str,
-        *,
-        command_name: Optional[str] = None,
-        gcmd=None,
-    ) -> None:
-        """Run toolchanger command at reduced velocity when quiet mode + OpenAMS toggle are enabled."""
-        if command_name and gcmd is not None:
-            original_command = self._original_toolchange_commands.get(command_name)
-
-            def _execute_command():
-                if original_command is not None:
-                    original_command(gcmd)
-                    return
-                if command:
-                    gcode.run_script_from_command(command)
-
-        else:
-            def _execute_command():
-                gcode.run_script_from_command(command)
-
-        afc_obj = self._get_afc()
-        quiet_enabled = bool(afc_obj and afc_obj._get_quiet_mode())
-        speed_adjust_enabled = self._quiet_toolchange_speed_adjust_enabled()
-
-        toolhead = self._toolhead_obj
-        if toolhead is None:
-            try:
-                toolhead = self.printer.lookup_object("toolhead")
-                self._toolhead_obj = toolhead
-            except Exception:
-                toolhead = None
-
-        if not quiet_enabled or not speed_adjust_enabled or toolhead is None:
-            _execute_command()
-            return
-
-        eventtime = self.reactor.monotonic()
-        status = toolhead.get_status(eventtime)
-        base_velocity = status.get("max_velocity", None)
-        base_accel = status.get("max_accel", None)
-
-        if base_velocity is None or base_accel is None:
-            _execute_command()
-            return
-
-        quiet_velocity = max(float(base_velocity) * 0.25, 1.0)
-        quiet_accel = max(float(base_accel) * 0.25, 1.0)
-
-        try:
-            gcode.run_script_from_command(
-                f"SET_VELOCITY_LIMIT VELOCITY={quiet_velocity:.3f} ACCEL={quiet_accel:.3f}"
-            )
-            _execute_command()
-        finally:
-            gcode.run_script_from_command(
-                f"SET_VELOCITY_LIMIT VELOCITY={float(base_velocity):.3f} ACCEL={float(base_accel):.3f}"
-            )
 
     def _get_reload_params(self, lane_name: str) -> Tuple[Optional[float], Optional[float]]:
         """Get reload length and speed from AFC extruder config.

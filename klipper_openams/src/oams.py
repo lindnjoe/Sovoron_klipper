@@ -159,9 +159,6 @@ class OAMS:
             "auto_unload_on_failed_load", True
         )
         self.dock_load: bool = config.getboolean("dock_load", False)
-        self.quiet_toolchange_speed_adjust: bool = config.getboolean(
-            "quiet_toolchange_speed_adjust", True
-        )
         self.post_load_purge: float = config.getfloat("post_load_purge", 0.0)
         self.extra_retract: float = config.getfloat("extra_retract", -10.0)
 
