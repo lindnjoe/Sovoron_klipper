@@ -135,7 +135,13 @@ class afcPrep:
                 if extruder_obj.name in units["system"]["extruders"] and \
                   'lane_loaded' in units["system"]["extruders"][extruder_obj.name] and \
                   units["system"]["extruders"][extruder_obj.name]['lane_loaded']:
-                    extruder_obj.lane_loaded = units["system"]["extruders"][extruder_obj.name]['lane_loaded']
+                    # For toolchanger setups, only restore saved lane_loaded when a tool is
+                    # currently detected on shuttle. This avoids stale persisted state
+                    # reporting e.g. lane0 as loaded when startup begins with an empty shuttle.
+                    if extruder_obj.tc_unit_name and not extruder_obj.on_shuttle():
+                        extruder_obj.lane_loaded = None
+                    else:
+                        extruder_obj.lane_loaded = units["system"]["extruders"][extruder_obj.name]['lane_loaded']
 
 
         for lane in self.afc.lanes.keys():
@@ -264,4 +270,3 @@ class afcPrep:
 
 def load_config(config):
     return afcPrep(config)
-
