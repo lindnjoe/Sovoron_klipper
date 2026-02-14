@@ -20,9 +20,17 @@ ON_AXIS_NOT_HOMED_ABORT = 0
 ON_AXIS_NOT_HOMED_HOME = 1
 XYZ_TO_INDEX = {'x': 0, 'X': 0, 'y': 1, 'Y': 1, 'z': 2, 'Z': 2}
 INDEX_TO_XYZ = 'XYZ'
-DETECT_UNAVAILABLE = "unavailable"
-DETECT_ABSENT = "absent"
-DETECT_PRESENT = "mounted"
+DETECT_UNAVAILABLE = -1
+DETECT_ABSENT = 0
+DETECT_PRESENT = 1
+
+
+def detect_state_name(state):
+    if state == DETECT_PRESENT:
+        return "mounted"
+    if state == DETECT_ABSENT:
+        return "absent"
+    return "unavailable"
 
 _FUTURE = 9999999999999999.
 
@@ -379,11 +387,15 @@ class Toolchanger:
             self.status = STATUS_INITIALIZING
             self.run_gcode('initialize_gcode', self.initialize_gcode, extra_context)
 
-        if select_tool or self.has_detection:
-            self._configure_toolhead_for_tool(select_tool)
-            if select_tool:
-                self.run_gcode('after_change_gcode', select_tool.after_change_gcode, extra_context)
-                self.gcode_transform.tool = select_tool
+        inferred_tool = select_tool
+        if inferred_tool is None and self.has_detection:
+            inferred_tool = self.require_detected_tool(lambda _msg: None)
+
+        if inferred_tool or self.has_detection:
+            self._configure_toolhead_for_tool(inferred_tool)
+            if inferred_tool:
+                self.run_gcode('after_change_gcode', inferred_tool.after_change_gcode, extra_context)
+                self.gcode_transform.tool = inferred_tool
             if self.require_tool_present and self.active_tool is None:
                 raise self.gcode.error(
                     '%s failed to initialize, require_tool_present set and no tool present after initialization' % (
