@@ -3502,8 +3502,8 @@ class OAMSManager:
             gcode.run_script_from_command(command)
             return
 
-        quiet_velocity = max(float(base_velocity) * 0.25, 1.0)
-        quiet_accel = max(float(base_accel) * 0.25, 1.0)
+        quiet_velocity = max(float(base_velocity) * 0.5, 1.0)
+        quiet_accel = max(float(base_accel) * 0.5, 1.0)
 
         try:
             gcode.run_script_from_command(
