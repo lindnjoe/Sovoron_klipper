@@ -40,6 +40,8 @@ try: from extras.AFC_utils import add_filament_switch
 except: raise ConfigError(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
 try: import extras.AFC_extruder as _afc_extruder_mod
 except: raise ConfigError(ERROR_STR.format(import_lib="AFC_extruder", trace=traceback.format_exc()))
+try: import extras.AFC_functions as _afc_functions_mod
+except: raise ConfigError(ERROR_STR.format(import_lib="AFC_functions", trace=traceback.format_exc()))
 try: from extras.AFC_respond import AFCprompt
 except: raise ConfigError(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
 
@@ -70,6 +72,7 @@ _ORIGINAL_BUFFER_SET_MULTIPLIER = None  # Will be set during patching
 _ORIGINAL_BUFFER_GET_STATUS = None  # Will be set during patching
 _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE = None  # Will be set during patching
 _ORIGINAL_EXTRUDER_ON_SHUTTLE = None  # Will be set during patching
+_ORIGINAL_GET_CURRENT_EXTRUDER = None  # Will be set during patching
 
 class _VirtualRunoutHelper:
     """Minimal runout helper used by AMS-managed virtual sensors."""
@@ -300,6 +303,53 @@ def _patch_extruder_on_shuttle_detection() -> None:
 
     extruder_cls.on_shuttle = _openams_on_shuttle
     extruder_cls._openams_on_shuttle_patched = True
+
+
+def _patch_current_extruder_detection_for_openams() -> None:
+    """Patch AFC current-extruder lookup with OpenAMS startup fallback."""
+    global _ORIGINAL_GET_CURRENT_EXTRUDER
+
+    afc_function_cls = getattr(_afc_functions_mod, "afcFunction", None)
+    if afc_function_cls is None or getattr(afc_function_cls, "_openams_get_current_extruder_patched", False):
+        return
+
+    _ORIGINAL_GET_CURRENT_EXTRUDER = getattr(afc_function_cls, "get_current_extruder", None)
+    if _ORIGINAL_GET_CURRENT_EXTRUDER is None:
+        return
+
+    def _openams_get_current_extruder(self):
+        current_extruder = self.afc.toolhead.get_extruder().name
+        tool_obj = self.afc.tools.get(current_extruder, None)
+        if not tool_obj:
+            return None
+
+        if tool_obj.on_shuttle():
+            return current_extruder
+
+        lane_name = getattr(tool_obj, "lane_loaded", None)
+        lane_obj = self.afc.lanes.get(lane_name, None) if lane_name else None
+        if lane_obj and lane_obj.tool_loaded:
+            tool_ready = (
+                lane_obj.get_toolhead_pre_sensor_state()
+                or tool_obj.tool_start == "buffer"
+                or tool_obj.tool_end_state
+            )
+            # Startup fallback for OpenAMS: when toolchanger detection is not yet
+            # initialized, virtual sensor states can lag briefly even though AFC's
+            # lane state is already internally consistent.
+            lane_state_ready = (
+                getattr(lane_obj, "prep_state", False)
+                and getattr(lane_obj, "load_state", False)
+                and getattr(lane_obj, "extruder_name", None) == current_extruder
+            )
+
+            if tool_ready or (not self.afc.prep_done and lane_state_ready):
+                return current_extruder
+
+        return None
+
+    afc_function_cls.get_current_extruder = _openams_get_current_extruder
+    afc_function_cls._openams_get_current_extruder_patched = True
 
 
 class afcAMS(afcUnit):
@@ -4898,6 +4948,7 @@ def load_config_prefix(config):
     _patch_lane_pre_sensor_for_ams()
     _patch_extruder_for_virtual_ams()
     _patch_extruder_on_shuttle_detection()
+    _patch_current_extruder_detection_for_openams()
     _patch_infinite_runout_handler()
     _patch_lane_unload_for_ams()
     _patch_buffer_multiplier_for_ams()
