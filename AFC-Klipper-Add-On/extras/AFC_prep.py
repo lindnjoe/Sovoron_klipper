@@ -264,4 +264,3 @@ class afcPrep:
 
 def load_config(config):
     return afcPrep(config)
-
