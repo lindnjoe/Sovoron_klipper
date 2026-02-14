@@ -1711,9 +1711,31 @@ class OAMSManager:
         if gcode is None:
             return
 
+        handler_maps = []
+        for attr in ("ready_gcode_handlers", "gcode_handlers", "_gcode_handlers"):
+            handlers = getattr(gcode, attr, None)
+            if isinstance(handlers, dict):
+                handler_maps.append(handlers)
+
+        if not handler_maps:
+            return
+
         for command_name in ("AFC_SELECT_TOOL", "AFC_UNSELECT_TOOL"):
-            original = gcode.register_command(command_name, None)
-            if original is None:
+            original = None
+            target_map = None
+            for handlers in handler_maps:
+                candidate = handlers.get(command_name)
+                if candidate is None:
+                    continue
+                if getattr(candidate, "_oams_quiet_wrapper", False):
+                    original = self._original_toolchange_commands.get(command_name)
+                    target_map = handlers
+                    break
+                original = candidate
+                target_map = handlers
+                break
+
+            if original is None or target_map is None:
                 continue
 
             self._original_toolchange_commands[command_name] = original
@@ -1727,9 +1749,13 @@ class OAMSManager:
                         gcmd=gcmd,
                     )
 
+                _wrapped._oams_quiet_wrapper = True
                 return _wrapped
 
-            gcode.register_command(command_name, _make_wrapper(command_name))
+            wrapper = _make_wrapper(command_name)
+            for handlers in handler_maps:
+                if handlers.get(command_name) is not None:
+                    handlers[command_name] = wrapper
 
         self._toolchange_wrappers_registered = bool(self._original_toolchange_commands)
 
