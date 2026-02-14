@@ -292,9 +292,6 @@ class afcAMS(afcUnit):
             self.led_tool_unloaded = config.get('led_tool_unloaded', '1,0,0,0')
 
         self.oams_name = config.get("oams", "oams1")
-        self.quiet_toolchange_speed_adjust = config.getboolean(
-            "quiet_toolchange_speed_adjust", True
-        )
 
         self.reactor = self.printer.get_reactor()
         self.printer.register_event_handler("klippy:ready", self.handle_ready)

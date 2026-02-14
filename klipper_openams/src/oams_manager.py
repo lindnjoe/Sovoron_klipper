@@ -3516,19 +3516,12 @@ class OAMSManager:
         return self.afc
 
     def _quiet_toolchange_speed_adjust_enabled(self) -> bool:
-        """Return True when any OpenAMS unit enables quiet toolchange speed adjust."""
-        afc_obj = self._get_afc()
-        if afc_obj is None:
+        """Return True when any OAMS unit enables quiet toolchange speed adjust."""
+        if not self.oams:
             return False
 
-        units = getattr(afc_obj, "units", None)
-        if not isinstance(units, dict):
-            return False
-
-        for unit in units.values():
-            if getattr(unit, "type", None) != "OpenAMS":
-                continue
-            if bool(getattr(unit, "quiet_toolchange_speed_adjust", True)):
+        for oam in self.oams.values():
+            if bool(getattr(oam, "quiet_toolchange_speed_adjust", True)):
                 return True
         return False
 
