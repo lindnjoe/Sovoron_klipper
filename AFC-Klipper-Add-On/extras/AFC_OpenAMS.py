@@ -69,7 +69,6 @@ _ORIGINAL_LANE_UNLOAD = None  # Will be set during patching
 _ORIGINAL_BUFFER_SET_MULTIPLIER = None  # Will be set during patching
 _ORIGINAL_BUFFER_GET_STATUS = None  # Will be set during patching
 _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE = None  # Will be set during patching
-_ORIGINAL_EXTRUDER_ON_SHUTTLE = None  # Will be set during patching
 
 class _VirtualRunoutHelper:
     """Minimal runout helper used by AMS-managed virtual sensors."""
@@ -266,42 +265,6 @@ def _patch_extruder_for_virtual_ams() -> None:
     extruder_cls.__init__ = _patched_init
     extruder_cls._ams_virtual_tool_patched = True
 
-def _patch_extruder_on_shuttle_detection() -> None:
-    """Patch AFC on_shuttle() to honor toolchanger string detect states."""
-    global _ORIGINAL_EXTRUDER_ON_SHUTTLE
-
-    extruder_cls = getattr(_afc_extruder_mod, "AFCExtruder", None)
-    if extruder_cls is None or getattr(extruder_cls, "_openams_on_shuttle_patched", False):
-        return
-
-    _ORIGINAL_EXTRUDER_ON_SHUTTLE = getattr(extruder_cls, "on_shuttle", None)
-    if _ORIGINAL_EXTRUDER_ON_SHUTTLE is None:
-        return
-
-    def _openams_on_shuttle(self):
-        try:
-            # Match AFC semantics: only use detection-pin state for toolchanger setups.
-            # Single-tool printers have no shuttle/detection pin and should stay on AFC default path.
-            tc_unit_name = getattr(self, "tc_unit_name", None)
-            tool_obj = getattr(self, "tool_obj", None)
-            if tc_unit_name and tool_obj is not None and hasattr(tool_obj, "detect_state"):
-                detect_state = getattr(tool_obj, "detect_state", None)
-                detect_present = (
-                    detect_state == 1
-                    or detect_state is True
-                    or str(detect_state).lower() in ("mounted", "present", "1", "true")
-                )
-                if detect_present:
-                    return True
-        except Exception:
-            pass
-
-        return _ORIGINAL_EXTRUDER_ON_SHUTTLE(self)
-
-    extruder_cls.on_shuttle = _openams_on_shuttle
-    extruder_cls._openams_on_shuttle_patched = True
-
-
 class afcAMS(afcUnit):
     """AFC unit subclass that synchronises state with OpenAMS"""
 
@@ -371,6 +334,12 @@ class afcAMS(afcUnit):
         self._cached_extruder_objects: Dict[str, Any] = {}
         self._cached_lane_objects: Dict[str, Any] = {}
         self._cached_oams_index: Optional[int] = None
+
+        self._toolchanger_obj = None
+        self._quiet_mode_sync_timer = None
+        self._toolchanger_base_fast_speed = None
+        self._toolchanger_base_path_speed = None
+        self._quiet_mode_applied = None
 
         # Track pending TD-1 capture timers (delayed after spool insertion)
         self._pending_spool_loaded_timers: Dict[str, Any] = {}
@@ -2600,11 +2569,55 @@ class afcAMS(afcUnit):
         self._wrap_afc_lane_unload()
         self._wrap_afc_unset_lane_loaded()
         self._patch_afc_sequences()
+        self._start_toolchanger_quiet_mode_sync()
 
         # Sync AFC state with hardware sensors at startup
         # This should run after all initialization is complete and sensors are stable
         # Delay slightly to ensure sensors have had time to stabilize
         self.reactor.register_callback(lambda et: self._sync_afc_from_hardware_at_startup())
+
+    def _start_toolchanger_quiet_mode_sync(self):
+        """Sync toolchanger docking speeds with AFC quiet mode when dock_load is enabled."""
+        if not getattr(self.oams, "dock_load", False):
+            return
+
+        self._toolchanger_obj = self.printer.lookup_object("toolchanger", None)
+        if self._toolchanger_obj is None:
+            return
+
+        self._toolchanger_base_fast_speed = self._toolchanger_obj.params.get("params_fast_speed", None)
+        self._toolchanger_base_path_speed = self._toolchanger_obj.params.get("params_path_speed", None)
+        if self._toolchanger_base_fast_speed is None or self._toolchanger_base_path_speed is None:
+            return
+
+        # Apply immediately and then poll for AFC_QUIET_MODE changes.
+        self._sync_toolchanger_quiet_mode(None)
+        if self._quiet_mode_sync_timer is None:
+            self._quiet_mode_sync_timer = self.reactor.register_timer(
+                self._sync_toolchanger_quiet_mode,
+                self.reactor.monotonic() + 1.0,
+            )
+
+    def _sync_toolchanger_quiet_mode(self, eventtime):
+        if self._toolchanger_obj is None:
+            return self.reactor.NEVER
+
+        quiet_enabled = bool(self.afc._get_quiet_mode())
+        if quiet_enabled != self._quiet_mode_applied:
+            if quiet_enabled:
+                self._toolchanger_obj.params["params_fast_speed"] = self._toolchanger_base_fast_speed / 4.0
+                self._toolchanger_obj.params["params_path_speed"] = self._toolchanger_base_path_speed / 4.0
+            else:
+                self._toolchanger_obj.params["params_fast_speed"] = self._toolchanger_base_fast_speed
+                self._toolchanger_obj.params["params_path_speed"] = self._toolchanger_base_path_speed
+            self._quiet_mode_applied = quiet_enabled
+            self.logger.info(
+                f"OpenAMS quiet sync: quiet_mode={quiet_enabled}, "
+                f"toolchanger speeds fast={self._toolchanger_obj.params['params_fast_speed']} "
+                f"path={self._toolchanger_obj.params['params_path_speed']}"
+            )
+
+        return self.reactor.monotonic() + 1.0
 
     def _wrap_afc_lane_unload(self):
         """Wrap AFC's LANE_UNLOAD to handle cross-extruder runout scenarios."""
@@ -4897,7 +4910,6 @@ def load_config_prefix(config):
     # The patches will only take effect if OpenAMS hardware is actually present
     _patch_lane_pre_sensor_for_ams()
     _patch_extruder_for_virtual_ams()
-    _patch_extruder_on_shuttle_detection()
     _patch_infinite_runout_handler()
     _patch_lane_unload_for_ams()
     _patch_buffer_multiplier_for_ams()
