@@ -2612,10 +2612,9 @@ class afcAMS(afcUnit):
                 self._toolchanger_obj.params["params_path_speed"] = self._toolchanger_base_path_speed
             self._quiet_mode_applied = quiet_enabled
             self.logger.info(
-                "OpenAMS quiet sync: quiet_mode=%s, toolchanger speeds fast=%s path=%s",
-                quiet_enabled,
-                self._toolchanger_obj.params["params_fast_speed"],
-                self._toolchanger_obj.params["params_path_speed"],
+                f"OpenAMS quiet sync: quiet_mode={quiet_enabled}, "
+                f"toolchanger speeds fast={self._toolchanger_obj.params['params_fast_speed']} "
+                f"path={self._toolchanger_obj.params['params_path_speed']}"
             )
 
         return self.reactor.monotonic() + 1.0
