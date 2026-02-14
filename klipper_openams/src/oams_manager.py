@@ -1711,12 +1711,8 @@ class OAMSManager:
         if gcode is None:
             return
 
-        handlers = getattr(gcode, "ready_gcode_handlers", None)
-        if not isinstance(handlers, dict):
-            return
-
         for command_name in ("AFC_SELECT_TOOL", "AFC_UNSELECT_TOOL"):
-            original = handlers.get(command_name)
+            original = gcode.register_command(command_name, None)
             if original is None:
                 continue
 
