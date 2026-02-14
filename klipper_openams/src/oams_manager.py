@@ -3476,6 +3476,45 @@ class OAMSManager:
             self._afc_logged = True
         return self.afc
 
+    def _run_toolchanger_command_with_quiet_speed(self, gcode, command: str) -> None:
+        """Run a toolchanger command at reduced velocity when AFC quiet mode is enabled."""
+        afc_obj = self._get_afc()
+        quiet_enabled = bool(afc_obj and afc_obj._get_quiet_mode())
+
+        toolhead = self._toolhead_obj
+        if toolhead is None:
+            try:
+                toolhead = self.printer.lookup_object("toolhead")
+                self._toolhead_obj = toolhead
+            except Exception:
+                toolhead = None
+
+        if not quiet_enabled or toolhead is None:
+            gcode.run_script_from_command(command)
+            return
+
+        eventtime = self.reactor.monotonic()
+        status = toolhead.get_status(eventtime)
+        base_velocity = status.get("max_velocity", None)
+        base_accel = status.get("max_accel", None)
+
+        if base_velocity is None or base_accel is None:
+            gcode.run_script_from_command(command)
+            return
+
+        quiet_velocity = max(float(base_velocity) * 0.25, 1.0)
+        quiet_accel = max(float(base_accel) * 0.25, 1.0)
+
+        try:
+            gcode.run_script_from_command(
+                f"SET_VELOCITY_LIMIT VELOCITY={quiet_velocity:.3f} ACCEL={quiet_accel:.3f}"
+            )
+            gcode.run_script_from_command(command)
+        finally:
+            gcode.run_script_from_command(
+                f"SET_VELOCITY_LIMIT VELOCITY={float(base_velocity):.3f} ACCEL={float(base_accel):.3f}"
+            )
+
     def _get_reload_params(self, lane_name: str) -> Tuple[Optional[float], Optional[float]]:
         """Get reload length and speed from AFC extruder config.
 
@@ -5230,7 +5269,7 @@ class OAMSManager:
                 if not self._run_tool_crash_detection(False):
                     self.logger.warning("Failed to stop tool crash detection before dock unload")
                 try:
-                    gcode.run_script_from_command("AFC_UNSELECT_TOOL")
+                    self._run_toolchanger_command_with_quiet_speed(gcode, "AFC_UNSELECT_TOOL")
                 except Exception:
                     self.logger.warning(f"Failed to dock tool before loading {lane_name}")
             else:
@@ -5447,7 +5486,9 @@ class OAMSManager:
                         self._gcode_obj = gcode
                     if not self._run_tool_crash_detection(True):
                         self.logger.warning("Failed to start tool crash detection before tool select")
-                    gcode.run_script_from_command(f"AFC_SELECT_TOOL TOOL={extruder_name}")
+                    self._run_toolchanger_command_with_quiet_speed(
+                        gcode, f"AFC_SELECT_TOOL TOOL={extruder_name}"
+                    )
                 except Exception:
                     self.logger.warning(f"Failed to select tool {extruder_name} after loading {lane_name}")
             else:
