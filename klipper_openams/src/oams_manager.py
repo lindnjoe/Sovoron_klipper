@@ -1722,20 +1722,17 @@ class OAMSManager:
 
         for command_name in ("AFC_SELECT_TOOL", "AFC_UNSELECT_TOOL"):
             original = None
-            target_map = None
             for handlers in handler_maps:
                 candidate = handlers.get(command_name)
                 if candidate is None:
                     continue
                 if getattr(candidate, "_oams_quiet_wrapper", False):
                     original = self._original_toolchange_commands.get(command_name)
-                    target_map = handlers
                     break
                 original = candidate
-                target_map = handlers
                 break
 
-            if original is None or target_map is None:
+            if original is None:
                 continue
 
             self._original_toolchange_commands[command_name] = original
@@ -1753,8 +1750,19 @@ class OAMSManager:
                 return _wrapped
 
             wrapper = _make_wrapper(command_name)
+
+            # Remove existing registration from all known handler maps first so
+            # register_command() can install wrapper in the canonical map used by dispatch.
             for handlers in handler_maps:
                 if handlers.get(command_name) is not None:
+                    handlers.pop(command_name, None)
+
+            try:
+                gcode.register_command(command_name, wrapper)
+            except Exception:
+                # Fallback for forks that reject registration despite manual map cleanup.
+                # In that case, patch known maps directly.
+                for handlers in handler_maps:
                     handlers[command_name] = wrapper
 
         self._toolchange_wrappers_registered = bool(self._original_toolchange_commands)
