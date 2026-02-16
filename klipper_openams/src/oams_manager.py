@@ -1651,6 +1651,7 @@ class OAMSManager:
             except Exception as exc:
                 self.logger.warning(f"Failed to unregister Moonraker status timer: {exc}")
             self._moonraker_status_timer = None
+        self._moonraker_client = None
 
         # Clean up MCU command poll timers
         for oams_name, timer in list(self._mcu_command_poll_timers.items()):
@@ -4669,29 +4670,43 @@ class OAMSManager:
                 fps_state.following = True
                 fps_state.direction = 1
                 self.reactor.pause(self.reactor.monotonic() + 1.0)
-                self._set_follower_state(
-                    fps_name,
-                    fps_state,
-                    oams,
-                    1,
-                    0,
-                    "unload retry recovery",
-                    force=True,
-                )
-                gcode = self._gcode_obj
-                if gcode is None:
-                    gcode = self.printer.lookup_object("gcode")
-                    self._gcode_obj = gcode
-                gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_unload_retry")
-                try:
-                    gcode.run_script_from_command("M83")  # Relative extrusion mode
-                    gcode.run_script_from_command("G92 E0")  # Reset extruder position
-                    gcode.run_script_from_command(f"G1 E-5.00 F{retract_feed:.0f}")
-                    gcode.run_script_from_command("M400")
-                finally:
-                    gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_unload_retry")
-                self.reactor.pause(self.reactor.monotonic() + 1.0)
-                success, message = oams.unload_spool_with_retry()
+                # reactor.pause() yields — AFC callbacks may have changed state
+                if fps_state.state != FPSLoadState.UNLOADING:
+                    self.logger.warning(
+                        f"Unload retry aborted for {fps_name}: state changed to "
+                        f"{fps_state.state} during yield"
+                    )
+                else:
+                    self._set_follower_state(
+                        fps_name,
+                        fps_state,
+                        oams,
+                        1,
+                        0,
+                        "unload retry recovery",
+                        force=True,
+                    )
+                    gcode = self._gcode_obj
+                    if gcode is None:
+                        gcode = self.printer.lookup_object("gcode")
+                        self._gcode_obj = gcode
+                    gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_unload_retry")
+                    try:
+                        gcode.run_script_from_command("M83")  # Relative extrusion mode
+                        gcode.run_script_from_command("G92 E0")  # Reset extruder position
+                        gcode.run_script_from_command(f"G1 E-5.00 F{retract_feed:.0f}")
+                        gcode.run_script_from_command("M400")
+                    finally:
+                        gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_unload_retry")
+                    self.reactor.pause(self.reactor.monotonic() + 1.0)
+                    # Check again after second yield
+                    if fps_state.state != FPSLoadState.UNLOADING:
+                        self.logger.warning(
+                            f"Unload retry aborted for {fps_name}: state changed to "
+                            f"{fps_state.state} during yield"
+                        )
+                    else:
+                        success, message = oams.unload_spool_with_retry()
             except Exception:
                 self.logger.error(f"Exception while retrying unload on {fps_name}")
 
@@ -6546,6 +6561,12 @@ class OAMSManager:
         # Update all followers based on hub sensors
         # Simple: if hub has filament, enable follower; if all empty, disable
         self._ensure_followers_for_loaded_hubs()
+
+        # Re-sync FPS state with AFC — tools may have been swapped during the pause
+        try:
+            self.determine_state()
+        except Exception as exc:
+            self.logger.debug(f"determine_state() failed during print resume: {exc}")
 
     def _trigger_stuck_spool_retry_gcode(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], message: str) -> None:
         """
