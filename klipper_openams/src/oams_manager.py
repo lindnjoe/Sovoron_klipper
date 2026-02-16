@@ -29,6 +29,7 @@
 # - extra_retract: Default extra retract distance (mm) applied before unload (default: 10.0)
 
 import logging
+import json
 import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -2427,6 +2428,7 @@ class OAMSManager:
             ("OAMSM_CLEAR_ERRORS", self.cmd_CLEAR_ERRORS, self.cmd_CLEAR_ERRORS_help),
             ("OAMSM_CLEAR_LANE_MAPPINGS", self.cmd_CLEAR_LANE_MAPPINGS, self.cmd_CLEAR_LANE_MAPPINGS_help),
             ("OAMSM_STATUS", self.cmd_STATUS, self.cmd_STATUS_help),
+            ("OAMSM_STATUS_JSON", self.cmd_STATUS_JSON, self.cmd_STATUS_JSON_help),
         ]
         for cmd_name, handler, help_text in commands:
             gcode.register_command(cmd_name, handler, desc=help_text)
@@ -3092,6 +3094,23 @@ class OAMSManager:
         # This fixes virtual sensor state after reboot (e.g., extruder4 showing filament when empty)
         gcmd.respond_info("\n=== Syncing Virtual Tool Sensors ===")
         self._sync_virtual_tool_sensors(gcmd)
+
+    cmd_STATUS_JSON_help = "Return OAMS manager status as JSON for scripts and API bridges"
+    def cmd_STATUS_JSON(self, gcmd):
+        """Machine-readable status dump.
+
+        This command is intended for external scripts that currently parse verbose
+        `OAMSM_STATUS` text and want a stable payload that mirrors `get_status()`.
+        """
+        eventtime = self.reactor.monotonic()
+        payload = {
+            "eventtime": eventtime,
+            "status": self.get_status(eventtime),
+        }
+        pretty = gcmd.get_int("PRETTY", 0)
+        indent = 2 if pretty else None
+        separators = None if pretty else (",", ":")
+        gcmd.respond_info(json.dumps(payload, sort_keys=True, indent=indent, separators=separators))
 
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
     def cmd_FOLLOWER(self, gcmd):
