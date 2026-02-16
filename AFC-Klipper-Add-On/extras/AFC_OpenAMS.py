@@ -367,10 +367,41 @@ class afcAMS(afcUnit):
         if self._cached_oams_manager is not None:
             return self._cached_oams_manager
         try:
-            self._cached_oams_manager = self.printer.lookup_object("oams_manager", None)
+            if OpenAMSManagerFacade is not None:
+                self._cached_oams_manager = OpenAMSManagerFacade.get_manager(self.printer)
+            else:
+                self._cached_oams_manager = self.printer.lookup_object("oams_manager", None)
         except Exception:
             self._cached_oams_manager = None
         return self._cached_oams_manager
+
+    def _manager_load_for_lane(self, lane_name: str):
+        if OpenAMSManagerFacade is not None:
+            return OpenAMSManagerFacade.load_for_lane(self.printer, lane_name)
+        manager = self._get_oams_manager()
+        if manager is None:
+            return False, "OpenAMS manager not available"
+        return manager.load_filament_for_lane(lane_name)
+
+    def _manager_unload_with_prep_for_fps(self, fps_name: str):
+        if OpenAMSManagerFacade is not None:
+            return OpenAMSManagerFacade.unload_with_prep_for_fps(self.printer, fps_name)
+        manager = self._get_oams_manager()
+        if manager is None:
+            return False, "OpenAMS manager not available"
+        return manager.unload_filament_with_prep_for_fps(fps_name)
+
+    def _manager_clear_fps_state_for_lane(self, lane_name: str, *, eventtime: float):
+        if OpenAMSManagerFacade is not None:
+            return OpenAMSManagerFacade.clear_fps_state_for_lane(
+                self.printer,
+                lane_name,
+                eventtime=eventtime,
+            )
+        manager = self._get_oams_manager()
+        if manager is None:
+            return False, None, None
+        return manager.clear_fps_state_for_lane(lane_name, eventtime=eventtime)
 
     def _patch_td1_capture(self):
         if getattr(AFCLane, "_ams_td1_capture_patched", False):
@@ -2631,21 +2662,10 @@ class afcAMS(afcUnit):
 
                                 # Also clear FPS state in OAMS manager
                                 try:
-                                    if OpenAMSManagerFacade is not None:
-                                        cleared, fps_name, spool_index = OpenAMSManagerFacade.clear_fps_state_for_lane(
-                                            self.printer,
-                                            lane_name,
-                                            eventtime=self.reactor.monotonic(),
-                                        )
-                                    else:
-                                        oams_mgr = self._get_oams_manager()
-                                        if oams_mgr is not None:
-                                            cleared, fps_name, spool_index = oams_mgr.clear_fps_state_for_lane(
-                                                lane_name,
-                                                eventtime=self.reactor.monotonic(),
-                                            )
-                                        else:
-                                            cleared, fps_name, spool_index = False, None, None
+                                    cleared, fps_name, spool_index = self._manager_clear_fps_state_for_lane(
+                                        lane_name,
+                                        eventtime=self.reactor.monotonic(),
+                                    )
 
                                     if cleared and fps_name:
                                         self.logger.debug("Cross-Extruder: Cleared FPS state for {} (was spool {})".format(fps_name, spool_index))
@@ -2795,10 +2815,7 @@ class afcAMS(afcUnit):
                     afc_self.error.handle_lane_failure(cur_lane, "OpenAMS load failed: oams_manager not available")
                     return False
 
-                if OpenAMSManagerFacade is not None:
-                    success, message = OpenAMSManagerFacade.load_for_lane(self.printer, cur_lane.name)
-                else:
-                    success, message = oams_manager.load_filament_for_lane(cur_lane.name)
+                success, message = self._manager_load_for_lane(cur_lane.name)
                 if not success:
                     message = message or f"OpenAMS load failed for {cur_lane.name}"
                     afc_self.error.handle_lane_failure(cur_lane, message)
@@ -2894,10 +2911,7 @@ class afcAMS(afcUnit):
                         cur_lane.name, fps_id
                     )
                 )
-                if OpenAMSManagerFacade is not None:
-                    success, message = OpenAMSManagerFacade.unload_with_prep_for_fps(self.printer, fps_name)
-                else:
-                    success, message = oams_manager.unload_filament_with_prep_for_fps(fps_name)
+                success, message = self._manager_unload_with_prep_for_fps(fps_name)
                 if not success:
                     message = message or "OpenAMS unload failed for {}".format(cur_lane.name)
                     afc_self.error.handle_lane_failure(cur_lane, message)
