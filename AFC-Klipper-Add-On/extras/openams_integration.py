@@ -45,6 +45,44 @@ def normalize_extruder_name(name: Optional[str]) -> Optional[str]:
     return lowered or None
 
 
+class OpenAMSManagerFacade:
+    """Thin compatibility facade for oams_manager interactions."""
+
+    @staticmethod
+    def get_manager(printer):
+        try:
+            return printer.lookup_object("oams_manager", None)
+        except Exception:
+            return None
+
+    @classmethod
+    def load_for_lane(cls, printer, lane_name: str) -> Tuple[bool, str]:
+        manager = cls.get_manager(printer)
+        if manager is None:
+            return False, "OpenAMS manager not available"
+        return manager.load_filament_for_lane(lane_name)
+
+    @classmethod
+    def unload_with_prep_for_fps(cls, printer, fps_name: str) -> Tuple[bool, str]:
+        manager = cls.get_manager(printer)
+        if manager is None:
+            return False, "OpenAMS manager not available"
+        return manager.unload_filament_with_prep_for_fps(fps_name)
+
+    @classmethod
+    def clear_fps_state_for_lane(
+        cls,
+        printer,
+        lane_name: str,
+        *,
+        eventtime: Optional[float] = None,
+    ) -> Tuple[bool, Optional[str], Optional[int]]:
+        manager = cls.get_manager(printer)
+        if manager is None:
+            return False, None, None
+        return manager.clear_fps_state_for_lane(lane_name, eventtime=eventtime)
+
+
 # ============================================================================
 # Event System
 # ============================================================================
