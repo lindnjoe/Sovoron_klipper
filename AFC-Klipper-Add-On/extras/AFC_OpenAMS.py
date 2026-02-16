@@ -75,6 +75,20 @@ _ORIGINAL_BUFFER_SET_MULTIPLIER = None  # Will be set during patching
 _ORIGINAL_BUFFER_GET_STATUS = None  # Will be set during patching
 _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE = None  # Will be set during patching
 
+
+def _is_openams_unit(unit_obj) -> bool:
+    """Return True if *unit_obj* represents an OpenAMS unit."""
+    if unit_obj is None:
+        return False
+    if isinstance(unit_obj, afcAMS):
+        return True
+    if getattr(unit_obj, "type", None) == "OpenAMS":
+        return True
+    if hasattr(unit_obj, "oams_name"):
+        return True
+    return False
+
+
 class _VirtualRunoutHelper:
     """Minimal runout helper used by AMS-managed virtual sensors."""
 
@@ -414,7 +428,7 @@ class afcAMS(afcUnit):
 
         def _patched_prep_capture_td1(lane_self):
             if (
-                getattr(lane_self.unit_obj, "type", None) == "OpenAMS"
+                _is_openams_unit(lane_self.unit_obj)
                 and hasattr(lane_self.unit_obj, "prep_capture_td1")
             ):
                 lane_self.unit_obj.prep_capture_td1(lane_self)
@@ -425,7 +439,7 @@ class afcAMS(afcUnit):
 
         def _patched_get_td1_data(lane_self):
             if (
-                getattr(lane_self.unit_obj, "type", None) == "OpenAMS"
+                _is_openams_unit(lane_self.unit_obj)
                 and hasattr(lane_self.unit_obj, "capture_td1_data")
             ):
                 return lane_self.unit_obj.capture_td1_data(lane_self)
@@ -463,7 +477,7 @@ class afcAMS(afcUnit):
                         prep_self.logger.info("Capturing TD-1 data for all loaded lanes")
                         for lane in prep_self.afc.lanes.values():
                             prep_ready = lane.prep_state
-                            if getattr(lane.unit_obj, "type", None) == "OpenAMS":
+                            if _is_openams_unit(lane.unit_obj):
                                 prep_ready = lane.load_state
                             if lane.td1_device_id and lane.load_state and prep_ready:
                                 return_status, _ = lane.get_td1_data()
@@ -500,7 +514,7 @@ class afcAMS(afcUnit):
             if (
                 reset_lane
                 and lane is not None
-                and getattr(lane.unit_obj, "type", None) == "OpenAMS"
+                and _is_openams_unit(lane.unit_obj)
                 and "TD-1" in title
             ):
                 fail_message = gcmd.get("MSG", "")
@@ -1464,7 +1478,7 @@ class afcAMS(afcUnit):
         afc = getattr(self, "afc", None)
         afc_units = getattr(afc, "units", {}) if afc else {}
         for unit_name, unit_obj in afc_units.items():
-            if isinstance(unit_obj, afcAMS) or getattr(unit_obj, "type", "") == "OpenAMS":
+            if _is_openams_unit(unit_obj):
                 units.add(getattr(unit_obj, "name", unit_name))
 
         return {unit for unit in units if unit}
@@ -1501,7 +1515,7 @@ class afcAMS(afcUnit):
                 units = getattr(afc, "units", {}) if afc else {}
                 unit_obj = units.get(base_unit_name)
 
-            if unit_obj is None or (not isinstance(unit_obj, afcAMS) and getattr(unit_obj, "type", "") != "OpenAMS"):
+            if not _is_openams_unit(unit_obj):
                 continue
 
             oams_name = getattr(unit_obj, "oams_name", None)
@@ -1586,7 +1600,7 @@ class afcAMS(afcUnit):
                 continue
 
             unit_obj = getattr(lane_obj, "unit_obj", None)
-            if unit_obj is not None and not isinstance(unit_obj, afcAMS):
+            if unit_obj is not None and not _is_openams_unit(unit_obj):
                 continue
 
             hub_reports_filament = bool(sensor_snapshot.get(canonical_lane, False))
@@ -2466,11 +2480,11 @@ class afcAMS(afcUnit):
                         loaded_lane_obj = self.afc.lanes.get(afc_lane_loaded) if hasattr(self.afc, 'lanes') else None
                         if loaded_lane_obj is not None:
                             loaded_unit_obj = getattr(loaded_lane_obj, 'unit_obj', None)
-                            loaded_unit_type = getattr(loaded_unit_obj, 'type', None) if loaded_unit_obj else None
 
-                            if loaded_unit_type != "OpenAMS":
+                            if not _is_openams_unit(loaded_unit_obj):
                                 # AFC thinks a non-AMS lane (Box Turtle, etc.) is loaded
                                 # Don't auto-correct based on AMS sensors!
+                                loaded_unit_type = getattr(loaded_unit_obj, 'type', None)
                                 self.logger.debug(
                                     f"State sync: AMS sensors show {lane_name} on {extruder_name}, "
                                     f"but AFC thinks non-AMS lane '{afc_lane_loaded}' (type={loaded_unit_type}) is loaded. "
@@ -2645,7 +2659,7 @@ class afcAMS(afcUnit):
 
             # Check if this is an OpenAMS lane with cross-extruder runout flag
             if lane is not None:
-                if getattr(lane, 'unit_obj', None) is not None and getattr(lane.unit_obj, 'type', None) == "OpenAMS":
+                if _is_openams_unit(getattr(lane, 'unit_obj', None)):
                     is_cross_extruder = getattr(lane, '_oams_cross_extruder_runout', False)
                     if is_cross_extruder:
                         lane_name = getattr(lane, 'name', 'unknown')
@@ -2738,7 +2752,7 @@ class afcAMS(afcUnit):
             cur_lane_loaded = afc_function.get_current_lane_obj()
             lane_name = getattr(cur_lane_loaded, "name", None) if cur_lane_loaded else None
             unit_obj = getattr(cur_lane_loaded, "unit_obj", None) if cur_lane_loaded else None
-            is_openams = unit_obj is not None and getattr(unit_obj, "type", "") == "OpenAMS"
+            is_openams = _is_openams_unit(unit_obj)
 
             result = afc_function._oams_unset_lane_loaded_original()
 
@@ -2789,7 +2803,7 @@ class afcAMS(afcUnit):
         afc._oams_unload_sequence_original = afc.unload_sequence
         def load_sequence_wrapper(afc_self, cur_lane, cur_hub, cur_extruder):
             unit_obj = getattr(cur_lane, "unit_obj", None)
-            is_openams = unit_obj is not None and getattr(unit_obj, "type", "") == "OpenAMS"
+            is_openams = _is_openams_unit(unit_obj)
             if not is_openams:
                 return afc_self._oams_load_sequence_original(cur_lane, cur_hub, cur_extruder)
 
@@ -2849,7 +2863,7 @@ class afcAMS(afcUnit):
 
         def unload_sequence_wrapper(afc_self, cur_lane, cur_hub, cur_extruder):
             unit_obj = getattr(cur_lane, "unit_obj", None)
-            is_openams = unit_obj is not None and getattr(unit_obj, "type", "") == "OpenAMS"
+            is_openams = _is_openams_unit(unit_obj)
             if not is_openams:
                 return afc_self._oams_unload_sequence_original(cur_lane, cur_hub, cur_extruder)
 
@@ -4480,7 +4494,7 @@ def _patch_lane_pre_sensor_for_ams() -> None:
 
     def _ams_get_toolhead_pre_sensor_state(self, *args, **kwargs):
         unit = getattr(self, "unit_obj", None)
-        if not isinstance(unit, afcAMS):
+        if not _is_openams_unit(unit):
             return _ORIGINAL_LANE_PRE_SENSOR(self, *args, **kwargs)
 
         reactor = getattr(unit, "reactor", None)
@@ -4668,32 +4682,27 @@ def _patch_lane_unload_for_ams() -> None:
         """Patched LANE_UNLOAD that blocks manual ejection on OpenAMS lanes."""
         # Check if this is an OpenAMS lane
         unit_obj = getattr(cur_lane, 'unit_obj', None)
-        if unit_obj is not None:
-            unit_type = getattr(unit_obj, 'type', None)
-            has_oams_name = hasattr(unit_obj, 'oams_name')
+        if _is_openams_unit(unit_obj):
+            lane_name = getattr(cur_lane, 'name', 'unknown')
+            self.logger.info(
+                f"LANE_UNLOAD is not supported for OpenAMS lane {lane_name}. "
+                f"OpenAMS units handle filament automatically - just remove the spool physically. "
+                f"Use TOOL_UNLOAD if you need to unload from the toolhead."
+            )
 
-            if unit_type == "OpenAMS" or has_oams_name:
-                # Block LANE_UNLOAD for OpenAMS lanes
-                lane_name = getattr(cur_lane, 'name', 'unknown')
-                self.logger.info(
-                    f"LANE_UNLOAD is not supported for OpenAMS lane {lane_name}. "
-                    f"OpenAMS units handle filament automatically - just remove the spool physically. "
-                    f"Use TOOL_UNLOAD if you need to unload from the toolhead."
-                )
+            # Try to respond to user via gcode
+            try:
+                gcode = self.gcode or self.printer.lookup_object("gcode")
+                if gcode:
+                    gcode.respond_info(
+                        f"LANE_UNLOAD is not supported for OpenAMS lanes like {lane_name}. "
+                        f"OpenAMS units handle filament automatically - just remove the spool physically. "
+                        f"Use TOOL_UNLOAD if you need to unload from the toolhead."
+                    )
+            except Exception as e:
+                self.logger.debug(f"Failed to send LANE_UNLOAD info response for {lane_name}: {e}")
 
-                # Try to respond to user via gcode
-                try:
-                    gcode = self.gcode or self.printer.lookup_object("gcode")
-                    if gcode:
-                        gcode.respond_info(
-                            f"LANE_UNLOAD is not supported for OpenAMS lanes like {lane_name}. "
-                            f"OpenAMS units handle filament automatically - just remove the spool physically. "
-                            f"Use TOOL_UNLOAD if you need to unload from the toolhead."
-                        )
-                except Exception as e:
-                    self.logger.debug(f"Failed to send LANE_UNLOAD info response for {lane_name}: {e}")
-
-                return  # Block the operation
+            return  # Block the operation
 
         # Not an OpenAMS lane - call original LANE_UNLOAD
         if callable(_ORIGINAL_LANE_UNLOAD):
@@ -4724,14 +4733,12 @@ def _patch_buffer_multiplier_for_ams() -> None:
             return _ORIGINAL_BUFFER_SET_MULTIPLIER(self, multiplier)
 
         unit_obj = getattr(cur_lane, "unit_obj", None)
-        unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
-        is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
-        if not is_openams:
+        if not _is_openams_unit(unit_obj):
             return _ORIGINAL_BUFFER_SET_MULTIPLIER(self, multiplier)
 
         extruder_stepper = getattr(cur_lane, "extruder_stepper", None)
         stepper = getattr(extruder_stepper, "stepper", None) if extruder_stepper is not None else None
-        if is_openams and stepper is None:
+        if stepper is None:
             self.logger.debug(
                 "Skipping buffer multiplier update for OpenAMS lane {} (no extruder stepper)".format(
                     cur_lane.name
@@ -4763,9 +4770,7 @@ def _patch_buffer_status_for_missing_stepper() -> None:
     def _ams_get_status(self, eventtime=None):
         cur_lane = self.afc.function.get_current_lane_obj()
         unit_obj = getattr(cur_lane, "unit_obj", None) if cur_lane is not None else None
-        unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
-        is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
-        if not is_openams:
+        if not _is_openams_unit(unit_obj):
             return _ORIGINAL_BUFFER_GET_STATUS(self, eventtime)
         try:
             return _ORIGINAL_BUFFER_GET_STATUS(self, eventtime)
@@ -4844,8 +4849,7 @@ def _patch_buffer_fault_detection_for_ams() -> None:
             unit_name = getattr(cur_lane, "unit", None)
             units = getattr(self.afc, "units", {})
             unit_obj = units.get(unit_name) if unit_name else None
-        unit_type = getattr(unit_obj, "type", None) if unit_obj is not None else None
-        is_openams = unit_type == "OpenAMS" or hasattr(unit_obj, "oams_name")
+        is_openams = _is_openams_unit(unit_obj)
         tool_pin = getattr(cur_extruder, "tool_start", None) if cur_extruder is not None else None
         is_virtual_tool = False
         try:
