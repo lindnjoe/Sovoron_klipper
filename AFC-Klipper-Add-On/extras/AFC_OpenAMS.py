@@ -2897,7 +2897,7 @@ class afcAMS(afcUnit):
                         cur_lane.name, fps_id
                     )
                 )
-                success, message = oams_manager.unload_filament_for_fps(fps_name)
+                success, message = oams_manager.unload_filament_with_prep_for_fps(fps_name)
                 if not success:
                     message = message or "OpenAMS unload failed for {}".format(cur_lane.name)
                     afc_self.error.handle_lane_failure(cur_lane, message)

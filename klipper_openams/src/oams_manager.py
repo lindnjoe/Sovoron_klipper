@@ -5539,38 +5539,29 @@ class OAMSManager:
         return False, f"Failed to load lane {lane_name}"
 
 
-    cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
-    def cmd_UNLOAD_FILAMENT(self, gcmd):
-        fps_param = gcmd.get('FPS')
-        fps_name = "fps " + fps_param
+    def unload_filament_with_prep_for_fps(
+        self,
+        fps_name: str,
+        *,
+        extra_retract: Optional[float] = None,
+    ) -> Tuple[bool, str]:
+        """Public API for AFC/OpenAMS unload with pre-unload retract preparation."""
         if fps_name not in self.fpss:
-            gcmd.respond_info(f"FPS {fps_name} does not exist")
-
-            return
+            return False, f"FPS {fps_name} does not exist"
 
         fps_state = self.current_state.fps_state[fps_name]
         if fps_state.state == FPSLoadState.UNLOADED:
-            gcmd.respond_info(f"FPS {fps_name} is already unloaded")
-
-            return
+            return False, f"FPS {fps_name} is already unloaded"
         if fps_state.state in (FPSLoadState.LOADING, FPSLoadState.UNLOADING):
-            self.logger.debug(f"OAMSM_UNLOAD_FILAMENT ignored because {fps_name} is busy")
+            self.logger.debug(f"OpenAMS unload prep ignored because {fps_name} is busy")
+            return False, f"FPS {fps_name} is busy"
 
-            return
-
-        extra_retract_raw = gcmd.get('EXTRA_RETRACT', None)
-        if extra_retract_raw is not None:
-            try:
-                extra_retract = float(extra_retract_raw)
-            except Exception:
-                raise gcmd.error("EXTRA_RETRACT must be a number")
-        else:
+        if extra_retract is None:
             oams_obj = self._get_oams_object(fps_state.current_oams) if fps_state.current_oams else None
             extra_retract = getattr(oams_obj, "extra_retract", None)
             if extra_retract is None:
                 extra_retract = self.extra_retract_default
 
-        # Queue a small extra retract move to overlap with the unload sequence
         extra_retract_lane = fps_state.current_lane
         if extra_retract_lane is not None:
             _, reload_speed = self._get_reload_params(extra_retract_lane)
@@ -5587,9 +5578,8 @@ class OAMSManager:
                 f"unload_length={unload_length_display}mm unload_speed={unload_speed_display}mm/min "
                 f"extra_retract={extra_retract:.2f}mm feed_rate={extra_retract_feed_rate:.0f}mm/min"
             )
-            reverse_direction = 0  # Pull back during unload overlap
+            reverse_direction = 0
 
-            # Ensure follower is enabled in reverse before the initial unload retract
             try:
                 oams_obj = self._get_oams_object(fps_state.current_oams) if fps_state.current_oams else None
                 if oams_obj is None:
@@ -5615,19 +5605,15 @@ class OAMSManager:
                     self._gcode_obj = gcode
                 gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_extra_retract")
                 try:
-                    gcode.run_script_from_command("M83")  # Relative extrusion mode
-                    gcode.run_script_from_command("G92 E0")  # Reset extruder position
+                    gcode.run_script_from_command("M83")
+                    gcode.run_script_from_command("G92 E0")
 
-                    # First retract by the configured unload length (if available)
                     if unload_length is not None:
                         unload_feed = unload_speed if unload_speed is not None else extra_retract_feed_rate
                         gcode.run_script_from_command(f"G1 E-{unload_length:.2f} F{unload_feed:.0f}")
                         gcode.run_script_from_command("M400")
 
-                    # Wait for retract moves to complete before extra retract/unload
                     gcode.run_script_from_command("M400")
-
-                    # Then issue the extra retract before unload
                     gcode.run_script_from_command(f"G1 E{extra_retract:.2f} F{extra_retract_feed_rate:.0f}")
                 finally:
                     gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_extra_retract")
@@ -5636,7 +5622,26 @@ class OAMSManager:
         else:
             self.logger.info(f"Skipping extra retract before unload on {fps_name}: no lane resolved")
 
-        success, message = self.unload_filament_for_fps(fps_name)
+        return self.unload_filament_for_fps(fps_name)
+
+    cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
+    def cmd_UNLOAD_FILAMENT(self, gcmd):
+        fps_param = gcmd.get('FPS')
+        fps_name = "fps " + fps_param
+
+        extra_retract_raw = gcmd.get('EXTRA_RETRACT', None)
+        if extra_retract_raw is not None:
+            try:
+                extra_retract = float(extra_retract_raw)
+            except Exception:
+                raise gcmd.error("EXTRA_RETRACT must be a number")
+        else:
+            extra_retract = None
+
+        success, message = self.unload_filament_with_prep_for_fps(
+            fps_name,
+            extra_retract=extra_retract,
+        )
 
         if not success or (message and message != "Spool unloaded successfully"):
             gcmd.respond_info(message)
