@@ -1,52 +1,49 @@
-# Klipper configuration snapshot
+# klipper-toolchanger
 
-This repository tracks the live Klipper and Moonraker setup that powers a CoreXY StealthChanger-style toolchanger with six CAN toolheads, dual OpenAMS units, and Armored Turtle's Automated Filament Control (AFC) stack. It combines the configuration under `printer_data/`, the custom Python extras that coordinate AFC/OpenAMS behaviour, companion services such as the QR-based spool scanner, and upstream references used while developing the machine. Cloning the repo provides everything required to recreate or audit the current machine definition without needing to chase multiple sources.
+An assortment of Klipper extensions that I have made while working on [Tapchanger](https://github.com/viesturz/tapchanger)
 
-## Repository layout
+# Installation
 
-- `printer_data/config/` – Authoritative Klipper configuration. Besides the main `printer.cfg`, the directory contains:
-  - `toolchanger/` and `toolchanger-*.cfg` files for StealthChanger motion, pickup/drop-off sequences, LED choreography, and user macros.
-  - `tool-EBBT*.cfg`, `tool-AVR*.cfg`, and matching `*-leds.cfg` includes that define each toolhead's CAN UUIDs, parking coordinates, probe offsets, heater tuning, and RGB feedback.
-  - `AFC/` with macros, variables, and speed/temperature presets that govern the AFC lane loader, poop/wipe sequences, and assisted unload routines.
-  - Service configuration like `moonraker.conf`, `octoeverywhere*.cfg`, `crowsnest.conf`, `KNOMI.cfg`, and `shell_command.cfg` so the host-side integrations mirror the printer.
-  - Sensor and motion tuning files (`homing.cfg`, `smart_filament_sensor.cfg`, `speed.cfg`, `ShakeTune_results/`, etc.) that keep input shaping, runout detection, and crash detection aligned with the hardware.
-- `AFC-Klipper-Add-On/extras/` – AFC Python modules dropped into Klipper's `klippy/extras/`. They implement lane state machines, Moonraker endpoints, LED updates, and save/resume hooks that tie the macros in `printer_data/config/AFC/` to the firmware runtime.
-- `klipper_openams/src/` – Custom OpenAMS manager responsible for dual-hub monitoring, pressure validation, stuck-spool recovery, and encoder sanity checks tailored to this build.
-- `klipper/klippy/extras/` – Patched Klipper extras that expose AFC lane objects to the OpenAMS manager and keep tool state, LEDs, and filament sensors in sync.
-- `afc-spool-scan/` – Systemd service (`usb-qr-scanner.service`) and helper script (`usb-qr-scanner-read.sh`) that watch a USB QR scanner and push spool metadata into Moonraker/AFC when a tag is scanned.
-- `klipper-toolchanger-easy/examples/` – Upstream reference macros and documentation for toolchanger probing, dock mechanisms, and slicer snippets used while iterating on this machine.
+To install this plugin, run the installation script using the following command over SSH. This script will download this GitHub repository to your RaspberryPi home directory, and symlink the files in the Klipper extra folder.
 
-## Deploying the configuration
+```
+wget -O - https://raw.githubusercontent.com/viesturz/klipper-toolchanger/main/install.sh | bash
+```
 
-1. **Copy the configuration tree** – Mirror `printer_data/config/` to the host running Klipper (usually `~/printer_data/config/`). Update CAN UUIDs, heater/thermistor types, dock offsets, accelerometer IDs, and probe locations in the per-tool files before enabling steppers.
-2. **Install the Python extras** – Drop the contents of `AFC-Klipper-Add-On/extras/`, `klipper/klippy/extras/`, and `klipper_openams/src/` into the corresponding directories of your Klipper checkout (`klippy/extras/` and `klippy/extras/openams/` or similar). Restart Klipper so the custom modules register their event handlers and REST endpoints.
-3. **Configure companion services** –
-   - Enable the QR spool scanner by copying `afc-spool-scan/usb-qr-scanner-read.sh` and `afc-spool-scan/usb-qr-scanner.service` to the host, adjust the script's serial device path, then run `systemctl enable --now usb-qr-scanner`.
-   - Review `moonraker.conf`, `octoeverywhere.conf`, `crowsnest.conf`, and other service files to align API keys, hostnames, and camera devices with your environment.
-4. **Restart Klipper and Moonraker** – A clean restart ensures AFC/OpenAMS modules initialise correctly, registers Moonraker UI panels, and activates the filament automation workflows.
+Then, add the following to your moonraker.conf to enable automatic updates:
+```
+[update_manager klipper-toolchanger]
+type: git_repo
+channel: dev
+path: ~/klipper-toolchanger
+origin: https://github.com/viesturz/klipper-toolchanger.git
+managed_services: klipper
+primary_branch: main
+```
+Add the [macros.cfg](/macros.cfg) to your printer config.
 
-## Key configuration highlights
+## Changelog
+* 2026.2.15 - Bring back the adjust Z after nozzle homing.
+* 2026.2.8
+     - **Breaking change** tool.detection_pin is inverted. Add/Remove the `!` in pin definition when updating.
+     - Simplify use of per-tool probe. Toolchanger can automatically detect active probe, see updated configuration example.
+     - Update tool probe for newest Klipper. 
+* 2026.1.25 - Example script for camera tool alignment.
+* 2025.12.26 - **Breaking change** Stop using Gcode offset for tool offsets. Uses a dedicated gcode transform instead.
+* 2025.12.25 - Use Bezier curves for rounded paths.
+* 2025.12.25 - Manual rail update to latest Klipper.
 
-### Toolchanger and motion control
-- `toolchanger.cfg` and the `toolchanger-*.cfg` files define the StealthChanger motion envelopes, safe clearances, dock detection, and helper macros (`TOOL_ALIGN_*`, `DOCK_*`, `RESUME`, etc.) used during calibration and recovery.
-- Per-tool includes inherit shared motion parameters but override parking coordinates, nozzle offsets, accelerometer buses, and LED behaviours. Update these whenever docks are realigned or new tools are added.
+## Updates that add new files
 
-### Automated Filament Control (AFC)
-- `AFC.cfg`, `AFC_Macro_Vars.cfg`, and the `macros/` directory coordinate lane speeds, unload/load routines, LED colours, purge lengths, and save/resume hooks.
-- `AFC.py` (in `AFC-Klipper-Add-On/extras/`) keeps Moonraker status pages, QR spool metadata, and AFC lane state machines in sync so the printer can pause, prompt, or resume automatically during filament changes.
+Note that if an update has new klipper files, they **will not** be automatically installed into Klipper.
+You will need to run the intall script manualy to add them:
+```commandline
+bash ~/klipper-toolchanger/install.sh
+```
 
-### OpenAMS integration
-- `oamsc.cfg` describes both AMS MCUs, pressure sensors, cutter macros, PID targets, optional inlet sensors, and spool group assignments for the dual-hub setup.
-- `oams_manager.py` (under `klipper_openams/src/`) monitors runout, stuck spools, clog detection, and post-load pressure validation, surfacing alerts to Moonraker and coordinating with AFC macros.
-- Load/unload retries use a fixed delay per attempt (configured in `printer_data/config/AFC/AFC_oams.cfg` via `retry_backoff_base`, capped by `retry_backoff_max`) rather than an exponential backoff.
+# Components
 
-## Adapting to other machines
-
-- Replace CAN UUIDs, heater IDs, tool parking coordinates, and probe offsets across `printer.cfg`, each `tool-*.cfg`, and `oamsc.cfg` to match your hardware before attempting tool changes.
-- Tune AFC lane speeds, temperature presets, tip-form routines, and LED colour choices in `printer_data/config/AFC/` to match your filament handling preferences.
-- Re-measure PTFE lengths, hub PID settings, and filament sensor thresholds in `oamsc.cfg` after any maintenance to ensure the OpenAMS manager continues to load reliably.
-- Align Moonraker- and OctoEverywhere-specific secrets with your host machine; the placeholders in the repo are tailored to the original installation.
-
-## Additional references
-
-The `klipper-toolchanger-easy/examples/` directory keeps the upstream documentation that informed this build. Consult it when experimenting with alternative probing strategies, docking sequences, or slicer start/end code.
+* [Toolchanger](/toolchanger.md) - tool management support.
+* [Tool probe](/tool_probe.md) - per tool Z probe.
+* [Rounded path](/rounded_path.md) - rounds the travel path corners for fast non-print moves.
+* [Tools calibrate](/tools_calibrate.md) - support for contact based XYZ offset calibration probes.
