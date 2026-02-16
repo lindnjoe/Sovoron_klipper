@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Literal
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
@@ -24,6 +24,7 @@ class OpenAMSMoonrakerClient:
         self.base_url = f"{base_host}:{int(port)}"
         self.database_url = urljoin(self.base_url, "server/database/item")
         self.logger = logger
+        self._last_status_fingerprint: Optional[str] = None
 
     def _request(self, req: Request, *, timeout: float = 1.5) -> Optional[Dict[str, Any]]:
         try:
@@ -43,7 +44,19 @@ class OpenAMSMoonrakerClient:
         req = Request(urljoin(self.base_url, "server/info"), method="GET")
         return self._request(req, timeout=1.0) is not None
 
-    def publish_manager_status(self, status: Dict[str, Any], *, eventtime: float) -> bool:
+    def _status_fingerprint(self, status: Dict[str, Any]) -> str:
+        return json.dumps(status, sort_keys=True, separators=(",", ":"))
+
+    def publish_manager_status(
+        self,
+        status: Dict[str, Any],
+        *,
+        eventtime: float,
+    ) -> Literal["published", "skipped", "failed"]:
+        fingerprint = self._status_fingerprint(status)
+        if fingerprint == self._last_status_fingerprint:
+            return "skipped"
+
         payload = {
             "request_method": "POST",
             "namespace": "openams",
@@ -59,4 +72,8 @@ class OpenAMSMoonrakerClient:
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        return self._request(req) is not None
+        if self._request(req) is None:
+            return "failed"
+
+        self._last_status_fingerprint = fingerprint
+        return "published"

@@ -334,6 +334,7 @@ class afcAMS(afcUnit):
         self._cached_extruder_objects: Dict[str, Any] = {}
         self._cached_lane_objects: Dict[str, Any] = {}
         self._cached_oams_index: Optional[int] = None
+        self._cached_oams_manager = None
 
         # Track pending TD-1 capture timers (delayed after spool insertion)
         self._pending_spool_loaded_timers: Dict[str, Any] = {}
@@ -359,6 +360,15 @@ class afcAMS(afcUnit):
     def _is_openams_unit(self):
         """Check if this unit has OpenAMS hardware available."""
         return self.oams is not None
+
+    def _get_oams_manager(self):
+        if self._cached_oams_manager is not None:
+            return self._cached_oams_manager
+        try:
+            self._cached_oams_manager = self.printer.lookup_object("oams_manager", None)
+        except Exception:
+            self._cached_oams_manager = None
+        return self._cached_oams_manager
 
     def _patch_td1_capture(self):
         if getattr(AFCLane, "_ams_td1_capture_patched", False):
@@ -487,7 +497,7 @@ class afcAMS(afcUnit):
         afc_function._openams_cali_fail_patched = True
 
     def _get_fps_id_for_lane(self, lane_name: str) -> Optional[str]:
-        oams_manager = self.printer.lookup_object("oams_manager", None)
+        oams_manager = self._get_oams_manager()
         if oams_manager is None:
             return None
         fps_name = oams_manager.get_fps_for_afc_lane(lane_name)
@@ -1030,7 +1040,7 @@ class afcAMS(afcUnit):
                     self.logger.debug(f"Set OAMS current_spool to {spool_index - 1} for {getattr(lane, 'name', None)}")
 
                 # Use sync_state_with_afc for proper state sync (includes error recovery)
-                oams_manager = self.printer.lookup_object("oams_manager", None)
+                oams_manager = self._get_oams_manager()
                 if oams_manager is not None:
                     oams_manager.sync_state_with_afc()
             except Exception as e:
@@ -1431,7 +1441,7 @@ class afcAMS(afcUnit):
         """
         snapshot: Dict[str, bool] = {}
         try:
-            oams_manager = self.printer.lookup_object("oams_manager", None)
+            oams_manager = self._get_oams_manager()
         except Exception:
             oams_manager = None
 
@@ -1682,7 +1692,7 @@ class afcAMS(afcUnit):
         # Trigger lane sync after PREP completes for this lane
         # The delay ensures hardware sensors have stabilized and all lanes have been tested
         try:
-            oams_manager = self.printer.lookup_object("oams_manager", None)
+            oams_manager = self._get_oams_manager()
             if oams_manager and hasattr(oams_manager, '_sync_all_fps_lanes_after_prep'):
                 # 200ms delay allows all lanes to complete and hardware to stabilize
                 self.afc.reactor.register_callback(
@@ -2619,7 +2629,7 @@ class afcAMS(afcUnit):
 
                                 # Also clear FPS state in OAMS manager
                                 try:
-                                    oams_mgr = self.printer.lookup_object("oams_manager", None)
+                                    oams_mgr = self._get_oams_manager()
                                     if oams_mgr is not None:
                                         fps_name = oams_mgr.get_fps_for_afc_lane(lane_name)
                                         if fps_name:
@@ -2715,7 +2725,7 @@ class afcAMS(afcUnit):
 
             if is_openams and lane_name:
                 try:
-                    oams_manager = self.printer.lookup_object("oams_manager", None)
+                    oams_manager = self._get_oams_manager()
                     extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None) if cur_lane_loaded else None
                     if oams_manager is not None:
                         oams_manager.on_afc_lane_unloaded(lane_name, extruder_name=extruder_name)
@@ -2786,17 +2796,16 @@ class afcAMS(afcUnit):
                 afc_self.logger.debug(
                     f"OpenAMS load: delegating to OAMSM_LOAD_FILAMENT for lane {cur_lane.name}"
                 )
-                oams_manager = afc_self.printer.lookup_object("oams_manager", None)
-                if oams_manager is not None:
-                    success, message = oams_manager._load_filament_for_lane(cur_lane.name)
-                    if not success:
-                        message = message or f"OpenAMS load failed for {cur_lane.name}"
-                        afc_self.error.handle_lane_failure(cur_lane, message)
-                        return False
-                else:
-                    afc_self.gcode.run_script_from_command(
-                        "OAMSM_LOAD_FILAMENT LANE={}".format(cur_lane.name)
-                    )
+                oams_manager = self._get_oams_manager()
+                if oams_manager is None:
+                    afc_self.error.handle_lane_failure(cur_lane, "OpenAMS load failed: oams_manager not available")
+                    return False
+
+                success, message = oams_manager._load_filament_for_lane(cur_lane.name)
+                if not success:
+                    message = message or f"OpenAMS load failed for {cur_lane.name}"
+                    afc_self.error.handle_lane_failure(cur_lane, message)
+                    return False
             except Exception as e:
                 message = "OpenAMS load failed for {}: {}".format(cur_lane.name, str(e))
                 afc_self.error.handle_lane_failure(cur_lane, message)
@@ -2871,11 +2880,12 @@ class afcAMS(afcUnit):
                 # OAMSM_UNLOAD_FILAMENT can control the spool independently.
                 cur_lane.unsync_to_extruder()
 
-                oams_manager = afc_self.printer.lookup_object("oams_manager", None)
-                fps_name = None
-                if oams_manager is not None:
-                    fps_name = oams_manager.get_fps_for_afc_lane(cur_lane.name)
+                oams_manager = self._get_oams_manager()
+                if oams_manager is None:
+                    afc_self.error.handle_lane_failure(cur_lane, "OpenAMS unload failed: oams_manager not available")
+                    return False
 
+                fps_name = oams_manager.get_fps_for_afc_lane(cur_lane.name)
                 if not fps_name:
                     message = "OpenAMS unload failed for {}: unable to resolve FPS".format(cur_lane.name)
                     afc_self.error.handle_lane_failure(cur_lane, message)
@@ -2883,11 +2893,15 @@ class afcAMS(afcUnit):
 
                 fps_id = fps_name.split(" ", 1)[1] if fps_name.startswith("fps ") else fps_name
                 afc_self.logger.debug(
-                    "OpenAMS unload: delegating to OAMSM_UNLOAD_FILAMENT for lane {} (FPS {})".format(
+                    "OpenAMS unload: delegating to manager helper for lane {} (FPS {})".format(
                         cur_lane.name, fps_id
                     )
                 )
-                afc_self.gcode.run_script_from_command("OAMSM_UNLOAD_FILAMENT FPS={}".format(fps_id))
+                success, message = oams_manager._unload_filament_for_fps(fps_name)
+                if not success:
+                    message = message or "OpenAMS unload failed for {}".format(cur_lane.name)
+                    afc_self.error.handle_lane_failure(cur_lane, message)
+                    return False
 
                 # After unload, filament is loaded in AMS (at f1s position), ready for next load
                 cur_lane.loaded_to_hub = True

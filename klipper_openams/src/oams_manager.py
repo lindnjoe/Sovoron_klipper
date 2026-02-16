@@ -29,6 +29,7 @@
 # - extra_retract: Default extra retract distance (mm) applied before unload (default: 10.0)
 
 import logging
+import json
 import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -1732,24 +1733,39 @@ class OAMSManager:
             return
 
         if self._moonraker_status_timer is None:
-            next_time = self.reactor.monotonic() + self.moonraker_status_interval
+            now = self.reactor.monotonic()
+            try:
+                self._publish_moonraker_status_snapshot(now)
+            except Exception as exc:
+                self.logger.debug(f"OpenAMS Moonraker initial status publish error: {exc}")
+
+            next_time = now + self.moonraker_status_interval
             self._moonraker_status_timer = self.reactor.register_timer(
                 self._moonraker_status_sync_timer,
                 next_time,
             )
             self.logger.info(
-                f"OpenAMS Moonraker status sync enabled (interval={self.moonraker_status_interval:.1f}s)"
+                f"OpenAMS Moonraker status sync enabled (interval={self.moonraker_status_interval:.1f}s, mode=changes-only)"
             )
+
+    def _publish_moonraker_status_snapshot(self, eventtime: float) -> None:
+        if self._moonraker_client is None:
+            return
+
+        snapshot = self.get_status(eventtime)
+        result = self._moonraker_client.publish_manager_status(
+            snapshot,
+            eventtime=eventtime,
+        )
+        if result == "failed":
+            self.logger.debug("OpenAMS Moonraker status publish failed")
 
     def _moonraker_status_sync_timer(self, eventtime: float) -> float:
         if self._moonraker_client is None:
             return self.reactor.NEVER
 
         try:
-            snapshot = self.get_status(eventtime)
-            published = self._moonraker_client.publish_manager_status(snapshot, eventtime=eventtime)
-            if not published:
-                self.logger.debug("OpenAMS Moonraker status publish failed")
+            self._publish_moonraker_status_snapshot(eventtime)
         except Exception as exc:
             self.logger.debug(f"OpenAMS Moonraker status sync error: {exc}")
 
@@ -2427,6 +2443,7 @@ class OAMSManager:
             ("OAMSM_CLEAR_ERRORS", self.cmd_CLEAR_ERRORS, self.cmd_CLEAR_ERRORS_help),
             ("OAMSM_CLEAR_LANE_MAPPINGS", self.cmd_CLEAR_LANE_MAPPINGS, self.cmd_CLEAR_LANE_MAPPINGS_help),
             ("OAMSM_STATUS", self.cmd_STATUS, self.cmd_STATUS_help),
+            ("OAMSM_STATUS_JSON", self.cmd_STATUS_JSON, self.cmd_STATUS_JSON_help),
         ]
         for cmd_name, handler, help_text in commands:
             gcode.register_command(cmd_name, handler, desc=help_text)
@@ -3092,6 +3109,23 @@ class OAMSManager:
         # This fixes virtual sensor state after reboot (e.g., extruder4 showing filament when empty)
         gcmd.respond_info("\n=== Syncing Virtual Tool Sensors ===")
         self._sync_virtual_tool_sensors(gcmd)
+
+    cmd_STATUS_JSON_help = "Return OAMS manager status as JSON for scripts and API bridges"
+    def cmd_STATUS_JSON(self, gcmd):
+        """Machine-readable status dump.
+
+        This command is intended for external scripts that currently parse verbose
+        `OAMSM_STATUS` text and want a stable payload that mirrors `get_status()`.
+        """
+        eventtime = self.reactor.monotonic()
+        payload = {
+            "eventtime": eventtime,
+            "status": self.get_status(eventtime),
+        }
+        pretty = gcmd.get_int("PRETTY", 0)
+        indent = 2 if pretty else None
+        separators = None if pretty else (",", ":")
+        gcmd.respond_info(json.dumps(payload, sort_keys=True, indent=indent, separators=separators))
 
     cmd_FOLLOWER_help = "Enable the follower on whatever OAMS is current loaded"
     def cmd_FOLLOWER(self, gcmd):
