@@ -1733,6 +1733,20 @@ class OAMSManager:
             self.logger.warning("Moonraker status sync enabled, but Moonraker is not reachable")
             return
 
+        # Recover last-known status from Moonraker DB (survives Klipper restart)
+        try:
+            persisted = self._moonraker_client.read_manager_status()
+            if persisted and isinstance(persisted.get("status"), dict):
+                age = ""
+                if "eventtime" in persisted:
+                    age = f", age={self.reactor.monotonic() - persisted['eventtime']:.0f}s"
+                self.logger.info(
+                    f"Recovered previous OpenAMS status from Moonraker DB"
+                    f" (keys={list(persisted['status'].keys())}{age})"
+                )
+        except Exception as exc:
+            self.logger.debug(f"OpenAMS Moonraker status recovery failed: {exc}")
+
         if self._moonraker_status_timer is None:
             now = self.reactor.monotonic()
             try:
@@ -1760,6 +1774,19 @@ class OAMSManager:
         )
         if result == "failed":
             self.logger.debug("OpenAMS Moonraker status publish failed")
+
+    def _publish_moonraker_now(self) -> None:
+        """Push current status to Moonraker immediately (non-timer path).
+
+        Called after load/unload state changes so the frontend sees the
+        update without waiting up to *moonraker_status_interval* seconds.
+        """
+        if self._moonraker_client is None:
+            return
+        try:
+            self._publish_moonraker_status_snapshot(self.reactor.monotonic())
+        except Exception as exc:
+            self.logger.debug(f"OpenAMS Moonraker immediate publish error: {exc}")
 
     def _moonraker_status_sync_timer(self, eventtime: float) -> float:
         if self._moonraker_client is None:
@@ -8058,8 +8085,12 @@ class OAMSManager:
 
                 self.logger.info(f"Synced OAMS state from AFC: {detected_lane_name} loaded to {fps_name} (bay {bay_index} on {oam.name})")
 
+            # Push updated status to Moonraker immediately
+            self._publish_moonraker_now()
+
         except Exception:
             self.logger.error(f"Error processing AFC lane loaded notification for {lane_name}")
+
     def on_afc_lane_unloaded(self, lane_name: str, extruder_name: Optional[str] = None) -> None:
         """Callback for AFC to notify OAMS when a lane is unloaded.
 
@@ -8099,8 +8130,13 @@ class OAMSManager:
                         self._update_follower_for_oams(prev_oams_name, oam)
 
                 self.logger.info(f"Synced OAMS state from AFC: {lane_name} unloaded from {fps_name}")
+
+            # Push updated status to Moonraker immediately
+            self._publish_moonraker_now()
+
         except Exception:
             self.logger.error(f"Error processing AFC lane unloaded notification for {lane_name}")
+
     def stop_monitors(self):
         for timer in self.monitor_timers:
             self.printer.get_reactor().unregister_timer(timer)

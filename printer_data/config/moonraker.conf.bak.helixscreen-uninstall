@@ -134,6 +134,8 @@ info_tags: desc=Cartographer Alpha
 
 
 
+# # HelixScreen Update Manager
+# # Added by HelixScreen installer - enables one-click updates from Mainsail/Fluidd
 # [update_manager helixscreen]
 # type: git_repo
 # channel: stable
@@ -143,3 +145,13 @@ info_tags: desc=Cartographer Alpha
 # managed_services: helixscreen
 # install_script: scripts/install.sh
 
+# HelixScreen Update Manager
+# Added by HelixScreen installer - enables one-click updates from Mainsail/Fluidd
+[update_manager helixscreen]
+type: git_repo
+channel: stable
+path: /home/pii/helixscreen-repo
+origin: https://github.com/prestonbrown/helixscreen.git
+primary_branch: main
+managed_services: helixscreen
+install_script: scripts/install.sh
