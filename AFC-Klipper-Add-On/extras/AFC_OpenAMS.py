@@ -51,6 +51,7 @@ try:
         AMSEventBus,
         normalize_extruder_name,
         OPENAMS_VERSION,
+        OpenAMSManagerFacade,
     )
 except Exception:
     AMSHardwareService = None
@@ -59,6 +60,7 @@ except Exception:
     AMSEventBus = None
     normalize_extruder_name = None
     OPENAMS_VERSION = "0.0.3"  # Fallback if import fails
+    OpenAMSManagerFacade = None
 
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 _ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
@@ -334,6 +336,7 @@ class afcAMS(afcUnit):
         self._cached_extruder_objects: Dict[str, Any] = {}
         self._cached_lane_objects: Dict[str, Any] = {}
         self._cached_oams_index: Optional[int] = None
+        self._cached_oams_manager = None
 
         # Track pending TD-1 capture timers (delayed after spool insertion)
         self._pending_spool_loaded_timers: Dict[str, Any] = {}
@@ -359,6 +362,15 @@ class afcAMS(afcUnit):
     def _is_openams_unit(self):
         """Check if this unit has OpenAMS hardware available."""
         return self.oams is not None
+
+    def _get_oams_manager(self):
+        if self._cached_oams_manager is not None:
+            return self._cached_oams_manager
+        try:
+            self._cached_oams_manager = self.printer.lookup_object("oams_manager", None)
+        except Exception:
+            self._cached_oams_manager = None
+        return self._cached_oams_manager
 
     def _patch_td1_capture(self):
         if getattr(AFCLane, "_ams_td1_capture_patched", False):
@@ -487,7 +499,7 @@ class afcAMS(afcUnit):
         afc_function._openams_cali_fail_patched = True
 
     def _get_fps_id_for_lane(self, lane_name: str) -> Optional[str]:
-        oams_manager = self.printer.lookup_object("oams_manager", None)
+        oams_manager = self._get_oams_manager()
         if oams_manager is None:
             return None
         fps_name = oams_manager.get_fps_for_afc_lane(lane_name)
@@ -1030,7 +1042,7 @@ class afcAMS(afcUnit):
                     self.logger.debug(f"Set OAMS current_spool to {spool_index - 1} for {getattr(lane, 'name', None)}")
 
                 # Use sync_state_with_afc for proper state sync (includes error recovery)
-                oams_manager = self.printer.lookup_object("oams_manager", None)
+                oams_manager = self._get_oams_manager()
                 if oams_manager is not None:
                     oams_manager.sync_state_with_afc()
             except Exception as e:
@@ -1431,7 +1443,7 @@ class afcAMS(afcUnit):
         """
         snapshot: Dict[str, bool] = {}
         try:
-            oams_manager = self.printer.lookup_object("oams_manager", None)
+            oams_manager = self._get_oams_manager()
         except Exception:
             oams_manager = None
 
@@ -1682,7 +1694,7 @@ class afcAMS(afcUnit):
         # Trigger lane sync after PREP completes for this lane
         # The delay ensures hardware sensors have stabilized and all lanes have been tested
         try:
-            oams_manager = self.printer.lookup_object("oams_manager", None)
+            oams_manager = self._get_oams_manager()
             if oams_manager and hasattr(oams_manager, '_sync_all_fps_lanes_after_prep'):
                 # 200ms delay allows all lanes to complete and hardware to stabilize
                 self.afc.reactor.register_callback(
@@ -2619,62 +2631,54 @@ class afcAMS(afcUnit):
 
                                 # Also clear FPS state in OAMS manager
                                 try:
-                                    oams_mgr = self.printer.lookup_object("oams_manager", None)
-                                    if oams_mgr is not None:
-                                        fps_name = oams_mgr.get_fps_for_afc_lane(lane_name)
-                                        if fps_name:
-                                            fps_state = oams_mgr.current_state.fps_state.get(fps_name)
-                                            if fps_state is not None:
-                                                spool_index = fps_state.current_spool_idx
-
-                                                # Clear FPS state (matching _unload_filament_for_fps logic)
-                                                fps_state.state = 0  # FPSLoadState.UNLOADED
-                                                fps_state.following = False
-                                                fps_state.direction = 0
-                                                fps_state.clog_restore_follower = False
-                                                fps_state.clog_restore_direction = 1
-                                                fps_state.since = self.reactor.monotonic()
-                                                fps_state.current_lane = None
-                                                fps_state.current_spool_idx = None
-                                                if hasattr(fps_state, 'reset_stuck_spool_state'):
-                                                    fps_state.reset_stuck_spool_state()
-
-                                                self.logger.debug("Cross-Extruder: Cleared FPS state for {} (was spool {})".format(fps_name, spool_index))
-
-                                                # Notify AFC via AMSRunoutCoordinator
-                                                try:
-                                                    from .openams_integration import AMSRunoutCoordinator
-                                                    AMSRunoutCoordinator.notify_lane_tool_state(
-                                                        self.printer,
-                                                        self.oams_name,
-                                                        lane_name,
-                                                        loaded=False,
-                                                        spool_index=spool_index,
-                                                        eventtime=fps_state.since
-                                                    )
-                                                    self.logger.debug("Cross-Extruder: Notified AFC that lane {} unloaded".format(lane_name))
-                                                except Exception:
-                                                    self.logger.error("Failed to notify AFC about lane {} unload".format(lane_name))
-
-                                                # Also manually set the virtual tool sensor to False for AMS virtual extruders
-                                                # This ensures virtual sensor (e.g., AMS_Extruder4) shows correct state
-                                                try:
-                                                    if lane_extruder is not None:
-                                                        extruder_name = getattr(lane_extruder, 'name', None)
-                                                        if extruder_name and extruder_name.upper().startswith('AMS_'):
-                                                            sensor_name = extruder_name.replace('ams_', '').replace('AMS_', '')
-                                                            sensor = self.printer.lookup_object("filament_switch_sensor {}".format(sensor_name), None)
-                                                            if sensor and hasattr(sensor, 'runout_helper'):
-                                                                sensor.runout_helper.note_filament_present(self.reactor.monotonic(), is_filament_present=False)
-                                                                self.logger.debug("Cross-Extruder: Set virtual sensor {} to False after cross-extruder runout".format(sensor_name))
-                                                except Exception:
-                                                    self.logger.error("Failed to update virtual sensor for lane {} during cross-extruder runout".format(lane_name))
-                                            else:
-                                                self.logger.warning("Cross-Extruder: Could not find FPS state for {}".format(fps_name))
-                                        else:
-                                            self.logger.warning("Cross-Extruder: Could not find FPS name for lane {}".format(lane_name))
+                                    if OpenAMSManagerFacade is not None:
+                                        cleared, fps_name, spool_index = OpenAMSManagerFacade.clear_fps_state_for_lane(
+                                            self.printer,
+                                            lane_name,
+                                            eventtime=self.reactor.monotonic(),
+                                        )
                                     else:
-                                        self.logger.warning("Cross-Extruder: OAMS manager not found, FPS state not cleared")
+                                        oams_mgr = self._get_oams_manager()
+                                        if oams_mgr is not None:
+                                            cleared, fps_name, spool_index = oams_mgr.clear_fps_state_for_lane(
+                                                lane_name,
+                                                eventtime=self.reactor.monotonic(),
+                                            )
+                                        else:
+                                            cleared, fps_name, spool_index = False, None, None
+
+                                    if cleared and fps_name:
+                                        self.logger.debug("Cross-Extruder: Cleared FPS state for {} (was spool {})".format(fps_name, spool_index))
+
+                                        try:
+                                            from .openams_integration import AMSRunoutCoordinator
+                                            AMSRunoutCoordinator.notify_lane_tool_state(
+                                                self.printer,
+                                                self.oams_name,
+                                                lane_name,
+                                                loaded=False,
+                                                spool_index=spool_index,
+                                                eventtime=self.reactor.monotonic(),
+                                            )
+                                            self.logger.debug("Cross-Extruder: Notified AFC that lane {} unloaded".format(lane_name))
+                                        except Exception:
+                                            self.logger.error("Failed to notify AFC about lane {} unload".format(lane_name))
+
+                                        # Also manually set the virtual tool sensor to False for AMS virtual extruders
+                                        # This ensures virtual sensor (e.g., AMS_Extruder4) shows correct state
+                                        try:
+                                            if lane_extruder is not None:
+                                                extruder_name = getattr(lane_extruder, 'name', None)
+                                                if extruder_name and extruder_name.upper().startswith('AMS_'):
+                                                    sensor_name = extruder_name.replace('ams_', '').replace('AMS_', '')
+                                                    sensor = self.printer.lookup_object("filament_switch_sensor {}".format(sensor_name), None)
+                                                    if sensor and hasattr(sensor, 'runout_helper'):
+                                                        sensor.runout_helper.note_filament_present(self.reactor.monotonic(), is_filament_present=False)
+                                                        self.logger.debug("Cross-Extruder: Set virtual sensor {} to False after cross-extruder runout".format(sensor_name))
+                                        except Exception:
+                                            self.logger.error("Failed to update virtual sensor for lane {} during cross-extruder runout".format(lane_name))
+                                    else:
+                                        self.logger.warning("Cross-Extruder: Could not clear FPS state for lane {}".format(lane_name))
                                 except Exception:
                                     self.logger.error("Failed to clear FPS state for lane {}".format(lane_name))
 
@@ -2715,7 +2719,7 @@ class afcAMS(afcUnit):
 
             if is_openams and lane_name:
                 try:
-                    oams_manager = self.printer.lookup_object("oams_manager", None)
+                    oams_manager = self._get_oams_manager()
                     extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None) if cur_lane_loaded else None
                     if oams_manager is not None:
                         oams_manager.on_afc_lane_unloaded(lane_name, extruder_name=extruder_name)
@@ -2786,17 +2790,19 @@ class afcAMS(afcUnit):
                 afc_self.logger.debug(
                     f"OpenAMS load: delegating to OAMSM_LOAD_FILAMENT for lane {cur_lane.name}"
                 )
-                oams_manager = afc_self.printer.lookup_object("oams_manager", None)
-                if oams_manager is not None:
-                    success, message = oams_manager._load_filament_for_lane(cur_lane.name)
-                    if not success:
-                        message = message or f"OpenAMS load failed for {cur_lane.name}"
-                        afc_self.error.handle_lane_failure(cur_lane, message)
-                        return False
+                oams_manager = self._get_oams_manager()
+                if oams_manager is None:
+                    afc_self.error.handle_lane_failure(cur_lane, "OpenAMS load failed: oams_manager not available")
+                    return False
+
+                if OpenAMSManagerFacade is not None:
+                    success, message = OpenAMSManagerFacade.load_for_lane(self.printer, cur_lane.name)
                 else:
-                    afc_self.gcode.run_script_from_command(
-                        "OAMSM_LOAD_FILAMENT LANE={}".format(cur_lane.name)
-                    )
+                    success, message = oams_manager.load_filament_for_lane(cur_lane.name)
+                if not success:
+                    message = message or f"OpenAMS load failed for {cur_lane.name}"
+                    afc_self.error.handle_lane_failure(cur_lane, message)
+                    return False
             except Exception as e:
                 message = "OpenAMS load failed for {}: {}".format(cur_lane.name, str(e))
                 afc_self.error.handle_lane_failure(cur_lane, message)
@@ -2871,11 +2877,12 @@ class afcAMS(afcUnit):
                 # OAMSM_UNLOAD_FILAMENT can control the spool independently.
                 cur_lane.unsync_to_extruder()
 
-                oams_manager = afc_self.printer.lookup_object("oams_manager", None)
-                fps_name = None
-                if oams_manager is not None:
-                    fps_name = oams_manager.get_fps_for_afc_lane(cur_lane.name)
+                oams_manager = self._get_oams_manager()
+                if oams_manager is None:
+                    afc_self.error.handle_lane_failure(cur_lane, "OpenAMS unload failed: oams_manager not available")
+                    return False
 
+                fps_name = oams_manager.get_fps_for_afc_lane(cur_lane.name)
                 if not fps_name:
                     message = "OpenAMS unload failed for {}: unable to resolve FPS".format(cur_lane.name)
                     afc_self.error.handle_lane_failure(cur_lane, message)
@@ -2883,11 +2890,18 @@ class afcAMS(afcUnit):
 
                 fps_id = fps_name.split(" ", 1)[1] if fps_name.startswith("fps ") else fps_name
                 afc_self.logger.debug(
-                    "OpenAMS unload: delegating to OAMSM_UNLOAD_FILAMENT for lane {} (FPS {})".format(
+                    "OpenAMS unload: delegating to manager helper for lane {} (FPS {})".format(
                         cur_lane.name, fps_id
                     )
                 )
-                afc_self.gcode.run_script_from_command("OAMSM_UNLOAD_FILAMENT FPS={}".format(fps_id))
+                if OpenAMSManagerFacade is not None:
+                    success, message = OpenAMSManagerFacade.unload_with_prep_for_fps(self.printer, fps_name)
+                else:
+                    success, message = oams_manager.unload_filament_with_prep_for_fps(fps_name)
+                if not success:
+                    message = message or "OpenAMS unload failed for {}".format(cur_lane.name)
+                    afc_self.error.handle_lane_failure(cur_lane, message)
+                    return False
 
                 # After unload, filament is loaded in AMS (at f1s position), ready for next load
                 cur_lane.loaded_to_hub = True
