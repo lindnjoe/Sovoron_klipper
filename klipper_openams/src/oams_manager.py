@@ -60,6 +60,11 @@ except Exception:
     OAMSStatus = None
     OAMSOpCode = None
 
+try:
+    from extras.openams_moonraker import OpenAMSMoonrakerClient
+except Exception:
+    OpenAMSMoonrakerClient = None
+
 # Configuration constants
 PAUSE_DISTANCE = 60
 MIN_ENCODER_DIFF = 3  # Increased from 1 to 3 - prevents false positives during print stalls/brief pauses
@@ -1145,6 +1150,16 @@ class OAMSManager:
         # Prevent duplicate detection logs when the same lane remains loaded
         self._last_logged_detected_lane: Dict[str, Optional[str]] = {}
 
+        # OpenAMS-owned Moonraker status publishing (does not modify AFC core behavior)
+        self.moonraker_status_sync = config.getboolean("moonraker_status_sync", False)
+        self.moonraker_status_interval = config.getfloat(
+            "moonraker_status_interval", 5.0, minval=1.0, maxval=120.0
+        )
+        self.moonraker_host = config.get("moonraker_host", "http://localhost")
+        self.moonraker_port = config.getint("moonraker_port", 7125, minval=1, maxval=65535)
+        self._moonraker_client = None
+        self._moonraker_status_timer = None
+
         self._initialize_oams()
 
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
@@ -1627,6 +1642,13 @@ class OAMSManager:
         """Cleanup timers and resources on disconnect/shutdown."""
         self.logger.info("OAMS Manager shutting down, cleaning up timers...")
 
+        if self._moonraker_status_timer is not None:
+            try:
+                self.reactor.unregister_timer(self._moonraker_status_timer)
+            except Exception as exc:
+                self.logger.warning(f"Failed to unregister Moonraker status timer: {exc}")
+            self._moonraker_status_timer = None
+
         # Clean up MCU command poll timers
         for oams_name, timer in list(self._mcu_command_poll_timers.items()):
             try:
@@ -1687,8 +1709,51 @@ class OAMSManager:
         except Exception:
             self.logger.error("Failed to enable followers for loaded hubs during startup")
 
+        if self.moonraker_status_sync:
+            self._start_moonraker_status_sync()
+
         self.start_monitors()
         self.ready = True
+
+    def _start_moonraker_status_sync(self) -> None:
+        if OpenAMSMoonrakerClient is None:
+            self.logger.warning("Moonraker sync requested but OpenAMSMoonrakerClient is unavailable")
+            return
+
+        if self._moonraker_client is None:
+            self._moonraker_client = OpenAMSMoonrakerClient(
+                self.moonraker_host,
+                self.moonraker_port,
+                self.logger,
+            )
+
+        if not self._moonraker_client.is_available():
+            self.logger.warning("Moonraker status sync enabled, but Moonraker is not reachable")
+            return
+
+        if self._moonraker_status_timer is None:
+            next_time = self.reactor.monotonic() + self.moonraker_status_interval
+            self._moonraker_status_timer = self.reactor.register_timer(
+                self._moonraker_status_sync_timer,
+                next_time,
+            )
+            self.logger.info(
+                f"OpenAMS Moonraker status sync enabled (interval={self.moonraker_status_interval:.1f}s)"
+            )
+
+    def _moonraker_status_sync_timer(self, eventtime: float) -> float:
+        if self._moonraker_client is None:
+            return self.reactor.NEVER
+
+        try:
+            snapshot = self.get_status(eventtime)
+            published = self._moonraker_client.publish_manager_status(snapshot, eventtime=eventtime)
+            if not published:
+                self.logger.debug("OpenAMS Moonraker status publish failed")
+        except Exception as exc:
+            self.logger.debug(f"OpenAMS Moonraker status sync error: {exc}")
+
+        return eventtime + self.moonraker_status_interval
 
     def _initialize_oams(self) -> None:
         for name, oam in self.printer.lookup_objects(module="oams"):
