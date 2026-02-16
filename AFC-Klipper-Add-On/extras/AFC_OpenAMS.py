@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import traceback
@@ -61,6 +62,8 @@ except Exception:
     normalize_extruder_name = None
     OPENAMS_VERSION = "0.0.3"  # Fallback if import fails
     OpenAMSManagerFacade = None
+
+_module_logger = logging.getLogger(__name__)
 
 _ORIGINAL_LANE_PRE_SENSOR = getattr(AFCLane, "get_toolhead_pre_sensor_state", None)
 _ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
@@ -222,7 +225,8 @@ def _patch_extruder_for_virtual_ams() -> None:
     def _patched_init(self, config):
         try:
             pin_value = config.get("pin_tool_start", None)
-        except Exception:
+        except Exception as e:
+            _module_logger.debug(f"Failed to read pin_tool_start from config: {e}")
             pin_value = None
 
         normalized = _normalize_ams_pin_value(pin_value)
@@ -242,7 +246,8 @@ def _patch_extruder_for_virtual_ams() -> None:
                         proxy_config = _ProxyConfig(config, pin_override)
                     else:
                         normalized = None
-                except Exception:
+                except Exception as e:
+                    _module_logger.debug(f"Failed to set up virtual AMS pin for {normalized}: {e}")
                     normalized = None
             else:
                 normalized = None
@@ -4492,8 +4497,8 @@ def _patch_lane_pre_sensor_for_ams() -> None:
         # Sync virtual tool sensor state (sensor state is kept up-to-date via events)
         try:
             unit._sync_virtual_tool_sensor(eventtime, self.name)
-        except Exception:
-            pass
+        except Exception as e:
+            unit.logger.debug(f"Virtual tool sensor sync failed for {self.name}: {e}")
 
         result = _ORIGINAL_LANE_PRE_SENSOR(self, *args, **kwargs)
 
@@ -4507,8 +4512,8 @@ def _patch_lane_pre_sensor_for_ams() -> None:
         if desired_state:
             try:
                 unit._set_virtual_tool_sensor_state(desired_state, eventtime, getattr(self, "name", None), lane_obj=self)
-            except Exception:
-                pass
+            except Exception as e:
+                unit.logger.debug(f"Failed to set virtual tool sensor state for {self.name}: {e}")
             return True
 
         return bool(result)
@@ -4685,8 +4690,8 @@ def _patch_lane_unload_for_ams() -> None:
                             f"OpenAMS units handle filament automatically - just remove the spool physically. "
                             f"Use TOOL_UNLOAD if you need to unload from the toolhead."
                         )
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.logger.debug(f"Failed to send LANE_UNLOAD info response for {lane_name}: {e}")
 
                 return  # Block the operation
 
@@ -4823,7 +4828,8 @@ def _patch_buffer_fault_detection_for_ams() -> None:
                 toolhead = getattr(self.afc, "toolhead", None)
                 extruder_name = toolhead.get_extruder().name if toolhead is not None else None
                 cur_extruder = self.afc.tools.get(extruder_name) if extruder_name else None
-            except Exception:
+            except Exception as e:
+                self.logger.debug(f"Failed to resolve current extruder for buffer fault detection: {e}")
                 cur_extruder = None
             if cur_extruder is not None:
                 lane_name = getattr(cur_extruder, "lane_loaded", None)
@@ -4850,7 +4856,8 @@ def _patch_buffer_fault_detection_for_ams() -> None:
                     or tool_pin_str.startswith("ams_")
                     or tool_pin_str.startswith("ams_extruder")
                 )
-        except Exception:
+        except Exception as e:
+            self.logger.debug(f"Failed to check virtual tool pin for buffer fault detection: {e}")
             is_virtual_tool = False
         if is_openams or is_virtual_tool:
             return eventtime + timeout

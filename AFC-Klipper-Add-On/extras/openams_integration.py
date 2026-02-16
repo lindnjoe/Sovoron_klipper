@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -105,7 +106,9 @@ class AMSEventBus:
     
     _instance: Optional['AMSEventBus'] = None
     _lock = threading.RLock()
-    
+    _MAX_HISTORY = 500
+    _HISTORY_TTL = 3600.0
+
     def __init__(self):
         self._subscribers: Dict[str, List[Tuple[Callable, int]]] = {}
         self._event_history: List[Tuple[str, float, Dict[str, Any]]] = []
@@ -156,23 +159,27 @@ class AMSEventBus:
     
     def publish(self, event_type: str, **kwargs) -> int:
         """Publish an event to all subscribers.
-        
+
         Args:
             event_type: Type of event being published
             **kwargs: Event data to pass to subscribers
-            
+
         Returns:
             Number of subscribers that successfully handled the event
         """
-        import time
         eventtime = kwargs.get('eventtime', time.time())
-        
+
         with self._lock:
             # Record event in history
             self._event_history.append((event_type, eventtime, dict(kwargs)))
-            if len(self._event_history) > self._max_history:
-                self._event_history.pop(0)
-            
+            # Evict stale history entries
+            if len(self._event_history) > self._MAX_HISTORY:
+                cutoff = time.monotonic() - self._HISTORY_TTL
+                self._event_history = [e for e in self._event_history if e[1] > cutoff]
+                # Hard cap if TTL eviction wasn't enough
+                if len(self._event_history) > self._MAX_HISTORY:
+                    self._event_history = self._event_history[-self._MAX_HISTORY:]
+
             subscribers = list(self._subscribers.get(event_type, []))
         
         if not subscribers:
@@ -522,6 +529,11 @@ class AMSHardwareService:
             # AFC_logger signature: info(message, console_only=False)
             self.logger.info(message)
         except TypeError:
+            # Log format string error to help debugging, then use fallback
+            try:
+                self.logger.debug(f"Log format error: {message!r} with args=()")
+            except Exception:
+                pass
             # Standard logging signature: info(msg, *args)
             self.logger.info(message)
 
@@ -530,6 +542,11 @@ class AMSHardwareService:
         try:
             self.logger.warning(message)
         except TypeError:
+            # Log format string error to help debugging, then use fallback
+            try:
+                self.logger.debug(f"Log format error: {message!r} with args=()")
+            except Exception:
+                pass
             self.logger.warning(message)
 
     def _log_error(self, message: str) -> None:
@@ -540,7 +557,12 @@ class AMSHardwareService:
                 self.logger.error(message)
             else:
                 self.logger.error(message)
-        except Exception:
+        except TypeError:
+            # Log format string error to help debugging, then use fallback
+            try:
+                self.logger.debug(f"Log format error: {message!r} with args=()")
+            except Exception:
+                pass
             # Fallback to print if all else fails
             print(f"AMSHardwareService: {message}")
 
