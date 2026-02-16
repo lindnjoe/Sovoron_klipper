@@ -1186,14 +1186,15 @@ class OAMSManager:
                 self.logger.error(f"Failed to fetch status from {name}")
                 oam_status = {"action_status": "error", "action_status_code": None, "action_status_value": None}
             attributes["oams"][status_name] = oam_status
-            if status_name != name:
-                attributes["oams"][name] = oam_status
 
         state_names = {0: "UNLOADED", 1: "LOADED", 2: "LOADING", 3: "UNLOADING"}
         for fps_name, fps_state in self.current_state.fps_state.items():
+            current_oams = fps_state.current_oams
+            if isinstance(current_oams, str):
+                current_oams = current_oams.split()[-1]
             attributes[fps_name] = {
                 "current_lane": fps_state.current_lane,
-                "current_oams": fps_state.current_oams,
+                "current_oams": current_oams,
                 "current_spool_idx": fps_state.current_spool_idx,
                 "state_name": state_names.get(fps_state.state, str(fps_state.state)),
                 "since": fps_state.since,
