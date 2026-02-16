@@ -4479,6 +4479,38 @@ class OAMSManager:
         self.logger.info(f"Delegated infinite runout for {fps_name} via AFC lane {source_lane_name} -> {runout_target}")
         return True
 
+    def clear_fps_state_for_lane(
+        self,
+        lane_name: str,
+        *,
+        eventtime: Optional[float] = None,
+    ) -> Tuple[bool, Optional[str], Optional[int]]:
+        """Clear FPS state for a lane and return (cleared, fps_name, previous_spool_index)."""
+        fps_name = self.get_fps_for_afc_lane(lane_name)
+        if not fps_name:
+            return False, None, None
+
+        fps_state = self.current_state.fps_state.get(fps_name)
+        if fps_state is None:
+            return False, fps_name, None
+
+        spool_index = fps_state.current_spool_idx
+        if eventtime is None:
+            eventtime = self.reactor.monotonic()
+
+        fps_state.state = FPSLoadState.UNLOADED
+        fps_state.following = False
+        fps_state.direction = 0
+        fps_state.clog_restore_follower = False
+        fps_state.clog_restore_direction = 1
+        fps_state.since = eventtime
+        fps_state.current_lane = None
+        fps_state.current_spool_idx = None
+        if hasattr(fps_state, 'reset_stuck_spool_state'):
+            fps_state.reset_stuck_spool_state()
+
+        return True, fps_name, spool_index
+
     def unload_filament_for_fps(self, fps_name: str) -> Tuple[bool, str]:
         """Public API for unloading filament by FPS name."""
         return self._unload_filament_for_fps(fps_name)
