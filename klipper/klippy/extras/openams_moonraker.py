@@ -7,10 +7,15 @@
 from __future__ import annotations
 
 import json
-import time
+import socket
 from typing import Any, Dict, Optional, Literal
+from urllib.error import URLError
 from urllib.parse import urlparse, urlunparse
 from urllib.request import Request, urlopen
+
+# Errors that indicate a transient or expected network/parsing failure.
+_TRANSIENT_ERRORS = (URLError, socket.timeout, OSError, json.JSONDecodeError,
+                     ValueError)
 
 
 class OpenAMSMoonrakerClient:
@@ -47,18 +52,18 @@ class OpenAMSMoonrakerClient:
             with urlopen(req, timeout=timeout) as response:
                 payload = json.load(response)
                 return payload.get("result") if isinstance(payload, dict) else None
-        except Exception as exc:
+        except _TRANSIENT_ERRORS as exc:
             self.logger.debug(f"OpenAMS Moonraker request error: {exc}")
             return None
 
     def _request_with_retry(self, url: str, *, method: str = "GET",
                             data: Optional[bytes] = None,
                             timeout: float = 1.5) -> Optional[Dict[str, Any]]:
-        """Issue a request, retrying once after a brief pause on failure."""
+        """Issue a request, retrying once on failure (no sleep)."""
         result = self._request(url, method=method, data=data, timeout=timeout)
         if result is not None:
             return result
-        time.sleep(0.25)
+        # Immediate single retry — avoids blocking the Klipper reactor thread.
         return self._request(url, method=method, data=data, timeout=timeout)
 
     def is_available(self) -> bool:

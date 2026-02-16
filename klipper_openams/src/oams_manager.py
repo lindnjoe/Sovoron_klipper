@@ -1651,6 +1651,7 @@ class OAMSManager:
             except Exception as exc:
                 self.logger.warning(f"Failed to unregister Moonraker status timer: {exc}")
             self._moonraker_status_timer = None
+        self._moonraker_client = None
 
         # Clean up MCU command poll timers
         for oams_name, timer in list(self._mcu_command_poll_timers.items()):
