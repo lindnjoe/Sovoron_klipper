@@ -1152,7 +1152,6 @@ class OAMSManager:
         self._last_logged_detected_lane: Dict[str, Optional[str]] = {}
 
         # OpenAMS-owned Moonraker status publishing (does not modify AFC core behavior)
-        self.moonraker_status_sync = config.getboolean("moonraker_status_sync", False)
         self.moonraker_status_interval = config.getfloat(
             "moonraker_status_interval", 5.0, minval=1.0, maxval=120.0
         )
@@ -1710,15 +1709,14 @@ class OAMSManager:
         except Exception:
             self.logger.error("Failed to enable followers for loaded hubs during startup")
 
-        if self.moonraker_status_sync:
-            self._start_moonraker_status_sync()
+        self._start_moonraker_status_sync()
 
         self.start_monitors()
         self.ready = True
 
     def _start_moonraker_status_sync(self) -> None:
         if OpenAMSMoonrakerClient is None:
-            self.logger.warning("Moonraker sync requested but OpenAMSMoonrakerClient is unavailable")
+            self.logger.warning("OpenAMS Moonraker client is unavailable; status sync disabled")
             return
 
         if self._moonraker_client is None:
@@ -4481,6 +4479,10 @@ class OAMSManager:
         self.logger.info(f"Delegated infinite runout for {fps_name} via AFC lane {source_lane_name} -> {runout_target}")
         return True
 
+    def unload_filament_for_fps(self, fps_name: str) -> Tuple[bool, str]:
+        """Public API for unloading filament by FPS name."""
+        return self._unload_filament_for_fps(fps_name)
+
     def _unload_filament_for_fps(self, fps_name: str) -> Tuple[bool, str]:
         if fps_name not in self.fpss:
             return False, f"FPS {fps_name} does not exist"
@@ -5077,6 +5079,10 @@ class OAMSManager:
             # Always clear the suppression flag, even if cleanup fails
             fps_state.engagement_in_progress = False
 
+    def load_filament_for_lane(self, lane_name: str) -> Tuple[bool, str]:
+        """Public API for loading filament by AFC lane name."""
+        return self._load_filament_for_lane(lane_name)
+
     def _load_filament_for_lane(self, lane_name: str) -> Tuple[bool, str]:
         """Load filament for a lane by deriving OAMS and bay from the lane's unit configuration.
 
@@ -5630,7 +5636,7 @@ class OAMSManager:
         else:
             self.logger.info(f"Skipping extra retract before unload on {fps_name}: no lane resolved")
 
-        success, message = self._unload_filament_for_fps(fps_name)
+        success, message = self.unload_filament_for_fps(fps_name)
 
         if not success or (message and message != "Spool unloaded successfully"):
             gcmd.respond_info(message)
@@ -5643,7 +5649,7 @@ class OAMSManager:
             raise gcmd.error("LANE parameter is required (e.g., LANE=lane4)")
 
         # Load directly from lane configuration
-        success, message = self._load_filament_for_lane(lane_name)
+        success, message = self.load_filament_for_lane(lane_name)
         if not success:
             # Raise to halt any enclosing macro/script so we don't continue with a bad state
             raise gcmd.error(message or f"Failed to load {lane_name}")

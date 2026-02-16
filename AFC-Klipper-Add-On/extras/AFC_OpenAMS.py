@@ -2801,7 +2801,7 @@ class afcAMS(afcUnit):
                     afc_self.error.handle_lane_failure(cur_lane, "OpenAMS load failed: oams_manager not available")
                     return False
 
-                success, message = oams_manager._load_filament_for_lane(cur_lane.name)
+                success, message = oams_manager.load_filament_for_lane(cur_lane.name)
                 if not success:
                     message = message or f"OpenAMS load failed for {cur_lane.name}"
                     afc_self.error.handle_lane_failure(cur_lane, message)
@@ -2897,7 +2897,7 @@ class afcAMS(afcUnit):
                         cur_lane.name, fps_id
                     )
                 )
-                success, message = oams_manager._unload_filament_for_fps(fps_name)
+                success, message = oams_manager.unload_filament_for_fps(fps_name)
                 if not success:
                     message = message or "OpenAMS unload failed for {}".format(cur_lane.name)
                     afc_self.error.handle_lane_failure(cur_lane, message)
