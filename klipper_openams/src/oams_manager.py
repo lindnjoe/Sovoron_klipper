@@ -4671,7 +4671,7 @@ class OAMSManager:
                 fps_state.following = True
                 fps_state.direction = 1
                 self.reactor.pause(self.reactor.monotonic() + 1.0)
-                # reactor.pause() yields — AFC callbacks may have changed state
+                # reactor.pause() yields â€” AFC callbacks may have changed state
                 if fps_state.state != FPSLoadState.UNLOADING:
                     self.logger.warning(
                         f"Unload retry aborted for {fps_name}: state changed to "
@@ -6563,7 +6563,7 @@ class OAMSManager:
         # Simple: if hub has filament, enable follower; if all empty, disable
         self._ensure_followers_for_loaded_hubs()
 
-        # Re-sync FPS state with AFC — tools may have been swapped during the pause
+        # Re-sync FPS state with AFC â€” tools may have been swapped during the pause
         try:
             self.determine_state()
         except Exception as exc:

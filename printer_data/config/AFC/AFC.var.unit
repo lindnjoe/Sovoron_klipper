@@ -240,9 +240,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 100.0,
-                "color": "D6E7FF",
-                "scan_time": "2026-02-17T03:35:53.976707+00:00Z",
+                "td": 2.4,
+                "color": "F8FFFF",
+                "scan_time": "2026-02-17T08:24:21.458838+00:00Z",
                 "error": null
             }
         }
@@ -273,7 +273,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Loaded",
+            "status": "Tooled",
             "dist_hub": 1940.0,
             "td1_data": {}
         },
