@@ -190,9 +190,9 @@ class AMSEventBus:
             try:
                 callback(event_type=event_type, **kwargs)
                 success_count += 1
-            except Exception:
-                self.logger.error("Event handler failed for '%s' (priority=%d)", 
-                                    event_type, priority)
+            except Exception as e:
+                self.logger.error("Event handler failed for '%s' (priority=%d): %s",
+                                    event_type, priority, e)
         
         return success_count
     
@@ -704,9 +704,9 @@ class AMSHardwareService:
 
             return eventtime + self._polling_interval
 
-        except Exception:
+        except Exception as e:
             import traceback
-            self._log_error(f"Error in unified polling callback for {self.name}: {traceback.format_exc()}")
+            self._log_error(f"Error in unified polling callback for {self.name}: {e}\n{traceback.format_exc()}")
             return eventtime + self._polling_interval_idle
 
     def poll_status(self) -> Optional[Dict[str, Any]]:
@@ -744,9 +744,9 @@ class AMSHardwareService:
             for callback in callbacks:
                 try:
                     callback(status_copy)
-                except Exception:
+                except Exception as e:
                     import traceback
-                    self._log_error(f"AMS status observer failed for {self.name}: {traceback.format_exc()}")
+                    self._log_error(f"AMS status observer failed for {self.name}: {e}\n{traceback.format_exc()}")
 
     def latest_status(self) -> Dict[str, Any]:
         """Return the most recently cached status snapshot."""
@@ -1029,8 +1029,8 @@ class AMSRunoutCoordinator:
         for unit in units:
             try:
                 unit.handle_runout_detected(spool_index, monitor, lane_name=lane_hint)
-            except Exception:
-                unit.logger.error("Failed to propagate OpenAMS runout to AFC unit %s", unit.name)
+            except Exception as e:
+                unit.logger.error("Failed to propagate OpenAMS runout to AFC unit %s: %s", unit.name, e)
 
     @classmethod
     def notify_afc_error(cls, printer, name: str, message: str, *, pause: bool = False) -> None:
@@ -1050,11 +1050,11 @@ class AMSRunoutCoordinator:
 
             try:
                 error_obj.AFC_error(message, pause=pause, level=3)
-            except Exception:
+            except Exception as e:
                 logger = getattr(unit, "logger", None)
                 if logger is None:
                     logger = logging.getLogger(__name__)
-                logger.error("Failed to deliver OpenAMS error '%s' to AFC unit %s", message, unit)
+                logger.error("Failed to deliver OpenAMS error '%s' to AFC unit %s: %s", message, unit, e)
 
     @classmethod
     def notify_lane_tool_state(cls, printer, name: str, lane_name: str, *, loaded: bool, spool_index: Optional[int] = None, eventtime: Optional[float] = None) -> bool:
@@ -1077,8 +1077,8 @@ class AMSRunoutCoordinator:
             try:
                 if unit.handle_openams_lane_tool_state(lane_name, loaded, spool_index=spool_index, eventtime=eventtime):
                     handled = True
-            except Exception:
-                unit.logger.error("Failed to update AFC lane %s from OpenAMS tool state", lane_name)
+            except Exception as e:
+                unit.logger.error("Failed to update AFC lane %s from OpenAMS tool state: %s", lane_name, e)
         return handled
 
     @classmethod
@@ -1098,8 +1098,8 @@ class AMSRunoutCoordinator:
                 marker = getattr(unit, "mark_cross_extruder_runout", None)
                 if callable(marker) and marker(lane_name):
                     handled = True
-            except Exception:
-                unit.logger.error("Failed to mark lane %s as cross-extruder runout participant", lane_name)
+            except Exception as e:
+                unit.logger.error("Failed to mark lane %s as cross-extruder runout participant: %s", lane_name, e)
         return handled
 
     @classmethod

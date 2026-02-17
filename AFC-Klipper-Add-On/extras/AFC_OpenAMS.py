@@ -151,12 +151,12 @@ class _VirtualFilamentSensor:
             return
         try:
             gcode.register_mux_command("QUERY_FILAMENT_SENSOR", "SENSOR", name, self.cmd_QUERY_FILAMENT_SENSOR, desc=self.QUERY_HELP)
-        except Exception:
+        except Exception as e:
             pass
 
         try:
             gcode.register_mux_command("SET_FILAMENT_SENSOR", "SENSOR", name, self.cmd_SET_FILAMENT_SENSOR, desc=self.SET_HELP)
-        except Exception:
+        except Exception as e:
             pass
 
     def get_status(self, eventtime):
@@ -178,7 +178,7 @@ def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
     if callable(normalize_extruder_name):
         try:
             return normalize_extruder_name(name)
-        except Exception:
+        except Exception as e:
             pass
 
     if not name or not isinstance(name, str):
@@ -322,8 +322,8 @@ class afcAMS(afcUnit):
         if LaneRegistry is not None:
             try:
                 self.registry = LaneRegistry.for_printer(self.printer)
-            except Exception:
-                self.logger.error("Failed to initialize LaneRegistry")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize LaneRegistry: {e}")
 
         # Event bus subscription for spool changes
         self.event_bus = None
@@ -332,8 +332,8 @@ class afcAMS(afcUnit):
                 self.event_bus = AMSEventBus.get_instance()
                 self.event_bus.subscribe("spool_loaded", self._handle_spool_loaded_event, priority=10)
                 self.event_bus.subscribe("spool_unloaded", self._handle_spool_unloaded_event, priority=10)
-            except Exception:
-                self.logger.error("Failed to subscribe to AMS events")
+            except Exception as e:
+                self.logger.error(f"Failed to subscribe to AMS events: {e}")
 
         # NOTE: This class uses AFC native state exclusively (no duplicate tracking):
         # - extruder.lane_loaded - which lane is loaded to toolhead
@@ -390,7 +390,7 @@ class afcAMS(afcUnit):
                 self._cached_oams_manager = OpenAMSManagerFacade.get_manager(self.printer)
             else:
                 self._cached_oams_manager = self.printer.lookup_object("oams_manager", None)
-        except Exception:
+        except Exception as e:
             self._cached_oams_manager = None
         return self._cached_oams_manager
 
@@ -721,7 +721,7 @@ class afcAMS(afcUnit):
         if self._cached_gcode is None:
             try:
                 self._cached_gcode = self.printer.lookup_object("gcode")
-            except Exception:
+            except Exception as e:
                 pass
 
         # Pre-cache OAMS index
@@ -767,8 +767,8 @@ class afcAMS(afcUnit):
                             custom_load_cmd=getattr(lane, "custom_load_cmd", None),
                             custom_unload_cmd=getattr(lane, "custom_unload_cmd", None),
                         )
-                    except Exception:
-                        self.logger.error(f"Failed to register lane {lane_name} with registry")
+                    except Exception as e:
+                        self.logger.error(f"Failed to register lane {lane_name} with registry: {e}")
         first_leg = ("<span class=warning--text>|</span>"
                     "<span class=error--text>_</span>")
         second_leg = f"{first_leg}<span class=warning--text>|</span>"
@@ -826,7 +826,7 @@ class afcAMS(afcUnit):
             if not getattr(self.afc, "_virtual_ams_chip_registered", False):
                 try:
                     pins.register_chip("afc_virtual_ams", self.afc)
-                except Exception:
+                except Exception as e:
                     return False
                 else:
                     self.afc._virtual_ams_chip_registered = True
@@ -841,9 +841,9 @@ class afcAMS(afcUnit):
             except TypeError:
                 try:
                     created = add_filament_switch(normalized, f"afc_virtual_ams:{normalized}", self.printer, enable_gui)
-                except Exception:
+                except Exception as e:
                     return False
-            except Exception:
+            except Exception as e:
                 return False
 
             sensor = created[0] if isinstance(created, tuple) else created
@@ -869,7 +869,7 @@ class afcAMS(afcUnit):
         alias_token = None
         try:
             alias_token = f"{extruder.name}_tool_start"
-        except Exception:
+        except Exception as e:
             alias_token = None
 
         if alias_token:
@@ -886,7 +886,7 @@ class afcAMS(afcUnit):
                 try:
                     gcode = self.printer.lookup_object("gcode")
                     self._cached_gcode = gcode
-                except Exception:
+                except Exception as e:
                     gcode = None
 
             if gcode is not None:
@@ -896,7 +896,7 @@ class afcAMS(afcUnit):
                 ):
                     try:
                         gcode.register_mux_command(command, "SENSOR", alias_token, handler, desc=desc)
-                    except Exception:
+                    except Exception as e:
                         pass
 
         return True
@@ -972,7 +972,7 @@ class afcAMS(afcUnit):
                     try:
                         sensor_snapshot = self._get_oams_sensor_snapshot({lane_name: lane}, require_hub=True)
                         lane_has_filament = bool(sensor_snapshot.get(lane_name, False) and getattr(lane, "tool_loaded", False))
-                    except Exception:
+                    except Exception as e:
                         lane_has_filament = False
 
                 saved_lane_loaded = self._get_saved_extruder_lane_loaded(getattr(extruder, "name", None))
@@ -985,7 +985,7 @@ class afcAMS(afcUnit):
                             extruder.lane_loaded = lane_name
                             self.logger.debug(f"Restored extruder.lane_loaded to {lane_name} from AFC.var.unit during sync")
                             return True
-                        except Exception:
+                        except Exception as e:
                             self.logger.debug("Failed to restore extruder.lane_loaded from AFC.var.unit during sync")
                     else:
                         return False
@@ -995,7 +995,7 @@ class afcAMS(afcUnit):
                         extruder.lane_loaded = lane_name
                         self.logger.debug(f"Restored extruder.lane_loaded to {lane_name} based on lane state during sync")
                         return True
-                    except Exception:
+                    except Exception as e:
                         self.logger.debug("Failed to restore extruder.lane_loaded during sync")
                 if sync_only:
                     # Post-reboot sync: extruder says nothing loaded, trust it over stale lane state
@@ -1107,7 +1107,7 @@ class afcAMS(afcUnit):
             toolhead.wait_moves()
             # Add a small delay to allow the MCU to catch up
             self.reactor.pause(self.reactor.monotonic() + 0.05)
-        except Exception:
+        except Exception as e:
             pass
 
         eventtime = self.reactor.monotonic()
@@ -1138,7 +1138,7 @@ class afcAMS(afcUnit):
             toolhead.wait_moves()
             # Add a small delay to allow the MCU to catch up
             self.reactor.pause(self.reactor.monotonic() + 0.05)
-        except Exception:
+        except Exception as e:
             pass
 
         eventtime = self.reactor.monotonic()
@@ -1308,7 +1308,7 @@ class afcAMS(afcUnit):
         if callable(lookup):
             try:
                 extruder = lookup(key, None)
-            except Exception:
+            except Exception as e:
                 extruder = None
 
         if extruder is None:
@@ -1348,7 +1348,7 @@ class afcAMS(afcUnit):
         if callable(lookup):
             try:
                 lane = lookup(key, None)
-            except Exception:
+            except Exception as e:
                 lane = None
         else:
             lane = None
@@ -1390,7 +1390,7 @@ class afcAMS(afcUnit):
         try:
             with open(filename, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
-        except Exception:
+        except Exception as e:
             self.logger.debug(f"Failed to read saved AFC unit data from {filename}")
             self._saved_unit_cache = None
         else:
@@ -1494,7 +1494,7 @@ class afcAMS(afcUnit):
         snapshot: Dict[str, bool] = {}
         try:
             oams_manager = self._get_oams_manager()
-        except Exception:
+        except Exception as e:
             oams_manager = None
 
         if oams_manager is None:
@@ -1540,7 +1540,7 @@ class afcAMS(afcUnit):
                     hub_present = bool(hub_values[bay_index])
                 if f1s_values and bay_index < len(f1s_values):
                     f1s_present = bool(f1s_values[bay_index])
-            except Exception:
+            except Exception as e:
                 pass
 
             has_filament = bool(hub_present or (f1s_present and not require_hub))
@@ -1620,7 +1620,7 @@ class afcAMS(afcUnit):
                 extruder_obj.lane_loaded = canonical_lane
                 self.__class__._hydrated_extruders.add(extruder_name)
                 self.logger.debug(f"Hydrated {extruder_name}.lane_loaded from saved state: {canonical_lane}")
-            except Exception:
+            except Exception as e:
                 self.logger.debug(f"Failed to hydrate {extruder_name} lane from saved state")
 
         self._hydrated_from_saved = True
@@ -1719,7 +1719,7 @@ class afcAMS(afcUnit):
                         try:
                             if cur_lane.extruder_obj.tool_obj and cur_lane.extruder_obj.tc_unit_name:
                                 on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
-                        except Exception:
+                        except Exception as e:
                             pass
 
                         msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
@@ -1774,7 +1774,7 @@ class afcAMS(afcUnit):
         """
         try:
             self.oams.abort_current_action(wait=True, code=0)
-        except Exception:
+        except Exception as e:
             self.logger.debug(f"Failed to abort existing action before unload for {cur_lane.name}")
 
         hub_cleared = False
@@ -1784,14 +1784,14 @@ class afcAMS(afcUnit):
             # Send unload command first to retract spool motor
             try:
                 self.oams.oams_unload_spool_cmd.send([])
-            except Exception:
-                self.logger.error(f"Failed to send unload command for {cur_lane.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to send unload command for {cur_lane.name}: {e}")
 
             # Also reverse follower to help pull filament back
             try:
                 self.oams.set_oams_follower(1, 0)  # Enable reverse
-            except Exception:
-                self.logger.error(f"Failed to enable reverse follower for {cur_lane.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to enable reverse follower for {cur_lane.name}: {e}")
 
             # Optional delay before checking hub clear state
             if initial_delay > 0.0:
@@ -1802,7 +1802,7 @@ class afcAMS(afcUnit):
             while self.afc.reactor.monotonic() < unload_deadline:
                 try:
                     hub_cleared = not bool(self.oams.hub_hes_value[spool_index])
-                except Exception:
+                except Exception as e:
                     hub_cleared = False
                 if hub_cleared:
                     break
@@ -1812,14 +1812,14 @@ class afcAMS(afcUnit):
             # Send another unload command between attempts
             try:
                 self.oams.oams_unload_spool_cmd.send([])
-            except Exception:
+            except Exception as e:
                 pass
 
         # Disable follower after unload completes or times out
         try:
             self.oams.set_oams_follower(0, 0)
-        except Exception:
-            self.logger.error(f"Failed to disable follower after unload for {cur_lane.name}")
+        except Exception as e:
+            self.logger.error(f"Failed to disable follower after unload for {cur_lane.name}: {e}")
 
         # If hub still not cleared, wait a bit longer for mechanical settling
         if not hub_cleared:
@@ -1828,7 +1828,7 @@ class afcAMS(afcUnit):
             while self.afc.reactor.monotonic() < settle_deadline:
                 try:
                     hub_cleared = not bool(self.oams.hub_hes_value[spool_index])
-                except Exception:
+                except Exception as e:
                     hub_cleared = False
                 if hub_cleared:
                     break
@@ -1878,8 +1878,8 @@ class afcAMS(afcUnit):
         # The load command is needed to move filament from spool bay to hub motor
         try:
             self.oams.oams_load_spool_cmd.send([spool_index])
-        except Exception:
-            self.logger.error(f"Failed to start spool load for TD-1 calibration on {cur_lane.name}")
+        except Exception as e:
+            self.logger.error(f"Failed to start spool load for TD-1 calibration on {cur_lane.name}: {e}")
             return False, "Failed to start spool load", 0
 
         # Wait for hub to load and STOP immediately when hub sensor triggers
@@ -1914,12 +1914,12 @@ class afcAMS(afcUnit):
             # Abort the load operation and stop the follower
             try:
                 self.oams.abort_current_action(wait=True, code=0)
-            except Exception:
-                self.logger.error(f"Failed to abort load action for {cur_lane.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to abort load action for {cur_lane.name}: {e}")
             try:
                 self.oams.set_oams_follower(0, 0)
-            except Exception:
-                self.logger.error(f"Failed to disable follower for {cur_lane.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to disable follower for {cur_lane.name}: {e}")
             msg = f"Hub sensor did not trigger during TD-1 calibration for {cur_lane.name}"
             self.logger.error(msg)
             return False, msg, 0
@@ -1929,19 +1929,19 @@ class afcAMS(afcUnit):
         self.logger.debug(f"Hub loaded, aborting load operation and taking manual control for {cur_lane.name}")
         try:
             self.oams.abort_current_action(wait=True, code=0)
-        except Exception:
-            self.logger.error(f"Failed to abort load action for {cur_lane.name}")
+        except Exception as e:
+            self.logger.error(f"Failed to abort load action for {cur_lane.name}: {e}")
         try:
             self.oams.set_oams_follower(0, 0)
-        except Exception:
-            self.logger.error(f"Failed to stop follower for {cur_lane.name}")
+        except Exception as e:
+            self.logger.error(f"Failed to stop follower for {cur_lane.name}: {e}")
 
         # Give it a moment for the follower to stop
         self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
 
         try:
             encoder_before = int(self.oams.encoder_clicks)
-        except Exception:
+        except Exception as e:
             encoder_before = None
 
         compare_time = datetime.now()
@@ -2001,15 +2001,15 @@ class afcAMS(afcUnit):
         follower_start_time = datetime.now().astimezone()  # Track when follower started
         try:
             self.oams.set_oams_follower(1, 1)
-        except Exception:
-            self.logger.error(f"Failed to enable follower for TD-1 calibration on {cur_lane.name}")
+        except Exception as e:
+            self.logger.error(f"Failed to enable follower for TD-1 calibration on {cur_lane.name}: {e}")
             self._unload_after_td1(cur_lane, spool_index, fps_id)
             return False, "Failed to enable follower", 0
 
         while self.afc.reactor.monotonic() < td1_timeout:
             try:
                 encoder_now = int(self.oams.encoder_clicks)
-            except Exception:
+            except Exception as e:
                 encoder_now = encoder_before
 
             clicks_moved = abs(encoder_now - encoder_before)
@@ -2046,8 +2046,8 @@ class afcAMS(afcUnit):
         follower_stop_time = datetime.now().astimezone()  # Track when follower stopped
         try:
             self.oams.set_oams_follower(0, 0)
-        except Exception:
-            self.logger.error(f"Failed to disable follower after TD-1 calibration for {cur_lane.name}")
+        except Exception as e:
+            self.logger.error(f"Failed to disable follower after TD-1 calibration for {cur_lane.name}: {e}")
 
         if not td1_detected:
             # Filament reached hub but not TD-1 - unload it
@@ -2057,7 +2057,7 @@ class afcAMS(afcUnit):
 
         try:
             encoder_after = int(self.oams.encoder_clicks)
-        except Exception:
+        except Exception as e:
             encoder_after = None
 
         if encoder_before is None or encoder_after is None:
@@ -2162,7 +2162,7 @@ class afcAMS(afcUnit):
                 other_hub_loaded = any(
                     bool(value) for idx, value in enumerate(hub_values) if idx != spool_index
                 )
-        except Exception:
+        except Exception as e:
             current_hub_loaded = False
             other_hub_loaded = False
 
@@ -2174,7 +2174,7 @@ class afcAMS(afcUnit):
                     if hub_values and all(not bool(value) for value in hub_values):
                         other_hub_loaded = False
                         break
-                except Exception:
+                except Exception as e:
                     break
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
@@ -2192,7 +2192,7 @@ class afcAMS(afcUnit):
                     hub_values = getattr(self.oams, "hub_hes_value", None)
                     if hub_values and all(not bool(value) for value in hub_values):
                         break
-                except Exception:
+                except Exception as e:
                     break
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
@@ -2206,8 +2206,8 @@ class afcAMS(afcUnit):
         # The load command is needed to move filament from spool bay to follower (hub) motor
         try:
             self.oams.oams_load_spool_cmd.send([spool_index])
-        except Exception:
-            self.logger.error(f"Failed to start spool load for TD-1 capture on {cur_lane.name}")
+        except Exception as e:
+            self.logger.error(f"Failed to start spool load for TD-1 capture on {cur_lane.name}: {e}")
             return False, "Failed to start spool load"
 
         fps_id = self._get_fps_id_for_lane(cur_lane.name)
@@ -2215,11 +2215,11 @@ class afcAMS(afcUnit):
             self.logger.error(f"Unable to resolve FPS for {cur_lane.name}")
             try:
                 self.oams.set_oams_follower(0, 0)
-            except Exception:
+            except Exception as e:
                 pass
             try:
                 self.oams.oams_unload_spool_cmd.send([])
-            except Exception:
+            except Exception as e:
                 pass
             return False, "Unable to resolve FPS"
 
@@ -2232,7 +2232,7 @@ class afcAMS(afcUnit):
         while self.afc.reactor.monotonic() < hub_timeout:
             try:
                 hub_detected = bool(self.oams.hub_hes_value[spool_index])
-            except Exception:
+            except Exception as e:
                 hub_detected = False
             if hub_detected:
                 self.logger.info(f"Hub sensor triggered for TD-1 capture on {cur_lane.name}")
@@ -2243,11 +2243,11 @@ class afcAMS(afcUnit):
             # Abort the load operation and stop the follower
             try:
                 self.oams.abort_current_action(wait=True, code=0)
-            except Exception:
+            except Exception as e:
                 pass
             try:
                 self.oams.set_oams_follower(0, 0)
-            except Exception:
+            except Exception as e:
                 pass
             self.logger.error(
                 f"Hub sensor did not trigger during TD-1 capture for {cur_lane.name}"
@@ -2257,7 +2257,7 @@ class afcAMS(afcUnit):
         # Hub detected - use OAMS load flow and encoder tracking (no manual follower feed)
         try:
             encoder_before = int(self.oams.encoder_clicks)
-        except Exception:
+        except Exception as e:
             encoder_before = None
 
         if encoder_before is None:
@@ -2313,7 +2313,7 @@ class afcAMS(afcUnit):
         while self.afc.reactor.monotonic() < td1_timeout:
             try:
                 encoder_now = int(self.oams.encoder_clicks)
-            except Exception:
+            except Exception as e:
                 encoder_now = encoder_before
             clicks_moved = abs(encoder_now - encoder_before)
             if clicks_moved >= target_clicks:
@@ -2339,7 +2339,7 @@ class afcAMS(afcUnit):
             try:
                 if hasattr(self.oams, "determine_current_spool"):
                     queried_spool = self.oams.determine_current_spool()
-            except Exception:
+            except Exception as e:
                 queried_spool = None
             current_spool = getattr(self.oams, "current_spool", None)
             if (
@@ -2437,7 +2437,7 @@ class afcAMS(afcUnit):
                 tool_loaded = False
                 try:
                     tool_loaded = self._lane_reports_tool_filament(lane, sync_only=False)
-                except Exception:
+                except Exception as e:
                     pass
 
                 # Hub sensor shows filament in AMS (but not necessarily in toolhead)
@@ -2448,7 +2448,7 @@ class afcAMS(afcUnit):
                         spool_index = self._get_openams_spool_index(lane)
                         if spool_index is not None:
                             hub_loaded = bool(self.oams.hub_hes_value[spool_index])
-                    except Exception:
+                    except Exception as e:
                         pass
 
                 # Read what AFC THINKS
@@ -2591,8 +2591,8 @@ class afcAMS(afcUnit):
                 try:
                     self.hardware_service = AMSHardwareService.for_printer(self.printer, self.oams_name, self.logger)
                     self.hardware_service.attach_controller(self.oams)
-                except Exception:
-                    self.logger.error(f"Failed to attach AMSHardwareService for {self.oams_name}")
+                except Exception as e:
+                    self.logger.error(f"Failed to attach AMSHardwareService for {self.oams_name}: {e}")
         # Check if OAMS hardware was found for THIS specific unit
         if self.oams is None:
             self.logger.warning(
@@ -2619,8 +2619,8 @@ class afcAMS(afcUnit):
         # Start unified polling in AMSHardwareService
         try:
             self.hardware_service.start_polling()
-        except Exception:
-            self.logger.error(f"Failed to start unified polling for {self.oams_name}")
+        except Exception as e:
+            self.logger.error(f"Failed to start unified polling for {self.oams_name}: {e}")
         # Hook into AFC's LANE_UNLOAD for cross-extruder runouts
         self._wrap_afc_lane_unload()
         self._wrap_afc_unset_lane_loaded()
@@ -2700,8 +2700,8 @@ class afcAMS(afcUnit):
                                                 eventtime=self.reactor.monotonic(),
                                             )
                                             self.logger.debug("Cross-Extruder: Notified AFC that lane {} unloaded".format(lane_name))
-                                        except Exception:
-                                            self.logger.error("Failed to notify AFC about lane {} unload".format(lane_name))
+                                        except Exception as e:
+                                            self.logger.error(f"Failed to notify AFC about lane {lane_name} unload: {e}")
 
                                         # Also manually set the virtual tool sensor to False for AMS virtual extruders
                                         # This ensures virtual sensor (e.g., AMS_Extruder4) shows correct state
@@ -2714,17 +2714,17 @@ class afcAMS(afcUnit):
                                                     if sensor and hasattr(sensor, 'runout_helper'):
                                                         sensor.runout_helper.note_filament_present(self.reactor.monotonic(), is_filament_present=False)
                                                         self.logger.debug("Cross-Extruder: Set virtual sensor {} to False after cross-extruder runout".format(sensor_name))
-                                        except Exception:
-                                            self.logger.error("Failed to update virtual sensor for lane {} during cross-extruder runout".format(lane_name))
+                                        except Exception as e:
+                                            self.logger.error(f"Failed to update virtual sensor for lane {lane_name} during cross-extruder runout: {e}")
                                     else:
                                         self.logger.warning("Cross-Extruder: Could not clear FPS state for lane {}".format(lane_name))
-                                except Exception:
-                                    self.logger.error("Failed to clear FPS state for lane {}".format(lane_name))
+                                except Exception as e:
+                                    self.logger.error(f"Failed to clear FPS state for lane {lane_name}: {e}")
 
                             # Clear the flag
                             lane._oams_cross_extruder_runout = False
                         except Exception as e:
-                            self.logger.error("Failed to handle cross-extruder LANE_UNLOAD for {}: {}".format(lane_name, str(e)))
+                            self.logger.error(f"Failed to handle cross-extruder LANE_UNLOAD for {lane_name}: {e}")
 
             # Call original method
             return self.afc._original_LANE_UNLOAD(gcmd_or_lane)
@@ -2762,8 +2762,8 @@ class afcAMS(afcUnit):
                     extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None) if cur_lane_loaded else None
                     if oams_manager is not None:
                         oams_manager.on_afc_lane_unloaded(lane_name, extruder_name=extruder_name)
-                except Exception:
-                    self.logger.error("Failed to notify OAMS manager during unset_lane_loaded")
+                except Exception as e:
+                    self.logger.error(f"Failed to notify OAMS manager during unset_lane_loaded: {e}")
             return result
 
         afc_function.unset_lane_loaded = unset_lane_loaded_wrapper
@@ -2781,7 +2781,7 @@ class afcAMS(afcUnit):
         if not getattr(afc, "_oams_tool_swap_timing_patched", False):
             try:
                 from extras.AFC_Toolchanger import AfcToolchanger
-            except Exception:
+            except Exception as e:
                 AfcToolchanger = None
 
             if AfcToolchanger is not None:
@@ -2999,7 +2999,7 @@ class afcAMS(afcUnit):
         if prev_val and not lane_val:
             try:
                 is_printing = self.afc.function.is_printing()
-            except Exception:
+            except Exception as e:
                 is_printing = False
 
             if is_printing:
@@ -3018,18 +3018,18 @@ class afcAMS(afcUnit):
                                 f"{getattr(extruder_obj, 'name', 'extruder')} - skipping runout detection on inactive lane"
                             )
                             skip_runout = True
-                except Exception:
+                except Exception as e:
                     pass
 
                 if not skip_runout:
                     self.logger.info("F1S sensor False for {} (spool empty, printing), triggering runout detection".format(lane.name))
                     try:
                         self.handle_runout_detected(bay, None, lane_name=lane.name)
-                    except Exception:
+                    except Exception as e:
                         self.logger.error(
                             f"Failed to handle runout detection for {lane.name} "
-                            f"(spool_index={bay}, runout_lane={getattr(lane, 'runout_lane', None)})\n"
-                            f"{traceback.format_exc()}"
+                            f"(spool_index={bay}, runout_lane={getattr(lane, 'runout_lane', None)}): {e}",
+                            traceback=traceback.format_exc(),
                         )
             else:
                 self.logger.debug("F1S sensor False for {} but not printing - skipping runout detection (likely filament insertion/removal)".format(lane.name))
@@ -3044,8 +3044,8 @@ class afcAMS(afcUnit):
                     self.oams_name, lane.name, lane_val, hub_state, eventtime,
                     spool_index=bay, tool_state=tool_state
                 )
-            except Exception:
-                self.logger.error(f"Failed to update lane snapshot for {lane.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to update lane snapshot for {lane.name}: {e}")
         # Sync virtual tool sensor
         self._sync_virtual_tool_sensor(eventtime)
 
@@ -3074,8 +3074,8 @@ class afcAMS(afcUnit):
                         self.oams_name, lane.name, lane_state, hub_val, eventtime,
                         spool_index=bay, tool_state=tool_state
                     )
-                except Exception:
-                    self.logger.error(f"Failed to update lane snapshot for {lane.name}")
+                except Exception as e:
+                    self.logger.error(f"Failed to update lane snapshot for {lane.name}: {e}")
             return
 
         if hub_val != getattr(lane, "loaded_to_hub", False):
@@ -3097,8 +3097,8 @@ class afcAMS(afcUnit):
                     self.oams_name, lane.name, lane_state, hub_val, eventtime,
                     spool_index=bay, tool_state=tool_state
                 )
-            except Exception:
-                self.logger.error(f"Failed to update lane snapshot for {lane.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to update lane snapshot for {lane.name}: {e}")
 
     def _should_block_sensor_update_for_runout(self, lane, lane_val):
         """Check if sensor update should be blocked due to active runout.
@@ -3129,7 +3129,7 @@ class afcAMS(afcUnit):
                 # Clear the flag - runout handling is complete
                 lane._oams_runout_detected = False
                 self.logger.debug(f"Clearing runout flag for lane {getattr(lane, 'name', 'unknown')} - runout handling complete")
-        except Exception:
+        except Exception as e:
             # On error, clear the flag to be safe
             lane._oams_runout_detected = False
 
@@ -3262,7 +3262,7 @@ class afcAMS(afcUnit):
             # Only unsync from extruder if not in active cross-extruder runout or tool operation
             try:
                 is_printing = self.afc.function.is_printing()
-            except Exception:
+            except Exception as e:
                 is_printing = False
             is_cross_extruder_runout = getattr(lane, '_oams_cross_extruder_runout', False) and is_printing
 
@@ -3284,7 +3284,7 @@ class afcAMS(afcUnit):
                         # During runout, the runout monitor sets a flag to indicate filament actually ran out
                         # We should clear lane_loaded in this case even for shared extruders
                         is_same_fps_runout = getattr(lane, '_oams_same_fps_runout', False)
-            except Exception:
+            except Exception as e:
                 pass
 
             if not is_cross_extruder_runout and not (is_shared_extruder and not is_same_fps_runout):
@@ -3294,10 +3294,10 @@ class afcAMS(afcUnit):
                             lane.unsync_to_extruder()
                             lane.extruder_obj.lane_loaded = None
                             self.logger.debug(f"Unsynced lane {lane.name} and cleared extruder.lane_loaded when sensor went False")
-                except Exception:
+                except Exception as e:
                     self.logger.error(
-                        f"Failed to unsync lane {lane.name} from extruder when sensor cleared\n"
-                        f"{traceback.format_exc()}"
+                        f"Failed to unsync lane {lane.name} from extruder when sensor cleared: {e}",
+                        traceback=traceback.format_exc(),
                     )
             elif is_shared_extruder and not is_same_fps_runout:
                 self.logger.debug(f"Skipping lane_loaded clear for {lane.name} - shared extruder (only UNLOAD/RUNOUT commands should clear)")
@@ -3316,7 +3316,7 @@ class afcAMS(afcUnit):
 
         try:
             share = getattr(lane, "ams_share_prep_load", False)
-        except Exception:
+        except Exception as e:
             share = False
 
         if share:
@@ -3332,14 +3332,14 @@ class afcAMS(afcUnit):
             lane.load_callback(eventtime, lane_val)
         except TypeError:
             lane.load_callback(eventtime, load_state=lane_val)
-        except Exception:
-            self.logger.error(f"Failed to update load sensor for lane {lane}")
+        except Exception as e:
+            self.logger.error(f"Failed to update load sensor for lane {lane}: {e}")
         try:
             lane.prep_callback(eventtime, lane_val)
         except TypeError:
             lane.prep_callback(eventtime, prep_state=lane_val)
-        except Exception:
-            self.logger.error(f"Failed to update prep sensor for lane {lane}")
+        except Exception as e:
+            self.logger.error(f"Failed to update prep sensor for lane {lane}: {e}")
         # When sensor goes False (empty), only clear tool/hub loaded flags
         # Let AFC's normal flow handle status and cleanup (align with Box Turtle)
         if not lane_val:
@@ -3503,7 +3503,7 @@ class afcAMS(afcUnit):
             runout_from_saved = True
             try:
                 lane.runout_lane = runout_lane_name
-            except Exception:
+            except Exception as e:
                 self.logger.debug(f"Unable to write saved runout lane {runout_lane_name} onto {lane.name}")
         target_lane, handoff_trace = self._resolve_lane_reference_with_trace(runout_lane_name) if runout_lane_name else (None, [])
         same_extruder_handoff = False
@@ -3525,8 +3525,8 @@ class afcAMS(afcUnit):
                     f"Runout classification failed for {lane.name}: AFC.var.unit missing extruder data. "
                     "Please check AFC.var.unit and lane mappings."
                 )
-            except Exception:
-                self.logger.error("Failed to issue PAUSE after runout classification failure")
+            except Exception as e:
+                self.logger.error(f"Failed to issue PAUSE after runout classification failure: {e}")
             return
 
         self.logger.debug(
@@ -3552,7 +3552,7 @@ class afcAMS(afcUnit):
             if target_lane:
                 try:
                     lane.runout_lane = runout_lane_name
-                except Exception:
+                except Exception as e:
                     self.logger.debug(f"Unable to persist saved runout lane {runout_lane_name} on {lane.name}")
         if runout_from_saved:
             self.logger.info(f"Resolved runout lane for {lane.name} from saved AFC.var.unit state: {runout_lane_name}")
@@ -3568,7 +3568,7 @@ class afcAMS(afcUnit):
             try:
                 if hasattr(lane, '_oams_runout_detected'):
                     lane._oams_runout_detected = False
-            except Exception:
+            except Exception as e:
                 pass
 
             if runout_lane_name and not target_lane:
@@ -3582,14 +3582,14 @@ class afcAMS(afcUnit):
                 # afterward instead of treating it as a same-FPS handoff.
                 try:
                     lane._oams_cross_extruder_runout = True
-                except Exception:
+                except Exception as e:
                     pass
 
                 resolved_name = getattr(target_lane, "name", None)
                 if resolved_name and resolved_name != getattr(lane, "runout_lane", None):
                     try:
                         lane.runout_lane = resolved_name
-                    except Exception:
+                    except Exception as e:
                         self.logger.debug(f"Could not set resolved runout lane on {lane.name}")
                 perform_infinite = getattr(lane, "_perform_infinite_runout", None)
                 if callable(perform_infinite):
@@ -3603,22 +3603,23 @@ class afcAMS(afcUnit):
                                 )
                             try:
                                 self.afc.current = lane.name
-                            except Exception:
+                            except Exception as e:
                                 self.logger.debug(f"Unable to set AFC current lane to {lane.name} before infinite runout")
                         self.logger.info(
                             f"Cross-extruder runout: invoking infinite spool handoff from {lane.name} to {resolved_name}"
                         )
                         perform_infinite()
                         return
-                    except Exception:
+                    except Exception as e:
                         self.logger.error(
                             f"Failed infinite spool handoff for {lane.name} -> {resolved_name}; "
-                            f"falling back to AFC runout handler\n{traceback.format_exc()}"
+                            f"falling back to AFC runout handler: {e}",
+                            traceback=traceback.format_exc(),
                         )
             else:
                 try:
                     lane._oams_cross_extruder_runout = False
-                except Exception:
+                except Exception as e:
                     pass
 
                 self.logger.info(
@@ -3633,11 +3634,11 @@ class afcAMS(afcUnit):
                     runout_cb(eventtime)
                 except TypeError:
                     runout_cb(eventtime=eventtime)
-                except Exception:
+                except Exception as e:
                     self.logger.error(
                         f"Extruder runout handler failed for {lane.name} "
-                        f"(spool_index={spool_index}, runout_lane={runout_lane_name})\n"
-                        f"{traceback.format_exc()}"
+                        f"(spool_index={spool_index}, runout_lane={runout_lane_name}): {e}",
+                        traceback=traceback.format_exc(),
                     )
             else:
                 self.logger.warning(
@@ -3658,8 +3659,8 @@ class afcAMS(afcUnit):
                 f"Same-extruder runout: Marked lane {lane.name} for runout "
                 "(oams_manager monitor will handle reload)"
             )
-        except Exception:
-            self.logger.error(f"Failed to mark lane {lane.name} for runout tracking")
+        except Exception as e:
+            self.logger.error(f"Failed to mark lane {lane.name} for runout tracking: {e}")
     def handle_openams_lane_tool_state(self, lane_name: str, loaded: bool, *, spool_index: Optional[int] = None, eventtime: Optional[float] = None) -> bool:
         """Update lane/tool state in response to OpenAMS hardware events."""
         lane = self._resolve_lane_reference(lane_name)
@@ -3670,14 +3671,14 @@ class afcAMS(afcUnit):
         if eventtime is None:
             try:
                 eventtime = self.reactor.monotonic()
-            except Exception:
+            except Exception as e:
                 eventtime = 0.0
 
         lane_state = bool(loaded)
         try:
             self._apply_lane_sensor_state(lane, lane_state, eventtime)
-        except Exception:
-            self.logger.error(f"Failed to mirror OpenAMS lane sensor state for {lane.name}")
+        except Exception as e:
+            self.logger.error(f"Failed to mirror OpenAMS lane sensor state for {lane.name}: {e}")
         if self.hardware_service is not None:
             hub_state = getattr(lane, "loaded_to_hub", None)
             tool_state = getattr(lane, "tool_loaded", None)
@@ -3689,8 +3690,8 @@ class afcAMS(afcUnit):
                     mapped_spool = None
             try:
                 self.hardware_service.update_lane_snapshot(self.oams_name, lane.name, lane_state, hub_state if hub_state is not None else None, eventtime, spool_index=mapped_spool, tool_state=tool_state if tool_state is not None else lane_state)
-            except Exception:
-                self.logger.error(f"Failed to update shared lane snapshot for {lane.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to update shared lane snapshot for {lane.name}: {e}")
         afc_function = getattr(self.afc, "function", None)
 
         if lane_state:
@@ -3702,14 +3703,14 @@ class afcAMS(afcUnit):
             if afc_function is not None:
                 try:
                     afc_function.unset_lane_loaded()
-                except Exception:
-                    self.logger.error("Failed to unset previously loaded lane")
+                except Exception as e:
+                    self.logger.error(f"Failed to unset previously loaded lane: {e}")
             try:
                 # Call set_tool_loaded() instead of set_loaded() since filament is loaded to toolhead
                 # This properly sets extruder.lane_loaded which is needed for lane tracking
                 lane.set_tool_loaded()
-            except Exception:
-                self.logger.error(f"Failed to mark lane {lane.name} as loaded")
+            except Exception as e:
+                self.logger.error(f"Failed to mark lane {lane.name} as loaded: {e}")
             try:
                 lane.sync_to_extruder()
                 # Wait for all moves to complete to prevent "Timer too close" errors
@@ -3718,22 +3719,22 @@ class afcAMS(afcUnit):
                     toolhead.wait_moves()
                     # Add a small delay to allow the MCU to catch up
                     self.reactor.pause(self.reactor.monotonic() + 0.05)
-                except Exception:
+                except Exception as e:
                     pass
-            except Exception:
-                self.logger.error(f"Failed to sync lane {lane.name} to extruder")
+            except Exception as e:
+                self.logger.error(f"Failed to sync lane {lane.name} to extruder: {e}")
             if afc_function is not None:
                 try:
                     afc_function.handle_activate_extruder()
-                except Exception:
-                    self.logger.error(f"Failed to activate extruder after loading lane {lane.name}")
+                except Exception as e:
+                    self.logger.error(f"Failed to activate extruder after loading lane {lane.name}: {e}")
             try:
                 self.afc.save_vars()
-            except Exception:
-                self.logger.error("Failed to persist AFC state after lane load")
+            except Exception as e:
+                self.logger.error(f"Failed to persist AFC state after lane load: {e}")
             try:
                 self.select_lane(lane)
-            except Exception:
+            except Exception as e:
                 self.logger.debug(f"Unable to select lane {lane.name} during OpenAMS load")
             if self._lane_matches_extruder(lane):
                 try:
@@ -3742,22 +3743,22 @@ class afcAMS(afcUnit):
                     if lane:
                         force_update = (getattr(lane, "tool_loaded", False) is not False)
                     self._set_virtual_tool_sensor_state(True, eventtime, lane.name, force=force_update, lane_obj=lane)
-                except Exception:
-                    self.logger.error(f"Failed to mirror tool sensor state for loaded lane {lane.name}")
+                except Exception as e:
+                    self.logger.error(f"Failed to mirror tool sensor state for loaded lane {lane.name}: {e}")
             return True
 
         current_lane = None
         if afc_function is not None:
             try:
                 current_lane = afc_function.get_current_lane_obj()
-            except Exception:
+            except Exception as e:
                 current_lane = None
 
         if current_lane is lane and afc_function is not None:
             try:
                 afc_function.unset_lane_loaded()
-            except Exception:
-                self.logger.error(f"Failed to unset currently loaded lane {lane.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to unset currently loaded lane {lane.name}: {e}")
             return True
 
         if getattr(lane, "tool_loaded", False):
@@ -3769,36 +3770,36 @@ class afcAMS(afcUnit):
                     toolhead.wait_moves()
                     # Add a small delay to allow the MCU to catch up
                     self.reactor.pause(self.reactor.monotonic() + 0.05)
-                except Exception:
+                except Exception as e:
                     pass
-            except Exception:
-                self.logger.error(f"Failed to unsync lane {lane.name} from extruder")
+            except Exception as e:
+                self.logger.error(f"Failed to unsync lane {lane.name} from extruder: {e}")
             try:
                 lane.set_unloaded()
-            except Exception:
-                self.logger.error(f"Failed to mark lane {lane.name} as unloaded")
+            except Exception as e:
+                self.logger.error(f"Failed to mark lane {lane.name} as unloaded: {e}")
             try:
                 self.afc.save_vars()
-            except Exception:
-                self.logger.error(f"Failed to persist AFC state after unloading lane {lane.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to persist AFC state after unloading lane {lane.name}: {e}")
 
         # Ensure extruder tracking is cleared even if lane.tool_loaded was already false
         extruder_obj = getattr(lane, "extruder_obj", None)
         try:
             extruder_lane = getattr(extruder_obj, "lane_loaded", None)
-        except Exception:
+        except Exception as e:
             extruder_lane = None
         if extruder_obj is not None and extruder_lane == getattr(lane, "name", None):
             try:
                 extruder_obj.lane_loaded = None
                 self.logger.debug(f"Cleared extruder.lane_loaded for {getattr(lane, 'name', None)} during unload cleanup")
-            except Exception:
+            except Exception as e:
                 self.logger.debug(f"Failed to clear extruder tracking for {getattr(lane, 'name', None)} during unload cleanup")
         if self._lane_matches_extruder(lane):
             try:
                 self._set_virtual_tool_sensor_state(False, eventtime, lane.name, lane_obj=lane)
-            except Exception:
-                self.logger.error(f"Failed to mirror tool sensor state for unloaded lane {lane.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to mirror tool sensor state for unloaded lane {lane.name}: {e}")
         return True
 
     def mark_cross_extruder_runout(self, lane_name: str) -> bool:
@@ -3819,8 +3820,8 @@ class afcAMS(afcUnit):
                 f"Marked lane {lane.name} as cross-extruder runout participant for shared sensor bypass"
             )
             return True
-        except Exception:
-            self.logger.error(f"Failed to mark lane {lane.name} for cross-extruder runout")
+        except Exception as e:
+            self.logger.error(f"Failed to mark lane {lane.name} for cross-extruder runout: {e}")
             return False
 
     def _is_event_for_unit(self, unit_name: Optional[str]) -> bool:
@@ -3865,7 +3866,7 @@ class afcAMS(afcUnit):
             prep_obj = self.printer.lookup_object('AFC_prep', None)
             if prep_obj is not None:
                 capture_td1_data = getattr(prep_obj, "get_td1_data", False) and self.afc.td1_present
-        except Exception:
+        except Exception as e:
             pass
         self.logger.debug(f"_handle_spool_loaded_event: lane={lane.name} previous_loaded={previous_loaded} capture_td1_data={capture_td1_data}")
 
@@ -3903,7 +3904,7 @@ class afcAMS(afcUnit):
                     try:
                         old_timer = self._pending_spool_loaded_timers[lane_name]
                         self.reactor.unregister_timer(old_timer)
-                    except Exception:
+                    except Exception as e:
                         pass  # Timer may have already fired
 
                 # Register new timer with 4.2-second delay for TD-1 capture
@@ -3919,7 +3920,7 @@ class afcAMS(afcUnit):
         if extruder_name is None and self.registry is not None:
             try:
                 extruder_name = self.registry.resolve_extruder(lane.name)
-            except Exception:
+            except Exception as e:
                 extruder_name = None
 
         self.record_load(extruder=extruder_name, lane_name=lane.name)
@@ -3938,8 +3939,8 @@ class afcAMS(afcUnit):
                     tool_state=tool_state if tool_state is not None else None,
                     emit_spool_event=False,
                 )
-            except Exception:
-                self.logger.error(f"Failed to mirror spool load event for {lane.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to mirror spool load event for {lane.name}: {e}")
     def _handle_spool_unloaded_event(self, *, event_type=None, **kwargs):
         """Update local state in response to a spool_unloaded event."""
         unit_name = kwargs.get("unit_name")
@@ -3983,8 +3984,8 @@ class afcAMS(afcUnit):
                     tool_state=False,
                     emit_spool_event=False,
                 )
-            except Exception:
-                self.logger.error(f"Failed to mirror spool unload event for {lane.name}")
+            except Exception as e:
+                self.logger.error(f"Failed to mirror spool unload event for {lane.name}: {e}")
     def cmd_AFC_OAMS_CALIBRATE_HUB_HES(self, gcmd):
         """Run the OpenAMS HUB HES calibration for a specific lane."""
         spool_index = gcmd.get_int("SPOOL", None)
@@ -4078,8 +4079,8 @@ class afcAMS(afcUnit):
 
         try:
             messages = self._run_command_with_capture(command)
-        except Exception:
-            self.logger.error(f"Failed to execute OpenAMS HUB HES calibration for spool {spool_index}")
+        except Exception as e:
+            self.logger.error(f"Failed to execute OpenAMS HUB HES calibration for spool {spool_index}: {e}")
             gcmd.respond_info(f"Failed to execute HUB HES calibration for {lane_label}. See logs.")
             return False
 
@@ -4143,8 +4144,8 @@ class afcAMS(afcUnit):
 
         try:
             messages = self._run_command_with_capture(command)
-        except Exception:
-            self.logger.error(f"Failed to execute OpenAMS PTFE calibration for spool {spool_index}")
+        except Exception as e:
+            self.logger.error(f"Failed to execute OpenAMS PTFE calibration for spool {spool_index}: {e}")
             gcmd.respond_info(f"Failed to execute PTFE calibration for {lane_label}. See logs.")
             return False
 
@@ -4328,8 +4329,8 @@ class afcAMS(afcUnit):
         msg = f"\n{self.name} {key}: Saved {value}"
         try:
             rewrite(section, key, value, msg)
-        except Exception:
-            self.logger.error(f"Failed to persist {key} for OpenAMS unit {self.name}")
+        except Exception as e:
+            self.logger.error(f"Failed to persist {key} for OpenAMS unit {self.name}: {e}")
             return False
 
         return True
@@ -4416,7 +4417,7 @@ class afcAMS(afcUnit):
             return False
         try:
             is_printing = self.afc.function.is_printing()
-        except Exception:
+        except Exception as e:
             is_printing = False
         return bool(is_printing)
 
@@ -4502,7 +4503,7 @@ def _patch_lane_pre_sensor_for_ams() -> None:
         if reactor is not None:
             try:
                 eventtime = reactor.monotonic()
-            except Exception:
+            except Exception as e:
                 eventtime = None
 
         if eventtime is None:
@@ -4583,7 +4584,7 @@ def _patch_infinite_runout_handler() -> None:
                         lane_idx = getattr(lane_obj, "lane", None)
                         if lane_idx is not None and int(lane_idx) == idx:
                             return key
-                except Exception:
+                except Exception as e:
                     pass
 
             return None
@@ -4594,7 +4595,7 @@ def _patch_infinite_runout_handler() -> None:
             try:
                 if hasattr(cur, "name") and getattr(cur, "name", None) in lanes:
                     return getattr(cur, "name", None)
-            except Exception:
+            except Exception as e:
                 pass
             return None
 
@@ -4610,7 +4611,7 @@ def _patch_infinite_runout_handler() -> None:
             try:
                 self.runout_lane = runout_target
                 self.logger.info(f"Normalized runout lane {raw_runout_target} -> {runout_target} for infinite runout")
-            except Exception:
+            except Exception as e:
                 pass
 
         if runout_target not in lanes:
@@ -4622,7 +4623,7 @@ def _patch_infinite_runout_handler() -> None:
                 afc.current = lane_name
                 normalized_current = lane_name
                 self.logger.debug(f"Setting AFC current lane to {lane_name} before infinite runout")
-            except Exception:
+            except Exception as e:
                 normalized_current = normalized_current or lane_name
 
         empty_lane = lanes.get(normalized_current, self)
@@ -4642,7 +4643,7 @@ def _patch_infinite_runout_handler() -> None:
         step = "delegate"
         try:
             return _ORIGINAL_PERFORM_INFINITE_RUNOUT(self, *args, **kwargs)
-        except Exception:
+        except Exception as e:
             self.logger.error(
                 f"Infinite runout failed at step {step} for {lane_name} -> {runout_target} "
                 f"(current={getattr(afc, 'current', None)}, empty_map={getattr(empty_lane, 'map', None)}, "
@@ -4666,7 +4667,7 @@ def _patch_lane_unload_for_ams() -> None:
     # Import here to avoid circular dependencies
     try:
         from extras.AFC import afc as AFC_Class
-    except Exception:
+    except Exception as e:
         # If we can't import AFC, we can't patch it
         return
 
@@ -4717,7 +4718,7 @@ def _patch_buffer_multiplier_for_ams() -> None:
 
     try:
         from extras.AFC_buffer import AFCTrigger
-    except Exception:
+    except Exception as e:
         return
 
     if getattr(AFCTrigger, "_ams_buffer_multiplier_patched", False):
@@ -4757,7 +4758,7 @@ def _patch_buffer_status_for_missing_stepper() -> None:
 
     try:
         from extras.AFC_buffer import AFCTrigger
-    except Exception:
+    except Exception as e:
         return
 
     if getattr(AFCTrigger, "_ams_buffer_status_patched", False):
@@ -4809,7 +4810,7 @@ def _patch_buffer_fault_detection_for_ams() -> None:
 
     try:
         import extras.AFC_buffer as _afc_buffer_mod
-    except Exception:
+    except Exception as e:
         return
 
     AFCTrigger = getattr(_afc_buffer_mod, "AFCTrigger", None)
@@ -4884,7 +4885,7 @@ def _has_openams_hardware(printer):
             if obj_name.startswith('oams '):
                 return True
         return False
-    except Exception:
+    except Exception as e:
         # If we can't check, assume OAMS might be present to avoid breaking existing setups
         return True
 
