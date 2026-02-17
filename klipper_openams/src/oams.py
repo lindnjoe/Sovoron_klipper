@@ -198,9 +198,9 @@ class OAMS:
                 )
                 service.attach_controller(self)
                 self.hardware_service = service
-            except Exception:
+            except Exception as e:
                 self.logger.error(
-                    "Failed to register OAMS controller with AMSHardwareService"
+                    f"Failed to register OAMS controller with AMSHardwareService: {e}"
                 )
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
@@ -596,9 +596,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                     gcode.run_script_from_command("G92 E0")
                     gcode.run_script_from_command("G1 E-5.00 F1200")
                     gcode.run_script_from_command("M400")
-                except Exception:
+                except Exception as e:
                     self.logger.warning(
-                        f"OAMS[{self.oams_idx}]: Failed to retract extruder before unload retry"
+                        f"OAMS[{self.oams_idx}]: Failed to retract extruder before unload retry: {e}"
                     )
 
             self._unload_retry_count += 1
