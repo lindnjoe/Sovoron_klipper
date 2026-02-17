@@ -990,7 +990,7 @@ class afcAMS(afcUnit):
                             self.logger.debug(f"Restored extruder.lane_loaded to {lane_name} from AFC.var.unit during sync")
                             return True
                         except Exception as e:
-                            self.logger.debug("Failed to restore extruder.lane_loaded from AFC.var.unit during sync")
+                            self.logger.debug(f"Failed to restore extruder.lane_loaded from AFC.var.unit during sync: {e}")
                     else:
                         return False
 
@@ -1000,7 +1000,7 @@ class afcAMS(afcUnit):
                         self.logger.debug(f"Restored extruder.lane_loaded to {lane_name} based on lane state during sync")
                         return True
                     except Exception as e:
-                        self.logger.debug("Failed to restore extruder.lane_loaded during sync")
+                        self.logger.debug(f"Failed to restore extruder.lane_loaded during sync: {e}")
                 if sync_only:
                     # Post-reboot sync: extruder says nothing loaded, trust it over stale lane state
                     return False

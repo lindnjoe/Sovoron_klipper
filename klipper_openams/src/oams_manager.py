@@ -573,7 +573,7 @@ class OAMSRunoutMonitor:
                     if afc and hasattr(afc, 'lanes'):
                         target_lane_obj = afc.lanes.get(target_lane_name)
             except Exception as e:
-                self.logger.debug(f"OAMS: Failed to read AFC.var.unit runout_lane for {lane_name}")
+                self.logger.debug(f"OAMS: Failed to read AFC.var.unit runout_lane for {lane_name}: {e}")
 
         try:
             current_extruder = self._get_lane_extruder_name(current_lane_obj)
@@ -2607,7 +2607,7 @@ class OAMSManager:
                             "Use OAMSM_CLEAR_LANE_MAPPINGS to clear these redirects if needed."
                         )
             except Exception as e:
-                self.logger.debug("Could not inspect lane mappings (AFC not available or no mappings set)")
+                self.logger.debug(f"Could not inspect lane mappings (AFC not available or no mappings set): {e}")
 
 
             # Re-detect state from hardware sensors
@@ -2616,7 +2616,7 @@ class OAMSManager:
                     self.determine_state()
                 except Exception as e:
                     restart_monitors = False
-                    self.logger.error("State detection failed during OAMSM_CLEAR_ERRORS")
+                    self.logger.error(f"State detection failed during OAMSM_CLEAR_ERRORS: {e}")
 
             # Sync state between OAMS hardware and AFC to prevent state desync issues
             # This validates that AFC's lane_loaded matches OAMS hardware current_spool
@@ -2625,7 +2625,7 @@ class OAMSManager:
                     self.sync_state_with_afc()
                 except Exception as e:
                     restart_monitors = False
-                    self.logger.error("State sync with AFC failed during OAMSM_CLEAR_ERRORS")
+                    self.logger.error(f"State sync with AFC failed during OAMSM_CLEAR_ERRORS: {e}")
 
             # Comprehensive 3-way state reconciliation (like PREP does at startup)
             # This reconciles: Hardware sensors <-> AFC live state <-> AFC.var.unit
@@ -3564,7 +3564,7 @@ class OAMSManager:
                 _ = self.afc.lanes  # Quick attribute access test
                 return self.afc
             except Exception as e:
-                self.logger.warning("Cached AFC object invalid, re-fetching")
+                self.logger.warning(f"Cached AFC object invalid, re-fetching: {e}")
 
                 self.afc = None
 
