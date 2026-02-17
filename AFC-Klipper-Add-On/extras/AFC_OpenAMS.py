@@ -74,6 +74,7 @@ _ORIGINAL_LANE_UNLOAD = None  # Will be set during patching
 _ORIGINAL_BUFFER_SET_MULTIPLIER = None  # Will be set during patching
 _ORIGINAL_BUFFER_GET_STATUS = None  # Will be set during patching
 _ORIGINAL_BUFFER_EXTRUDER_POS_UPDATE = None  # Will be set during patching
+_ORIGINAL_EXTRUDER_ON_SHUTTLE = None  # Will be set during patching
 
 
 def _is_openams_unit(unit_obj) -> bool:
@@ -285,6 +286,38 @@ def _patch_extruder_for_virtual_ams() -> None:
 
     extruder_cls.__init__ = _patched_init
     extruder_cls._ams_virtual_tool_patched = True
+
+def _patch_extruder_on_shuttle_detection() -> None:
+    """Patch AFC on_shuttle() to honor toolchanger string detect states."""
+    global _ORIGINAL_EXTRUDER_ON_SHUTTLE
+
+    extruder_cls = getattr(_afc_extruder_mod, "AFCExtruder", None)
+    if extruder_cls is None or getattr(extruder_cls, "_openams_on_shuttle_patched", False):
+        return
+
+    _ORIGINAL_EXTRUDER_ON_SHUTTLE = getattr(extruder_cls, "on_shuttle", None)
+    if _ORIGINAL_EXTRUDER_ON_SHUTTLE is None:
+        return
+
+    def _openams_on_shuttle(self):
+        try:
+            if self.tool_obj is not None and hasattr(self.tool_obj, "detect_state"):
+                detect_state = getattr(self.tool_obj, "detect_state", None)
+                detect_present = (
+                    detect_state == 1
+                    or detect_state is True
+                    or str(detect_state).lower() in ("mounted", "present", "1", "true")
+                )
+                if detect_present:
+                    return True
+        except Exception:
+            pass
+
+        return _ORIGINAL_EXTRUDER_ON_SHUTTLE(self)
+
+    extruder_cls.on_shuttle = _openams_on_shuttle
+    extruder_cls._openams_on_shuttle_patched = True
+
 
 class afcAMS(afcUnit):
     """AFC unit subclass that synchronises state with OpenAMS"""
@@ -4947,6 +4980,7 @@ def load_config_prefix(config):
     # The patches will only take effect if OpenAMS hardware is actually present
     _patch_lane_pre_sensor_for_ams()
     _patch_extruder_for_virtual_ams()
+    _patch_extruder_on_shuttle_detection()
     _patch_infinite_runout_handler()
     _patch_lane_unload_for_ams()
     _patch_buffer_multiplier_for_ams()
