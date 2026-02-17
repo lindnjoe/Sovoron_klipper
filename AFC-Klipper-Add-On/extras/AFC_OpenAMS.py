@@ -3108,7 +3108,7 @@ class afcAMS(afcUnit):
         Called by oams_manager's monitoring loop via _sync_openams_sensors_for_oams().
         Unlike _on_hub_changed/_on_f1s_changed (which are edge-triggered and only fire
         on sensor value *changes*), this method re-reads the actual hardware values and
-        corrects any drift — e.g., when set_unloaded() clears loaded_to_hub but the hub
+        corrects any drift -- e.g., when set_unloaded() clears loaded_to_hub but the hub
         sensor is still True.
         """
         if self.oams is None:
@@ -3123,7 +3123,7 @@ class afcAMS(afcUnit):
                 if spool_idx is None or spool_idx < 0:
                     continue
 
-                # Sync hub sensor → loaded_to_hub
+                # Sync hub sensor -> loaded_to_hub
                 if sync_hub and hub_values is not None and spool_idx < len(hub_values):
                     hw_hub = bool(hub_values[spool_idx])
                     current = getattr(lane, "loaded_to_hub", False)
@@ -3134,7 +3134,7 @@ class afcAMS(afcUnit):
                             f"{current}->{hw_hub} for {lane.name}"
                         )
 
-                # Sync F1S sensor → load_state/prep_state (only when allowed)
+                # Sync F1S sensor -> load_state/prep_state (only when allowed)
                 if sync_f1s and f1s_values is not None and spool_idx < len(f1s_values):
                     hw_f1s = bool(f1s_values[spool_idx])
                     current_load = getattr(lane, "load_state", False)
