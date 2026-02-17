@@ -747,6 +747,10 @@ class afcAMS(afcUnit):
             lane.load_state = False
             lane.status = AFCLaneState.NONE
             lane.ams_share_prep_load = getattr(lane, "load", None) is None
+            # Initialize OpenAMS runout tracking attributes so downstream code
+            # can use direct access instead of hasattr()/getattr() guards.
+            lane._oams_runout_detected = False
+            lane._oams_cross_extruder_runout = False
 
             idx = getattr(lane, "index", 0) - 1
             if idx >= 0 and self.registry is not None:
@@ -1076,8 +1080,7 @@ class afcAMS(afcUnit):
                     # PHASE 1 REFACTOR: Use AFC native set_tool_unloaded() instead of direct assignment
                     # This ensures proper state cleanup and callbacks
                     other_lane.set_tool_unloaded()
-                    if hasattr(other_lane, '_oams_runout_detected'):
-                        other_lane._oams_runout_detected = False
+                    other_lane._oams_runout_detected = False
                     self.logger.debug(f"Cleared tool_loaded for {other_lane.name} on same FPS (new lane {lane.name} loaded)")
 
         # Sync OAMS MCU current_spool and FPS state when lane is set as loaded
@@ -1122,8 +1125,7 @@ class afcAMS(afcUnit):
         # Parent's lane_tool_unloaded() already calls lane.set_tool_unloaded() which sets tool_loaded = False
 
         # Clear runout flag if set
-        if hasattr(lane, '_oams_runout_detected'):
-            lane._oams_runout_detected = False
+        lane._oams_runout_detected = False
 
         # NOTE: Don't call sync_state_with_afc() here - it interferes with normal unload
         # sync_state_with_afc() is only for error recovery (SET_LANE_LOADED, OAMSM_CLEAR_ERRORS)
@@ -2660,7 +2662,7 @@ class afcAMS(afcUnit):
             # Check if this is an OpenAMS lane with cross-extruder runout flag
             if lane is not None:
                 if _is_openams_unit(getattr(lane, 'unit_obj', None)):
-                    is_cross_extruder = getattr(lane, '_oams_cross_extruder_runout', False)
+                    is_cross_extruder = lane._oams_cross_extruder_runout
                     if is_cross_extruder:
                         lane_name = getattr(lane, 'name', 'unknown')
                         self.logger.debug("Cross-Extruder LANE_UNLOAD for {} - clearing extruder.lane_loaded to bypass check".format(lane_name))
@@ -3108,13 +3110,12 @@ class afcAMS(afcUnit):
         """
         # Cross-extruder runouts should not block shared sensor transitions; let AFC handle
         # them like Box Turtle units. Only same-extruder runouts set _oams_runout_detected.
-        if getattr(lane, '_oams_cross_extruder_runout', False):
+        if lane._oams_cross_extruder_runout:
             # Make sure any stale blocking flag is cleared for cross-extruder scenarios
-            if hasattr(lane, '_oams_runout_detected'):
-                lane._oams_runout_detected = False
+            lane._oams_runout_detected = False
             return False
 
-        if not hasattr(lane, '_oams_runout_detected') or not lane._oams_runout_detected:
+        if not lane._oams_runout_detected:
             return False
 
         should_block = False
@@ -3264,7 +3265,7 @@ class afcAMS(afcUnit):
                 is_printing = self.afc.function.is_printing()
             except Exception as e:
                 is_printing = False
-            is_cross_extruder_runout = getattr(lane, '_oams_cross_extruder_runout', False) and is_printing
+            is_cross_extruder_runout = lane._oams_cross_extruder_runout and is_printing
 
             # Check if this is a shared extruder (multiple lanes on same extruder)
             # For shared extruders, NEVER clear lane_loaded from sensor callback
@@ -3303,9 +3304,9 @@ class afcAMS(afcUnit):
                 self.logger.debug(f"Skipping lane_loaded clear for {lane.name} - shared extruder (only UNLOAD/RUNOUT commands should clear)")
             else:
                 self.logger.debug(f"Skipping extruder unsync for {lane.name} - cross-extruder runout (AFC will handle via LANE_UNLOAD)")
-        lane.afc.save_vars()
         lane.prep_state = lane_val_bool
         lane.load_state = lane_val_bool
+        lane.afc.save_vars()
 
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
         """Apply a boolean lane sensor value using existing AFC callbacks."""
@@ -3566,8 +3567,7 @@ class afcAMS(afcUnit):
             # sensors flowing so AFC can perform its own infinite-runout logic just like Box Turtle
             # units.
             try:
-                if hasattr(lane, '_oams_runout_detected'):
-                    lane._oams_runout_detected = False
+                lane._oams_runout_detected = False
             except Exception as e:
                 pass
 
@@ -3651,8 +3651,6 @@ class afcAMS(afcUnit):
         # The oams_manager runout monitor will detect the F1S=False via its own polling
         # and handle the reload sequence.
         try:
-            if not hasattr(lane, '_oams_runout_detected'):
-                lane._oams_runout_detected = False
             lane._oams_runout_detected = True
             lane._oams_cross_extruder_runout = False
             self.logger.info(
@@ -3813,8 +3811,7 @@ class afcAMS(afcUnit):
             return False
 
         try:
-            if not hasattr(lane, "_oams_runout_detected"):
-                lane._oams_runout_detected = False
+            lane._oams_runout_detected = False
             lane._oams_cross_extruder_runout = True
             self.logger.info(
                 f"Marked lane {lane.name} as cross-extruder runout participant for shared sensor bypass"
