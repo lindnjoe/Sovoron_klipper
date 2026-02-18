@@ -692,7 +692,7 @@ class AFCLane:
                         self._perform_pause_runout()
                 elif self.status != "calibrating":
                     self.set_unloaded()
-
+        self.fila_load.runout_helper.min_event_systime = self.reactor.monotonic() + self.fila_load.runout_helper.event_delay
         self.afc.save_vars()
 
     def prep_callback(self, eventtime, state):
@@ -807,7 +807,7 @@ class AFCLane:
             elif not prep_state:
                 # Filament is unloaded
                 self.set_unloaded()
-
+        self.fila_prep.runout_helper.min_event_systime = self.reactor.monotonic() + self.fila_prep.runout_helper.event_delay
         self.afc.save_vars()
 
     def do_enable(self, enable):

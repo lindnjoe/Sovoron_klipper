@@ -1295,6 +1295,9 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
+        # Allow unit to provide custom load sequence
+        if hasattr(cur_lane.unit_obj, 'load_sequence'):
+            return cur_lane.unit_obj.load_sequence(cur_lane, cur_hub, cur_extruder)
         # Placeholder for custom load sequence
         if cur_lane.custom_load_cmd:
             self.logger.info("Running custom load command for lane {}".format(cur_lane.name))
@@ -1565,6 +1568,9 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
+        # Allow unit to provide custom unload sequence
+        if hasattr(cur_lane.unit_obj, 'unload_sequence'):
+            return cur_lane.unit_obj.unload_sequence(cur_lane, cur_hub, cur_extruder)
         if cur_lane.custom_unload_cmd:
             self.logger.info("Running custom unload command for lane {}".format(cur_lane.name))
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
