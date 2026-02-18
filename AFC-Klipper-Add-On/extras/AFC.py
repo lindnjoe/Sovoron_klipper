@@ -1081,8 +1081,8 @@ class afc:
         self.LANE_UNLOAD( cur_lane )
 
     def LANE_UNLOAD(self, cur_lane: AFCLane):
-    if hasattr(cur_lane.unit_obj, 'lane_unload'):
-        return cur_lane.unit_obj.lane_unload(cur_lane)
+        if hasattr(cur_lane.unit_obj, 'lane_unload'):
+            return cur_lane.unit_obj.lane_unload(cur_lane)
         
         cur_hub = cur_lane.hub_obj
 
