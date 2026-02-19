@@ -66,8 +66,6 @@ except Exception:
 _module_logger = logging.getLogger(__name__)
 
 _ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
-_ORIGINAL_PREP_CAPTURE_TD1 = getattr(AFCLane, "_prep_capture_td1", None)
-_ORIGINAL_GET_TD1_DATA = getattr(AFCLane, "get_td1_data", None)
 
 
 def _is_openams_unit(unit_obj) -> bool:
@@ -363,7 +361,6 @@ class afcAMS(afcUnit):
             self.hardware_service = AMSHardwareService.for_printer(self.printer, self.oams_name, self.logger)
 
         self._register_sync_dispatcher()
-        self._patch_td1_capture()
 
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES, desc="calibrate the OpenAMS HUB HES value for a specific lane")
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES_ALL", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL, desc="calibrate the OpenAMS HUB HES value for every loaded lane")
@@ -658,35 +655,6 @@ class afcAMS(afcUnit):
             self.logger.debug(f"Failed to send LANE_UNLOAD info response for {lane_name}: {e}")
 
         return None
-
-    def _patch_td1_capture(self):
-        if getattr(AFCLane, "_ams_td1_capture_patched", False):
-            return
-
-        def _patched_prep_capture_td1(lane_self):
-            if (
-                _is_openams_unit(lane_self.unit_obj)
-                and hasattr(lane_self.unit_obj, "prep_capture_td1")
-            ):
-                lane_self.unit_obj.prep_capture_td1(lane_self)
-                return
-            if _ORIGINAL_PREP_CAPTURE_TD1 is not None:
-                return _ORIGINAL_PREP_CAPTURE_TD1(lane_self)
-            return None
-
-        def _patched_get_td1_data(lane_self):
-            if (
-                _is_openams_unit(lane_self.unit_obj)
-                and hasattr(lane_self.unit_obj, "capture_td1_data")
-            ):
-                return lane_self.unit_obj.capture_td1_data(lane_self)
-            if _ORIGINAL_GET_TD1_DATA is not None:
-                return _ORIGINAL_GET_TD1_DATA(lane_self)
-            return False, "TD-1 capture not available"
-
-        AFCLane._prep_capture_td1 = _patched_prep_capture_td1
-        AFCLane.get_td1_data = _patched_get_td1_data
-        AFCLane._ams_td1_capture_patched = True
 
     def get_lane_reset_command(self, lane, distance) -> str:
         """Return OpenAMS-specific reset command for calibration prompts."""
@@ -3989,6 +3957,21 @@ class afcAMS(afcUnit):
 
         lane = self._find_lane_by_spool(normalized_index)
         if lane is None:
+            return
+
+        # Ignore initial startup "unloaded" baselines during PREP/bring-up.
+        # These can be emitted before AFC/Moonraker is fully initialized and
+        # should not be treated as real unload transitions.
+        previous_loaded = kwargs.get("previous_loaded")
+        if previous_loaded is not None:
+            previous_loaded = bool(previous_loaded)
+        in_prep = not getattr(self.afc, "prep_done", True)
+        if in_prep and previous_loaded is False:
+            self.logger.debug(
+                "Skipping spool_unloaded baseline for %s during PREP (spool_index=%s)",
+                lane.name,
+                normalized_index,
+            )
             return
 
         # PHASE 1 REFACTOR: Use AFC native set_unloaded() instead of direct state assignments
