@@ -770,7 +770,10 @@ class AMSHardwareService:
         old_lane_state = old_snapshot.get("lane_state")
         new_lane_state = bool(lane_state)
 
-        if emit_spool_event and (old_lane_state is None or old_lane_state != new_lane_state) and event_spool_index is not None:
+        # Skip spool events for initial snapshots (old_lane_state is None).
+        # Initial state publication during startup should not be treated as
+        # a load/unload transition because AFC/Moonraker may not be ready yet.
+        if emit_spool_event and old_lane_state is not None and old_lane_state != new_lane_state and event_spool_index is not None:
             event_type = "spool_loaded" if new_lane_state else "spool_unloaded"
             self.event_bus.publish(
                 event_type,
