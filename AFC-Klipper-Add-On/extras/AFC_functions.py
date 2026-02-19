@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 # This file includes code modified from the Shaketune Project. https://github.com/Frix-x/klippain-shaketune
-# Originally authored by Félix Boisselier and licensed under the GNU General Public License v3.0.
+# Originally authored by F�lix Boisselier and licensed under the GNU General Public License v3.0.
 #
 # Full license text available at: https://www.gnu.org/licenses/gpl-3.0.html
 from __future__ import annotations
@@ -1326,7 +1326,11 @@ class afcFunction:
         text = f'{title} for {cali}. '
         if reset_lane:
             text += 'First: reset lane, Second: review messages in console and take necessary action and re-run calibration.'
-            buttons.append(("Reset lane", "AFC_LANE_RESET LANE={} DISTANCE={}".format(cali, dis), "primary"))
+            lane = self.afc.lanes.get(str(cali)) if cali is not None else None
+            if lane and hasattr(lane.unit_obj, 'get_lane_reset_command'):
+                buttons.append(("Reset lane", lane.unit_obj.get_lane_reset_command(lane, dis), "primary"))
+            else:
+                buttons.append(("Reset lane", "AFC_LANE_RESET LANE={} DISTANCE={}".format(cali, dis), "primary"))
 
         if fail_message:
             text += f" Fail message: {fail_message}"
@@ -1801,7 +1805,7 @@ class afcDeltaTime:
             curr_time = datetime.now()
             self.delta_time = (curr_time - self.last_time ).total_seconds()
             total_time = (curr_time - self.start_time).total_seconds()
-            msg = "{} (Δt:{:.3f}s, t:{:.3f})".format( msg, self.delta_time, total_time )
+            msg = "{} (?t:{:.3f}s, t:{:.3f})".format( msg, self.delta_time, total_time )
             if debug:
                 self.logger.debug( msg )
             else:
