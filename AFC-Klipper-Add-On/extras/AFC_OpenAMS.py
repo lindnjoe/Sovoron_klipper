@@ -364,7 +364,6 @@ class afcAMS(afcUnit):
 
         self._register_sync_dispatcher()
         self._patch_td1_capture()
-        self._patch_td1_cali_fail_prompt()
 
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES, desc="calibrate the OpenAMS HUB HES value for a specific lane")
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES_ALL", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL, desc="calibrate the OpenAMS HUB HES value for every loaded lane")
@@ -689,62 +688,12 @@ class afcAMS(afcUnit):
         AFCLane.get_td1_data = _patched_get_td1_data
         AFCLane._ams_td1_capture_patched = True
 
-    def _patch_td1_cali_fail_prompt(self):
-        afc_function = getattr(self.afc, "function", None)
-        if afc_function is None:
-            return
-        if getattr(afc_function, "_openams_cali_fail_patched", False):
-            return
-
-        original_cmd = getattr(afc_function, "cmd_AFC_CALI_FAIL", None)
-        if original_cmd is None:
-            return
-
-        def _openams_cmd_AFC_CALI_FAIL(afc_func_self, gcmd):
-            cali = gcmd.get("FAIL", None)
-            title = gcmd.get("TITLE", "AFC Calibration Failed")
-            reset_lane = bool(gcmd.get_int("RESET", 1))
-
-            lane = None
-            if cali is not None:
-                lane = afc_func_self.afc.lanes.get(str(cali))
-
-            if (
-                reset_lane
-                and lane is not None
-                and _is_openams_unit(lane.unit_obj)
-                and "TD-1" in title
-            ):
-                fail_message = gcmd.get("MSG", "")
-                prompt = AFCprompt(gcmd, afc_func_self.logger)
-                buttons = []
-                footer = []
-                text = f"{title} for {cali}. "
-                fps_id = None
-                if lane is not None:
-                    fps_id = lane.unit_obj._get_fps_id_for_lane(lane.name)
-                if fps_id:
-                    text += "First: reset lane, Second: review messages in console and take necessary action and re-run calibration."
-                    buttons.append(
-                        (
-                            "Reset lane",
-                            f"OAMSM_UNLOAD_FILAMENT FPS={fps_id}",
-                            "primary",
-                        )
-                    )
-                if fail_message:
-                    text += f" Fail message: {fail_message}"
-                footer.append(("EXIT", "prompt_end", "info"))
-                prompt.create_custom_p(title, text, buttons, True, None, footer)
-                return
-
-            return original_cmd(gcmd)
-
-        afc_function.cmd_AFC_CALI_FAIL = MethodType(
-            _openams_cmd_AFC_CALI_FAIL,
-            afc_function,
-        )
-        afc_function._openams_cali_fail_patched = True
+    def get_lane_reset_command(self, lane, distance) -> str:
+        """Return OpenAMS-specific reset command for calibration prompts."""
+        fps_id = self._get_fps_id_for_lane(lane.name)
+        if fps_id:
+            return f"OAMSM_UNLOAD_FILAMENT FPS={fps_id}"
+        return "AFC_LANE_RESET LANE={} DISTANCE={}".format(lane.name, distance)
 
     def _get_fps_id_for_lane(self, lane_name: str) -> Optional[str]:
         oams_manager = self._get_oams_manager()
