@@ -1433,7 +1433,7 @@ class OAMSManager:
                         f"State detection: Hardware reports hub and F1S empty for {getattr(current_oams, 'name', '<unknown>')} "
                         f"(bay {detected_spool_idx}) on {fps_name}; clearing AFC loaded lane {detected_lane}"
                     )
-                    self._clear_afc_loaded_lane(detected_lane)
+                    self._clear_afc_loaded_lane(detected_lane, clear_hub_state=True)
                     detected_lane = None
                     current_oams = None
                     detected_spool_idx = None
@@ -1542,7 +1542,7 @@ class OAMSManager:
                         except Exception as e:
                             self.logger.error(f"Failed to notify AFC about {old_lane_name} unload during state detection: {e}")
 
-    def _clear_afc_loaded_lane(self, lane_name: Optional[str]) -> None:
+    def _clear_afc_loaded_lane(self, lane_name: Optional[str], *, clear_hub_state: bool = False) -> None:
         if not lane_name:
             return
         try:
@@ -1559,6 +1559,20 @@ class OAMSManager:
                     unset_lane_loaded = getattr(afc_function, "unset_lane_loaded", None)
                     if callable(unset_lane_loaded):
                         unset_lane_loaded()
+                        lane_obj = afc.lanes.get(lane_name)
+                        if lane_obj is not None and clear_hub_state:
+                            try:
+                                if hasattr(lane_obj, 'loaded_to_hub'):
+                                    lane_obj.loaded_to_hub = False
+                                hub_obj = getattr(lane_obj, 'hub_obj', None)
+                                if hub_obj is not None:
+                                    if hasattr(hub_obj, 'switch_pin_callback'):
+                                        hub_obj.switch_pin_callback(self.reactor.monotonic(), False)
+                                    fila = getattr(hub_obj, 'fila', None)
+                                    if fila is not None and hasattr(fila, 'runout_helper'):
+                                        fila.runout_helper.note_filament_present(self.reactor.monotonic(), False)
+                            except Exception as e:
+                                self.logger.debug(f"Failed to clear hub virtual sensor for {lane_name} after unset_lane_loaded: {e}")
                         return
             lane_obj = afc.lanes.get(lane_name)
             if lane_obj is None:
@@ -1568,6 +1582,19 @@ class OAMSManager:
                 extruder_obj.lane_loaded = None
             if getattr(lane_obj, 'tool_loaded', False):
                 lane_obj.tool_loaded = False
+            if clear_hub_state:
+                try:
+                    if hasattr(lane_obj, 'loaded_to_hub'):
+                        lane_obj.loaded_to_hub = False
+                    hub_obj = getattr(lane_obj, 'hub_obj', None)
+                    if hub_obj is not None:
+                        if hasattr(hub_obj, 'switch_pin_callback'):
+                            hub_obj.switch_pin_callback(self.reactor.monotonic(), False)
+                        fila = getattr(hub_obj, 'fila', None)
+                        if fila is not None and hasattr(fila, 'runout_helper'):
+                            fila.runout_helper.note_filament_present(self.reactor.monotonic(), False)
+                except Exception as e:
+                    self.logger.debug(f"Failed to clear hub virtual sensor for {lane_name}: {e}")
             if hasattr(afc, 'save_vars') and callable(afc.save_vars):
                 try:
                     afc.save_vars()
@@ -1753,7 +1780,7 @@ class OAMSManager:
         self.ready = True
 
     def _start_moonraker_status_sync(self) -> None:
-        # Register timer unconditionally — the callback will lazy-init
+        # Register timer unconditionally ? the callback will lazy-init
         # when afc.moonraker becomes available (it's set during PREP,
         # after klippy:ready).
         if self._moonraker_status_timer is None:
@@ -1831,7 +1858,7 @@ class OAMSManager:
 
     def _moonraker_status_sync_timer(self, eventtime: float) -> float:
         if not self._ensure_moonraker_patched():
-            # afc.moonraker not ready yet — keep polling
+            # afc.moonraker not ready yet ? keep polling
             return eventtime + self.moonraker_status_interval
 
         try:
@@ -4665,7 +4692,7 @@ class OAMSManager:
                 fps_state.following = True
                 fps_state.direction = 1
                 self.reactor.pause(self.reactor.monotonic() + 1.0)
-                # reactor.pause() yields — AFC callbacks may have changed state
+                # reactor.pause() yields ? AFC callbacks may have changed state
                 if fps_state.state != FPSLoadState.UNLOADING:
                     self.logger.warning(
                         f"Unload retry aborted for {fps_name}: state changed to "
@@ -6553,7 +6580,7 @@ class OAMSManager:
         # Simple: if hub has filament, enable follower; if all empty, disable
         self._ensure_followers_for_loaded_hubs()
 
-        # Re-sync FPS state with AFC — tools may have been swapped during the pause
+        # Re-sync FPS state with AFC ? tools may have been swapped during the pause
         try:
             self.determine_state()
         except Exception as exc:
