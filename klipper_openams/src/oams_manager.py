@@ -498,6 +498,14 @@ class OAMSRunoutMonitor:
                     return eventtime + MONITOR_ENCODER_PERIOD
 
                 effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
+
+                # Same-FPS runouts include a fixed PAUSE_DISTANCE while waiting for
+                # filament to clear the hub sensor before coasting math begins.
+                # Subtract that pause distance from PTFE path length so we don't
+                # overestimate remaining distance to toolhead.
+                if not self.is_cross_extruder_runout and effective_path_length > 0.0:
+                    effective_path_length = max(effective_path_length - PAUSE_DISTANCE, 0.0)
+
                 # When the hub sensor sticks or the clear position hasn't been
                 # set yet, don't let None arithmetic crash the monitor. Treat
                 # the traveled distance after the hub as zero until we have a
@@ -516,7 +524,8 @@ class OAMSRunoutMonitor:
                     self.logger.debug(
                         "OAMS: COASTING - path_length="
                         f"{path_length:.1f}, effective_path_length={effective_path_length:.1f}, "
-                        f"reload_margin={self.reload_before_toolhead_distance:.1f}"
+                        f"reload_margin={self.reload_before_toolhead_distance:.1f}, "
+                        f"runout_type={'cross' if self.is_cross_extruder_runout else 'same'}"
                     )
 
                 if self.hub_cleared and runout_after_position - self._last_coast_log_position >= 100.0:

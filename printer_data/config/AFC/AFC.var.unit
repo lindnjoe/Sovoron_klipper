@@ -9,22 +9,22 @@
             "buffer_status": null,
             "lane": 1,
             "map": "T4",
-            "load": false,
-            "prep": false,
-            "tool_loaded": false,
-            "loaded_to_hub": false,
-            "material": "",
+            "load": true,
+            "prep": true,
+            "tool_loaded": true,
+            "loaded_to_hub": true,
+            "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
             "empty_spool_weight": 250.0,
-            "spool_id": null,
-            "color": "",
-            "weight": 0,
-            "extruder_temp": null,
-            "runout_lane": null,
-            "filament_status": "Not Ready",
-            "filament_status_led": "#ff0000",
-            "status": "None",
+            "spool_id": 13,
+            "color": "#000000",
+            "weight": 228.88659414715107,
+            "extruder_temp": 240,
+            "runout_lane": "lane7",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tooled",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -141,9 +141,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 0.2,
-                "color": "64677B",
-                "scan_time": "2026-02-20T20:49:08.526309+00:00Z",
+                "td": 0.3,
+                "color": "65677B",
+                "scan_time": "2026-02-20T22:33:03.118283+00:00Z",
                 "error": null
             }
         },
@@ -175,8 +175,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 2.0,
-                "color": "489D7E",
-                "scan_time": "2026-02-20T20:49:36.185739+00:00Z",
+                "color": "4AA080",
+                "scan_time": "2026-02-20T22:32:27.224332+00:00Z",
                 "error": null
             }
         },
@@ -235,9 +235,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 2.5,
+                "td": 2.4,
                 "color": "FFFFFF",
-                "scan_time": "2026-02-20T20:48:37.682703+00:00Z",
+                "scan_time": "2026-02-20T22:31:59.154235+00:00Z",
                 "error": null
             }
         }
@@ -358,7 +358,7 @@
         }
     },
     "system": {
-        "current_load": null,
+        "current_load": "lane4",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
@@ -376,7 +376,7 @@
                 "lane_loaded": "lane3"
             },
             "extruder4": {
-                "lane_loaded": null
+                "lane_loaded": "lane4"
             },
             "extruder5": {
                 "lane_loaded": null
