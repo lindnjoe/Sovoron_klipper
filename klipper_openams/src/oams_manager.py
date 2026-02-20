@@ -4918,6 +4918,42 @@ class OAMSManager:
             self.logger.error(f"Failed to clear LED for {fps_name} spool {spool_idx} after {context}: {e}")
             return False
 
+    def _unload_with_busy_recovery(
+        self,
+        oam: object,
+        fps_name: str,
+        lane_name: str,
+        *,
+        context: str,
+        max_retries: Optional[int] = None,
+    ) -> Tuple[bool, str]:
+        """Attempt unload and recover from transient MCU busy timing windows."""
+        success, message = oam.unload_spool_with_retry(max_retries=max_retries)
+        if success:
+            return True, message
+
+        if "busy" not in str(message).lower():
+            return False, message
+
+        self.logger.warning(
+            f"Unload returned busy during {context} for {lane_name} on {fps_name}; waiting for MCU idle and retrying once"
+        )
+
+        deadline = self.reactor.monotonic() + 8.0
+        while self.reactor.monotonic() < deadline:
+            if getattr(oam, "action_status", None) is None:
+                break
+            self.reactor.pause(self.reactor.monotonic() + 0.25)
+
+        if getattr(oam, "action_status", None) is not None:
+            try:
+                oam.abort_current_action(wait=True)
+            except Exception as e:
+                self.logger.debug(f"Busy-recovery abort failed for {fps_name}: {e}")
+
+        self.reactor.pause(self.reactor.monotonic() + 0.5)
+        return oam.unload_spool_with_retry(max_retries=max_retries)
+
     def _perform_stuck_spool_recovery(
         self,
         fps_name: str,
@@ -4964,7 +5000,21 @@ class OAMSManager:
 
         # STEP 4: Unload the stuck filament
         try:
-            oam.unload_spool_with_retry()
+            afc = self._get_afc()
+            max_retries = getattr(afc, 'tool_max_unload_attempts', None) if afc is not None else None
+            unload_success, unload_msg = self._unload_with_busy_recovery(
+                oam,
+                fps_name,
+                lane_name,
+                context="stuck spool recovery",
+                max_retries=max_retries,
+            )
+            if not unload_success:
+                self.logger.error(
+                    f"Failed to unload during stuck spool recovery for {lane_name}: {unload_msg}"
+                )
+                return False
+
             # Clear error LED after successful unload
             if fps_state.stuck_spool.active and fps_state.current_spool_idx is not None:
                 self._clear_error_led(oam, fps_state.current_spool_idx, fps_name, "stuck spool retry unload")
@@ -5141,7 +5191,20 @@ class OAMSManager:
 
             # Unload the filament
             try:
-                oam.unload_spool_with_retry()
+                afc = self._get_afc()
+                max_retries = getattr(afc, 'tool_max_unload_attempts', None) if afc is not None else None
+                unload_success, unload_msg = self._unload_with_busy_recovery(
+                    oam,
+                    fps_name,
+                    lane_name,
+                    context="engagement retry cleanup",
+                    max_retries=max_retries,
+                )
+                if not unload_success:
+                    self.logger.error(
+                        f"Unload after engagement failure did not complete for {lane_name}: {unload_msg}"
+                    )
+                    return False
             except Exception as e:
                 self.logger.error(f"Exception during unload after engagement failure for {lane_name}: {e}")
                 return False
