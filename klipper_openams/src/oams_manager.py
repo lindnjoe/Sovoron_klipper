@@ -1433,7 +1433,7 @@ class OAMSManager:
                         f"State detection: Hardware reports hub and F1S empty for {getattr(current_oams, 'name', '<unknown>')} "
                         f"(bay {detected_spool_idx}) on {fps_name}; clearing AFC loaded lane {detected_lane}"
                     )
-                    self._clear_afc_loaded_lane(detected_lane)
+                    self._clear_afc_loaded_lane(detected_lane, clear_hub_state=True)
                     detected_lane = None
                     current_oams = None
                     detected_spool_idx = None
@@ -1542,7 +1542,7 @@ class OAMSManager:
                         except Exception as e:
                             self.logger.error(f"Failed to notify AFC about {old_lane_name} unload during state detection: {e}")
 
-    def _clear_afc_loaded_lane(self, lane_name: Optional[str]) -> None:
+    def _clear_afc_loaded_lane(self, lane_name: Optional[str], *, clear_hub_state: bool = False) -> None:
         if not lane_name:
             return
         try:
@@ -1559,6 +1559,20 @@ class OAMSManager:
                     unset_lane_loaded = getattr(afc_function, "unset_lane_loaded", None)
                     if callable(unset_lane_loaded):
                         unset_lane_loaded()
+                        lane_obj = afc.lanes.get(lane_name)
+                        if lane_obj is not None and clear_hub_state:
+                            try:
+                                if hasattr(lane_obj, 'loaded_to_hub'):
+                                    lane_obj.loaded_to_hub = False
+                                hub_obj = getattr(lane_obj, 'hub_obj', None)
+                                if hub_obj is not None:
+                                    if hasattr(hub_obj, 'switch_pin_callback'):
+                                        hub_obj.switch_pin_callback(self.reactor.monotonic(), False)
+                                    fila = getattr(hub_obj, 'fila', None)
+                                    if fila is not None and hasattr(fila, 'runout_helper'):
+                                        fila.runout_helper.note_filament_present(self.reactor.monotonic(), False)
+                            except Exception as e:
+                                self.logger.debug(f"Failed to clear hub virtual sensor for {lane_name} after unset_lane_loaded: {e}")
                         return
             lane_obj = afc.lanes.get(lane_name)
             if lane_obj is None:
@@ -1568,6 +1582,19 @@ class OAMSManager:
                 extruder_obj.lane_loaded = None
             if getattr(lane_obj, 'tool_loaded', False):
                 lane_obj.tool_loaded = False
+            if clear_hub_state:
+                try:
+                    if hasattr(lane_obj, 'loaded_to_hub'):
+                        lane_obj.loaded_to_hub = False
+                    hub_obj = getattr(lane_obj, 'hub_obj', None)
+                    if hub_obj is not None:
+                        if hasattr(hub_obj, 'switch_pin_callback'):
+                            hub_obj.switch_pin_callback(self.reactor.monotonic(), False)
+                        fila = getattr(hub_obj, 'fila', None)
+                        if fila is not None and hasattr(fila, 'runout_helper'):
+                            fila.runout_helper.note_filament_present(self.reactor.monotonic(), False)
+                except Exception as e:
+                    self.logger.debug(f"Failed to clear hub virtual sensor for {lane_name}: {e}")
             if hasattr(afc, 'save_vars') and callable(afc.save_vars):
                 try:
                     afc.save_vars()
@@ -1753,7 +1780,7 @@ class OAMSManager:
         self.ready = True
 
     def _start_moonraker_status_sync(self) -> None:
-        # Register timer unconditionally — the callback will lazy-init
+        # Register timer unconditionally Â— the callback will lazy-init
         # when afc.moonraker becomes available (it's set during PREP,
         # after klippy:ready).
         if self._moonraker_status_timer is None:
@@ -1831,7 +1858,7 @@ class OAMSManager:
 
     def _moonraker_status_sync_timer(self, eventtime: float) -> float:
         if not self._ensure_moonraker_patched():
-            # afc.moonraker not ready yet — keep polling
+            # afc.moonraker not ready yet Â— keep polling
             return eventtime + self.moonraker_status_interval
 
         try:
@@ -4665,7 +4692,7 @@ class OAMSManager:
                 fps_state.following = True
                 fps_state.direction = 1
                 self.reactor.pause(self.reactor.monotonic() + 1.0)
-                # reactor.pause() yields — AFC callbacks may have changed state
+                # reactor.pause() yields Â— AFC callbacks may have changed state
                 if fps_state.state != FPSLoadState.UNLOADING:
                     self.logger.warning(
                         f"Unload retry aborted for {fps_name}: state changed to "
@@ -4891,6 +4918,42 @@ class OAMSManager:
             self.logger.error(f"Failed to clear LED for {fps_name} spool {spool_idx} after {context}: {e}")
             return False
 
+    def _unload_with_busy_recovery(
+        self,
+        oam: object,
+        fps_name: str,
+        lane_name: str,
+        *,
+        context: str,
+        max_retries: Optional[int] = None,
+    ) -> Tuple[bool, str]:
+        """Attempt unload and recover from transient MCU busy timing windows."""
+        success, message = oam.unload_spool_with_retry(max_retries=max_retries)
+        if success:
+            return True, message
+
+        if "busy" not in str(message).lower():
+            return False, message
+
+        self.logger.warning(
+            f"Unload returned busy during {context} for {lane_name} on {fps_name}; waiting for MCU idle and retrying once"
+        )
+
+        deadline = self.reactor.monotonic() + 8.0
+        while self.reactor.monotonic() < deadline:
+            if getattr(oam, "action_status", None) is None:
+                break
+            self.reactor.pause(self.reactor.monotonic() + 0.25)
+
+        if getattr(oam, "action_status", None) is not None:
+            try:
+                oam.abort_current_action(wait=True)
+            except Exception as e:
+                self.logger.debug(f"Busy-recovery abort failed for {fps_name}: {e}")
+
+        self.reactor.pause(self.reactor.monotonic() + 0.5)
+        return oam.unload_spool_with_retry(max_retries=max_retries)
+
     def _perform_stuck_spool_recovery(
         self,
         fps_name: str,
@@ -4937,7 +5000,21 @@ class OAMSManager:
 
         # STEP 4: Unload the stuck filament
         try:
-            oam.unload_spool_with_retry()
+            afc = self._get_afc()
+            max_retries = getattr(afc, 'tool_max_unload_attempts', None) if afc is not None else None
+            unload_success, unload_msg = self._unload_with_busy_recovery(
+                oam,
+                fps_name,
+                lane_name,
+                context="stuck spool recovery",
+                max_retries=max_retries,
+            )
+            if not unload_success:
+                self.logger.error(
+                    f"Failed to unload during stuck spool recovery for {lane_name}: {unload_msg}"
+                )
+                return False
+
             # Clear error LED after successful unload
             if fps_state.stuck_spool.active and fps_state.current_spool_idx is not None:
                 self._clear_error_led(oam, fps_state.current_spool_idx, fps_name, "stuck spool retry unload")
@@ -5114,7 +5191,20 @@ class OAMSManager:
 
             # Unload the filament
             try:
-                oam.unload_spool_with_retry()
+                afc = self._get_afc()
+                max_retries = getattr(afc, 'tool_max_unload_attempts', None) if afc is not None else None
+                unload_success, unload_msg = self._unload_with_busy_recovery(
+                    oam,
+                    fps_name,
+                    lane_name,
+                    context="engagement retry cleanup",
+                    max_retries=max_retries,
+                )
+                if not unload_success:
+                    self.logger.error(
+                        f"Unload after engagement failure did not complete for {lane_name}: {unload_msg}"
+                    )
+                    return False
             except Exception as e:
                 self.logger.error(f"Exception during unload after engagement failure for {lane_name}: {e}")
                 return False
@@ -6553,7 +6643,7 @@ class OAMSManager:
         # Simple: if hub has filament, enable follower; if all empty, disable
         self._ensure_followers_for_loaded_hubs()
 
-        # Re-sync FPS state with AFC — tools may have been swapped during the pause
+        # Re-sync FPS state with AFC Â— tools may have been swapped during the pause
         try:
             self.determine_state()
         except Exception as exc:
