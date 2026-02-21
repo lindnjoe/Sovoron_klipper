@@ -4395,9 +4395,22 @@ class OAMSManager:
                     fps_state_obj.since = self.reactor.monotonic()
                     oam_load.current_spool = bay_index
 
-                    # Call success handler with AFC notifications
-                    self._handle_successful_reload(fps_name, fps_state, target_lane, target_lane_map,
-                                                   source_lane_name, active_oams, monitor)
+                    # Defer post-load state synchronization to a reactor callback.
+                    # This avoids doing all AFC/gcode sync work inside the timer callback
+                    # and helps state transitions complete immediately during active prints.
+                    def _finish_successful_reload(_eventtime):
+                        self._handle_successful_reload(
+                            fps_name,
+                            fps_state,
+                            target_lane,
+                            target_lane_map,
+                            source_lane_name,
+                            active_oams,
+                            monitor,
+                        )
+                        return self.reactor.NEVER
+
+                    self.reactor.register_callback(_finish_successful_reload)
                 else:
                     self.logger.error(f"Async load failed with code {oam_load.action_status_code}")
                     fps_state_obj.state = FPSLoadState.UNLOADED
