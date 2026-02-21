@@ -498,14 +498,6 @@ class OAMSRunoutMonitor:
                     return eventtime + MONITOR_ENCODER_PERIOD
 
                 effective_path_length = (path_length / FILAMENT_PATH_LENGTH_FACTOR if path_length else 0.0)
-
-                # Same-FPS runouts include a fixed PAUSE_DISTANCE while waiting for
-                # filament to clear the hub sensor before coasting math begins.
-                # Subtract that pause distance from PTFE path length so we don't
-                # overestimate remaining distance to toolhead.
-                if not self.is_cross_extruder_runout and effective_path_length > 0.0:
-                    effective_path_length = max(effective_path_length - PAUSE_DISTANCE, 0.0)
-
                 # When the hub sensor sticks or the clear position hasn't been
                 # set yet, don't let None arithmetic crash the monitor. Treat
                 # the traveled distance after the hub as zero until we have a
@@ -524,8 +516,7 @@ class OAMSRunoutMonitor:
                     self.logger.debug(
                         "OAMS: COASTING - path_length="
                         f"{path_length:.1f}, effective_path_length={effective_path_length:.1f}, "
-                        f"reload_margin={self.reload_before_toolhead_distance:.1f}, "
-                        f"runout_type={'cross' if self.is_cross_extruder_runout else 'same'}"
+                        f"reload_margin={self.reload_before_toolhead_distance:.1f}"
                     )
 
                 if self.hub_cleared and runout_after_position - self._last_coast_log_position >= 100.0:
@@ -4927,51 +4918,6 @@ class OAMSManager:
             self.logger.error(f"Failed to clear LED for {fps_name} spool {spool_idx} after {context}: {e}")
             return False
 
-    def _unload_with_busy_recovery(
-        self,
-        oam: object,
-        fps_name: str,
-        lane_name: str,
-        *,
-        context: str,
-        max_retries: Optional[int] = None,
-    ) -> Tuple[bool, str]:
-        """Attempt unload and recover from transient MCU busy timing windows."""
-        last_message = "Unknown unload failure"
-
-        # Try multiple recovery rounds because OAMS can report BUSY for several
-        # seconds after abort/transition windows.
-        for recovery_round in range(3):
-            success, message = oam.unload_spool_with_retry(max_retries=max_retries)
-            last_message = message
-            if success:
-                return True, message
-
-            if "busy" not in str(message).lower():
-                return False, message
-
-            self.logger.warning(
-                f"Unload returned busy during {context} for {lane_name} on {fps_name}; "
-                f"recovery round {recovery_round + 1}/3"
-            )
-
-            deadline = self.reactor.monotonic() + 12.0
-            while self.reactor.monotonic() < deadline:
-                if getattr(oam, "action_status", None) is None:
-                    break
-                self.reactor.pause(self.reactor.monotonic() + 0.25)
-
-            try:
-                oam.abort_current_action(wait=True)
-            except Exception as e:
-                self.logger.debug(f"Busy-recovery abort failed for {fps_name}: {e}")
-
-            # Give MCU time to settle before another full unload retry loop.
-            settle_delay = 1.0 + (recovery_round * 0.5)
-            self.reactor.pause(self.reactor.monotonic() + settle_delay)
-
-        return False, last_message
-
     def _perform_stuck_spool_recovery(
         self,
         fps_name: str,
@@ -5016,26 +4962,9 @@ class OAMSManager:
         except Exception as e:
             self.logger.error(f"Failed to abort stuck load operation for {lane_name}: {e}")
 
-        # Give MCU a moment to settle before starting unload retries.
-        self.reactor.pause(self.reactor.monotonic() + 0.75)
-
         # STEP 4: Unload the stuck filament
         try:
-            afc = self._get_afc()
-            max_retries = getattr(afc, 'tool_max_unload_attempts', None) if afc is not None else None
-            unload_success, unload_msg = self._unload_with_busy_recovery(
-                oam,
-                fps_name,
-                lane_name,
-                context="stuck spool recovery",
-                max_retries=max_retries,
-            )
-            if not unload_success:
-                self.logger.error(
-                    f"Failed to unload during stuck spool recovery for {lane_name}: {unload_msg}"
-                )
-                return False
-
+            oam.unload_spool_with_retry()
             # Clear error LED after successful unload
             if fps_state.stuck_spool.active and fps_state.current_spool_idx is not None:
                 self._clear_error_led(oam, fps_state.current_spool_idx, fps_name, "stuck spool retry unload")
@@ -5210,25 +5139,9 @@ class OAMSManager:
             except Exception as e:
                 self.logger.error(f"Failed to abort load operation before engagement retry for {lane_name}: {e}")
 
-            # Give MCU a moment to settle before starting unload retries.
-            self.reactor.pause(self.reactor.monotonic() + 0.75)
-
             # Unload the filament
             try:
-                afc = self._get_afc()
-                max_retries = getattr(afc, 'tool_max_unload_attempts', None) if afc is not None else None
-                unload_success, unload_msg = self._unload_with_busy_recovery(
-                    oam,
-                    fps_name,
-                    lane_name,
-                    context="engagement retry cleanup",
-                    max_retries=max_retries,
-                )
-                if not unload_success:
-                    self.logger.error(
-                        f"Unload after engagement failure did not complete for {lane_name}: {unload_msg}"
-                    )
-                    return False
+                oam.unload_spool_with_retry()
             except Exception as e:
                 self.logger.error(f"Exception during unload after engagement failure for {lane_name}: {e}")
                 return False
