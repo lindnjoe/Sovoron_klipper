@@ -3970,6 +3970,16 @@ class OAMSManager:
         """
         self.logger.info(f"Successfully loaded lane {target_lane} on {fps_name} after infinite runout")
 
+        # Pre-clear the source lane before marking the replacement lane loaded.
+        # This keeps virtual hub/tool state transitions ordered in same-FPS reloads.
+        if source_lane_name:
+            try:
+                gcode = self.printer.lookup_object("gcode")
+                gcode.run_script(f"SET_LANE_UNLOADED LANE={source_lane_name}")
+                self.logger.info(f"Pre-cleared source lane {source_lane_name} via SET_LANE_UNLOADED before loading {target_lane}")
+            except Exception as e:
+                self.logger.error(f"Failed to pre-clear source lane {source_lane_name} before loading {target_lane}: {e}")
+
         # Always notify AFC that target lane is loaded to update virtual sensors
         # This ensures AMS_Extruder# sensors show correct state after same-FPS runouts
         if target_lane:
@@ -4048,31 +4058,9 @@ class OAMSManager:
                 except Exception as e:
                     self.logger.warning(f"Failed to force update loaded_to_hub for {target_lane}: {e}")
 
-        # Clear the source lane's state in AFC so it shows as EMPTY and can detect new filament
-        # Note: LED will clear automatically when lane state updates to empty
-        # FPS state stays LOADED with the new target lane, but old lane needs to be cleared
+        # Clear same-FPS runout flag on source lane after successful reload.
         if source_lane_name:
             try:
-                if AMSRunoutCoordinator is not None:
-                    # Notify AFC that source lane is now unloaded
-                    AMSRunoutCoordinator.notify_lane_tool_state(
-                        self.printer,
-                        fps_state.current_oams or active_oams,
-                        source_lane_name,
-                        loaded=False,
-                        spool_index=None,
-                        eventtime=self.reactor.monotonic()
-                    )
-                    self.logger.info(f"Cleared source lane {source_lane_name} state in AFC after successful reload to {target_lane}")
-                else:
-                    # Fallback to gcode command if coordinator not available
-                    gcode = self.printer.lookup_object("gcode")
-
-                    gcode.run_script(f"SET_LANE_UNLOADED LANE={source_lane_name}")
-
-                    self.logger.info(f"Cleared source lane {source_lane_name} via SET_LANE_UNLOADED after reload to {target_lane}")
-
-                # Clear the same-FPS runout flag on source lane after successful reload
                 afc = self._get_afc()
                 if afc and hasattr(afc, 'lanes'):
                     source_lane_obj = afc.lanes.get(source_lane_name)
@@ -4080,7 +4068,7 @@ class OAMSManager:
                         source_lane_obj._oams_same_fps_runout = False
                         self.logger.info(f"Cleared same-FPS runout flag on lane {source_lane_name} after successful reload")
             except Exception as e:
-                self.logger.error(f"Failed to clear source lane {source_lane_name} state after reload to {target_lane}: {e}")
+                self.logger.error(f"Failed to clear same-FPS runout flag for source lane {source_lane_name} after reload to {target_lane}: {e}")
 
         # CRITICAL: Reset detection trackers after successful reload to prevent false positives
         # The clog/stuck spool trackers may have stale encoder data from the old lane
