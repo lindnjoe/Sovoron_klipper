@@ -3974,9 +3974,22 @@ class OAMSManager:
         # This keeps virtual hub/tool state transitions ordered in same-FPS reloads.
         if source_lane_name:
             try:
-                gcode = self.printer.lookup_object("gcode")
-                gcode.run_script_from_command("UNSET_LANE_LOADED")
-                self.logger.info(f"Pre-cleared active lane via UNSET_LANE_LOADED before loading {target_lane} (expected source {source_lane_name})")
+                afc = self._get_afc()
+                afc_function = getattr(afc, "function", None) if afc is not None else None
+                unset_fn = getattr(afc_function, "unset_lane_loaded", None)
+                if callable(unset_fn):
+                    unset_fn()
+                    self.logger.info(
+                        f"Pre-cleared active lane via AFC.function.unset_lane_loaded() before loading {target_lane} "
+                        f"(expected source {source_lane_name})"
+                    )
+                else:
+                    gcode = self.printer.lookup_object("gcode")
+                    gcode.run_script_from_command("UNSET_LANE_LOADED")
+                    self.logger.info(
+                        f"Pre-cleared active lane via UNSET_LANE_LOADED G-code fallback before loading {target_lane} "
+                        f"(expected source {source_lane_name})"
+                    )
 
                 # Explicitly clear AFC hub cache/virtual hub sensor for the source lane.
                 self._clear_afc_loaded_lane(source_lane_name, clear_hub_state=True)
