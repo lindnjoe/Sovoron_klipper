@@ -125,6 +125,7 @@ CLOG_SENSITIVITY_LEVELS = {
     "high": {"extrusion_window": 12.0, "encoder_slack": 4, "pressure_band": 0.04, "dwell": 8.0},  # Increased from 6.0 to 8.0 for debouncing
 }
 CLOG_SENSITIVITY_DEFAULT = "medium"
+OAMS_MANAGER_VERSION = "v0.4"
 
 POST_LOAD_PRESSURE_THRESHOLD = 0.65
 POST_LOAD_PRESSURE_DWELL = 15.0
@@ -1204,9 +1205,9 @@ class OAMSManager:
         self.printer.add_object("oams_manager", self)
         self.register_commands()
 
-    def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
+    def get_status(self, eventtime: float) -> Dict[str, Any]:
         """Return current status of all FPS units and OAMS hardware."""
-        attributes: Dict[str, Dict[str, Any]] = {"oams": {}}
+        attributes: Dict[str, Any] = {"oams": {}, "version": OAMS_MANAGER_VERSION}
 
         for name, oam in self.oams.items():
             status_name = name.split()[-1]
