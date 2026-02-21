@@ -3672,10 +3672,11 @@ class afcAMS(afcUnit):
                 eventtime = 0.0
 
         lane_state = bool(loaded)
-        try:
-            self._apply_lane_sensor_state(lane, lane_state, eventtime)
-        except Exception as e:
-            self.logger.error(f"Failed to mirror OpenAMS lane sensor state for {lane.name}: {e}")
+        if lane_state:
+            try:
+                self._apply_lane_sensor_state(lane, lane_state, eventtime)
+            except Exception as e:
+                self.logger.error(f"Failed to mirror OpenAMS lane sensor state for {lane.name}: {e}")
         if self.hardware_service is not None:
             hub_state = getattr(lane, "loaded_to_hub", None)
             tool_state = getattr(lane, "tool_loaded", None)
@@ -3819,9 +3820,9 @@ class afcAMS(afcUnit):
             except Exception as e:
                 self.logger.error(f"Failed to unsync lane {lane.name} from extruder: {e}")
             try:
-                lane.set_unloaded()
+                lane.set_tool_unloaded()
             except Exception as e:
-                self.logger.error(f"Failed to mark lane {lane.name} as unloaded: {e}")
+                self.logger.error(f"Failed to mark lane {lane.name} as tool-unloaded: {e}")
             try:
                 self.afc.save_vars()
             except Exception as e:
