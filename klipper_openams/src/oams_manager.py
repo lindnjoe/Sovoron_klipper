@@ -4937,31 +4937,40 @@ class OAMSManager:
         max_retries: Optional[int] = None,
     ) -> Tuple[bool, str]:
         """Attempt unload and recover from transient MCU busy timing windows."""
-        success, message = oam.unload_spool_with_retry(max_retries=max_retries)
-        if success:
-            return True, message
+        last_message = "Unknown unload failure"
 
-        if "busy" not in str(message).lower():
-            return False, message
+        # Try multiple recovery rounds because OAMS can report BUSY for several
+        # seconds after abort/transition windows.
+        for recovery_round in range(3):
+            success, message = oam.unload_spool_with_retry(max_retries=max_retries)
+            last_message = message
+            if success:
+                return True, message
 
-        self.logger.warning(
-            f"Unload returned busy during {context} for {lane_name} on {fps_name}; waiting for MCU idle and retrying once"
-        )
+            if "busy" not in str(message).lower():
+                return False, message
 
-        deadline = self.reactor.monotonic() + 8.0
-        while self.reactor.monotonic() < deadline:
-            if getattr(oam, "action_status", None) is None:
-                break
-            self.reactor.pause(self.reactor.monotonic() + 0.25)
+            self.logger.warning(
+                f"Unload returned busy during {context} for {lane_name} on {fps_name}; "
+                f"recovery round {recovery_round + 1}/3"
+            )
 
-        if getattr(oam, "action_status", None) is not None:
+            deadline = self.reactor.monotonic() + 12.0
+            while self.reactor.monotonic() < deadline:
+                if getattr(oam, "action_status", None) is None:
+                    break
+                self.reactor.pause(self.reactor.monotonic() + 0.25)
+
             try:
                 oam.abort_current_action(wait=True)
             except Exception as e:
                 self.logger.debug(f"Busy-recovery abort failed for {fps_name}: {e}")
 
-        self.reactor.pause(self.reactor.monotonic() + 0.5)
-        return oam.unload_spool_with_retry(max_retries=max_retries)
+            # Give MCU time to settle before another full unload retry loop.
+            settle_delay = 1.0 + (recovery_round * 0.5)
+            self.reactor.pause(self.reactor.monotonic() + settle_delay)
+
+        return False, last_message
 
     def _perform_stuck_spool_recovery(
         self,
@@ -5006,6 +5015,9 @@ class OAMSManager:
             self.logger.info(f"Aborted stuck load operation for {lane_name} before unload")
         except Exception as e:
             self.logger.error(f"Failed to abort stuck load operation for {lane_name}: {e}")
+
+        # Give MCU a moment to settle before starting unload retries.
+        self.reactor.pause(self.reactor.monotonic() + 0.75)
 
         # STEP 4: Unload the stuck filament
         try:
@@ -5197,6 +5209,9 @@ class OAMSManager:
                 oam.abort_current_action()
             except Exception as e:
                 self.logger.error(f"Failed to abort load operation before engagement retry for {lane_name}: {e}")
+
+            # Give MCU a moment to settle before starting unload retries.
+            self.reactor.pause(self.reactor.monotonic() + 0.75)
 
             # Unload the filament
             try:
