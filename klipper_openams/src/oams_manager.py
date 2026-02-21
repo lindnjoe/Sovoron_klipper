@@ -3974,9 +3974,22 @@ class OAMSManager:
         # This keeps virtual hub/tool state transitions ordered in same-FPS reloads.
         if source_lane_name:
             try:
-                gcode = self.printer.lookup_object("gcode")
-                gcode.run_script_from_command("UNSET_LANE_LOADED")
-                self.logger.info(f"Pre-cleared active lane via UNSET_LANE_LOADED before loading {target_lane} (expected source {source_lane_name})")
+                afc = self._get_afc()
+                afc_function = getattr(afc, "function", None) if afc is not None else None
+                unset_fn = getattr(afc_function, "unset_lane_loaded", None)
+                if callable(unset_fn):
+                    unset_fn()
+                    self.logger.info(
+                        f"Pre-cleared active lane via AFC.function.unset_lane_loaded() before loading {target_lane} "
+                        f"(expected source {source_lane_name})"
+                    )
+                else:
+                    gcode = self.printer.lookup_object("gcode")
+                    gcode.run_script_from_command("UNSET_LANE_LOADED")
+                    self.logger.info(
+                        f"Pre-cleared active lane via UNSET_LANE_LOADED G-code fallback before loading {target_lane} "
+                        f"(expected source {source_lane_name})"
+                    )
 
                 # Explicitly clear AFC hub cache/virtual hub sensor for the source lane.
                 self._clear_afc_loaded_lane(source_lane_name, clear_hub_state=True)
@@ -4028,11 +4041,45 @@ class OAMSManager:
 
             if not handled:
                 try:
+                    afc = self._get_afc()
+                    lane_obj = afc.lanes.get(target_lane) if afc is not None and hasattr(afc, "lanes") else None
+                    if lane_obj is not None and hasattr(lane_obj, "set_tool_loaded") and hasattr(lane_obj, "sync_to_extruder"):
+                        if not getattr(lane_obj, "load_state", False):
+                            self.logger.warning(
+                                f"Skipping direct AFC lane-loaded update for {target_lane}: lane load_state is False"
+                            )
+                        else:
+                            afc_function = getattr(afc, "function", None)
+                            handle_activate = getattr(afc_function, "handle_activate_extruder", None)
+                            if callable(handle_activate):
+                                handle_activate()
+                            lane_obj.set_tool_loaded()
+                            lane_obj.sync_to_extruder()
+                            unit_obj = getattr(lane_obj, "unit_obj", None)
+                            select_lane = getattr(unit_obj, "select_lane", None)
+                            if callable(select_lane):
+                                select_lane(lane_obj)
+                            save_vars = getattr(afc, "save_vars", None)
+                            if callable(save_vars):
+                                save_vars()
+                            handled = True
+                            self.logger.info(
+                                f"Marked lane {target_lane} as loaded via direct AFC lane state update after infinite runout on {fps_name}"
+                            )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed direct AFC lane-loaded update for {target_lane} after infinite runout on {fps_name}: {e}"
+                    )
+
+            if not handled:
+                try:
                     gcode = self.printer.lookup_object("gcode")
 
-                    gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
+                    gcode.run_script_from_command(f"SET_LANE_LOADED LANE={target_lane}")
 
-                    self.logger.info(f"Marked lane {target_lane} as loaded via SET_LANE_LOADED after infinite runout on {fps_name}")
+                    self.logger.info(
+                        f"Marked lane {target_lane} as loaded via SET_LANE_LOADED G-code fallback after infinite runout on {fps_name}"
+                    )
                 except Exception as e:
                     self.logger.error(f"Failed to mark lane {target_lane} as loaded after infinite runout on {fps_name}: {e}")
 
@@ -4348,9 +4395,22 @@ class OAMSManager:
                     fps_state_obj.since = self.reactor.monotonic()
                     oam_load.current_spool = bay_index
 
-                    # Call success handler with AFC notifications
-                    self._handle_successful_reload(fps_name, fps_state, target_lane, target_lane_map,
-                                                   source_lane_name, active_oams, monitor)
+                    # Defer post-load state synchronization to a reactor callback.
+                    # This avoids doing all AFC/gcode sync work inside the timer callback
+                    # and helps state transitions complete immediately during active prints.
+                    def _finish_successful_reload(_eventtime):
+                        self._handle_successful_reload(
+                            fps_name,
+                            fps_state,
+                            target_lane,
+                            target_lane_map,
+                            source_lane_name,
+                            active_oams,
+                            monitor,
+                        )
+                        return self.reactor.NEVER
+
+                    self.reactor.register_callback(_finish_successful_reload)
                 else:
                     self.logger.error(f"Async load failed with code {oam_load.action_status_code}")
                     fps_state_obj.state = FPSLoadState.UNLOADED
