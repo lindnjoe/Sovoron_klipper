@@ -25,6 +25,7 @@ from textwrap import dedent
 from datetime import datetime
 from types import MethodType
 from typing import Any, Dict, List, Optional, Set, Tuple
+from enum import Enum
 
 from configparser import Error as ConfigError
 
@@ -73,6 +74,32 @@ def _is_openams_unit(unit_obj) -> bool:
     if hasattr(unit_obj, "oams_name"):
         return True
     return False
+
+
+class OpenAMSStateMutation(str, Enum):
+    """Authoritative state mutation channels for OpenAMS/AFC integration."""
+    SENSOR = "sensor"
+    TOOL = "tool"
+    RUNOUT = "runout"
+
+
+EVENT_POLICY: Dict[str, Dict[str, bool]] = {
+    # Hardware sensor channels own load/prep and hub transitions.
+    OpenAMSStateMutation.SENSOR.value: {
+        "allow_spool_events": True,
+        "allow_full_unload": True,
+    },
+    # Tool-only channels must not emit spool transitions.
+    OpenAMSStateMutation.TOOL.value: {
+        "allow_spool_events": False,
+        "allow_full_unload": False,
+    },
+    # Runout flow can force full state cleanup.
+    OpenAMSStateMutation.RUNOUT.value: {
+        "allow_spool_events": True,
+        "allow_full_unload": True,
+    },
+}
 
 
 class _VirtualRunoutHelper:
@@ -3173,6 +3200,32 @@ class afcAMS(afcUnit):
 
         return _timer_callback
 
+    def _should_force_full_unload_for_shared_lane(self, lane, lane_val_bool: bool, eventtime: float, *, allow_clear: bool = True) -> bool:
+        """Gate destructive shared-lane unloads to confirmed sensor/removal conditions."""
+        if not allow_clear or lane_val_bool:
+            return False
+
+        if bool(
+            getattr(lane, "_oams_same_fps_runout", False)
+            or getattr(lane, "_oams_runout_detected", False)
+            or getattr(lane, "_oams_cross_extruder_runout", False)
+        ):
+            return True
+
+        if bool(getattr(lane, "tool_loaded", False)):
+            return False
+
+        hub_state = getattr(lane, "loaded_to_hub", False)
+        if self.hardware_service is not None:
+            try:
+                snapshot = self.hardware_service.latest_lane_snapshot(self.oams_name, lane.name)
+                if snapshot is not None:
+                    hub_state = snapshot.get("hub_state", hub_state)
+            except Exception:
+                pass
+
+        return not bool(hub_state)
+
     def _update_shared_lane(self, lane, lane_val, eventtime, *, allow_clear: bool = True):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
         # Check if runout handling requires blocking this sensor update
@@ -3245,10 +3298,16 @@ class afcAMS(afcUnit):
                 # lane.set_unloaded() already handles tool_loaded and loaded_to_hub
                 # Only call set_unloaded if lane isn't already in NONE state
                 # This prevents errors when sensor reports empty for an already-empty lane
-                if lane.status != AFCLaneState.NONE:
+                force_full_unload = self._should_force_full_unload_for_shared_lane(
+                    lane,
+                    lane_val_bool,
+                    eventtime,
+                    allow_clear=allow_clear and EVENT_POLICY[OpenAMSStateMutation.SENSOR.value]["allow_full_unload"],
+                )
+                if force_full_unload and lane.status != AFCLaneState.NONE:
                     lane.set_unloaded()
-                if hasattr(lane, "_afc_prep_done"):
-                    lane._afc_prep_done = False
+                    if hasattr(lane, "_afc_prep_done"):
+                        lane._afc_prep_done = False
                 lane.prep_state = lane_val_bool
                 lane.load_state = lane_val_bool
             except Exception as e:

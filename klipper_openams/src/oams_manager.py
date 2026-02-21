@@ -40,8 +40,7 @@ from extras.openams_integration import (
     AMSRunoutCoordinator,
     AMSHardwareService,
     normalize_extruder_name as _normalize_extruder_name,
-    normalize_oams_name as _normalize_oams_name_token,
-    OPENAMS_VERSION,
+    normalize_oams_name as _normalize_oams_name_token
 )
 from extras.oams import OAMSStatus, OAMSOpCode
 
@@ -117,6 +116,30 @@ POST_LOAD_PRESSURE_CHECK_PERIOD = 0.5
 
 # Threshold for detecting failed load - if FPS stays above this during LOADING, filament isn't engaging
 LOAD_FPS_STUCK_THRESHOLD = 0.75
+
+
+def _resolve_oams_entry(oams_map: Dict[str, Any], oams_name: Optional[str], oams_obj: Optional[Any] = None) -> Tuple[Optional[str], Optional[Any]]:
+    """Resolve OAMS object/name using the canonical OpenAMS token format."""
+    if not oams_name:
+        return None, None
+
+    if oams_name in oams_map:
+        return oams_name, oams_map.get(oams_name)
+
+    if oams_obj is not None:
+        obj_name = getattr(oams_obj, "name", None)
+        if obj_name in oams_map:
+            return obj_name, oams_map.get(obj_name)
+
+    canonical = _normalize_oams_name_token(oams_name)
+    prefixed = f"oams {canonical}"
+    if prefixed in oams_map:
+        return prefixed, oams_map.get(prefixed)
+
+    if canonical in oams_map:
+        return canonical, oams_map.get(canonical)
+
+    return canonical, None
 
 
 class OAMSRunoutState:
@@ -691,28 +714,7 @@ class OAMSRunoutMonitor:
         oams_name: Optional[str],
         oams_obj: Optional[Any] = None,
     ) -> Tuple[Optional[str], Optional[Any]]:
-        if not oams_name:
-            return None, None
-
-        if oams_name in self.oams:
-            return oams_name, self.oams.get(oams_name)
-
-        if oams_obj is not None:
-            obj_name = getattr(oams_obj, "name", None)
-            if obj_name in self.oams:
-                return obj_name, self.oams.get(obj_name)
-
-        canonical = _normalize_oams_name_token(oams_name)
-        prefixed = f"oams {canonical}"
-        if prefixed in self.oams:
-            return prefixed, self.oams.get(prefixed)
-
-        if oams_name.startswith("oams "):
-            unprefixed = oams_name[5:]
-            if unprefixed in self.oams:
-                return unprefixed, self.oams.get(unprefixed)
-
-        return oams_name, None
+        return _resolve_oams_entry(self.oams, oams_name, oams_obj)
 
     def _has_gcode_command(self, gcode, command: str) -> bool:
         handlers = getattr(gcode, "ready_gcode_handlers", None)
@@ -1559,7 +1561,11 @@ class OAMSManager:
                 return
             extruder_obj = getattr(lane_obj, 'extruder_obj', None)
             if extruder_obj is not None:
-                extruder_obj.lane_loaded = None
+                try:
+                    if getattr(extruder_obj, 'lane_loaded', None) == lane_name:
+                        extruder_obj.lane_loaded = None
+                except Exception:
+                    pass
             if getattr(lane_obj, 'tool_loaded', False):
                 lane_obj.tool_loaded = False
             if clear_hub_state:
@@ -1857,28 +1863,7 @@ class OAMSManager:
         oams_name: Optional[str],
         oams_obj: Optional[Any] = None,
     ) -> Tuple[Optional[str], Optional[Any]]:
-        if not oams_name:
-            return None, None
-
-        if oams_name in self.oams:
-            return oams_name, self.oams.get(oams_name)
-
-        if oams_obj is not None:
-            obj_name = getattr(oams_obj, "name", None)
-            if obj_name in self.oams:
-                return obj_name, self.oams.get(obj_name)
-
-        canonical = _normalize_oams_name_token(oams_name)
-        prefixed = f"oams {canonical}"
-        if prefixed in self.oams:
-            return prefixed, self.oams.get(prefixed)
-
-        if oams_name.startswith("oams "):
-            unprefixed = oams_name[5:]
-            if unprefixed in self.oams:
-                return unprefixed, self.oams.get(unprefixed)
-
-        return oams_name, None
+        return _resolve_oams_entry(self.oams, oams_name, oams_obj)
 
 
     def _get_follower_state(self, oams_name: str) -> FollowerState:
@@ -3523,38 +3508,12 @@ class OAMSManager:
         return _normalize_extruder_name(name)
 
     def _get_oams_object(self, oams_name: Optional[str]):
-        if not oams_name:
-            return None
-        if oams_name in self.oams:
-            return self.oams.get(oams_name)
-        canonical = _normalize_oams_name_token(oams_name)
-        prefixed = f"oams {canonical}"
-        if prefixed in self.oams:
-            return self.oams.get(prefixed)
-        normalized = _normalize_oams_name_token(oams_name)
-        return self.oams.get(normalized)
+        _, oams_obj = self._resolve_oams_name(oams_name)
+        return oams_obj
 
     def _normalize_oams_name(self, oams_name: Optional[str], oams_obj: Optional[Any] = None) -> Optional[str]:
-        if not oams_name:
-            return oams_name
-
-        if oams_name in self.oams:
-            return oams_name
-
-        if oams_obj is not None:
-            obj_name = getattr(oams_obj, "name", None)
-            if obj_name in self.oams:
-                return obj_name
-
-        canonical = _normalize_oams_name_token(oams_name)
-        prefixed = f"oams {canonical}"
-        if prefixed in self.oams:
-            return prefixed
-
-        if canonical in self.oams:
-            return canonical
-
-        return canonical
+        resolved_name, _ = self._resolve_oams_name(oams_name, oams_obj)
+        return resolved_name
 
     def _get_afc(self):
         # OPTIMIZATION: Cache AFC object lookup with validation
