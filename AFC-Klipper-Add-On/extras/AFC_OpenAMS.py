@@ -66,8 +66,6 @@ except Exception:
 _module_logger = logging.getLogger(__name__)
 
 _ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
-_ORIGINAL_PREP_CAPTURE_TD1 = getattr(AFCLane, "_prep_capture_td1", None)
-_ORIGINAL_GET_TD1_DATA = getattr(AFCLane, "get_td1_data", None)
 
 
 def _is_openams_unit(unit_obj) -> bool:
@@ -274,6 +272,7 @@ def _patch_extruder_for_virtual_ams() -> None:
         virtual = _VirtualFilamentSensor(self.printer, normalized, show_in_gui=show_sensor, runout_cb=runout_cb, enable_runout=enable_runout)
 
         self.tool_start = pin_value
+        self.logger.info(f"Skipping physical tool_start registration for virtual pin {self.tool_start} in [{self.fullname}]")
         self.fila_tool_start = virtual
         self.tool_start_state = bool(virtual.runout_helper.filament_present)
 
@@ -363,8 +362,6 @@ class afcAMS(afcUnit):
             self.hardware_service = AMSHardwareService.for_printer(self.printer, self.oams_name, self.logger)
 
         self._register_sync_dispatcher()
-        self._patch_td1_capture()
-        self._patch_td1_cali_fail_prompt()
 
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES, desc="calibrate the OpenAMS HUB HES value for a specific lane")
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES_ALL", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL, desc="calibrate the OpenAMS HUB HES value for every loaded lane")
@@ -660,91 +657,12 @@ class afcAMS(afcUnit):
 
         return None
 
-    def _patch_td1_capture(self):
-        if getattr(AFCLane, "_ams_td1_capture_patched", False):
-            return
-
-        def _patched_prep_capture_td1(lane_self):
-            if (
-                _is_openams_unit(lane_self.unit_obj)
-                and hasattr(lane_self.unit_obj, "prep_capture_td1")
-            ):
-                lane_self.unit_obj.prep_capture_td1(lane_self)
-                return
-            if _ORIGINAL_PREP_CAPTURE_TD1 is not None:
-                return _ORIGINAL_PREP_CAPTURE_TD1(lane_self)
-            return None
-
-        def _patched_get_td1_data(lane_self):
-            if (
-                _is_openams_unit(lane_self.unit_obj)
-                and hasattr(lane_self.unit_obj, "capture_td1_data")
-            ):
-                return lane_self.unit_obj.capture_td1_data(lane_self)
-            if _ORIGINAL_GET_TD1_DATA is not None:
-                return _ORIGINAL_GET_TD1_DATA(lane_self)
-            return False, "TD-1 capture not available"
-
-        AFCLane._prep_capture_td1 = _patched_prep_capture_td1
-        AFCLane.get_td1_data = _patched_get_td1_data
-        AFCLane._ams_td1_capture_patched = True
-
-    def _patch_td1_cali_fail_prompt(self):
-        afc_function = getattr(self.afc, "function", None)
-        if afc_function is None:
-            return
-        if getattr(afc_function, "_openams_cali_fail_patched", False):
-            return
-
-        original_cmd = getattr(afc_function, "cmd_AFC_CALI_FAIL", None)
-        if original_cmd is None:
-            return
-
-        def _openams_cmd_AFC_CALI_FAIL(afc_func_self, gcmd):
-            cali = gcmd.get("FAIL", None)
-            title = gcmd.get("TITLE", "AFC Calibration Failed")
-            reset_lane = bool(gcmd.get_int("RESET", 1))
-
-            lane = None
-            if cali is not None:
-                lane = afc_func_self.afc.lanes.get(str(cali))
-
-            if (
-                reset_lane
-                and lane is not None
-                and _is_openams_unit(lane.unit_obj)
-                and "TD-1" in title
-            ):
-                fail_message = gcmd.get("MSG", "")
-                prompt = AFCprompt(gcmd, afc_func_self.logger)
-                buttons = []
-                footer = []
-                text = f"{title} for {cali}. "
-                fps_id = None
-                if lane is not None:
-                    fps_id = lane.unit_obj._get_fps_id_for_lane(lane.name)
-                if fps_id:
-                    text += "First: reset lane, Second: review messages in console and take necessary action and re-run calibration."
-                    buttons.append(
-                        (
-                            "Reset lane",
-                            f"OAMSM_UNLOAD_FILAMENT FPS={fps_id}",
-                            "primary",
-                        )
-                    )
-                if fail_message:
-                    text += f" Fail message: {fail_message}"
-                footer.append(("EXIT", "prompt_end", "info"))
-                prompt.create_custom_p(title, text, buttons, True, None, footer)
-                return
-
-            return original_cmd(gcmd)
-
-        afc_function.cmd_AFC_CALI_FAIL = MethodType(
-            _openams_cmd_AFC_CALI_FAIL,
-            afc_function,
-        )
-        afc_function._openams_cali_fail_patched = True
+    def get_lane_reset_command(self, lane, distance) -> str:
+        """Return OpenAMS-specific reset command for calibration prompts."""
+        fps_id = self._get_fps_id_for_lane(lane.name)
+        if fps_id:
+            return f"OAMSM_UNLOAD_FILAMENT FPS={fps_id}"
+        return "AFC_LANE_RESET LANE={} DISTANCE={}".format(lane.name, distance)
 
     def _get_fps_id_for_lane(self, lane_name: str) -> Optional[str]:
         oams_manager = self._get_oams_manager()
@@ -4040,6 +3958,21 @@ class afcAMS(afcUnit):
 
         lane = self._find_lane_by_spool(normalized_index)
         if lane is None:
+            return
+
+        # Ignore initial startup "unloaded" baselines during PREP/bring-up.
+        # These can be emitted before AFC/Moonraker is fully initialized and
+        # should not be treated as real unload transitions.
+        previous_loaded = kwargs.get("previous_loaded")
+        if previous_loaded is not None:
+            previous_loaded = bool(previous_loaded)
+        in_prep = not getattr(self.afc, "prep_done", True)
+        if in_prep and previous_loaded is False:
+            self.logger.debug(
+                "Skipping spool_unloaded baseline for %s during PREP (spool_index=%s)",
+                lane.name,
+                normalized_index,
+            )
             return
 
         # PHASE 1 REFACTOR: Use AFC native set_unloaded() instead of direct state assignments
