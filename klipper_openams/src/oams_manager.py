@@ -3975,8 +3975,9 @@ class OAMSManager:
         if source_lane_name:
             try:
                 gcode = self.printer.lookup_object("gcode")
-                gcode.run_script(f"SET_LANE_UNLOADED LANE={source_lane_name}")
-                self.logger.info(f"Pre-cleared source lane {source_lane_name} via SET_LANE_UNLOADED before loading {target_lane}")
+                gcode.run_script_from_command("UNSET_LANE_LOADED")
+                self.logger.info(f"Pre-cleared active lane via UNSET_LANE_LOADED before loading {target_lane} (expected source {source_lane_name})")
+
             except Exception as e:
                 self.logger.error(f"Failed to pre-clear source lane {source_lane_name} before loading {target_lane}: {e}")
 
