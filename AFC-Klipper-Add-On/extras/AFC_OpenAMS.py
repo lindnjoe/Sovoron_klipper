@@ -54,14 +54,8 @@ try:
         OPENAMS_VERSION,
         OpenAMSManagerFacade,
     )
-except Exception:
-    AMSHardwareService = None
-    AMSRunoutCoordinator = None
-    LaneRegistry = None
-    AMSEventBus = None
-    normalize_extruder_name = None
-    OPENAMS_VERSION = "0.0.3"  # Fallback if import fails
-    OpenAMSManagerFacade = None
+except:
+    raise ConfigError(ERROR_STR.format(import_lib="openams_integration", trace=traceback.format_exc()))
 
 _module_logger = logging.getLogger(__name__)
 
@@ -3748,7 +3742,13 @@ class afcAMS(afcUnit):
                 except Exception as e:
                     self.logger.error(f"Failed to unset previously loaded lane: {e}")
                 if previous_lane is not None and getattr(previous_lane, "name", None) != getattr(lane, "name", None):
-                    _clear_lane_virtual_hub_sensor(previous_lane)
+                    clear_previous_hub = bool(
+                        getattr(previous_lane, "_oams_same_fps_runout", False)
+                        or getattr(previous_lane, "_oams_runout_detected", False)
+                        or getattr(previous_lane, "_oams_cross_extruder_runout", False)
+                    )
+                    if clear_previous_hub:
+                        _clear_lane_virtual_hub_sensor(previous_lane)
             try:
                 # Call set_tool_loaded() instead of set_loaded() since filament is loaded to toolhead
                 # This properly sets extruder.lane_loaded which is needed for lane tracking
