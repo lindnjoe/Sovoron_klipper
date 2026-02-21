@@ -3978,6 +3978,10 @@ class OAMSManager:
                 gcode.run_script_from_command("UNSET_LANE_LOADED")
                 self.logger.info(f"Pre-cleared active lane via UNSET_LANE_LOADED before loading {target_lane} (expected source {source_lane_name})")
 
+                # Explicitly clear AFC hub cache/virtual hub sensor for the source lane.
+                self._clear_afc_loaded_lane(source_lane_name, clear_hub_state=True)
+                self.logger.info(f"Pre-cleared source lane {source_lane_name} hub virtual sensor before loading {target_lane}")
+
             except Exception as e:
                 self.logger.error(f"Failed to pre-clear source lane {source_lane_name} before loading {target_lane}: {e}")
 
