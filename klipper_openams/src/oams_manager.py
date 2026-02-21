@@ -4041,11 +4041,45 @@ class OAMSManager:
 
             if not handled:
                 try:
+                    afc = self._get_afc()
+                    lane_obj = afc.lanes.get(target_lane) if afc is not None and hasattr(afc, "lanes") else None
+                    if lane_obj is not None and hasattr(lane_obj, "set_tool_loaded") and hasattr(lane_obj, "sync_to_extruder"):
+                        if not getattr(lane_obj, "load_state", False):
+                            self.logger.warning(
+                                f"Skipping direct AFC lane-loaded update for {target_lane}: lane load_state is False"
+                            )
+                        else:
+                            afc_function = getattr(afc, "function", None)
+                            handle_activate = getattr(afc_function, "handle_activate_extruder", None)
+                            if callable(handle_activate):
+                                handle_activate()
+                            lane_obj.set_tool_loaded()
+                            lane_obj.sync_to_extruder()
+                            unit_obj = getattr(lane_obj, "unit_obj", None)
+                            select_lane = getattr(unit_obj, "select_lane", None)
+                            if callable(select_lane):
+                                select_lane(lane_obj)
+                            save_vars = getattr(afc, "save_vars", None)
+                            if callable(save_vars):
+                                save_vars()
+                            handled = True
+                            self.logger.info(
+                                f"Marked lane {target_lane} as loaded via direct AFC lane state update after infinite runout on {fps_name}"
+                            )
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed direct AFC lane-loaded update for {target_lane} after infinite runout on {fps_name}: {e}"
+                    )
+
+            if not handled:
+                try:
                     gcode = self.printer.lookup_object("gcode")
 
-                    gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
+                    gcode.run_script_from_command(f"SET_LANE_LOADED LANE={target_lane}")
 
-                    self.logger.info(f"Marked lane {target_lane} as loaded via SET_LANE_LOADED after infinite runout on {fps_name}")
+                    self.logger.info(
+                        f"Marked lane {target_lane} as loaded via SET_LANE_LOADED G-code fallback after infinite runout on {fps_name}"
+                    )
                 except Exception as e:
                     self.logger.error(f"Failed to mark lane {target_lane} as loaded after infinite runout on {fps_name}: {e}")
 
