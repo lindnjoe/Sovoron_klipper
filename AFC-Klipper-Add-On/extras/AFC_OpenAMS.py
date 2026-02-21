@@ -3680,6 +3680,7 @@ class afcAMS(afcUnit):
         if self.hardware_service is not None:
             hub_state = getattr(lane, "loaded_to_hub", None)
             tool_state = getattr(lane, "tool_loaded", None)
+            sensor_lane_state = bool(getattr(lane, "load_state", False) or getattr(lane, "prep_state", False))
             mapped_spool = spool_index
             if mapped_spool is None:
                 try:
@@ -3687,7 +3688,16 @@ class afcAMS(afcUnit):
                 except (TypeError, ValueError):
                     mapped_spool = None
             try:
-                self.hardware_service.update_lane_snapshot(self.oams_name, lane.name, lane_state, hub_state if hub_state is not None else None, eventtime, spool_index=mapped_spool, tool_state=tool_state if tool_state is not None else lane_state)
+                self.hardware_service.update_lane_snapshot(
+                    self.oams_name,
+                    lane.name,
+                    sensor_lane_state,
+                    hub_state if hub_state is not None else None,
+                    eventtime,
+                    spool_index=mapped_spool,
+                    tool_state=tool_state if tool_state is not None else lane_state,
+                    emit_spool_event=False,
+                )
             except Exception as e:
                 self.logger.error(f"Failed to update shared lane snapshot for {lane.name}: {e}")
         afc_function = getattr(self.afc, "function", None)
