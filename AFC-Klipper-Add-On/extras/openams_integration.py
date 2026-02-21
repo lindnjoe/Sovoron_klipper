@@ -947,6 +947,65 @@ class AMSRunoutCoordinator:
         return (id(printer), name)
 
     @classmethod
+    def _key_candidates(cls, printer, name: Optional[str]) -> Tuple[Tuple[int, str], ...]:
+        """Return all plausible key variants for an OAMS name."""
+        if not name:
+            normalized = "default"
+        else:
+            normalized = str(name).strip()
+            if not normalized:
+                normalized = "default"
+
+        names: List[str] = [normalized]
+        lowered = normalized.lower()
+        if lowered.startswith("oams "):
+            unprefixed = normalized[5:].strip()
+            if unprefixed:
+                names.append(unprefixed)
+        else:
+            names.append(f"oams {normalized}")
+
+        seen = set()
+        keys: List[Tuple[int, str]] = []
+        printer_id = id(printer)
+        for candidate in names:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            keys.append((printer_id, candidate))
+        return tuple(keys)
+
+    @classmethod
+    def _units_for_name(cls, printer, name: Optional[str]) -> List[Any]:
+        """Resolve AFC units for a name, accepting prefixed/unprefixed OAMS aliases."""
+        units: List[Any] = []
+        seen_units = set()
+        with cls._lock:
+            for key in cls._key_candidates(printer, name):
+                for unit in cls._units.get(key, ()):
+                    unit_id = id(unit)
+                    if unit_id in seen_units:
+                        continue
+                    seen_units.add(unit_id)
+                    units.append(unit)
+        return units
+
+    @classmethod
+    def _monitors_for_name(cls, printer, name: Optional[str]) -> List[Any]:
+        """Resolve runout monitors for a name, accepting OAMS aliases."""
+        monitors: List[Any] = []
+        seen_monitors = set()
+        with cls._lock:
+            for key in cls._key_candidates(printer, name):
+                for monitor in cls._monitors.get(key, ()):
+                    monitor_id = id(monitor)
+                    if monitor_id in seen_monitors:
+                        continue
+                    seen_monitors.add(monitor_id)
+                    monitors.append(monitor)
+        return monitors
+
+    @classmethod
     def register_afc_unit(cls, unit) -> AMSHardwareService:
         """Register an ``afcAMS`` unit as participating in AMS integration."""
         service = AMSHardwareService.for_printer(unit.printer, unit.oams_name, unit.logger)
@@ -980,9 +1039,7 @@ class AMSRunoutCoordinator:
         oams_name = getattr(state, "current_oams", None) if state else None
         if not oams_name:
             oams_name = getattr(monitor, "fps_name", "default")
-        key = cls._key(printer, oams_name)
-        with cls._lock:
-            units = list(cls._units.get(key, ()))
+        units = cls._units_for_name(printer, oams_name)
         lane_hint = lane_name or getattr(monitor, "latest_lane_name", None)
         for unit in units:
             try:
@@ -993,9 +1050,7 @@ class AMSRunoutCoordinator:
     @classmethod
     def notify_afc_error(cls, printer, name: str, message: str, *, pause: bool = False) -> None:
         """Deliver an OpenAMS pause/error message to any registered AFC units."""
-        key = cls._key(printer, name)
-        with cls._lock:
-            units = list(cls._units.get(key, ()))
+        units = cls._units_for_name(printer, name)
 
         for unit in units:
             afc = getattr(unit, "afc", None)
@@ -1016,9 +1071,7 @@ class AMSRunoutCoordinator:
     @classmethod
     def notify_lane_tool_state(cls, printer, name: str, lane_name: str, *, loaded: bool, spool_index: Optional[int] = None, eventtime: Optional[float] = None) -> bool:
         """Propagate lane tool state changes from OpenAMS into AFC."""
-        key = cls._key(printer, name)
-        with cls._lock:
-            units = list(cls._units.get(key, ()))
+        units = cls._units_for_name(printer, name)
 
         if not units:
             return False
@@ -1042,9 +1095,7 @@ class AMSRunoutCoordinator:
     def mark_cross_extruder_runout(cls, printer, name: str, lane_name: str) -> bool:
         """Ask AFC units to mark a lane as participating in cross-extruder runout."""
 
-        key = cls._key(printer, name)
-        with cls._lock:
-            units = list(cls._units.get(key, ()))
+        units = cls._units_for_name(printer, name)
 
         if not units:
             return False
@@ -1062,13 +1113,9 @@ class AMSRunoutCoordinator:
     @classmethod
     def active_units(cls, printer, name: str) -> Iterable[Any]:
         """Return all AFC units registered for a specific OpenAMS instance."""
-        key = cls._key(printer, name)
-        with cls._lock:
-            return tuple(cls._units.get(key, ()))
+        return tuple(cls._units_for_name(printer, name))
 
     @classmethod
     def active_monitors(cls, printer, name: str) -> Iterable[Any]:
         """Return all runout monitors registered for a specific OpenAMS instance."""
-        key = cls._key(printer, name)
-        with cls._lock:
-            return tuple(cls._monitors.get(key, ()))
+        return tuple(cls._monitors_for_name(printer, name))
