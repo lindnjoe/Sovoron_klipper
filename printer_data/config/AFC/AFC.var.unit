@@ -95,7 +95,7 @@
             "map": "T7",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
+            "tool_loaded": false,
             "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.23,
@@ -106,9 +106,9 @@
             "weight": 863.5164618487369,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         }
@@ -263,7 +263,7 @@
             "empty_spool_weight": 130.0,
             "spool_id": 35,
             "color": "#328169",
-            "weight": 643.7467695846439,
+            "weight": 643.9853730769324,
             "extruder_temp": 210,
             "runout_lane": null,
             "filament_status": "In Tool",
@@ -376,7 +376,7 @@
                 "lane_loaded": "lane3"
             },
             "extruder4": {
-                "lane_loaded": "lane7"
+                "lane_loaded": null
             },
             "extruder5": {
                 "lane_loaded": null

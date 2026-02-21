@@ -3950,12 +3950,29 @@ class OAMSManager:
                     self.logger.error(f"Failed to update virtual sensor directly for lane {target_lane}: {e}")
 
             if not handled:
+                # Avoid queued gcode fallback here. During active prints, queued SET_LANE_LOADED
+                # can execute late and leave lane/hub indicators in limbo until a manual pause.
                 try:
-                    gcode = self.printer.lookup_object("gcode")
-
-                    gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
-
-                    self.logger.info(f"Marked lane {target_lane} as loaded via SET_LANE_LOADED after infinite runout on {fps_name}")
+                    afc = self._get_afc()
+                    forced = False
+                    if afc and hasattr(afc, "lanes"):
+                        lane_obj = afc.lanes.get(target_lane)
+                        if lane_obj is not None:
+                            try:
+                                lane_obj.loaded_to_hub = True
+                            except Exception:
+                                pass
+                            lane_obj.set_tool_loaded()
+                            lane_obj.sync_to_extruder()
+                            forced = True
+                    if forced:
+                        self.logger.info(
+                            f"Marked lane {target_lane} as loaded via direct AFC state update after infinite runout on {fps_name}"
+                        )
+                    else:
+                        self.logger.error(
+                            f"Failed to mark lane {target_lane} as loaded: coordinator unavailable and direct fallback failed"
+                        )
                 except Exception as e:
                     self.logger.error(f"Failed to mark lane {target_lane} as loaded after infinite runout on {fps_name}: {e}")
 
@@ -4008,10 +4025,9 @@ class OAMSManager:
                         self.logger.info(f"AMSRunoutCoordinator.notify_lane_tool_state returned False for source lane {source_lane_name}, using fallback clear")
 
                 if not source_lane_cleared:
-                    # Fallback to gcode command if coordinator is unavailable or declined handling
-                    gcode = self.printer.lookup_object("gcode")
-                    gcode.run_script(f"UNSET_LANE_LOADED LANE={source_lane_name}")
-                    self.logger.info(f"Cleared source lane {source_lane_name} via UNSET_LANE_LOADED after reload to {target_lane}")
+                    self.logger.info(
+                        f"Coordinator did not handle source lane clear for {source_lane_name}; using direct AFC clear"
+                    )
 
                 # Always hard-clear AFC lane/tool/hub state for the source lane so virtual hub never lingers.
                 self._clear_afc_loaded_lane(source_lane_name, clear_hub_state=True)
