@@ -54,14 +54,8 @@ try:
         OPENAMS_VERSION,
         OpenAMSManagerFacade,
     )
-except Exception:
-    AMSHardwareService = None
-    AMSRunoutCoordinator = None
-    LaneRegistry = None
-    AMSEventBus = None
-    normalize_extruder_name = None
-    OPENAMS_VERSION = "0.0.3"  # Fallback if import fails
-    OpenAMSManagerFacade = None
+except:
+    raise ConfigError(ERROR_STR.format(import_lib="openams_integration", trace=traceback.format_exc()))
 
 _module_logger = logging.getLogger(__name__)
 
