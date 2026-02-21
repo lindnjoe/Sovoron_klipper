@@ -4053,9 +4053,10 @@ class OAMSManager:
         # FPS state stays LOADED with the new target lane, but old lane needs to be cleared
         if source_lane_name:
             try:
+                source_lane_cleared = False
                 if AMSRunoutCoordinator is not None:
                     # Notify AFC that source lane is now unloaded
-                    AMSRunoutCoordinator.notify_lane_tool_state(
+                    source_lane_cleared = AMSRunoutCoordinator.notify_lane_tool_state(
                         self.printer,
                         fps_state.current_oams or active_oams,
                         source_lane_name,
@@ -4063,14 +4064,20 @@ class OAMSManager:
                         spool_index=None,
                         eventtime=self.reactor.monotonic()
                     )
-                    self.logger.info(f"Cleared source lane {source_lane_name} state in AFC after successful reload to {target_lane}")
-                else:
-                    # Fallback to gcode command if coordinator not available
+                    if source_lane_cleared:
+                        self.logger.info(f"Cleared source lane {source_lane_name} state in AFC after successful reload to {target_lane}")
+                    else:
+                        self.logger.info(f"AMSRunoutCoordinator.notify_lane_tool_state returned False for source lane {source_lane_name}, using fallback clear")
+
+                if not source_lane_cleared:
+                    # Fallback to gcode command if coordinator is unavailable or declined handling
                     gcode = self.printer.lookup_object("gcode")
-
                     gcode.run_script(f"SET_LANE_UNLOADED LANE={source_lane_name}")
-
                     self.logger.info(f"Cleared source lane {source_lane_name} via SET_LANE_UNLOADED after reload to {target_lane}")
+
+                # Always hard-clear AFC lane/tool/hub state for the source lane so virtual hub never lingers.
+                self._clear_afc_loaded_lane(source_lane_name, clear_hub_state=True)
+                self.logger.info(f"Force-cleared source lane {source_lane_name} hub/tool state after reload to {target_lane}")
 
                 # Clear the same-FPS runout flag on source lane after successful reload
                 afc = self._get_afc()
