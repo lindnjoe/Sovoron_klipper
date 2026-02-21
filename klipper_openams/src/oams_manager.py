@@ -41,6 +41,7 @@ try:
         AMSRunoutCoordinator,
         AMSHardwareService,
         normalize_extruder_name as _normalize_extruder_name,
+        normalize_oams_name as _normalize_oams_name_token,
         OPENAMS_VERSION,
     )
 except Exception:
@@ -54,6 +55,17 @@ except Exception:
             return None
         cleaned = name.strip()
         return cleaned.lower() if cleaned else None
+
+    def _normalize_oams_name_token(name: Optional[str], *, default: str = "default") -> str:
+        """Fallback: Return canonical OAMS identifier token."""
+        if not name:
+            return default
+        normalized = str(name).strip()
+        if not normalized:
+            return default
+        if normalized.lower().startswith("oams "):
+            normalized = normalized[5:].strip()
+        return normalized or default
 
 try:
     from extras.oams import OAMSStatus, OAMSOpCode
@@ -125,6 +137,7 @@ CLOG_SENSITIVITY_LEVELS = {
     "high": {"extrusion_window": 12.0, "encoder_slack": 4, "pressure_band": 0.04, "dwell": 8.0},  # Increased from 6.0 to 8.0 for debouncing
 }
 CLOG_SENSITIVITY_DEFAULT = "medium"
+OAMS_MANAGER_VERSION = "v0.4"
 
 POST_LOAD_PRESSURE_THRESHOLD = 0.65
 POST_LOAD_PRESSURE_DWELL = 15.0
@@ -325,9 +338,7 @@ class OAMSRunoutMonitor:
                     # Get OAMS name - strip "oams " prefix if present for hardware service lookup
                     # fps_state.current_oams is "oams oams1" but hardware service expects "oams1"
                     oams_full_name = getattr(fps_state, "current_oams", None) or self.fps_name
-                    unit_name = oams_full_name
-                    if isinstance(unit_name, str) and unit_name.startswith("oams "):
-                        unit_name = unit_name[5:]  # Strip "oams " prefix
+                    unit_name = _normalize_oams_name_token(oams_full_name)
 
                     if self.hardware_service is not None:
                         try:
@@ -439,9 +450,7 @@ class OAMSRunoutMonitor:
                         return eventtime + MONITOR_ENCODER_PERIOD
 
                     # Get unit name for cached lookup
-                    coast_unit_name = fps_state.current_oams or self.fps_name
-                    if isinstance(coast_unit_name, str) and coast_unit_name.startswith("oams "):
-                        coast_unit_name = coast_unit_name[5:]
+                    coast_unit_name = _normalize_oams_name_token(fps_state.current_oams or self.fps_name)
 
                     # Use cached sensor data from AMSHardwareService when available
                     try:
@@ -721,7 +730,8 @@ class OAMSRunoutMonitor:
             if obj_name in self.oams:
                 return obj_name, self.oams.get(obj_name)
 
-        prefixed = f"oams {oams_name}"
+        canonical = _normalize_oams_name_token(oams_name)
+        prefixed = f"oams {canonical}"
         if prefixed in self.oams:
             return prefixed, self.oams.get(prefixed)
 
@@ -1204,9 +1214,9 @@ class OAMSManager:
         self.printer.add_object("oams_manager", self)
         self.register_commands()
 
-    def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
+    def get_status(self, eventtime: float) -> Dict[str, Any]:
         """Return current status of all FPS units and OAMS hardware."""
-        attributes: Dict[str, Dict[str, Any]] = {"oams": {}}
+        attributes: Dict[str, Any] = {"oams": {}, "version": OAMS_MANAGER_VERSION}
 
         for name, oam in self.oams.items():
             status_name = name.split()[-1]
@@ -1247,9 +1257,7 @@ class OAMSManager:
             return None
 
         # Normalize oams_name - strip "oams " prefix if present
-        normalized_name = oams_name
-        if isinstance(oams_name, str) and oams_name.startswith("oams "):
-            normalized_name = oams_name[5:]
+        normalized_name = _normalize_oams_name_token(oams_name)
 
         # Check cache first
         if normalized_name in self._hardware_service_cache:
@@ -1888,7 +1896,8 @@ class OAMSManager:
             if obj_name in self.oams:
                 return obj_name, self.oams.get(obj_name)
 
-        prefixed = f"oams {oams_name}"
+        canonical = _normalize_oams_name_token(oams_name)
+        prefixed = f"oams {canonical}"
         if prefixed in self.oams:
             return prefixed, self.oams.get(prefixed)
 
@@ -3546,13 +3555,12 @@ class OAMSManager:
             return None
         if oams_name in self.oams:
             return self.oams.get(oams_name)
-        prefixed = f"oams {oams_name}"
+        canonical = _normalize_oams_name_token(oams_name)
+        prefixed = f"oams {canonical}"
         if prefixed in self.oams:
             return self.oams.get(prefixed)
-        if oams_name.startswith("oams "):
-            unprefixed = oams_name[5:]
-            return self.oams.get(unprefixed)
-        return None
+        normalized = _normalize_oams_name_token(oams_name)
+        return self.oams.get(normalized)
 
     def _normalize_oams_name(self, oams_name: Optional[str], oams_obj: Optional[Any] = None) -> Optional[str]:
         if not oams_name:
@@ -3566,16 +3574,15 @@ class OAMSManager:
             if obj_name in self.oams:
                 return obj_name
 
-        prefixed = f"oams {oams_name}"
+        canonical = _normalize_oams_name_token(oams_name)
+        prefixed = f"oams {canonical}"
         if prefixed in self.oams:
             return prefixed
 
-        if oams_name.startswith("oams "):
-            unprefixed = oams_name[5:]
-            if unprefixed in self.oams:
-                return unprefixed
+        if canonical in self.oams:
+            return canonical
 
-        return oams_name
+        return canonical
 
     def _get_afc(self):
         # OPTIMIZATION: Cache AFC object lookup with validation
