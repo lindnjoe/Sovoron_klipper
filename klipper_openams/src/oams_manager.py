@@ -3577,6 +3577,13 @@ class OAMSManager:
 
         return oams_name
 
+    def _coordinator_oams_name(self, oams_name: Optional[str], fallback: Optional[str] = None) -> Optional[str]:
+        """Return canonical OAMS name used when notifying AMSRunoutCoordinator."""
+        candidate = oams_name or fallback
+        if isinstance(candidate, str) and candidate.startswith("oams "):
+            return candidate[5:]
+        return candidate
+
     def _get_afc(self):
         # OPTIMIZATION: Cache AFC object lookup with validation
         if self.afc is not None:
@@ -3977,7 +3984,7 @@ class OAMSManager:
             if AMSRunoutCoordinator is not None:
                 try:
                     handled = AMSRunoutCoordinator.notify_lane_tool_state(
-                        self.printer, fps_state.current_oams or active_oams, target_lane,
+                        self.printer, self._coordinator_oams_name(fps_state.current_oams, active_oams), target_lane,
                         loaded=True, spool_index=fps_state.current_spool_idx, eventtime=fps_state.since
                     )
                     if handled:
@@ -4058,7 +4065,7 @@ class OAMSManager:
                     # Notify AFC that source lane is now unloaded
                     source_lane_cleared = AMSRunoutCoordinator.notify_lane_tool_state(
                         self.printer,
-                        fps_state.current_oams or active_oams,
+                        self._coordinator_oams_name(fps_state.current_oams, active_oams),
                         source_lane_name,
                         loaded=False,
                         spool_index=None,
