@@ -45,6 +45,21 @@ def normalize_extruder_name(name: Optional[str]) -> Optional[str]:
     return lowered or None
 
 
+def normalize_oams_name(name: Optional[str], *, default: str = "default") -> str:
+    """Return canonical OAMS identifier used across OpenAMS/AFC integration."""
+    if not name:
+        return default
+
+    normalized = str(name).strip()
+    if not normalized:
+        return default
+
+    if normalized.lower().startswith("oams "):
+        normalized = normalized[5:].strip()
+
+    return normalized or default
+
+
 class OpenAMSManagerFacade:
     """Thin compatibility facade for oams_manager interactions."""
 
@@ -468,11 +483,11 @@ class AMSHardwareService:
     @classmethod
     def for_printer(cls, printer, name: str = "default", logger=None) -> "AMSHardwareService":
         """Return the singleton service for the provided printer/name pair."""
-        key = (id(printer), name)
+        key = (id(printer), AMSRunoutCoordinator._canonical_oams_name(name))
         try:
             service = cls._instances[key]
         except KeyError:
-            service = cls(printer, name, logger)
+            service = cls(printer, AMSRunoutCoordinator._canonical_oams_name(name), logger)
             cls._instances[key] = service
         else:
             if logger is not None:
@@ -941,10 +956,15 @@ class AMSRunoutCoordinator:
     _monitors: Dict[Tuple[int, str], List[Any]] = {}
     _lock = threading.RLock()
 
+    @staticmethod
+    def _canonical_oams_name(name: Optional[str]) -> str:
+        """Normalize OAMS identifiers to one canonical key format."""
+        return normalize_oams_name(name)
+
     @classmethod
-    def _key(cls, printer, name: str) -> Tuple[int, str]:
+    def _key(cls, printer, name: Optional[str]) -> Tuple[int, str]:
         """Generate a unique key for printer/name combinations."""
-        return (id(printer), name)
+        return (id(printer), cls._canonical_oams_name(name))
 
     @classmethod
     def register_afc_unit(cls, unit) -> AMSHardwareService:
