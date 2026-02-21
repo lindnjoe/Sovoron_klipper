@@ -11,11 +11,7 @@ from dataclasses import dataclass
 from math import pi
 from typing import Tuple, List, Optional, Dict
 
-try:  # pragma: no cover - optional dependency during unit tests
-    from extras.openams_integration import AMSHardwareService, OPENAMS_VERSION
-except Exception:  # pragma: no cover - best-effort integration only
-    AMSHardwareService = None
-    OPENAMS_VERSION = "0.0.3"  # Fallback if import fails
+from extras.openams_integration import AMSHardwareService
 
 # Pre-compiled struct formats for float conversions
 _FLOAT_STRUCT = struct.Struct("f")
