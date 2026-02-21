@@ -3697,40 +3697,6 @@ class afcAMS(afcUnit):
                 self.logger.error(f"Failed to update shared lane snapshot for {lane.name}: {e}")
         afc_function = getattr(self.afc, "function", None)
 
-        def _clear_lane_virtual_hub_sensor(target_lane) -> None:
-            """Clear cached hub state + virtual hub sensor for a lane."""
-            if target_lane is None:
-                return
-            try:
-                target_lane.loaded_to_hub = False
-            except Exception:
-                pass
-
-            try:
-                hub_obj = getattr(target_lane, "hub_obj", None)
-            except Exception:
-                hub_obj = None
-
-            if hub_obj is None:
-                return
-
-            try:
-                if hasattr(hub_obj, "switch_pin_callback"):
-                    hub_obj.switch_pin_callback(eventtime, False)
-            except Exception as e:
-                self.logger.debug(
-                    f"Failed to clear virtual hub switch state for {getattr(target_lane, 'name', '<unknown>')}: {e}"
-                )
-
-            try:
-                fila = getattr(hub_obj, "fila", None)
-                if fila is not None and hasattr(fila, "runout_helper"):
-                    fila.runout_helper.note_filament_present(eventtime, False)
-            except Exception as e:
-                self.logger.debug(
-                    f"Failed to clear virtual hub runout helper for {getattr(target_lane, 'name', '<unknown>')}: {e}"
-                )
-
         if lane_state:
             # Filament at toolhead must have passed through hub - ensure hub indicator is correct.
             # hub_changed events are edge-triggered and can miss transitions when loaded_to_hub
@@ -3738,17 +3704,10 @@ class afcAMS(afcUnit):
             # stayed True between polls, so no event fires to re-set it.
             lane.loaded_to_hub = True
             if afc_function is not None:
-                previous_lane = None
-                try:
-                    previous_lane = afc_function.get_current_lane_obj()
-                except Exception:
-                    previous_lane = None
                 try:
                     afc_function.unset_lane_loaded()
                 except Exception as e:
                     self.logger.error(f"Failed to unset previously loaded lane: {e}")
-                if previous_lane is not None and getattr(previous_lane, "name", None) != getattr(lane, "name", None):
-                    _clear_lane_virtual_hub_sensor(previous_lane)
             try:
                 # Call set_tool_loaded() instead of set_loaded() since filament is loaded to toolhead
                 # This properly sets extruder.lane_loaded which is needed for lane tracking
