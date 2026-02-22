@@ -3246,10 +3246,22 @@ class afcAMS(afcUnit):
             and (prep_state is None or bool(prep_state) == lane_val_bool)
             and (load_state is None or bool(load_state) == lane_val_bool)
         ):
-            # Even when prep/load sensor state is unchanged, hub state may have changed
-            # (or may be stale per-lane during same-FPS handoffs). Keep lane hub state
-            # synchronized from latest hardware snapshot to avoid stale UI indicators.
-            if self.hardware_service is not None:
+            # prep/load is shared for OpenAMS lanes, but hub sensing is per-lane.
+            # Even when prep/load is unchanged, reconcile this lane's own hub state.
+            hub_state = None
+            lane_index = None
+            try:
+                lane_index = int(getattr(lane, "index", 0)) - 1
+            except Exception:
+                lane_index = None
+            if self.oams is not None and lane_index is not None and lane_index >= 0:
+                try:
+                    hub_values = getattr(self.oams, "hub_hes_value", None)
+                    if hub_values is not None and lane_index < len(hub_values):
+                        hub_state = bool(hub_values[lane_index])
+                except Exception:
+                    hub_state = None
+            if hub_state is None and self.hardware_service is not None:
                 try:
                     snapshot = self.hardware_service.latest_lane_snapshot(self.oams_name, lane.name)
                 except Exception:
@@ -3258,23 +3270,23 @@ class afcAMS(afcUnit):
                     snap_hub_state = snapshot.get("hub_state")
                     if snap_hub_state is not None:
                         hub_state = bool(snap_hub_state)
-                        if bool(getattr(lane, "loaded_to_hub", False)) != hub_state:
-                            try:
-                                lane.loaded_to_hub = hub_state
-                            except Exception:
-                                pass
-                            try:
-                                hub_obj = getattr(lane, "hub_obj", None)
-                                if hub_obj is not None:
-                                    if hasattr(hub_obj, "switch_pin_callback"):
-                                        hub_obj.switch_pin_callback(eventtime, hub_state)
-                                    fila = getattr(hub_obj, "fila", None)
-                                    if fila is not None and hasattr(fila, "runout_helper"):
-                                        fila.runout_helper.note_filament_present(eventtime, hub_state)
-                            except Exception as e:
-                                self.logger.debug(
-                                    f"_update_shared_lane: failed to mirror stale hub state for {lane.name}: {e}"
-                                )
+            if hub_state is not None and bool(getattr(lane, "loaded_to_hub", False)) != hub_state:
+                try:
+                    lane.loaded_to_hub = hub_state
+                except Exception:
+                    pass
+                try:
+                    hub_obj = getattr(lane, "hub_obj", None)
+                    if hub_obj is not None:
+                        if hasattr(hub_obj, "switch_pin_callback"):
+                            hub_obj.switch_pin_callback(eventtime, hub_state)
+                        fila = getattr(hub_obj, "fila", None)
+                        if fila is not None and hasattr(fila, "runout_helper"):
+                            fila.runout_helper.note_filament_present(eventtime, hub_state)
+                except Exception as e:
+                    self.logger.debug(
+                        f"_update_shared_lane: failed to reconcile per-lane hub state for {lane.name}: {e}"
+                    )
             self.logger.debug(f"_update_shared_lane: early return - state unchanged for {lane.name}")
             return
 
