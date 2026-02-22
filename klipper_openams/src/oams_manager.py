@@ -3908,73 +3908,33 @@ class OAMSManager:
         """
         self.logger.info(f"Successfully loaded lane {target_lane} on {fps_name} after infinite runout")
 
-        # Always notify AFC that target lane is loaded to update virtual sensors
-        # This ensures AMS_Extruder# sensors show correct state after same-FPS runouts
+        # Force immediate AFC state update for target lane first.
+        # Coordinator callbacks can occasionally block during active print motion,
+        # so do direct state mutation here to avoid waiting until pause/idle.
         if target_lane:
-            handled = False
-            if AMSRunoutCoordinator is not None:
-                try:
-                    handled = AMSRunoutCoordinator.notify_lane_tool_state(
-                        self.printer, fps_state.current_oams or active_oams, target_lane,
-                        loaded=True, spool_index=fps_state.current_spool_idx, eventtime=fps_state.since
+            try:
+                afc = self._get_afc()
+                forced = False
+                if afc and hasattr(afc, "lanes"):
+                    lane_obj = afc.lanes.get(target_lane)
+                    if lane_obj is not None:
+                        try:
+                            lane_obj.loaded_to_hub = True
+                        except Exception:
+                            pass
+                        lane_obj.set_tool_loaded()
+                        lane_obj.sync_to_extruder()
+                        forced = True
+                if forced:
+                    self.logger.info(
+                        f"Marked lane {target_lane} as loaded via direct AFC state update after infinite runout on {fps_name}"
                     )
-                    if handled:
-                        self.logger.info(f"Notified AFC that lane {target_lane} is loaded via AMSRunoutCoordinator (updates virtual sensor state)")
-                    else:
-                        self.logger.info(f"AMSRunoutCoordinator.notify_lane_tool_state returned False for lane {target_lane}, trying fallback")
-                except Exception as e:
-                    self.logger.error(f"Failed to notify AFC lane {target_lane} after infinite runout on {fps_name}: {e}")
-                    handled = False
-            else:
-                # AMSRunoutCoordinator not available - call AFC methods directly
-                self.logger.info(f"AMSRunoutCoordinator not available, updating virtual sensor directly for lane {target_lane}")
-                try:
-                    afc = self._get_afc()
-                    if afc and hasattr(afc, 'lanes'):
-                        lane_obj = afc.lanes.get(target_lane)
-                        if lane_obj:
-                            # Update virtual sensor using AFC's direct method
-                            if hasattr(afc, '_mirror_lane_to_virtual_sensor'):
-                                afc._mirror_lane_to_virtual_sensor(lane_obj, self.reactor.monotonic())
-                                self.logger.info(f"Updated virtual sensor for lane {target_lane} via AFC._mirror_lane_to_virtual_sensor")
-                                handled = True
-                            else:
-                                self.logger.warning("AFC doesn't have _mirror_lane_to_virtual_sensor method")
-
-                        else:
-                            self.logger.warning(f"Lane object not found for {target_lane} in AFC")
-                    else:
-                        self.logger.warning("AFC not available or has no lanes attribute")
-
-                except Exception as e:
-                    self.logger.error(f"Failed to update virtual sensor directly for lane {target_lane}: {e}")
-
-            if not handled:
-                # Avoid queued gcode fallback here. During active prints, queued SET_LANE_LOADED
-                # can execute late and leave lane/hub indicators in limbo until a manual pause.
-                try:
-                    afc = self._get_afc()
-                    forced = False
-                    if afc and hasattr(afc, "lanes"):
-                        lane_obj = afc.lanes.get(target_lane)
-                        if lane_obj is not None:
-                            try:
-                                lane_obj.loaded_to_hub = True
-                            except Exception:
-                                pass
-                            lane_obj.set_tool_loaded()
-                            lane_obj.sync_to_extruder()
-                            forced = True
-                    if forced:
-                        self.logger.info(
-                            f"Marked lane {target_lane} as loaded via direct AFC state update after infinite runout on {fps_name}"
-                        )
-                    else:
-                        self.logger.error(
-                            f"Failed to mark lane {target_lane} as loaded: coordinator unavailable and direct fallback failed"
-                        )
-                except Exception as e:
-                    self.logger.error(f"Failed to mark lane {target_lane} as loaded after infinite runout on {fps_name}: {e}")
+                else:
+                    self.logger.error(
+                        f"Failed to mark lane {target_lane} as loaded via direct AFC state update after infinite runout on {fps_name}"
+                    )
+            except Exception as e:
+                self.logger.error(f"Failed direct AFC tool-state update for lane {target_lane} on {fps_name}: {e}")
 
         # Ensure follower is enabled after successful reload
         # Follower should stay enabled throughout same-FPS runouts (never disabled)
@@ -4008,28 +3968,8 @@ class OAMSManager:
         # FPS state stays LOADED with the new target lane, but old lane needs to be cleared
         if source_lane_name:
             try:
-                source_lane_cleared = False
-                if AMSRunoutCoordinator is not None:
-                    # Notify AFC that source lane is now unloaded
-                    source_lane_cleared = AMSRunoutCoordinator.notify_lane_tool_state(
-                        self.printer,
-                        fps_state.current_oams or active_oams,
-                        source_lane_name,
-                        loaded=False,
-                        spool_index=None,
-                        eventtime=self.reactor.monotonic()
-                    )
-                    if source_lane_cleared:
-                        self.logger.info(f"Cleared source lane {source_lane_name} state in AFC after successful reload to {target_lane}")
-                    else:
-                        self.logger.info(f"AMSRunoutCoordinator.notify_lane_tool_state returned False for source lane {source_lane_name}, using fallback clear")
-
-                if not source_lane_cleared:
-                    self.logger.info(
-                        f"Coordinator did not handle source lane clear for {source_lane_name}; using direct AFC clear"
-                    )
-
-                # Always hard-clear AFC lane/tool/hub state for the source lane so virtual hub never lingers.
+                # Always hard-clear AFC lane/tool/hub state for the source lane first.
+                # This must happen immediately in-run, not deferred via coordinator/gcode.
                 self._clear_afc_loaded_lane(source_lane_name, clear_hub_state=True)
                 self.logger.info(f"Force-cleared source lane {source_lane_name} hub/tool state after reload to {target_lane}")
 
