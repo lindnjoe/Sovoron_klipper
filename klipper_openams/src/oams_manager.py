@@ -108,6 +108,7 @@ CLOG_SENSITIVITY_LEVELS = {
     "high": {"extrusion_window": 12.0, "encoder_slack": 4, "pressure_band": 0.04, "dwell": 8.0},  # Increased from 6.0 to 8.0 for debouncing
 }
 CLOG_SENSITIVITY_DEFAULT = "medium"
+CLOG_POST_LOAD_GRACE = 12.0
 OAMS_MANAGER_VERSION = "v0.4"
 
 POST_LOAD_PRESSURE_THRESHOLD = 0.65
@@ -5448,9 +5449,10 @@ class OAMSManager:
         fps_state.current_oams = oam.name
         fps_state.current_spool_idx = bay_index
 
-        # If lane actually changed (runout recovery), track the time
-        if old_lane is not None and old_lane != lane_name:
-            fps_state.last_lane_change_time = self.reactor.monotonic()
+        # Track successful load time for transient detection suppression.
+        # Apply on every successful load (not just lane changes) to avoid
+        # false clog/stuck detections during post-load toolchange/purge windows.
+        fps_state.last_lane_change_time = self.reactor.monotonic()
 
         # CRITICAL: Set fps_state.since to the successful load time BEFORE changing state
         successful_load_time = oam.get_last_successful_load_time(bay_index)
@@ -7516,9 +7518,9 @@ class OAMSManager:
             fps_state.reset_clog_tracker()
             return
 
-        # Suppress clog detection briefly after lane transitions (e.g., same-FPS runouts)
-        # so the new filament has time to engage the extruder before we evaluate encoder motion.
-        if fps_state.last_lane_change_time is not None and now - fps_state.last_lane_change_time < 5.0:
+        # Suppress clog detection after successful loads/lane transitions so
+        # toolchange and post-load purge motion does not false-trigger clogs.
+        if fps_state.last_lane_change_time is not None and now - fps_state.last_lane_change_time < CLOG_POST_LOAD_GRACE:
             fps_state.reset_clog_tracker()
             return
 
