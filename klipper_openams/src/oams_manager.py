@@ -1922,6 +1922,26 @@ class OAMSManager:
             if current_lane_loaded == detected_lane:
                 return  # Already in sync
 
+            # Guard against stale sensor back-sync during same-FPS runout handoff.
+            # If FPS state already tracks a different active lane, do not overwrite it here.
+            fps_state = self.current_state.fps_state.get(fps_name)
+            if fps_state is not None:
+                tracked_lane = getattr(fps_state, 'current_lane', None)
+                if tracked_lane and tracked_lane != detected_lane:
+                    self.logger.debug(
+                        f"Skipping AFC lane sync for {detected_lane} on {fps_name}: FPS currently tracks {tracked_lane}"
+                    )
+                    return
+
+            # Also preserve an actively tool-loaded lane on this extruder.
+            if current_lane_loaded and current_lane_loaded != detected_lane:
+                current_lane_obj = afc.lanes.get(current_lane_loaded)
+                if current_lane_obj is not None and bool(getattr(current_lane_obj, 'tool_loaded', False)):
+                    self.logger.debug(
+                        f"Skipping AFC lane sync to {detected_lane}: extruder {extruder_name} currently has tool-loaded {current_lane_loaded}"
+                    )
+                    return
+
             # Update AFC's lane_loaded
             extruder_obj.lane_loaded = detected_lane
 
