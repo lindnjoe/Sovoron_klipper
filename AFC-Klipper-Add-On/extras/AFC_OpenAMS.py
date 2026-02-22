@@ -29,36 +29,43 @@ from enum import Enum
 
 from configparser import Error as ConfigError
 
-from extras.AFC_prep import afcPrep
+
+def _raise_import_error(import_lib: str, *, template: Optional[str] = None) -> None:
+    trace = traceback.format_exc()
+    if template is None:
+        raise ConfigError(f"Error when trying to import {import_lib}\n{trace}")
+    raise ConfigError(template.format(import_lib=import_lib, trace=trace))
+
+
 try:
     from extras.AFC_utils import ERROR_STR
 except Exception:
-    raise ConfigError("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
+    _raise_import_error("AFC_utils.ERROR_STR")
 
 try:
     from extras.AFC_unit import afcUnit
 except Exception:
-    raise ConfigError(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
+    _raise_import_error("AFC_unit", template=ERROR_STR)
 
 try:
     from extras.AFC_lane import AFCLane, AFCLaneState
 except Exception:
-    raise ConfigError(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
+    _raise_import_error("AFC_lane", template=ERROR_STR)
 
 try:
     from extras.AFC_utils import add_filament_switch
 except Exception:
-    raise ConfigError(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
+    _raise_import_error("AFC_utils", template=ERROR_STR)
 
 try:
     import extras.AFC_extruder as _afc_extruder_mod
 except Exception:
-    raise ConfigError(ERROR_STR.format(import_lib="AFC_extruder", trace=traceback.format_exc()))
+    _raise_import_error("AFC_extruder", template=ERROR_STR)
 
 try:
     from extras.AFC_respond import AFCprompt
 except Exception:
-    raise ConfigError(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
+    _raise_import_error("AFC_respond", template=ERROR_STR)
 
 try:
     from extras.openams_integration import (
@@ -67,10 +74,9 @@ try:
         LaneRegistry,
         AMSEventBus,
         normalize_extruder_name,
-        OPENAMS_VERSION,
     )
 except Exception:
-    raise ConfigError(ERROR_STR.format(import_lib="openams_integration", trace=traceback.format_exc()))
+    _raise_import_error("openams_integration", template=ERROR_STR)
 
 _module_logger = logging.getLogger(__name__)
 
