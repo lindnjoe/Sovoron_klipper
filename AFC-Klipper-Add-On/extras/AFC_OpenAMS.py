@@ -68,7 +68,6 @@ try:
         AMSEventBus,
         normalize_extruder_name,
         OPENAMS_VERSION,
-        OpenAMSManagerFacade,
     )
 except Exception:
     raise ConfigError(ERROR_STR.format(import_lib="openams_integration", trace=traceback.format_exc()))
@@ -411,37 +410,24 @@ class afcAMS(afcUnit):
         if self._cached_oams_manager is not None:
             return self._cached_oams_manager
         try:
-            if OpenAMSManagerFacade is not None:
-                self._cached_oams_manager = OpenAMSManagerFacade.get_manager(self.printer)
-            else:
-                self._cached_oams_manager = self.printer.lookup_object("oams_manager", None)
-        except Exception as e:
+            self._cached_oams_manager = self.printer.lookup_object("oams_manager", None)
+        except Exception:
             self._cached_oams_manager = None
         return self._cached_oams_manager
 
     def _manager_load_for_lane(self, lane_name: str):
-        if OpenAMSManagerFacade is not None:
-            return OpenAMSManagerFacade.load_for_lane(self.printer, lane_name)
         manager = self._get_oams_manager()
         if manager is None:
             return False, "OpenAMS manager not available"
         return manager.load_filament_for_lane(lane_name)
 
     def _manager_unload_with_prep_for_fps(self, fps_name: str):
-        if OpenAMSManagerFacade is not None:
-            return OpenAMSManagerFacade.unload_with_prep_for_fps(self.printer, fps_name)
         manager = self._get_oams_manager()
         if manager is None:
             return False, "OpenAMS manager not available"
         return manager.unload_filament_with_prep_for_fps(fps_name)
 
     def _manager_clear_fps_state_for_lane(self, lane_name: str, *, eventtime: float):
-        if OpenAMSManagerFacade is not None:
-            return OpenAMSManagerFacade.clear_fps_state_for_lane(
-                self.printer,
-                lane_name,
-                eventtime=eventtime,
-            )
         manager = self._get_oams_manager()
         if manager is None:
             return False, None, None
