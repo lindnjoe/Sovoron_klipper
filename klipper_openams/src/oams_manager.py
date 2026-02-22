@@ -80,6 +80,38 @@ def _patch_moonraker_db_methods(moonraker) -> None:
 
         moonraker.read_database_entry = types.MethodType(_read, moonraker)
 
+    if (
+        hasattr(moonraker, "trigger_db_backup")
+        and not getattr(moonraker, "_openams_backup_guard_patched", False)
+    ):
+        original_trigger_db_backup = moonraker.trigger_db_backup
+
+        def _trigger_db_backup_guarded(self):
+            """Skip Moonraker DB backups while printing.
+
+            Moonraker returns HTTP 400 for backup requests during active prints.
+            Guard this call so AFC reset/stat flows do not log noisy false errors
+            when invoked mid-print.
+            """
+            try:
+                idle_timeout = self.printer.lookup_object("idle_timeout", None)
+                if idle_timeout is not None:
+                    state = idle_timeout.get_status(self.printer.reactor.monotonic()).get("state")
+                    if state == "Printing":
+                        self.logger.debug(
+                            "Skipping moonraker database backup while printing; "
+                            "Moonraker rejects backup requests in active prints"
+                        )
+                        return False
+            except Exception:
+                # Fall through to original AFC behavior if print-state check fails.
+                pass
+
+            return original_trigger_db_backup()
+
+        moonraker.trigger_db_backup = types.MethodType(_trigger_db_backup_guarded, moonraker)
+        moonraker._openams_backup_guard_patched = True
+
 # Configuration constants
 PAUSE_DISTANCE = 60
 MIN_ENCODER_DIFF = 3  # Increased from 1 to 3 - prevents false positives during print stalls/brief pauses
@@ -1423,13 +1455,42 @@ class OAMSManager:
 
             if current_oams is not None and detected_spool_idx is not None:
                 # Lane is detected as loaded - update state normally
+                previous_lane = fps_state.current_lane
+                previous_oams = fps_state.current_oams
+                previous_spool_idx = fps_state.current_spool_idx
+                now = self.reactor.monotonic()
+                is_lane_transition = (
+                    not was_loaded
+                    or previous_lane != detected_lane
+                    or previous_oams != current_oams.name
+                    or previous_spool_idx != detected_spool_idx
+                )
+
                 fps_state.current_lane = detected_lane
                 fps_state.current_oams = current_oams.name
                 fps_state.current_spool_idx = detected_spool_idx
                 fps_state.state = FPSLoadState.LOADED
-                fps_state.since = self.reactor.monotonic()
-                fps_state.reset_stuck_spool_state()
-                fps_state.reset_clog_tracker()
+
+                if is_lane_transition:
+                    fps_state.since = now
+                    fps_state.last_lane_change_time = now
+                    fps_state.reset_stuck_spool_state()
+                    fps_state.reset_clog_tracker()
+                    self.logger.debug(
+                        f"State detection: lane transition on {fps_name}: "
+                        f"{previous_lane}/{previous_oams}/{previous_spool_idx} -> "
+                        f"{detected_lane}/{current_oams.name}/{detected_spool_idx}"
+                    )
+                elif is_printing and fps_state.last_lane_change_time is None:
+                    # Prime a one-time post-load grace window when a preloaded lane
+                    # is first used at print start. This avoids false clog detections
+                    # from stale pre-print baselines.
+                    fps_state.last_lane_change_time = now
+                    fps_state.reset_clog_tracker()
+                    self.logger.debug(
+                        f"State detection: primed post-load grace for preloaded lane {detected_lane} on {fps_name}"
+                    )
+
                 self._ensure_forward_follower(fps_name, fps_state, "state detection")
 
 
@@ -6926,7 +6987,7 @@ class OAMSManager:
         if self._idle_timeout_obj is not None:
             try:
                 is_printing = self._idle_timeout_obj.get_status(now)["state"] == "Printing"
-            except Exception as e:
+            except Exception:
                 is_printing = False
 
         if not is_printing:
@@ -7124,7 +7185,7 @@ class OAMSManager:
         if self._idle_timeout_obj is not None:
             try:
                 is_printing = self._idle_timeout_obj.get_status(now)["state"] == "Printing"
-            except Exception as e:
+            except Exception:
                 is_printing = False
 
         # Skip stuck spool detection if ANY runout is active
@@ -7153,14 +7214,14 @@ class OAMSManager:
                 pause_resume = self.printer.lookup_object("pause_resume")
 
                 self._pause_resume_obj = pause_resume
-            except Exception as e:
+            except Exception:
                 pause_resume = False
 
         is_paused = False
         if pause_resume:
             try:
                 is_paused = bool(getattr(pause_resume, "is_paused", False))
-            except Exception as e:
+            except Exception:
                 is_paused = False
 
         if not is_printing or is_paused:
@@ -7191,9 +7252,9 @@ class OAMSManager:
                     fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
                     self.logger.debug(f"Skipping stuck spool detection on {fps_name} - AFC bypass enabled")
                     return
-        except Exception as e:
-            # Don't crash if bypass check fails, just continue with detection
-            pass
+        except Exception:
+            # Expected fallback: bypass state may be unavailable transiently
+            self.logger.debug(f"Skipping bypass-state check failure during stuck-spool detection on {fps_name}")
 
         if fps_state.since is not None and now - fps_state.since < self.stuck_spool_load_grace:
             fps_state.stuck_spool.start_time = None
@@ -7248,9 +7309,9 @@ class OAMSManager:
 
                             fps_state.reset_stuck_spool_state(preserve_restore=fps_state.stuck_spool.restore_follower)
                             return
-            except Exception as e:
-                # If we can't determine sync state, proceed with detection to avoid masking real issues
-                pass
+            except Exception:
+                # Expected fallback: if sync state is unavailable, continue detection to avoid masking real issues
+                self.logger.debug(f"Unable to verify active lane for {fps_name} during stuck-spool detection; continuing")
 
         if not fps_state.following or fps_state.direction != 1:
             fps_state.stuck_spool.start_time = None
@@ -7427,7 +7488,7 @@ class OAMSManager:
         if self._idle_timeout_obj is not None:
             try:
                 is_printing = self._idle_timeout_obj.get_status(now)["state"] == "Printing"
-            except Exception as e:
+            except Exception:
                 is_printing = False
 
         # Check if printer is paused (same logic as stuck spool detection)
@@ -7436,14 +7497,14 @@ class OAMSManager:
             try:
                 pause_resume = self.printer.lookup_object("pause_resume")
                 self._pause_resume_obj = pause_resume
-            except Exception as e:
+            except Exception:
                 pause_resume = False
 
         is_paused = False
         if pause_resume:
             try:
                 is_paused = bool(getattr(pause_resume, "is_paused", False))
-            except Exception as e:
+            except Exception:
                 is_paused = False
 
         monitor = self.runout_monitors.get(fps_name)
@@ -7485,9 +7546,9 @@ class OAMSManager:
                     fps_state.reset_clog_tracker()
                     self.logger.debug(f"Skipping clog detection on {fps_name} - AFC bypass enabled")
                     return
-        except Exception as e:
-            # Don't crash if bypass check fails, just continue with detection
-            pass
+        except Exception:
+            # Expected fallback: bypass state may be unavailable transiently
+            self.logger.debug(f"Skipping bypass-state check failure during clog detection on {fps_name}")
 
         # CRITICAL: Skip clog detection if THIS lane is NOT the one actively loaded to toolhead
         # This prevents monitoring inactive lanes (e.g., when changing spools on a different lane)
@@ -7504,9 +7565,9 @@ class OAMSManager:
                                 self._set_led_error_if_changed(oams, fps_state.current_oams, fps_state.current_spool_idx, 0, f"different lane loaded to extruder ({lane_loaded})")
                             fps_state.reset_clog_tracker()
                             return
-            except Exception as e:
-                # If we can't determine sync state, proceed with detection to avoid masking real issues
-                pass
+            except Exception:
+                # Expected fallback: if sync state is unavailable, continue detection to avoid masking real issues
+                self.logger.debug(f"Unable to verify active lane for {fps_name} during clog detection; continuing")
 
         # Suppress clog detection during engagement verification to avoid false positives
         # while the extruder is deliberately driving filament for the check.
@@ -7809,12 +7870,12 @@ class OAMSManager:
 
                         target_lane = afc.lanes.get(target_lane_name)
                         if not target_lane:
-                            raise Exception(f"Target lane {target_lane_name} not found in AFC")
+                            raise LookupError(f"Target lane {target_lane_name} not found in AFC")
 
 
                         target_extruder_name = getattr(target_lane, 'extruder_name', None)
                         if not target_extruder_name:
-                            raise Exception(f"Target lane {target_lane_name} has no extruder_name")
+                            raise ValueError(f"Target lane {target_lane_name} has no extruder_name")
 
 
                         # Get source extruder name for turning it off later
@@ -7835,9 +7896,9 @@ class OAMSManager:
                         try:
                             target_temp_value = float(target_temp)
                         except (TypeError, ValueError):
-                            raise Exception(f"Current extruder has invalid target temp: {target_temp}")
+                            raise ValueError(f"Current extruder has invalid target temp: {target_temp}")
                         if target_temp_value <= 0:
-                            raise Exception(f"Current extruder has no target temp set")
+                            raise RuntimeError("Current extruder has no target temp set")
 
 
                         # 5. Set target extruder temp before CHANGE_TOOL (so it knows what temp to heat to)

@@ -184,12 +184,12 @@ class _VirtualFilamentSensor:
             return
         try:
             gcode.register_mux_command("QUERY_FILAMENT_SENSOR", "SENSOR", name, self.cmd_QUERY_FILAMENT_SENSOR, desc=self.QUERY_HELP)
-        except Exception as e:
+        except Exception:
             pass
 
         try:
             gcode.register_mux_command("SET_FILAMENT_SENSOR", "SENSOR", name, self.cmd_SET_FILAMENT_SENSOR, desc=self.SET_HELP)
-        except Exception as e:
+        except Exception:
             pass
 
     def get_status(self, eventtime):
@@ -211,7 +211,7 @@ def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
     if callable(normalize_extruder_name):
         try:
             return normalize_extruder_name(name)
-        except Exception as e:
+        except Exception:
             pass
 
     if not name or not isinstance(name, str):
@@ -864,7 +864,7 @@ class afcAMS(afcUnit):
         if self._cached_gcode is None:
             try:
                 self._cached_gcode = self.printer.lookup_object("gcode")
-            except Exception as e:
+            except Exception:
                 pass
 
         # Pre-cache OAMS index
@@ -1043,7 +1043,7 @@ class afcAMS(afcUnit):
                 ):
                     try:
                         gcode.register_mux_command(command, "SENSOR", alias_token, handler, desc=desc)
-                    except Exception as e:
+                    except Exception:
                         pass
 
         return True
@@ -1253,7 +1253,7 @@ class afcAMS(afcUnit):
             toolhead.wait_moves()
             # Add a small delay to allow the MCU to catch up
             self.reactor.pause(self.reactor.monotonic() + 0.05)
-        except Exception as e:
+        except Exception:
             pass
 
         eventtime = self.reactor.monotonic()
@@ -1283,7 +1283,7 @@ class afcAMS(afcUnit):
             toolhead.wait_moves()
             # Add a small delay to allow the MCU to catch up
             self.reactor.pause(self.reactor.monotonic() + 0.05)
-        except Exception as e:
+        except Exception:
             pass
 
         eventtime = self.reactor.monotonic()
@@ -1685,7 +1685,7 @@ class afcAMS(afcUnit):
                     hub_present = bool(hub_values[bay_index])
                 if f1s_values and bay_index < len(f1s_values):
                     f1s_present = bool(f1s_values[bay_index])
-            except Exception as e:
+            except Exception:
                 pass
 
             has_filament = bool(hub_present or (f1s_present and not require_hub))
@@ -1864,7 +1864,7 @@ class afcAMS(afcUnit):
                         try:
                             if cur_lane.extruder_obj.tool_obj and cur_lane.extruder_obj.tc_unit_name:
                                 on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
-                        except Exception as e:
+                        except Exception:
                             pass
 
                         msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
@@ -1957,7 +1957,7 @@ class afcAMS(afcUnit):
             # Send another unload command between attempts
             try:
                 self.oams.oams_unload_spool_cmd.send([])
-            except Exception as e:
+            except Exception:
                 pass
 
         # Disable follower after unload completes or times out
@@ -2360,11 +2360,11 @@ class afcAMS(afcUnit):
             self.logger.error(f"Unable to resolve FPS for {cur_lane.name}")
             try:
                 self.oams.set_oams_follower(0, 0)
-            except Exception as e:
+            except Exception:
                 pass
             try:
                 self.oams.oams_unload_spool_cmd.send([])
-            except Exception as e:
+            except Exception:
                 pass
             return False, "Unable to resolve FPS"
 
@@ -2388,11 +2388,11 @@ class afcAMS(afcUnit):
             # Abort the load operation and stop the follower
             try:
                 self.oams.abort_current_action(wait=True, code=0)
-            except Exception as e:
+            except Exception:
                 pass
             try:
                 self.oams.set_oams_follower(0, 0)
-            except Exception as e:
+            except Exception:
                 pass
             self.logger.error(
                 f"Hub sensor did not trigger during TD-1 capture for {cur_lane.name}"
@@ -2582,7 +2582,7 @@ class afcAMS(afcUnit):
                 tool_loaded = False
                 try:
                     tool_loaded = self._lane_reports_tool_filament(lane, sync_only=False)
-                except Exception as e:
+                except Exception:
                     pass
 
                 # Hub sensor shows filament in AMS (but not necessarily in toolhead)
@@ -2593,7 +2593,7 @@ class afcAMS(afcUnit):
                         spool_index = self._get_openams_spool_index(lane)
                         if spool_index is not None:
                             hub_loaded = bool(self.oams.hub_hes_value[spool_index])
-                    except Exception as e:
+                    except Exception:
                         pass
 
                 # Read what AFC THINKS
@@ -3003,7 +3003,7 @@ class afcAMS(afcUnit):
                                 f"{getattr(extruder_obj, 'name', 'extruder')} - skipping runout detection on inactive lane"
                             )
                             skip_runout = True
-                except Exception as e:
+                except Exception:
                     pass
 
                 if not skip_runout:
@@ -3391,7 +3391,7 @@ class afcAMS(afcUnit):
                         # During runout, the runout monitor sets a flag to indicate filament actually ran out
                         # We should clear lane_loaded in this case even for shared extruders
                         is_same_fps_runout = getattr(lane, '_oams_same_fps_runout', False)
-            except Exception as e:
+            except Exception:
                 pass
 
             if not is_cross_extruder_runout and not (is_shared_extruder and not is_same_fps_runout):
@@ -3674,7 +3674,7 @@ class afcAMS(afcUnit):
             # units.
             try:
                 lane._oams_runout_detected = False
-            except Exception as e:
+            except Exception:
                 pass
 
             if runout_lane_name and not target_lane:
@@ -3688,7 +3688,7 @@ class afcAMS(afcUnit):
                 # afterward instead of treating it as a same-FPS handoff.
                 try:
                     lane._oams_cross_extruder_runout = True
-                except Exception as e:
+                except Exception:
                     pass
 
                 resolved_name = getattr(target_lane, "name", None)
@@ -3725,7 +3725,7 @@ class afcAMS(afcUnit):
             else:
                 try:
                     lane._oams_cross_extruder_runout = False
-                except Exception as e:
+                except Exception:
                     pass
 
                 self.logger.info(
@@ -4024,7 +4024,7 @@ class afcAMS(afcUnit):
             prep_obj = self.printer.lookup_object('AFC_prep', None)
             if prep_obj is not None:
                 capture_td1_data = getattr(prep_obj, "get_td1_data", False) and self.afc.td1_present
-        except Exception as e:
+        except Exception:
             pass
         self.logger.debug(f"_handle_spool_loaded_event: lane={lane.name} previous_loaded={previous_loaded} capture_td1_data={capture_td1_data}")
 
@@ -4062,7 +4062,7 @@ class afcAMS(afcUnit):
                     try:
                         old_timer = self._pending_spool_loaded_timers[lane_name]
                         self.reactor.unregister_timer(old_timer)
-                    except Exception as e:
+                    except Exception:
                         pass  # Timer may have already fired
 
                 # Register new timer with 4.2-second delay for TD-1 capture
@@ -4078,7 +4078,10 @@ class afcAMS(afcUnit):
         if extruder_name is None and self.registry is not None:
             try:
                 extruder_name = self.registry.resolve_extruder(lane.name)
-            except Exception as e:
+            except Exception:
+                self.logger.debug(
+                    f"_handle_spool_loaded_event: unable to resolve extruder for {lane.name}; recording load without extruder"
+                )
                 extruder_name = None
 
         self.record_load(extruder=extruder_name, lane_name=lane.name)
@@ -4705,7 +4708,7 @@ def _patch_infinite_runout_handler() -> None:
                         lane_idx = getattr(lane_obj, "lane", None)
                         if lane_idx is not None and int(lane_idx) == idx:
                             return key
-                except Exception as e:
+                except Exception:
                     pass
 
             return None
@@ -4716,7 +4719,7 @@ def _patch_infinite_runout_handler() -> None:
             try:
                 if hasattr(cur, "name") and getattr(cur, "name", None) in lanes:
                     return getattr(cur, "name", None)
-            except Exception as e:
+            except Exception:
                 pass
             return None
 
@@ -4732,7 +4735,7 @@ def _patch_infinite_runout_handler() -> None:
             try:
                 self.runout_lane = runout_target
                 self.logger.info(f"Normalized runout lane {raw_runout_target} -> {runout_target} for infinite runout")
-            except Exception as e:
+            except Exception:
                 pass
 
         if runout_target not in lanes:
