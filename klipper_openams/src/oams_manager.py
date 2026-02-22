@@ -36,30 +36,13 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Optional, Tuple, Dict, List, Any, Callable
 
-try:
-    from extras.openams_integration import (
-        AMSRunoutCoordinator,
-        AMSHardwareService,
-        normalize_extruder_name as _normalize_extruder_name,
-        OPENAMS_VERSION,
-    )
-except Exception:
-    AMSRunoutCoordinator = None
-    AMSHardwareService = None
-    OPENAMS_VERSION = "0.0.3"  # Fallback if import fails
-    # Fallback implementation if openams_integration not available
-    def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
-        """Fallback: Return a lowercase token for comparing extruder identifiers."""
-        if not name or not isinstance(name, str):
-            return None
-        cleaned = name.strip()
-        return cleaned.lower() if cleaned else None
-
-try:
-    from extras.oams import OAMSStatus, OAMSOpCode
-except Exception:
-    OAMSStatus = None
-    OAMSOpCode = None
+from extras.openams_integration import (
+    AMSRunoutCoordinator,
+    AMSHardwareService,
+    normalize_extruder_name as _normalize_extruder_name,
+    normalize_oams_name as _normalize_oams_name_token
+)
+from extras.oams import OAMSStatus, OAMSOpCode
 
 def _patch_moonraker_db_methods(moonraker) -> None:
     """Patch generic write/read_database_entry onto AFC_moonraker if missing.
@@ -125,6 +108,7 @@ CLOG_SENSITIVITY_LEVELS = {
     "high": {"extrusion_window": 12.0, "encoder_slack": 4, "pressure_band": 0.04, "dwell": 8.0},  # Increased from 6.0 to 8.0 for debouncing
 }
 CLOG_SENSITIVITY_DEFAULT = "medium"
+OAMS_MANAGER_VERSION = "v0.4"
 
 POST_LOAD_PRESSURE_THRESHOLD = 0.65
 POST_LOAD_PRESSURE_DWELL = 15.0
@@ -132,6 +116,30 @@ POST_LOAD_PRESSURE_CHECK_PERIOD = 0.5
 
 # Threshold for detecting failed load - if FPS stays above this during LOADING, filament isn't engaging
 LOAD_FPS_STUCK_THRESHOLD = 0.75
+
+
+def _resolve_oams_entry(oams_map: Dict[str, Any], oams_name: Optional[str], oams_obj: Optional[Any] = None) -> Tuple[Optional[str], Optional[Any]]:
+    """Resolve OAMS object/name using the canonical OpenAMS token format."""
+    if not oams_name:
+        return None, None
+
+    if oams_name in oams_map:
+        return oams_name, oams_map.get(oams_name)
+
+    if oams_obj is not None:
+        obj_name = getattr(oams_obj, "name", None)
+        if obj_name in oams_map:
+            return obj_name, oams_map.get(obj_name)
+
+    canonical = _normalize_oams_name_token(oams_name)
+    prefixed = f"oams {canonical}"
+    if prefixed in oams_map:
+        return prefixed, oams_map.get(prefixed)
+
+    if canonical in oams_map:
+        return canonical, oams_map.get(canonical)
+
+    return canonical, None
 
 
 class OAMSRunoutState:
@@ -325,9 +333,7 @@ class OAMSRunoutMonitor:
                     # Get OAMS name - strip "oams " prefix if present for hardware service lookup
                     # fps_state.current_oams is "oams oams1" but hardware service expects "oams1"
                     oams_full_name = getattr(fps_state, "current_oams", None) or self.fps_name
-                    unit_name = oams_full_name
-                    if isinstance(unit_name, str) and unit_name.startswith("oams "):
-                        unit_name = unit_name[5:]  # Strip "oams " prefix
+                    unit_name = _normalize_oams_name_token(oams_full_name)
 
                     if self.hardware_service is not None:
                         try:
@@ -439,9 +445,7 @@ class OAMSRunoutMonitor:
                         return eventtime + MONITOR_ENCODER_PERIOD
 
                     # Get unit name for cached lookup
-                    coast_unit_name = fps_state.current_oams or self.fps_name
-                    if isinstance(coast_unit_name, str) and coast_unit_name.startswith("oams "):
-                        coast_unit_name = coast_unit_name[5:]
+                    coast_unit_name = _normalize_oams_name_token(fps_state.current_oams or self.fps_name)
 
                     # Use cached sensor data from AMSHardwareService when available
                     try:
@@ -710,27 +714,7 @@ class OAMSRunoutMonitor:
         oams_name: Optional[str],
         oams_obj: Optional[Any] = None,
     ) -> Tuple[Optional[str], Optional[Any]]:
-        if not oams_name:
-            return None, None
-
-        if oams_name in self.oams:
-            return oams_name, self.oams.get(oams_name)
-
-        if oams_obj is not None:
-            obj_name = getattr(oams_obj, "name", None)
-            if obj_name in self.oams:
-                return obj_name, self.oams.get(obj_name)
-
-        prefixed = f"oams {oams_name}"
-        if prefixed in self.oams:
-            return prefixed, self.oams.get(prefixed)
-
-        if oams_name.startswith("oams "):
-            unprefixed = oams_name[5:]
-            if unprefixed in self.oams:
-                return unprefixed, self.oams.get(unprefixed)
-
-        return oams_name, None
+        return _resolve_oams_entry(self.oams, oams_name, oams_obj)
 
     def _has_gcode_command(self, gcode, command: str) -> bool:
         handlers = getattr(gcode, "ready_gcode_handlers", None)
@@ -1204,9 +1188,9 @@ class OAMSManager:
         self.printer.add_object("oams_manager", self)
         self.register_commands()
 
-    def get_status(self, eventtime: float) -> Dict[str, Dict[str, Any]]:
+    def get_status(self, eventtime: float) -> Dict[str, Any]:
         """Return current status of all FPS units and OAMS hardware."""
-        attributes: Dict[str, Dict[str, Any]] = {"oams": {}}
+        attributes: Dict[str, Any] = {"oams": {}, "version": OAMS_MANAGER_VERSION}
 
         for name, oam in self.oams.items():
             status_name = name.split()[-1]
@@ -1247,9 +1231,7 @@ class OAMSManager:
             return None
 
         # Normalize oams_name - strip "oams " prefix if present
-        normalized_name = oams_name
-        if isinstance(oams_name, str) and oams_name.startswith("oams "):
-            normalized_name = oams_name[5:]
+        normalized_name = _normalize_oams_name_token(oams_name)
 
         # Check cache first
         if normalized_name in self._hardware_service_cache:
@@ -1579,7 +1561,11 @@ class OAMSManager:
                 return
             extruder_obj = getattr(lane_obj, 'extruder_obj', None)
             if extruder_obj is not None:
-                extruder_obj.lane_loaded = None
+                try:
+                    if getattr(extruder_obj, 'lane_loaded', None) == lane_name:
+                        extruder_obj.lane_loaded = None
+                except Exception:
+                    pass
             if getattr(lane_obj, 'tool_loaded', False):
                 lane_obj.tool_loaded = False
             if clear_hub_state:
@@ -1877,27 +1863,7 @@ class OAMSManager:
         oams_name: Optional[str],
         oams_obj: Optional[Any] = None,
     ) -> Tuple[Optional[str], Optional[Any]]:
-        if not oams_name:
-            return None, None
-
-        if oams_name in self.oams:
-            return oams_name, self.oams.get(oams_name)
-
-        if oams_obj is not None:
-            obj_name = getattr(oams_obj, "name", None)
-            if obj_name in self.oams:
-                return obj_name, self.oams.get(obj_name)
-
-        prefixed = f"oams {oams_name}"
-        if prefixed in self.oams:
-            return prefixed, self.oams.get(prefixed)
-
-        if oams_name.startswith("oams "):
-            unprefixed = oams_name[5:]
-            if unprefixed in self.oams:
-                return unprefixed, self.oams.get(unprefixed)
-
-        return oams_name, None
+        return _resolve_oams_entry(self.oams, oams_name, oams_obj)
 
 
     def _get_follower_state(self, oams_name: str) -> FollowerState:
@@ -3542,40 +3508,12 @@ class OAMSManager:
         return _normalize_extruder_name(name)
 
     def _get_oams_object(self, oams_name: Optional[str]):
-        if not oams_name:
-            return None
-        if oams_name in self.oams:
-            return self.oams.get(oams_name)
-        prefixed = f"oams {oams_name}"
-        if prefixed in self.oams:
-            return self.oams.get(prefixed)
-        if oams_name.startswith("oams "):
-            unprefixed = oams_name[5:]
-            return self.oams.get(unprefixed)
-        return None
+        _, oams_obj = self._resolve_oams_name(oams_name)
+        return oams_obj
 
     def _normalize_oams_name(self, oams_name: Optional[str], oams_obj: Optional[Any] = None) -> Optional[str]:
-        if not oams_name:
-            return oams_name
-
-        if oams_name in self.oams:
-            return oams_name
-
-        if oams_obj is not None:
-            obj_name = getattr(oams_obj, "name", None)
-            if obj_name in self.oams:
-                return obj_name
-
-        prefixed = f"oams {oams_name}"
-        if prefixed in self.oams:
-            return prefixed
-
-        if oams_name.startswith("oams "):
-            unprefixed = oams_name[5:]
-            if unprefixed in self.oams:
-                return unprefixed
-
-        return oams_name
+        resolved_name, _ = self._resolve_oams_name(oams_name, oams_obj)
+        return resolved_name
 
     def _get_afc(self):
         # OPTIMIZATION: Cache AFC object lookup with validation
@@ -4012,12 +3950,29 @@ class OAMSManager:
                     self.logger.error(f"Failed to update virtual sensor directly for lane {target_lane}: {e}")
 
             if not handled:
+                # Avoid queued gcode fallback here. During active prints, queued SET_LANE_LOADED
+                # can execute late and leave lane/hub indicators in limbo until a manual pause.
                 try:
-                    gcode = self.printer.lookup_object("gcode")
-
-                    gcode.run_script(f"SET_LANE_LOADED LANE={target_lane}")
-
-                    self.logger.info(f"Marked lane {target_lane} as loaded via SET_LANE_LOADED after infinite runout on {fps_name}")
+                    afc = self._get_afc()
+                    forced = False
+                    if afc and hasattr(afc, "lanes"):
+                        lane_obj = afc.lanes.get(target_lane)
+                        if lane_obj is not None:
+                            try:
+                                lane_obj.loaded_to_hub = True
+                            except Exception:
+                                pass
+                            lane_obj.set_tool_loaded()
+                            lane_obj.sync_to_extruder()
+                            forced = True
+                    if forced:
+                        self.logger.info(
+                            f"Marked lane {target_lane} as loaded via direct AFC state update after infinite runout on {fps_name}"
+                        )
+                    else:
+                        self.logger.error(
+                            f"Failed to mark lane {target_lane} as loaded: coordinator unavailable and direct fallback failed"
+                        )
                 except Exception as e:
                     self.logger.error(f"Failed to mark lane {target_lane} as loaded after infinite runout on {fps_name}: {e}")
 
@@ -4070,10 +4025,9 @@ class OAMSManager:
                         self.logger.info(f"AMSRunoutCoordinator.notify_lane_tool_state returned False for source lane {source_lane_name}, using fallback clear")
 
                 if not source_lane_cleared:
-                    # Fallback to gcode command if coordinator is unavailable or declined handling
-                    gcode = self.printer.lookup_object("gcode")
-                    gcode.run_script(f"UNSET_LANE_LOADED LANE={source_lane_name}")
-                    self.logger.info(f"Cleared source lane {source_lane_name} via UNSET_LANE_LOADED after reload to {target_lane}")
+                    self.logger.info(
+                        f"Coordinator did not handle source lane clear for {source_lane_name}; using direct AFC clear"
+                    )
 
                 # Always hard-clear AFC lane/tool/hub state for the source lane so virtual hub never lingers.
                 self._clear_afc_loaded_lane(source_lane_name, clear_hub_state=True)
