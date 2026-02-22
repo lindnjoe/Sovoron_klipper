@@ -30,20 +30,35 @@ from enum import Enum
 from configparser import Error as ConfigError
 
 from extras.AFC_prep import afcPrep
-try: from extras.AFC_utils import ERROR_STR
-except: raise ConfigError("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
+try:
+    from extras.AFC_utils import ERROR_STR
+except Exception:
+    raise ConfigError("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
 
-try: from extras.AFC_unit import afcUnit
-except: raise ConfigError(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
+try:
+    from extras.AFC_unit import afcUnit
+except Exception:
+    raise ConfigError(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
 
-try: from extras.AFC_lane import AFCLane, AFCLaneState
-except: raise ConfigError(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
-try: from extras.AFC_utils import add_filament_switch
-except: raise ConfigError(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
-try: import extras.AFC_extruder as _afc_extruder_mod
-except: raise ConfigError(ERROR_STR.format(import_lib="AFC_extruder", trace=traceback.format_exc()))
-try: from extras.AFC_respond import AFCprompt
-except: raise ConfigError(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
+try:
+    from extras.AFC_lane import AFCLane, AFCLaneState
+except Exception:
+    raise ConfigError(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
+
+try:
+    from extras.AFC_utils import add_filament_switch
+except Exception:
+    raise ConfigError(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
+
+try:
+    import extras.AFC_extruder as _afc_extruder_mod
+except Exception:
+    raise ConfigError(ERROR_STR.format(import_lib="AFC_extruder", trace=traceback.format_exc()))
+
+try:
+    from extras.AFC_respond import AFCprompt
+except Exception:
+    raise ConfigError(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
 
 try:
     from extras.openams_integration import (
@@ -55,7 +70,7 @@ try:
         OPENAMS_VERSION,
         OpenAMSManagerFacade,
     )
-except:
+except Exception:
     raise ConfigError(ERROR_STR.format(import_lib="openams_integration", trace=traceback.format_exc()))
 
 _module_logger = logging.getLogger(__name__)
