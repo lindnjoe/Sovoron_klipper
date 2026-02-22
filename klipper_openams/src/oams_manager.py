@@ -2270,9 +2270,17 @@ class OAMSManager:
             if isinstance(extr_state, dict):
                 loaded_lane_name = extr_state.get("lane_loaded")
 
+            # Compare against live AFC object to avoid stale snapshot writes
+            # immediately after same-FPS runout handoff.
+            live_loaded_lane_name = getattr(extruder_obj, 'lane_loaded', None)
+            if loaded_lane_name and live_loaded_lane_name and loaded_lane_name != live_loaded_lane_name:
+                live_lane_obj = afc.lanes.get(live_loaded_lane_name) if hasattr(afc, 'lanes') else None
+                if live_lane_obj is not None and bool(getattr(live_lane_obj, 'tool_loaded', False)):
+                    loaded_lane_name = live_loaded_lane_name
+
             # Fall back to live object if snapshot missing
             if not loaded_lane_name:
-                loaded_lane_name = getattr(extruder_obj, 'lane_loaded', None)
+                loaded_lane_name = live_loaded_lane_name
 
             if not loaded_lane_name:
                 # Clear last log so a future detection of the same lane after unload will log again

@@ -12,7 +12,7 @@
             "load": false,
             "prep": false,
             "tool_loaded": false,
-            "loaded_to_hub": false,
+            "loaded_to_hub": true,
             "material": "",
             "density": 1.24,
             "diameter": 1.75,
@@ -24,7 +24,7 @@
             "runout_lane": null,
             "filament_status": "Not Ready",
             "filament_status_led": "#ff0000",
-            "status": "None",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -96,18 +96,18 @@
             "load": true,
             "prep": true,
             "tool_loaded": true,
-            "loaded_to_hub": false,
+            "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.23,
             "diameter": 1.75,
             "empty_spool_weight": 170.0,
             "spool_id": 42,
             "color": "#ffffff",
-            "weight": 863.461796107498,
+            "weight": 862.5964211762155,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
             "status": "Tooled",
             "dist_hub": 60,
             "td1_data": {}
@@ -263,7 +263,7 @@
             "empty_spool_weight": 130.0,
             "spool_id": 35,
             "color": "#328169",
-            "weight": 644.1046748230767,
+            "weight": 643.9853730769324,
             "extruder_temp": 210,
             "runout_lane": null,
             "filament_status": "In Tool",
@@ -358,7 +358,7 @@
         }
     },
     "system": {
-        "current_load": "lane7",
+        "current_load": null,
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
@@ -376,7 +376,7 @@
                 "lane_loaded": "lane3"
             },
             "extruder4": {
-                "lane_loaded": "lane7"
+                "lane_loaded": null
             },
             "extruder5": {
                 "lane_loaded": null
