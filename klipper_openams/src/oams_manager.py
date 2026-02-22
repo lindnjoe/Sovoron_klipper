@@ -3936,6 +3936,27 @@ class OAMSManager:
         """
         self.logger.info(f"Successfully loaded lane {target_lane} on {fps_name} after infinite runout")
 
+        def _mirror_lane_virtual_hub(lane_obj, present: bool) -> None:
+            if lane_obj is None:
+                return
+            try:
+                lane_obj.loaded_to_hub = bool(present)
+            except Exception:
+                pass
+            try:
+                now = self.reactor.monotonic()
+                hub_obj = getattr(lane_obj, 'hub_obj', None)
+                if hub_obj is not None:
+                    if hasattr(hub_obj, 'switch_pin_callback'):
+                        hub_obj.switch_pin_callback(now, bool(present))
+                    fila = getattr(hub_obj, 'fila', None)
+                    if fila is not None and hasattr(fila, 'runout_helper'):
+                        fila.runout_helper.note_filament_present(now, bool(present))
+            except Exception as e:
+                self.logger.debug(
+                    f"Failed to mirror virtual hub sensor for {getattr(lane_obj, 'name', '<unknown>')} -> {present}: {e}"
+                )
+
         # Force immediate AFC state update for target lane first.
         # Coordinator callbacks can occasionally block during active print motion,
         # so do direct state mutation here to avoid waiting until pause/idle.
@@ -3946,23 +3967,12 @@ class OAMSManager:
                 if afc and hasattr(afc, "lanes"):
                     lane_obj = afc.lanes.get(target_lane)
                     if lane_obj is not None:
-                        try:
-                            lane_obj.loaded_to_hub = True
-                        except Exception:
-                            pass
-                        try:
-                            hub_obj = getattr(lane_obj, 'hub_obj', None)
-                            if hub_obj is not None:
-                                now = self.reactor.monotonic()
-                                if hasattr(hub_obj, 'switch_pin_callback'):
-                                    hub_obj.switch_pin_callback(now, True)
-                                fila = getattr(hub_obj, 'fila', None)
-                                if fila is not None and hasattr(fila, 'runout_helper'):
-                                    fila.runout_helper.note_filament_present(now, True)
-                        except Exception as e:
-                            self.logger.debug(f"Failed to set virtual hub sensor loaded for {target_lane}: {e}")
+                        _mirror_lane_virtual_hub(lane_obj, True)
+                        # Do not call sync_to_extruder() here.
+                        # During same-FPS runout, filament is already physically engaged and
+                        # sync_to_extruder can trigger deferred AFC tool/cut flows that only
+                        # execute when print motion unwinds, delaying the rest of handoff logic.
                         lane_obj.set_tool_loaded()
-                        lane_obj.sync_to_extruder()
                         forced = True
                 if forced:
                     self.logger.info(
@@ -3997,19 +4007,7 @@ class OAMSManager:
                             target_lane_obj = afc.lanes.get(target_lane)
                             if target_lane_obj:
                                 # Force update loaded_to_hub to match actual hub sensor
-                                target_lane_obj.loaded_to_hub = hub_sensor_state
-                                if hub_sensor_state:
-                                    try:
-                                        now = self.reactor.monotonic()
-                                        hub_obj = getattr(target_lane_obj, 'hub_obj', None)
-                                        if hub_obj is not None:
-                                            if hasattr(hub_obj, 'switch_pin_callback'):
-                                                hub_obj.switch_pin_callback(now, True)
-                                            fila = getattr(hub_obj, 'fila', None)
-                                            if fila is not None and hasattr(fila, 'runout_helper'):
-                                                fila.runout_helper.note_filament_present(now, True)
-                                    except Exception as e:
-                                        self.logger.debug(f"Failed to mirror hub loaded sensor state for {target_lane}: {e}")
+                                _mirror_lane_virtual_hub(target_lane_obj, hub_sensor_state)
                                 self.logger.info(f"Force updated loaded_to_hub={hub_sensor_state} for {target_lane} after same-FPS runout")
                 except Exception as e:
                     self.logger.warning(f"Failed to force update loaded_to_hub for {target_lane}: {e}")
@@ -4022,15 +4020,19 @@ class OAMSManager:
                 # Always hard-clear AFC lane/tool/hub state for the source lane first.
                 # This must happen immediately in-run, not deferred via coordinator/gcode.
                 self._clear_afc_loaded_lane(source_lane_name, clear_hub_state=True)
+
+                afc = self._get_afc()
+                source_lane_obj = None
+                if afc and hasattr(afc, 'lanes'):
+                    source_lane_obj = afc.lanes.get(source_lane_name)
+                    _mirror_lane_virtual_hub(source_lane_obj, False)
+
                 self.logger.info(f"Force-cleared source lane {source_lane_name} hub/tool state after reload to {target_lane}")
 
                 # Clear the same-FPS runout flag on source lane after successful reload
-                afc = self._get_afc()
-                if afc and hasattr(afc, 'lanes'):
-                    source_lane_obj = afc.lanes.get(source_lane_name)
-                    if source_lane_obj and hasattr(source_lane_obj, '_oams_same_fps_runout'):
-                        source_lane_obj._oams_same_fps_runout = False
-                        self.logger.info(f"Cleared same-FPS runout flag on lane {source_lane_name} after successful reload")
+                if source_lane_obj and hasattr(source_lane_obj, '_oams_same_fps_runout'):
+                    source_lane_obj._oams_same_fps_runout = False
+                    self.logger.info(f"Cleared same-FPS runout flag on lane {source_lane_name} after successful reload")
             except Exception as e:
                 self.logger.error(f"Failed to clear source lane {source_lane_name} state after reload to {target_lane}: {e}")
 

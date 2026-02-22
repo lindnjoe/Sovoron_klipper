@@ -19,7 +19,7 @@
             "empty_spool_weight": 250.0,
             "spool_id": 13,
             "color": "#000000",
-            "weight": 52.66349382753492,
+            "weight": 42.06547667363509,
             "extruder_temp": 240,
             "runout_lane": "lane7",
             "filament_status": "Ready",
@@ -39,8 +39,8 @@
             "map": "T5",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
-            "loaded_to_hub": true,
+            "tool_loaded": false,
+            "loaded_to_hub": false,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -50,8 +50,8 @@
             "weight": 366.5671171912736,
             "extruder_temp": 250,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
@@ -96,7 +96,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.23,
             "diameter": 1.75,
@@ -159,7 +159,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -175,8 +175,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 2.0,
-                "color": "4EA685",
-                "scan_time": "2026-02-22T05:17:42.448428+00:00Z",
+                "color": "4EA686",
+                "scan_time": "2026-02-22T07:47:56.283817+00:00Z",
                 "error": null
             }
         },
@@ -381,7 +381,7 @@
                 "lane_loaded": "lane3"
             },
             "extruder4": {
-                "lane_loaded": "lane5"
+                "lane_loaded": null
             },
             "extruder5": {
                 "lane_loaded": null
