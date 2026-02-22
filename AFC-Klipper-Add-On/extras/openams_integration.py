@@ -45,42 +45,19 @@ def normalize_extruder_name(name: Optional[str]) -> Optional[str]:
     return lowered or None
 
 
-class OpenAMSManagerFacade:
-    """Thin compatibility facade for oams_manager interactions."""
+def normalize_oams_name(name: Optional[str], *, default: str = "default") -> str:
+    """Return canonical OAMS identifier used across OpenAMS/AFC integration."""
+    if not name:
+        return default
 
-    @staticmethod
-    def get_manager(printer):
-        try:
-            return printer.lookup_object("oams_manager", None)
-        except Exception:
-            return None
+    normalized = str(name).strip()
+    if not normalized:
+        return default
 
-    @classmethod
-    def load_for_lane(cls, printer, lane_name: str) -> Tuple[bool, str]:
-        manager = cls.get_manager(printer)
-        if manager is None:
-            return False, "OpenAMS manager not available"
-        return manager.load_filament_for_lane(lane_name)
+    if normalized.lower().startswith("oams "):
+        normalized = normalized[5:].strip()
 
-    @classmethod
-    def unload_with_prep_for_fps(cls, printer, fps_name: str) -> Tuple[bool, str]:
-        manager = cls.get_manager(printer)
-        if manager is None:
-            return False, "OpenAMS manager not available"
-        return manager.unload_filament_with_prep_for_fps(fps_name)
-
-    @classmethod
-    def clear_fps_state_for_lane(
-        cls,
-        printer,
-        lane_name: str,
-        *,
-        eventtime: Optional[float] = None,
-    ) -> Tuple[bool, Optional[str], Optional[int]]:
-        manager = cls.get_manager(printer)
-        if manager is None:
-            return False, None, None
-        return manager.clear_fps_state_for_lane(lane_name, eventtime=eventtime)
+    return normalized or default
 
 
 # ============================================================================
@@ -468,11 +445,11 @@ class AMSHardwareService:
     @classmethod
     def for_printer(cls, printer, name: str = "default", logger=None) -> "AMSHardwareService":
         """Return the singleton service for the provided printer/name pair."""
-        key = (id(printer), name)
+        key = (id(printer), AMSRunoutCoordinator._canonical_oams_name(name))
         try:
             service = cls._instances[key]
         except KeyError:
-            service = cls(printer, name, logger)
+            service = cls(printer, AMSRunoutCoordinator._canonical_oams_name(name), logger)
             cls._instances[key] = service
         else:
             if logger is not None:
@@ -941,10 +918,15 @@ class AMSRunoutCoordinator:
     _monitors: Dict[Tuple[int, str], List[Any]] = {}
     _lock = threading.RLock()
 
+    @staticmethod
+    def _canonical_oams_name(name: Optional[str]) -> str:
+        """Normalize OAMS identifiers to one canonical key format."""
+        return normalize_oams_name(name)
+
     @classmethod
-    def _key(cls, printer, name: str) -> Tuple[int, str]:
+    def _key(cls, printer, name: Optional[str]) -> Tuple[int, str]:
         """Generate a unique key for printer/name combinations."""
-        return (id(printer), name)
+        return (id(printer), cls._canonical_oams_name(name))
 
     @classmethod
     def register_afc_unit(cls, unit) -> AMSHardwareService:
