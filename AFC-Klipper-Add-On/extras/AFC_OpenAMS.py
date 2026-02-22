@@ -3835,14 +3835,9 @@ class afcAMS(afcUnit):
                 self.logger.error(f"Failed to mark lane {lane.name} as loaded: {e}")
             try:
                 lane.sync_to_extruder()
-                # Wait for all moves to complete to prevent "Timer too close" errors
-                try:
-                    toolhead = self.printer.lookup_object("toolhead")
-                    toolhead.wait_moves()
-                    # Add a small delay to allow the MCU to catch up
-                    self.reactor.pause(self.reactor.monotonic() + 0.05)
-                except Exception as e:
-                    pass
+                # Do not block on toolhead.wait_moves() here.
+                # This callback can run mid-print during same-FPS runout handoff;
+                # waiting for move queue drain can defer state updates until print end.
             except Exception as e:
                 self.logger.error(f"Failed to sync lane {lane.name} to extruder: {e}")
             if afc_function is not None:
@@ -3886,14 +3881,8 @@ class afcAMS(afcUnit):
         if getattr(lane, "tool_loaded", False):
             try:
                 lane.unsync_to_extruder()
-                # Wait for all moves to complete to prevent "Timer too close" errors
-                try:
-                    toolhead = self.printer.lookup_object("toolhead")
-                    toolhead.wait_moves()
-                    # Add a small delay to allow the MCU to catch up
-                    self.reactor.pause(self.reactor.monotonic() + 0.05)
-                except Exception as e:
-                    pass
+                # Do not block on toolhead.wait_moves() in tool-state callbacks.
+                # During active prints this can stall unload state propagation until idle.
             except Exception as e:
                 self.logger.error(f"Failed to unsync lane {lane.name} from extruder: {e}")
             try:
