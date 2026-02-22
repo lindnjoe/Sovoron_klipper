@@ -3950,6 +3950,17 @@ class OAMSManager:
                             lane_obj.loaded_to_hub = True
                         except Exception:
                             pass
+                        try:
+                            hub_obj = getattr(lane_obj, 'hub_obj', None)
+                            if hub_obj is not None:
+                                now = self.reactor.monotonic()
+                                if hasattr(hub_obj, 'switch_pin_callback'):
+                                    hub_obj.switch_pin_callback(now, True)
+                                fila = getattr(hub_obj, 'fila', None)
+                                if fila is not None and hasattr(fila, 'runout_helper'):
+                                    fila.runout_helper.note_filament_present(now, True)
+                        except Exception as e:
+                            self.logger.debug(f"Failed to set virtual hub sensor loaded for {target_lane}: {e}")
                         lane_obj.set_tool_loaded()
                         lane_obj.sync_to_extruder()
                         forced = True
@@ -3987,6 +3998,18 @@ class OAMSManager:
                             if target_lane_obj:
                                 # Force update loaded_to_hub to match actual hub sensor
                                 target_lane_obj.loaded_to_hub = hub_sensor_state
+                                if hub_sensor_state:
+                                    try:
+                                        now = self.reactor.monotonic()
+                                        hub_obj = getattr(target_lane_obj, 'hub_obj', None)
+                                        if hub_obj is not None:
+                                            if hasattr(hub_obj, 'switch_pin_callback'):
+                                                hub_obj.switch_pin_callback(now, True)
+                                            fila = getattr(hub_obj, 'fila', None)
+                                            if fila is not None and hasattr(fila, 'runout_helper'):
+                                                fila.runout_helper.note_filament_present(now, True)
+                                    except Exception as e:
+                                        self.logger.debug(f"Failed to mirror hub loaded sensor state for {target_lane}: {e}")
                                 self.logger.info(f"Force updated loaded_to_hub={hub_sensor_state} for {target_lane} after same-FPS runout")
                 except Exception as e:
                     self.logger.warning(f"Failed to force update loaded_to_hub for {target_lane}: {e}")
