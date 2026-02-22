@@ -141,9 +141,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 0.4,
-                "color": "67697E",
-                "scan_time": "2026-02-21T03:49:10.292647+00:00Z",
+                "td": 0.3,
+                "color": "66697C",
+                "scan_time": "2026-02-22T04:26:51.180265+00:00Z",
                 "error": null
             }
         },
@@ -175,8 +175,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 2.0,
-                "color": "4AA080",
-                "scan_time": "2026-02-20T22:32:27.224332+00:00Z",
+                "color": "4DA385",
+                "scan_time": "2026-02-22T04:26:19.281441+00:00Z",
                 "error": null
             }
         },
@@ -235,9 +235,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 2.4,
+                "td": 2.5,
                 "color": "FFFFFF",
-                "scan_time": "2026-02-21T03:47:42.982806+00:00Z",
+                "scan_time": "2026-02-22T04:25:53.257002+00:00Z",
                 "error": null
             }
         }
