@@ -3807,11 +3807,15 @@ class afcAMS(afcUnit):
                     previous_lane = afc_function.get_current_lane_obj()
                 except Exception:
                     previous_lane = None
-                try:
-                    afc_function.unset_lane_loaded()
-                except Exception as e:
-                    self.logger.error(f"Failed to unset previously loaded lane: {e}")
-                if previous_lane is not None and getattr(previous_lane, "name", None) != getattr(lane, "name", None):
+
+                previous_lane_name = getattr(previous_lane, "name", None) if previous_lane is not None else None
+                current_lane_name = getattr(lane, "name", None)
+                if previous_lane_name and previous_lane_name != current_lane_name:
+                    try:
+                        afc_function.unset_lane_loaded()
+                    except Exception as e:
+                        self.logger.error(f"Failed to unset previously loaded lane {previous_lane_name}: {e}")
+
                     clear_previous_hub = bool(
                         getattr(previous_lane, "_oams_same_fps_runout", False)
                         or getattr(previous_lane, "_oams_runout_detected", False)
@@ -3819,6 +3823,10 @@ class afcAMS(afcUnit):
                     )
                     if clear_previous_hub:
                         _clear_lane_virtual_hub_sensor(previous_lane)
+                elif previous_lane_name == current_lane_name:
+                    self.logger.debug(
+                        f"OpenAMS lane tool-state load for {current_lane_name} received while lane is already active; skipping unset_lane_loaded self-clear"
+                    )
             try:
                 # Call set_tool_loaded() instead of set_loaded() since filament is loaded to toolhead
                 # This properly sets extruder.lane_loaded which is needed for lane tracking
