@@ -1509,7 +1509,7 @@ class afc:
                         msg += "manually extrude filament and clean nozzle."
                         if self.function.in_print():
                             msg += '\nOnce issue is resolved click resume to continue printing'
-                        self.error.handle_lane_failure(cur_lane, msg)
+                        self.error.handle_lane_failure(cur_lane, msg, pause=self.function.in_print())
                         return False
                 cur_lane.sync_to_extruder()
 
@@ -1759,7 +1759,7 @@ class afc:
                             msg += f"with {self.lanes[self.next_lane_load].map} macro.\n"
                             if self.function.in_print():
                                 msg += "Once lane is loaded click resume to continue printing"
-                        self.error.handle_lane_failure(cur_lane, msg)
+                        self.error.handle_lane_failure(cur_lane, msg, pause=self.function.in_print())
                         return False
                 cur_lane.sync_to_extruder(False)
                 # we only need to do this if we need to move off the extruder gears
