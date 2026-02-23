@@ -27,6 +27,7 @@ class afcError:
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.errorLog= {}
         self.pause= False
+        self.pause_in_progress = False
 
     def handle_connect(self):
         """
@@ -106,11 +107,29 @@ class afcError:
         pause_print function verifies that the printer is homed and not currently paused before calling
         the base pause command
         """
+        if self.pause_in_progress:
+            self.logger.debug("pause_print: Pause already in progress, skipping duplicate request")
+            return
+
+        if self.afc.function.is_paused():
+            self.logger.debug("pause_print: Printer is already paused, skipping")
+            return
+
+        self.pause_in_progress = True
         self.set_error_state( True )
         self.logger.info ('PAUSING')
-        self.afc.gcode.run_script_from_command('PAUSE')
-        self.logger.debug("After User Pause")
-        self.afc.function.log_toolhead_pos()
+        try:
+            # Use core pause command directly to avoid macro recursion and to work
+            # even when AFC_PREP rename hooks are not installed.
+            self.pause_resume.send_pause_command()
+            self.logger.debug("After pause command")
+            self.afc.function.log_toolhead_pos()
+
+            # Keep AFC idle-timeout behavior when available.
+            timeout_to_use = max(self.error_timeout, self.idle_timeout_val)
+            self.afc.gcode.run_script_from_command(f"SET_IDLE_TIMEOUT TIMEOUT={timeout_to_use}")
+        finally:
+            self.pause_in_progress = False
 
     def set_error_state(self, state=False):
         logging.warning("AFC debug: setting error state {}".format(state))
@@ -125,7 +144,8 @@ class afcError:
         logging.warning(msg)
         # Handle AFC errors
         self.logger.error( message=msg, stack_name=inspect.stack()[level].function )
-        if pause: self.pause_print()
+        if pause:
+            self.pause_print()
 
     cmd_RESET_FAILURE_help = "CLEAR STATUS ERROR"
     def cmd_RESET_FAILURE(self, gcmd):
