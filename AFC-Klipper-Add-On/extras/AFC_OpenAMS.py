@@ -3924,7 +3924,7 @@ class afcAMS(afcUnit):
                 self.logger.error(f"Failed to sync lane {lane.name} to extruder: {e}")
             if afc_function is not None:
                 try:
-                    afc_function.handle_activate_extruder()
+                    afc_function.handle_activate_extruder(clear_active_spool=False)
                 except Exception as e:
                     self.logger.error(f"Failed to activate extruder after loading lane {lane.name}: {e}")
             try:
