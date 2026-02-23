@@ -119,10 +119,15 @@ class afcError:
         self.set_error_state( True )
         self.logger.info ('PAUSING')
         try:
+            # Use core pause command directly to avoid macro recursion and to work
+            # even when AFC_PREP rename hooks are not installed.
             self.pause_resume.send_pause_command()
-            self.afc.gcode.run_script_from_command("AFC_PAUSE")
-            self.logger.debug("After User Pause")
+            self.logger.debug("After pause command")
             self.afc.function.log_toolhead_pos()
+
+            # Keep AFC idle-timeout behavior when available.
+            timeout_to_use = max(self.error_timeout, self.idle_timeout_val)
+            self.afc.gcode.run_script_from_command(f"SET_IDLE_TIMEOUT TIMEOUT={timeout_to_use}")
         finally:
             self.pause_in_progress = False
 
