@@ -547,6 +547,11 @@ class AFCLane:
             self.hub_obj.state = False
             self.hub_obj.move_dis = 75
             self.hub_obj.hub_clear_move_dis = 65
+            # Direct/direct_load lanes still pass hub_obj through generic AFC load logic.
+            # Provide expected hub distance attributes so retry/homing code paths don't
+            # fail with AttributeError when no physical AFC_hub object exists.
+            self.hub_obj.afc_bowden_length = float(getattr(self, "dist_hub", 0.0) or 0.0)
+            self.hub_obj.afc_unload_bowden_length = float(getattr(self, "dist_hub", 0.0) or 0.0)
 
         self.extruder_obj = self.unit_obj.extruder_obj
         if self.extruder_name is not None:
