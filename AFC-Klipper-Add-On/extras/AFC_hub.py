@@ -109,7 +109,13 @@ class afc_hub:
             msg = "The following lanes need load sensors for virtual hub sensor to work correctly:"
             report_error = False
             for lane in self.lanes.values():
-                if lane.load is None:
+                # OpenAMS lanes use OAMS hardware sensors instead of AFC load pins
+                unit_obj = getattr(lane, "unit_obj", None)
+                is_openams = (
+                    getattr(unit_obj, "type", None) == "OpenAMS"
+                    or hasattr(unit_obj, "oams_name")
+                )
+                if lane.load is None and not is_openams:
                     report_error = True
                     msg += f"\n{lane.fullname}"
 
@@ -130,7 +136,11 @@ class afc_hub:
         if self.switch_pin.lower() == "virtual":
             lane_states = []
             for lane in self.lanes.values():
-                is_openams_lane = getattr(getattr(lane, "unit_obj", None), "type", None) == "OpenAMS"                     or hasattr(getattr(lane, "unit_obj", None), "oams_name")
+                unit_obj = getattr(lane, "unit_obj", None)
+                is_openams_lane = (
+                    getattr(unit_obj, "type", None) == "OpenAMS"
+                    or hasattr(unit_obj, "oams_name")
+                )
                 if is_openams_lane:
                     lane_states.append(bool(getattr(lane, "loaded_to_hub", False)))
                 else:
