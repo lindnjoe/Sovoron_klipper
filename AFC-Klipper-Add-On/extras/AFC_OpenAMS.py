@@ -392,9 +392,9 @@ class afcAMS(afcUnit):
 
         # Track pending TD-1 capture timers (delayed after spool insertion)
         self._pending_spool_loaded_timers: Dict[str, Any] = {}
-        # Debounce redundant lane_tool_loaded sync-state calls that can be emitted
-        # repeatedly by overlapping AFC/OpenAMS callbacks during a successful load.
-        self._last_lane_tool_loaded_sync: Dict[str, float] = {}
+        # Track last synced lane_tool_loaded signature per lane to avoid re-running
+        # expensive manager sync_state_with_afc() loops for repeated callbacks.
+        self._last_lane_tool_loaded_sync: Dict[str, tuple] = {}
 
         self.oams = None
         self.hardware_service = None
@@ -1167,9 +1167,6 @@ class afcAMS(afcUnit):
         """Update the virtual tool sensor when a lane loads into the tool."""
         lane_name = getattr(lane, "name", None)
         extruder_obj = getattr(lane, "extruder_obj", None)
-        previous_tool_loaded = bool(getattr(lane, "tool_loaded", False))
-        previous_extruder_lane = getattr(extruder_obj, "lane_loaded", None) if extruder_obj is not None else None
-
         super().lane_tool_loaded(lane)
 
         # When a new lane loads to toolhead, clear tool_loaded on any OTHER lanes from this unit
@@ -1192,32 +1189,24 @@ class afcAMS(afcUnit):
                     other_lane._oams_runout_detected = False
                     self.logger.debug(f"Cleared tool_loaded for {other_lane.name} on same FPS (new lane {lane.name} loaded)")
 
-        # Sync OAMS MCU current_spool and FPS state when lane is set as loaded.
-        # `lane_tool_loaded()` may be emitted multiple times during a single tool-load
-        # pipeline (OpenAMS load completion, ACTIVATE_EXTRUDER callbacks, post-load steps).
-        # Only run expensive manager sync on real transitions.
+        # Sync OAMS MCU current_spool whenever lane is marked loaded.
+        # Do not run sync_state_with_afc() here; AFC/OpenAMS already emit this callback
+        # multiple times during one load and state-detection loops can race AFC's
+        # canonical spool/lane assignment ordering.
         if self.oams is not None:
             try:
-                now = self.reactor.monotonic()
-                no_transition = previous_tool_loaded and previous_extruder_lane == lane_name
-
                 # Set OAMS MCU current_spool to this lane's spool index (0-based)
                 spool_index = getattr(lane, 'index', None)
                 if spool_index is not None:
                     self.oams.current_spool = spool_index - 1
                     self.logger.debug(f"Set OAMS current_spool to {spool_index - 1} for {getattr(lane, 'name', None)}")
-
-                if not no_transition:
-                    # Use sync_state_with_afc for proper state sync (includes error recovery)
-                    oams_manager = self._get_oams_manager()
-                    if oams_manager is not None:
-                        oams_manager.sync_state_with_afc()
-                    if lane_name is not None:
-                        self._last_lane_tool_loaded_sync[lane_name] = now
-                else:
-                    self.logger.debug(f"Skipping redundant sync_state_with_afc for {lane_name} (lane/extruder already in loaded state)")
+                if lane_name is not None:
+                    self._last_lane_tool_loaded_sync[lane_name] = (
+                        bool(getattr(lane, "tool_loaded", False)),
+                        getattr(extruder_obj, "lane_loaded", None) if extruder_obj is not None else None,
+                    )
             except Exception as e:
-                self.logger.error(f"Failed to sync OAMS state for {getattr(lane, 'name', None)}: {e}")
+                self.logger.error(f"Failed to update OAMS current_spool for {getattr(lane, 'name', None)}: {e}")
 
         if not self._lane_matches_extruder(lane):
             return
