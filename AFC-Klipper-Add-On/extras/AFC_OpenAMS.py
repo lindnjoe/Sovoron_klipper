@@ -1224,15 +1224,6 @@ class afcAMS(afcUnit):
         previous_tool_loaded = bool(getattr(lane, "tool_loaded", False))
         previous_extruder_lane = getattr(extruder_obj, "lane_loaded", None) if extruder_obj is not None else None
 
-        # Suppress duplicate lane_tool_loaded callbacks emitted by overlapping AFC/OpenAMS
-        # paths when this lane is already marked loaded for the same extruder and the
-        # virtual tool sensor already reflects loaded state.
-        if previous_tool_loaded and previous_extruder_lane == lane_name:
-            helper = getattr(getattr(self, "_virtual_tool_sensor", None), "runout_helper", None)
-            if bool(getattr(helper, "filament_present", False)):
-                self.logger.debug(f"Ignoring duplicate lane_tool_loaded for {lane_name} (already loaded and sensor true)")
-                return
-
         super().lane_tool_loaded(lane)
 
         # When a new lane loads to toolhead, clear tool_loaded on any OTHER lanes from this unit
