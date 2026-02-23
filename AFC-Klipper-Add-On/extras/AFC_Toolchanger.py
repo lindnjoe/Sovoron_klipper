@@ -175,9 +175,7 @@ class AfcToolchanger(afcUnit):
         lane.activate_toolhead_extruder()
         # Need to call again since KTC activate callback happens before switching to new extruder
         # TODO: Take double call out once transitioned away from KTC
-        # Avoid briefly clearing active spool during tool swap activation;
-        # TOOL_LOAD sets the final active spool once load completes.
-        self.afc.function._handle_activate_extruder(0, clear_active_spool=False)
+        self.afc.function._handle_activate_extruder(0)
 
         self.afc.toolhead.wait_moves()
         self.afc.afcDeltaTime.log_with_time("Tool swap done", debug=False)
