@@ -1284,8 +1284,11 @@ class afc:
                     if not success:
                         return success
 
-                    # Activate the tool-loaded LED and handle filament operations if enabled.
-                    cur_lane.unit_obj.lane_tool_loaded( cur_lane )
+                    # Activate tool-loaded indication before post-load steps.
+                    # OpenAMS lanes emit their own tool-loaded updates via manager callbacks;
+                    # avoid duplicate early lane_tool_loaded() churn here.
+                    if getattr(cur_lane.unit_obj, "type", None) != "OpenAMS":
+                        cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                     cur_lane.espooler.do_assist_move()
                     if self.poop:
                         if purge_length is not None:
