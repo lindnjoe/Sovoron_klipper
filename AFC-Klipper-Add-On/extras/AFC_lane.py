@@ -282,7 +282,8 @@ class AFCLane:
             and "extruder" not in self.name): # Protects against standalone lanes
             self._get_extruder_object()
             pin = self.extruder_obj.tool_start
-            if "buffer" not in pin:
+            if ("buffer" not in pin
+                and not str(pin).strip().upper().startswith("AMS_")):
                 self._set_homing_endstop(query_endstops, ppins,
                                          pin, AFCHomingPoints.TOOL)
 
