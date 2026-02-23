@@ -1177,8 +1177,20 @@ class afcAMS(afcUnit):
         if canonical_lane is None and lane_obj is not None:
             canonical_lane = self._canonical_lane_name(getattr(lane_obj, "name", None))
 
-        if new_state and not force:
-            if lane_obj and getattr(lane_obj, "tool_loaded", False) is False:
+        if new_state and not force and lane_obj is not None:
+            lane_tool_loaded = bool(getattr(lane_obj, "tool_loaded", False))
+            extruder_loaded_match = False
+            try:
+                extruder_obj = getattr(lane_obj, "extruder_obj", None)
+                lane_name = getattr(lane_obj, "name", None)
+                if extruder_obj is not None and lane_name is not None:
+                    extruder_loaded_match = getattr(extruder_obj, "lane_loaded", None) == lane_name
+            except Exception:
+                extruder_loaded_match = False
+
+            # Allow virtual sensor assertion when extruder tracking confirms this lane,
+            # even if lane.tool_loaded has not been hydrated yet after startup/PREP.
+            if not lane_tool_loaded and not extruder_loaded_match:
                 return
 
         #  Use cached sensor helper
