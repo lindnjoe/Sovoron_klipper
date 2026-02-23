@@ -1354,8 +1354,17 @@ class afcAMS(afcUnit):
             if desired_state is None and pending_false is not None:
                 desired_state, desired_lane, desired_lane_obj = pending_false
 
-        # Skip update only if state matches AND not forcing
-        if desired_state is None or (not force and desired_state == getattr(desired_lane_obj, "tool_loaded", False) if desired_lane_obj else False):
+        # Skip update only if sensor already matches desired state AND not forcing.
+        # Compare against the virtual sensor helper state (what UI/queries read), not
+        # lane.tool_loaded, which can already be True while the virtual helper is stale.
+        current_sensor_state = False
+        try:
+            helper = getattr(self._virtual_tool_sensor, "runout_helper", None)
+            current_sensor_state = bool(getattr(helper, "filament_present", False))
+        except Exception:
+            current_sensor_state = False
+
+        if desired_state is None or (not force and desired_state == current_sensor_state):
             return
 
         self._set_virtual_tool_sensor_state(desired_state, eventtime, desired_lane, lane_obj=desired_lane_obj)
