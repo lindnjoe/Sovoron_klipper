@@ -479,7 +479,7 @@ class afcFunction:
             return 'Prep:{}'.format(self.HexConvert(cur_lane.led_prep_loaded).split(':')[-1])
         return 'Not Ready:{}'.format(self.HexConvert(cur_lane.led_not_ready).split(':')[-1])
 
-    def handle_activate_extruder(self):
+    def handle_activate_extruder(self, clear_active_spool=True):
         """
         Function used to deactivate lanes motors and buffers, then enables current extruders lane
 
@@ -487,7 +487,7 @@ class afcFunction:
         """
         # Wait until printer is not moving so klipper does not crash
         # self.reactor.update_timer( self.activate_extruder_cb, self.reactor.monotonic() + 5 )
-        self._handle_activate_extruder(0)
+        self._handle_activate_extruder(0, clear_active_spool=clear_active_spool)
 
     def _handle_activate_extruder(self, eventtime, clear_active_spool=True):
         """
