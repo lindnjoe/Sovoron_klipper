@@ -159,7 +159,7 @@
             "map": "T9",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
+            "tool_loaded": false,
             "loaded_to_hub": true,
             "material": "ABS",
             "density": 1.05,
@@ -171,9 +171,9 @@
             "weight": 52.76427556760234,
             "extruder_temp": 250,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
                 "td": 2.1,
@@ -374,7 +374,7 @@
         }
     },
     "system": {
-        "current_load": "lane9",
+        "current_load": null,
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
@@ -383,7 +383,7 @@
                 "lane_loaded": null
             },
             "extruder5": {
-                "lane_loaded": "lane9"
+                "lane_loaded": null
             },
             "extruder": {
                 "lane_loaded": "lane0"

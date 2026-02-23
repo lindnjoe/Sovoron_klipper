@@ -1247,17 +1247,13 @@ class afcAMS(afcUnit):
                     self.logger.debug(f"Cleared tool_loaded for {other_lane.name} on same FPS (new lane {lane.name} loaded)")
 
         # Sync OAMS MCU current_spool and FPS state when lane is set as loaded.
-        # Debounce duplicate callbacks for the same lane that can occur within a
-        # short window during normal load/toolswap flows.
+        # `lane_tool_loaded()` may be emitted multiple times during a single tool-load
+        # pipeline (OpenAMS load completion, ACTIVATE_EXTRUDER callbacks, post-load steps).
+        # Only run expensive manager sync on real transitions.
         if self.oams is not None:
             try:
                 now = self.reactor.monotonic()
-                recently_synced = False
-                if lane_name is not None:
-                    last_sync = self._last_lane_tool_loaded_sync.get(lane_name)
-                    if last_sync is not None and (now - last_sync) < 1.0:
-                        no_transition = previous_tool_loaded and previous_extruder_lane == lane_name
-                        recently_synced = no_transition
+                no_transition = previous_tool_loaded and previous_extruder_lane == lane_name
 
                 # Set OAMS MCU current_spool to this lane's spool index (0-based)
                 spool_index = getattr(lane, 'index', None)
@@ -1265,7 +1261,7 @@ class afcAMS(afcUnit):
                     self.oams.current_spool = spool_index - 1
                     self.logger.debug(f"Set OAMS current_spool to {spool_index - 1} for {getattr(lane, 'name', None)}")
 
-                if not recently_synced:
+                if not no_transition:
                     # Use sync_state_with_afc for proper state sync (includes error recovery)
                     oams_manager = self._get_oams_manager()
                     if oams_manager is not None:
@@ -1273,7 +1269,7 @@ class afcAMS(afcUnit):
                     if lane_name is not None:
                         self._last_lane_tool_loaded_sync[lane_name] = now
                 else:
-                    self.logger.debug(f"Skipping redundant sync_state_with_afc for {lane_name} (recent duplicate lane_tool_loaded)")
+                    self.logger.debug(f"Skipping redundant sync_state_with_afc for {lane_name} (lane/extruder already in loaded state)")
             except Exception as e:
                 self.logger.error(f"Failed to sync OAMS state for {getattr(lane, 'name', None)}: {e}")
 
