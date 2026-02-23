@@ -1886,18 +1886,20 @@ class afcAMS(afcUnit):
         self.logger.info('{lane_name} tool cmd: {tcmd:3} {msg}'.format(lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))
         cur_lane.set_afc_prep_done()
 
-        # Trigger lane sync after PREP completes for this lane
-        # The delay ensures hardware sensors have stabilized and all lanes have been tested
+        # Trigger OpenAMS sensor reconciliation after PREP completes for this lane.
+        # Keep this in AFC_OpenAMS (not AFC_prep) so OpenAMS owns its recovery behavior.
         try:
-            oams_manager = self._get_oams_manager()
-            if oams_manager and hasattr(oams_manager, '_sync_all_fps_lanes_after_prep'):
-                # 200ms delay allows all lanes to complete and hardware to stabilize
-                self.afc.reactor.register_callback(
-                    lambda et: oams_manager._sync_all_fps_lanes_after_prep(),
-                    self.afc.reactor.monotonic() + 0.2
-                )
+            self.afc.reactor.register_callback(
+                lambda et: self.sync_openams_sensors(
+                    et,
+                    sync_hub=True,
+                    sync_f1s=True,
+                    allow_lane_clear=True,
+                ),
+                self.afc.reactor.monotonic() + 0.2,
+            )
         except Exception as e:
-            self.logger.error(f"Failed to schedule post-PREP sync: {e}")
+            self.logger.error(f"Failed to schedule OpenAMS post-PREP sensor sync: {e}")
 
         return succeeded
 
@@ -2553,6 +2555,20 @@ class afcAMS(afcUnit):
             self.logger.debug("State sync: No lanes configured, skipping")
             return
 
+        # First reconcile lane-level AFC booleans from live OpenAMS sensors.
+        # This is critical after crashes/restarts where AFC.var.unit persisted values
+        # (load_state/prep_state/loaded_to_hub) can be stale.
+        try:
+            eventtime = self.reactor.monotonic()
+            self.sync_openams_sensors(
+                eventtime,
+                sync_hub=True,
+                sync_f1s=True,
+                allow_lane_clear=True,
+            )
+        except Exception as e:
+            self.logger.debug(f"State sync: initial lane sensor reconciliation failed: {e}")
+
         self.logger.info(f"State sync: Reconciling AFC state with {self.name} hardware sensors")
 
         synced_count = 0
@@ -2775,6 +2791,18 @@ class afcAMS(afcUnit):
         # This should run after all initialization is complete and sensors are stable
         # Delay slightly to ensure sensors have had time to stabilize
         self.reactor.register_callback(lambda et: self._sync_afc_from_hardware_at_startup())
+
+        # Some OpenAMS controllers report late initial sensor updates right after boot.
+        # Run a second delayed reconciliation so PREP/load checks use true hub/F1S state.
+        self.reactor.register_callback(
+            lambda et: self.sync_openams_sensors(
+                et,
+                sync_hub=True,
+                sync_f1s=True,
+                allow_lane_clear=True,
+            ),
+            self.reactor.monotonic() + 1.0,
+        )
 
     def _wrap_afc_lane_unload(self):
         """Wrap AFC's LANE_UNLOAD to handle cross-extruder runout scenarios."""
