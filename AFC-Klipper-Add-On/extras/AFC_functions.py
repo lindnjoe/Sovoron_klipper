@@ -922,6 +922,14 @@ class afcFunction:
         prompt.create_custom_p(title, text, buttons,
                                True, None)
 
+    def _lane_reset_command(self, lane, dis):
+        if lane and hasattr(lane.unit_obj, 'get_lane_reset_command'):
+            return lane.unit_obj.get_lane_reset_command(lane, dis)
+
+        if dis is not None:
+            return "AFC_LANE_RESET LANE={} DISTANCE={}".format(lane.name, dis)
+        return "AFC_LANE_RESET LANE={}".format(lane.name)
+
     def _afc_cali_fail(self, cali: str, dis: str, reset_lane: bool=True,
                        title: str="AFC Calibration Failed", fail_message: str="",
                        gcmd: GCodeCommand=None):
@@ -944,7 +952,9 @@ class afcFunction:
         text = f'{title} for {cali}. '
         if reset_lane:
             text += 'First: reset lane, Second: review messages and take necessary action and re-run calibration.'
-            buttons.append(("Reset lane", "AFC_LANE_RESET LANE={} DISTANCE={}".format(cali, dis), "primary"))
+            lane = self.afc.lanes.get(str(cali)) if cali is not None else None
+            if lane:
+                buttons.append(("Reset lane", self._lane_reset_command(lane, dis), "primary"))
 
         if fail_message:
             text += f"\nFail message: {fail_message}"
@@ -1455,10 +1465,7 @@ class afcFunction:
         for index, LANE in enumerate(self.afc.lanes.values()):
             if LANE.load_state:
                 button_label = "{}".format(LANE.name)
-                if dis is not None:
-                    button_command = "AFC_LANE_RESET LANE={} DISTANCE={}".format(LANE.name, dis)
-                else:
-                    button_command = "AFC_LANE_RESET LANE={}".format(LANE.name)
+                button_command = self._lane_reset_command(LANE, dis)
 
                 button_style = "primary" if index % 2 == 0 else "secondary"
                 buttons.append((button_label, button_command, button_style))
