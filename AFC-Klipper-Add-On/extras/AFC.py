@@ -1284,8 +1284,11 @@ class afc:
                     if not success:
                         return success
 
-                    # Activate the tool-loaded LED and handle filament operations if enabled.
-                    cur_lane.unit_obj.lane_tool_loaded( cur_lane )
+                    # Activate tool-loaded indication before post-load steps.
+                    # OpenAMS lanes emit their own tool-loaded updates via manager callbacks;
+                    # avoid duplicate early lane_tool_loaded() churn here.
+                    if getattr(cur_lane.unit_obj, "type", None) != "OpenAMS":
+                        cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                     cur_lane.espooler.do_assist_move()
                     if self.poop:
                         if purge_length is not None:
@@ -1509,7 +1512,7 @@ class afc:
                         msg += "manually extrude filament and clean nozzle."
                         if self.function.in_print():
                             msg += '\nOnce issue is resolved click resume to continue printing'
-                        self.error.handle_lane_failure(cur_lane, msg)
+                        self.error.handle_lane_failure(cur_lane, msg, pause=self.function.in_print())
                         return False
                 cur_lane.sync_to_extruder()
 
@@ -1759,7 +1762,7 @@ class afc:
                             msg += f"with {self.lanes[self.next_lane_load].map} macro.\n"
                             if self.function.in_print():
                                 msg += "Once lane is loaded click resume to continue printing"
-                        self.error.handle_lane_failure(cur_lane, msg)
+                        self.error.handle_lane_failure(cur_lane, msg, pause=self.function.in_print())
                         return False
                 cur_lane.sync_to_extruder(False)
                 # we only need to do this if we need to move off the extruder gears
