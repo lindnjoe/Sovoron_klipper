@@ -33,10 +33,10 @@ class afc_hub:
         self.lanes: Dict[str, AFCLane] = {}
         self._state: bool = False
 
-        self.switch_pin = config.get('switch_pin', None)
+        # switch_pin is optional for OpenAMS/virtual hub usage; default to virtual when omitted
+        self.switch_pin             = config.get('switch_pin', 'virtual')           # Pin hub sensor it connected to
         # HUB Cut variables
         # Next two variables are used in AFC
-        self.switch_pin             = config.get('switch_pin')                      # Pin hub sensor it connected to
         self.hub_clear_move_dis     = config.getfloat("hub_clear_move_dis", 65)     # How far to move filament so that it's not block the hub exit
         self.afc_bowden_length      = config.getfloat("afc_bowden_length", 900)     # Length of the Bowden tube from the hub to the toolhead sensor in mm.
         self.td1_bowden_length      = config.getfloat("td1_bowden_length", self.afc_bowden_length-50)     # Length of the Bowden tube from the hub to a TD-1 device in mm.
@@ -60,6 +60,7 @@ class afc_hub:
         self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui",    self.afc.enable_sensors_in_gui) # Set to True to show hub sensor switches as filament sensor in mainsail/fluidd gui, overrides value set in AFC.cfg
         self.debounce_delay         = config.getfloat("debounce_delay",             self.afc.debounce_delay)
         self.enable_runout          = config.getboolean("enable_hub_runout",        self.afc.enable_hub_runout)
+        self.switch_pin = str(self.switch_pin).strip() or "virtual"
 
         if self.switch_pin.lower() != "virtual":
             buttons = self.printer.load_object(config, "buttons")

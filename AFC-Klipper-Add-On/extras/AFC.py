@@ -1138,6 +1138,9 @@ class afc:
         self.LANE_UNLOAD( cur_lane )
 
     def LANE_UNLOAD(self, cur_lane: AFCLane):
+        if hasattr(cur_lane.unit_obj, 'lane_unload'):
+            return cur_lane.unit_obj.lane_unload(cur_lane)
+
         # TODO: update this to unload from toolhead and move all the way back to load
         # when homing is enabled
 
@@ -1357,7 +1360,10 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
-        # Placeholder for custom load sequence
+        # Allow unit to provide custom load sequence
+        if hasattr(cur_lane.unit_obj, 'load_sequence'):
+            return cur_lane.unit_obj.load_sequence(cur_lane, cur_hub, cur_extruder)
+
         if cur_lane.custom_load_cmd:
             self.logger.info("Running custom load command for lane {}".format(cur_lane.name))
             self.gcode.run_script_from_command(cur_lane.custom_load_cmd)
@@ -1667,6 +1673,10 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
+        # Allow unit to provide custom unload sequence
+        if hasattr(cur_lane.unit_obj, 'unload_sequence'):
+            return cur_lane.unit_obj.unload_sequence(cur_lane, cur_hub, cur_extruder)
+
         if cur_lane.custom_unload_cmd:
             self.logger.info("Running custom unload command for lane {}".format(cur_lane.name))
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
