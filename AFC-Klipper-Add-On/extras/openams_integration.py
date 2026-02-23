@@ -60,6 +60,38 @@ def normalize_oams_name(name: Optional[str], *, default: str = "default") -> str
     return normalized or default
 
 
+def coerce_sensor_bool(value: Any) -> bool:
+    """Convert OpenAMS sensor values to a reliable boolean.
+
+    OpenAMS controller responses may represent digital sensor values as
+    integers, floats, booleans, or strings (e.g. "0", "1", "false", "true").
+    Python's native ``bool("0")`` is ``True`` because any non-empty string is
+    truthy, which can cause lanes/hubs to always appear loaded when values are
+    string-encoded.
+    """
+    if isinstance(value, bool):
+        return value
+
+    if value is None:
+        return False
+
+    if isinstance(value, (int, float)):
+        return bool(value)
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"", "0", "false", "off", "no", "none", "null"}:
+            return False
+        if normalized in {"1", "true", "on", "yes"}:
+            return True
+        try:
+            return bool(float(normalized))
+        except ValueError:
+            return bool(normalized)
+
+    return bool(value)
+
+
 # ============================================================================
 # Event System
 # ============================================================================
@@ -568,7 +600,7 @@ class AMSHardwareService:
             # Detect f1s_hes changes (spool present in bay)
             f1s_values = status.get("f1s_hes_value", [])
             for bay in range(min(len(f1s_values), 4)):
-                new_val = bool(f1s_values[bay])
+                new_val = coerce_sensor_bool(f1s_values[bay])
                 old_val = self._last_f1s_hes[bay]
 
                 # Publish on first detection (old_val is None) OR when value changes
@@ -591,7 +623,7 @@ class AMSHardwareService:
             # Detect hub_hes changes (filament at hub)
             hub_values = status.get("hub_hes_value", [])
             for bay in range(min(len(hub_values), 4)):
-                new_val = bool(hub_values[bay])
+                new_val = coerce_sensor_bool(hub_values[bay])
                 old_val = self._last_hub_hes[bay]
 
                 # Publish on first detection (old_val is None) OR when value changes

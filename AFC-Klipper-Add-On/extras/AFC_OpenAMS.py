@@ -74,6 +74,7 @@ try:
         LaneRegistry,
         AMSEventBus,
         normalize_extruder_name,
+        coerce_sensor_bool,
     )
 except Exception:
     _raise_import_error("openams_integration", template=ERROR_STR)
@@ -1682,9 +1683,9 @@ class afcAMS(afcUnit):
             f1s_present = False
             try:
                 if hub_values and bay_index < len(hub_values):
-                    hub_present = bool(hub_values[bay_index])
+                    hub_present = coerce_sensor_bool(hub_values[bay_index])
                 if f1s_values and bay_index < len(f1s_values):
-                    f1s_present = bool(f1s_values[bay_index])
+                    f1s_present = coerce_sensor_bool(f1s_values[bay_index])
             except Exception:
                 pass
 
@@ -2303,9 +2304,9 @@ class afcAMS(afcUnit):
         other_hub_loaded = False
         try:
             if hub_values and spool_index < len(hub_values):
-                current_hub_loaded = bool(hub_values[spool_index])
+                current_hub_loaded = coerce_sensor_bool(hub_values[spool_index])
                 other_hub_loaded = any(
-                    bool(value) for idx, value in enumerate(hub_values) if idx != spool_index
+                    coerce_sensor_bool(value) for idx, value in enumerate(hub_values) if idx != spool_index
                 )
         except Exception as e:
             current_hub_loaded = False
@@ -2316,7 +2317,7 @@ class afcAMS(afcUnit):
             while self.afc.reactor.monotonic() < settle_deadline:
                 try:
                     hub_values = getattr(self.oams, "hub_hes_value", None)
-                    if hub_values and all(not bool(value) for value in hub_values):
+                    if hub_values and all(not coerce_sensor_bool(value) for value in hub_values):
                         other_hub_loaded = False
                         break
                 except Exception as e:
@@ -2335,7 +2336,7 @@ class afcAMS(afcUnit):
             while self.afc.reactor.monotonic() < settle_deadline:
                 try:
                     hub_values = getattr(self.oams, "hub_hes_value", None)
-                    if hub_values and all(not bool(value) for value in hub_values):
+                    if hub_values and all(not coerce_sensor_bool(value) for value in hub_values):
                         break
                 except Exception as e:
                     break
@@ -3048,7 +3049,7 @@ class afcAMS(afcUnit):
             return
 
         hub = getattr(lane, "hub_obj", None)
-        hub_val = bool(value)
+        hub_val = coerce_sensor_bool(value)
         if hub is None:
             lane.loaded_to_hub = hub_val
             if self.hardware_service is not None:
@@ -3108,7 +3109,7 @@ class afcAMS(afcUnit):
 
                 # Sync hub sensor -> loaded_to_hub
                 if sync_hub and hub_values is not None and spool_idx < len(hub_values):
-                    hw_hub = bool(hub_values[spool_idx])
+                    hw_hub = coerce_sensor_bool(hub_values[spool_idx])
                     current = getattr(lane, "loaded_to_hub", False)
                     if hw_hub != current:
                         lane.loaded_to_hub = hw_hub
@@ -3119,7 +3120,7 @@ class afcAMS(afcUnit):
 
                 # Sync F1S sensor -> load_state/prep_state (only when allowed)
                 if sync_f1s and f1s_values is not None and spool_idx < len(f1s_values):
-                    hw_f1s = bool(f1s_values[spool_idx])
+                    hw_f1s = coerce_sensor_bool(f1s_values[spool_idx])
                     current_load = getattr(lane, "load_state", False)
                     if hw_f1s != current_load:
                         if hw_f1s or allow_lane_clear:
@@ -3265,7 +3266,7 @@ class afcAMS(afcUnit):
                 try:
                     hub_values = getattr(self.oams, "hub_hes_value", None)
                     if hub_values is not None and lane_index < len(hub_values):
-                        hub_state = bool(hub_values[lane_index])
+                        hub_state = coerce_sensor_bool(hub_values[lane_index])
                 except Exception:
                     hub_state = None
             if hub_state is None and self.hardware_service is not None:
@@ -3276,7 +3277,7 @@ class afcAMS(afcUnit):
                 if isinstance(snapshot, dict) and "hub_state" in snapshot:
                     snap_hub_state = snapshot.get("hub_state")
                     if snap_hub_state is not None:
-                        hub_state = bool(snap_hub_state)
+                        hub_state = coerce_sensor_bool(snap_hub_state)
             if hub_state is not None and bool(getattr(lane, "loaded_to_hub", False)) != hub_state:
                 try:
                     lane.loaded_to_hub = hub_state

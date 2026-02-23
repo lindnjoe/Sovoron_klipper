@@ -17,6 +17,7 @@
             "density": 1.24,
             "diameter": 1.75,
             "empty_spool_weight": 250.0,
+            "remember_spool": false,
             "spool_id": 13,
             "color": "#000000",
             "weight": 20.506843739014016,
@@ -45,6 +46,7 @@
             "density": 1.05,
             "diameter": 1.75,
             "empty_spool_weight": 250.0,
+            "remember_spool": false,
             "spool_id": 43,
             "color": "#0A2CA5",
             "weight": 366.5671171912736,
@@ -73,6 +75,7 @@
             "density": 1.08,
             "diameter": 1.75,
             "empty_spool_weight": 130.0,
+            "remember_spool": false,
             "spool_id": 45,
             "color": "#23ADE9",
             "weight": 984.0250334483933,
@@ -101,6 +104,7 @@
             "density": 1.23,
             "diameter": 1.75,
             "empty_spool_weight": 170.0,
+            "remember_spool": false,
             "spool_id": 42,
             "color": "#ffffff",
             "weight": 822.623035635258,
@@ -113,6 +117,7 @@
             "td1_data": {}
         }
     },
+    "Tools": {},
     "AMS_2": {
         "lane8": {
             "name": "lane8",
@@ -131,6 +136,7 @@
             "density": 1.21,
             "diameter": 1.75,
             "empty_spool_weight": 240.0,
+            "remember_spool": false,
             "spool_id": 23,
             "color": "#76603c",
             "weight": 966.90777640701,
@@ -164,9 +170,10 @@
             "density": 1.05,
             "diameter": 1.75,
             "empty_spool_weight": 250.0,
+            "remember_spool": false,
             "spool_id": 15,
             "color": "#00AE42",
-            "weight": 52.7961900522702,
+            "weight": 52.76427556760234,
             "extruder_temp": 250,
             "runout_lane": null,
             "filament_status": "Ready",
@@ -197,6 +204,7 @@
             "density": 1.05,
             "diameter": 1.75,
             "empty_spool_weight": 250.0,
+            "remember_spool": false,
             "spool_id": 34,
             "color": "#000000",
             "weight": 222.76828268987845,
@@ -230,6 +238,7 @@
             "density": 1.0,
             "diameter": 1.75,
             "empty_spool_weight": 190.0,
+            "remember_spool": false,
             "spool_id": 44,
             "color": "#2015c2",
             "weight": 988.764272102878,
@@ -242,7 +251,6 @@
             "td1_data": {}
         }
     },
-    "Tools": {},
     "Turtle_1": {
         "lane0": {
             "name": "lane0",
@@ -261,6 +269,7 @@
             "density": 1.24,
             "diameter": 1.75,
             "empty_spool_weight": 130.0,
+            "remember_spool": false,
             "spool_id": 35,
             "color": "#328169",
             "weight": 615.4361730730611,
@@ -270,7 +279,8 @@
             "filament_status_led": "#0000ff",
             "status": "Loaded",
             "dist_hub": 1940.0,
-            "td1_data": {}
+            "td1_data": {},
+            "endstops": "load,tool_start,buffer_advance,buffer_trailing,lane0_prep,lane0_load,lane0_buffer"
         },
         "lane1": {
             "name": "lane1",
@@ -289,6 +299,7 @@
             "density": 1.32,
             "diameter": 1.75,
             "empty_spool_weight": 250.0,
+            "remember_spool": false,
             "spool_id": 6,
             "color": "#EAECEB",
             "weight": 580.9836566870152,
@@ -298,7 +309,8 @@
             "filament_status_led": "#0000ff",
             "status": "Loaded",
             "dist_hub": 2120.0,
-            "td1_data": {}
+            "td1_data": {},
+            "endstops": "load,tool_start,buffer_advance,buffer_trailing,lane1_prep,lane1_load,lane1_buffer"
         },
         "lane2": {
             "name": "lane2",
@@ -317,6 +329,7 @@
             "density": 1.24,
             "diameter": 1.75,
             "empty_spool_weight": 250.0,
+            "remember_spool": false,
             "spool_id": 37,
             "color": "#C12E1F",
             "weight": 298.5372204905266,
@@ -326,7 +339,8 @@
             "filament_status_led": "#0000ff",
             "status": "Loaded",
             "dist_hub": 2110.0,
-            "td1_data": {}
+            "td1_data": {},
+            "endstops": "load,tool_start,buffer_advance,buffer_trailing,lane2_prep,lane2_load,lane2_buffer"
         },
         "lane3": {
             "name": "lane3",
@@ -345,6 +359,7 @@
             "density": 1.24,
             "diameter": 1.75,
             "empty_spool_weight": 250.0,
+            "remember_spool": false,
             "spool_id": 7,
             "color": "#d79a9a",
             "weight": 324.4202864782193,
@@ -354,7 +369,8 @@
             "filament_status_led": "#0000ff",
             "status": "Loaded",
             "dist_hub": 2230.0,
-            "td1_data": {}
+            "td1_data": {},
+            "endstops": "load,tool_start,buffer_advance,buffer_trailing,lane3_prep,lane3_load,lane3_buffer"
         }
     },
     "system": {
@@ -363,6 +379,12 @@
         "num_lanes": 12,
         "num_extruders": 6,
         "extruders": {
+            "extruder4": {
+                "lane_loaded": null
+            },
+            "extruder5": {
+                "lane_loaded": null
+            },
             "extruder": {
                 "lane_loaded": "lane0"
             },
@@ -374,12 +396,6 @@
             },
             "extruder3": {
                 "lane_loaded": "lane3"
-            },
-            "extruder4": {
-                "lane_loaded": null
-            },
-            "extruder5": {
-                "lane_loaded": null
             }
         },
         "bypass": {
