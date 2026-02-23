@@ -952,6 +952,12 @@ class AFCLane:
         else:
             return bool(self._load_state)
 
+    @load_state.setter
+    def load_state(self, state: bool):
+        state_val = bool(state)
+        self._load_state = state_val
+        if self.unit_obj.type == "ViViD":
+            self.loaded_to_hub = state_val
 
     def load_callback(self, eventtime, state):
         self._load_state = state
