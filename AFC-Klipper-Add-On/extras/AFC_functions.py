@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 # This file includes code modified from the Shaketune Project. https://github.com/Frix-x/klippain-shaketune
-# Originally authored by Félix Boisselier and licensed under the GNU General Public License v3.0.
+# Originally authored by FÃ©lix Boisselier and licensed under the GNU General Public License v3.0.
 #
 # Full license text available at: https://www.gnu.org/licenses/gpl-3.0.html
 from __future__ import annotations
@@ -1431,6 +1431,11 @@ class afcFunction:
         fail_message    = gcmd.get("MSG", "")
         self._afc_cali_fail(cali, dis, reset_lane, title, fail_message, gcmd)
 
+    def _is_openams_lane(self, lane) -> bool:
+        """Return True if *lane* belongs to an OpenAMS unit."""
+        unit_obj = getattr(lane, "unit_obj", None)
+        return getattr(unit_obj, "type", None) == "OpenAMS"
+
     cmd_AFC_RESET_help = 'Opens prompt to select lane to reset.'
     cmd_AFC_RESET_options = {"DISTANCE": {"default": "30", "type": "float"}}
     def cmd_AFC_RESET(self, gcmd):
@@ -1464,6 +1469,8 @@ class afcFunction:
         # Create buttons for each loaded lane
         for index, LANE in enumerate(self.afc.lanes.values()):
             if LANE.load_state:
+                if self._is_openams_lane(LANE):
+                    continue
                 button_label = "{}".format(LANE.name)
                 button_command = self._lane_reset_command(LANE, dis)
 
@@ -1472,7 +1479,10 @@ class afcFunction:
 
         total_buttons = sum(len(group) for group in buttons)
         if total_buttons == 0:
-            text = 'No lanes are loaded, a lane must be loaded to be reset'
+            if any(lane.load_state and self._is_openams_lane(lane) for lane in self.afc.lanes.values()):
+                text = 'OpenAMS lanes do not support AFC_RESET (reset-to-hub). No action taken.'
+            else:
+                text = 'No lanes are loaded, a lane must be loaded to be reset'
 
         prompt.create_custom_p(title, text, buttons,
                         True, None)
@@ -1527,6 +1537,13 @@ class afcFunction:
                 return
 
         cur_lane: Union[AFCLane, AFCExtruderStepper] = self.afc.lanes[lane]
+        if self._is_openams_lane(cur_lane):
+            prompt.p_end()
+            self.afc.gcode.respond_info(
+                f"{lane} is an OpenAMS lane and does not support AFC_RESET reset-to-hub. No action taken."
+            )
+            return
+
         CUR_HUB: afc_hub = cur_lane.hub_obj
         short_move = cur_lane.short_move_dis * 2
 
