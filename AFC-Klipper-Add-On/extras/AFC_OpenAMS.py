@@ -651,7 +651,7 @@ class afcAMS(afcUnit):
 
     def _format_openams_calibration_command(self, base_command, lane):
         if base_command not in {"OAMS_CALIBRATE_HUB_HES", "OAMS_CALIBRATE_PTFE_LENGTH"}:
-            return super()._format_openams_calibration_command(base_command, lane)
+            return None
 
         oams_index = self._get_openams_index()
         spool_index = self._get_openams_spool_index(lane)
