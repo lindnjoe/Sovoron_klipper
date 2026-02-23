@@ -255,7 +255,7 @@
         "lane0": {
             "name": "lane0",
             "unit": "Turtle_1",
-            "hub": "direct",
+            "hub": "direct_load",
             "extruder": "extruder",
             "buffer": "TN",
             "buffer_status": "Advancing",
@@ -285,7 +285,7 @@
         "lane1": {
             "name": "lane1",
             "unit": "Turtle_1",
-            "hub": "direct",
+            "hub": "direct_load",
             "extruder": "extruder1",
             "buffer": "TN1",
             "buffer_status": "Advancing",
@@ -315,7 +315,7 @@
         "lane2": {
             "name": "lane2",
             "unit": "Turtle_1",
-            "hub": "direct",
+            "hub": "direct_load",
             "extruder": "extruder2",
             "buffer": "TN2",
             "buffer_status": "Advancing",
@@ -345,16 +345,16 @@
         "lane3": {
             "name": "lane3",
             "unit": "Turtle_1",
-            "hub": "direct",
+            "hub": "direct_load",
             "extruder": "extruder3",
             "buffer": "TN3",
-            "buffer_status": "Advancing",
+            "buffer_status": "Trailing",
             "lane": 4,
             "map": "T3",
-            "load": false,
+            "load": true,
             "prep": true,
-            "tool_loaded": false,
-            "loaded_to_hub": true,
+            "tool_loaded": true,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -365,16 +365,16 @@
             "weight": 324.4202864782193,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "Prep",
-            "filament_status_led": "#ffffff",
-            "status": "None",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tooled",
             "dist_hub": 2195.8452031250004,
             "td1_data": {},
             "endstops": "load,tool_start,buffer_advance,buffer_trailing,lane3_prep,lane3_load,lane3_buffer"
         }
     },
     "system": {
-        "current_load": null,
+        "current_load": "lane2",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
@@ -395,7 +395,7 @@
                 "lane_loaded": "lane2"
             },
             "extruder3": {
-                "lane_loaded": null
+                "lane_loaded": "lane3"
             }
         },
         "bypass": {
