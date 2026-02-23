@@ -1189,21 +1189,32 @@ class afcAMS(afcUnit):
                     other_lane._oams_runout_detected = False
                     self.logger.debug(f"Cleared tool_loaded for {other_lane.name} on same FPS (new lane {lane.name} loaded)")
 
-        # Sync OAMS MCU current_spool whenever lane is marked loaded.
-        # Do not run sync_state_with_afc() here; AFC/OpenAMS already emit this callback
-        # multiple times during one load and state-detection loops can race AFC's
-        # canonical spool/lane assignment ordering.
+        # Sync OAMS MCU current_spool only when this callback aligns with AFC's
+        # active load transition (current_loading) or the extruder mapping already
+        # confirms the lane. This prevents stray/late duplicate callbacks from
+        # clobbering active spool tracking.
         if self.oams is not None:
             try:
-                # Set OAMS MCU current_spool to this lane's spool index (0-based)
-                spool_index = getattr(lane, 'index', None)
-                if spool_index is not None:
-                    self.oams.current_spool = spool_index - 1
-                    self.logger.debug(f"Set OAMS current_spool to {spool_index - 1} for {getattr(lane, 'name', None)}")
-                if lane_name is not None:
-                    self._last_lane_tool_loaded_sync[lane_name] = (
-                        bool(getattr(lane, "tool_loaded", False)),
-                        getattr(extruder_obj, "lane_loaded", None) if extruder_obj is not None else None,
+                current_extruder_lane = getattr(extruder_obj, "lane_loaded", None) if extruder_obj is not None else None
+                afc_loading_lane = getattr(self.afc, "current_loading", None)
+                lane_confirmed = current_extruder_lane == lane_name
+                lane_is_loading = afc_loading_lane == lane_name
+                should_update_current_spool = lane_confirmed or lane_is_loading
+
+                if should_update_current_spool:
+                    spool_index = getattr(lane, 'index', None)
+                    if spool_index is not None:
+                        self.oams.current_spool = spool_index - 1
+                        self.logger.debug(f"Set OAMS current_spool to {spool_index - 1} for {getattr(lane, 'name', None)}")
+                    if lane_name is not None:
+                        self._last_lane_tool_loaded_sync[lane_name] = (
+                            bool(getattr(lane, "tool_loaded", False)),
+                            current_extruder_lane,
+                        )
+                else:
+                    self.logger.debug(
+                        f"Ignoring lane_tool_loaded current_spool update for {lane_name}: "
+                        f"lane_loaded={current_extruder_lane}, current_loading={afc_loading_lane}"
                     )
             except Exception as e:
                 self.logger.error(f"Failed to update OAMS current_spool for {getattr(lane, 'name', None)}: {e}")

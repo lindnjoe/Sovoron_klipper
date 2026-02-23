@@ -49,12 +49,12 @@
             "remember_spool": false,
             "spool_id": 43,
             "color": "#0A2CA5",
-            "weight": 366.5671171912736,
+            "weight": 366.44083847219525,
             "extruder_temp": 250,
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -176,9 +176,9 @@
             "status": "Tooled",
             "dist_hub": 60,
             "td1_data": {
-                "td": 1.9,
-                "color": "357056",
-                "scan_time": "2026-02-23T06:44:17.283688+00:00Z",
+                "td": 2.0,
+                "color": "397F5C",
+                "scan_time": "2026-02-23T07:09:13.865734+00:00Z",
                 "error": null
             }
         },
@@ -194,7 +194,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -211,8 +211,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.1,
-                "color": "162221",
-                "scan_time": "2026-02-23T06:42:19.570844+00:00Z",
+                "color": "141D1A",
+                "scan_time": "2026-02-23T07:08:11.402761+00:00Z",
                 "error": null
             }
         },
