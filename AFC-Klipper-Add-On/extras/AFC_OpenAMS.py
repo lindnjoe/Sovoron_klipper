@@ -1886,18 +1886,20 @@ class afcAMS(afcUnit):
         self.logger.info('{lane_name} tool cmd: {tcmd:3} {msg}'.format(lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))
         cur_lane.set_afc_prep_done()
 
-        # Trigger lane sync after PREP completes for this lane
-        # The delay ensures hardware sensors have stabilized and all lanes have been tested
+        # Trigger OpenAMS sensor reconciliation after PREP completes for this lane.
+        # Keep this in AFC_OpenAMS (not AFC_prep) so OpenAMS owns its recovery behavior.
         try:
-            oams_manager = self._get_oams_manager()
-            if oams_manager and hasattr(oams_manager, '_sync_all_fps_lanes_after_prep'):
-                # 200ms delay allows all lanes to complete and hardware to stabilize
-                self.afc.reactor.register_callback(
-                    lambda et: oams_manager._sync_all_fps_lanes_after_prep(),
-                    self.afc.reactor.monotonic() + 0.2
-                )
+            self.afc.reactor.register_callback(
+                lambda et: self.sync_openams_sensors(
+                    et,
+                    sync_hub=True,
+                    sync_f1s=True,
+                    allow_lane_clear=True,
+                ),
+                self.afc.reactor.monotonic() + 0.2,
+            )
         except Exception as e:
-            self.logger.error(f"Failed to schedule post-PREP sync: {e}")
+            self.logger.error(f"Failed to schedule OpenAMS post-PREP sensor sync: {e}")
 
         return succeeded
 
@@ -2553,6 +2555,20 @@ class afcAMS(afcUnit):
             self.logger.debug("State sync: No lanes configured, skipping")
             return
 
+        # First reconcile lane-level AFC booleans from live OpenAMS sensors.
+        # This is critical after crashes/restarts where AFC.var.unit persisted values
+        # (load_state/prep_state/loaded_to_hub) can be stale.
+        try:
+            eventtime = self.reactor.monotonic()
+            self.sync_openams_sensors(
+                eventtime,
+                sync_hub=True,
+                sync_f1s=True,
+                allow_lane_clear=True,
+            )
+        except Exception as e:
+            self.logger.debug(f"State sync: initial lane sensor reconciliation failed: {e}")
+
         self.logger.info(f"State sync: Reconciling AFC state with {self.name} hardware sensors")
 
         synced_count = 0
@@ -2776,6 +2792,18 @@ class afcAMS(afcUnit):
         # Delay slightly to ensure sensors have had time to stabilize
         self.reactor.register_callback(lambda et: self._sync_afc_from_hardware_at_startup())
 
+        # Some OpenAMS controllers report late initial sensor updates right after boot.
+        # Run a second delayed reconciliation so PREP/load checks use true hub/F1S state.
+        self.reactor.register_callback(
+            lambda et: self.sync_openams_sensors(
+                et,
+                sync_hub=True,
+                sync_f1s=True,
+                allow_lane_clear=True,
+            ),
+            self.reactor.monotonic() + 1.0,
+        )
+
     def _wrap_afc_lane_unload(self):
         """Wrap AFC's LANE_UNLOAD to handle cross-extruder runout scenarios."""
         if not hasattr(self, 'afc') or self.afc is None:
@@ -2939,6 +2967,26 @@ class afcAMS(afcUnit):
                 AfcToolchanger.tool_swap = tool_swap_wrapper
                 afc._oams_tool_swap_timing_patched = True
 
+    def _sync_lane_virtual_f1s_sensors(self, lane, eventtime, state) -> None:
+        """Mirror F1S state into lane virtual prep/load filament-switch helpers."""
+        state_val = bool(state)
+        for attr in ("fila_load", "fila_prep"):
+            sensor = getattr(lane, attr, None)
+            if sensor is None:
+                continue
+            helper = getattr(sensor, "runout_helper", None)
+            if helper is None:
+                continue
+            try:
+                helper.note_filament_present(eventtime, state_val)
+            except TypeError:
+                try:
+                    helper.note_filament_present(is_filament_present=state_val)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
     def _on_f1s_changed(self, event_type, unit_name, bay, value, eventtime, **kwargs):
         """Handle F1S sensor change events from AMSHardwareService.
 
@@ -2954,6 +3002,7 @@ class afcAMS(afcUnit):
 
         lane_val = bool(value)
         prev_val = getattr(lane, "load_state", False)
+        self._sync_lane_virtual_f1s_sensors(lane, eventtime, lane_val)
         self.logger.debug(f"_on_f1s_changed: lane={lane.name} value={lane_val} prev={prev_val} ams_share_prep_load={getattr(lane, 'ams_share_prep_load', False)}")
 
         # Update lane state based on sensor FIRST
@@ -3120,6 +3169,7 @@ class afcAMS(afcUnit):
                 # Sync F1S sensor -> load_state/prep_state (only when allowed)
                 if sync_f1s and f1s_values is not None and spool_idx < len(f1s_values):
                     hw_f1s = bool(f1s_values[spool_idx])
+                    self._sync_lane_virtual_f1s_sensors(lane, eventtime, hw_f1s)
                     current_load = getattr(lane, "load_state", False)
                     if hw_f1s != current_load:
                         if hw_f1s or allow_lane_clear:
