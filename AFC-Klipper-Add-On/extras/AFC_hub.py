@@ -110,12 +110,7 @@ class afc_hub:
             report_error = False
             for lane in self.lanes.values():
                 # OpenAMS lanes use OAMS hardware sensors instead of AFC load pins
-                unit_obj = getattr(lane, "unit_obj", None)
-                is_openams = (
-                    getattr(unit_obj, "type", None) == "OpenAMS"
-                    or hasattr(unit_obj, "oams_name")
-                )
-                if lane.load is None and not is_openams:
+                if lane.load is None and not self._is_openams_lane(lane):
                     report_error = True
                     msg += f"\n{lane.fullname}"
 
@@ -134,19 +129,20 @@ class afc_hub:
         """
         state = self._state
         if self.switch_pin.lower() == "virtual":
-            lane_states = []
-            for lane in self.lanes.values():
-                unit_obj = getattr(lane, "unit_obj", None)
-                is_openams_lane = (
-                    getattr(unit_obj, "type", None) == "OpenAMS"
-                    or hasattr(unit_obj, "oams_name")
-                )
-                if is_openams_lane:
-                    lane_states.append(bool(getattr(lane, "loaded_to_hub", False)))
-                else:
-                    lane_states.append(bool(getattr(lane, "_load_state", False)))
-            state = any(lane_states)
+            state = any(
+                bool(getattr(lane, "loaded_to_hub", False)) if self._is_openams_lane(lane)
+                else bool(getattr(lane, "_load_state", False))
+                for lane in self.lanes.values()
+            )
         return state
+
+    @staticmethod
+    def _is_openams_lane(lane) -> bool:
+        unit_obj = getattr(lane, "unit_obj", None)
+        return (
+            getattr(unit_obj, "type", None) == "OpenAMS"
+            or hasattr(unit_obj, "oams_name")
+        )
 
     def switch_pin_callback(self, eventtime, state):
         self._state = state
