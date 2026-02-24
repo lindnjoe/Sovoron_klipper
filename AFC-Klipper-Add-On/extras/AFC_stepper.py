@@ -334,7 +334,7 @@ class AFCExtruderStepper(AFCLane):
             curtime: float = self.reactor.monotonic()
             est_print_time: float = toolhead.mcu.estimated_print_time(curtime)
             wait_time: float = toolhead.print_time - est_print_time - flush_delay
-            if wait_time > 0.:
+            if wait_time > 0. and toolhead.can_pause:
                 drip_completion.wait(curtime + wait_time)
                 continue
             npt = min(toolhead.print_time + DRIP_SEGMENT_TIME, max_time)
@@ -626,7 +626,18 @@ class AFCExtruderStepper(AFCLane):
         try:
             start_mcu_pos = self.extruder_stepper.stepper.get_mcu_position()
             with self.assist_move(speed, rewind, assist_active=assist_active):
-                phoming.manual_home(self, [endstop], pos, speed, triggered, check_trigger)
+                if self.afc.manual_home_has_probe_pos_param:
+                    # Explicitly set probe_pos=False to use normal homing coordinates even when
+                    # homing is initiated from a "probing" context. AFC lanes are not bed/Z
+                    # probes, and we do not want Klipper's probe-position bookkeeping here.
+                    # This argument is passed explicitly to remain compatible with newer
+                    # Klipper versions that added the probe_pos parameter.
+                    phoming.manual_home(toolhead=self, endstops=[endstop], pos=pos, speed=speed,
+                                        probe_pos=False, triggered=triggered,
+                                        check_triggered=check_trigger)
+                else:
+                    phoming.manual_home(toolhead=self, endstops=[endstop], pos=pos, speed=speed,
+                                        triggered=triggered, check_triggered=check_trigger)
             end_ts = reactor.monotonic()
             try:
                 # Log distance at trigger using homing trigger positions
