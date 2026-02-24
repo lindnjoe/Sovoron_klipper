@@ -188,8 +188,8 @@
             "map": "T10",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
-            "loaded_to_hub": true,
+            "tool_loaded": false,
+            "loaded_to_hub": false,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -200,9 +200,9 @@
             "weight": 222.57886674219037,
             "extruder_temp": 250,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.1,
@@ -222,8 +222,8 @@
             "map": "T11",
             "load": true,
             "prep": true,
-            "tool_loaded": false,
-            "loaded_to_hub": false,
+            "tool_loaded": true,
+            "loaded_to_hub": true,
             "material": "ASA",
             "density": 1.0,
             "diameter": 1.75,
@@ -234,9 +234,9 @@
             "weight": 988.764272102878,
             "extruder_temp": 250,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
-            "status": "Loaded",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tooled",
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.3,
@@ -369,7 +369,7 @@
         }
     },
     "system": {
-        "current_load": "lane10",
+        "current_load": "lane11",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
@@ -378,7 +378,7 @@
                 "lane_loaded": "lane5"
             },
             "extruder5": {
-                "lane_loaded": "lane10"
+                "lane_loaded": "lane11"
             },
             "extruder": {
                 "lane_loaded": "lane0"
