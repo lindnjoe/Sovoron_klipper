@@ -4983,14 +4983,14 @@ class OAMSManager:
         except Exception as e:
             self.logger.warning(f"Failed to stop follower before stuck-spool-recovery unload for {lane_name}: {e}")
 
-        # STEP 4: Unload the stuck filament — check return value; if unload fails the
+        # STEP 4: Unload the stuck filament - check return value; if unload fails the
         # hardware is still loaded and the next load attempt would see OAMS busy.
         try:
             unload_ok, unload_msg = oam.unload_spool_with_retry()
             if not unload_ok:
                 self.logger.error(
                     f"Unload failed during stuck spool recovery for {lane_name}: {unload_msg}. "
-                    f"Hardware is still loaded — aborting recovery."
+                    f"Hardware is still loaded - aborting recovery."
                 )
                 return False
             # Clear error LED after successful unload
@@ -5177,7 +5177,7 @@ class OAMSManager:
             except Exception as e:
                 self.logger.warning(f"Failed to stop follower before engagement-retry unload for {lane_name}: {e}")
 
-            # Unload the filament — check return value; if unload fails the hardware
+            # Unload the filament - check return value; if unload fails the hardware
             # is still loaded and continuing would make the next load attempt get OAMS busy.
             try:
                 unload_ok, unload_msg = oam.unload_spool_with_retry()
@@ -5188,7 +5188,7 @@ class OAMSManager:
             if not unload_ok:
                 self.logger.error(
                     f"Unload failed after engagement failure for {lane_name}: {unload_msg}. "
-                    f"Hardware is still loaded — aborting retry to avoid OAMS busy cascade."
+                    f"Hardware is still loaded - aborting retry to avoid OAMS busy cascade."
                 )
                 return False
 
