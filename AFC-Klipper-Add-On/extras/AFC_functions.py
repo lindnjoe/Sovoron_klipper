@@ -922,14 +922,6 @@ class afcFunction:
         prompt.create_custom_p(title, text, buttons,
                                True, None)
 
-    def _lane_reset_command(self, lane, dis):
-        if lane and hasattr(lane.unit_obj, 'get_lane_reset_command'):
-            return lane.unit_obj.get_lane_reset_command(lane, dis)
-
-        if dis is not None:
-            return "AFC_LANE_RESET LANE={} DISTANCE={}".format(lane.name, dis)
-        return "AFC_LANE_RESET LANE={}".format(lane.name)
-
     def _afc_cali_fail(self, cali: str, dis: str, reset_lane: bool=True,
                        title: str="AFC Calibration Failed", fail_message: str="",
                        gcmd: GCodeCommand=None):
@@ -1436,6 +1428,19 @@ class afcFunction:
         unit_obj = getattr(lane, "unit_obj", None)
         return getattr(unit_obj, "type", None) == "OpenAMS"
 
+    def _lane_reset_command(self, lane, dis):
+        """Return the GCode command to reset *lane*.
+
+        Checks if the unit defines its own reset command (e.g. OpenAMS units
+        return TOOL_UNLOAD); falls back to AFC_LANE_RESET for standard units.
+        """
+        if lane and hasattr(lane.unit_obj, 'get_lane_reset_command'):
+            return lane.unit_obj.get_lane_reset_command(lane, dis)
+
+        if dis is not None:
+            return "AFC_LANE_RESET LANE={} DISTANCE={}".format(lane.name, dis)
+        return "AFC_LANE_RESET LANE={}".format(lane.name)
+
     cmd_AFC_RESET_help = 'Opens prompt to select lane to reset.'
     cmd_AFC_RESET_options = {"DISTANCE": {"default": "30", "type": "float"}}
     def cmd_AFC_RESET(self, gcmd):
@@ -1466,23 +1471,32 @@ class afcFunction:
         title = 'AFC RESET'
         text = 'Select a loaded lane to reset'
 
+        has_openams = False
+        has_standard = False
+
         # Create buttons for each loaded lane
         for index, LANE in enumerate(self.afc.lanes.values()):
             if LANE.load_state:
-                if self._is_openams_lane(LANE):
-                    continue
-                button_label = "{}".format(LANE.name)
                 button_command = self._lane_reset_command(LANE, dis)
+                if self._is_openams_lane(LANE):
+                    has_openams = True
+                    # OpenAMS lanes don't support reset-to-hub; redirect to TOOL_UNLOAD
+                    button_label = "{} (TOOL_UNLOAD)".format(LANE.name)
+                    buttons.append((button_label, button_command, "info"))
+                else:
+                    has_standard = True
+                    button_label = "{}".format(LANE.name)
+                    button_style = "primary" if index % 2 == 0 else "secondary"
+                    buttons.append((button_label, button_command, button_style))
 
-                button_style = "primary" if index % 2 == 0 else "secondary"
-                buttons.append((button_label, button_command, button_style))
-
-        total_buttons = sum(len(group) for group in buttons)
-        if total_buttons == 0:
-            if any(lane.load_state and self._is_openams_lane(lane) for lane in self.afc.lanes.values()):
-                text = 'OpenAMS lanes do not support AFC_RESET (reset-to-hub). No action taken.'
-            else:
-                text = 'No lanes are loaded, a lane must be loaded to be reset'
+        if not buttons:
+            text = 'No lanes are loaded, a lane must be loaded to be reset'
+        elif has_openams and not has_standard:
+            text = ('OpenAMS lanes do not support reset-to-hub. '
+                    'Select a lane below to unload it from the toolhead using TOOL_UNLOAD.')
+        elif has_openams and has_standard:
+            text = ('Select a loaded lane to reset. '
+                    'OpenAMS lanes (marked TOOL_UNLOAD) will unload from the toolhead instead of resetting to hub.')
 
         prompt.create_custom_p(title, text, buttons,
                         True, None)
@@ -1540,8 +1554,10 @@ class afcFunction:
         if self._is_openams_lane(cur_lane):
             prompt.p_end()
             self.afc.gcode.respond_info(
-                f"{lane} is an OpenAMS lane and does not support AFC_RESET reset-to-hub. No action taken."
+                f"{lane} is an OpenAMS lane and does not support reset-to-hub. "
+                f"Use 'TOOL_UNLOAD LANE={lane}' to unload the filament from the toolhead."
             )
+            self.afc.gcode.run_script_from_command(f"TOOL_UNLOAD LANE={lane}")
             return
 
         CUR_HUB: afc_hub = cur_lane.hub_obj
