@@ -11,8 +11,8 @@
             "map": "T4",
             "load": true,
             "prep": true,
-            "tool_loaded": false,
-            "loaded_to_hub": false,
+            "tool_loaded": true,
+            "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -23,9 +23,9 @@
             "weight": 20.506843739014016,
             "extruder_temp": 240,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
-            "status": "Loaded",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tooled",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -69,8 +69,8 @@
             "map": "T6",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
-            "loaded_to_hub": true,
+            "tool_loaded": false,
+            "loaded_to_hub": false,
             "material": "ASA",
             "density": 1.08,
             "diameter": 1.75,
@@ -81,9 +81,9 @@
             "weight": 983.8302056164855,
             "extruder_temp": null,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -374,13 +374,13 @@
         }
     },
     "system": {
-        "current_load": "lane6",
+        "current_load": "lane0",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
         "extruders": {
             "extruder4": {
-                "lane_loaded": "lane6"
+                "lane_loaded": "lane4"
             },
             "extruder5": {
                 "lane_loaded": "lane9"
