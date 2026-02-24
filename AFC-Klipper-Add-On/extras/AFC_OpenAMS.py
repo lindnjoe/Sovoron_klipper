@@ -621,6 +621,12 @@ class afcAMS(afcUnit):
 
         return None
 
+    def prep_load(self, lane):
+        """No-op for OpenAMS: hardware drives filament to the load sensor directly."""
+
+    def prep_post_load(self, lane):
+        """No-op for OpenAMS: hardware handles hub loading internally."""
+
     def _get_fps_id_for_lane(self, lane_name: str) -> Optional[str]:
         oams_manager = self._get_oams_manager()
         if oams_manager is None:
