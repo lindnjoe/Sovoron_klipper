@@ -82,6 +82,11 @@ _module_logger = logging.getLogger(__name__)
 
 _ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
 
+# Sentinel distinguishing "never looked up" from "looked up and returned None".
+# Used by _get_oams_manager() so a None result is cached rather than re-fetched
+# on every subsequent call.
+_UNSET = object()
+
 
 def _is_openams_unit(unit_obj) -> bool:
     """Return True if *unit_obj* represents an OpenAMS unit."""
@@ -206,26 +211,10 @@ class _VirtualFilamentSensor:
     def cmd_SET_FILAMENT_SENSOR(self, gcmd):
         self.runout_helper.sensor_enabled = bool(gcmd.get_int("ENABLE", 1))
 
-def _normalize_extruder_name(name: Optional[str]) -> Optional[str]:
-    """Return a case-insensitive token for comparing extruder aliases."""
-    if callable(normalize_extruder_name):
-        try:
-            return normalize_extruder_name(name)
-        except Exception:
-            pass
-
-    if not name or not isinstance(name, str):
-        return None
-
-    normalized = name.strip()
-    if not normalized:
-        return None
-
-    lowered = normalized.lower()
-    if lowered.startswith("ams_"):
-        lowered = lowered[4:]
-
-    return lowered or None
+# Alias to the shared implementation from openams_integration (imported above).
+# The import is guarded by a ConfigError at module load time, so it is always
+# available here.
+_normalize_extruder_name = normalize_extruder_name
 
 def _normalize_ams_pin_value(pin_value) -> Optional[str]:
     """Return the cleaned AMS_* token stripped of comments and modifiers."""
@@ -388,7 +377,7 @@ class afcAMS(afcUnit):
         self._cached_extruder_objects: Dict[str, Any] = {}
         self._cached_lane_objects: Dict[str, Any] = {}
         self._cached_oams_index: Optional[int] = None
-        self._cached_oams_manager = None
+        self._cached_oams_manager = _UNSET  # sentinel: distinguish unset from None
 
         # Track pending TD-1 capture timers (delayed after spool insertion)
         self._pending_spool_loaded_timers: Dict[str, Any] = {}
@@ -416,7 +405,7 @@ class afcAMS(afcUnit):
         return self.oams is not None
 
     def _get_oams_manager(self):
-        if self._cached_oams_manager is not None:
+        if self._cached_oams_manager is not _UNSET:
             return self._cached_oams_manager
         try:
             self._cached_oams_manager = self.printer.lookup_object("oams_manager", None)

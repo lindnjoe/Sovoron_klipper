@@ -364,7 +364,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         
 
     def register_commands(self, name):
-        id = str(self.oams_idx)
+        oams_id = str(self.oams_idx)
         # OPTIMIZATION: Cache gcode object lookup
         if self._cached_gcode is None:
             self._cached_gcode = self.printer.lookup_object("gcode", None)
@@ -393,7 +393,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         ]
 
         for cmd_name, handler, help_text in commands:
-            gcode.register_mux_command(cmd_name, "OAMS", id, handler, desc=help_text)
+            gcode.register_mux_command(cmd_name, "OAMS", oams_id, handler, desc=help_text)
 
     cmd_OAMS_RETRY_STATUS_help = "Display retry configuration and state"
 
@@ -720,8 +720,8 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             gcmd.error("Failed to access gcode object")
             return
 
-        gcode.send("M104 S%f" % target_temp)
-        gcode.send("G1 E%f F%f" % (extrusion_length, extrusion_speed_per_min))
+        gcode.run_script_from_command("M104 S%f" % target_temp)
+        gcode.run_script_from_command("G1 E%f F%f" % (extrusion_length, extrusion_speed_per_min))
 
     cmd_OAMS_CALIBRATE_HUB_HES_help = "Calibrate the range of a single hub HES"
     def cmd_OAMS_CALIBRATE_HUB_HES(self, gcmd):
@@ -811,7 +811,6 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
     cmd_OAMS_LOAD_SPOOL_help = "Load a new spool of filament"
     def cmd_OAMS_LOAD_SPOOL(self, gcmd):
         self.action_status = OAMSStatus.LOADING
-        self.oams_spool_query_spool_cmd.send()
         spool_idx = gcmd.get_int("SPOOL", None)
         if spool_idx is None:
             raise gcmd.error("SPOOL index is required")
