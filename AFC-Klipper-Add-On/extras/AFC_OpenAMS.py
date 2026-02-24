@@ -1,19 +1,8 @@
 # Armored Turtle Automated Filament Changer
 #
-# Copyright (C) 2024 Armored Turtle
+# Copyright (C) 2024-2026 Armored Turtle
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-#
-# OPTIMIZATIONS APPLIED:
-# 1. Object Caching: Cache frequently accessed objects (gcode, extruder, lane, OAMS index)
-#    to eliminate redundant printer.lookup_object() calls
-# 2. Event-Driven Architecture: All sensor updates via AMSHardwareService event subscriptions
-#    instead of polling, eliminating unnecessary sensor reads
-# 3. Sensor Helper Caching: Virtual sensor helpers cached to avoid repeated lookups
-# 4. Registry Integration: Uses LaneRegistry for O(1) lane lookups across units
-
-"""AMS integration helpers for Armored Turtle AFC."""
-
 from __future__ import annotations
 
 import json
@@ -24,7 +13,6 @@ import traceback
 from textwrap import dedent
 from datetime import datetime
 from types import MethodType
-from typing import Any, Dict, List, Optional, Set, Tuple
 from enum import Enum
 
 from configparser import Error as ConfigError
@@ -371,7 +359,7 @@ class afcAMS(afcUnit):
         # Keep _last_hub_hes_values for HES calibration (not an AFC responsibility)
         self._last_hub_hes_values: Optional[List[float]] = None
 
-        # OPTIMIZATION: Cache frequently accessed objects
+        # Cache frequently accessed objects
         self._cached_sensor_helper = None
         self._cached_gcode = None
         self._cached_extruder_objects: Dict[str, Any] = {}
@@ -569,7 +557,7 @@ class afcAMS(afcUnit):
                 afc.function.log_toolhead_pos()
 
         try:
-            # CRITICAL: Unsync from extruder before OpenAMS unload
+            # Unsync from extruder before OpenAMS unload
             # After cut/form_tip, lane is synced to extruder. Must unsync before
             # OAMSM_UNLOAD_FILAMENT can control the spool independently.
             cur_lane.unsync_to_extruder()
@@ -802,7 +790,7 @@ class afcAMS(afcUnit):
     def handle_connect(self):
         """Initialise the AMS unit and configure custom logos."""
         super().handle_connect()
-        # OPTIMIZATION: Pre-warm object caches for faster runtime access
+        # Pre-warm object caches for faster runtime access
         if self._cached_gcode is None:
             try:
                 self._cached_gcode = self.printer.lookup_object("gcode")
@@ -815,7 +803,7 @@ class afcAMS(afcUnit):
 
         self._ensure_virtual_tool_sensor()
 
-        # CRITICAL: Ensure all AMS lanes have buffer_obj = None
+        # Ensure all AMS lanes have buffer_obj = None
         # AMS units don't have physical buffers - this prevents buffer monitoring
         # from running even if users accidentally configure buffers at lane level
         for lane in self.lanes.values():
@@ -951,7 +939,7 @@ class afcAMS(afcUnit):
         extruder.tool_start = original_pin
         self._virtual_tool_sensor = sensor
 
-        # OPTIMIZATION: Cache the sensor helper
+        # Cache the sensor helper
         self._cached_sensor_helper = helper
 
         alias_token = None
@@ -968,7 +956,7 @@ class afcAMS(afcUnit):
                 if previous is None or previous is sensor:
                     objects[alias_object] = sensor
 
-            # OPTIMIZATION: Use cached gcode object
+            # Use cached gcode object
             gcode = self._cached_gcode
             if gcode is None:
                 try:
@@ -1414,7 +1402,7 @@ class afcAMS(afcUnit):
         return lookup
 
     def _get_extruder_object(self, extruder_name: Optional[str]):
-        # OPTIMIZATION: Cache extruder object lookups
+        # Cache extruder object lookups
         if not extruder_name:
             return None
 
@@ -1449,7 +1437,7 @@ class afcAMS(afcUnit):
         return self._canonical_lane_name(lane_name)
 
     def _get_lane_object(self, lane_name: Optional[str]):
-        # OPTIMIZATION: Cache lane object lookups
+        # Cache lane object lookups
         canonical = self._canonical_lane_name(lane_name)
         if canonical is None:
             return None
@@ -2576,7 +2564,7 @@ class afcAMS(afcUnit):
                     pass
 
                 # Hub sensor shows filament in AMS (but not necessarily in toolhead)
-                # CRITICAL: Read ACTUAL hardware sensor, not AFC state!
+                # Read ACTUAL hardware sensor, not AFC state!
                 hub_loaded = False
                 if self.oams is not None:
                     try:
@@ -2695,7 +2683,7 @@ class afcAMS(afcUnit):
 
     def handle_ready(self):
         """Resolve the OpenAMS object once Klippy is ready."""
-        # CRITICAL: Re-enforce buffer_obj = None on all AMS lanes FIRST
+        # Re-enforce buffer_obj = None on all AMS lanes FIRST
         # This runs during klippy:ready AFTER AFC_lane._handle_ready() has initialized lanes
         # AFC_lane._handle_ready() may assign buffers from unit/extruder, we must override to None
         # MUST run BEFORE any early returns to ensure buffers are always cleared
@@ -3011,7 +2999,7 @@ class afcAMS(afcUnit):
                 is_printing = False
 
             if is_printing:
-                # CRITICAL: Only trigger runout detection if THIS lane is the one loaded to its extruder
+                # Only trigger runout detection if THIS lane is the one loaded to its extruder
                 # Skip runout detection on inactive lanes (e.g., when changing spools on different lane)
                 # In multi-extruder setups, check the specific extruder this lane is associated with
                 skip_runout = False
@@ -3088,7 +3076,7 @@ class afcAMS(afcUnit):
 
         if hub_val != getattr(lane, "loaded_to_hub", False):
             hub.switch_pin_callback(eventtime, hub_val)
-            # CRITICAL: Update lane.loaded_to_hub to match hub sensor state
+            # Update lane.loaded_to_hub to match hub sensor state
             # This field is reported to Mainsail via lane.get_status()
             # Without this, Mainsail shows stale hub status even when hardware sensor is correct
             lane.loaded_to_hub = hub_val
@@ -4600,7 +4588,7 @@ class afcAMS(afcUnit):
 
     def _get_openams_index(self):
         """Helper to extract OAMS index (OPTIMIZED with caching)."""
-        # OPTIMIZATION: Cache OAMS index after first lookup
+        # Cache OAMS index after first lookup
         if self._cached_oams_index is not None:
             return self._cached_oams_index
 
