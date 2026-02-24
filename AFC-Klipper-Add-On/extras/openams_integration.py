@@ -88,7 +88,6 @@ class AMSEventBus:
     def __init__(self):
         self._subscribers: Dict[str, List[Tuple[Callable, int]]] = {}
         self._event_history: List[Tuple[str, float, Dict[str, Any]]] = []
-        self._max_history = 100
         self.logger = None  # Set via get_instance(logger=...)
 
     @classmethod
@@ -249,6 +248,7 @@ class LaneRegistry:
 
         # Indexed lookups for O(1) access
         self._by_lane_name: Dict[str, LaneInfo] = {}
+        self._by_lane_name_lower: Dict[str, LaneInfo] = {}  # case-insensitive index
         self._by_spool: Dict[Tuple[str, int], LaneInfo] = {}
         self._by_extruder: Dict[str, List[LaneInfo]] = {}
 
@@ -320,6 +320,7 @@ class LaneRegistry:
 
             # Build indexes
             self._by_lane_name[lane_name] = info
+            self._by_lane_name_lower[lane_name.lower()] = info
             self._by_spool[(unit_name, spool_index)] = info
 
             if extruder not in self._by_extruder:
@@ -334,8 +335,9 @@ class LaneRegistry:
         """Internal: Remove a lane from all indexes."""
         if info in self._lanes:
             self._lanes.remove(info)
-        
+
         self._by_lane_name.pop(info.lane_name, None)
+        self._by_lane_name_lower.pop(info.lane_name.lower(), None)
         self._by_spool.pop((info.unit_name, info.spool_index), None)
 
         extruder_lanes = self._by_extruder.get(info.extruder, [])
@@ -356,14 +358,9 @@ class LaneRegistry:
             return self._by_spool.get((unit_name, spool_index))
 
     def resolve_lane_token(self, token: str) -> Optional[LaneInfo]:
-        """Resolve a lane by name."""
-        lowered = token.lower()
+        """Resolve a lane by name (case-insensitive, O(1) lookup)."""
         with self._lock:
-            for lane_name, info in self._by_lane_name.items():
-                if lane_name.lower() == lowered:
-                    return info
-
-            return None
+            return self._by_lane_name_lower.get(token.lower())
     
     def get_by_extruder(self, extruder: str) -> List[LaneInfo]:
         """Get all lanes for an extruder (e.g., "extruder4")."""
