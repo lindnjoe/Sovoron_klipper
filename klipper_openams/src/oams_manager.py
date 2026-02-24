@@ -1992,6 +1992,15 @@ class OAMSManager:
             # If FPS state already tracks a different active lane, do not overwrite it here.
             fps_state = self.current_state.fps_state.get(fps_name)
             if fps_state is not None:
+                # If the FPS was explicitly set to UNLOADED (e.g. by on_afc_lane_unloaded
+                # during UNSET_LANE_LOADED or CHANGE_TOOL), filament may still be physically
+                # present in the path but we must not write it back into AFC's lane_loaded.
+                if fps_state.state == FPSLoadState.UNLOADED:
+                    self.logger.debug(
+                        f"Skipping AFC lane sync for {detected_lane} on {fps_name}: "
+                        f"FPS is in UNLOADED state (intentionally cleared)"
+                    )
+                    return
                 tracked_lane = getattr(fps_state, 'current_lane', None)
                 if tracked_lane and tracked_lane != detected_lane:
                     self.logger.debug(
