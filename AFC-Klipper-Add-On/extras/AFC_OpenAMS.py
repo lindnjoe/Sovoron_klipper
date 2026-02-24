@@ -809,6 +809,18 @@ class afcAMS(afcUnit):
 
         self._ensure_virtual_tool_sensor()
 
+        # Register internal gcode command for stuck spool auto-recovery.
+        # Multiple afcAMS units share the same printer gcode namespace so ignore
+        # the AlreadyRegistered error if another unit registered it first.
+        try:
+            self.gcode.register_command(
+                '_AFC_OAMS_STUCK_RECOVERY',
+                self._cmd_stuck_spool_recovery,
+                desc="Internal: auto-recover from stuck spool via unload+reload",
+            )
+        except Exception:
+            pass
+
         # Ensure all AMS lanes have buffer_obj = None
         # AMS units don't have physical buffers - this prevents buffer monitoring
         # from running even if users accidentally configure buffers at lane level
@@ -2755,6 +2767,9 @@ class afcAMS(afcUnit):
         self._wrap_afc_unset_lane_loaded()
         self._patch_tool_swap_timing()
 
+        # Register auto-recovery callback for stuck spool detected during printing
+        self._register_stuck_spool_recovery()
+
         # Sync AFC state with hardware sensors at startup
         # This should run after all initialization is complete and sensors are stable
         # Delay slightly to ensure sensors have had time to stabilize
@@ -3783,6 +3798,160 @@ class afcAMS(afcUnit):
             )
         except Exception as e:
             self.logger.error(f"Failed to mark lane {lane.name} for runout tracking: {e}")
+
+    # ------------------------------------------------------------------
+    # Stuck spool auto-recovery (post-engagement, during printing)
+    # ------------------------------------------------------------------
+
+    def _register_stuck_spool_recovery(self):
+        """Register the stuck spool recovery callback with oams_manager."""
+        oams_manager = self._get_oams_manager()
+        if oams_manager is None:
+            self.logger.debug("Cannot register stuck spool recovery: oams_manager not available")
+            return
+        if not hasattr(oams_manager, 'register_stuck_spool_print_recovery_callback'):
+            self.logger.debug("oams_manager does not support stuck spool recovery callback")
+            return
+        oams_manager.register_stuck_spool_print_recovery_callback(
+            self._on_stuck_spool_recovery_needed
+        )
+        self.logger.debug("Registered stuck spool print recovery callback with oams_manager")
+
+    def _on_stuck_spool_recovery_needed(self, fps_name, lane_name):
+        """Callback from oams_manager when stuck spool needs recovery during printing.
+
+        Called from reactor timer context (non-blocking). Schedules the recovery
+        gcode command which runs in the gcode thread where blocking is safe.
+        """
+        self.logger.info(
+            f"Stuck spool recovery scheduled: fps={fps_name}, lane={lane_name}"
+        )
+        try:
+            self.gcode.run_script_from_command(
+                f"_AFC_OAMS_STUCK_RECOVERY LANE={lane_name} FPS={fps_name}"
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Failed to schedule stuck spool recovery gcode for {lane_name}: {e}"
+            )
+
+    def _cmd_stuck_spool_recovery(self, gcmd):
+        """Internal gcode command: full unload + reload + resume for a stuck spool.
+
+        Runs in the gcode thread so blocking operations (TOOL_UNLOAD, TOOL_LOAD) are safe.
+        Triggered by oams_manager when stuck spool is detected post-engagement during printing.
+        """
+        lane_name = gcmd.get('LANE', None)
+        fps_name  = gcmd.get('FPS', None)
+
+        lane = self.lanes.get(lane_name) if lane_name else None
+        if lane is None:
+            self.logger.error(
+                f"Stuck spool recovery: lane '{lane_name}' not found, falling back to pause"
+            )
+            self._stuck_spool_recovery_fallback(fps_name, lane_name, "lane not found")
+            return
+
+        self.logger.info(
+            f"Stuck spool auto-recovery starting: unload then reload for {lane_name}"
+        )
+
+        # Save toolhead position so AFC_RESUME can restore it afterwards
+        self.afc.save_pos()
+
+        # Pause the print queue immediately so no more gcode feeds from sdcard
+        pause_resume = self.printer.lookup_object("pause_resume", None)
+        if pause_resume is not None and not self.afc.function.is_paused():
+            pause_resume.send_pause_command()
+
+        # Z-hop to clear the part
+        try:
+            pos = self.afc.gcode_move.last_position
+            self.afc.move_z_pos(pos[2] + self.afc.z_hop, "stuck_spool_recovery_zhop")
+        except Exception as e:
+            self.logger.warning(f"Stuck spool recovery: Z-hop failed: {e}")
+
+        try:
+            self.logger.info(f"Stuck spool recovery: unloading {lane_name} (with cut)")
+            unload_ok = self.afc.TOOL_UNLOAD(lane, set_start_time=True)
+            if not unload_ok:
+                raise RuntimeError(f"TOOL_UNLOAD returned False for {lane_name}")
+
+            self.logger.info(f"Stuck spool recovery: reloading {lane_name}")
+            load_ok = self.afc.TOOL_LOAD(lane, set_start_time=True)
+            if not load_ok:
+                raise RuntimeError(f"TOOL_LOAD returned False for {lane_name}")
+
+        except Exception as e:
+            self.logger.error(f"Stuck spool auto-recovery FAILED for {lane_name}: {e}")
+            self._stuck_spool_recovery_fallback(fps_name, lane_name, str(e))
+            return
+
+        # Recovery succeeded — clear OAMS error state then resume
+        self.logger.info(
+            f"Stuck spool auto-recovery SUCCEEDED for {lane_name}, resuming print"
+        )
+        self._stuck_spool_recovery_clear_oams_state(fps_name, lane_name)
+
+        try:
+            self.afc.error.reset_failure()
+            self.gcode.run_script_from_command("AFC_RESUME")
+        except Exception as e:
+            self.logger.error(
+                f"Stuck spool recovery: AFC_RESUME failed after successful reload: {e}"
+            )
+
+    def _stuck_spool_recovery_fallback(self, fps_name, lane_name, reason):
+        """Fall back to pausing when auto-recovery is not possible or fails."""
+        msg = (
+            f"Stuck spool auto-recovery failed for {lane_name or fps_name}: {reason}.\n"
+            f"Please manually correct the issue, then run:\n"
+            f"  SET_LANE_LOADED LANE={lane_name}\n"
+            f"followed by OAMSM_CLEAR_ERRORS"
+        )
+        self.logger.error(msg)
+        try:
+            self.afc.error.AFC_error(msg, pause=True)
+        except Exception as e:
+            self.logger.error(f"Failed to issue AFC error for stuck spool fallback: {e}")
+            try:
+                self.gcode.run_script_from_command("PAUSE")
+            except Exception:
+                pass
+
+    def _stuck_spool_recovery_clear_oams_state(self, fps_name, lane_name):
+        """Clear the OAMS stuck spool error state after a successful auto-recovery."""
+        try:
+            oams_manager = self._get_oams_manager()
+            if oams_manager is None:
+                return
+
+            if not fps_name and lane_name:
+                fps_name = oams_manager.get_fps_for_afc_lane(lane_name)
+            if not fps_name:
+                return
+
+            fps_state = oams_manager.current_state.fps_state.get(fps_name)
+            if fps_state is None:
+                return
+
+            oams_name = fps_state.current_oams
+            spool_idx = fps_state.current_spool_idx
+            if oams_name and spool_idx is not None:
+                oams = oams_manager._get_oams_object(oams_name)
+                if oams is not None:
+                    oams_manager._clear_error_led(
+                        oams, spool_idx, fps_name, "stuck spool auto-recovery succeeded"
+                    )
+            fps_state.reset_stuck_spool_state()
+            self.logger.debug(
+                f"Cleared OAMS stuck spool state for {fps_name} after auto-recovery"
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to clear OAMS stuck spool state for {fps_name}: {e}"
+            )
+
     def handle_openams_lane_tool_state(self, lane_name: str, loaded: bool, *, spool_index: Optional[int] = None, eventtime: Optional[float] = None) -> bool:
         """Update lane/tool state in response to OpenAMS hardware events."""
         lane = self._resolve_lane_reference(lane_name)

@@ -1124,6 +1124,7 @@ class OAMSManager:
         self._toolhead_obj           = None
         self._pause_resume_obj       = None
         self._last_logged_detected_lane = {}
+        self._stuck_spool_print_recovery_callback = None
 
         # OpenAMS-owned Moonraker status publishing (does not modify AFC core behavior)
         self.moonraker_status_interval = config.getfloat(
@@ -6597,6 +6598,71 @@ class OAMSManager:
             # Clear stuck flag so detection can retrigger
             fps_state.stuck_spool.active = False
 
+    def register_stuck_spool_print_recovery_callback(self, callback):
+        """Register a callback for auto-recovery when stuck spool is detected during printing.
+
+        Callback signature: callback(fps_name: str, lane_name: str)
+
+        When a post-engagement stuck spool is detected the callback is invoked instead
+        of pausing so that the caller can perform a full unload + reload + resume cycle.
+        If no callback is registered the system falls back to _trigger_stuck_spool_pause.
+        """
+        self._stuck_spool_print_recovery_callback = callback
+
+    def _trigger_stuck_spool_recovery(self, fps_name: str, fps_state, oams, message: str):
+        """Schedule auto-recovery for a post-engagement stuck spool during active printing.
+
+        Sets the OAMS error state (LED red, active flag, aborts action) then schedules
+        the registered recovery callback asynchronously via the reactor timer so the
+        caller (a timer callback) can return immediately.
+
+        Falls back to _trigger_stuck_spool_pause when:
+          - No recovery callback has been registered, or
+          - fps_state.current_lane is unknown
+        """
+        if fps_state.stuck_spool.active:
+            return
+
+        lane_name = fps_state.current_lane
+        if not lane_name or not callable(self._stuck_spool_print_recovery_callback):
+            self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
+            return
+
+        fps_state.stuck_spool.active = True
+
+        spool_idx = fps_state.current_spool_idx
+        if oams is None and fps_state.current_oams is not None:
+            oams = self._get_oams_object(fps_state.current_oams)
+
+        if oams is not None and spool_idx is not None:
+            try:
+                oams.set_led_error(spool_idx, 1)
+            except Exception as e:
+                self.logger.error(f"Failed to set stuck spool LED on {fps_name}: {e}")
+
+        if oams is not None:
+            try:
+                oams.abort_current_action(wait=False)
+            except Exception as e:
+                self.logger.error(f"Failed to abort OAMS action on {fps_name}: {e}")
+
+        self.logger.info(
+            f"{fps_name}: Stuck spool on {lane_name} - scheduling auto-recovery (unload+reload+resume)"
+        )
+
+        callback = self._stuck_spool_print_recovery_callback
+
+        def _do_recovery(eventtime):
+            try:
+                callback(fps_name, lane_name)
+            except Exception as e:
+                self.logger.error(
+                    f"Stuck spool recovery callback failed for {fps_name}/{lane_name}: {e}"
+                )
+            return self.reactor.NEVER
+
+        self.reactor.register_timer(_do_recovery, self.reactor.monotonic() + 0.1)
+
     def _trigger_stuck_spool_pause(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], message: str):
         if fps_state.stuck_spool.active:
             return
@@ -7300,15 +7366,19 @@ class OAMSManager:
                         except Exception as e:
                             self.logger.error(f"Failed to trigger stuck spool pause for {fps_name}: {e}")
                     else:
-                        # Post-engagement stuck spool - filament is loaded but spool is stuck/tangled
-                        # This requires user intervention - pause the print
-                        self.logger.info(f"{fps_name}: Stuck spool detected AFTER engagement - pausing for user intervention")
+                        # Post-engagement stuck spool - filament is loaded but spool is stuck/tangled.
+                        # Attempt auto-recovery (unload+reload+resume) if a callback is registered;
+                        # otherwise fall back to pausing for user intervention.
+                        self.logger.info(f"{fps_name}: Stuck spool detected AFTER engagement - attempting auto-recovery")
 
-                        # SAFETY: Wrap pause trigger in try/except to prevent crash
                         try:
-                            self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
+                            self._trigger_stuck_spool_recovery(fps_name, fps_state, oams, message)
                         except Exception as e:
-                            self.logger.error(f"Failed to trigger stuck spool pause for {fps_name} - error state may be inconsistent: {e}")
+                            self.logger.error(f"Failed to trigger stuck spool recovery for {fps_name}: {e}")
+                            try:
+                                self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
+                            except Exception as e2:
+                                self.logger.error(f"Fallback pause also failed for {fps_name}: {e2}")
         elif encoder_moving:
             # Encoder is moving - clear timer even if pressure is low (print stall with active extrusion)
             if fps_state.stuck_spool.start_time is not None and not fps_state.stuck_spool.active:
