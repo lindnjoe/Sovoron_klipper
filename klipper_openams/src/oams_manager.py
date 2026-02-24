@@ -19,7 +19,8 @@
 #
 # CONFIGURABLE DETECTION PARAMETERS:
 # The following parameters can be tuned in [oams_manager] config section:
-# - stuck_spool_load_grace: Grace period (seconds) after load before stuck spool detection (default: 8.0)
+# - stuck_spool_load_grace: Grace period (seconds) after each load before stuck spool detection (default: 8.0)
+# - stuck_spool_startup_grace: Grace period (seconds) after klippy:ready before stuck spool detection (default: 60.0)
 # - stuck_spool_pressure_threshold: Pressure below which stuck detection starts (default: 0.08)
 # - stuck_spool_pressure_clear_threshold: Pressure above which stuck state clears - hysteresis (default: 0.12)
 # - clog_pressure_target: Target FPS pressure for clog detection (default: 0.50)
@@ -132,6 +133,7 @@ STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
 STUCK_SPOOL_DWELL = 5.0  # Increased from 3.5 to 5.0 - debouncing for high-speed printing with fast extrudes/retracts (FPS is slow to react)
 STUCK_SPOOL_LOAD_GRACE = 8.0
 STUCK_SPOOL_MAX_ATTEMPTS = 2  # User requirement: max 2 attempts for stuck spool pre-engagement detection
+STUCK_SPOOL_STARTUP_GRACE = 60.0  # Suppress stuck spool detection for this many seconds after klippy:ready
 
 CLOG_PRESSURE_TARGET = 0.50
 CLOG_SENSITIVITY_LEVELS = {
@@ -1813,6 +1815,8 @@ class OAMSManager:
 
         except Exception as e:
             self._toolhead_obj = None
+
+        self._startup_time: float = self.reactor.monotonic()
 
         self.determine_state()
 
@@ -7178,6 +7182,14 @@ class OAMSManager:
         """
         # Check if stuck spool detection is disabled in config
         if not self.enable_stuck_spool_detection:
+            return
+
+        # Suppress stuck spool detection for a startup grace period after klippy:ready.
+        # After a reboot, saved AFC vars and OAMS state may reflect a loaded lane that no
+        # longer matches physical reality.  Give the hardware and reconciliation logic time
+        # to settle before acting on low-pressure / no-encoder readings.
+        if hasattr(self, '_startup_time') and now - self._startup_time < STUCK_SPOOL_STARTUP_GRACE:
+            fps_state.stuck_spool.start_time = None
             return
 
         # Skip stuck spool detection if clog is active
