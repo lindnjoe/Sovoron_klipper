@@ -4974,9 +4974,25 @@ class OAMSManager:
         except Exception as e:
             self.logger.error(f"Failed to abort stuck load operation for {lane_name}: {e}")
 
-        # STEP 4: Unload the stuck filament
+        # Stop the follower motor before unload.  Step 1 above set the follower to
+        # reverse but left it running; sending an unload command while the follower
+        # motor is active causes the MCU to return ERROR_BUSY.
         try:
-            oam.unload_spool_with_retry()
+            oam.set_oams_follower(0, 0)
+            self.reactor.pause(self.reactor.monotonic() + 0.2)
+        except Exception as e:
+            self.logger.warning(f"Failed to stop follower before stuck-spool-recovery unload for {lane_name}: {e}")
+
+        # STEP 4: Unload the stuck filament — check return value; if unload fails the
+        # hardware is still loaded and the next load attempt would see OAMS busy.
+        try:
+            unload_ok, unload_msg = oam.unload_spool_with_retry()
+            if not unload_ok:
+                self.logger.error(
+                    f"Unload failed during stuck spool recovery for {lane_name}: {unload_msg}. "
+                    f"Hardware is still loaded — aborting recovery."
+                )
+                return False
             # Clear error LED after successful unload
             if fps_state.stuck_spool.active and fps_state.current_spool_idx is not None:
                 self._clear_error_led(oam, fps_state.current_spool_idx, fps_name, "stuck spool retry unload")
@@ -5151,11 +5167,29 @@ class OAMSManager:
             except Exception as e:
                 self.logger.error(f"Failed to abort load operation before engagement retry for {lane_name}: {e}")
 
-            # Unload the filament
+            # Stop the follower motor before unload so the MCU is not busy when the
+            # unload command arrives.  The follower is left running (forward) by the
+            # engagement-verification extrusion; sending an unload while it is active
+            # causes the MCU to return ERROR_BUSY.
             try:
-                oam.unload_spool_with_retry()
+                oam.set_oams_follower(0, 0)
+                self.reactor.pause(self.reactor.monotonic() + 0.2)
+            except Exception as e:
+                self.logger.warning(f"Failed to stop follower before engagement-retry unload for {lane_name}: {e}")
+
+            # Unload the filament — check return value; if unload fails the hardware
+            # is still loaded and continuing would make the next load attempt get OAMS busy.
+            try:
+                unload_ok, unload_msg = oam.unload_spool_with_retry()
             except Exception as e:
                 self.logger.error(f"Exception during unload after engagement failure for {lane_name}: {e}")
+                return False
+
+            if not unload_ok:
+                self.logger.error(
+                    f"Unload failed after engagement failure for {lane_name}: {unload_msg}. "
+                    f"Hardware is still loaded — aborting retry to avoid OAMS busy cascade."
+                )
                 return False
 
             # Brief cooldown
