@@ -404,6 +404,17 @@ class afcAMS(afcUnit):
         """Check if this unit has OpenAMS hardware available."""
         return self.oams is not None
 
+    def get_lane_reset_command(self, lane, dis) -> str:
+        """Return the GCode command used when a user requests a lane reset.
+
+        OpenAMS units don't support stepper-based reset-to-hub (there are no
+        hub-positioning steppers). Instead, the user should unload the filament
+        from the toolhead via TOOL_UNLOAD.  This hook is called by
+        AFC_functions._lane_reset_command() so the reset prompt and
+        AFC_LANE_RESET macro both produce the correct action automatically.
+        """
+        return f"TOOL_UNLOAD LANE={lane.name}"
+
     def _get_oams_manager(self):
         if self._cached_oams_manager is not _UNSET:
             return self._cached_oams_manager

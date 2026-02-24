@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 # This file includes code modified from the Shaketune Project. https://github.com/Frix-x/klippain-shaketune
-# Originally authored by Félix Boisselier and licensed under the GNU General Public License v3.0.
+# Originally authored by Fï¿½lix Boisselier and licensed under the GNU General Public License v3.0.
 #
 # Full license text available at: https://www.gnu.org/licenses/gpl-3.0.html
 from __future__ import annotations
@@ -1466,23 +1466,32 @@ class afcFunction:
         title = 'AFC RESET'
         text = 'Select a loaded lane to reset'
 
+        has_openams = False
+        has_standard = False
+
         # Create buttons for each loaded lane
         for index, LANE in enumerate(self.afc.lanes.values()):
             if LANE.load_state:
-                if self._is_openams_lane(LANE):
-                    continue
-                button_label = "{}".format(LANE.name)
                 button_command = self._lane_reset_command(LANE, dis)
+                if self._is_openams_lane(LANE):
+                    has_openams = True
+                    # OpenAMS lanes don't support reset-to-hub; redirect to TOOL_UNLOAD
+                    button_label = "{} (TOOL_UNLOAD)".format(LANE.name)
+                    buttons.append((button_label, button_command, "info"))
+                else:
+                    has_standard = True
+                    button_label = "{}".format(LANE.name)
+                    button_style = "primary" if index % 2 == 0 else "secondary"
+                    buttons.append((button_label, button_command, button_style))
 
-                button_style = "primary" if index % 2 == 0 else "secondary"
-                buttons.append((button_label, button_command, button_style))
-
-        total_buttons = sum(len(group) for group in buttons)
-        if total_buttons == 0:
-            if any(lane.load_state and self._is_openams_lane(lane) for lane in self.afc.lanes.values()):
-                text = 'OpenAMS lanes do not support AFC_RESET (reset-to-hub). No action taken.'
-            else:
-                text = 'No lanes are loaded, a lane must be loaded to be reset'
+        if not buttons:
+            text = 'No lanes are loaded, a lane must be loaded to be reset'
+        elif has_openams and not has_standard:
+            text = ('OpenAMS lanes do not support reset-to-hub. '
+                    'Select a lane below to unload it from the toolhead using TOOL_UNLOAD.')
+        elif has_openams and has_standard:
+            text = ('Select a loaded lane to reset. '
+                    'OpenAMS lanes (marked TOOL_UNLOAD) will unload from the toolhead instead of resetting to hub.')
 
         prompt.create_custom_p(title, text, buttons,
                         True, None)
@@ -1540,8 +1549,10 @@ class afcFunction:
         if self._is_openams_lane(cur_lane):
             prompt.p_end()
             self.afc.gcode.respond_info(
-                f"{lane} is an OpenAMS lane and does not support AFC_RESET reset-to-hub. No action taken."
+                f"{lane} is an OpenAMS lane and does not support reset-to-hub. "
+                f"Use 'TOOL_UNLOAD LANE={lane}' to unload the filament from the toolhead."
             )
+            self.afc.gcode.run_script_from_command(f"TOOL_UNLOAD LANE={lane}")
             return
 
         CUR_HUB: afc_hub = cur_lane.hub_obj
