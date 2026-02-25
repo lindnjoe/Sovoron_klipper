@@ -89,6 +89,7 @@ MONITOR_ENCODER_SPEED_GRACE = 3.0  # Increased from 2.0 to 3.0 - more grace time
 AUTO_DETECT_INSERT_GRACE = 10.0  # Seconds to suppress auto-detect after unload completes
 MIN_EXTRUDER_ENGAGEMENT_DELTA = 0.5  # Minimum extruder movement to confirm engagement
 ENGAGEMENT_SUPPRESSION_WINDOW = 10.0  # Increased from 6.0 to 10.0 - longer suppression after engagement to prevent false clog detection
+LOAD_STUCK_CONSECUTIVE_THRESHOLD = 2  # Require N consecutive stuck readings before triggering during low-pressure+encoder-stopped case (prevents COASTING false positives)
 CLOG_CHECK_INTERVAL = 8.0  # Minimum seconds between clog checks to reduce log/CPU churn
 AFC_DELEGATION_TIMEOUT = 30.0
 COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
@@ -917,6 +918,7 @@ class FPSState:
         self.load_pressure_dropped  = False
         self.engagement_in_progress = False  # Suppress stuck detection during engagement verification
         self.engagement_retry_active = False  # Suppress clog detection during engagement retry
+        self.load_stuck_consecutive_count = 0  # Count consecutive "encoder stopped + pressure low" readings to avoid COASTING false positives
 
     def record_encoder_sample(self, value):
         self.encoder_sample_prev    = self.encoder_sample_current
@@ -928,6 +930,7 @@ class FPSState:
     def clear_encoder_samples(self):
         self.encoder_sample_prev    = None
         self.encoder_sample_current = None
+        self.load_stuck_consecutive_count = 0
 
     def reset_runout_positions(self):
         self.runout_position       = None
@@ -962,6 +965,7 @@ class FPSState:
         self.engagement_extruder_pos = None
         self.load_pressure_dropped  = False
         self.engagement_in_progress = False
+        self.load_stuck_consecutive_count = 0
 
     def prime_clog_tracker(self, extruder_pos: float, encoder_clicks: int, pressure: float, timestamp: float):
         self.clog.start_extruder = extruder_pos
@@ -7052,18 +7056,30 @@ class OAMSManager:
         if encoder_diff < MIN_ENCODER_DIFF:
             # Encoder not moving during load = stuck spool (follower not tracking)
             # Pressure level tells us WHY it's stuck, but it's stuck regardless
-            stuck_detected = True
             if not fps_state.load_pressure_dropped:
-                # Pressure never dropped - spool never engaged buffer
+                # Pressure never dropped - spool never engaged buffer - trigger immediately
+                stuck_detected = True
                 stuck_reason = "encoder not moving and pressure never dropped"
             elif pressure >= self.load_fps_stuck_threshold:
-                # Pressure high - filament not flowing through buffer
+                # Pressure high - filament not flowing through buffer - trigger immediately
+                stuck_detected = True
                 stuck_reason = f"encoder not moving and FPS pressure {pressure:.2f} >= {self.load_fps_stuck_threshold:.2f}"
             else:
-                # Pressure low but encoder still not moving - spool not feeding filament
-                stuck_reason = f"encoder not moving (only {encoder_diff} clicks) and FPS pressure low ({pressure:.2f})"
+                # Pressure low + encoder stopped - could be COASTING (OAMS motor idle after
+                # successful load) or genuine stuck spool. Require consecutive readings to
+                # avoid aborting a load that is actually completing via COASTING.
+                fps_state.load_stuck_consecutive_count += 1
+                self.logger.debug(
+                    f"Encoder stopped + low pressure on {fps_name}: consecutive count "
+                    f"{fps_state.load_stuck_consecutive_count}/{LOAD_STUCK_CONSECUTIVE_THRESHOLD} "
+                    f"(may be COASTING)"
+                )
+                if fps_state.load_stuck_consecutive_count >= LOAD_STUCK_CONSECUTIVE_THRESHOLD:
+                    stuck_detected = True
+                    stuck_reason = f"encoder not moving (only {encoder_diff} clicks) and FPS pressure low ({pressure:.2f})"
         else:
-            # Encoder IS moving - filament is flowing, not stuck
+            # Encoder IS moving - filament is flowing, not stuck; reset consecutive count
+            fps_state.load_stuck_consecutive_count = 0
             # Pressure spikes during engagement extrusion are normal when filament is moving
             if pressure >= self.load_fps_stuck_threshold:
                 self.logger.debug(f"High pressure ({pressure:.2f}) but encoder moving ({encoder_diff}) - filament flowing correctly")
