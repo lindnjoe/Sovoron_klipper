@@ -89,6 +89,7 @@ MONITOR_ENCODER_SPEED_GRACE = 3.0  # Increased from 2.0 to 3.0 - more grace time
 AUTO_DETECT_INSERT_GRACE = 10.0  # Seconds to suppress auto-detect after unload completes
 MIN_EXTRUDER_ENGAGEMENT_DELTA = 0.5  # Minimum extruder movement to confirm engagement
 ENGAGEMENT_SUPPRESSION_WINDOW = 10.0  # Increased from 6.0 to 10.0 - longer suppression after engagement to prevent false clog detection
+LOAD_STUCK_CONSECUTIVE_THRESHOLD = 2  # Require N consecutive stuck readings before triggering during low-pressure+encoder-stopped case (prevents COASTING false positives)
 CLOG_CHECK_INTERVAL = 8.0  # Minimum seconds between clog checks to reduce log/CPU churn
 AFC_DELEGATION_TIMEOUT = 30.0
 COASTING_TIMEOUT = 1800.0  # Max time to wait for hub to clear and filament to coast through PTFE (30 minutes - typical prints take 15-20 min)
@@ -917,6 +918,7 @@ class FPSState:
         self.load_pressure_dropped  = False
         self.engagement_in_progress = False  # Suppress stuck detection during engagement verification
         self.engagement_retry_active = False  # Suppress clog detection during engagement retry
+        self.load_stuck_consecutive_count = 0  # Count consecutive "encoder stopped + pressure low" readings to avoid COASTING false positives
 
     def record_encoder_sample(self, value):
         self.encoder_sample_prev    = self.encoder_sample_current
@@ -928,6 +930,7 @@ class FPSState:
     def clear_encoder_samples(self):
         self.encoder_sample_prev    = None
         self.encoder_sample_current = None
+        self.load_stuck_consecutive_count = 0
 
     def reset_runout_positions(self):
         self.runout_position       = None
@@ -962,6 +965,7 @@ class FPSState:
         self.engagement_extruder_pos = None
         self.load_pressure_dropped  = False
         self.engagement_in_progress = False
+        self.load_stuck_consecutive_count = 0
 
     def prime_clog_tracker(self, extruder_pos: float, encoder_clicks: int, pressure: float, timestamp: float):
         self.clog.start_extruder = extruder_pos
@@ -1124,6 +1128,7 @@ class OAMSManager:
         self._toolhead_obj           = None
         self._pause_resume_obj       = None
         self._last_logged_detected_lane = {}
+        self._stuck_spool_print_recovery_callback = None
 
         # OpenAMS-owned Moonraker status publishing (does not modify AFC core behavior)
         self.moonraker_status_interval = config.getfloat(
@@ -6597,6 +6602,71 @@ class OAMSManager:
             # Clear stuck flag so detection can retrigger
             fps_state.stuck_spool.active = False
 
+    def register_stuck_spool_print_recovery_callback(self, callback):
+        """Register a callback for auto-recovery when stuck spool is detected during printing.
+
+        Callback signature: callback(fps_name: str, lane_name: str)
+
+        When a post-engagement stuck spool is detected the callback is invoked instead
+        of pausing so that the caller can perform a full unload + reload + resume cycle.
+        If no callback is registered the system falls back to _trigger_stuck_spool_pause.
+        """
+        self._stuck_spool_print_recovery_callback = callback
+
+    def _trigger_stuck_spool_recovery(self, fps_name: str, fps_state, oams, message: str):
+        """Schedule auto-recovery for a post-engagement stuck spool during active printing.
+
+        Sets the OAMS error state (LED red, active flag, aborts action) then schedules
+        the registered recovery callback asynchronously via the reactor timer so the
+        caller (a timer callback) can return immediately.
+
+        Falls back to _trigger_stuck_spool_pause when:
+          - No recovery callback has been registered, or
+          - fps_state.current_lane is unknown
+        """
+        if fps_state.stuck_spool.active:
+            return
+
+        lane_name = fps_state.current_lane
+        if not lane_name or not callable(self._stuck_spool_print_recovery_callback):
+            self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
+            return
+
+        fps_state.stuck_spool.active = True
+
+        spool_idx = fps_state.current_spool_idx
+        if oams is None and fps_state.current_oams is not None:
+            oams = self._get_oams_object(fps_state.current_oams)
+
+        if oams is not None and spool_idx is not None:
+            try:
+                oams.set_led_error(spool_idx, 1)
+            except Exception as e:
+                self.logger.error(f"Failed to set stuck spool LED on {fps_name}: {e}")
+
+        if oams is not None:
+            try:
+                oams.abort_current_action(wait=False)
+            except Exception as e:
+                self.logger.error(f"Failed to abort OAMS action on {fps_name}: {e}")
+
+        self.logger.info(
+            f"{fps_name}: Stuck spool on {lane_name} - scheduling auto-recovery (unload+reload+resume)"
+        )
+
+        callback = self._stuck_spool_print_recovery_callback
+
+        def _do_recovery(eventtime):
+            try:
+                callback(fps_name, lane_name)
+            except Exception as e:
+                self.logger.error(
+                    f"Stuck spool recovery callback failed for {fps_name}/{lane_name}: {e}"
+                )
+            return self.reactor.NEVER
+
+        self.reactor.register_timer(_do_recovery, self.reactor.monotonic() + 0.1)
+
     def _trigger_stuck_spool_pause(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], message: str):
         if fps_state.stuck_spool.active:
             return
@@ -6986,18 +7056,30 @@ class OAMSManager:
         if encoder_diff < MIN_ENCODER_DIFF:
             # Encoder not moving during load = stuck spool (follower not tracking)
             # Pressure level tells us WHY it's stuck, but it's stuck regardless
-            stuck_detected = True
             if not fps_state.load_pressure_dropped:
-                # Pressure never dropped - spool never engaged buffer
+                # Pressure never dropped - spool never engaged buffer - trigger immediately
+                stuck_detected = True
                 stuck_reason = "encoder not moving and pressure never dropped"
             elif pressure >= self.load_fps_stuck_threshold:
-                # Pressure high - filament not flowing through buffer
+                # Pressure high - filament not flowing through buffer - trigger immediately
+                stuck_detected = True
                 stuck_reason = f"encoder not moving and FPS pressure {pressure:.2f} >= {self.load_fps_stuck_threshold:.2f}"
             else:
-                # Pressure low but encoder still not moving - spool not feeding filament
-                stuck_reason = f"encoder not moving (only {encoder_diff} clicks) and FPS pressure low ({pressure:.2f})"
+                # Pressure low + encoder stopped - could be COASTING (OAMS motor idle after
+                # successful load) or genuine stuck spool. Require consecutive readings to
+                # avoid aborting a load that is actually completing via COASTING.
+                fps_state.load_stuck_consecutive_count += 1
+                self.logger.debug(
+                    f"Encoder stopped + low pressure on {fps_name}: consecutive count "
+                    f"{fps_state.load_stuck_consecutive_count}/{LOAD_STUCK_CONSECUTIVE_THRESHOLD} "
+                    f"(may be COASTING)"
+                )
+                if fps_state.load_stuck_consecutive_count >= LOAD_STUCK_CONSECUTIVE_THRESHOLD:
+                    stuck_detected = True
+                    stuck_reason = f"encoder not moving (only {encoder_diff} clicks) and FPS pressure low ({pressure:.2f})"
         else:
-            # Encoder IS moving - filament is flowing, not stuck
+            # Encoder IS moving - filament is flowing, not stuck; reset consecutive count
+            fps_state.load_stuck_consecutive_count = 0
             # Pressure spikes during engagement extrusion are normal when filament is moving
             if pressure >= self.load_fps_stuck_threshold:
                 self.logger.debug(f"High pressure ({pressure:.2f}) but encoder moving ({encoder_diff}) - filament flowing correctly")
@@ -7300,15 +7382,19 @@ class OAMSManager:
                         except Exception as e:
                             self.logger.error(f"Failed to trigger stuck spool pause for {fps_name}: {e}")
                     else:
-                        # Post-engagement stuck spool - filament is loaded but spool is stuck/tangled
-                        # This requires user intervention - pause the print
-                        self.logger.info(f"{fps_name}: Stuck spool detected AFTER engagement - pausing for user intervention")
+                        # Post-engagement stuck spool - filament is loaded but spool is stuck/tangled.
+                        # Attempt auto-recovery (unload+reload+resume) if a callback is registered;
+                        # otherwise fall back to pausing for user intervention.
+                        self.logger.info(f"{fps_name}: Stuck spool detected AFTER engagement - attempting auto-recovery")
 
-                        # SAFETY: Wrap pause trigger in try/except to prevent crash
                         try:
-                            self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
+                            self._trigger_stuck_spool_recovery(fps_name, fps_state, oams, message)
                         except Exception as e:
-                            self.logger.error(f"Failed to trigger stuck spool pause for {fps_name} - error state may be inconsistent: {e}")
+                            self.logger.error(f"Failed to trigger stuck spool recovery for {fps_name}: {e}")
+                            try:
+                                self._trigger_stuck_spool_pause(fps_name, fps_state, oams, message)
+                            except Exception as e2:
+                                self.logger.error(f"Fallback pause also failed for {fps_name}: {e2}")
         elif encoder_moving:
             # Encoder is moving - clear timer even if pressure is low (print stall with active extrusion)
             if fps_state.stuck_spool.start_time is not None and not fps_state.stuck_spool.active:
