@@ -1837,6 +1837,13 @@ class afcAMS(afcUnit):
                 msg += '<span class=success--text> AND LOADED</span>'
                 self.lane_illuminate_spool(cur_lane)
 
+                # If tool_loaded was not saved (e.g. power cycle / crash) but the hub
+                # sensor still shows filament for exactly one bay on this unit, infer
+                # that this lane is loaded to the toolhead so oams_manager can unload it.
+                if not cur_lane.tool_loaded:
+                    if self._infer_tool_loaded_from_hub(cur_lane):
+                        msg += '<span class=primary--text> (hub-detected: auto-set as in ToolHead)</span>'
+
                 if cur_lane.tool_loaded:
                     tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.tool_start == "buffer" or cur_lane.extruder_obj.tool_end_state)
                     if tool_ready and cur_lane.extruder_obj.lane_loaded == cur_lane.name:
@@ -1883,6 +1890,48 @@ class afcAMS(afcUnit):
             self.logger.error(f"Failed to schedule OpenAMS post-PREP sensor sync: {e}")
 
         return succeeded
+
+    def _infer_tool_loaded_from_hub(self, cur_lane) -> bool:
+        """During PREP: if the hub sensor is active for this lane and it is the only
+        hub-loaded bay on this unit, infer that the lane is loaded to the toolhead.
+
+        This covers power-cycle / crash-recovery scenarios where tool_loaded was not
+        persisted but the physical filament is still sitting past the hub.
+
+        Returns True if tool_loaded was inferred and set_tool_loaded() was called.
+        """
+        if self.oams is None:
+            return False
+
+        hub_values = getattr(self.oams, "hub_hes_value", None)
+        if hub_values is None:
+            return False
+
+        spool_idx = self._get_openams_spool_index(cur_lane)
+        if spool_idx is None or not (0 <= spool_idx < len(hub_values)):
+            return False
+
+        if not bool(hub_values[spool_idx]):
+            return False  # This lane's hub sensor is not active
+
+        # Safety: if any other bay on this unit also shows hub active we cannot
+        # unambiguously attribute the toolhead filament to cur_lane.
+        other_hub_active = any(
+            bool(hub_values[i]) for i in range(len(hub_values)) if i != spool_idx
+        )
+        if other_hub_active:
+            self.logger.debug(
+                f"PREP hub inference: {cur_lane.name} hub active but other bays on "
+                f"{self.name} also show hub - cannot infer tool_loaded unambiguously"
+            )
+            return False
+
+        self.logger.info(
+            f"PREP: {cur_lane.name} is the only hub-loaded lane on {self.name} "
+            f"(spool index {spool_idx}) - auto-setting as loaded to toolhead"
+        )
+        cur_lane.set_tool_loaded()
+        return True
 
     def calibrate_bowden(self, cur_lane, dis, tol):
         """OpenAMS units use different calibration commands."""
