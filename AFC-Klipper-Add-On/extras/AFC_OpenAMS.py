@@ -3984,6 +3984,22 @@ class afcAMS(afcUnit):
 
         try:
             self.afc.error.reset_failure()
+
+            # AFC_RESUME guards on is_paused() == True before it will restore
+            # the toolhead position and restart the SD card.  During recovery
+            # the pause flag can be cleared without the SD card being properly
+            # restarted (e.g. if a Tx toolchange command in the still-running
+            # print file fires AFC_RESUME mid-recovery before we reach here).
+            # Force the flag back so AFC_RESUME takes the full resume path.
+            if not self.afc.function.is_paused():
+                self.logger.info(
+                    "Stuck spool recovery: pause state was cleared during recovery; "
+                    "restoring it so AFC_RESUME can properly restart the print"
+                )
+                pause_resume_obj = self.printer.lookup_object("pause_resume", None)
+                if pause_resume_obj is not None:
+                    pause_resume_obj.is_paused = True
+
             self.gcode.run_script_from_command("AFC_RESUME")
         except Exception as e:
             self.logger.error(
