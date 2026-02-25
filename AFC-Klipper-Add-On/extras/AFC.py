@@ -1318,12 +1318,6 @@ class afc:
                     cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                     cur_lane.espooler.do_assist_move()
                     if self.poop:
-                        # Allow unit to snapshot encoder state before the purge.
-                        # Returns None when the unit has no encoder or check is disabled.
-                        _encoder_before = None
-                        if hasattr(cur_lane.unit_obj, 'get_encoder_clicks'):
-                            _encoder_before = cur_lane.unit_obj.get_encoder_clicks()
-
                         if purge_length is not None:
                             self.gcode.run_script_from_command("%s %s=%s" % (self.poop_cmd, 'PURGE_LENGTH', purge_length))
 
@@ -1332,13 +1326,6 @@ class afc:
 
                         self.afcDeltaTime.log_with_time("TOOL_LOAD: After poop")
                         self.function.log_toolhead_pos()
-
-                        # Allow unit to verify encoder delta and retry on clog.
-                        # Only fires when the unit returned a non-None encoder snapshot above.
-                        if _encoder_before is not None and hasattr(cur_lane.unit_obj, 'check_post_poop'):
-                            if not cur_lane.unit_obj.check_post_poop(
-                                    cur_lane, cur_hub, cur_extruder, _encoder_before, purge_length):
-                                return False
 
                         if self.wipe:
                             self.gcode.run_script_from_command(self.wipe_cmd)

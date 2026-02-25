@@ -329,13 +329,13 @@ class afcAMS(afcUnit):
         # Defaults to False (pause-only) so the behaviour is opt-in.
         self.stuck_spool_auto_recovery = config.getboolean("stuck_spool_auto_recovery", False)
 
-        # Post-purge encoder clog detection (set purge_clog_check: True to enable).
-        # When enabled, AFC captures encoder state before/after the configured poop_cmd.
-        # If the delta is below purge_clog_min_clicks, check_post_poop() performs a
-        # no-cut unload + reload + re-purge cycle up to purge_clog_retries times.
-        self.purge_clog_check       = config.getboolean("purge_clog_check", False)  # Enable encoder-based clog detection after purge
+        # Post-engagement encoder clog detection (set purge_clog_check: True to enable).
+        # When enabled, load_sequence captures encoder state before and after the OAMS
+        # load. If the delta is below purge_clog_min_clicks, a no-cut unload + reload
+        # retry cycle runs up to purge_clog_retries times before raising a fault.
+        self.purge_clog_check       = config.getboolean("purge_clog_check", False)  # Enable encoder-based clog detection after engagement
         self.purge_clog_retries     = config.getint("purge_clog_retries", 1)        # No-cut unload/reload retries when clog detected
-        self.purge_clog_min_clicks  = config.getint("purge_clog_min_clicks", 5)     # Minimum encoder clicks to consider purge successful
+        self.purge_clog_min_clicks  = config.getint("purge_clog_min_clicks", 5)     # Minimum encoder clicks to consider load successful
 
         self.reactor = self.printer.get_reactor()
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
@@ -406,15 +406,10 @@ class afcAMS(afcUnit):
         return self.oams is not None
 
     def get_encoder_clicks(self):
-        """Return current OAMS encoder click count, or None when unavailable or disabled.
-
-        Returns None when purge_clog_check is False so the AFC hook skips the check
-        entirely without needing to know about this flag.
+        """Return the current OAMS encoder click count, or None if unavailable.
 
         :return int|None: Encoder click count, or None.
         """
-        if not self.purge_clog_check:
-            return None
         if self.oams is None:
             return None
         try:
@@ -422,94 +417,13 @@ class afcAMS(afcUnit):
         except Exception:
             return None
 
-    def check_post_poop(self, cur_lane, cur_hub, cur_extruder, encoder_before, purge_length):
-        """Called by AFC immediately after the configured poop_cmd runs.
-
-        Compares the OAMS encoder delta against purge_clog_min_clicks. If the
-        filament did not move (extruder grinding against a clogged hotend), performs
-        a no-cut unload + reload then re-runs the same poop_cmd, repeating up to
-        purge_clog_retries times before calling handle_lane_failure.
-
-        After this method returns True the normal AFC load flow continues
-        (wipe, kick, second wipe, fault detection, etc.) unchanged.
-
-        :param cur_lane:      The lane that was just loaded.
-        :param cur_hub:       The hub object for the lane.
-        :param cur_extruder:  The extruder object for the lane.
-        :param encoder_before: Encoder click count captured before the purge ran.
-        :param purge_length:  The PURGE_LENGTH value passed to poop_cmd, or None.
-        :return bool: True to continue the load flow, False to abort.
-        """
-        afc = self.afc
-
-        def _delta():
-            """Return abs encoder delta since encoder_before, or None on failure."""
-            enc = self.get_encoder_clicks()
-            if enc is None:
-                return None
-            return abs(enc - encoder_before)
-
-        delta = _delta()
-        if delta is None or delta >= self.purge_clog_min_clicks:
-            if delta is not None:
-                self.logger.debug(
-                    "Post-purge encoder delta for {}: {} clicks (OK)".format(
-                        cur_lane.name, delta
-                    )
-                )
-            return True  # purge succeeded or encoder unavailable
-
-        # Clog detected — retry up to purge_clog_retries times
-        for attempt in range(1, self.purge_clog_retries + 1):
-            self.logger.warning(
-                "Post-purge clog detected for {} "
-                "(encoder delta: {} clicks, min: {}). "
-                "Retry {}/{}.".format(
-                    cur_lane.name, delta, self.purge_clog_min_clicks,
-                    attempt, self.purge_clog_retries
-                )
-            )
-
-            if not self._retry_load_after_purge_clog(cur_lane, cur_hub, cur_extruder):
-                return False
-
-            # Re-run the same poop_cmd (same macro, same PURGE_LENGTH)
-            enc_before_retry = self.get_encoder_clicks() or 0
-            if purge_length is not None:
-                afc.gcode.run_script_from_command(
-                    "%s %s=%s" % (afc.poop_cmd, 'PURGE_LENGTH', purge_length)
-                )
-            else:
-                afc.gcode.run_script_from_command(afc.poop_cmd)
-
-            enc_after_retry = self.get_encoder_clicks()
-            if enc_after_retry is None:
-                return True  # encoder lost mid-retry, assume OK
-            delta = abs(enc_after_retry - enc_before_retry)
-            self.logger.debug(
-                "Retry {} post-purge encoder delta for {}: {} clicks".format(
-                    attempt, cur_lane.name, delta
-                )
-            )
-            if delta >= self.purge_clog_min_clicks:
-                return True  # retry purge succeeded
-
-        # All retries exhausted
-        message = (
-            "Post-purge clog detected for {} after {} retr{}. "
-            "Encoder delta: {} clicks (min: {}). "
-            "Please check for a clog between the extruder and hotend.".format(
-                cur_lane.name, self.purge_clog_retries,
-                "y" if self.purge_clog_retries == 1 else "ies",
-                delta, self.purge_clog_min_clicks
-            )
-        )
-        afc.error.handle_lane_failure(cur_lane, message, pause=afc.function.in_print())
-        return False
-
     def _retry_load_after_purge_clog(self, cur_lane, cur_hub, cur_extruder):
-        """Perform a no-cut unload followed by a reload to recover from a clog detected
-        between the extruder and hotend during the post-load purge.
+        """Perform a no-cut unload followed by a reload to recover from a load-time clog.
+
+        Called by load_sequence when the post-engagement encoder delta is below
+        purge_clog_min_clicks.  Reloads via _manager_load_for_lane directly so that
+        load_sequence's encoder check is not re-entered recursively.  The caller is
+        responsible for calling set_tool_loaded() / save_vars() on success.
 
         :param cur_lane: The lane object to recover.
         :param cur_hub: The hub object associated with the lane.
@@ -518,7 +432,7 @@ class afcAMS(afcUnit):
         """
         afc = self.afc
         self.logger.info(
-            "Post-purge clog retry: no-cut unload and reload for {}".format(cur_lane.name)
+            "Load clog retry: no-cut unload and reload for {}".format(cur_lane.name)
         )
 
         # Temporarily disable cut so the filament tip stays intact for re-loading
@@ -527,17 +441,33 @@ class afcAMS(afcUnit):
         try:
             if not afc.unload_sequence(cur_lane, cur_hub, cur_extruder):
                 self.logger.warning(
-                    "No-cut unload failed during purge clog retry for {}".format(cur_lane.name)
+                    "No-cut unload failed during load clog retry for {}".format(cur_lane.name)
                 )
                 return False
         finally:
             afc.tool_cut = saved_tool_cut
 
-        # Signal reload in progress (LED feedback) then reload filament to toolhead
+        # Reload directly via OAMS manager to avoid re-entering load_sequence's clog check
         self.lane_loading(cur_lane)
-        if not afc.load_sequence(cur_lane, cur_hub, cur_extruder):
+        try:
+            afc._oams_suppress_tool_swap_timer = True
+            success, message = self._manager_load_for_lane(cur_lane.name)
+        finally:
+            afc._oams_suppress_tool_swap_timer = False
+
+        if not success:
             self.logger.warning(
-                "Reload failed during purge clog retry for {}".format(cur_lane.name)
+                "Reload failed during load clog retry for {}: {}".format(
+                    cur_lane.name, message or "unknown error"
+                )
+            )
+            return False
+
+        if not cur_lane.get_toolhead_pre_sensor_state():
+            self.logger.warning(
+                "Engagement sensor not triggered during load clog retry for {}".format(
+                    cur_lane.name
+                )
             )
             return False
 
@@ -605,6 +535,9 @@ class afcAMS(afcUnit):
         if afc._check_extruder_temp(cur_lane):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
 
+        # Snapshot encoder before load so we can verify filament movement afterward
+        enc_before = self.get_encoder_clicks() if self.purge_clog_check else None
+
         try:
             if afc.afcDeltaTime.start_time is None:
                 afc.afcDeltaTime.set_start_time()
@@ -643,6 +576,44 @@ class afcAMS(afcUnit):
                 message += "\nOnce filament is fully loaded click resume to continue printing"
             afc.error.handle_lane_failure(cur_lane, message)
             return False
+
+        # Encoder-based clog detection right after engagement verification (opt-in)
+        if self.purge_clog_check and enc_before is not None:
+            enc_after = self.get_encoder_clicks()
+            delta = abs(enc_after - enc_before) if enc_after is not None else None
+            if delta is not None and delta < self.purge_clog_min_clicks:
+                recovered = False
+                for attempt in range(1, self.purge_clog_retries + 1):
+                    self.logger.warning(
+                        "Load clog detected for {} "
+                        "(encoder delta: {} clicks, min: {}). "
+                        "Retry {}/{}.".format(
+                            cur_lane.name, delta, self.purge_clog_min_clicks,
+                            attempt, self.purge_clog_retries
+                        )
+                    )
+                    if self._retry_load_after_purge_clog(cur_lane, cur_hub, cur_extruder):
+                        recovered = True
+                        break
+                    self.logger.warning(
+                        "Retry {} failed for {}".format(attempt, cur_lane.name)
+                    )
+                if not recovered:
+                    message = (
+                        "Load clog detected for {} after {} retr{}. "
+                        "Encoder delta: {} clicks (min: {}). "
+                        "Please check for a clog between the extruder and hotend.".format(
+                            cur_lane.name, self.purge_clog_retries,
+                            "y" if self.purge_clog_retries == 1 else "ies",
+                            delta, self.purge_clog_min_clicks
+                        )
+                    )
+                    afc.error.handle_lane_failure(cur_lane, message, pause=afc.function.in_print())
+                    return False
+            elif delta is not None:
+                self.logger.debug(
+                    "Load encoder delta for {}: {} clicks (OK)".format(cur_lane.name, delta)
+                )
 
         cur_lane.set_tool_loaded()
         afc.save_vars()
