@@ -184,9 +184,6 @@ class afc:
         self.wipe_cmd               = config.get('wipe_cmd', None)                  # Macro to use when nozzle wiping. Change macro name if you would like to use your own wipe macro
         self.poop                   = config.getboolean("poop", False)              # Set to True to enable pooping(purging color) after lane loads
         self.poop_cmd               = config.get('poop_cmd', None)                  # Macro to use when pooping. Change macro name if you would like to use your own poop/purge macro
-        self.purge_clog_check       = config.getboolean("purge_clog_check", False)  # Use unit encoder to detect clog between extruder and hotend after purge
-        self.purge_clog_retries     = config.getint("purge_clog_retries", 1)        # No-cut unload/reload retries when a purge clog is detected
-        self.purge_clog_min_clicks  = config.getint("purge_clog_min_clicks", 5)     # Minimum encoder clicks during purge to be considered a successful extrusion
 
         self.post_load_macro        = config.get("post_load_macro", None)
         self.post_unload_macro      = config.get("post_unload_macro", None)
@@ -1321,63 +1318,14 @@ class afc:
                     cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                     cur_lane.espooler.do_assist_move()
                     if self.poop:
-                        # Run purge with optional encoder-based clog detection and no-cut retry.
-                        # purge_clog_check requires the unit to expose get_encoder_clicks().
-                        for purge_attempt in range(self.purge_clog_retries + 1):
-                            encoder_before = None
-                            if self.purge_clog_check and hasattr(cur_lane.unit_obj, 'get_encoder_clicks'):
-                                encoder_before = cur_lane.unit_obj.get_encoder_clicks()
+                        if purge_length is not None:
+                            self.gcode.run_script_from_command("%s %s=%s" % (self.poop_cmd, 'PURGE_LENGTH', purge_length))
 
-                            if purge_length is not None:
-                                self.gcode.run_script_from_command("%s %s=%s" % (self.poop_cmd, 'PURGE_LENGTH', purge_length))
-                            else:
-                                self.gcode.run_script_from_command(self.poop_cmd)
+                        else:
+                            self.gcode.run_script_from_command(self.poop_cmd)
 
-                            self.afcDeltaTime.log_with_time("TOOL_LOAD: After poop")
-                            self.function.log_toolhead_pos()
-
-                            # Check encoder delta to detect clog between extruder and hotend
-                            if encoder_before is not None:
-                                encoder_after = cur_lane.unit_obj.get_encoder_clicks()
-                                if encoder_after is not None:
-                                    encoder_delta = abs(encoder_after - encoder_before)
-                                    self.logger.debug(
-                                        "Post-purge encoder delta for {}: {} clicks".format(
-                                            cur_lane.name, encoder_delta
-                                        )
-                                    )
-                                    if encoder_delta < self.purge_clog_min_clicks:
-                                        if purge_attempt < self.purge_clog_retries:
-                                            self.logger.warning(
-                                                "Post-purge clog detected for {} "
-                                                "(encoder delta: {} clicks, min: {}). "
-                                                "Retry {}/{}.".format(
-                                                    cur_lane.name, encoder_delta,
-                                                    self.purge_clog_min_clicks,
-                                                    purge_attempt + 1,
-                                                    self.purge_clog_retries
-                                                )
-                                            )
-                                            if not self._retry_load_after_purge_clog(cur_lane, cur_hub, cur_extruder):
-                                                return False
-                                            continue
-                                        else:
-                                            message = (
-                                                "Post-purge clog detected for {} after {} "
-                                                "retr{}. Encoder delta: {} clicks (min: {}). "
-                                                "Please check for a clog between the extruder "
-                                                "and hotend.".format(
-                                                    cur_lane.name, self.purge_clog_retries,
-                                                    "y" if self.purge_clog_retries == 1 else "ies",
-                                                    encoder_delta, self.purge_clog_min_clicks
-                                                )
-                                            )
-                                            self.error.handle_lane_failure(
-                                                cur_lane, message,
-                                                pause=self.function.in_print()
-                                            )
-                                            return False
-                            break  # Purge succeeded (or purge_clog_check not enabled)
+                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After poop")
+                        self.function.log_toolhead_pos()
 
                         if self.wipe:
                             self.gcode.run_script_from_command(self.wipe_cmd)
@@ -1431,43 +1379,6 @@ class afc:
                         message += '\nOnce issue is resolved please manually load {} with {} macro and click resume to continue printing.'.format(cur_lane.name, cur_lane.map)
                     self.error.handle_lane_failure(cur_lane, message, pause=self.function.in_print())
                     return False
-        return True
-
-    def _retry_load_after_purge_clog(self, cur_lane: AFCLane, cur_hub, cur_extruder):
-        """
-        Perform a no-cut unload followed by a reload after a clog is detected between the
-        extruder and hotend during post-load purge. Called by TOOL_LOAD when
-        purge_clog_check is enabled and encoder movement is below purge_clog_min_clicks.
-
-        :param cur_lane: The lane to recover.
-        :param cur_hub: The hub object associated with the lane.
-        :param cur_extruder: The extruder object associated with the lane.
-        :return bool: True if the no-cut unload and reload both succeeded, False otherwise.
-        """
-        self.logger.info(
-            "Post-purge clog retry: no-cut unload and reload for {}".format(cur_lane.name)
-        )
-
-        # Unload without activating the cutter so filament tip stays intact for re-loading
-        saved_tool_cut = self.tool_cut
-        self.tool_cut = False
-        try:
-            if not self.unload_sequence(cur_lane, cur_hub, cur_extruder):
-                self.logger.warning(
-                    "No-cut unload failed during purge clog retry for {}".format(cur_lane.name)
-                )
-                return False
-        finally:
-            self.tool_cut = saved_tool_cut
-
-        # Signal reload in progress then reload filament to toolhead
-        cur_lane.unit_obj.lane_loading(cur_lane)
-        if not self.load_sequence(cur_lane, cur_hub, cur_extruder):
-            self.logger.warning(
-                "Reload failed during purge clog retry for {}".format(cur_lane.name)
-            )
-            return False
-
         return True
 
     def load_sequence(self, cur_lane: AFCLane, cur_hub: afc_hub, cur_extruder: AFCExtruder):
