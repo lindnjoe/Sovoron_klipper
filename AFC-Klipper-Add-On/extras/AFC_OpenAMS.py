@@ -3958,7 +3958,7 @@ class afcAMS(afcUnit):
                 if hub.state:
                     self.logger.warning(
                         f"Stuck spool recovery: hub sensor still active {waited:.1f}s "
-                        f"after unload of {lane_name} — proceeding with TOOL_LOAD anyway"
+                        f"after unload of {lane_name} - proceeding with TOOL_LOAD anyway"
                     )
                 else:
                     self.logger.info(
