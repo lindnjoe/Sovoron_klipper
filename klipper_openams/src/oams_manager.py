@@ -5912,7 +5912,7 @@ class OAMSManager:
         fps_state.post_load_pressure_timer = timer
         fps_state.post_load_pressure_start = None
 
-    def _enable_follower(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], direction: int, context: str):
+    def _enable_follower(self, fps_name: str, fps_state: "FPSState", oams: Optional[Any], direction: int, context: str, force: bool = False):
         """
         Enable the OAMS follower motor to track filament movement.
 
@@ -5952,8 +5952,10 @@ class OAMSManager:
 
         direction = direction if direction in (0, 1) else 1
 
-        # Use state-tracked helper to avoid overwhelming MCU with redundant commands
-        self._set_follower_if_changed(fps_state.current_oams, oams, 1, direction, context)
+        # Use state-tracked helper to avoid overwhelming MCU with redundant commands.
+        # force=True is used for pause/recovery paths where the hardware state may have
+        # drifted from the cache (e.g., MCU state drift after a clog/stuck-spool pause).
+        self._set_follower_if_changed(fps_state.current_oams, oams, 1, direction, context, force=force)
 
         # Update FPS state to reflect follower is now enabled
         # Note: _set_follower_if_changed updates follower_last_state tracking
@@ -6734,6 +6736,7 @@ class OAMSManager:
                 oams,
                 1,  # Always forward during stuck spool so user can manually extrude
                 "stuck spool pause - keep follower forward for manual recovery",
+                force=True,  # Force MCU command even if cache says already enabled
             )
             self.logger.info(f"Follower enabled on {fps_name} during stuck spool pause")
 
@@ -7779,13 +7782,19 @@ class OAMSManager:
                 fps_state.clog.restore_follower = fps_state.following
                 fps_state.clog.restore_direction = current_direction
 
-                # Enable follower forward during clog pause for manual recovery
+                # Enable follower forward during clog pause for manual recovery.
+                # force=True guarantees the MCU command is sent even if the cache
+                # already shows the follower as enabled — hardware state may have
+                # drifted (e.g. brief power glitch or MCU reconnect) and without
+                # force the command would be silently skipped, leaving the follower
+                # stopped despite the log saying it was enabled.
                 self._enable_follower(
                     fps_name,
                     fps_state,
                     oams,
                     1,  # Always forward during clog so user can manually extrude
                     "clog pause - keep follower forward for manual recovery",
+                    force=True,
                 )
                 self.logger.info(f"Follower enabled forward on {fps_name} during clog pause for manual recovery")
 
