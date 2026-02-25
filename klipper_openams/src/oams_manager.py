@@ -97,7 +97,7 @@ IDLE_POLL_THRESHOLD = 3  # Polls before switching to idle interval
 
 STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
 STUCK_SPOOL_PRESSURE_CLEAR_THRESHOLD = 0.12  # Hysteresis upper threshold
-STUCK_SPOOL_DWELL = 5.0  # Increased from 3.5 to 5.0 - debouncing for high-speed printing with fast extrudes/retracts (FPS is slow to react)
+STUCK_SPOOL_DWELL = 2.0  # Reduced from 5.0 to 2.0 - fire ~4s sooner to prevent print blemish from loss-of-extrusion
 STUCK_SPOOL_LOAD_GRACE = 8.0
 STUCK_SPOOL_MAX_ATTEMPTS = 2  # User requirement: max 2 attempts for stuck spool pre-engagement detection
 STUCK_SPOOL_STARTUP_GRACE = 60.0  # Suppress stuck spool detection for this many seconds after klippy:ready
@@ -7335,7 +7335,7 @@ class OAMSManager:
         #
         # State Transitions:
         #   IDLE ? TIMER_RUNNING: pressure <= stuck_spool_pressure_threshold (0.08) AND encoder stopped
-        #   TIMER_RUNNING ? ACTIVE: timer exceeds STUCK_SPOOL_DWELL (5.0s)
+        #   TIMER_RUNNING ? ACTIVE: timer exceeds STUCK_SPOOL_DWELL (2.0s)
         #   ACTIVE ? IDLE: pressure >= stuck_spool_pressure_clear_threshold (0.12) OR encoder moving
         #   TIMER_RUNNING ? IDLE: encoder moving OR pressure restored
         #
