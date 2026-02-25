@@ -324,6 +324,11 @@ class afcAMS(afcUnit):
 
         self.oams_name = config.get("oams", "oams1")
 
+        # When True, a stuck spool detected during printing triggers an automatic
+        # unload + reload + resume cycle instead of just pausing for user intervention.
+        # Defaults to False (pause-only) so the behaviour is opt-in.
+        self.stuck_spool_auto_recovery = config.getboolean("stuck_spool_auto_recovery", False)
+
         self.reactor = self.printer.get_reactor()
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
@@ -3853,7 +3858,18 @@ class afcAMS(afcUnit):
     # ------------------------------------------------------------------
 
     def _register_stuck_spool_recovery(self):
-        """Register the stuck spool recovery callback with oams_manager."""
+        """Register the stuck spool recovery callback with oams_manager.
+
+        Only registers when stuck_spool_auto_recovery=True in the config.
+        When disabled, oams_manager finds no callback and falls back to
+        pausing the print for user intervention.
+        """
+        if not self.stuck_spool_auto_recovery:
+            self.logger.info(
+                "Stuck spool auto-recovery disabled (stuck_spool_auto_recovery=False); "
+                "stuck spools during printing will pause the print instead"
+            )
+            return
         oams_manager = self._get_oams_manager()
         if oams_manager is None:
             self.logger.debug("Cannot register stuck spool recovery: oams_manager not available")
@@ -3864,7 +3880,7 @@ class afcAMS(afcUnit):
         oams_manager.register_stuck_spool_print_recovery_callback(
             self._on_stuck_spool_recovery_needed
         )
-        self.logger.debug("Registered stuck spool print recovery callback with oams_manager")
+        self.logger.info("Stuck spool auto-recovery enabled: unload+reload+resume on stuck detection")
 
     def _on_stuck_spool_recovery_needed(self, fps_name, lane_name):
         """Callback from oams_manager when stuck spool needs recovery during printing.
