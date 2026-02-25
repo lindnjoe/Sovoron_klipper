@@ -197,9 +197,6 @@ class Toolchanger:
                                     self.cmd_VERIFY_TOOL_DETECTED)
         self.gcode.register_command("ADJUST_Z_AFTER_TOOL_NOZZLE_HOME",
                                     self.cmd_ADJUST_Z_AFTER_TOOL_NOZZLE_HOME)
-        self.gcode.register_command("ADJUST_TOOL_Z_OFFSET",
-                                    self.cmd_ADJUST_TOOL_Z_OFFSET,
-                                    desc=self.cmd_ADJUST_TOOL_Z_OFFSET_help)
         self.fan_switcher = None
         self.tool_probe_endstop = None
         self.validate_tool_timer = None
@@ -729,67 +726,6 @@ class Toolchanger:
         if not tool:
             raise gcmd.error("ADJUST_Z_AFTER_TOOL_NOZZLE_HOME - no active tool")
         self._adjust_z_position_for_tool(tool)
-
-    cmd_ADJUST_TOOL_Z_OFFSET_help = (
-        "Atomically adjust a tool's gcode_z_offset: update in-memory, apply to the "
-        "gcode transform, and save to printer.cfg. "
-        "Usage: ADJUST_TOOL_Z_OFFSET [TOOL=<name>|T=<n>] <ADJUST=<delta>|Z=<value>>"
-    )
-    def cmd_ADJUST_TOOL_Z_OFFSET(self, gcmd):
-        """Adjust a tool's gcode_z_offset in three atomic steps:
-          1. Update the in-memory value via set_parameter() so _apply_param sets
-             tool.gcode_z_offset and the ToolGcodeTransform picks it up immediately.
-          2. Reset the gcode reported position so subsequent moves reference the new offset.
-          3. Persist to printer.cfg via save_parameter() / configfile.set().
-
-        Parameters:
-          TOOL=<name>    Tool section name (e.g. 'tool t0').  Defaults to active tool.
-          T=<n>          Tool number.  Defaults to active tool.
-          ADJUST=<delta> Add delta (mm) to the current gcode_z_offset.
-          Z=<value>      Set gcode_z_offset to this absolute value (mm).
-        Exactly one of ADJUST or Z must be supplied.
-        """
-        # Resolve target tool (name, number, or active)
-        tool_name = gcmd.get("TOOL", None)
-        tool_nr   = gcmd.get_int("T", None)
-        if tool_name:
-            tool = self.printer.lookup_object(tool_name)
-        elif tool_nr is not None:
-            tool = self.lookup_tool(tool_nr)
-            if not tool:
-                raise gcmd.error("ADJUST_TOOL_Z_OFFSET: T%d not found" % (tool_nr,))
-        else:
-            tool = self.active_tool
-            if not tool:
-                raise gcmd.error(
-                    "ADJUST_TOOL_Z_OFFSET: no TOOL specified and no active tool")
-
-        adjust = gcmd.get_float("ADJUST", None)
-        z      = gcmd.get_float("Z", None)
-        if adjust is None and z is None:
-            raise gcmd.error(
-                "ADJUST_TOOL_Z_OFFSET: specify ADJUST=<delta_mm> or Z=<value_mm>")
-        if adjust is not None and z is not None:
-            raise gcmd.error(
-                "ADJUST_TOOL_Z_OFFSET: specify either ADJUST or Z, not both")
-
-        current = tool.gcode_z_offset
-        new_z   = current + adjust if adjust is not None else z
-
-        # Step 1 – wait for move queue, then update in-memory offset
-        toolhead = self.printer.lookup_object('toolhead')
-        toolhead.wait_moves()
-        tool.set_parameter('gcode_z_offset', new_z)
-
-        # Step 2 – sync gcode reported position to the new offset
-        self.gcode_move.reset_last_position()
-
-        # Step 3 – persist to printer.cfg
-        tool.save_parameter('gcode_z_offset')
-
-        gcmd.respond_info(
-            "Tool {} gcode_z_offset: {:.6f} -> {:.6f}".format(tool.name, current, new_z)
-        )
 
     def _adjust_z_position_for_tool(self, tool):
         z_offset = tool.gcode_z_offset
