@@ -6463,6 +6463,18 @@ class OAMSManager:
 
             # Clear clog_active on resume and reset tracker
             if fps_state.clog.active:
+                # Force-enable the follower forward BEFORE clearing clog state.
+                # _ensure_forward_follower uses force=True so it always sends the
+                # hardware command, regardless of what fps_state.following says.
+                # This is necessary because operations during the clog pause (e.g.
+                # AFC/OAMS commands that call oam.set_oams_follower() directly)
+                # can change the hardware state without updating fps_state, leaving
+                # the in-memory tracking out of sync with the motor.  Without the
+                # force-send the elif guard below (which checks fps_state) would
+                # silently skip re-enabling, and the first layer after resume would
+                # have no filament feed, triggering an immediate re-clog.
+                if oams is not None and fps_state.current_spool_idx is not None:
+                    self._ensure_forward_follower(fps_name, fps_state, "print resume (clog)")
                 fps_state.reset_clog_tracker()
                 self.logger.info(f"Cleared clog state for {fps_name} on print resume")
                 if fps_state.current_lane is not None:
