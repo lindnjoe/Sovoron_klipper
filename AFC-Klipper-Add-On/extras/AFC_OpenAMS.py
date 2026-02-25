@@ -397,6 +397,22 @@ class afcAMS(afcUnit):
         """Check if this unit has OpenAMS hardware available."""
         return self.oams is not None
 
+    def get_encoder_clicks(self):
+        """Return the current encoder click count from the OAMS hardware.
+
+        Used by AFC to bracket a purge/poop command and detect clogs between
+        the extruder and hotend: if the encoder delta after purge is below the
+        configured minimum, the hotend is considered clogged.
+
+        :return int|None: Current encoder click count, or None if unavailable.
+        """
+        if self.oams is None:
+            return None
+        try:
+            return int(self.oams.encoder_clicks)
+        except Exception:
+            return None
+
     def get_lane_reset_command(self, lane, dis) -> str:
         """Return the GCode command used when a user requests a lane reset.
 
