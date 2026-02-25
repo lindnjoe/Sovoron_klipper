@@ -3886,7 +3886,7 @@ class afcAMS(afcUnit):
             self.logger.error(
                 f"Failed to schedule stuck spool recovery gcode for {lane_name}: {e}"
             )
-            # Recovery command failed — pause the print so the spool issue is not ignored
+            # Recovery command failed ï¿½ pause the print so the spool issue is not ignored
             try:
                 self.gcode.run_script_from_command("PAUSE")
             except Exception as pause_e:
@@ -3937,6 +3937,35 @@ class afcAMS(afcUnit):
             if not unload_ok:
                 raise RuntimeError(f"TOOL_UNLOAD returned False for {lane_name}")
 
+            # Wait for the hub sensor to settle before reloading.
+            # The AFC unload homing move retracts filament past the hub sensor,
+            # which clears it before TOOL_UNLOAD returns True.  However the
+            # filament can continue to move slightly after stopping (inertia /
+            # bowden spring-back) and briefly re-trigger the hub sensor.
+            # TOOL_LOAD checks hub.state at the very start; if it reads True it
+            # immediately returns False with "Hub not clear".  Polling here until
+            # the sensor actually reads clear (up to HUB_CLEAR_TIMEOUT seconds)
+            # absorbs that transient without requiring user intervention.
+            HUB_CLEAR_TIMEOUT  = 5.0   # seconds; far more than any real settle time
+            HUB_POLL_INTERVAL  = 0.1   # seconds between polls
+            hub = getattr(lane, 'hub_obj', None)
+            if hub is not None and hub.state:
+                reactor = self.printer.get_reactor()
+                waited  = 0.0
+                while hub.state and waited < HUB_CLEAR_TIMEOUT:
+                    reactor.pause(reactor.monotonic() + HUB_POLL_INTERVAL)
+                    waited += HUB_POLL_INTERVAL
+                if hub.state:
+                    self.logger.warning(
+                        f"Stuck spool recovery: hub sensor still active {waited:.1f}s "
+                        f"after unload of {lane_name} â€” proceeding with TOOL_LOAD anyway"
+                    )
+                else:
+                    self.logger.info(
+                        f"Stuck spool recovery: hub cleared after {waited:.1f}s settle "
+                        f"post-unload for {lane_name}"
+                    )
+
             self.logger.info(f"Stuck spool recovery: reloading {lane_name}")
             load_ok = self.afc.TOOL_LOAD(lane, set_start_time=True)
             if not load_ok:
@@ -3947,7 +3976,7 @@ class afcAMS(afcUnit):
             self._stuck_spool_recovery_fallback(fps_name, lane_name, str(e))
             return
 
-        # Recovery succeeded — clear OAMS error state then resume
+        # Recovery succeeded ï¿½ clear OAMS error state then resume
         self.logger.info(
             f"Stuck spool auto-recovery SUCCEEDED for {lane_name}, resuming print"
         )
