@@ -3876,13 +3876,21 @@ class afcAMS(afcUnit):
             f"Stuck spool recovery scheduled: fps={fps_name}, lane={lane_name}"
         )
         try:
+            # G-code parameters cannot contain spaces; strip the "fps " prefix so that
+            # "fps fps1" becomes "fps1" (the handler reconstructs the full name).
+            fps_id = fps_name.split(" ", 1)[1] if fps_name and fps_name.startswith("fps ") else (fps_name or "")
             self.gcode.run_script_from_command(
-                f"_AFC_OAMS_STUCK_RECOVERY LANE={lane_name} FPS={fps_name}"
+                f"_AFC_OAMS_STUCK_RECOVERY LANE={lane_name} FPS={fps_id}"
             )
         except Exception as e:
             self.logger.error(
                 f"Failed to schedule stuck spool recovery gcode for {lane_name}: {e}"
             )
+            # Recovery command failed — pause the print so the spool issue is not ignored
+            try:
+                self.gcode.run_script_from_command("PAUSE")
+            except Exception as pause_e:
+                self.logger.error(f"Failed to pause print after recovery command failure: {pause_e}")
 
     def _cmd_stuck_spool_recovery(self, gcmd):
         """Internal gcode command: full unload + reload + resume for a stuck spool.
@@ -3891,7 +3899,10 @@ class afcAMS(afcUnit):
         Triggered by oams_manager when stuck spool is detected post-engagement during printing.
         """
         lane_name = gcmd.get('LANE', None)
-        fps_name  = gcmd.get('FPS', None)
+        # FPS is passed without the "fps " prefix (G-code parameters can't have spaces).
+        # Reconstruct the full internal name expected by oams_manager ("fps <id>").
+        fps_id    = gcmd.get('FPS', None)
+        fps_name  = f"fps {fps_id}" if fps_id and not fps_id.startswith("fps ") else fps_id
 
         lane = self.lanes.get(lane_name) if lane_name else None
         if lane is None:
