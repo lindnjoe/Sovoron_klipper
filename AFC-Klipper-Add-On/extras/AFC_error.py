@@ -27,6 +27,7 @@ class afcError:
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.errorLog= {}
         self.pause= False
+        self.pause_in_progress = False
 
     def handle_connect(self):
         """
@@ -106,11 +107,24 @@ class afcError:
         pause_print function verifies that the printer is homed and not currently paused before calling
         the base pause command
         """
+        if self.pause_in_progress:
+            self.logger.debug("pause_print: Pause already in progress, skipping duplicate request")
+            return
+
+        if self.afc.function.is_paused():
+            self.logger.debug("pause_print: Printer is already paused, skipping")
+            return
+
+        self.pause_in_progress = True
         self.set_error_state( True )
         self.logger.info ('PAUSING')
-        self.afc.gcode.run_script_from_command('PAUSE')
-        self.logger.debug("After User Pause")
-        self.afc.function.log_toolhead_pos()
+        try:
+            self.pause_resume.send_pause_command()
+            self.afc.gcode.run_script_from_command("AFC_PAUSE")
+            self.logger.debug("After User Pause")
+            self.afc.function.log_toolhead_pos()
+        finally:
+            self.pause_in_progress = False
 
     def set_error_state(self, state=False):
         logging.warning("AFC debug: setting error state {}".format(state))
@@ -125,7 +139,8 @@ class afcError:
         logging.warning(msg)
         # Handle AFC errors
         self.logger.error( message=msg, stack_name=inspect.stack()[level].function )
-        if pause: self.pause_print()
+        if pause:
+            self.pause_print()
 
     cmd_RESET_FAILURE_help = "CLEAR STATUS ERROR"
     def cmd_RESET_FAILURE(self, gcmd):
