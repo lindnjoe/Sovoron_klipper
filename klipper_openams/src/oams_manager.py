@@ -5926,6 +5926,8 @@ class OAMSManager:
             oams: OAMS object controlling the hardware (can be None, will be looked up)
             direction: Follower direction (0=reverse, 1=forward)
             context: Description of why follower is being enabled (for logging)
+            force: If True, send the MCU command even if cached state matches.
+                   Use on pause/recovery paths where hardware state may have drifted.
 
         State Updates:
             - fps_state.following: Set to True on success
@@ -7143,6 +7145,7 @@ class OAMSManager:
                         oams_obj,
                         1,
                         "stuck load - keep follower active",
+                        force=True,  # Force MCU command even if cache says already enabled
                     )
 
             # NOTE: Do NOT call retry sequence from this timer callback context!
