@@ -1003,17 +1003,9 @@ class afc:
         self.gcode_move.move_with_transform(newpos, self._get_resume_speed() )
         self.function.log_toolhead_pos("Resume prev xy: ")
 
-        # Preserve any Z babystep applied between save_pos() and now; without this
-        # a SET_GCODE_OFFSET Z_ADJUST issued during loading/purging is silently lost.
-        z_base_delta   = self.gcode_move.base_position[2]   - self.base_position[2]
-        z_homing_delta = self.gcode_move.homing_position[2] - self.homing_position[2]
-
-        # Restore gcode position state
+        # Update GCODE STATE variables
         self.gcode_move.base_position       = list(self.base_position)
         self.gcode_move.homing_position     = list(self.homing_position)
-
-        self.gcode_move.base_position[2]   += z_base_delta
-        self.gcode_move.homing_position[2] += z_homing_delta
 
         # Restore absolute coords
         self.gcode_move.absolute_coord      = self.absolute_coord
