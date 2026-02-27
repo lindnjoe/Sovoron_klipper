@@ -3861,8 +3861,7 @@ class afcAMS(afcUnit):
         """Register the stuck spool recovery callback with oams_manager.
 
         Only registers when stuck_spool_auto_recovery=True in the config.
-        When disabled, oams_manager finds no callback and falls back to
-        pausing the print for user intervention.
+        When disabled, stuck spools during printing pause for user intervention.
         """
         if not self.stuck_spool_auto_recovery:
             self.logger.debug(
@@ -3992,7 +3991,7 @@ class afcAMS(afcUnit):
             self._stuck_spool_recovery_fallback(fps_name, lane_name, str(e))
             return
 
-        # Recovery succeeded � clear OAMS error state then resume
+        # Recovery succeeded - clear OAMS error state then resume
         self.logger.info(
             f"Stuck spool auto-recovery SUCCEEDED for {lane_name}, resuming print"
         )

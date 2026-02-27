@@ -7145,6 +7145,7 @@ class OAMSManager:
                         oams_obj,
                         1,
                         "stuck load - keep follower active",
+                        force=True,  # Force MCU command even if cache says already enabled
                     )
 
             # NOTE: Do NOT call retry sequence from this timer callback context!

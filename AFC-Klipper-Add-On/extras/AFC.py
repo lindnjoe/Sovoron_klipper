@@ -1008,7 +1008,7 @@ class afc:
         z_base_delta   = self.gcode_move.base_position[2]   - self.base_position[2]
         z_homing_delta = self.gcode_move.homing_position[2] - self.homing_position[2]
 
-        # Update GCODE STATE variables
+        # Restore gcode position state
         self.gcode_move.base_position       = list(self.base_position)
         self.gcode_move.homing_position     = list(self.homing_position)
 
