@@ -223,13 +223,9 @@ class Toolchanger:
         self.gcode_transform.next_transform = self.gcode_move.set_move_transform(self.gcode_transform, force=True)
 
     def _handle_command_error(self):
-        # Only clear the active tool and its transform if the error happened
-        # during a tool change (STATUS_CHANGING) or initialization
-        # (STATUS_INITIALIZING), where the physical tool state is genuinely
-        # uncertain.  Errors that fire while STATUS_READY (e.g. an AFC
-        # lane dock/undock failure) leave the currently-mounted tool
-        # unchanged, so preserving active_tool and gcode_transform.tool
-        # keeps the Z/XY offsets correct for the rest of the print.
+        # Only clear active_tool when a tool change or init was in progress.
+        # Errors during STATUS_READY (e.g. AFC lane failures) leave the mounted
+        # tool unchanged so Z/XY offsets remain valid for the rest of the print.
         was_mid_change = self.status in (STATUS_CHANGING, STATUS_INITIALIZING)
         self.status = STATUS_UNINITALIZED
         self.tool_missing_helper.deactivate()

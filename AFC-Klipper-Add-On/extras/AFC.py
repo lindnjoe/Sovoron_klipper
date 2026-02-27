@@ -1003,12 +1003,8 @@ class afc:
         self.gcode_move.move_with_transform(newpos, self._get_resume_speed() )
         self.function.log_toolhead_pos("Resume prev xy: ")
 
-        # Preserve any Z babystep (SET_GCODE_OFFSET Z_ADJUST) that was applied
-        # between save_pos()/tool_swap() and now.  Both base_position[2] and
-        # homing_position[2] are shifted by the same amount on every babystep,
-        # so we capture the delta before restoring the saved snapshots and
-        # re-apply it afterwards.  Without this, any babystep done while AFC is
-        # loading/purging filament is silently discarded by the restore.
+        # Preserve any Z babystep applied between save_pos() and now; without this
+        # a SET_GCODE_OFFSET Z_ADJUST issued during loading/purging is silently lost.
         z_base_delta   = self.gcode_move.base_position[2]   - self.base_position[2]
         z_homing_delta = self.gcode_move.homing_position[2] - self.homing_position[2]
 
@@ -1016,11 +1012,8 @@ class afc:
         self.gcode_move.base_position       = list(self.base_position)
         self.gcode_move.homing_position     = list(self.homing_position)
 
-        # Re-apply babystep deltas so Z adjustments survive the tool change
-        if z_base_delta:
-            self.gcode_move.base_position[2]   += z_base_delta
-        if z_homing_delta:
-            self.gcode_move.homing_position[2] += z_homing_delta
+        self.gcode_move.base_position[2]   += z_base_delta
+        self.gcode_move.homing_position[2] += z_homing_delta
 
         # Restore absolute coords
         self.gcode_move.absolute_coord      = self.absolute_coord

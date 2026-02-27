@@ -5926,6 +5926,8 @@ class OAMSManager:
             oams: OAMS object controlling the hardware (can be None, will be looked up)
             direction: Follower direction (0=reverse, 1=forward)
             context: Description of why follower is being enabled (for logging)
+            force: If True, send the MCU command even if cached state matches.
+                   Use on pause/recovery paths where hardware state may have drifted.
 
         State Updates:
             - fps_state.following: Set to True on success

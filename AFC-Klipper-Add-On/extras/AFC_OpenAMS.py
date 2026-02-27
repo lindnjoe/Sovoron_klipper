@@ -3865,7 +3865,7 @@ class afcAMS(afcUnit):
         pausing the print for user intervention.
         """
         if not self.stuck_spool_auto_recovery:
-            self.logger.info(
+            self.logger.debug(
                 "Stuck spool auto-recovery disabled (stuck_spool_auto_recovery=False); "
                 "stuck spools during printing will pause the print instead"
             )
@@ -3902,7 +3902,7 @@ class afcAMS(afcUnit):
             self.logger.error(
                 f"Failed to schedule stuck spool recovery gcode for {lane_name}: {e}"
             )
-            # Recovery command failed � pause the print so the spool issue is not ignored
+            # Recovery command failed - pause the print so the spool issue is not ignored
             try:
                 self.gcode.run_script_from_command("PAUSE")
             except Exception as pause_e:
