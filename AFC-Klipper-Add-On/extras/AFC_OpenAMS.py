@@ -3919,7 +3919,9 @@ class afcAMS(afcUnit):
         fps_id    = gcmd.get('FPS', None)
         fps_name  = f"fps {fps_id}" if fps_id and not fps_id.startswith("fps ") else fps_id
 
-        lane = self.lanes.get(lane_name) if lane_name else None
+        # Use the global AFC lane registry so this works regardless of which
+        # AFC_OpenAMS unit registered the gcode command first.
+        lane = self.afc.lanes.get(lane_name) if lane_name else None
         if lane is None:
             self.logger.error(
                 f"Stuck spool recovery: lane '{lane_name}' not found, falling back to pause"
