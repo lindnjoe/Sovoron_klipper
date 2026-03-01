@@ -81,7 +81,8 @@ def _patch_moonraker_db_methods(moonraker):
 
 # Configuration constants
 PAUSE_DISTANCE = 60
-MIN_ENCODER_DIFF = 3  # Increased from 1 to 3 - prevents false positives during print stalls/brief pauses
+MIN_ENCODER_DIFF = 3          # Minimum encoder clicks per 2-second poll to be considered "moving"
+SLOW_PRINT_ENCODER_WINDOW = 10.0  # Rolling window (s) to accumulate encoder movement for slow-print detection
 FILAMENT_PATH_LENGTH_FACTOR = 1.14
 MONITOR_ENCODER_PERIOD = 2.0
 MONITOR_ENCODER_PERIOD_IDLE = 4.0  # Longer interval when idle
@@ -882,9 +883,11 @@ class FPSState:
         self.monitor_pause_timer           = None
         self.monitor_load_next_spool_timer = None
 
-        # Encoder tracking
+        # Encoder tracking (instantaneous — prev vs current sample)
         self.encoder_sample_prev    = None
         self.encoder_sample_current = None
+        # Rolling window for slow-print stuck-spool detection: list of (timestamp, encoder_value)
+        self.encoder_history: list = []
 
         # Follower state
         self.following = False
@@ -927,9 +930,36 @@ class FPSState:
             return abs(self.encoder_sample_current - self.encoder_sample_prev)
         return None
 
+    def record_stuck_check_encoder_sample(self, value, now):
+        """Like record_encoder_sample but also maintains the rolling encoder history
+        used by encoder_moved_in_window() to guard against slow-print false positives."""
+        diff = self.record_encoder_sample(value)
+        if value is not None:
+            self.encoder_history.append((now, value))
+            cutoff = now - SLOW_PRINT_ENCODER_WINDOW
+            while self.encoder_history and self.encoder_history[0][0] < cutoff:
+                self.encoder_history.pop(0)
+        return diff
+
+    def encoder_moved_in_window(self, threshold):
+        """Return True if the encoder accumulated >= threshold clicks across the rolling window.
+
+        Used alongside the per-poll check to prevent false stuck-spool triggers during
+        slow fine-detail printing where each 2-second sample may show < MIN_ENCODER_DIFF
+        clicks even though the filament is clearly moving over a longer period.
+        """
+        if len(self.encoder_history) < 2:
+            return False
+        total = sum(
+            abs(self.encoder_history[i][1] - self.encoder_history[i - 1][1])
+            for i in range(1, len(self.encoder_history))
+        )
+        return total >= threshold
+
     def clear_encoder_samples(self):
         self.encoder_sample_prev    = None
         self.encoder_sample_current = None
+        self.encoder_history        = []
         self.load_stuck_consecutive_count = 0
 
     def reset_runout_positions(self):
@@ -7330,9 +7360,18 @@ class OAMSManager:
 
             return
 
-        # Check encoder movement to differentiate stuck spool from normal print pause
-        encoder_diff = fps_state.record_encoder_sample(encoder_value)
-        encoder_moving = encoder_diff is not None and encoder_diff >= MIN_ENCODER_DIFF
+        # Check encoder movement to differentiate stuck spool from normal print pause.
+        # Two-tier check:
+        #   1. Fast check: >= MIN_ENCODER_DIFF clicks in this 2-second poll window.
+        #   2. Slow-print check: >= MIN_ENCODER_DIFF clicks accumulated across the last
+        #      SLOW_PRINT_ENCODER_WINDOW seconds.  Prevents false positives during fine-detail
+        #      printing (ironing, skin, slow perimeters) where each individual 2-second sample
+        #      may show almost no movement even though the filament is clearly feeding.
+        encoder_diff = fps_state.record_stuck_check_encoder_sample(encoder_value, now)
+        encoder_moving = (
+            (encoder_diff is not None and encoder_diff >= MIN_ENCODER_DIFF)
+            or fps_state.encoder_moved_in_window(MIN_ENCODER_DIFF)
+        )
 
         # =======================================================================================
         # HYSTERESIS STATE MACHINE: Stuck Spool Detection
