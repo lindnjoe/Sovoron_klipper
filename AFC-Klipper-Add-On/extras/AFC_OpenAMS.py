@@ -3192,12 +3192,28 @@ class afcAMS(afcUnit):
                 if spool_idx is None or spool_idx < 0:
                     continue
 
-                # Sync hub sensor -> loaded_to_hub
+                # Sync hub sensor -> loaded_to_hub + virtual hub sensor objects.
+                # Must mirror what _on_hub_changed does: update the lane attribute AND
+                # drive switch_pin_callback + runout_helper so the virtual hub sensor
+                # AFC reads for hub-runout detection stays in sync with hardware.
                 if sync_hub and hub_values is not None and spool_idx < len(hub_values):
                     hw_hub = bool(hub_values[spool_idx])
                     current = getattr(lane, "loaded_to_hub", False)
                     if hw_hub != current:
                         lane.loaded_to_hub = hw_hub
+                        hub_obj = getattr(lane, "hub_obj", None)
+                        if hub_obj is not None:
+                            try:
+                                if hasattr(hub_obj, "switch_pin_callback"):
+                                    hub_obj.switch_pin_callback(eventtime, hw_hub)
+                                fila = getattr(hub_obj, "fila", None)
+                                if fila is not None and hasattr(fila, "runout_helper"):
+                                    fila.runout_helper.note_filament_present(eventtime, hw_hub)
+                            except Exception as hub_e:
+                                self.logger.debug(
+                                    f"sync_openams_sensors: failed to update virtual hub sensor "
+                                    f"for {lane.name}: {hub_e}"
+                                )
                         self.logger.debug(
                             f"sync_openams_sensors: corrected loaded_to_hub "
                             f"{current}->{hw_hub} for {lane.name}"
