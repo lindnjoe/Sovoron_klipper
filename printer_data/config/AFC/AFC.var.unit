@@ -12,7 +12,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -267,12 +267,12 @@
             "remember_spool": false,
             "spool_id": 42,
             "color": "#ffffff",
-            "weight": 643.351761441237,
+            "weight": 643.3463326386177,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 1920.7991562500004,
             "td1_data": {},
             "endstops": "load,tool_start,buffer_advance,buffer_trailing,lane0_prep,lane0_load,lane0_buffer"
@@ -369,7 +369,7 @@
         }
     },
     "system": {
-        "current_load": null,
+        "current_load": "lane3",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
