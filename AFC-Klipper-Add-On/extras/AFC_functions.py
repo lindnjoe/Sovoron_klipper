@@ -489,7 +489,7 @@ class afcFunction:
         # self.reactor.update_timer( self.activate_extruder_cb, self.reactor.monotonic() + 5 )
         self._handle_activate_extruder(0)
 
-    def _handle_activate_extruder(self, eventtime):
+    def _handle_activate_extruder(self, eventtime, clear_active_spool=True):
         """
         Supposed to be a callback function from timer, currently this is not called from timer event.
         TODO: Update this functionality before pushing to main/dev or once fully moved away from KTC
@@ -498,7 +498,8 @@ class afcFunction:
         cur_lane_loaded = self.get_current_lane_obj()
         self.logger.debug("Activating extruder lane: {}".format(cur_lane_loaded.name if cur_lane_loaded else "None"))
 
-        self.afc.spool.set_active_spool('')
+        if clear_active_spool:
+            self.afc.spool.set_active_spool('')
         # Disable extruder steppers for non active lanes
         for key, obj in self.afc.lanes.items():
             if cur_lane_loaded is None or key != cur_lane_loaded.name:
