@@ -89,7 +89,7 @@ MONITOR_ENCODER_PERIOD_IDLE = 4.0  # Longer interval when idle
 MONITOR_ENCODER_SPEED_GRACE = 3.0  # Increased from 2.0 to 3.0 - more grace time before stuck detection
 AUTO_DETECT_INSERT_GRACE = 10.0  # Seconds to suppress auto-detect after unload completes
 MIN_EXTRUDER_ENGAGEMENT_DELTA = 0.5  # Minimum extruder movement to confirm engagement
-ENGAGEMENT_SUPPRESSION_WINDOW = 10.0  # Increased from 6.0 to 10.0 - longer suppression after engagement to prevent false clog detection
+ENGAGEMENT_SUPPRESSION_WINDOW = 5.0  # Reduced from 10.0 - shorter window allows stuck detection to catch stalled motors sooner
 LOAD_STUCK_CONSECUTIVE_THRESHOLD = 2  # Require N consecutive stuck readings before triggering during low-pressure+encoder-stopped case (prevents COASTING false positives)
 CLOG_CHECK_INTERVAL = 8.0  # Minimum seconds between clog checks to reduce log/CPU churn
 AFC_DELEGATION_TIMEOUT = 30.0
@@ -883,7 +883,7 @@ class FPSState:
         self.monitor_pause_timer           = None
         self.monitor_load_next_spool_timer = None
 
-        # Encoder tracking (instantaneous — prev vs current sample)
+        # Encoder tracking (instantaneous ï¿½ prev vs current sample)
         self.encoder_sample_prev    = None
         self.encoder_sample_current = None
         # Rolling window for slow-print stuck-spool detection: list of (timestamp, encoder_value)
@@ -3792,7 +3792,28 @@ class OAMSManager:
                                 f"Filament engagement verified for {lane_name} "
                                 f"(encoder moved {encoder_delta} clicks during {engagement_length:.1f}mm extrusion)"
                             )
+                            # Clear engagement_in_progress BEFORE post-load extrusion so stuck
+                            # detection can protect against MCU brownout from a stalled motor.
+                            # The engagement_checked_at suppression window still prevents false
+                            # triggers for a short period after this point.
+                            fps_state.engagement_in_progress = False
                             if post_length is not None and post_speed is not None and post_length > 0:
+                                # Re-check FPS pressure before continuing - a high pressure
+                                # reading after engagement means the spool is stuck/tangled and
+                                # further extrusion risks stalling the follower motor hard enough
+                                # to brownout the MCU.
+                                try:
+                                    fps_pressure_pre_complete = oams.fps_value
+                                    if fps_pressure_pre_complete >= self.engagement_pressure_threshold:
+                                        self.logger.warning(
+                                            f"FPS pressure too high ({fps_pressure_pre_complete:.2f}) before "
+                                            f"completing load for {lane_name} - spool may be stuck, "
+                                            f"skipping post-engagement extrusion to protect MCU"
+                                        )
+                                        fps_state.engaged_with_extruder = False
+                                        return False
+                                except Exception:
+                                    pass  # If we can't read pressure, proceed cautiously
                                 self.logger.debug(
                                     f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
                                     f"at {post_speed:.0f}mm/min"
@@ -3827,7 +3848,21 @@ class OAMSManager:
                                     f"(encoder moved {encoder_delta} clicks after retry during "
                                     f"{engagement_length:.1f}mm extrusion)"
                                 )
+                                # Clear engagement_in_progress before post-load extrusion
+                                fps_state.engagement_in_progress = False
                                 if post_length is not None and post_speed is not None and post_length > 0:
+                                    # Re-check FPS pressure before continuing
+                                    try:
+                                        fps_pressure_pre_complete = oams.fps_value
+                                        if fps_pressure_pre_complete >= self.engagement_pressure_threshold:
+                                            self.logger.warning(
+                                                f"FPS pressure too high ({fps_pressure_pre_complete:.2f}) before "
+                                                f"completing load for {lane_name} - spool may be stuck"
+                                            )
+                                            fps_state.engaged_with_extruder = False
+                                            return False
+                                    except Exception:
+                                        pass
                                     self.logger.debug(
                                         f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
                                         f"at {post_speed:.0f}mm/min"
@@ -3855,6 +3890,8 @@ class OAMSManager:
                                 f"Filament engagement verified for {lane_name} "
                                 f"(FPS pressure {fps_pressure:.2f}, encoder unavailable)"
                             )
+                            # Clear engagement_in_progress before post-load extrusion
+                            fps_state.engagement_in_progress = False
                             if post_length is not None and post_speed is not None and post_length > 0:
                                 self.logger.debug(
                                     f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
@@ -7080,19 +7117,29 @@ class OAMSManager:
             fps_state.load_pressure_dropped = True
             self.logger.debug(f"FPS pressure dropped to {pressure:.2f} during load - filament moving through buffer")
 
-        # Suppress stuck detection DURING engagement verification
-        # High FPS pressure during engagement extrusion is NORMAL and expected
-        if fps_state.engagement_in_progress:
-            self.logger.debug("Suppressing stuck detection during engagement verification (high pressure is normal)")
-            return
-
-        # Suppress stuck detection after successful engagement verification
-        # Prevents false triggers when filament is actually loaded correctly
-        if fps_state.engaged_with_extruder and fps_state.engagement_checked_at is not None:
-            time_since_engagement = now - fps_state.engagement_checked_at
-            if time_since_engagement < ENGAGEMENT_SUPPRESSION_WINDOW:
-                self.logger.debug(f"Suppressing stuck detection for {ENGAGEMENT_SUPPRESSION_WINDOW - time_since_engagement:.1f}s after successful engagement")
+        # Safety override: if FPS pressure is critically high (>= 0.95) AND encoder
+        # is not moving, the follower motor is likely stalled against a stuck spool.
+        # This can brownout the MCU, so abort regardless of engagement suppression.
+        if pressure >= 0.95 and encoder_diff is not None and encoder_diff < MIN_ENCODER_DIFF:
+            self.logger.warning(
+                f"CRITICAL: FPS pressure {pressure:.2f} with no encoder movement on {fps_name} "
+                f"- follower motor likely stalled, aborting to protect MCU"
+            )
+            # Fall through to stuck detection logic below (skip suppression)
+        else:
+            # Suppress stuck detection DURING engagement verification
+            # High FPS pressure during engagement extrusion is NORMAL and expected
+            if fps_state.engagement_in_progress:
+                self.logger.debug("Suppressing stuck detection during engagement verification (high pressure is normal)")
                 return
+
+            # Suppress stuck detection after successful engagement verification
+            # Prevents false triggers when filament is actually loaded correctly
+            if fps_state.engaged_with_extruder and fps_state.engagement_checked_at is not None:
+                time_since_engagement = now - fps_state.engagement_checked_at
+                if time_since_engagement < ENGAGEMENT_SUPPRESSION_WINDOW:
+                    self.logger.debug(f"Suppressing stuck detection for {ENGAGEMENT_SUPPRESSION_WINDOW - time_since_engagement:.1f}s after successful engagement")
+                    return
 
         # Check for stuck spool conditions:
         # Both conditions require encoder not moving + high pressure
@@ -7826,7 +7873,7 @@ class OAMSManager:
 
                 # Enable follower forward during clog pause for manual recovery.
                 # force=True guarantees the MCU command is sent even if the cache
-                # already shows the follower as enabled — hardware state may have
+                # already shows the follower as enabled ï¿½ hardware state may have
                 # drifted (e.g. brief power glitch or MCU reconnect) and without
                 # force the command would be silently skipped, leaving the follower
                 # stopped despite the log saying it was enabled.
