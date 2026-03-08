@@ -116,9 +116,9 @@ class OAMS:
         self.action_status_value = None
 
         # MCU communication
-        self.mcu.register_response(self._oams_action_status, "oams_action_status")
-        self.mcu.register_response(self._oams_cmd_stats, "oams_cmd_stats")
-        self.mcu.register_response(self._oams_cmd_current_status, "oams_cmd_current_status")
+        self._register_mcu_response(self._oams_action_status, "oams_action_status")
+        self._register_mcu_response(self._oams_cmd_stats, "oams_cmd_stats")
+        self._register_mcu_response(self._oams_cmd_current_status, "oams_cmd_current_status")
         self.mcu.register_config_callback(self._build_config)
 
         self.name = config.get_name()
@@ -160,6 +160,18 @@ class OAMS:
                 )
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
+
+    def _register_mcu_response(self, callback, message_name, oid=None):
+        """Register MCU message callbacks across Klipper API versions."""
+        if hasattr(self.mcu, "register_serial_response"):
+            self.mcu.register_serial_response(callback, message_name, oid)
+            return
+        if hasattr(self.mcu, "register_response"):
+            self.mcu.register_response(callback, message_name, oid)
+            return
+        raise self.printer.config_error(
+            f"MCU '{self.mcu.get_name()}' does not support response registration"
+        )
 
     def _resolve_lane_name(self, spool_idx):
         if self.hardware_service is None:
