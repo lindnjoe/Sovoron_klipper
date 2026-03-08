@@ -163,11 +163,15 @@ class OAMS:
 
     def _register_mcu_response(self, callback, message_name, oid=None):
         """Register MCU message callbacks across Klipper API versions."""
-        if hasattr(self.mcu, "register_serial_response"):
-            self.mcu.register_serial_response(callback, message_name, oid)
-            return
         if hasattr(self.mcu, "register_response"):
             self.mcu.register_response(callback, message_name, oid)
+            return
+        serial = getattr(self.mcu, "_serial", None)
+        if serial is not None and hasattr(serial, "register_response"):
+            serial.register_response(callback, message_name, oid)
+            return
+        if hasattr(self.mcu, "register_serial_response"):
+            self.mcu.register_serial_response(callback, message_name, oid)
             return
         raise self.printer.config_error(
             f"MCU '{self.mcu.get_name()}' does not support response registration"
