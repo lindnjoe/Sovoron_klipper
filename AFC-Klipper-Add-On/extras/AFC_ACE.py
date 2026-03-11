@@ -245,6 +245,13 @@ class afcACE(afcUnit):
         # Sync initial slot loaded state to lanes
         self._sync_slot_loaded_state()
 
+        # Hook runout detection into AFC's infinite spool system
+        if self._backend.backend_type == BACKEND_ACEPRO:
+            self._hook_acepro_runout_monitor()
+        else:
+            # DuckACE: use periodic slot status polling for runout detection
+            self._start_slot_status_monitor()
+
     def _sync_slot_loaded_state(self):
         """Sync ACE slot status to lane loaded_to_hub for virtual sensor states.
 
@@ -647,6 +654,213 @@ class afcACE(afcUnit):
                         lane.material = material
                     if color and hasattr(lane, "color"):
                         lane.color = self._ace_color_to_hex(color)
+
+    # ---- Runout / Infinite Spool Integration ----
+
+    def check_runout(self, cur_lane):
+        """Override: ACE supports runout detection during printing."""
+        try:
+            return self.afc.function.is_printing()
+        except Exception:
+            return False
+
+    def _get_lane_for_global_tool(self, global_tool):
+        """Map an ACEPRO global tool index back to the AFC lane on this unit.
+
+        Returns the lane object or None.
+        """
+        local_slot = global_tool - (self.ace_instance_index * self.SLOTS_PER_UNIT)
+        if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
+            return None
+        for lane in self.lanes.values():
+            if self._get_local_slot_for_lane(lane) == local_slot:
+                return lane
+        return None
+
+    def _hook_acepro_runout_monitor(self):
+        """Hook ACEPRO's RunoutMonitor to route runout events through AFC.
+
+        ACEPRO's RunoutMonitor detects filament runout via the toolhead sensor.
+        By default it handles the swap itself (pause → tool_change → resume).
+        When AFC is managing the lanes, we intercept the runout event and let
+        AFC's infinite spool system handle the unload/load/resume sequence.
+
+        This is the same pattern OpenAMS uses: hardware detects the runout,
+        AFC handles the swap.
+        """
+        ace_obj = self._cached_ace_obj
+        if ace_obj is None:
+            return
+
+        # ACEPRO manager has a runout_monitor attribute
+        monitor = getattr(ace_obj, "runout_monitor", None)
+        if monitor is None:
+            self.logger.debug(
+                f"ACE unit {self.name}: no runout_monitor found on ACE manager, "
+                "skipping ACEPRO runout hook"
+            )
+            return
+
+        # Save original handler for potential fallback
+        original_handler = getattr(monitor, "_handle_runout_detected", None)
+        if original_handler is None:
+            return
+
+        # Already hooked by another afcACE instance
+        if getattr(monitor, "_afc_runout_hooked", False):
+            self.logger.debug(f"ACE unit {self.name}: runout monitor already hooked")
+            return
+
+        # Build a map of all afcACE units for tool→lane resolution
+        # We need this because a single RunoutMonitor covers all ACE instances
+        afc_ace_units = []
+        for unit in self.afc.units.values():
+            if getattr(unit, "type", None) == "ACE":
+                afc_ace_units.append(unit)
+
+        unit_ref = self  # capture for closure
+
+        def _afc_handle_runout(tool_index):
+            """AFC-aware replacement for RunoutMonitor._handle_runout_detected.
+
+            Maps the ACEPRO tool index to an AFC lane and triggers AFC's
+            infinite spool system instead of ACEPRO's own swap logic.
+            """
+            # Find the AFC lane for this tool
+            lane = None
+            for ace_unit in afc_ace_units:
+                lane = ace_unit._get_lane_for_global_tool(tool_index)
+                if lane is not None:
+                    break
+
+            if lane is None:
+                unit_ref.logger.warning(
+                    f"ACE runout on T{tool_index}: no matching AFC lane found, "
+                    "falling back to ACEPRO handler"
+                )
+                return original_handler(tool_index)
+
+            unit_ref.logger.info(
+                f"ACE runout detected on T{tool_index} → lane {lane.name}"
+            )
+
+            # Update virtual sensor state: slot is now empty
+            lane.loaded_to_hub = False
+
+            # Check if lane is in a state where runout handling applies
+            if lane.status not in (AFCLaneState.TOOLED, AFCLaneState.LOADED):
+                unit_ref.logger.info(
+                    f"ACE runout on {lane.name}: lane status is {lane.status}, "
+                    "not in active printing state - ignoring"
+                )
+                return
+
+            if lane.runout_lane:
+                unit_ref.logger.info(
+                    f"ACE infinite spool: {lane.name} → {lane.runout_lane}"
+                )
+                # Ensure AFC.current is set so _perform_infinite_runout works
+                try:
+                    current = getattr(unit_ref.afc, "current", None)
+                    if current != lane.name:
+                        unit_ref.afc.current = lane.name
+                except Exception:
+                    pass
+
+                try:
+                    lane._perform_infinite_runout()
+                except Exception as e:
+                    unit_ref.logger.error(
+                        f"ACE infinite spool failed for {lane.name}: {e}\n"
+                        f"{traceback.format_exc()}"
+                    )
+                    # Fall back to pause
+                    lane._perform_pause_runout()
+            else:
+                unit_ref.logger.info(
+                    f"ACE runout on {lane.name}: no runout_lane configured, pausing"
+                )
+                lane._perform_pause_runout()
+
+        monitor._handle_runout_detected = _afc_handle_runout
+        monitor._afc_runout_hooked = True
+
+        # Disable ACEPRO's own endless spool so it doesn't also try to swap
+        state = getattr(ace_obj, "state", None)
+        if isinstance(state, dict):
+            state["ace_endless_spool_enabled"] = False
+
+        self.logger.info(
+            f"ACE unit {self.name}: hooked ACEPRO runout monitor for AFC infinite spool"
+        )
+
+    def _start_slot_status_monitor(self):
+        """Start periodic slot status monitoring for runout detection.
+
+        This is a fallback for DuckACE (which lacks a RunoutMonitor) or when
+        the ACEPRO runout hook isn't available. Polls slot status every ~1s
+        during printing to detect ready→empty transitions.
+        """
+        self._prev_slot_states: Dict[str, bool] = {}
+        self._slot_monitor_timer = self.afc.reactor.register_timer(
+            self._poll_slot_status,
+            self.afc.reactor.monotonic() + 5.0
+        )
+        self.logger.info(
+            f"ACE unit {self.name}: started slot status monitor for runout detection"
+        )
+
+    def _poll_slot_status(self, eventtime):
+        """Periodic callback to detect slot status changes during printing."""
+        try:
+            if not self.afc.function.is_printing():
+                return eventtime + 2.0
+        except Exception:
+            return eventtime + 2.0
+
+        backend = self._get_backend()
+        if backend is None:
+            return eventtime + 2.0
+
+        for lane in self.lanes.values():
+            local_slot = self._get_local_slot_for_lane(lane)
+            if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
+                continue
+
+            slot_info = backend.get_slot_info(local_slot)
+            slot_ready = bool(slot_info and slot_info.get("status", "") == "ready")
+            prev_ready = self._prev_slot_states.get(lane.name, slot_ready)
+            self._prev_slot_states[lane.name] = slot_ready
+
+            # Detect ready → not-ready transition (filament runout)
+            if prev_ready and not slot_ready:
+                if lane.status in (AFCLaneState.TOOLED, AFCLaneState.LOADED):
+                    self.logger.info(
+                        f"ACE slot monitor: runout detected on {lane.name} "
+                        f"(slot {local_slot} status changed)"
+                    )
+                    lane.loaded_to_hub = False
+
+                    if lane.runout_lane:
+                        try:
+                            current = getattr(self.afc, "current", None)
+                            if current != lane.name:
+                                self.afc.current = lane.name
+                        except Exception:
+                            pass
+
+                        try:
+                            lane._perform_infinite_runout()
+                        except Exception as e:
+                            self.logger.error(
+                                f"ACE infinite spool failed for {lane.name}: {e}\n"
+                                f"{traceback.format_exc()}"
+                            )
+                            lane._perform_pause_runout()
+                    else:
+                        lane._perform_pause_runout()
+
+        return eventtime + 1.0
 
 
 def load_config_prefix(config):
