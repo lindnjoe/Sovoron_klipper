@@ -109,13 +109,14 @@ class afc_hub:
             msg = "The following lanes need load sensors for virtual hub sensor to work correctly:"
             report_error = False
             for lane in self.lanes.values():
-                # OpenAMS lanes use OAMS hardware sensors instead of AFC load pins
+                # OpenAMS/ACE lanes use hardware sensors instead of AFC load pins
                 unit_obj = getattr(lane, "unit_obj", None)
-                is_openams = (
-                    getattr(unit_obj, "type", None) == "OpenAMS"
+                unit_type = getattr(unit_obj, "type", None)
+                is_hw_managed = (
+                    unit_type in ("OpenAMS", "ACE")
                     or hasattr(unit_obj, "oams_name")
                 )
-                if lane.load is None and not is_openams:
+                if lane.load is None and not is_hw_managed:
                     report_error = True
                     msg += f"\n{lane.fullname}"
 
@@ -128,20 +129,21 @@ class afc_hub:
         Returns current state of switch.
 
         For classic virtual hubs (no real hub sensor), infer hub occupancy from lane load
-        sensors. For OpenAMS virtual hubs, use per-lane ``loaded_to_hub`` because OpenAMS
-        provides an actual hub sensor value and ``load_state`` only indicates spool/load
-        presence, not hub-path occupancy.
+        sensors. For hardware-managed units (OpenAMS, ACE), use per-lane ``loaded_to_hub``
+        because the hardware provides the hub sensor value and ``load_state`` only indicates
+        spool/load presence, not hub-path occupancy.
         """
         state = self._state
         if self.switch_pin.lower() == "virtual":
             lane_states = []
             for lane in self.lanes.values():
                 unit_obj = getattr(lane, "unit_obj", None)
-                is_openams_lane = (
-                    getattr(unit_obj, "type", None) == "OpenAMS"
+                unit_type = getattr(unit_obj, "type", None)
+                is_hw_managed = (
+                    unit_type in ("OpenAMS", "ACE")
                     or hasattr(unit_obj, "oams_name")
                 )
-                if is_openams_lane:
+                if is_hw_managed:
                     lane_states.append(bool(getattr(lane, "loaded_to_hub", False)))
                 else:
                     lane_states.append(bool(getattr(lane, "_load_state", False)))

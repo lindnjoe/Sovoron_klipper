@@ -242,6 +242,27 @@ class afcACE(afcUnit):
             f"instance {self.ace_instance_index}"
         )
 
+        # Sync initial slot loaded state to lanes
+        self._sync_slot_loaded_state()
+
+    def _sync_slot_loaded_state(self):
+        """Sync ACE slot status to lane loaded_to_hub for virtual sensor states.
+
+        ACE lanes have no physical prep/load sensors. Instead, the lane's
+        load_state and prep_state properties derive from loaded_to_hub when
+        the unit type is ACE. This method queries the ACE backend for each
+        lane's slot status and updates loaded_to_hub accordingly.
+        """
+        backend = self._backend or self._get_backend()
+        if backend is None:
+            return
+        for lane in self.lanes.values():
+            local_slot = self._get_local_slot_for_lane(lane)
+            if 0 <= local_slot < self.SLOTS_PER_UNIT:
+                slot_info = backend.get_slot_info(local_slot)
+                slot_loaded = bool(slot_info and slot_info.get("status", "") == "ready")
+                lane.loaded_to_hub = slot_loaded
+
     def _get_backend(self) -> Optional[_AceBackend]:
         """Get the backend adapter, initializing lazily if needed."""
         if self._backend is not None:
@@ -505,14 +526,16 @@ class afcACE(afcUnit):
         self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.7)
 
         backend = self._get_backend()
-        slot_ready = False
 
         if backend is not None:
             local_slot = self._get_local_slot_for_lane(cur_lane)
             if 0 <= local_slot < self.SLOTS_PER_UNIT:
                 slot_info = backend.get_slot_info(local_slot)
                 if slot_info:
+                    # Sync slot loaded state to loaded_to_hub so virtual
+                    # prep_state/load_state properties reflect ACE hardware
                     slot_ready = slot_info.get("status", "") == "ready"
+                    cur_lane.loaded_to_hub = slot_ready
 
                     # Sync RFID/spool data to AFC lane if available
                     material = slot_info.get("material", "")
@@ -524,13 +547,8 @@ class afcACE(afcUnit):
 
         if not cur_lane.prep_state:
             if not cur_lane.load_state:
-                if not slot_ready:
-                    self.lane_not_ready(cur_lane)
-                    msg += '<span class=success--text>EMPTY READY FOR SPOOL</span>'
-                else:
-                    # ACE reports spool ready but AFC sensors don't see it yet
-                    self.lane_not_ready(cur_lane)
-                    msg += '<span class=warning--text>ACE: spool detected, awaiting AFC sensor</span>'
+                self.lane_not_ready(cur_lane)
+                msg += '<span class=success--text>EMPTY READY FOR SPOOL</span>'
             else:
                 self.lane_fault(cur_lane)
                 msg += '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
@@ -610,7 +628,7 @@ class afcACE(afcUnit):
         return "#000000"
 
     def sync_ace_inventory(self):
-        """Sync RFID/spool inventory data from ACE hardware to AFC lanes."""
+        """Sync RFID/spool inventory data and slot loaded state from ACE hardware to AFC lanes."""
         backend = self._get_backend()
         if backend is None:
             return
@@ -620,6 +638,9 @@ class afcACE(afcUnit):
             if 0 <= local_slot < self.SLOTS_PER_UNIT:
                 slot_info = backend.get_slot_info(local_slot)
                 if slot_info:
+                    # Sync slot loaded state for virtual sensors
+                    lane.loaded_to_hub = slot_info.get("status", "") == "ready"
+
                     material = slot_info.get("material", "")
                     color = slot_info.get("color", [0, 0, 0])
                     if material and hasattr(lane, "material"):
