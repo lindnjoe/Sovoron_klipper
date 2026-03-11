@@ -762,14 +762,6 @@ class afcACE(afcUnit):
                 unit_ref.logger.info(
                     f"ACE infinite spool: {lane.name} → {lane.runout_lane}"
                 )
-                # Ensure AFC.current is set so _perform_infinite_runout works
-                try:
-                    current = getattr(unit_ref.afc, "current", None)
-                    if current != lane.name:
-                        unit_ref.afc.current = lane.name
-                except Exception:
-                    pass
-
                 try:
                     lane._perform_infinite_runout()
                 except Exception as e:
@@ -855,13 +847,6 @@ class afcACE(afcUnit):
                     lane.loaded_to_hub = False
 
                     if lane.runout_lane:
-                        try:
-                            current = getattr(self.afc, "current", None)
-                            if current != lane.name:
-                                self.afc.current = lane.name
-                        except Exception:
-                            pass
-
                         try:
                             lane._perform_infinite_runout()
                         except Exception as e:
