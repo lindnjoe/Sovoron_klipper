@@ -202,7 +202,7 @@ class AFCLane:
         # lane triggers
         buttons = self.printer.load_object(config, "buttons")
         self.prep = config.get('prep', None)                                    # MCU pin for prep trigger
-        self.prep_state = False
+        self._prep_state = False
         if self.prep is not None:
             buttons.register_buttons([self.prep], self.prep_callback)
 
@@ -952,7 +952,7 @@ class AFCLane:
 
     @property
     def load_state(self) -> bool:
-        if self.unit_obj.type == "ViViD":
+        if self.unit_obj.type in ("ViViD", "ACE"):
             return self.loaded_to_hub
         else:
             return bool(self._load_state)
@@ -961,8 +961,19 @@ class AFCLane:
     def load_state(self, state: bool):
         state_val = bool(state)
         self._load_state = state_val
-        if self.unit_obj.type == "ViViD":
+        if self.unit_obj.type in ("ViViD", "ACE"):
             self.loaded_to_hub = state_val
+
+    @property
+    def prep_state(self) -> bool:
+        unit_type = getattr(getattr(self, 'unit_obj', None), 'type', None)
+        if unit_type == "ACE":
+            return self.loaded_to_hub
+        return self._prep_state
+
+    @prep_state.setter
+    def prep_state(self, state):
+        self._prep_state = bool(state)
 
     def load_callback(self, eventtime, state):
         self._load_state = state
