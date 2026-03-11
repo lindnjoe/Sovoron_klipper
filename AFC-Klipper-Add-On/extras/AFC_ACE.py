@@ -1,7 +1,7 @@
 # Armored Turtle Automated Filament Changer
 #
 # ACE Pro Unit Type - Integrates Anycubic ACE PRO hardware with AFC
-# Based on the Kobra-S1/ACEPRO driver (https://github.com/Kobra-S1/ACEPRO)
+# Supports both ACEPRO (Kobra-S1/ACEPRO) and DuckACE (utkabobr/DuckACE) backends.
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
@@ -43,13 +43,136 @@ _module_logger = logging.getLogger(__name__)
 # Sentinel for "not yet looked up"
 _UNSET = object()
 
+# Backend type constants
+BACKEND_ACEPRO = "acepro"
+BACKEND_DUCKACE = "duckace"
+
+
+class _AceBackend:
+    """Adapter that normalizes API differences between ACE backends.
+
+    ACEPRO: AceManager with instances[] list, each AceInstance has .connected,
+            .inventory (list of dicts), .get_status(), ._retract(), etc.
+    DuckACE: Single DuckAce object with ._connected, ._info['slots'],
+             gcode commands for tool changes.
+    """
+
+    def __init__(self, backend_type, ace_obj, instance_index, logger):
+        self.backend_type = backend_type
+        self._ace_obj = ace_obj
+        self._instance_index = instance_index
+        self.logger = logger
+
+    @property
+    def is_connected(self):
+        if self.backend_type == BACKEND_ACEPRO:
+            instance = self._get_acepro_instance()
+            if instance is None:
+                return False
+            return getattr(instance, "connected", False)
+        else:
+            return getattr(self._ace_obj, "_connected", False)
+
+    def get_slot_info(self, local_slot):
+        """Return normalized slot info dict: {status, material, color}."""
+        if self.backend_type == BACKEND_ACEPRO:
+            instance = self._get_acepro_instance()
+            if instance is None:
+                return {}
+            inventory = getattr(instance, "inventory", [])
+            if local_slot < len(inventory):
+                return inventory[local_slot]
+            return {}
+        else:
+            info = getattr(self._ace_obj, "_info", {})
+            slots = info.get("slots", [])
+            if local_slot < len(slots):
+                raw = slots[local_slot]
+                return {
+                    "status": raw.get("status", ""),
+                    "material": raw.get("type", raw.get("sku", "")),
+                    "color": raw.get("color", [0, 0, 0]),
+                }
+            return {}
+
+    def get_hardware_status(self, eventtime=None):
+        """Return backend-specific hardware status dict."""
+        if self.backend_type == BACKEND_ACEPRO:
+            instance = self._get_acepro_instance()
+            if instance is not None and hasattr(instance, "get_status"):
+                try:
+                    return instance.get_status(eventtime)
+                except Exception as e:
+                    self.logger.debug(f"ACE status query error: {e}")
+            return {}
+        else:
+            info = getattr(self._ace_obj, "_info", {})
+            return dict(info)
+
+    def has_perform_tool_change(self):
+        if self.backend_type == BACKEND_ACEPRO:
+            return hasattr(self._ace_obj, "perform_tool_change")
+        return False
+
+    def perform_tool_change(self, global_tool):
+        """Invoke backend tool change (ACEPRO manager only)."""
+        self._ace_obj.perform_tool_change(global_tool)
+
+    def has_direct_feed(self):
+        if self.backend_type == BACKEND_ACEPRO:
+            instance = self._get_acepro_instance()
+            return instance is not None and hasattr(instance, "_feed_to_toolhead_with_extruder_assist")
+        return False
+
+    def direct_feed(self, local_slot):
+        """Feed filament via ACEPRO instance method."""
+        instance = self._get_acepro_instance()
+        instance._feed_to_toolhead_with_extruder_assist(local_slot)
+
+    def has_direct_retract(self):
+        if self.backend_type == BACKEND_ACEPRO:
+            instance = self._get_acepro_instance()
+            return instance is not None and hasattr(instance, "_retract")
+        return False
+
+    def direct_retract(self, local_slot):
+        """Retract filament via ACEPRO instance method."""
+        instance = self._get_acepro_instance()
+        instance._retract(local_slot)
+
+    def _get_acepro_instance(self):
+        """Get the AceInstance for this unit (ACEPRO only)."""
+        instances = getattr(self._ace_obj, "instances", [])
+        if self._instance_index < len(instances):
+            return instances[self._instance_index]
+        return None
+
+
+def _detect_backend(ace_obj):
+    """Auto-detect whether the ace printer object is ACEPRO or DuckACE.
+
+    ACEPRO has an 'instances' attribute (list of AceInstance objects).
+    DuckACE has '_info' and '_connected' attributes.
+    """
+    if hasattr(ace_obj, "instances"):
+        return BACKEND_ACEPRO
+    if hasattr(ace_obj, "_info"):
+        return BACKEND_DUCKACE
+    # Fallback: check class name
+    cls_name = type(ace_obj).__name__.lower()
+    if "duck" in cls_name:
+        return BACKEND_DUCKACE
+    return BACKEND_ACEPRO
+
 
 class afcACE(afcUnit):
     """AFC unit subclass that integrates Anycubic ACE PRO hardware.
 
-    Delegates serial communication and filament operations to the ACEPRO
-    Klipper module (extras/ace/). Each afcACE instance maps to one physical
-    ACE PRO unit with 4 filament slots.
+    Supports both ACEPRO and DuckACE backends. The backend is auto-detected
+    from the [ace] Klipper module, or can be explicitly set via the
+    'ace_backend' config option.
+
+    Each afcACE instance maps to one physical ACE PRO unit with 4 filament slots.
     """
 
     SLOTS_PER_UNIT = 4
@@ -63,56 +186,85 @@ class afcACE(afcUnit):
         self.buffer_obj = None
 
         # ACE instance index (0-based) - which physical ACE unit this maps to
+        # For DuckACE (single-unit), this should stay 0.
         self.ace_instance_index = config.getint("ace_instance", 0)
 
-        # Cached reference to the ACE manager and instance
-        self._cached_ace_manager = _UNSET
-        self._cached_ace_instance = _UNSET
+        # Optional explicit backend selection: "acepro", "duckace", or "auto"
+        self._configured_backend = config.get("ace_backend", "auto").lower().strip()
+
+        # Cached references
+        self._cached_ace_obj = _UNSET
+        self._backend: Optional[_AceBackend] = None
 
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
     def _handle_ready(self):
         """Look up ACE module objects once Klipper is fully ready."""
-        self._cached_ace_manager = self.printer.lookup_object("ace", None)
-        if self._cached_ace_manager is None:
+        ace_obj = self.printer.lookup_object("ace", None)
+        self._cached_ace_obj = ace_obj
+
+        if ace_obj is None:
             self.logger.warning(
                 f"ACE unit {self.name}: [ace] module not found. "
-                "Ensure ACEPRO is installed and [ace] section exists in config."
+                "Ensure ACEPRO or DuckACE is installed and [ace] section exists in config."
             )
             return
 
-        instances = getattr(self._cached_ace_manager, "instances", [])
-        if self.ace_instance_index < len(instances):
-            self._cached_ace_instance = instances[self.ace_instance_index]
-            self.logger.info(
-                f"ACE unit {self.name}: bound to ACE instance {self.ace_instance_index}"
-            )
+        # Detect or use configured backend
+        if self._configured_backend == "auto":
+            backend_type = _detect_backend(ace_obj)
+        elif self._configured_backend in (BACKEND_ACEPRO, BACKEND_DUCKACE):
+            backend_type = self._configured_backend
         else:
-            self._cached_ace_instance = None
-            self.logger.error(
-                f"ACE unit {self.name}: instance index {self.ace_instance_index} "
-                f"out of range (ace_count={len(instances)})"
+            self.logger.warning(
+                f"ACE unit {self.name}: unknown ace_backend '{self._configured_backend}', "
+                "falling back to auto-detection."
             )
+            backend_type = _detect_backend(ace_obj)
 
-    def _get_ace_manager(self):
-        """Get the ACEPRO AceManager object."""
-        if self._cached_ace_manager is _UNSET:
-            self._cached_ace_manager = self.printer.lookup_object("ace", None)
-        return self._cached_ace_manager
+        self._backend = _AceBackend(
+            backend_type, ace_obj, self.ace_instance_index, self.logger
+        )
 
-    def _get_ace_instance(self):
-        """Get this unit's AceInstance object."""
-        if self._cached_ace_instance is _UNSET:
-            manager = self._get_ace_manager()
-            if manager is None:
-                self._cached_ace_instance = None
-                return None
-            instances = getattr(manager, "instances", [])
-            if self.ace_instance_index < len(instances):
-                self._cached_ace_instance = instances[self.ace_instance_index]
-            else:
-                self._cached_ace_instance = None
-        return self._cached_ace_instance
+        # Validate ACEPRO instance index
+        if backend_type == BACKEND_ACEPRO:
+            instances = getattr(ace_obj, "instances", [])
+            if self.ace_instance_index >= len(instances):
+                self.logger.error(
+                    f"ACE unit {self.name}: instance index {self.ace_instance_index} "
+                    f"out of range (ace_count={len(instances)})"
+                )
+                self._backend = None
+                return
+
+        self.logger.info(
+            f"ACE unit {self.name}: using {backend_type} backend, "
+            f"instance {self.ace_instance_index}"
+        )
+
+    def _get_backend(self) -> Optional[_AceBackend]:
+        """Get the backend adapter, initializing lazily if needed."""
+        if self._backend is not None:
+            return self._backend
+
+        if self._cached_ace_obj is _UNSET:
+            self._cached_ace_obj = self.printer.lookup_object("ace", None)
+
+        ace_obj = self._cached_ace_obj
+        if ace_obj is None:
+            return None
+
+        if self._configured_backend == "auto":
+            backend_type = _detect_backend(ace_obj)
+        elif self._configured_backend in (BACKEND_ACEPRO, BACKEND_DUCKACE):
+            backend_type = self._configured_backend
+        else:
+            backend_type = _detect_backend(ace_obj)
+
+        self._backend = _AceBackend(
+            backend_type, ace_obj, self.ace_instance_index, self.logger
+        )
+        return self._backend
 
     def _get_local_slot_for_lane(self, lane) -> int:
         """Map an AFC lane to a local ACE slot index (0-3).
@@ -152,33 +304,28 @@ class afcACE(afcUnit):
         """Return status dict including ACE hardware state."""
         response = super().get_status(eventtime)
 
-        ace_instance = self._get_ace_instance()
-        if ace_instance is not None:
-            ace_status = {}
-            if hasattr(ace_instance, "get_status"):
-                try:
-                    ace_status = ace_instance.get_status(eventtime)
-                except Exception as e:
-                    self.logger.debug(f"ACE status query error: {e}")
-            response["ace_connected"] = getattr(ace_instance, "connected", False)
-            response["ace_status"] = ace_status
+        backend = self._get_backend()
+        if backend is not None:
+            response["ace_backend"] = backend.backend_type
+            response["ace_connected"] = backend.is_connected
+            try:
+                response["ace_status"] = backend.get_hardware_status(eventtime)
+            except Exception as e:
+                self.logger.debug(f"ACE status query error: {e}")
+                response["ace_status"] = {}
         else:
+            response["ace_backend"] = None
             response["ace_connected"] = False
             response["ace_status"] = {}
 
         return response
 
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
-        """ACE load sequence - delegates filament feeding to ACE hardware.
-
-        Called by AFC's upstream delegation hook when this unit has a
-        load_sequence method.
-        """
+        """ACE load sequence - delegates filament feeding to ACE hardware."""
         afc = self.afc
-        ace_manager = self._get_ace_manager()
-        ace_instance = self._get_ace_instance()
+        backend = self._get_backend()
 
-        if ace_manager is None or ace_instance is None:
+        if backend is None:
             afc.error.handle_lane_failure(
                 cur_lane, f"ACE load failed: ACE module not available for {self.name}"
             )
@@ -207,18 +354,18 @@ class afcACE(afcUnit):
 
         try:
             self.logger.info(
-                f"ACE load: feeding tool T{global_tool} "
+                f"ACE load ({backend.backend_type}): feeding tool T{global_tool} "
                 f"(instance {self.ace_instance_index}, slot {local_slot}) "
                 f"for lane {cur_lane.name}"
             )
 
-            # Use ACE manager's tool change / feed mechanism
-            if hasattr(ace_manager, "perform_tool_change"):
-                ace_manager.perform_tool_change(global_tool)
-            elif hasattr(ace_instance, "_feed_to_toolhead_with_extruder_assist"):
-                ace_instance._feed_to_toolhead_with_extruder_assist(local_slot)
+            # Try backend-specific methods first, fall back to gcode command
+            if backend.has_perform_tool_change():
+                backend.perform_tool_change(global_tool)
+            elif backend.has_direct_feed():
+                backend.direct_feed(local_slot)
             else:
-                # Fallback: use gcode command
+                # Works for both backends - ACE_CHANGE_TOOL is registered by both
                 self.gcode.run_script_from_command(
                     f"ACE_CHANGE_TOOL TOOL={global_tool}"
                 )
@@ -243,16 +390,11 @@ class afcACE(afcUnit):
         return True
 
     def unload_sequence(self, cur_lane, cur_hub, cur_extruder):
-        """ACE unload sequence - shared toolhead steps then ACE retraction.
-
-        Performs cut/form-tip at the toolhead (shared with AFC), then delegates
-        filament retraction to the ACE hardware.
-        """
+        """ACE unload sequence - shared toolhead steps then ACE retraction."""
         afc = self.afc
-        ace_manager = self._get_ace_manager()
-        ace_instance = self._get_ace_instance()
+        backend = self._get_backend()
 
-        if ace_manager is None or ace_instance is None:
+        if backend is None:
             afc.error.handle_lane_failure(
                 cur_lane, f"ACE unload failed: ACE module not available for {self.name}"
             )
@@ -296,18 +438,18 @@ class afcACE(afcUnit):
             cur_lane.unsync_to_extruder()
 
             self.logger.info(
-                f"ACE unload: retracting tool T{global_tool} "
+                f"ACE unload ({backend.backend_type}): retracting tool T{global_tool} "
                 f"(instance {self.ace_instance_index}, slot {local_slot}) "
                 f"for lane {cur_lane.name}"
             )
 
-            # Delegate retraction to ACE hardware
-            if hasattr(ace_instance, "_retract"):
-                ace_instance._retract(local_slot)
+            # Try backend-specific retract first, fall back to gcode
+            if backend.has_direct_retract():
+                backend.direct_retract(local_slot)
             else:
-                # Fallback: use gcode command
+                # ACE_RETRACT gcode command works for both backends
                 self.gcode.run_script_from_command(
-                    f"ACE_RETRACT INSTANCE={self.ace_instance_index}"
+                    f"ACE_RETRACT INDEX={local_slot}"
                 )
 
             cur_lane.loaded_to_hub = True
@@ -362,18 +504,17 @@ class afcACE(afcUnit):
         cur_lane.unsync_to_extruder(False)
         self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.7)
 
-        ace_instance = self._get_ace_instance()
+        backend = self._get_backend()
         slot_ready = False
 
-        if ace_instance is not None:
+        if backend is not None:
             local_slot = self._get_local_slot_for_lane(cur_lane)
             if 0 <= local_slot < self.SLOTS_PER_UNIT:
-                inventory = getattr(ace_instance, "inventory", [])
-                if local_slot < len(inventory):
-                    slot_info = inventory[local_slot]
+                slot_info = backend.get_slot_info(local_slot)
+                if slot_info:
                     slot_ready = slot_info.get("status", "") == "ready"
 
-                    # Sync RFID data to AFC lane if available
+                    # Sync RFID/spool data to AFC lane if available
                     material = slot_info.get("material", "")
                     color = slot_info.get("color", [0, 0, 0])
                     if material and hasattr(cur_lane, "material"):
@@ -469,22 +610,22 @@ class afcACE(afcUnit):
         return "#000000"
 
     def sync_ace_inventory(self):
-        """Sync RFID inventory data from ACE hardware to AFC lanes."""
-        ace_instance = self._get_ace_instance()
-        if ace_instance is None:
+        """Sync RFID/spool inventory data from ACE hardware to AFC lanes."""
+        backend = self._get_backend()
+        if backend is None:
             return
 
-        inventory = getattr(ace_instance, "inventory", [])
         for lane in self.lanes.values():
             local_slot = self._get_local_slot_for_lane(lane)
-            if 0 <= local_slot < len(inventory):
-                slot_info = inventory[local_slot]
-                material = slot_info.get("material", "")
-                color = slot_info.get("color", [0, 0, 0])
-                if material and hasattr(lane, "material"):
-                    lane.material = material
-                if color and hasattr(lane, "color"):
-                    lane.color = self._ace_color_to_hex(color)
+            if 0 <= local_slot < self.SLOTS_PER_UNIT:
+                slot_info = backend.get_slot_info(local_slot)
+                if slot_info:
+                    material = slot_info.get("material", "")
+                    color = slot_info.get("color", [0, 0, 0])
+                    if material and hasattr(lane, "material"):
+                        lane.material = material
+                    if color and hasattr(lane, "color"):
+                        lane.color = self._ace_color_to_hex(color)
 
 
 def load_config_prefix(config):
