@@ -747,11 +747,14 @@ class afcACE(afcUnit):
             # Update virtual sensor state: slot is now empty
             lane.loaded_to_hub = False
 
-            # Check if lane is in a state where runout handling applies
-            if lane.status not in (AFCLaneState.TOOLED, AFCLaneState.LOADED):
+            # Only trigger runout on the lane actively printing (TOOLED).
+            # LOADED lanes are at the hub but not in the toolhead — a slot
+            # going empty on a LOADED lane (e.g. user removed spool after a
+            # previous infinite-spool swap) must not re-trigger the swap.
+            if lane.status != AFCLaneState.TOOLED:
                 unit_ref.logger.info(
                     f"ACE runout on {lane.name}: lane status is {lane.status}, "
-                    "not in active printing state - ignoring"
+                    "not TOOLED - ignoring"
                 )
                 return
 
@@ -776,6 +779,12 @@ class afcACE(afcUnit):
                     )
                     # Fall back to pause
                     lane._perform_pause_runout()
+                finally:
+                    # unload_sequence sets loaded_to_hub = True after retract,
+                    # but this lane ran out — clear it so virtual sensors
+                    # reflect the empty state and the lane won't false-trigger
+                    # runout again after the remap.
+                    lane.loaded_to_hub = False
             else:
                 unit_ref.logger.info(
                     f"ACE runout on {lane.name}: no runout_lane configured, pausing"
@@ -832,9 +841,13 @@ class afcACE(afcUnit):
             prev_ready = self._prev_slot_states.get(lane.name, slot_ready)
             self._prev_slot_states[lane.name] = slot_ready
 
-            # Detect ready → not-ready transition (filament runout)
+            # Detect ready → not-ready transition (filament runout).
+            # Only act on TOOLED lanes — LOADED lanes are at the hub, not
+            # actively printing. After a previous infinite-spool swap the old
+            # lane stays LOADED; the user removing that spool later must not
+            # re-trigger the runout sequence.
             if prev_ready and not slot_ready:
-                if lane.status in (AFCLaneState.TOOLED, AFCLaneState.LOADED):
+                if lane.status == AFCLaneState.TOOLED:
                     self.logger.info(
                         f"ACE slot monitor: runout detected on {lane.name} "
                         f"(slot {local_slot} status changed)"
@@ -857,8 +870,17 @@ class afcACE(afcUnit):
                                 f"{traceback.format_exc()}"
                             )
                             lane._perform_pause_runout()
+                        finally:
+                            # Clear loaded_to_hub after the swap so the old
+                            # lane's virtual sensors reflect empty state and
+                            # don't false-trigger on the next poll cycle.
+                            lane.loaded_to_hub = False
                     else:
                         lane._perform_pause_runout()
+                elif lane.status == AFCLaneState.LOADED:
+                    # Slot went empty on a non-active lane — just update
+                    # virtual sensor state, no runout action needed.
+                    lane.loaded_to_hub = False
 
         return eventtime + 1.0
 
