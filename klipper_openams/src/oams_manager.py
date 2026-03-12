@@ -4868,12 +4868,16 @@ class OAMSManager:
         except Exception as e:
             self.logger.error(f"Failed to retract extruder after stuck spool detection for {lane_name}: {e}")
 
-        # STEP 3: Abort the stuck load operation
+        # STEP 3: Cancel the stuck load on hardware, then clear software state
+        try:
+            oam.load_spool_cancel()
+            self.logger.info(f"Cancelled stuck load operation for {lane_name} before unload")
+        except Exception as e:
+            self.logger.error(f"Failed to cancel stuck load operation for {lane_name}: {e}")
         try:
             oam.abort_current_action()
-            self.logger.info(f"Aborted stuck load operation for {lane_name} before unload")
-        except Exception as e:
-            self.logger.error(f"Failed to abort stuck load operation for {lane_name}: {e}")
+        except Exception:
+            pass
 
         # Stop the follower motor before unload.  Step 1 above set the follower to
         # reverse but left it running; sending an unload command while the follower
@@ -5062,11 +5066,15 @@ class OAMSManager:
             except Exception as e:
                 self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}: {e}")
 
-            # Abort any lingering load operation
+            # Cancel any lingering load on hardware, then clear software state
+            try:
+                oam.load_spool_cancel()
+            except Exception as e:
+                self.logger.error(f"Failed to cancel load operation before engagement retry for {lane_name}: {e}")
             try:
                 oam.abort_current_action()
-            except Exception as e:
-                self.logger.error(f"Failed to abort load operation before engagement retry for {lane_name}: {e}")
+            except Exception:
+                pass
 
             # Stop the follower motor before unload so the MCU is not busy when the
             # unload command arrives.  The follower is left running (forward) by the
@@ -6707,6 +6715,10 @@ class OAMSManager:
 
         if oams is not None:
             try:
+                oams.load_spool_cancel()
+            except Exception as e:
+                self.logger.error(f"Failed to cancel OAMS load on {fps_name}: {e}")
+            try:
                 oams.abort_current_action(wait=False)
             except Exception as e:
                 self.logger.error(f"Failed to abort OAMS action on {fps_name}: {e}")
@@ -6747,8 +6759,12 @@ class OAMSManager:
             except Exception as e:
                 self.logger.error(f"Failed to set stuck spool LED on {fps_name} spool {spool_idx}: {e}")
 
-        # Abort current action (unload/load)
+        # Cancel load on hardware, then clear software state
         if oams is not None:
+            try:
+                oams.load_spool_cancel()
+            except Exception as e:
+                self.logger.error(f"Failed to cancel load on {fps_name} during stuck spool pause: {e}")
             try:
                 oams.abort_current_action(wait=False)
             except Exception as e:
@@ -7151,17 +7167,17 @@ class OAMSManager:
             spool_label = str(fps_state.current_spool_idx) if fps_state.current_spool_idx is not None else "unknown"
 
             # User requirement: Stuck detection should trigger after couple seconds, not full timeout
+            # Cancel on hardware first, then clear software state
             # Use wait=False because this runs in timer callback context
             # Timer callbacks cannot use reactor.pause() properly (causes Klipper crashes)
-            # wait=False queues the abort without blocking - MCU will complete asynchronously
-            # This makes the load fail after ~3-5 seconds instead of waiting 30 seconds for timeout
             try:
                 self.logger.info(f"Detected stuck spool on {fps_name}: {stuck_reason}")
                 if fps_state.current_oams and oams is not None:
+                    oams.load_spool_cancel()
                     oams.abort_current_action(wait=False)
-                    self.logger.info(f"Requested abort for stuck load operation on {fps_name}")
+                    self.logger.info(f"Cancelled stuck load operation on {fps_name}")
             except Exception as e:
-                self.logger.error(f"Failed to abort load operation on {fps_name}: {e}")
+                self.logger.error(f"Failed to cancel load operation on {fps_name}: {e}")
 
             # Set LED error using state-tracked helper
             if fps_state.current_spool_idx is not None:
