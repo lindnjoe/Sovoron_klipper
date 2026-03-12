@@ -774,10 +774,33 @@ class afcAFCACE(afcUnit):
         # Retract back to the ACE unit
         self._retract_slot(local_slot)
 
+        # Round to nearest integer for clean config values
+        new_feed_length = round(distance, 0)
+        new_retract_length = round(distance + 20, 0)
+
+        # Update in-memory values
+        old_feed = self.feed_length
+        old_retract = self.retract_length
+        self.feed_length = new_feed_length
+        self.retract_length = new_retract_length
+
+        # Write calibrated values back to config file
+        unit_section = " ".join(self.full_name)
+        cal_msg = f"\n feed_length: New: {new_feed_length} Old: {old_feed}"
+        self.afc.function.ConfigRewrite(
+            unit_section, "feed_length", new_feed_length, cal_msg
+        )
+        cal_msg = f"\n retract_length: New: {new_retract_length} Old: {old_retract}"
+        self.afc.function.ConfigRewrite(
+            unit_section, "retract_length", new_retract_length, cal_msg
+        )
+        self.afc.save_vars()
+
         msg = (
             f"AFCACE bowden calibration: toolhead sensor triggered at {distance:.1f}mm.\n"
-            f"Set feed_length: {distance:.0f} in your [AFC_AFCACE {self.name}] config.\n"
-            f"(Also set retract_length to the same value or slightly longer)"
+            f"feed_length: {new_feed_length:.0f} (was {old_feed:.0f})\n"
+            f"retract_length: {new_retract_length:.0f} (was {old_retract:.0f})\n"
+            f"Values saved to config."
         )
         return True, msg, distance
 
@@ -862,9 +885,20 @@ class afcAFCACE(afcUnit):
         # Retract back to ACE unit
         self._retract_slot(local_slot)
 
+        # Save td1_bowden_length to the lane's config section
+        old_td1 = getattr(cur_lane, "td1_bowden_length", None)
+        cur_lane.td1_bowden_length = bow_pos
+        fullname = cur_lane.fullname
+        cal_msg = f"\n td1_bowden_length: New: {bow_pos} Old: {old_td1}"
+        self.afc.function.ConfigRewrite(
+            fullname, "td1_bowden_length", bow_pos, cal_msg
+        )
+        self.afc.save_vars()
+
         msg = (
             f"AFCACE TD-1 calibration: filament detected at {bow_pos:.1f}mm.\n"
-            f"Set td1_bowden_length: {bow_pos:.0f} in your lane or unit config."
+            f"td1_bowden_length: {bow_pos:.0f} (was {old_td1})\n"
+            f"Value saved to config."
         )
         return True, msg, bow_pos
 

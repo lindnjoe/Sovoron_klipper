@@ -584,13 +584,8 @@ extruder: extruder
 2. Run PREP to validate the slot: `AFC_PREP`
 3. Make sure the toolhead is heated to printing temperature
 4. Run calibration: `AFCACE_CALIBRATE UNIT=ace1 LANE=lane1`
-5. Note the measured distance in the output
-6. Update your config with the measured value:
-   ```ini
-   feed_length: <measured_distance>
-   retract_length: <measured_distance + 20>   # Add some margin
-   ```
-7. Restart Klipper to apply
+5. The measured `feed_length` and `retract_length` are automatically saved to your config
+6. Restart Klipper to apply the saved values
 
 ---
 
@@ -629,8 +624,8 @@ When a TD-1 device is configured (`td1_device_id`), you can calibrate the distan
 from the ACE unit to the TD-1 sensor:
 1. Run `AFC_UNIT_TD_ONE_CALIBRATION` from the unit prompt
 2. Filament feeds in small increments, polling TD-1 via Moonraker
-3. When TD-1 detects filament, the distance is reported
-4. Set `td1_bowden_length` in your lane config with the measured value
+3. When TD-1 detects filament, `td1_bowden_length` is automatically saved to your lane config
+4. Restart Klipper to apply the saved value
 
 ### Runout Detection
 Periodic polling (every `poll_interval` seconds during printing) checks slot status
