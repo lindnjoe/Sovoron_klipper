@@ -32,6 +32,7 @@ class OAMSOpCode:
     SPOOL_ALREADY_IN_BAY = 3
     NO_SPOOL_IN_BAY = 4
     ERROR_KLIPPER_CALL = 5
+    CANCEL = 6
 
 
 class RetryState:
@@ -248,15 +249,26 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 cmd_obj = self.mcu.lookup_command(cmd_string)
                 setattr(self, f'oams_{cmd_name}_cmd', cmd_obj)
 
+            try:
+                self.oams_load_spool_cancel_cmd = self.mcu.lookup_command(
+                    "oams_cmd_load_spool_cancel"
+                )
+            except Exception as e:
+                self.oams_load_spool_cancel_cmd = None
+                self.logger.warning(
+                    "Failed to initialize OAMS load filament cancel command: %s\n"
+                    "Most likely the firmware needs to be updated to support this command.", e
+                )
+
             cmd_queue = self.mcu.alloc_command_queue()
             self.oams_spool_query_spool_cmd = self.mcu.lookup_query_command(
                 "oams_cmd_query_spool",
                 "oams_query_response_spool spool=%u",
                 cq=cmd_queue,
             )
-            
+
             self.clear_errors()
-            
+
         except Exception as e:
             self.logger.error(f"Failed to initialize OAMS commands: {e}")
     def handle_ready(self):
@@ -414,9 +426,9 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             retry.count = retry_count + 1
             retry.last_attempt = self.reactor.monotonic()
 
-            success, message = self.load_spool(spool_idx)
+            code, message = self.load_spool(spool_idx)
 
-            if success:
+            if code == OAMSOpCode.SUCCESS or code == OAMSOpCode.CANCEL:
                 self._last_successful_load[spool_idx] = self.reactor.monotonic()
                 retry.was_retry = retry_count > 0
                 self._reset_load_retry_count(spool_idx)
@@ -535,6 +547,12 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             f"Failed to unload after {retry_limit} attempts. "
             f"Attempt history: {history_str}"
         )
+
+    def load_spool_cancel(self):
+        if self.oams_load_spool_cancel_cmd is not None:
+            self.oams_load_spool_cancel_cmd.send()
+            return "OAMS load spool operation cancelled"
+        return "OAMS load spool cancel command not available on this firmware"
 
     cmd_OAMS_CURRENT_PID_SET_help = "Set the PID values for the current sensor"
     def cmd_OAMS_CURRENT_PID_SET(self, gcmd):
@@ -678,18 +696,20 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 self.logger.error(f"OAMS[{self.oams_idx}]: Load operation timed out after 30 seconds")
                 self.action_status      = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
-                return False, "OAMS load operation timed out (MCU unresponsive)"
+                return OAMSOpCode.ERROR_UNSPECIFIED, "OAMS load operation timed out (MCU unresponsive)"
             self.reactor.pause(self.reactor.monotonic() + 0.2)
 
         if self.action_status_code == OAMSOpCode.SUCCESS:
             self.current_spool = spool_idx
-            return True, "Spool loaded successfully"
+            return self.action_status_code, "Spool loaded successfully"
         elif self.action_status_code == OAMSOpCode.ERROR_KLIPPER_CALL:
-            return False, "Spool loading stopped by klipper monitor"
+            return self.action_status_code, "Spool loading stopped by klipper monitor"
         elif self.action_status_code == OAMSOpCode.ERROR_BUSY:
-            return False, "OAMS is busy"
+            return self.action_status_code, "OAMS is busy"
+        elif self.action_status_code == OAMSOpCode.CANCEL:
+            return self.action_status_code, "Spool loading cancelled"
         else:
-            return False, "Unknown error from OAMS with code %d" % self.action_status_code
+            return self.action_status_code, "Unknown error from OAMS with code %d" % self.action_status_code
 
     cmd_OAMS_LOAD_SPOOL_help = "Load a new spool of filament"
     def cmd_OAMS_LOAD_SPOOL(self, gcmd):
