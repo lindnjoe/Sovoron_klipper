@@ -202,8 +202,15 @@ extruder: extruder
 
 ### Direct Mode (Multi-Extruder, No Combiner)
 
+In direct mode each lane feeds its own extruder through its own physical path.
+Each lane needs its own hub since there is no shared merge point.
+
 ```ini
-[AFC_hub ace_hub]
+# Each lane has its own hub (separate physical filament paths)
+[AFC_hub ace_hub1]
+switch_pin: virtual
+
+[AFC_hub ace_hub2]
 switch_pin: virtual
 
 [AFC_extruder extruder]
@@ -216,23 +223,23 @@ tool_unload_speed: 25
 
 [AFC_AFCACE ace1]
 serial_port: /dev/ttyACM0
-hub: ace_hub
 mode: direct
 feed_speed: 800
 retract_speed: 800
 feed_length: 400
 retract_length: 420
 use_feed_assist: True
+# No hub at unit level - each lane defines its own
 
-# Each lane feeds its own extruder independently
+# Each lane feeds its own extruder through its own hub
 [AFC_lane lane1]
 unit: ace1:1
-hub: ace_hub
+hub: ace_hub1
 extruder: extruder
 
 [AFC_lane lane2]
 unit: ace1:2
-hub: ace_hub
+hub: ace_hub2
 extruder: extruder1
 ```
 
