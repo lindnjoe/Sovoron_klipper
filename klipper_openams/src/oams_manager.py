@@ -883,7 +883,7 @@ class FPSState:
         self.monitor_pause_timer           = None
         self.monitor_load_next_spool_timer = None
 
-        # Encoder tracking (instantaneous — prev vs current sample)
+        # Encoder tracking (instantaneous ï¿½ prev vs current sample)
         self.encoder_sample_prev    = None
         self.encoder_sample_current = None
         # Rolling window for slow-print stuck-spool detection: list of (timestamp, encoder_value)
@@ -2450,6 +2450,7 @@ class OAMSManager:
         commands = [
             ("OAMSM_UNLOAD_FILAMENT", self.cmd_UNLOAD_FILAMENT, self.cmd_UNLOAD_FILAMENT_help),
             ("OAMSM_LOAD_FILAMENT", self.cmd_LOAD_FILAMENT, self.cmd_LOAD_FILAMENT_help),
+            ("OAMSM_LOAD_FILAMENT_CANCEL", self.cmd_LOAD_FILAMENT_CANCEL, self.cmd_LOAD_FILAMENT_CANCEL_help),
             ("OAMSM_FOLLOWER", self.cmd_FOLLOWER, self.cmd_FOLLOWER_help),
             ("OAMSM_FOLLOWER_RESET", self.cmd_FOLLOWER_RESET, self.cmd_FOLLOWER_RESET_help),
             ("OAMSM_CLEAR_ERRORS", self.cmd_CLEAR_ERRORS, self.cmd_CLEAR_ERRORS_help),
@@ -2459,6 +2460,20 @@ class OAMSManager:
         ]
         for cmd_name, handler, help_text in commands:
             gcode.register_command(cmd_name, handler, desc=help_text)
+
+    cmd_LOAD_FILAMENT_CANCEL_help = "Cancel the current load filament operation"
+    def cmd_LOAD_FILAMENT_CANCEL(self, gcmd):
+        # Find any FPS that is currently in LOADING state
+        for fps_name, fps_state in self.current_state.fps_state.items():
+            if fps_state.state == FPSLoadState.LOADING:
+                oams_name = fps_state.current_oams
+                oam = self.oams.get(oams_name) if oams_name else None
+                if oam is not None:
+                    gcmd.respond_info(oam.load_spool_cancel())
+                    return
+                gcmd.respond_info("OAMS unit not found for active load")
+                return
+        gcmd.respond_info("No load filament operation is currently in progress")
 
     cmd_CLEAR_ERRORS_help = "Clear OAMS errors and sync all state (hardware sensors, AFC live state, AFC.var.unit)"
     def cmd_CLEAR_ERRORS(self, gcmd):
@@ -7826,7 +7841,7 @@ class OAMSManager:
 
                 # Enable follower forward during clog pause for manual recovery.
                 # force=True guarantees the MCU command is sent even if the cache
-                # already shows the follower as enabled — hardware state may have
+                # already shows the follower as enabled ï¿½ hardware state may have
                 # drifted (e.g. brief power glitch or MCU reconnect) and without
                 # force the command would be silently skipped, leaving the follower
                 # stopped despite the log saying it was enabled.

@@ -1965,10 +1965,11 @@ class afcAMS(afcUnit):
         """
         Unload filament after TD-1 operation by reversing follower and spool motor until hub clears.
         """
+        # Cancel any in-progress load before unloading
         try:
-            self.oams.abort_current_action(wait=True, code=0)
+            self.oams.load_spool_cancel()
         except Exception:
-            self.logger.debug(f"Failed to abort existing action before unload for {cur_lane.name}")
+            self.logger.debug(f"Failed to cancel load before unload for {cur_lane.name}")
 
         hub_cleared = False
         unload_wait = 5.0
@@ -2103,11 +2104,11 @@ class afcAMS(afcUnit):
                 break
 
         if not hub_detected:
-            # Abort the load operation and stop the follower
+            # Cancel the load operation and stop the follower
             try:
-                self.oams.abort_current_action(wait=True, code=0)
+                self.oams.load_spool_cancel()
             except Exception as e:
-                self.logger.error(f"Failed to abort load action for {cur_lane.name}: {e}")
+                self.logger.error(f"Failed to cancel load for {cur_lane.name}: {e}")
             try:
                 self.oams.set_oams_follower(0, 0)
             except Exception as e:
@@ -2116,13 +2117,13 @@ class afcAMS(afcUnit):
             self.logger.error(msg)
             return False, msg, 0
 
-        # Hub loaded successfully - abort the load operation and take manual control
-        # This stops the FPS-based load and lets us control follower manually by distance
-        self.logger.debug(f"Hub loaded, aborting load operation and taking manual control for {cur_lane.name}")
+        # Hub loaded successfully - cancel the load operation and take manual control
+        # This cleanly stops the FPS-based load so we can control follower manually by distance
+        self.logger.debug(f"Hub loaded, cancelling load operation and taking manual control for {cur_lane.name}")
         try:
-            self.oams.abort_current_action(wait=True, code=0)
+            self.oams.load_spool_cancel()
         except Exception as e:
-            self.logger.error(f"Failed to abort load action for {cur_lane.name}: {e}")
+            self.logger.error(f"Failed to cancel load for {cur_lane.name}: {e}")
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception as e:
@@ -2432,9 +2433,9 @@ class afcAMS(afcUnit):
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
         if not hub_detected:
-            # Abort the load operation and stop the follower
+            # Cancel the load operation and stop the follower
             try:
-                self.oams.abort_current_action(wait=True, code=0)
+                self.oams.load_spool_cancel()
             except Exception:
                 pass
             try:
@@ -2446,7 +2447,7 @@ class afcAMS(afcUnit):
             )
             return False, "Hub sensor did not trigger"
 
-        # Hub detected - use OAMS load flow and encoder tracking (no manual follower feed)
+        # Hub detected - use OAMS load flow and encoder tracking
         try:
             encoder_before = int(self.oams.encoder_clicks)
         except Exception:
@@ -2512,7 +2513,13 @@ class afcAMS(afcUnit):
                 break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
-        # Read TD-1 as soon as encoder target is reached
+        # Cancel the load at the target position - filament is now at TD-1
+        try:
+            self.oams.load_spool_cancel()
+        except Exception as e:
+            self.logger.warning(f"Failed to cancel load at TD-1 position for {cur_lane.name}: {e}")
+
+        # Read TD-1 data now that filament is stopped at the sensor
         td1_detected = _capture_td1_if_fresh()
         if not td1_detected:
             td1_wait_deadline = self.afc.reactor.monotonic() + 3.5
@@ -2521,29 +2528,6 @@ class afcAMS(afcUnit):
                     td1_detected = True
                     break
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
-
-        # Wait until OAMS reports load complete before unloading
-        load_deadline = self.afc.reactor.monotonic() + 30.0
-        while self.afc.reactor.monotonic() < load_deadline:
-            action_status = getattr(self.oams, "action_status", None)
-            action_status_code = getattr(self.oams, "action_status_code", None)
-            queried_spool = None
-            try:
-                if hasattr(self.oams, "determine_current_spool"):
-                    queried_spool = self.oams.determine_current_spool()
-            except Exception:
-                queried_spool = None
-            current_spool = getattr(self.oams, "current_spool", None)
-            if (
-                action_status is None
-                and action_status_code == 0
-                and (current_spool == spool_index or queried_spool == spool_index)
-            ):
-                if current_spool != spool_index:
-                    self.oams.current_spool = spool_index
-                break
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
-
 
         # Always unload after capture attempt, regardless of TD-1 read result
         self._unload_after_td1(cur_lane, spool_index, fps_id)
