@@ -15,6 +15,7 @@ import logging
 import traceback
 
 from configparser import Error as ConfigError
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
@@ -87,9 +88,6 @@ class afcAFCACE(afcUnit):
         self.type = "AFCACE"
         self.logger = self.afc.logger
 
-        # ACE units don't have physical buffers or stepper-based mechanisms
-        self.buffer_obj = None
-
         # Serial port configuration
         self.serial_port = config.get("serial_port")
 
@@ -108,13 +106,24 @@ class afcAFCACE(afcUnit):
         self.feed_length = config.getfloat("feed_length", 500.0)        # mm
         self.retract_length = config.getfloat("retract_length", 500.0)  # mm
 
-        # Feed assist: enable motorized backing during load
-        self.use_feed_assist = config.getboolean("use_feed_assist", True)
+        # Feed assist: default enable/disable for all slots
+        self._default_feed_assist = config.getboolean("use_feed_assist", True)
+
+        # Per-slot feed assist overrides (populated at runtime)
+        # None = use default, True/False = explicit override
+        self._slot_feed_assist: Dict[int, Optional[bool]] = {}
 
         # Extruder assist length: how far to advance with extruder motor
         # during feed assist (after filament reaches toolhead sensor area)
         self.extruder_assist_length = config.getfloat("extruder_assist_length", 50.0)  # mm
         self.extruder_assist_speed = config.getfloat("extruder_assist_speed", 300.0)   # mm/min
+
+        # Sensor-based feeding: feed in increments near the toolhead sensor
+        # instead of blindly feeding a fixed distance. This enables calibration.
+        self.sensor_approach_margin = config.getfloat("sensor_approach_margin", 60.0)  # mm before expected sensor to switch to incremental
+        self.sensor_step = config.getfloat("sensor_step", 20.0)                       # mm per check during sensor approach
+        self.calibration_step = config.getfloat("calibration_step", 10.0)              # mm per check during calibration (more precise)
+        self.max_feed_overshoot = config.getfloat("max_feed_overshoot", 100.0)         # mm extra to try past feed_length before giving up
 
         # Sensor polling interval for status/runout monitoring
         self.poll_interval = config.getfloat("poll_interval", 1.0)
@@ -175,6 +184,13 @@ class afcAFCACE(afcUnit):
             f"AFCACE {self.name}: connected, mode={self.mode}, "
             f"port={self.serial_port}, slots={self.SLOTS_PER_UNIT}"
         )
+
+    def _get_feed_assist_for_slot(self, slot_index) -> bool:
+        """Check if feed assist is enabled for a specific slot."""
+        override = self._slot_feed_assist.get(slot_index)
+        if override is not None:
+            return override
+        return self._default_feed_assist
 
     # ---- Slot / Lane Mapping ----
 
@@ -335,12 +351,12 @@ class afcAFCACE(afcUnit):
                     self._retract_slot(self._current_loaded_slot)
                     self._current_loaded_slot = -1
 
-            # Feed the target slot
+            # Feed the target slot (pass lane for sensor-based stopping)
             self.logger.info(
                 f"AFCACE load: feeding slot {local_slot} for lane {cur_lane.name} "
                 f"(mode={self.mode})"
             )
-            self._feed_slot(local_slot)
+            self._feed_slot(local_slot, lane=cur_lane)
 
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = local_slot
@@ -351,21 +367,49 @@ class afcAFCACE(afcUnit):
             afc.error.handle_lane_failure(cur_lane, message)
             return False
 
-        # Verify toolhead sensor
-        if not cur_lane.get_toolhead_pre_sensor_state():
-            message = (
-                "AFCACE load did not trigger toolhead sensor. CHECK FILAMENT PATH\n"
-                "To resolve, set lane loaded with "
-                f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-            )
-            if afc.function.in_print():
-                message += (
-                    "\nOnce filament is fully loaded click resume to continue printing"
+        # Buffer/ramming mode: if tool_start == "buffer", the buffer's advance_state
+        # is used as the toolhead sensor. After loading, the buffer should be compressed
+        # (advance_state True). We need to back off until it decompresses to confirm load.
+        if cur_extruder.tool_start == "buffer" and cur_lane.buffer_obj is not None:
+            try:
+                cur_lane.unsync_to_extruder()
+                load_checks = 0
+                while cur_lane.get_toolhead_pre_sensor_state():
+                    cur_lane.move_advanced(cur_lane.short_move_dis * -1, 1)  # 1 = SpeedMode.SHORT
+                    load_checks += 1
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.1)
+                    if load_checks > afc.tool_max_load_checks:
+                        message = (
+                            f"Buffer did not decompress after {afc.tool_max_load_checks} "
+                            f"retract moves. Check filament path and buffer.\n"
+                            f"To resolve, set lane loaded with "
+                            f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                        )
+                        afc.error.handle_lane_failure(cur_lane, message)
+                        return False
+                cur_lane.sync_to_extruder()
+            except Exception as e:
+                message = f"AFCACE buffer load check failed for {cur_lane.name}: {e}"
+                self.logger.error(f"{message}\n{traceback.format_exc()}")
+                afc.error.handle_lane_failure(cur_lane, message)
+                return False
+        else:
+            # Standard toolhead sensor verification
+            if not cur_lane.get_toolhead_pre_sensor_state():
+                message = (
+                    "AFCACE load did not trigger toolhead sensor. CHECK FILAMENT PATH\n"
+                    "To resolve, set lane loaded with "
+                    f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
                 )
-            afc.error.handle_lane_failure(cur_lane, message)
-            return False
+                if afc.function.in_print():
+                    message += (
+                        "\nOnce filament is fully loaded click resume to continue printing"
+                    )
+                afc.error.handle_lane_failure(cur_lane, message)
+                return False
 
         cur_lane.set_tool_loaded()
+        cur_lane.enable_buffer(disable_fault=True)
         afc.save_vars()
         return True
 
@@ -381,6 +425,9 @@ class afcAFCACE(afcUnit):
             return False
 
         cur_lane.status = AFCLaneState.TOOL_UNLOADING
+
+        # Disable buffer before unloading (safe no-op if no buffer)
+        cur_lane.disable_buffer()
 
         if afc._check_extruder_temp(cur_lane):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
@@ -444,36 +491,110 @@ class afcAFCACE(afcUnit):
 
     # ---- Low-Level Slot Operations ----
 
-    def _feed_slot(self, slot_index):
+    def _feed_slot(self, slot_index, lane=None):
         """Feed filament from an ACE slot through to the toolhead.
 
-        1. Feed filament through the bowden path
-        2. Optionally enable feed assist for extruder loading
-        3. Use extruder motor to pull filament into the hotend
+        Uses a two-phase approach:
+        1. Bulk feed: advance most of the bowden distance in one shot (fast)
+        2. Sensor approach: feed in small increments, checking the toolhead
+           sensor between each step (precise, stops when sensor triggers)
+        3. Feed assist + extruder assist for the final stretch into the hotend
+
+        If no lane is provided (no sensor to check), falls back to fixed-distance feed.
         """
         ace = self._ace
 
-        # Step 1: Feed filament through bowden
         self.logger.debug(
             f"AFCACE feed: slot {slot_index}, "
             f"length={self.feed_length}mm @ {self.feed_speed}mm/min"
         )
-        ace.feed_filament(slot_index, self.feed_length, self.feed_speed)
 
-        # Step 2: Feed assist + extruder assist for the last stretch
-        if self.use_feed_assist:
+        # Phase 1: Bulk feed (skip the last sensor_approach_margin mm)
+        bulk_distance = max(0, self.feed_length - self.sensor_approach_margin)
+        if bulk_distance > 0:
+            ace.feed_filament(slot_index, bulk_distance, self.feed_speed)
+
+        # Phase 2: Sensor approach - feed in increments, checking sensor
+        total_fed = bulk_distance
+        sensor_triggered = False
+
+        if lane is not None:
+            # Check if sensor already triggered during bulk feed
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+            if lane.get_toolhead_pre_sensor_state():
+                sensor_triggered = True
+                self.logger.info(
+                    f"AFCACE feed: toolhead sensor triggered during bulk feed "
+                    f"at ~{total_fed:.0f}mm"
+                )
+
+            # Incremental feed until sensor triggers or max distance reached
+            max_total = self.feed_length + self.max_feed_overshoot
+            while not sensor_triggered and total_fed < max_total:
+                step = min(self.sensor_step, max_total - total_fed)
+                ace.feed_filament(slot_index, step, self.feed_speed)
+                total_fed += step
+
+                # Brief pause for sensor state to settle
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+
+                if lane.get_toolhead_pre_sensor_state():
+                    sensor_triggered = True
+                    self.logger.info(
+                        f"AFCACE feed: toolhead sensor triggered at {total_fed:.0f}mm"
+                    )
+        else:
+            # No lane/sensor - just feed the remaining fixed distance
+            remaining = self.feed_length - bulk_distance
+            if remaining > 0:
+                ace.feed_filament(slot_index, remaining, self.feed_speed)
+                total_fed = self.feed_length
+
+        # Phase 3: Feed assist + extruder assist for the last stretch
+        if self._get_feed_assist_for_slot(slot_index):
             try:
                 ace.start_feed_assist(slot_index)
 
                 # Use extruder motor to pull filament into hotend
                 if self.extruder_assist_length > 0:
-                    speed_mm_s = self.extruder_assist_speed / 60.0
                     self.afc.gcode.run_script_from_command(
                         f"G92 E0\n"
                         f"G1 E{self.extruder_assist_length} F{self.extruder_assist_speed}"
                     )
             finally:
                 ace.stop_feed_assist(slot_index)
+
+        return total_fed, sensor_triggered
+
+    def _feed_until_sensor(self, slot_index, lane, max_length, step_size=None):
+        """Feed filament incrementally until the toolhead sensor triggers.
+
+        Used for calibration. Feeds in small steps, checking the sensor
+        between each step. Returns the total distance fed.
+
+        Returns (distance_fed, sensor_triggered).
+        """
+        if step_size is None:
+            step_size = self.calibration_step
+
+        ace = self._ace
+        total_fed = 0.0
+
+        while total_fed < max_length:
+            step = min(step_size, max_length - total_fed)
+            ace.feed_filament(slot_index, step, self.feed_speed)
+            total_fed += step
+
+            # Pause for sensor state to settle
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+
+            if lane.get_toolhead_pre_sensor_state():
+                self.logger.info(
+                    f"AFCACE calibration: sensor triggered at {total_fed:.1f}mm"
+                )
+                return total_fed, True
+
+        return total_fed, False
 
     def _retract_slot(self, slot_index):
         """Retract filament from the toolhead back into the ACE slot."""
@@ -607,20 +728,145 @@ class afcAFCACE(afcUnit):
         cur_lane.set_afc_prep_done()
         return succeeded
 
-    # ---- Calibration (not applicable for ACE hardware) ----
+    # ---- Calibration ----
 
     def calibrate_bowden(self, cur_lane, dis, tol):
-        msg = (
-            "AFCACE units do not support standard AFC bowden calibration. "
-            "Configure feed_length and retract_length in [AFC_AFCACE] section."
+        """Calibrate bowden length by feeding until toolhead sensor triggers.
+
+        Feeds filament from the ACE slot in small increments, checking the
+        toolhead sensor between each step. The total distance when the sensor
+        triggers becomes the measured bowden/feed_length.
+
+        This replaces the "not supported" stub - since we control the ACE
+        hardware directly, we can measure the distance ourselves.
+        """
+        if self._ace is None or not self._ace.connected:
+            return False, "AFCACE not connected", 0
+
+        local_slot = self._get_local_slot_for_lane(cur_lane)
+        if local_slot < 0:
+            return False, f"Cannot determine slot for {cur_lane.name}", 0
+
+        # Don't calibrate if sensor is already triggered
+        if cur_lane.get_toolhead_pre_sensor_state():
+            return False, "Toolhead sensor already triggered - unload first", 0
+
+        max_distance = dis if dis > 0 else self.feed_length + self.max_feed_overshoot + 200
+
+        self.logger.info(
+            f"AFCACE calibrate_bowden: feeding slot {local_slot} "
+            f"in {self.calibration_step}mm steps, max {max_distance}mm"
         )
-        return False, msg, 0
+
+        distance, triggered = self._feed_until_sensor(
+            local_slot, cur_lane, max_distance, step_size=self.calibration_step
+        )
+
+        if not triggered:
+            # Retract what we fed so filament doesn't jam
+            self._retract_slot(local_slot)
+            msg = (
+                f"Toolhead sensor did not trigger after {distance:.0f}mm. "
+                "Check filament path and sensor wiring."
+            )
+            return False, msg, distance
+
+        # Retract back to the ACE unit
+        self._retract_slot(local_slot)
+
+        msg = (
+            f"AFCACE bowden calibration: toolhead sensor triggered at {distance:.1f}mm.\n"
+            f"Set feed_length: {distance:.0f} in your [AFC_AFCACE {self.name}] config.\n"
+            f"(Also set retract_length to the same value or slightly longer)"
+        )
+        return True, msg, distance
 
     def calibrate_hub(self, cur_lane, tol):
-        return False, "AFCACE units do not support hub calibration.", 0
+        """Hub calibration not applicable - ACE manages hub state internally."""
+        return False, "AFCACE hub is managed by ACE hardware. No calibration needed.", 0
 
     def calibrate_lane(self, cur_lane, tol):
-        return False, "AFCACE units do not support lane calibration.", 0
+        """Lane calibration: alias for bowden calibration on AFCACE units.
+
+        On stepper units, calibrate_lane measures extruder-to-hub distance.
+        On AFCACE, there's only one distance that matters: ACE slot to toolhead.
+        This delegates to calibrate_bowden for the same measurement.
+        """
+        return self.calibrate_bowden(cur_lane, 0, tol)
+
+    def calibrate_td1(self, cur_lane, dis, tol):
+        """Calibrate TD-1 bowden length by feeding until TD-1 device detects filament.
+
+        Feeds filament from the ACE slot in small increments, polling the TD-1
+        sensor via Moonraker between each step. The total distance when TD-1
+        detects filament becomes the measured td1_bowden_length.
+
+        :param cur_lane: Lane to use for calibration
+        :param dis: Distance step for incremental feeding (mm)
+        :param tol: Tolerance (unused for AFCACE but kept for interface compatibility)
+        :return: (success, message, length) tuple
+        """
+        if self._ace is None or not self._ace.connected:
+            return False, "AFCACE not connected", 0
+
+        # Validate TD-1 device ID
+        if cur_lane.td1_device_id is None:
+            msg = (
+                f"Cannot calibrate TD-1 for {cur_lane.name}, td1_device_id is a required "
+                "field in AFC_hub or per AFC_lane"
+            )
+            return False, msg, 0
+
+        valid, msg = self.afc.function.check_for_td1_id(cur_lane.td1_device_id)
+        if not valid:
+            msg = (
+                f"TD-1 device(SN: {cur_lane.td1_device_id}) not detected anymore, "
+                "please check before continuing to calibrate TD-1 bowden length"
+            )
+            return False, msg, 0
+
+        local_slot = self._get_local_slot_for_lane(cur_lane)
+        if local_slot < 0:
+            return False, f"Cannot determine slot for {cur_lane.name}", 0
+
+        # Use calibration_step if dis is not specified
+        step_size = dis if dis > 0 else self.calibration_step
+        max_bowden_length = self.feed_length + self.max_feed_overshoot + 500
+
+        self.logger.info(
+            f"AFCACE calibrate_td1: feeding slot {local_slot} in {step_size}mm steps, "
+            f"max {max_bowden_length}mm, TD-1 device={cur_lane.td1_device_id}"
+        )
+
+        # Feed incrementally until TD-1 detects filament
+        bow_pos = 0.0
+        compare_time = datetime.now()
+        while not self.get_td1_data(cur_lane, compare_time):
+            if bow_pos > max_bowden_length:
+                # Retract what we fed
+                self._retract_slot(local_slot)
+                msg = f"TD-1 failed to detect filament after moving {bow_pos:.0f}mm"
+                return False, msg, bow_pos
+
+            compare_time = datetime.now()
+            bow_pos += step_size
+            self._ace.feed_filament(local_slot, step_size, self.feed_speed)
+
+            # Brief pause for TD-1 to register
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+
+        self.logger.info(
+            f"AFCACE calibrate_td1: TD-1 detected filament at {bow_pos:.1f}mm"
+        )
+
+        # Retract back to ACE unit
+        self._retract_slot(local_slot)
+
+        msg = (
+            f"AFCACE TD-1 calibration: filament detected at {bow_pos:.1f}mm.\n"
+            f"Set td1_bowden_length: {bow_pos:.0f} in your lane or unit config."
+        )
+        return True, msg, bow_pos
 
     # ---- Runout Detection ----
 
@@ -735,6 +981,11 @@ class afcAFCACE(afcUnit):
             self.cmd_AFCACE_SYNC_INVENTORY,
             desc="Refresh RFID/spool inventory from ACE hardware",
         )
+        self.gcode.register_mux_command(
+            "AFCACE_CALIBRATE", "UNIT", self.name,
+            self.cmd_AFCACE_CALIBRATE,
+            desc="Calibrate AFCACE bowden length by feeding until toolhead sensor triggers",
+        )
 
     def cmd_AFCACE_STATUS(self, gcmd):
         """Query and display AFCACE hardware status.
@@ -789,21 +1040,64 @@ class afcAFCACE(afcUnit):
             gcmd.respond_info(f"AFCACE {self.name}: stop drying failed: {e}")
 
     def cmd_AFCACE_FEED_ASSIST(self, gcmd):
-        """Enable or disable feed assist at runtime.
+        """Enable or disable feed assist, globally or per-slot.
 
-        Usage: AFCACE_FEED_ASSIST UNIT=<name> ENABLE=<0|1>
+        Usage:
+            AFCACE_FEED_ASSIST UNIT=<name>                    # query all slots
+            AFCACE_FEED_ASSIST UNIT=<name> ENABLE=<0|1>       # set default for all
+            AFCACE_FEED_ASSIST UNIT=<name> SLOT=<1-4> ENABLE=<0|1>  # set per-slot
+            AFCACE_FEED_ASSIST UNIT=<name> SLOT=<1-4> ENABLE=default # clear per-slot override
         """
-        enable = gcmd.get_int("ENABLE", default=None)
-        if enable is None:
-            state = "enabled" if self.use_feed_assist else "disabled"
-            gcmd.respond_info(
-                f"AFCACE {self.name}: feed assist is {state}"
-            )
+        slot_num = gcmd.get_int("SLOT", default=None)
+        enable_str = gcmd.get("ENABLE", default=None)
+
+        # Query mode: no ENABLE param
+        if enable_str is None:
+            lines = [f"AFCACE {self.name} feed assist:"]
+            default_str = "enabled" if self._default_feed_assist else "disabled"
+            lines.append(f"  Default: {default_str}")
+            for s in range(self.SLOTS_PER_UNIT):
+                override = self._slot_feed_assist.get(s)
+                effective = self._get_feed_assist_for_slot(s)
+                eff_str = "enabled" if effective else "disabled"
+                if override is not None:
+                    lines.append(f"  Slot {s + 1}: {eff_str} (override)")
+                else:
+                    lines.append(f"  Slot {s + 1}: {eff_str} (default)")
+            gcmd.respond_info("\n".join(lines))
             return
 
-        self.use_feed_assist = bool(enable)
-        state = "enabled" if self.use_feed_assist else "disabled"
-        gcmd.respond_info(f"AFCACE {self.name}: feed assist {state}")
+        # Per-slot override
+        if slot_num is not None:
+            slot_index = slot_num - 1  # Config is 1-based
+            if slot_index < 0 or slot_index >= self.SLOTS_PER_UNIT:
+                gcmd.respond_info(
+                    f"AFCACE {self.name}: invalid slot {slot_num} (must be 1-{self.SLOTS_PER_UNIT})"
+                )
+                return
+
+            if enable_str.lower() == "default":
+                # Clear per-slot override
+                self._slot_feed_assist.pop(slot_index, None)
+                effective = self._get_feed_assist_for_slot(slot_index)
+                state = "enabled" if effective else "disabled"
+                gcmd.respond_info(
+                    f"AFCACE {self.name}: slot {slot_num} feed assist reset to default ({state})"
+                )
+            else:
+                enable = bool(int(enable_str))
+                self._slot_feed_assist[slot_index] = enable
+                state = "enabled" if enable else "disabled"
+                gcmd.respond_info(
+                    f"AFCACE {self.name}: slot {slot_num} feed assist {state}"
+                )
+            return
+
+        # Global default
+        enable = bool(int(enable_str))
+        self._default_feed_assist = enable
+        state = "enabled" if enable else "disabled"
+        gcmd.respond_info(f"AFCACE {self.name}: feed assist default {state}")
 
     def cmd_AFCACE_SYNC_INVENTORY(self, gcmd):
         """Refresh RFID/spool inventory from ACE hardware and sync to lanes.
@@ -837,6 +1131,42 @@ class afcAFCACE(afcUnit):
             gcmd.respond_info(
                 f"AFCACE {self.name}: inventory sync failed: {e}"
             )
+
+    def cmd_AFCACE_CALIBRATE(self, gcmd):
+        """Calibrate bowden length by feeding until toolhead sensor triggers.
+
+        Feeds filament from the specified lane's ACE slot in small increments,
+        checking the toolhead sensor between each step. Reports the measured
+        distance when the sensor triggers.
+
+        Usage: AFCACE_CALIBRATE UNIT=<name> LANE=<lane_name> [MAX=<mm>]
+        """
+        if self._ace is None or not self._ace.connected:
+            gcmd.respond_info(f"AFCACE {self.name}: not connected")
+            return
+
+        lane_name = gcmd.get("LANE", default=None)
+        if lane_name is None:
+            gcmd.respond_info("AFCACE_CALIBRATE requires LANE=<lane_name>")
+            return
+
+        cur_lane = self.lanes.get(lane_name)
+        if cur_lane is None:
+            # Try looking up from AFC global lanes
+            cur_lane = self.afc.lanes.get(lane_name)
+        if cur_lane is None:
+            gcmd.respond_info(f"Lane '{lane_name}' not found")
+            return
+
+        max_distance = gcmd.get_float("MAX", self.feed_length + self.max_feed_overshoot + 200)
+
+        gcmd.respond_info(
+            f"AFCACE {self.name}: starting bowden calibration for {lane_name}...\n"
+            f"Feeding in {self.calibration_step}mm steps, max {max_distance:.0f}mm"
+        )
+
+        success, msg, distance = self.calibrate_bowden(cur_lane, max_distance, 0)
+        gcmd.respond_info(msg)
 
     # ---- Utilities ----
 
