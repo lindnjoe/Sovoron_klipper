@@ -1965,11 +1965,15 @@ class afcAMS(afcUnit):
         """
         Unload filament after TD-1 operation by reversing follower and spool motor until hub clears.
         """
-        # Cancel any in-progress load before unloading
-        try:
-            self.oams.load_spool_cancel()
-        except Exception:
-            self.logger.debug(f"Failed to cancel load before unload for {cur_lane.name}")
+        # Cancel any in-progress load before unloading (only if a load is active)
+        if self.oams.action_status is not None:
+            try:
+                self.oams.load_spool_cancel()
+            except Exception:
+                self.logger.debug(f"Failed to cancel load before unload for {cur_lane.name}")
+        # Always clear software state
+        self.oams.action_status = None
+        self.oams.action_status_code = None
 
         hub_cleared = False
         unload_wait = 5.0
@@ -2069,9 +2073,13 @@ class afcAMS(afcUnit):
 
         # Load the spool before starting TD-1 calibration
         # The load command is needed to move filament from spool bay to hub motor
+        # Set action_status so firmware responses are handled correctly
+        from extras.oams import OAMSStatus
+        self.oams.action_status = OAMSStatus.LOADING
         try:
             self.oams.oams_load_spool_cmd.send([spool_index])
         except Exception as e:
+            self.oams.action_status = None
             self.logger.error(f"Failed to start spool load for TD-1 calibration on {cur_lane.name}: {e}")
             return False, "Failed to start spool load", 0
 
@@ -2109,6 +2117,7 @@ class afcAMS(afcUnit):
                 self.oams.load_spool_cancel()
             except Exception as e:
                 self.logger.error(f"Failed to cancel load for {cur_lane.name}: {e}")
+            self.oams.action_status = None
             try:
                 self.oams.set_oams_follower(0, 0)
             except Exception as e:
@@ -2124,6 +2133,9 @@ class afcAMS(afcUnit):
             self.oams.load_spool_cancel()
         except Exception as e:
             self.logger.error(f"Failed to cancel load for {cur_lane.name}: {e}")
+        # Give firmware time to stop, then clear software state
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+        self.oams.action_status = None
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception as e:
@@ -2397,9 +2409,13 @@ class afcAMS(afcUnit):
 
         # Load the spool before starting TD-1 capture
         # The load command is needed to move filament from spool bay to follower (hub) motor
+        # Set action_status so firmware responses are handled correctly
+        from extras.oams import OAMSStatus
+        self.oams.action_status = OAMSStatus.LOADING
         try:
             self.oams.oams_load_spool_cmd.send([spool_index])
         except Exception as e:
+            self.oams.action_status = None
             self.logger.error(f"Failed to start spool load for TD-1 capture on {cur_lane.name}: {e}")
             return False, "Failed to start spool load"
 
@@ -2438,6 +2454,7 @@ class afcAMS(afcUnit):
                 self.oams.load_spool_cancel()
             except Exception:
                 pass
+            self.oams.action_status = None
             try:
                 self.oams.set_oams_follower(0, 0)
             except Exception:
@@ -2518,6 +2535,9 @@ class afcAMS(afcUnit):
             self.oams.load_spool_cancel()
         except Exception as e:
             self.logger.warning(f"Failed to cancel load at TD-1 position for {cur_lane.name}: {e}")
+        # Give firmware time to stop, then clear software state
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+        self.oams.action_status = None
 
         # Read TD-1 data now that filament is stopped at the sensor
         td1_detected = _capture_td1_if_fresh()
