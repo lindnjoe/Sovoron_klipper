@@ -131,7 +131,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -159,8 +159,8 @@
             "map": "T9",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
-            "loaded_to_hub": true,
+            "tool_loaded": false,
+            "loaded_to_hub": false,
             "material": "ABS",
             "density": 1.05,
             "diameter": 1.75,
@@ -171,9 +171,9 @@
             "weight": 651.9586996947472,
             "extruder_temp": 250,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -217,8 +217,8 @@
             "map": "T11",
             "load": true,
             "prep": true,
-            "tool_loaded": false,
-            "loaded_to_hub": false,
+            "tool_loaded": true,
+            "loaded_to_hub": true,
             "material": "ASA",
             "density": 1.0,
             "diameter": 1.75,
@@ -229,9 +229,9 @@
             "weight": 988.764272102878,
             "extruder_temp": 250,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
-            "status": "Loaded",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tooled",
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.3,
@@ -267,7 +267,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 1920.7991562500004,
             "td1_data": {},
             "endstops": "load,tool_start,buffer_advance,buffer_trailing,lane0_prep,lane0_load,lane0_buffer"
@@ -364,7 +364,7 @@
         }
     },
     "system": {
-        "current_load": "lane9",
+        "current_load": "lane11",
         "num_units": 4,
         "num_lanes": 12,
         "num_extruders": 6,
@@ -373,7 +373,7 @@
                 "lane_loaded": null
             },
             "extruder5": {
-                "lane_loaded": "lane9"
+                "lane_loaded": "lane11"
             },
             "extruder": {
                 "lane_loaded": "lane0"
