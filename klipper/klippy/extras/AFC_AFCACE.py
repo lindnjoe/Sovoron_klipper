@@ -155,6 +155,15 @@ class afcAFCACE(afcUnit):
             self._ace = None
             return
 
+        # Enable RFID reader so get_filament_info returns spool data
+        try:
+            self._ace.enable_rfid()
+            self.logger.debug(f"AFCACE {self.name}: RFID enabled")
+        except Exception as e:
+            self.logger.warning(
+                f"AFCACE {self.name}: enable_rfid failed (non-fatal): {e}"
+            )
+
         # Sync slot inventory and loaded states
         self._sync_inventory()
         self._sync_slot_loaded_state()
@@ -716,6 +725,16 @@ class afcAFCACE(afcUnit):
             self.cmd_AFCACE_DRY_STOP,
             desc="Stop ACE filament dryer",
         )
+        self.gcode.register_mux_command(
+            "AFCACE_FEED_ASSIST", "UNIT", self.name,
+            self.cmd_AFCACE_FEED_ASSIST,
+            desc="Enable/disable feed assist for AFCACE unit",
+        )
+        self.gcode.register_mux_command(
+            "AFCACE_SYNC_INVENTORY", "UNIT", self.name,
+            self.cmd_AFCACE_SYNC_INVENTORY,
+            desc="Refresh RFID/spool inventory from ACE hardware",
+        )
 
     def cmd_AFCACE_STATUS(self, gcmd):
         """Query and display AFCACE hardware status.
@@ -768,6 +787,56 @@ class afcAFCACE(afcUnit):
             gcmd.respond_info(f"AFCACE {self.name}: drying stopped")
         except Exception as e:
             gcmd.respond_info(f"AFCACE {self.name}: stop drying failed: {e}")
+
+    def cmd_AFCACE_FEED_ASSIST(self, gcmd):
+        """Enable or disable feed assist at runtime.
+
+        Usage: AFCACE_FEED_ASSIST UNIT=<name> ENABLE=<0|1>
+        """
+        enable = gcmd.get_int("ENABLE", default=None)
+        if enable is None:
+            state = "enabled" if self.use_feed_assist else "disabled"
+            gcmd.respond_info(
+                f"AFCACE {self.name}: feed assist is {state}"
+            )
+            return
+
+        self.use_feed_assist = bool(enable)
+        state = "enabled" if self.use_feed_assist else "disabled"
+        gcmd.respond_info(f"AFCACE {self.name}: feed assist {state}")
+
+    def cmd_AFCACE_SYNC_INVENTORY(self, gcmd):
+        """Refresh RFID/spool inventory from ACE hardware and sync to lanes.
+
+        Usage: AFCACE_SYNC_INVENTORY UNIT=<name>
+        """
+        if self._ace is None or not self._ace.connected:
+            gcmd.respond_info(f"AFCACE {self.name}: not connected")
+            return
+
+        try:
+            # Re-enable RFID in case it was disabled
+            self._ace.enable_rfid()
+            # Pull fresh inventory
+            self._sync_inventory()
+            self._sync_slot_loaded_state()
+
+            # Report what we found
+            lines = [f"AFCACE {self.name} inventory:"]
+            for slot in range(self.SLOTS_PER_UNIT):
+                info = self._slot_inventory[slot]
+                status = info.get("status", "unknown")
+                material = info.get("material", "")
+                color = info.get("color", [0, 0, 0])
+                hex_color = self._ace_color_to_hex(color)
+                lines.append(
+                    f"  Slot {slot + 1}: {status} | {material} | {hex_color}"
+                )
+            gcmd.respond_info("\n".join(lines))
+        except Exception as e:
+            gcmd.respond_info(
+                f"AFCACE {self.name}: inventory sync failed: {e}"
+            )
 
     # ---- Utilities ----
 
