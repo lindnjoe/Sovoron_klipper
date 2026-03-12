@@ -328,6 +328,256 @@ extruder: extruder
 
 ---
 
+## AFC_ACE Configuration (DuckACE / ACEPRO Backends)
+
+If you are using [DuckACE](https://github.com/utkabobr/DuckACE) or
+[ACEPRO](https://github.com/Kobra-S1/ACEPRO) instead of the direct AFCACE
+serial driver, use `[AFC_ACE]` sections instead of `[AFC_AFCACE]`.
+
+AFC_ACE is an adapter layer — it delegates feeding and retracting to whichever
+backend module (`[ace]` section) is already installed in your Klipper config.
+The backend is auto-detected, or can be forced with `ace_backend`.
+
+### AFC_ACE Unit Settings
+
+```ini
+[AFC_ACE <unit_name>]
+```
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `ace_backend` | string | `auto` | Backend selection: `auto` (detect from `[ace]` module), `acepro`, or `duckace` |
+| `ace_instance` | int | `0` | Which physical ACE unit (0-based). ACEPRO supports multiple units via its `ace_count` setting. DuckACE is single-unit only (leave at 0). |
+
+All inherited AFC unit settings (`hub`, `extruder`, `buffer`, `td1_device_id`,
+LED colors, etc.) are the same as listed in the AFCACE section above.
+
+Lane configuration is identical to AFCACE — use `[AFC_lane]` sections with
+`unit: <unit_name>:<slot>` (1-based slot numbers).
+
+### DuckACE — Single Unit
+
+Requires [DuckACE](https://github.com/utkabobr/DuckACE) installed and an
+`[ace]` section in your Klipper config. DuckACE provides `ACE_CHANGE_TOOL`
+and `ACE_RETRACT` gcode commands that AFC_ACE calls during load/unload.
+
+```ini
+# DuckACE's own config (see DuckACE docs for full options)
+[ace]
+# DuckACE serial/connection settings go here
+
+[AFC_hub ace_hub]
+switch_pin: virtual
+
+[AFC_extruder extruder]
+pin_tool_start: PF4
+tool_unload_speed: 25
+
+[AFC_ACE ace1]
+hub: ace_hub
+extruder: extruder
+# ace_backend: auto              # Auto-detects DuckACE from [ace] module
+# ace_instance: 0                # DuckACE is single-unit, always 0
+
+[AFC_lane lane1]
+unit: ace1:1
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane2]
+unit: ace1:2
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane3]
+unit: ace1:3
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane4]
+unit: ace1:4
+hub: ace_hub
+extruder: extruder
+```
+
+### ACEPRO — Single Unit
+
+Requires [ACEPRO](https://github.com/Kobra-S1/ACEPRO) installed and an
+`[ace]` section in your Klipper config. ACEPRO provides direct Python methods
+for feeding and retracting that AFC_ACE calls when available, with
+`ACE_CHANGE_TOOL`/`ACE_RETRACT` gcode as fallback.
+
+```ini
+# ACEPRO's own config (see ACEPRO docs for full options)
+[ace]
+# ACEPRO connection and calibration settings go here
+# parkposition_to_toolhead_length: 400
+# toolchange_load_length: 62
+
+[AFC_hub ace_hub]
+switch_pin: virtual
+
+[AFC_extruder extruder]
+pin_tool_start: PF4
+tool_unload_speed: 25
+
+[AFC_ACE ace1]
+hub: ace_hub
+extruder: extruder
+ace_backend: acepro              # Explicitly select ACEPRO backend
+# ace_instance: 0                # First (or only) ACE unit
+
+[AFC_lane lane1]
+unit: ace1:1
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane2]
+unit: ace1:2
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane3]
+unit: ace1:3
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane4]
+unit: ace1:4
+hub: ace_hub
+extruder: extruder
+```
+
+### ACEPRO — Multi-Unit (8 Slots)
+
+ACEPRO supports multiple physical ACE units via its `ace_count` setting.
+Each AFC_ACE unit maps to one physical unit using `ace_instance`.
+
+```ini
+[ace]
+# ACEPRO config with ace_count: 2
+# parkposition_to_toolhead_length: 400
+
+[AFC_hub ace_hub]
+switch_pin: virtual
+
+[AFC_extruder extruder]
+pin_tool_start: PF4
+tool_unload_speed: 25
+
+# First physical ACE unit (instance 0)
+[AFC_ACE ace1]
+hub: ace_hub
+extruder: extruder
+ace_backend: acepro
+ace_instance: 0
+
+# Second physical ACE unit (instance 1)
+[AFC_ACE ace2]
+hub: ace_hub
+extruder: extruder
+ace_backend: acepro
+ace_instance: 1
+
+[AFC_lane lane1]
+unit: ace1:1
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane2]
+unit: ace1:2
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane3]
+unit: ace1:3
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane4]
+unit: ace1:4
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane5]
+unit: ace2:1
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane6]
+unit: ace2:2
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane7]
+unit: ace2:3
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane8]
+unit: ace2:4
+hub: ace_hub
+extruder: extruder
+```
+
+### DuckACE with Turtle Neck Buffer
+
+```ini
+[ace]
+# DuckACE config
+
+[AFC_buffer TN]
+# Turtle Neck buffer configuration
+
+[AFC_hub ace_hub]
+switch_pin: virtual
+
+[AFC_extruder extruder]
+pin_tool_start: buffer           # Use buffer as tool start sensor (enables ramming)
+tool_unload_speed: 25
+buffer: TN
+
+[AFC_ACE ace1]
+hub: ace_hub
+extruder: extruder
+buffer: TN
+
+[AFC_lane lane1]
+unit: ace1:1
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane2]
+unit: ace1:2
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane3]
+unit: ace1:3
+hub: ace_hub
+extruder: extruder
+
+[AFC_lane lane4]
+unit: ace1:4
+hub: ace_hub
+extruder: extruder
+```
+
+### Key Differences from AFCACE
+
+| | AFCACE (`[AFC_AFCACE]`) | AFC_ACE (`[AFC_ACE]`) |
+|---|---|---|
+| **Dependency** | None — owns serial stack | Requires DuckACE or ACEPRO installed |
+| **Serial port** | Configured here (`serial_port`) | Configured in `[ace]` section |
+| **Feed/retract tuning** | `feed_speed`, `retract_speed`, `feed_length`, `retract_length`, etc. | Configured in `[ace]` section (backend handles it) |
+| **Operational mode** | `mode: combined\|direct` | Backend-dependent |
+| **Sensor approach** | `sensor_approach_margin`, `sensor_step`, `calibration_step` | N/A — backend handles sensor logic |
+| **Calibration** | `AFCACE_CALIBRATE` gcode command | Use backend's own calibration tools |
+| **Runout detection** | Own polling (`poll_interval`) | ACEPRO: hooks RunoutMonitor; DuckACE: polling fallback |
+| **Feed assist** | `use_feed_assist`, `AFCACE_FEED_ASSIST` command | Backend-managed |
+
+---
+
 ## Calibration Workflow
 
 1. Load filament into an ACE slot physically
