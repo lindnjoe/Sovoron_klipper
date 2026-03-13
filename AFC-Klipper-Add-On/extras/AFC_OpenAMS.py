@@ -2089,13 +2089,15 @@ class afcAMS(afcUnit):
                 break
 
         if not hub_detected:
-            # Wait for firmware load to complete/timeout naturally
-            load_deadline = self.afc.reactor.monotonic() + 30.0
-            while self.oams.action_status is not None:
-                if self.afc.reactor.monotonic() > load_deadline:
-                    self.oams.action_status = None
-                    break
-                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            # Cancel the in-progress load, then clean up
+            try:
+                self.oams.load_spool_cancel()
+            except Exception:
+                pass
+            try:
+                self.oams.abort_current_action()
+            except Exception:
+                pass
             try:
                 self.oams.set_oams_follower(0, 0)
             except Exception as e:
@@ -2109,15 +2111,16 @@ class afcAMS(afcUnit):
             self.logger.error(msg)
             return False, msg, 0
 
-        # Hub loaded successfully - wait for firmware load to complete before taking manual control
-        self.logger.debug(f"Hub loaded, waiting for load to complete for {cur_lane.name}")
-        load_deadline = self.afc.reactor.monotonic() + 30.0
-        while self.oams.action_status is not None:
-            if self.afc.reactor.monotonic() > load_deadline:
-                self.logger.warning(f"Load response timeout for {cur_lane.name}")
-                self.oams.action_status = None
-                break
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+        # Hub loaded successfully - cancel load and take manual control with follower
+        self.logger.debug(f"Hub loaded, cancelling load to take manual control for {cur_lane.name}")
+        try:
+            self.oams.load_spool_cancel()
+        except Exception:
+            pass
+        try:
+            self.oams.abort_current_action()
+        except Exception:
+            pass
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception as e:
@@ -2408,13 +2411,15 @@ class afcAMS(afcUnit):
                 self.oams.set_oams_follower(0, 0)
             except Exception:
                 pass
-            # Wait for firmware load to complete naturally
-            load_deadline = self.afc.reactor.monotonic() + 30.0
-            while self.oams.action_status is not None:
-                if self.afc.reactor.monotonic() > load_deadline:
-                    self.oams.action_status = None
-                    break
-                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            # Cancel the in-progress load, then clean up
+            try:
+                self.oams.load_spool_cancel()
+            except Exception:
+                pass
+            try:
+                self.oams.abort_current_action()
+            except Exception:
+                pass
             try:
                 self.oams.clear_errors()
             except Exception:
@@ -2439,13 +2444,15 @@ class afcAMS(afcUnit):
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
         if not hub_detected:
-            # Wait for firmware load to complete/timeout naturally
-            load_deadline = self.afc.reactor.monotonic() + 30.0
-            while self.oams.action_status is not None:
-                if self.afc.reactor.monotonic() > load_deadline:
-                    self.oams.action_status = None
-                    break
-                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            # Cancel the in-progress load, then clean up
+            try:
+                self.oams.load_spool_cancel()
+            except Exception:
+                pass
+            try:
+                self.oams.abort_current_action()
+            except Exception:
+                pass
             try:
                 self.oams.set_oams_follower(0, 0)
             except Exception:
@@ -2470,13 +2477,15 @@ class afcAMS(afcUnit):
             self.logger.error(
                 f"Unable to read encoder before TD-1 capture for {cur_lane.name}"
             )
-            # Load is in progress — wait for it to complete, then clean up
-            load_deadline = self.afc.reactor.monotonic() + 30.0
-            while self.oams.action_status is not None:
-                if self.afc.reactor.monotonic() > load_deadline:
-                    self.oams.action_status = None
-                    break
-                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            # Cancel the in-progress load, then clean up
+            try:
+                self.oams.load_spool_cancel()
+            except Exception:
+                pass
+            try:
+                self.oams.abort_current_action()
+            except Exception:
+                pass
             try:
                 self.oams.clear_errors()
             except Exception:
@@ -2548,14 +2557,15 @@ class afcAMS(afcUnit):
                     break
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
-        # Wait for firmware load to complete naturally (don't cancel - it locks up firmware)
-        load_deadline = self.afc.reactor.monotonic() + 30.0
-        while self.oams.action_status is not None:
-            if self.afc.reactor.monotonic() > load_deadline:
-                self.logger.warning(f"Load response timeout for {cur_lane.name}")
-                self.oams.action_status = None
-                break
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+        # Cancel the load now that we have TD-1 data (or timed out), then unload
+        try:
+            self.oams.load_spool_cancel()
+        except Exception:
+            pass
+        try:
+            self.oams.abort_current_action()
+        except Exception:
+            pass
 
         # Always unload after capture attempt, regardless of TD-1 read result
         self._unload_after_td1(cur_lane, spool_index, fps_id)
