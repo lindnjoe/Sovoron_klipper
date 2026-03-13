@@ -547,7 +547,7 @@ class ACEConnection:
             # On failure, skip past just the header bytes and rescan,
             # since a false header in data would produce garbage framing.
             if footer != FRAME_FOOTER[0]:
-                self._logger.warning(
+                self._logger.debug(
                     f"ACE frame: invalid footer byte 0x{footer:02x}, "
                     "rescanning for next header"
                 )
@@ -556,7 +556,7 @@ class ACEConnection:
 
             crc_calculated = crc16_ccitt_reflected(payload)
             if crc_received != crc_calculated:
-                self._logger.warning(
+                self._logger.debug(
                     f"ACE frame: CRC mismatch (recv=0x{crc_received:04x}, "
                     f"calc=0x{crc_calculated:04x}), rescanning"
                 )
