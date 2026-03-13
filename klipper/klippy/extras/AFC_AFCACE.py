@@ -937,24 +937,27 @@ class afcAFCACE(afcUnit):
             local_slot, cur_lane, max_distance, step_size=self.calibration_step
         )
 
-        if not triggered:
-            # Retract what we fed so filament doesn't jam
-            retract_dist = distance + 20
-            self.logger.info(f"AFCACE calibrate_bowden: retracting {retract_dist:.0f}mm")
+        # Always retract after calibration (whether sensor triggered or not)
+        retract_dist = distance + 50
+        self.logger.info(
+            f"AFCACE calibrate_bowden: retracting {retract_dist:.0f}mm "
+            f"@ {self.retract_speed}mm/min"
+        )
+        try:
             self._ace.unwind_filament(local_slot, retract_dist, self.retract_speed)
-            self._wait_for_feed_complete(local_slot, retract_dist, self.retract_speed)
+            self._wait_for_feed_complete(
+                local_slot, retract_dist, self.retract_speed
+            )
+            self.logger.info("AFCACE calibrate_bowden: retract complete")
+        except Exception as e:
+            self.logger.error(f"AFCACE calibrate_bowden: retract failed: {e}")
+
+        if not triggered:
             msg = (
                 f"Toolhead sensor did not trigger after {distance:.0f}mm. "
                 "Check filament path and sensor wiring."
             )
             return False, msg, distance
-
-        # Retract back to the ACE unit using measured distance (not config value
-        # which may be too short for the actual bowden length)
-        retract_dist = distance + 20
-        self.logger.info(f"AFCACE calibrate_bowden: retracting {retract_dist:.0f}mm")
-        self._ace.unwind_filament(local_slot, retract_dist, self.retract_speed)
-        self._wait_for_feed_complete(local_slot, retract_dist, self.retract_speed)
 
         # Round to nearest integer for clean config values
         new_feed_length = round(distance, 0)
@@ -1062,10 +1065,19 @@ class afcAFCACE(afcUnit):
         )
 
         # Retract back to ACE unit using measured distance
-        retract_dist = bow_pos + 20
-        self.logger.info(f"AFCACE calibrate_td1: retracting {retract_dist:.0f}mm")
-        self._ace.unwind_filament(local_slot, retract_dist, self.retract_speed)
-        self._wait_for_feed_complete(local_slot, retract_dist, self.retract_speed)
+        retract_dist = bow_pos + 50
+        self.logger.info(
+            f"AFCACE calibrate_td1: retracting {retract_dist:.0f}mm "
+            f"@ {self.retract_speed}mm/min"
+        )
+        try:
+            self._ace.unwind_filament(local_slot, retract_dist, self.retract_speed)
+            self._wait_for_feed_complete(
+                local_slot, retract_dist, self.retract_speed
+            )
+            self.logger.info("AFCACE calibrate_td1: retract complete")
+        except Exception as e:
+            self.logger.error(f"AFCACE calibrate_td1: retract failed: {e}")
 
         # Save td1_bowden_length to the lane's config section
         old_td1 = getattr(cur_lane, "td1_bowden_length", None)
