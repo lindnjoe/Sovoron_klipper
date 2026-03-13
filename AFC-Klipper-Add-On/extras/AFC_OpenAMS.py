@@ -2108,12 +2108,15 @@ class afcAMS(afcUnit):
                 self.logger.warning(f"Cancel response timeout for {cur_lane.name}, forcing clear")
                 break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
-        self.oams.action_status = None
-        self.oams.action_status_code = None
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception as e:
             self.logger.error(f"Failed to stop follower for {cur_lane.name}: {e}")
+        # Re-sync firmware state after cancel
+        try:
+            self.oams.clear_errors()
+        except Exception:
+            pass
 
         # Give it a moment for the follower to stop
         self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
@@ -2535,8 +2538,11 @@ class afcAMS(afcUnit):
                 self.logger.warning(f"Cancel response timeout for {cur_lane.name}, forcing clear")
                 break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
-        self.oams.action_status = None
-        self.oams.action_status_code = None
+        # Re-sync firmware state after cancel
+        try:
+            self.oams.clear_errors()
+        except Exception:
+            pass
 
         # Read TD-1 data now that filament is stopped at the sensor
         td1_detected = _capture_td1_if_fresh()
