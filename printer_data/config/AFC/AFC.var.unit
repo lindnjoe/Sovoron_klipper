@@ -144,7 +144,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "Loaded",
+            "status": "Tool Loading",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -218,7 +218,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "ASA",
             "density": 1.0,
             "diameter": 1.75,
@@ -236,7 +236,7 @@
             "td1_data": {
                 "td": 0.6,
                 "color": "193B57",
-                "scan_time": "2026-03-12T22:28:56.082505+00:00Z",
+                "scan_time": "2026-03-13T01:36:01.428538+00:00Z",
                 "error": null
             }
         }
