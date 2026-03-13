@@ -926,7 +926,7 @@ class afcAFCACE(afcUnit):
         if cur_lane.get_toolhead_pre_sensor_state():
             return False, "Toolhead sensor already triggered - unload first", 0
 
-        max_distance = dis if dis > 0 else 4000
+        max_distance = dis if dis > 0 else 6000
 
         self.logger.info(
             f"AFCACE calibrate_bowden: feeding slot {local_slot} "
@@ -1026,7 +1026,7 @@ class afcAFCACE(afcUnit):
 
         # Use calibration_step if dis is not specified
         step_size = dis if dis > 0 else self.calibration_step
-        max_bowden_length = 4000
+        max_bowden_length = 6000
 
         self.logger.info(
             f"AFCACE calibrate_td1: feeding slot {local_slot} in {step_size}mm steps, "
@@ -1412,7 +1412,7 @@ class afcAFCACE(afcUnit):
             gcmd.respond_info(f"Lane '{lane_name}' not found")
             return
 
-        max_distance = gcmd.get_float("MAX", 4000)
+        max_distance = gcmd.get_float("MAX", 6000)
 
         gcmd.respond_info(
             f"AFCACE {self.name}: starting bowden calibration for {lane_name}...\n"
