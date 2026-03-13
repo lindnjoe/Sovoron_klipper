@@ -137,6 +137,9 @@ class afcAFCACE(afcUnit):
         # Slot inventory cache: [{status, material, color}, ...]
         self._slot_inventory = [{} for _ in range(self.SLOTS_PER_UNIT)]
 
+        # Cached hardware status (refreshed by _poll_slot_status, never by get_status)
+        self._cached_hw_status = {}
+
         # For combined mode: track which slot is currently in the toolhead
         # -1 means nothing loaded
         self._current_loaded_slot = -1
@@ -147,7 +150,11 @@ class afcAFCACE(afcUnit):
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
     def _handle_ready(self):
-        """Connect to ACE hardware once Klipper is fully ready."""
+        """Schedule deferred init — reactor pause is disabled during klippy:ready."""
+        self.afc.reactor.register_callback(self._deferred_init)
+
+    def _deferred_init(self, eventtime):
+        """Connect to ACE hardware after reactor is fully running."""
         try:
             self._ace = ACEConnection(
                 reactor=self.afc.reactor,
@@ -235,11 +242,6 @@ class afcAFCACE(afcUnit):
         if self._ace is None or not self._ace.connected:
             return
 
-        try:
-            status = self._ace.get_status()
-        except Exception:
-            return
-
         for lane in self.lanes.values():
             local_slot = self._get_local_slot_for_lane(lane)
             if 0 <= local_slot < self.SLOTS_PER_UNIT:
@@ -284,7 +286,12 @@ class afcAFCACE(afcUnit):
         self.logo_error += '  ' + self.name + '</span>\n'
 
     def get_status(self, eventtime=None):
-        """Return status dict including ACE hardware state."""
+        """Return status dict including cached ACE hardware state.
+
+        IMPORTANT: This must NOT send serial commands — Klipper calls this
+        multiple times per second for UI updates. Use cached data only.
+        The cache is refreshed by _poll_slot_status at poll_interval.
+        """
         response = super().get_status(eventtime)
 
         response["ace_mode"] = self.mode
@@ -292,15 +299,7 @@ class afcAFCACE(afcUnit):
             self._ace is not None and self._ace.connected
         )
         response["ace_serial_port"] = self.serial_port
-
-        if self._ace is not None and self._ace.connected:
-            try:
-                hw_status = self._ace.get_status(timeout=2.0)
-                response["ace_status"] = hw_status
-            except Exception:
-                response["ace_status"] = {}
-        else:
-            response["ace_status"] = {}
+        response["ace_status"] = self._cached_hw_status
 
         return response
 
@@ -914,6 +913,9 @@ class afcAFCACE(afcUnit):
     def _start_slot_status_monitor(self):
         """Start periodic polling for slot status changes (runout detection)."""
         self._prev_slot_states = {}
+        # Track when we last did a full inventory sync (RFID data)
+        self._last_inventory_sync = 0.0
+        self._inventory_sync_interval = 30.0  # Full RFID sync every 30s
         self._slot_monitor_timer = self.afc.reactor.register_timer(
             self._poll_slot_status,
             self.afc.reactor.monotonic() + 5.0,
@@ -924,22 +926,44 @@ class afcAFCACE(afcUnit):
         )
 
     def _poll_slot_status(self, eventtime):
-        """Periodic callback to detect slot status changes during printing."""
-        try:
-            if not self.afc.function.is_printing():
-                return eventtime + self.poll_interval * 2
-        except Exception:
-            return eventtime + self.poll_interval * 2
+        """Periodic callback to detect slot status changes during printing.
 
+        Uses a single get_status call per poll to check slot states.
+        Full inventory sync (4x get_filament_info) only runs infrequently.
+        """
         if self._ace is None or not self._ace.connected:
-            return eventtime + self.poll_interval * 2
+            return eventtime + self.poll_interval * 4
 
-        # Refresh inventory
+        is_printing = False
         try:
-            self._sync_inventory()
+            is_printing = self.afc.function.is_printing()
         except Exception:
             pass
 
+        # Single get_status call — refreshes cached hw status AND slot states
+        try:
+            hw_status = self._ace.get_status(timeout=2.0)
+            if isinstance(hw_status, dict):
+                self._cached_hw_status = hw_status
+                # Parse slot states from get_status response
+                slots = hw_status.get("slots", [])
+                for i, slot_data in enumerate(slots):
+                    if i < self.SLOTS_PER_UNIT and isinstance(slot_data, dict):
+                        status = slot_data.get("status", "")
+                        # Update inventory cache with status from get_status
+                        self._slot_inventory[i]["status"] = status
+        except Exception:
+            pass
+
+        # Full RFID inventory sync only infrequently (material, color data)
+        if eventtime - self._last_inventory_sync > self._inventory_sync_interval:
+            self._last_inventory_sync = eventtime
+            try:
+                self._sync_inventory()
+            except Exception:
+                pass
+
+        # Sync loaded states and detect runout
         for lane in self.lanes.values():
             local_slot = self._get_local_slot_for_lane(lane)
             if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
@@ -949,6 +973,10 @@ class afcAFCACE(afcUnit):
             slot_ready = bool(
                 slot_info and slot_info.get("status", "") == "ready"
             )
+
+            # Always sync loaded_to_hub so prep/status is accurate
+            lane.loaded_to_hub = slot_ready
+
             prev_ready = self._prev_slot_states.get(lane.name, slot_ready)
             self._prev_slot_states[lane.name] = slot_ready
 
@@ -977,7 +1005,10 @@ class afcAFCACE(afcUnit):
                     # Slot went empty on a non-active lane - just update sensor state
                     lane.loaded_to_hub = False
 
-        return eventtime + self.poll_interval
+        # Polling rates: 2s when printing (runout detection), 5s when idle
+        if is_printing:
+            return eventtime + max(self.poll_interval, 2.0)
+        return eventtime + 5.0
 
     # ---- Inventory Sync ----
 
