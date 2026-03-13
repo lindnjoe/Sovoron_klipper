@@ -147,6 +147,10 @@ class afcAFCACE(afcUnit):
         # Previous slot states for runout detection
         self._prev_slot_states: Dict[str, bool] = {}
 
+        # Set True during active operations (load, unload, calibration) to
+        # prevent heartbeat/poll callbacks from modifying lane state
+        self._operation_active = False
+
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
     def _handle_ready(self):
@@ -278,6 +282,10 @@ class afcAFCACE(afcUnit):
         if not isinstance(response, dict):
             return
 
+        # Skip lane state updates during active operations (load/unload/calibration)
+        if self._operation_active:
+            return
+
         # Extract result payload (JSON-RPC wraps it)
         result = response.get("result", response)
         if not isinstance(result, dict):
@@ -297,13 +305,6 @@ class afcAFCACE(afcUnit):
         for lane in self.lanes.values():
             local_slot = self._get_local_slot_for_lane(lane)
             if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
-                continue
-
-            # Skip lanes that are actively loading/unloading - the ACE slot
-            # status is transient during these operations and should not
-            # trigger state changes (avoids false empty/reinsert flicker)
-            if lane.status in (AFCLaneState.TOOL_LOADING,
-                               AFCLaneState.TOOL_UNLOADING):
                 continue
 
             slot_info = self._slot_inventory[local_slot]
@@ -379,6 +380,14 @@ class afcAFCACE(afcUnit):
         In combined mode: retracts the currently loaded slot first.
         In direct mode: feeds independently (each lane has its own extruder).
         """
+        afc = self.afc
+        self._operation_active = True
+        try:
+            return self._load_sequence_inner(cur_lane, cur_hub, cur_extruder)
+        finally:
+            self._operation_active = False
+
+    def _load_sequence_inner(self, cur_lane, cur_hub, cur_extruder):
         afc = self.afc
 
         if self._ace is None or not self._ace.connected:
@@ -484,6 +493,14 @@ class afcAFCACE(afcUnit):
 
     def unload_sequence(self, cur_lane, cur_hub, cur_extruder):
         """Unload filament: shared toolhead steps then ACE retraction."""
+        afc = self.afc
+        self._operation_active = True
+        try:
+            return self._unload_sequence_inner(cur_lane, cur_hub, cur_extruder)
+        finally:
+            self._operation_active = False
+
+    def _unload_sequence_inner(self, cur_lane, cur_hub, cur_extruder):
         afc = self.afc
 
         if self._ace is None or not self._ace.connected:
@@ -890,15 +907,14 @@ class afcAFCACE(afcUnit):
     # ---- Calibration ----
 
     def calibrate_bowden(self, cur_lane, dis, tol):
-        """Calibrate bowden length by feeding until toolhead sensor triggers.
+        """Calibrate bowden length by feeding until toolhead sensor triggers."""
+        self._operation_active = True
+        try:
+            return self._calibrate_bowden_inner(cur_lane, dis, tol)
+        finally:
+            self._operation_active = False
 
-        Feeds filament from the ACE slot in small increments, checking the
-        toolhead sensor between each step. The total distance when the sensor
-        triggers becomes the measured bowden/feed_length.
-
-        This replaces the "not supported" stub - since we control the ACE
-        hardware directly, we can measure the distance ourselves.
-        """
+    def _calibrate_bowden_inner(self, cur_lane, dis, tol):
         if self._ace is None or not self._ace.connected:
             return False, "AFCACE not connected", 0
 
@@ -977,17 +993,14 @@ class afcAFCACE(afcUnit):
         return self.calibrate_bowden(cur_lane, 0, tol)
 
     def calibrate_td1(self, cur_lane, dis, tol):
-        """Calibrate TD-1 bowden length by feeding until TD-1 device detects filament.
+        """Calibrate TD-1 bowden length by feeding until TD-1 device detects filament."""
+        self._operation_active = True
+        try:
+            return self._calibrate_td1_inner(cur_lane, dis, tol)
+        finally:
+            self._operation_active = False
 
-        Feeds filament from the ACE slot in small increments, polling the TD-1
-        sensor via Moonraker between each step. The total distance when TD-1
-        detects filament becomes the measured td1_bowden_length.
-
-        :param cur_lane: Lane to use for calibration
-        :param dis: Distance step for incremental feeding (mm)
-        :param tol: Tolerance (unused for AFCACE but kept for interface compatibility)
-        :return: (success, message, length) tuple
-        """
+    def _calibrate_td1_inner(self, cur_lane, dis, tol):
         if self._ace is None or not self._ace.connected:
             return False, "AFCACE not connected", 0
 
@@ -1094,6 +1107,10 @@ class afcAFCACE(afcUnit):
         if self._ace is None or not self._ace.connected:
             return eventtime + self.poll_interval * 4
 
+        # Skip during active operations (load/unload/calibration)
+        if self._operation_active:
+            return eventtime + self.poll_interval
+
         is_printing = False
         try:
             is_printing = self.afc.function.is_printing()
@@ -1127,13 +1144,6 @@ class afcAFCACE(afcUnit):
         for lane in self.lanes.values():
             local_slot = self._get_local_slot_for_lane(lane)
             if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
-                continue
-
-            # Skip lanes that are actively loading/unloading - the ACE slot
-            # status is transient during these operations and should not
-            # trigger state changes (avoids false empty/reinsert flicker)
-            if lane.status in (AFCLaneState.TOOL_LOADING,
-                               AFCLaneState.TOOL_UNLOADING):
                 continue
 
             slot_info = self._slot_inventory[local_slot]
