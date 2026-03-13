@@ -264,15 +264,40 @@ class afcAFCACE(afcUnit):
                 )
                 lane.loaded_to_hub = slot_loaded
 
-                # Sync material/color from RFID data only if Spoolman
-                # hasn't already set them (spool_id indicates Spoolman data)
-                if not getattr(lane, "spool_id", None):
-                    material = slot_info.get("material", "")
-                    color = slot_info.get("color", [0, 0, 0])
-                    if material and hasattr(lane, "material"):
-                        lane.material = material
-                    if color and hasattr(lane, "color"):
-                        lane.color = self._ace_color_to_hex(color)
+                # Only set material/color if the lane doesn't already have
+                # values (from Spoolman, manual set, or previous RFID read).
+                # Never overwrite existing assignments.
+                self._apply_slot_filament_defaults(lane, slot_info)
+
+    def _apply_slot_filament_defaults(self, lane, slot_info):
+        """Apply filament material/color to a lane if not already set.
+
+        Priority: existing lane values > Spoolman next_spool_id > ACE RFID > AFC defaults.
+        Never overwrites values that are already set.
+        """
+        # If lane already has material and color set, don't touch them
+        has_material = getattr(lane, "material", None) not in (None, "")
+        has_color = getattr(lane, "color", None) not in (None, "", "#000000")
+
+        if has_material and has_color:
+            return
+
+        # Try ACE RFID data from slot inventory
+        rfid_material = slot_info.get("material", "") if slot_info else ""
+        rfid_color = slot_info.get("color", [0, 0, 0]) if slot_info else [0, 0, 0]
+        rfid_has_data = bool(rfid_material) or rfid_color != [0, 0, 0]
+
+        if rfid_has_data:
+            if not has_material and rfid_material:
+                lane.material = rfid_material
+            if not has_color and rfid_color != [0, 0, 0]:
+                lane.color = self._ace_color_to_hex(rfid_color)
+        else:
+            # No RFID data - apply AFC defaults if lane is still empty
+            if not has_material:
+                default_mat = getattr(self.afc, "default_material_type", None)
+                if default_mat:
+                    lane.material = default_mat
 
     def _on_hw_status_callback(self, response):
         """Process slot status from any ACE response (including heartbeat).
@@ -956,14 +981,8 @@ class afcAFCACE(afcUnit):
                 slot_ready = slot_info.get("status", "") == "ready"
                 cur_lane.loaded_to_hub = slot_ready
 
-                # Sync RFID data to lane only if Spoolman hasn't set them
-                if not getattr(cur_lane, "spool_id", None):
-                    material = slot_info.get("material", "")
-                    color = slot_info.get("color", [0, 0, 0])
-                    if material and hasattr(cur_lane, "material"):
-                        cur_lane.material = material
-                    if color and hasattr(cur_lane, "color"):
-                        cur_lane.color = self._ace_color_to_hex(color)
+                # Apply filament defaults if lane doesn't have values set
+                self._apply_slot_filament_defaults(cur_lane, slot_info)
 
         if not cur_lane.prep_state:
             if not cur_lane.load_state:
