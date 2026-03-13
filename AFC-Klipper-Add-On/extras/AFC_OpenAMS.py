@@ -3110,9 +3110,13 @@ class afcAMS(afcUnit):
             afc_function._oams_unset_lane_loaded_original = afc_function.unset_lane_loaded
 
         def unset_lane_loaded_wrapper():
+            # Capture lane info BEFORE the original clears it
             cur_lane_loaded = afc_function.get_current_lane_obj()
             lane_name = getattr(cur_lane_loaded, "name", None) if cur_lane_loaded else None
             unit_obj = getattr(cur_lane_loaded, "unit_obj", None) if cur_lane_loaded else None
+            extruder_name = None
+            if cur_lane_loaded is not None:
+                extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None)
             is_openams = _is_openams_unit(unit_obj)
 
             result = afc_function._oams_unset_lane_loaded_original()
@@ -3120,9 +3124,13 @@ class afcAMS(afcUnit):
             if is_openams and lane_name:
                 try:
                     oams_manager = self._get_oams_manager()
-                    extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None) if cur_lane_loaded else None
                     if oams_manager is not None:
                         oams_manager.on_afc_lane_unloaded(lane_name, extruder_name=extruder_name)
+                        # Clear current_spool for THIS unit so background
+                        # sync_state_with_afc doesn't re-write the lane state
+                        oams_obj = getattr(unit_obj, "oams", None) if unit_obj else None
+                        if oams_obj is not None:
+                            oams_obj.current_spool = None
                 except Exception as e:
                     self.logger.error(f"Failed to notify OAMS manager during unset_lane_loaded: {e}")
             return result
