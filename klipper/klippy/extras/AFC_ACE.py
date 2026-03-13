@@ -182,9 +182,6 @@ class afcACE(afcUnit):
         self.type = "ACE"
         self.logger = self.afc.logger
 
-        # ACE units don't have physical buffers or stepper-based mechanisms
-        self.buffer_obj = None
-
         # ACE instance index (0-based) - which physical ACE unit this maps to
         # For DuckACE (single-unit), this should stay 0.
         self.ace_instance_index = config.getint("ace_instance", 0)
@@ -402,18 +399,46 @@ class afcACE(afcUnit):
             afc.error.handle_lane_failure(cur_lane, message)
             return False
 
-        if not cur_lane.get_toolhead_pre_sensor_state():
-            message = (
-                "ACE load did not trigger toolhead sensor. CHECK FILAMENT PATH\n"
-                "To resolve, set lane loaded with "
-                f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-            )
-            if afc.function.in_print():
-                message += "\nOnce filament is fully loaded click resume to continue printing"
-            afc.error.handle_lane_failure(cur_lane, message)
-            return False
+        # Buffer/ramming mode: if tool_start == "buffer", the buffer's advance_state
+        # is used as the toolhead sensor. After loading, retract off the buffer sensor
+        # to confirm the load and reset the buffer state.
+        if cur_extruder.tool_start == "buffer" and cur_lane.buffer_obj is not None:
+            try:
+                cur_lane.unsync_to_extruder()
+                load_checks = 0
+                while cur_lane.get_toolhead_pre_sensor_state():
+                    cur_lane.move_advanced(cur_lane.short_move_dis * -1, 1)
+                    load_checks += 1
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.1)
+                    if load_checks > afc.tool_max_load_checks:
+                        message = (
+                            f"Buffer did not decompress after {afc.tool_max_load_checks} "
+                            f"retract moves. Check filament path and buffer.\n"
+                            f"To resolve, set lane loaded with "
+                            f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                        )
+                        afc.error.handle_lane_failure(cur_lane, message)
+                        return False
+                cur_lane.sync_to_extruder()
+            except Exception as e:
+                message = f"ACE buffer load check failed for {cur_lane.name}: {e}"
+                self.logger.error(f"{message}\n{traceback.format_exc()}")
+                afc.error.handle_lane_failure(cur_lane, message)
+                return False
+        else:
+            if not cur_lane.get_toolhead_pre_sensor_state():
+                message = (
+                    "ACE load did not trigger toolhead sensor. CHECK FILAMENT PATH\n"
+                    "To resolve, set lane loaded with "
+                    f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                )
+                if afc.function.in_print():
+                    message += "\nOnce filament is fully loaded click resume to continue printing"
+                afc.error.handle_lane_failure(cur_lane, message)
+                return False
 
         cur_lane.set_tool_loaded()
+        cur_lane.enable_buffer(disable_fault=True)
         afc.save_vars()
         return True
 
@@ -429,6 +454,9 @@ class afcACE(afcUnit):
             return False
 
         cur_lane.status = AFCLaneState.TOOL_UNLOADING
+
+        # Disable buffer before unloading (safe no-op if no buffer)
+        cur_lane.disable_buffer()
 
         if afc._check_extruder_temp(cur_lane):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
@@ -748,7 +776,7 @@ class afcACE(afcUnit):
             lane.loaded_to_hub = False
 
             # Only trigger runout on the lane actively printing (TOOLED).
-            # LOADED lanes are at the hub but not in the toolhead — a slot
+            # LOADED lanes are at the hub but not in the toolhead ï¿½ a slot
             # going empty on a LOADED lane (e.g. user removed spool after a
             # previous infinite-spool swap) must not re-trigger the swap.
             if lane.status != AFCLaneState.TOOLED:
@@ -773,7 +801,7 @@ class afcACE(afcUnit):
                     lane._perform_pause_runout()
                 finally:
                     # unload_sequence sets loaded_to_hub = True after retract,
-                    # but this lane ran out — clear it so virtual sensors
+                    # but this lane ran out ï¿½ clear it so virtual sensors
                     # reflect the empty state and the lane won't false-trigger
                     # runout again after the remap.
                     lane.loaded_to_hub = False
@@ -834,7 +862,7 @@ class afcACE(afcUnit):
             self._prev_slot_states[lane.name] = slot_ready
 
             # Detect ready ? not-ready transition (filament runout).
-            # Only act on TOOLED lanes — LOADED lanes are at the hub, not
+            # Only act on TOOLED lanes ï¿½ LOADED lanes are at the hub, not
             # actively printing. After a previous infinite-spool swap the old
             # lane stays LOADED; the user removing that spool later must not
             # re-trigger the runout sequence.
@@ -863,7 +891,7 @@ class afcACE(afcUnit):
                     else:
                         lane._perform_pause_runout()
                 elif lane.status == AFCLaneState.LOADED:
-                    # Slot went empty on a non-active lane — just update
+                    # Slot went empty on a non-active lane ï¿½ just update
                     # virtual sensor state, no runout action needed.
                     lane.loaded_to_hub = False
 
