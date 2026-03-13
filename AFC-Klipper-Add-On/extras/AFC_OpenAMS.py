@@ -1963,64 +1963,38 @@ class afcAMS(afcUnit):
 
     def _unload_after_td1(self, cur_lane, spool_index, fps_id):
         """
-        Unload filament after TD-1 operation using the firmware unload command.
-        Waits for firmware to acknowledge the unload before returning.
+        Unload filament after TD-1 operation using the proper firmware unload_spool().
+        After cancel, the firmware still thinks a spool is loaded. We must use the
+        high-level unload_spool() so the firmware properly clears its internal state,
+        then re-sync current_spool with hardware via clear_errors().
         """
-        from extras.oams import OAMSStatus, OAMSOpCode
-
-        # Clean up any lingering software state before unloading
-        try:
-            self.oams.abort_current_action(wait=True, code=0)
-        except Exception:
-            self.logger.debug(f"Failed to abort existing action before unload for {cur_lane.name}")
-
-        hub_cleared = False
+        # Use the proper unload_spool() which tracks action_status, waits for
+        # firmware response, and clears current_spool on success
+        success = False
         for attempt in range(3):
-            # Track the unload via action_status so we wait for firmware response
-            self.oams.action_status = OAMSStatus.UNLOADING
             try:
-                self.oams.oams_unload_spool_cmd.send([])
+                success, msg = self.oams.unload_spool()
             except Exception as e:
-                self.logger.error(f"Failed to send unload command for {cur_lane.name}: {e}")
-                self.oams.action_status = None
-                continue
-
-            # Wait for firmware to acknowledge the unload (action_status cleared by response)
-            unload_deadline = self.afc.reactor.monotonic() + 15.0
-            while self.oams.action_status is not None:
-                if self.afc.reactor.monotonic() > unload_deadline:
-                    self.logger.warning(f"Unload response timeout for {cur_lane.name}, forcing clear")
-                    self.oams.action_status = None
-                    break
-                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
-
-            unload_code = self.oams.action_status_code
-            if unload_code == OAMSOpCode.SUCCESS:
-                self.logger.debug(f"Firmware acknowledged unload for {cur_lane.name}")
-            else:
-                self.logger.debug(
-                    f"Firmware unload response code={unload_code} for {cur_lane.name}"
-                )
-
-            # Check if hub cleared
-            hub_check_deadline = self.afc.reactor.monotonic() + 5.0
-            while self.afc.reactor.monotonic() < hub_check_deadline:
-                try:
-                    hub_cleared = not bool(self.oams.hub_hes_value[spool_index])
-                except Exception:
-                    hub_cleared = False
-                if hub_cleared:
-                    break
-                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
-            if hub_cleared:
+                self.logger.error(f"Unload exception for {cur_lane.name}: {e}")
+                success = False
+                msg = str(e)
+            if success:
+                self.logger.info(f"TD-1 unload completed for {cur_lane.name}")
                 break
+            self.logger.debug(
+                f"Unload attempt {attempt + 1} failed for {cur_lane.name}: {msg}"
+            )
 
-            self.logger.debug(f"Hub not cleared after unload attempt {attempt + 1} for {cur_lane.name}")
+        # Always re-sync firmware state after TD-1 operations.
+        # clear_errors() resets action_status/code/value and queries the firmware
+        # for current_spool, ensuring Klipper and firmware agree on what's loaded.
+        try:
+            self.oams.clear_errors()
+        except Exception as e:
+            self.logger.debug(f"Failed to clear_errors after TD-1 unload for {cur_lane.name}: {e}")
 
-        if hub_cleared:
-            self.logger.info(f"TD-1 unload completed for {cur_lane.name}")
-        else:
-            self.logger.debug(f"TD-1 unload did not fully clear hub for {cur_lane.name}")
+        if not success:
+            self.logger.warning(f"TD-1 unload did not fully clear for {cur_lane.name}")
 
     def calibrate_td1(self, cur_lane, dis, tol):
         """
@@ -2107,12 +2081,15 @@ class afcAMS(afcUnit):
                 if self.afc.reactor.monotonic() > cancel_deadline:
                     break
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
-            self.oams.action_status = None
-            self.oams.action_status_code = None
             try:
                 self.oams.set_oams_follower(0, 0)
             except Exception as e:
                 self.logger.error(f"Failed to disable follower for {cur_lane.name}: {e}")
+            # Re-sync firmware state so subsequent loads aren't rejected
+            try:
+                self.oams.clear_errors()
+            except Exception:
+                pass
             msg = f"Hub sensor did not trigger during TD-1 calibration for {cur_lane.name}"
             self.logger.error(msg)
             return False, msg, 0
@@ -2131,12 +2108,15 @@ class afcAMS(afcUnit):
                 self.logger.warning(f"Cancel response timeout for {cur_lane.name}, forcing clear")
                 break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
-        self.oams.action_status = None
-        self.oams.action_status_code = None
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception as e:
             self.logger.error(f"Failed to stop follower for {cur_lane.name}: {e}")
+        # Re-sync firmware state after cancel
+        try:
+            self.oams.clear_errors()
+        except Exception:
+            pass
 
         # Give it a moment for the follower to stop
         self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
@@ -2423,8 +2403,18 @@ class afcAMS(afcUnit):
                 self.oams.set_oams_follower(0, 0)
             except Exception:
                 pass
+            # Cancel the load and re-sync firmware state
             try:
-                self.oams.oams_unload_spool_cmd.send([])
+                self.oams.load_spool_cancel()
+            except Exception:
+                pass
+            cancel_deadline = self.afc.reactor.monotonic() + 5.0
+            while self.oams.action_status is not None:
+                if self.afc.reactor.monotonic() > cancel_deadline:
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+            try:
+                self.oams.clear_errors()
             except Exception:
                 pass
             return False, "Unable to resolve FPS"
@@ -2456,10 +2446,13 @@ class afcAMS(afcUnit):
                 if self.afc.reactor.monotonic() > cancel_deadline:
                     break
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
-            self.oams.action_status = None
-            self.oams.action_status_code = None
             try:
                 self.oams.set_oams_follower(0, 0)
+            except Exception:
+                pass
+            # Re-sync firmware state so subsequent loads aren't rejected
+            try:
+                self.oams.clear_errors()
             except Exception:
                 pass
             self.logger.error(
@@ -2545,8 +2538,11 @@ class afcAMS(afcUnit):
                 self.logger.warning(f"Cancel response timeout for {cur_lane.name}, forcing clear")
                 break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
-        self.oams.action_status = None
-        self.oams.action_status_code = None
+        # Re-sync firmware state after cancel
+        try:
+            self.oams.clear_errors()
+        except Exception:
+            pass
 
         # Read TD-1 data now that filament is stopped at the sensor
         td1_detected = _capture_td1_if_fresh()
