@@ -223,7 +223,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "ASA",
             "density": 1.0,
             "diameter": 1.75,
@@ -240,8 +240,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.5,
-                "color": "193C58",
-                "scan_time": "2026-03-13T02:29:51.412210+00:00Z",
+                "color": "193C59",
+                "scan_time": "2026-03-13T02:44:55.020740+00:00Z",
                 "error": null
             }
         }
