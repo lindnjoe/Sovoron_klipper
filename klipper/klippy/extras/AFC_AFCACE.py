@@ -299,6 +299,13 @@ class afcAFCACE(afcUnit):
             if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
                 continue
 
+            # Skip lanes that are actively loading/unloading - the ACE slot
+            # status is transient during these operations and should not
+            # trigger state changes (avoids false empty/reinsert flicker)
+            if lane.status in (AFCLaneState.TOOL_LOADING,
+                               AFCLaneState.TOOL_UNLOADING):
+                continue
+
             slot_info = self._slot_inventory[local_slot]
             slot_ready = bool(
                 slot_info and slot_info.get("status", "") == "ready"
@@ -575,32 +582,42 @@ class afcAFCACE(afcUnit):
         bulk_distance = max(0, self.feed_length - self.sensor_approach_margin)
         if bulk_distance > 0:
             ace.feed_filament(slot_index, bulk_distance, self.feed_speed)
+            # Wait for ACE to physically complete the bulk feed movement
+            # (ACE ACKs the command before the motor finishes)
+            sensor_triggered_early = self._wait_for_feed_complete(
+                slot_index, bulk_distance, self.feed_speed, lane=lane
+            )
+        else:
+            sensor_triggered_early = False
 
         # Phase 2: Sensor approach - feed in increments, checking sensor
         total_fed = bulk_distance
-        sensor_triggered = False
+        sensor_triggered = sensor_triggered_early
 
         if lane is not None:
-            # Check if sensor already triggered during bulk feed
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
-            if lane.get_toolhead_pre_sensor_state():
-                sensor_triggered = True
-                self.logger.info(
-                    f"AFCACE feed: toolhead sensor triggered during bulk feed "
-                    f"at ~{total_fed:.0f}mm"
-                )
+            if not sensor_triggered:
+                # Check if sensor triggered after bulk feed settled
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+                if lane.get_toolhead_pre_sensor_state():
+                    sensor_triggered = True
+                    self.logger.info(
+                        f"AFCACE feed: toolhead sensor triggered during bulk feed "
+                        f"at ~{total_fed:.0f}mm"
+                    )
 
             # Incremental feed until sensor triggers or max distance reached
             max_total = self.feed_length + self.max_feed_overshoot
             while not sensor_triggered and total_fed < max_total:
                 step = min(self.sensor_step, max_total - total_fed)
                 ace.feed_filament(slot_index, step, self.feed_speed)
+                # Wait for this small step to physically complete
+                sensor_hit = self._wait_for_feed_complete(
+                    slot_index, step, self.feed_speed, lane=lane,
+                    poll_interval=0.3
+                )
                 total_fed += step
 
-                # Brief pause for sensor state to settle
-                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
-
-                if lane.get_toolhead_pre_sensor_state():
+                if sensor_hit or lane.get_toolhead_pre_sensor_state():
                     sensor_triggered = True
                     self.logger.info(
                         f"AFCACE feed: toolhead sensor triggered at {total_fed:.0f}mm"
@@ -610,6 +627,9 @@ class afcAFCACE(afcUnit):
             remaining = self.feed_length - bulk_distance
             if remaining > 0:
                 ace.feed_filament(slot_index, remaining, self.feed_speed)
+                self._wait_for_feed_complete(
+                    slot_index, remaining, self.feed_speed
+                )
                 total_fed = self.feed_length
 
         # Phase 3: Feed assist + extruder assist for the last stretch
@@ -628,6 +648,68 @@ class afcAFCACE(afcUnit):
 
         return total_fed, sensor_triggered
 
+    def _wait_for_feed_complete(self, slot_index, length_mm, speed_mm_min,
+                                 lane=None, poll_interval=0.5):
+        """Wait for the ACE hardware to finish a feed/unwind movement.
+
+        The ACE acknowledges feed_filament/unwind_filament commands immediately
+        via JSON-RPC, but the physical motor movement continues asynchronously.
+        This method polls get_status until the slot is no longer busy, or until
+        the calculated maximum movement time expires.
+
+        If a lane with a toolhead sensor is provided, also checks the sensor
+        each poll iteration and returns early if triggered.
+
+        Returns True if the sensor triggered during the wait, False otherwise.
+        """
+        ace = self._ace
+        if ace is None or not ace.connected:
+            return False
+
+        # Calculate max wait: movement time + generous buffer
+        max_wait = (length_mm / max(speed_mm_min, 1)) * 60 + 5.0
+        deadline = self.afc.reactor.monotonic() + max_wait
+        sensor_triggered = False
+
+        while self.afc.reactor.monotonic() < deadline:
+            self.afc.reactor.pause(
+                self.afc.reactor.monotonic() + poll_interval
+            )
+
+            # Check toolhead sensor if available
+            if lane is not None and lane.get_toolhead_pre_sensor_state():
+                sensor_triggered = True
+                self.logger.debug(
+                    f"AFCACE wait: toolhead sensor triggered for slot {slot_index}"
+                )
+                return True
+
+            # Poll ACE status to check if movement is done
+            try:
+                hw_status = ace.get_status(timeout=2.0)
+                if isinstance(hw_status, dict):
+                    slots = hw_status.get("slots", [])
+                    if slot_index < len(slots):
+                        slot_data = slots[slot_index]
+                        if isinstance(slot_data, dict):
+                            status = slot_data.get("status", "")
+                            # If slot is back to "ready" or "empty", movement is done
+                            if status in ("ready", "empty", ""):
+                                self.logger.debug(
+                                    f"AFCACE wait: slot {slot_index} movement "
+                                    f"complete (status={status})"
+                                )
+                                return sensor_triggered
+            except Exception:
+                # Status poll failed, just keep waiting
+                pass
+
+        self.logger.debug(
+            f"AFCACE wait: timeout waiting for slot {slot_index} "
+            f"movement ({max_wait:.1f}s)"
+        )
+        return sensor_triggered
+
     def _feed_until_sensor(self, slot_index, lane, max_length, step_size=None):
         """Feed filament incrementally until the toolhead sensor triggers.
 
@@ -645,12 +727,14 @@ class afcAFCACE(afcUnit):
         while total_fed < max_length:
             step = min(step_size, max_length - total_fed)
             ace.feed_filament(slot_index, step, self.feed_speed)
+            # Wait for ACE to physically complete this step
+            sensor_hit = self._wait_for_feed_complete(
+                slot_index, step, self.feed_speed, lane=lane,
+                poll_interval=0.3
+            )
             total_fed += step
 
-            # Pause for sensor state to settle
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
-
-            if lane.get_toolhead_pre_sensor_state():
+            if sensor_hit or lane.get_toolhead_pre_sensor_state():
                 self.logger.info(
                     f"AFCACE calibration: sensor triggered at {total_fed:.1f}mm"
                 )
@@ -667,6 +751,10 @@ class afcAFCACE(afcUnit):
             f"length={self.retract_length}mm @ {self.retract_speed}mm/min"
         )
         ace.unwind_filament(slot_index, self.retract_length, self.retract_speed)
+        # Wait for ACE to physically complete the retraction
+        self._wait_for_feed_complete(
+            slot_index, self.retract_length, self.retract_speed
+        )
 
     # ---- No-Op / Unsupported Operations ----
 
@@ -1039,6 +1127,13 @@ class afcAFCACE(afcUnit):
         for lane in self.lanes.values():
             local_slot = self._get_local_slot_for_lane(lane)
             if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
+                continue
+
+            # Skip lanes that are actively loading/unloading - the ACE slot
+            # status is transient during these operations and should not
+            # trigger state changes (avoids false empty/reinsert flicker)
+            if lane.status in (AFCLaneState.TOOL_LOADING,
+                               AFCLaneState.TOOL_UNLOADING):
                 continue
 
             slot_info = self._slot_inventory[local_slot]
