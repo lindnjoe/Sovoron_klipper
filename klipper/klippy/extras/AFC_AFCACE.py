@@ -230,6 +230,25 @@ class afcAFCACE(afcUnit):
             return index - 1  # Config is 1-based, ACE is 0-based
         return -1
 
+    def _disable_extruder_buffers(self, cur_extruder, cur_lane):
+        """Disable any active buffers on the shared extruder from other units.
+
+        When an ACE lane shares an extruder with a stepper-based unit (e.g. Turtle),
+        the other unit's buffer may still be active and its fault detection timer
+        can trigger 'AFC NOT FEEDING' errors during ACE operations. This disables
+        those buffers to prevent cross-lane fault detection.
+        """
+        for lane_name, lane in cur_extruder.lanes.items():
+            if lane_name == cur_lane.name:
+                continue
+            buf = getattr(lane, "buffer_obj", None)
+            if buf is not None and getattr(buf, "enable", False):
+                self.logger.info(
+                    f"AFCACE: disabling buffer '{buf.name}' on shared extruder "
+                    f"lane {lane_name} to prevent cross-lane fault detection"
+                )
+                buf.disable_buffer()
+
     # ---- Inventory / State Sync ----
 
     def _sync_inventory(self):
@@ -424,6 +443,11 @@ class afcAFCACE(afcUnit):
             )
             return False
 
+        # Disable any active buffers on the shared extruder from other units.
+        # This prevents cross-lane buffer fault detection (e.g. a Turtle buffer
+        # on the same extruder) from triggering "AFC NOT FEEDING" during ACE ops.
+        self._disable_extruder_buffers(cur_extruder, cur_lane)
+
         # Check if already loaded
         if (cur_lane.get_toolhead_pre_sensor_state()
                 and hasattr(cur_lane, "tool_loaded") and cur_lane.tool_loaded):
@@ -594,6 +618,9 @@ class afcAFCACE(afcUnit):
                 f"AFCACE unload failed: ACE not connected ({self.serial_port})",
             )
             return False
+
+        # Disable any active buffers on the shared extruder from other units
+        self._disable_extruder_buffers(cur_extruder, cur_lane)
 
         cur_lane.status = AFCLaneState.TOOL_UNLOADING
 
