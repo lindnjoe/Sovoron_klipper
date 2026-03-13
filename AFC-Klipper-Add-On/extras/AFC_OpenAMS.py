@@ -3110,21 +3110,64 @@ class afcAMS(afcUnit):
             afc_function._oams_unset_lane_loaded_original = afc_function.unset_lane_loaded
 
         def unset_lane_loaded_wrapper():
+            # Capture lane info BEFORE the original clears it
             cur_lane_loaded = afc_function.get_current_lane_obj()
             lane_name = getattr(cur_lane_loaded, "name", None) if cur_lane_loaded else None
             unit_obj = getattr(cur_lane_loaded, "unit_obj", None) if cur_lane_loaded else None
+            extruder_name = None
+            if cur_lane_loaded is not None:
+                extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None)
             is_openams = _is_openams_unit(unit_obj)
 
             result = afc_function._oams_unset_lane_loaded_original()
 
+            # If AFC found a loaded lane on the active extruder, notify oams_manager
             if is_openams and lane_name:
                 try:
                     oams_manager = self._get_oams_manager()
-                    extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None) if cur_lane_loaded else None
                     if oams_manager is not None:
                         oams_manager.on_afc_lane_unloaded(lane_name, extruder_name=extruder_name)
                 except Exception as e:
                     self.logger.error(f"Failed to notify OAMS manager during unset_lane_loaded: {e}")
+
+            # Also clear any fps_state that oams_manager thinks is LOADED
+            # for this unit, even if AFC didn't find it (e.g. background
+            # detection set it on a non-active extruder after cancel)
+            try:
+                oams_manager = self._get_oams_manager()
+                if oams_manager is not None:
+                    for fps_name, fps_state in oams_manager.current_state.fps_state.items():
+                        if fps_state.state == 1:  # FPSLoadState.LOADED
+                            fps_lane = getattr(fps_state, "current_lane", None)
+                            if fps_lane is None:
+                                continue
+                            lane_obj = self.afc.lanes.get(fps_lane) if hasattr(self.afc, "lanes") else None
+                            if lane_obj is None:
+                                continue
+                            lu = getattr(lane_obj, "unit_obj", None)
+                            if not _is_openams_unit(lu):
+                                continue
+                            # Clear fps_state
+                            oams_manager.on_afc_lane_unloaded(fps_lane)
+                            self.logger.info(f"Cleared fps_state for {fps_lane} on {fps_name}")
+                            # Clear AFC-side state for this lane too
+                            ext_obj = getattr(lane_obj, "extruder_obj", None)
+                            if ext_obj is not None and getattr(ext_obj, "lane_loaded", None) == fps_lane:
+                                ext_obj.lane_loaded = None
+                            if getattr(lane_obj, "tool_loaded", False):
+                                lane_obj.set_tool_unloaded()
+            except Exception as e:
+                self.logger.error(f"Failed to clear fps_state during unset_lane_loaded: {e}")
+
+            # Clear current_spool so background sync doesn't re-write the state
+            try:
+                oams_obj = getattr(self, "oams", None)
+                if oams_obj is not None:
+                    oams_obj.current_spool = None
+            except Exception:
+                pass
+
+            self.afc.save_vars()
             return result
 
         afc_function.unset_lane_loaded = unset_lane_loaded_wrapper
