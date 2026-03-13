@@ -1984,7 +1984,7 @@ class afcAMS(afcUnit):
         deadline = self.afc.reactor.monotonic() + 5.0
         while self.oams.action_status is not None:
             if self.afc.reactor.monotonic() > deadline:
-                self.logger.warning("Cancel response timeout — forcing action_status clear")
+                self.logger.warning("Cancel response timeout - forcing action_status clear")
                 self.oams.action_status = None
                 break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
