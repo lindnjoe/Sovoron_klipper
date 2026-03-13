@@ -585,8 +585,8 @@ class ACEConnection:
             if self.status_callback:
                 try:
                     self.status_callback(response)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._logger.debug(f"ACE status_callback error: {e}")
             return
 
         completion = self._pending.get(response_id)
@@ -603,8 +603,8 @@ class ACEConnection:
             if self.status_callback:
                 try:
                     self.status_callback(response)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._logger.debug(f"ACE status_callback error: {e}")
             self._logger.debug(
                 f"ACE response for unknown request id={response_id}"
             )
