@@ -952,7 +952,7 @@ class AFCLane:
 
     @property
     def load_state(self) -> bool:
-        if self.unit_obj.type in ("ViViD", "ACE"):
+        if self.unit_obj.type in ("ViViD", "ACE", "AFCACE"):
             return self.loaded_to_hub
         else:
             return bool(self._load_state)
@@ -961,13 +961,13 @@ class AFCLane:
     def load_state(self, state: bool):
         state_val = bool(state)
         self._load_state = state_val
-        if self.unit_obj.type in ("ViViD", "ACE"):
+        if self.unit_obj.type in ("ViViD", "ACE", "AFCACE"):
             self.loaded_to_hub = state_val
 
     @property
     def prep_state(self) -> bool:
         unit_type = getattr(getattr(self, 'unit_obj', None), 'type', None)
-        if unit_type == "ACE":
+        if unit_type in ("ACE", "AFCACE"):
             return self.loaded_to_hub
         return self._prep_state
 
