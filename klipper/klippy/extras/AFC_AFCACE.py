@@ -988,8 +988,18 @@ class afcAFCACE(afcUnit):
             prev_ready = self._prev_slot_states.get(lane.name, slot_ready)
             self._prev_slot_states[lane.name] = slot_ready
 
+            # Detect not-ready -> ready transition (filament inserted)
+            if not prev_ready and slot_ready:
+                if lane._afc_prep_done and lane.status in (AFCLaneState.NONE,):
+                    self.logger.info(
+                        f"AFCACE filament detected on {lane.name} (slot {local_slot})"
+                    )
+                    lane.set_loaded()
+                    self.lane_illuminate_spool(lane)
+                    self.afc.save_vars()
+
             # Detect ready -> not-ready transition (filament runout)
-            if prev_ready and not slot_ready:
+            elif prev_ready and not slot_ready:
                 if lane.status == AFCLaneState.TOOLED:
                     self.logger.info(
                         f"AFCACE runout detected on {lane.name} (slot {local_slot})"
@@ -1011,7 +1021,9 @@ class afcAFCACE(afcUnit):
                         lane._perform_pause_runout()
                 elif lane.status == AFCLaneState.LOADED:
                     # Slot went empty on a non-active lane - just update sensor state
-                    lane.loaded_to_hub = False
+                    lane.set_unloaded()
+                    self.lane_not_ready(lane)
+                    self.afc.save_vars()
 
         # Polling rates: 2s when printing (runout detection), 5s when idle
         if is_printing:
