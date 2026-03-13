@@ -230,6 +230,25 @@ class afcAFCACE(afcUnit):
             return index - 1  # Config is 1-based, ACE is 0-based
         return -1
 
+    def _disable_extruder_buffers(self, cur_extruder, cur_lane):
+        """Disable any active buffers on the shared extruder from other units.
+
+        When an ACE lane shares an extruder with a stepper-based unit (e.g. Turtle),
+        the other unit's buffer may still be active and its fault detection timer
+        can trigger 'AFC NOT FEEDING' errors during ACE operations. This disables
+        those buffers to prevent cross-lane fault detection.
+        """
+        for lane_name, lane in cur_extruder.lanes.items():
+            if lane_name == cur_lane.name:
+                continue
+            buf = getattr(lane, "buffer_obj", None)
+            if buf is not None and getattr(buf, "enable", False):
+                self.logger.info(
+                    f"AFCACE: disabling buffer '{buf.name}' on shared extruder "
+                    f"lane {lane_name} to prevent cross-lane fault detection"
+                )
+                buf.disable_buffer()
+
     # ---- Inventory / State Sync ----
 
     def _sync_inventory(self):
@@ -424,6 +443,11 @@ class afcAFCACE(afcUnit):
             )
             return False
 
+        # Disable any active buffers on the shared extruder from other units.
+        # This prevents cross-lane buffer fault detection (e.g. a Turtle buffer
+        # on the same extruder) from triggering "AFC NOT FEEDING" during ACE ops.
+        self._disable_extruder_buffers(cur_extruder, cur_lane)
+
         # Check if already loaded
         if (cur_lane.get_toolhead_pre_sensor_state()
                 and hasattr(cur_lane, "tool_loaded") and cur_lane.tool_loaded):
@@ -453,6 +477,11 @@ class afcAFCACE(afcUnit):
                         f"AFCACE combined mode: retracting slot "
                         f"{self._current_loaded_slot} before loading slot {local_slot}"
                     )
+                    # Stop feed assist on old slot before retracting
+                    try:
+                        self._ace.stop_feed_assist(self._current_loaded_slot)
+                    except Exception:
+                        pass
                     self._retract_slot(self._current_loaded_slot)
                     self._current_loaded_slot = -1
 
@@ -552,6 +581,22 @@ class afcAFCACE(afcUnit):
 
         cur_lane.set_tool_loaded()
         cur_lane.enable_buffer(disable_fault=True)
+
+        # Ensure feed assist is running while filament is loaded.
+        # _feed_slot starts it during phase 3, but if the sensor triggered
+        # early (during bulk feed) phase 3 may not have run.
+        local_slot = self._get_local_slot_for_lane(cur_lane)
+        if local_slot >= 0 and self._get_feed_assist_for_slot(local_slot):
+            try:
+                self._ace.start_feed_assist(local_slot)
+                self.logger.debug(
+                    f"AFCACE load: feed assist enabled for slot {local_slot}"
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"AFCACE load: failed to start feed assist for slot {local_slot}: {e}"
+                )
+
         afc.save_vars()
         return True
 
@@ -574,7 +619,23 @@ class afcAFCACE(afcUnit):
             )
             return False
 
+        # Disable any active buffers on the shared extruder from other units
+        self._disable_extruder_buffers(cur_extruder, cur_lane)
+
         cur_lane.status = AFCLaneState.TOOL_UNLOADING
+
+        # Stop feed assist before unloading - it was kept running while loaded
+        local_slot = self._get_local_slot_for_lane(cur_lane)
+        if local_slot >= 0 and self._ace is not None:
+            try:
+                self._ace.stop_feed_assist(local_slot)
+                self.logger.debug(
+                    f"AFCACE unload: feed assist stopped for slot {local_slot}"
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"AFCACE unload: failed to stop feed assist for slot {local_slot}: {e}"
+                )
 
         # Disable buffer before unloading (safe no-op if no buffer)
         cur_lane.disable_buffer()
@@ -780,18 +841,17 @@ class afcAFCACE(afcUnit):
                 total_fed = self.feed_length
 
         # Phase 3: Feed assist + extruder assist for the last stretch
+        # Feed assist stays enabled after loading to maintain filament tension
+        # during printing. It is stopped in _unload_sequence_inner before retraction.
         if self._get_feed_assist_for_slot(slot_index):
-            try:
-                ace.start_feed_assist(slot_index)
+            ace.start_feed_assist(slot_index)
 
-                # Use extruder motor to pull filament into hotend
-                if self.extruder_assist_length > 0:
-                    self.afc.gcode.run_script_from_command(
-                        f"G92 E0\n"
-                        f"G1 E{self.extruder_assist_length} F{self.extruder_assist_speed}"
-                    )
-            finally:
-                ace.stop_feed_assist(slot_index)
+            # Use extruder motor to pull filament into hotend
+            if self.extruder_assist_length > 0:
+                self.afc.gcode.run_script_from_command(
+                    f"G92 E0\n"
+                    f"G1 E{self.extruder_assist_length} F{self.extruder_assist_speed}"
+                )
 
         return total_fed, sensor_triggered
 
