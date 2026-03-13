@@ -150,7 +150,7 @@ class afcAFCACE(afcUnit):
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
     def _handle_ready(self):
-        """Schedule deferred init — reactor pause is disabled during klippy:ready."""
+        """Schedule deferred init - reactor pause is disabled during klippy:ready."""
         self.afc.reactor.register_callback(self._deferred_init)
 
     def _deferred_init(self, eventtime):
@@ -288,7 +288,7 @@ class afcAFCACE(afcUnit):
     def get_status(self, eventtime=None):
         """Return status dict including cached ACE hardware state.
 
-        IMPORTANT: This must NOT send serial commands — Klipper calls this
+        IMPORTANT: This must NOT send serial commands - Klipper calls this
         multiple times per second for UI updates. Use cached data only.
         The cache is refreshed by _poll_slot_status at poll_interval.
         """
@@ -940,7 +940,7 @@ class afcAFCACE(afcUnit):
         except Exception:
             pass
 
-        # Single get_status call — refreshes cached hw status AND slot states
+        # Single get_status call - refreshes cached hw status AND slot states
         try:
             hw_status = self._ace.get_status(timeout=2.0)
             if isinstance(hw_status, dict):
