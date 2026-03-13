@@ -1963,8 +1963,11 @@ class afcAMS(afcUnit):
 
     def _unload_after_td1(self, cur_lane, spool_index, fps_id):
         """
-        Unload filament after TD-1 operation by reversing follower and spool motor until hub clears.
+        Unload filament after TD-1 operation using the firmware unload command.
+        Waits for firmware to acknowledge the unload before returning.
         """
+        from extras.oams import OAMSStatus, OAMSOpCode
+
         # Clean up any lingering software state before unloading
         try:
             self.oams.abort_current_action(wait=True, code=0)
@@ -1972,28 +1975,36 @@ class afcAMS(afcUnit):
             self.logger.debug(f"Failed to abort existing action before unload for {cur_lane.name}")
 
         hub_cleared = False
-        unload_wait = 5.0
-        initial_delay = 0.0  # Unload immediately once load is confirmed
-        for attempt in range(3):  # Increased to 3 attempts
-            # Send unload command first to retract spool motor
+        for attempt in range(3):
+            # Track the unload via action_status so we wait for firmware response
+            self.oams.action_status = OAMSStatus.UNLOADING
             try:
                 self.oams.oams_unload_spool_cmd.send([])
             except Exception as e:
                 self.logger.error(f"Failed to send unload command for {cur_lane.name}: {e}")
+                self.oams.action_status = None
+                continue
 
-            # Also reverse follower to help pull filament back
-            try:
-                self.oams.set_oams_follower(1, 0)  # Enable reverse
-            except Exception as e:
-                self.logger.error(f"Failed to enable reverse follower for {cur_lane.name}: {e}")
+            # Wait for firmware to acknowledge the unload (action_status cleared by response)
+            unload_deadline = self.afc.reactor.monotonic() + 15.0
+            while self.oams.action_status is not None:
+                if self.afc.reactor.monotonic() > unload_deadline:
+                    self.logger.warning(f"Unload response timeout for {cur_lane.name}, forcing clear")
+                    self.oams.action_status = None
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
 
-            # Optional delay before checking hub clear state
-            if initial_delay > 0.0:
-                self.afc.reactor.pause(self.afc.reactor.monotonic() + initial_delay)
+            unload_code = self.oams.action_status_code
+            if unload_code == OAMSOpCode.SUCCESS:
+                self.logger.debug(f"Firmware acknowledged unload for {cur_lane.name}")
+            else:
+                self.logger.debug(
+                    f"Firmware unload response code={unload_code} for {cur_lane.name}"
+                )
 
-            # Allow time for spool unload and reverse follower to clear the hub sensor.
-            unload_deadline = self.afc.reactor.monotonic() + unload_wait
-            while self.afc.reactor.monotonic() < unload_deadline:
+            # Check if hub cleared
+            hub_check_deadline = self.afc.reactor.monotonic() + 5.0
+            while self.afc.reactor.monotonic() < hub_check_deadline:
                 try:
                     hub_cleared = not bool(self.oams.hub_hes_value[spool_index])
                 except Exception:
@@ -2003,30 +2014,8 @@ class afcAMS(afcUnit):
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
             if hub_cleared:
                 break
-            # Send another unload command between attempts
-            try:
-                self.oams.oams_unload_spool_cmd.send([])
-            except Exception:
-                pass
 
-        # Disable follower after unload completes or times out
-        try:
-            self.oams.set_oams_follower(0, 0)
-        except Exception as e:
-            self.logger.error(f"Failed to disable follower after unload for {cur_lane.name}: {e}")
-
-        # If hub still not cleared, wait a bit longer for mechanical settling
-        if not hub_cleared:
-            self.logger.debug(f"TD-1 unload did not clear hub for {cur_lane.name}, waiting for settle")
-            settle_deadline = self.afc.reactor.monotonic() + 3.0
-            while self.afc.reactor.monotonic() < settle_deadline:
-                try:
-                    hub_cleared = not bool(self.oams.hub_hes_value[spool_index])
-                except Exception:
-                    hub_cleared = False
-                if hub_cleared:
-                    break
-                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+            self.logger.debug(f"Hub not cleared after unload attempt {attempt + 1} for {cur_lane.name}")
 
         if hub_cleared:
             self.logger.info(f"TD-1 unload completed for {cur_lane.name}")
