@@ -1970,6 +1970,27 @@ class afcAMS(afcUnit):
         self.logger.info(msg)
         return False, msg, 0
 
+    def _cancel_and_mark_loaded(self, spool_index):
+        """Cancel an in-progress load and mark the spool as loaded.
+
+        The firmware cancel command stops the follower motor and considers the
+        spool loaded at its current position.  We mirror that on the Klipper
+        side by waiting for the firmware CANCEL response (which clears
+        action_status) and then setting current_spool so that a subsequent
+        unload_spool() works correctly.
+        """
+        self.oams.load_spool_cancel()
+        # Wait for firmware CANCEL response to clear action_status
+        deadline = self.afc.reactor.monotonic() + 5.0
+        while self.oams.action_status is not None:
+            if self.afc.reactor.monotonic() > deadline:
+                self.logger.warning("Cancel response timeout — forcing action_status clear")
+                self.oams.action_status = None
+                break
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+        # Firmware considers this spool loaded after cancel
+        self.oams.current_spool = spool_index
+
     def _cmd_test_cancel(self, gcmd):
         """Test: load a lane, cancel after 500mm, unload, then reload."""
         lane_name = gcmd.get("LANE", None)
@@ -2018,15 +2039,11 @@ class afcAMS(afcUnit):
             final_clicks = 0
         gcmd.respond_info(f"Step 2: Cancelling load at {final_clicks} clicks...")
 
-        # --- CANCEL ---
+        # --- CANCEL (marks spool as loaded so unload works) ---
         try:
-            self.oams.load_spool_cancel()
+            self._cancel_and_mark_loaded(spool_index)
         except Exception as e:
             gcmd.respond_info(f"  cancel error: {e}")
-        try:
-            self.oams.abort_current_action()
-        except Exception as e:
-            gcmd.respond_info(f"  abort error: {e}")
 
         gcmd.respond_info("Step 3: Unloading...")
 
@@ -2188,19 +2205,19 @@ class afcAMS(afcUnit):
                 break
 
         if not hub_detected:
-            # Cancel the in-progress load, then clean up
+            # Cancel the in-progress load (marks spool as loaded), then unload + clean up
             try:
-                self.oams.load_spool_cancel()
-            except Exception:
-                pass
-            try:
-                self.oams.abort_current_action()
+                self._cancel_and_mark_loaded(spool_index)
             except Exception:
                 pass
             try:
                 self.oams.set_oams_follower(0, 0)
             except Exception as e:
                 self.logger.error(f"Failed to disable follower for {cur_lane.name}: {e}")
+            try:
+                self.oams.unload_spool()
+            except Exception:
+                pass
             try:
                 self.oams.clear_errors()
             except Exception:
@@ -2213,11 +2230,7 @@ class afcAMS(afcUnit):
         # Hub loaded successfully - cancel load and take manual control with follower
         self.logger.debug(f"Hub loaded, cancelling load to take manual control for {cur_lane.name}")
         try:
-            self.oams.load_spool_cancel()
-        except Exception:
-            pass
-        try:
-            self.oams.abort_current_action()
+            self._cancel_and_mark_loaded(spool_index)
         except Exception:
             pass
         try:
@@ -2510,13 +2523,13 @@ class afcAMS(afcUnit):
                 self.oams.set_oams_follower(0, 0)
             except Exception:
                 pass
-            # Cancel the in-progress load, then clean up
+            # Cancel the in-progress load (marks spool as loaded), then unload + clean up
             try:
-                self.oams.load_spool_cancel()
+                self._cancel_and_mark_loaded(spool_index)
             except Exception:
                 pass
             try:
-                self.oams.abort_current_action()
+                self.oams.unload_spool()
             except Exception:
                 pass
             try:
@@ -2543,17 +2556,17 @@ class afcAMS(afcUnit):
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
         if not hub_detected:
-            # Cancel the in-progress load, then clean up
+            # Cancel the in-progress load (marks spool as loaded), then unload + clean up
             try:
-                self.oams.load_spool_cancel()
-            except Exception:
-                pass
-            try:
-                self.oams.abort_current_action()
+                self._cancel_and_mark_loaded(spool_index)
             except Exception:
                 pass
             try:
                 self.oams.set_oams_follower(0, 0)
+            except Exception:
+                pass
+            try:
+                self.oams.unload_spool()
             except Exception:
                 pass
             try:
@@ -2576,13 +2589,13 @@ class afcAMS(afcUnit):
             self.logger.error(
                 f"Unable to read encoder before TD-1 capture for {cur_lane.name}"
             )
-            # Cancel the in-progress load, then clean up
+            # Cancel the in-progress load (marks spool as loaded), then unload + clean up
             try:
-                self.oams.load_spool_cancel()
+                self._cancel_and_mark_loaded(spool_index)
             except Exception:
                 pass
             try:
-                self.oams.abort_current_action()
+                self.oams.unload_spool()
             except Exception:
                 pass
             try:
@@ -2656,13 +2669,9 @@ class afcAMS(afcUnit):
                     break
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
-        # Cancel the load now that we have TD-1 data (or timed out), then unload
+        # Cancel the load now that we have TD-1 data (or timed out), mark as loaded, then unload
         try:
-            self.oams.load_spool_cancel()
-        except Exception:
-            pass
-        try:
-            self.oams.abort_current_action()
+            self._cancel_and_mark_loaded(spool_index)
         except Exception:
             pass
 

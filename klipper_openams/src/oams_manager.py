@@ -2469,7 +2469,18 @@ class OAMSManager:
                 oams_name = fps_state.current_oams
                 oam = self.oams.get(oams_name) if oams_name else None
                 if oam is not None:
+                    spool_idx = fps_state.current_spool_idx
                     gcmd.respond_info(oam.load_spool_cancel())
+                    # Wait for firmware CANCEL response
+                    deadline = self.reactor.monotonic() + 5.0
+                    while oam.action_status is not None:
+                        if self.reactor.monotonic() > deadline:
+                            oam.action_status = None
+                            break
+                        self.reactor.pause(self.reactor.monotonic() + 0.2)
+                    # Firmware considers spool loaded after cancel
+                    if spool_idx is not None:
+                        oam.current_spool = spool_idx
                     return
                 gcmd.respond_info("OAMS unit not found for active load")
                 return
@@ -4868,16 +4879,23 @@ class OAMSManager:
         except Exception as e:
             self.logger.error(f"Failed to retract extruder after stuck spool detection for {lane_name}: {e}")
 
-        # STEP 3: Cancel the stuck load on hardware, then clear software state
+        # STEP 3: Cancel the stuck load on hardware — firmware treats spool as loaded
         try:
             oam.load_spool_cancel()
             self.logger.info(f"Cancelled stuck load operation for {lane_name} before unload")
+            # Wait for firmware CANCEL response
+            deadline = self.reactor.monotonic() + 5.0
+            while oam.action_status is not None:
+                if self.reactor.monotonic() > deadline:
+                    oam.action_status = None
+                    break
+                self.reactor.pause(self.reactor.monotonic() + 0.2)
+            # Firmware considers spool loaded after cancel
+            spool_idx = fps_state.current_spool_idx
+            if spool_idx is not None:
+                oam.current_spool = spool_idx
         except Exception as e:
             self.logger.error(f"Failed to cancel stuck load operation for {lane_name}: {e}")
-        try:
-            oam.abort_current_action()
-        except Exception:
-            pass
 
         # Stop the follower motor before unload.  Step 1 above set the follower to
         # reverse but left it running; sending an unload command while the follower
@@ -5066,15 +5084,22 @@ class OAMSManager:
             except Exception as e:
                 self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}: {e}")
 
-            # Cancel any lingering load on hardware, then clear software state
+            # Cancel any lingering load on hardware — firmware treats spool as loaded
             try:
                 oam.load_spool_cancel()
+                # Wait for firmware CANCEL response
+                deadline = self.reactor.monotonic() + 5.0
+                while oam.action_status is not None:
+                    if self.reactor.monotonic() > deadline:
+                        oam.action_status = None
+                        break
+                    self.reactor.pause(self.reactor.monotonic() + 0.2)
+                # Firmware considers spool loaded after cancel
+                spool_idx = fps_state.current_spool_idx
+                if spool_idx is not None:
+                    oam.current_spool = spool_idx
             except Exception as e:
                 self.logger.error(f"Failed to cancel load operation before engagement retry for {lane_name}: {e}")
-            try:
-                oam.abort_current_action()
-            except Exception:
-                pass
 
             # Stop the follower motor before unload so the MCU is not busy when the
             # unload command arrives.  The follower is left running (forward) by the
@@ -6718,10 +6743,10 @@ class OAMSManager:
                 oams.load_spool_cancel()
             except Exception as e:
                 self.logger.error(f"Failed to cancel OAMS load on {fps_name}: {e}")
-            try:
-                oams.abort_current_action(wait=False)
-            except Exception as e:
-                self.logger.error(f"Failed to abort OAMS action on {fps_name}: {e}")
+            # Timer callback — can't wait, force-clear and mark loaded
+            oams.action_status = None
+            if spool_idx is not None:
+                oams.current_spool = spool_idx
 
         self.logger.info(
             f"{fps_name}: Stuck spool on {lane_name} - scheduling auto-recovery (unload+reload+resume)"
@@ -6759,16 +6784,16 @@ class OAMSManager:
             except Exception as e:
                 self.logger.error(f"Failed to set stuck spool LED on {fps_name} spool {spool_idx}: {e}")
 
-        # Cancel load on hardware, then clear software state
+        # Cancel load on hardware — firmware treats spool as loaded
         if oams is not None:
             try:
                 oams.load_spool_cancel()
             except Exception as e:
                 self.logger.error(f"Failed to cancel load on {fps_name} during stuck spool pause: {e}")
-            try:
-                oams.abort_current_action(wait=False)
-            except Exception as e:
-                self.logger.error(f"Failed to abort current action on {fps_name} during stuck spool pause: {e}")
+            # Timer callback — can't wait, force-clear and mark loaded
+            oams.action_status = None
+            if spool_idx is not None:
+                oams.current_spool = spool_idx
 
         # Pause printer with error message
         # Do NOT notify AFC during stuck spool pause - AFC will try to unload which fails
@@ -7174,7 +7199,10 @@ class OAMSManager:
                 self.logger.info(f"Detected stuck spool on {fps_name}: {stuck_reason}")
                 if fps_state.current_oams and oams is not None:
                     oams.load_spool_cancel()
-                    oams.abort_current_action(wait=False)
+                    # Timer callback — can't wait, force-clear and mark loaded
+                    oams.action_status = None
+                    if fps_state.current_spool_idx is not None:
+                        oams.current_spool = fps_state.current_spool_idx
                     self.logger.info(f"Cancelled stuck load operation on {fps_name}")
             except Exception as e:
                 self.logger.error(f"Failed to cancel load operation on {fps_name}: {e}")
