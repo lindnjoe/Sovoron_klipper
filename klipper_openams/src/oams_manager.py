@@ -2450,6 +2450,7 @@ class OAMSManager:
         commands = [
             ("OAMSM_UNLOAD_FILAMENT", self.cmd_UNLOAD_FILAMENT, self.cmd_UNLOAD_FILAMENT_help),
             ("OAMSM_LOAD_FILAMENT", self.cmd_LOAD_FILAMENT, self.cmd_LOAD_FILAMENT_help),
+            ("OAMSM_LOAD_FILAMENT_CANCEL", self.cmd_LOAD_FILAMENT_CANCEL, self.cmd_LOAD_FILAMENT_CANCEL_help),
             ("OAMSM_FOLLOWER", self.cmd_FOLLOWER, self.cmd_FOLLOWER_help),
             ("OAMSM_FOLLOWER_RESET", self.cmd_FOLLOWER_RESET, self.cmd_FOLLOWER_RESET_help),
             ("OAMSM_CLEAR_ERRORS", self.cmd_CLEAR_ERRORS, self.cmd_CLEAR_ERRORS_help),
@@ -4971,6 +4972,17 @@ class OAMSManager:
                 self.logger.debug(f"OAMS load succeeded for {lane_name} on stuck attempt {stuck_attempt + 1}")
                 return True, None
 
+            # If cancelled by user, stop immediately without stuck-spool retry
+            if getattr(oam, 'action_status_code', None) == OAMSOpCode.CANCEL:
+                self.logger.info(f"Load cancelled for {lane_name}")
+                fps_state.state = FPSLoadState.UNLOADED
+                fps_state.current_spool_idx = None
+                fps_state.current_oams = None
+                fps_state.current_lane = None
+                fps_state.since = self.reactor.monotonic()
+                fps_state.engagement_retry_active = False
+                return False, message
+
             # Load failed (stuck spool detected)
             self.logger.warning(f"Stuck spool detected on attempt {stuck_attempt + 1}/{self.stuck_spool_max_attempts} for {lane_name}")
 
@@ -5688,6 +5700,21 @@ class OAMSManager:
             # Raise to halt any enclosing macro/script so we don't continue with a bad state
             raise gcmd.error(message or f"Failed to load {lane_name}")
         gcmd.respond_info(message or f"Loaded {lane_name}")
+
+    cmd_LOAD_FILAMENT_CANCEL_help = "Cancel the current load filament operation"
+    def cmd_LOAD_FILAMENT_CANCEL(self, gcmd):
+        # Find any FPS currently in LOADING state and cancel the load on its OAMS
+        for fps_name, fps_state in self.current_state.fps_state.items():
+            if fps_state.state == FPSLoadState.LOADING:
+                oam = self.oams.get(fps_state.current_oams)
+                if oam is not None:
+                    gcmd.respond_info(oam.load_spool_cancel())
+                else:
+                    gcmd.respond_info(
+                        f"OAMS {fps_state.current_oams} not found for cancel"
+                    )
+                return
+        gcmd.respond_info("No load filament operation is currently in progress")
 
     def _pause_on_critical_failure(self, error_message: str, oams_name: Optional[str] = None):
         """
