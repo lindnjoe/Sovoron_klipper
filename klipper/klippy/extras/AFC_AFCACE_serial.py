@@ -39,7 +39,7 @@ RECONNECT_BACKOFF_MAX = 30.0
 RECONNECT_BACKOFF_FACTOR = 1.5
 
 # Health monitoring constants
-HEARTBEAT_INTERVAL = 5.0
+HEARTBEAT_INTERVAL = 2.0  # Must be < 3s to prevent ACE USB autosuspend
 COMM_SUPERVISION_WINDOW = 30.0
 COMM_TIMEOUT_THRESHOLD = 15
 COMM_UNSOLICITED_THRESHOLD = 15
@@ -255,6 +255,38 @@ class ACEConnection:
             self._reactor.monotonic() + delay,
         )
 
+    def _quick_reconnect(self):
+        """Fast reconnect for USB autosuspend - no backoff delay."""
+        if not self._reconnect_enabled:
+            return
+
+        self.disconnect()
+
+        def _quick_reconnect_cb(eventtime):
+            if not self._reconnect_enabled:
+                return self._reactor.NEVER
+            try:
+                self.connect()
+                self._logger.debug("ACE quick reconnect succeeded")
+                return self._reactor.NEVER
+            except Exception as e:
+                self._logger.warning(f"ACE quick reconnect failed: {e}")
+                # Fall back to normal reconnect with backoff
+                self.reconnect()
+                return self._reactor.NEVER
+
+        if self._reconnect_timer is not None:
+            try:
+                self._reactor.unregister_timer(self._reconnect_timer)
+            except Exception:
+                pass
+
+        # Reconnect after just 0.5s - enough for USB to re-enumerate
+        self._reconnect_timer = self._reactor.register_timer(
+            _quick_reconnect_cb,
+            self._reactor.monotonic() + 0.5,
+        )
+
     def send_command(self, method, params=None, timeout=REQUEST_TIMEOUT):
         """Send a JSON-RPC command and wait for the response.
 
@@ -453,8 +485,18 @@ class ACEConnection:
         try:
             data = self._serial.read(4096)
         except Exception as e:
-            self._logger.error(f"ACE read error: {e}")
-            self.reconnect()
+            err_msg = str(e)
+            if "returned no data" in err_msg or "disconnected" in err_msg:
+                # USB autosuspend - device briefly disappeared.
+                # Quick reconnect without backoff since it's not a real failure.
+                self._logger.debug(
+                    "ACE USB idle disconnect detected, quick reconnect"
+                )
+                self._reconnect_backoff = RECONNECT_BACKOFF_MIN
+                self._quick_reconnect()
+            else:
+                self._logger.error(f"ACE read error: {e}")
+                self.reconnect()
             return
 
         if not data:
