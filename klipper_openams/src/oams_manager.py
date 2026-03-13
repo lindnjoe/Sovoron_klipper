@@ -2570,6 +2570,10 @@ class OAMSManager:
                     # Step 1: Clear hardware errors (this also clears all LED errors)
                     # Note: clear_errors() already loops through all LEDs and clears them
                     oam.clear_errors()
+                    # Force clear current_spool so sync_state_with_afc() doesn't
+                    # re-write stale lane state from a cancelled load.
+                    # determine_state() will re-detect from sensors if truly loaded.
+                    oam.current_spool = None
                     self.reactor.pause(self.reactor.monotonic() + 0.2)  # Wait for MCU to process all commands
                     if not self._is_oams_mcu_ready(oam):
                         restart_monitors = False
