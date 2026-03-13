@@ -837,15 +837,6 @@ class afcAMS(afcUnit):
         except Exception:
             pass
 
-        try:
-            self.gcode.register_command(
-                'AFC_OAMS_TEST_CANCEL',
-                self._cmd_test_cancel,
-                desc="Test: load lane, cancel after 500mm, unload, reload",
-            )
-        except Exception:
-            pass
-
         # Ensure all AMS lanes have buffer_obj = None
         # AMS units don't have physical buffers - this prevents buffer monitoring
         # from running even if users accidentally configure buffers at lane level
@@ -1970,175 +1961,76 @@ class afcAMS(afcUnit):
         self.logger.info(msg)
         return False, msg, 0
 
-    def _cancel_and_mark_loaded(self, spool_index, lane_name=None):
-        """Cancel an in-progress load and mark the spool as loaded.
-
-        The firmware cancel command stops the follower motor and considers the
-        spool loaded at its current position.  We mirror that on the Klipper
-        side by setting current_spool and updating the oams_manager fps_state
-        to LOADED so that a subsequent unload_spool() works correctly.
-        """
-        self.oams.load_spool_cancel()
-        # Wait for firmware CANCEL response to clear action_status
-        deadline = self.afc.reactor.monotonic() + 5.0
-        while self.oams.action_status is not None:
-            if self.afc.reactor.monotonic() > deadline:
-                self.logger.warning("Cancel response timeout - forcing action_status clear")
-                self.oams.action_status = None
-                break
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
-        # Firmware considers this spool loaded after cancel
-        self.oams.current_spool = spool_index
-        # Tell oams_manager this FPS is now LOADED (FPSLoadState.LOADED = 1)
-        try:
-            oams_manager = self._get_oams_manager()
-            if oams_manager is not None and lane_name is not None:
-                fps_name = oams_manager.get_fps_for_afc_lane(lane_name)
-                if fps_name:
-                    fps_state = oams_manager.current_state.fps_state.get(fps_name)
-                    if fps_state is not None:
-                        fps_state.state = 1  # FPSLoadState.LOADED
-        except Exception:
-            pass
-
-    def _cmd_test_cancel(self, gcmd):
-        """Test: load a lane, cancel after 500mm, unload, then reload."""
-        lane_name = gcmd.get("LANE", None)
-        if lane_name is None:
-            raise gcmd.error("LANE is required (e.g. AFC_OAMS_TEST_CANCEL LANE=lane11)")
-
-        cur_lane = self.lanes.get(lane_name)
-        if cur_lane is None:
-            raise gcmd.error(f"Lane '{lane_name}' not found in {self.name}")
-
-        if self.oams is None:
-            raise gcmd.error("OpenAMS hardware not available")
-
-        spool_index = self._get_openams_spool_index(cur_lane)
-        if spool_index is None:
-            raise gcmd.error(f"Unable to resolve spool index for {lane_name}")
-
-        from extras.oams import OAMSStatus
-
-        target_clicks = gcmd.get_int("CLICKS", 500)
-        gcmd.respond_info(f"Step 1: Loading {lane_name} (spool {spool_index})...")
-
-        # --- LOAD ---
-        self.oams.action_status = OAMSStatus.LOADING
-        self.oams.oams_load_spool_cmd.send([spool_index])
-
-        try:
-            encoder_start = int(self.oams.encoder_clicks)
-        except Exception:
-            encoder_start = 0
-
-        # Wait for encoder to reach target clicks
-        deadline = self.afc.reactor.monotonic() + 30.0
-        while self.afc.reactor.monotonic() < deadline:
-            try:
-                clicks = abs(int(self.oams.encoder_clicks) - encoder_start)
-            except Exception:
-                clicks = 0
-            if clicks >= target_clicks:
-                break
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
-
-        try:
-            final_clicks = abs(int(self.oams.encoder_clicks) - encoder_start)
-        except Exception:
-            final_clicks = 0
-        gcmd.respond_info(f"Step 2: Cancelling load at {final_clicks} clicks...")
-
-        # --- CANCEL (marks spool as loaded so unload works) ---
-        try:
-            self._cancel_and_mark_loaded(spool_index, lane_name)
-        except Exception as e:
-            gcmd.respond_info(f"  cancel error: {e}")
-
-        gcmd.respond_info("Step 3: Unloading...")
-
-        # --- UNLOAD ---
-        try:
-            success, msg = self.oams.unload_spool()
-            gcmd.respond_info(f"  unload result: success={success} msg={msg}")
-        except Exception as e:
-            gcmd.respond_info(f"  unload exception: {e}")
-
-        try:
-            self.oams.clear_errors()
-        except Exception:
-            pass
-        self._clear_lane_state_after_td1(cur_lane)
-
-        gcmd.respond_info("Step 4: Reloading...")
-
-        # --- RELOAD ---
-        try:
-            code, msg = self.oams.load_spool(spool_index)
-            gcmd.respond_info(f"  reload result: code={code} msg={msg}")
-        except Exception as e:
-            gcmd.respond_info(f"  reload exception: {e}")
-
-        try:
-            self.oams.clear_errors()
-        except Exception:
-            pass
-        self._clear_lane_state_after_td1(cur_lane)
-
-        gcmd.respond_info(f"Test complete for {lane_name}")
-
-    def _clear_lane_state_after_td1(self, cur_lane):
-        """Clear AFC-level lane loaded state that background detection may have set
-        during a temporary TD-1 load, and persist the clean state."""
-        try:
-            if getattr(cur_lane, "tool_loaded", False):
-                cur_lane.set_tool_unloaded()
-                self.logger.debug(f"Cleared tool_loaded state for {cur_lane.name} after TD-1")
-            elif getattr(cur_lane, "extruder_obj", None) is not None:
-                if getattr(cur_lane.extruder_obj, "lane_loaded", None) == cur_lane.name:
-                    cur_lane.extruder_obj.lane_loaded = None
-                    self.logger.debug(f"Cleared extruder lane_loaded for {cur_lane.name} after TD-1")
-        except Exception as e:
-            self.logger.debug(f"Failed to clear lane state after TD-1 for {cur_lane.name}: {e}")
-        self.afc.save_vars()
-
     def _unload_after_td1(self, cur_lane, spool_index, fps_id):
         """
-        Unload filament after TD-1 operation using the proper firmware unload_spool().
-        Uses the high-level unload_spool() so the firmware properly clears its internal
-        state, then re-syncs current_spool with hardware via clear_errors().
+        Unload filament after TD-1 operation by reversing follower and spool motor until hub clears.
         """
-        # Use the proper unload_spool() which tracks action_status, waits for
-        # firmware response, and clears current_spool on success
-        success = False
-        for attempt in range(3):
-            try:
-                success, msg = self.oams.unload_spool()
-            except Exception as e:
-                self.logger.error(f"Unload exception for {cur_lane.name}: {e}")
-                success = False
-                msg = str(e)
-            if success:
-                self.logger.info(f"TD-1 unload completed for {cur_lane.name}")
-                break
-            self.logger.debug(
-                f"Unload attempt {attempt + 1} failed for {cur_lane.name}: {msg}"
-            )
-
-        # Always re-sync firmware state after TD-1 operations.
-        # clear_errors() resets action_status/code/value and queries the firmware
-        # for current_spool, ensuring Klipper and firmware agree on what's loaded.
         try:
-            self.oams.clear_errors()
+            self.oams.abort_current_action(wait=True, code=0)
+        except Exception:
+            self.logger.debug(f"Failed to abort existing action before unload for {cur_lane.name}")
+
+        hub_cleared = False
+        unload_wait = 5.0
+        initial_delay = 0.0  # Unload immediately once load is confirmed
+        for attempt in range(3):  # Increased to 3 attempts
+            # Send unload command first to retract spool motor
+            try:
+                self.oams.oams_unload_spool_cmd.send([])
+            except Exception as e:
+                self.logger.error(f"Failed to send unload command for {cur_lane.name}: {e}")
+
+            # Also reverse follower to help pull filament back
+            try:
+                self.oams.set_oams_follower(1, 0)  # Enable reverse
+            except Exception as e:
+                self.logger.error(f"Failed to enable reverse follower for {cur_lane.name}: {e}")
+
+            # Optional delay before checking hub clear state
+            if initial_delay > 0.0:
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + initial_delay)
+
+            # Allow time for spool unload and reverse follower to clear the hub sensor.
+            unload_deadline = self.afc.reactor.monotonic() + unload_wait
+            while self.afc.reactor.monotonic() < unload_deadline:
+                try:
+                    hub_cleared = not bool(self.oams.hub_hes_value[spool_index])
+                except Exception:
+                    hub_cleared = False
+                if hub_cleared:
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+            if hub_cleared:
+                break
+            # Send another unload command between attempts
+            try:
+                self.oams.oams_unload_spool_cmd.send([])
+            except Exception:
+                pass
+
+        # Disable follower after unload completes or times out
+        try:
+            self.oams.set_oams_follower(0, 0)
         except Exception as e:
-            self.logger.debug(f"Failed to clear_errors after TD-1 unload for {cur_lane.name}: {e}")
+            self.logger.error(f"Failed to disable follower after unload for {cur_lane.name}: {e}")
 
-        # Clear AFC-level lane loaded state that background state detection may
-        # have set during our temporary TD-1 load.
-        self._clear_lane_state_after_td1(cur_lane)
+        # If hub still not cleared, wait a bit longer for mechanical settling
+        if not hub_cleared:
+            self.logger.debug(f"TD-1 unload did not clear hub for {cur_lane.name}, waiting for settle")
+            settle_deadline = self.afc.reactor.monotonic() + 3.0
+            while self.afc.reactor.monotonic() < settle_deadline:
+                try:
+                    hub_cleared = not bool(self.oams.hub_hes_value[spool_index])
+                except Exception:
+                    hub_cleared = False
+                if hub_cleared:
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
-        if not success:
-            self.logger.warning(f"TD-1 unload did not fully clear for {cur_lane.name}")
+        if hub_cleared:
+            self.logger.info(f"TD-1 unload completed for {cur_lane.name}")
+        else:
+            self.logger.debug(f"TD-1 unload did not fully clear hub for {cur_lane.name}")
 
     def calibrate_td1(self, cur_lane, dis, tol):
         """
@@ -2176,13 +2068,9 @@ class afcAMS(afcUnit):
 
         # Load the spool before starting TD-1 calibration
         # The load command is needed to move filament from spool bay to hub motor
-        # Set action_status so firmware responses are handled correctly
-        from extras.oams import OAMSStatus
-        self.oams.action_status = OAMSStatus.LOADING
         try:
             self.oams.oams_load_spool_cmd.send([spool_index])
         except Exception as e:
-            self.oams.action_status = None
             self.logger.error(f"Failed to start spool load for TD-1 calibration on {cur_lane.name}: {e}")
             return False, "Failed to start spool load", 0
 
@@ -2215,34 +2103,26 @@ class afcAMS(afcUnit):
                 break
 
         if not hub_detected:
-            # Cancel the in-progress load (marks spool as loaded), then unload + clean up
+            # Abort the load operation and stop the follower
             try:
-                self._cancel_and_mark_loaded(spool_index, cur_lane.name)
-            except Exception:
-                pass
+                self.oams.abort_current_action(wait=True, code=0)
+            except Exception as e:
+                self.logger.error(f"Failed to abort load action for {cur_lane.name}: {e}")
             try:
                 self.oams.set_oams_follower(0, 0)
             except Exception as e:
                 self.logger.error(f"Failed to disable follower for {cur_lane.name}: {e}")
-            try:
-                self.oams.unload_spool()
-            except Exception:
-                pass
-            try:
-                self.oams.clear_errors()
-            except Exception:
-                pass
-            self._clear_lane_state_after_td1(cur_lane)
             msg = f"Hub sensor did not trigger during TD-1 calibration for {cur_lane.name}"
             self.logger.error(msg)
             return False, msg, 0
 
-        # Hub loaded successfully - cancel load and take manual control with follower
-        self.logger.debug(f"Hub loaded, cancelling load to take manual control for {cur_lane.name}")
+        # Hub loaded successfully - abort the load operation and take manual control
+        # This stops the FPS-based load and lets us control follower manually by distance
+        self.logger.debug(f"Hub loaded, aborting load operation and taking manual control for {cur_lane.name}")
         try:
-            self._cancel_and_mark_loaded(spool_index, cur_lane.name)
-        except Exception:
-            pass
+            self.oams.abort_current_action(wait=True, code=0)
+        except Exception as e:
+            self.logger.error(f"Failed to abort load action for {cur_lane.name}: {e}")
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception as e:
@@ -2516,13 +2396,9 @@ class afcAMS(afcUnit):
 
         # Load the spool before starting TD-1 capture
         # The load command is needed to move filament from spool bay to follower (hub) motor
-        # Set action_status so firmware responses are handled correctly
-        from extras.oams import OAMSStatus
-        self.oams.action_status = OAMSStatus.LOADING
         try:
             self.oams.oams_load_spool_cmd.send([spool_index])
         except Exception as e:
-            self.oams.action_status = None
             self.logger.error(f"Failed to start spool load for TD-1 capture on {cur_lane.name}: {e}")
             return False, "Failed to start spool load"
 
@@ -2533,20 +2409,10 @@ class afcAMS(afcUnit):
                 self.oams.set_oams_follower(0, 0)
             except Exception:
                 pass
-            # Cancel the in-progress load (marks spool as loaded), then unload + clean up
             try:
-                self._cancel_and_mark_loaded(spool_index, cur_lane.name)
+                self.oams.oams_unload_spool_cmd.send([])
             except Exception:
                 pass
-            try:
-                self.oams.unload_spool()
-            except Exception:
-                pass
-            try:
-                self.oams.clear_errors()
-            except Exception:
-                pass
-            self._clear_lane_state_after_td1(cur_lane)
             return False, "Unable to resolve FPS"
 
         # Wait for hub to load (should happen within a few seconds)
@@ -2566,30 +2432,21 @@ class afcAMS(afcUnit):
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
         if not hub_detected:
-            # Cancel the in-progress load (marks spool as loaded), then unload + clean up
+            # Abort the load operation and stop the follower
             try:
-                self._cancel_and_mark_loaded(spool_index, cur_lane.name)
+                self.oams.abort_current_action(wait=True, code=0)
             except Exception:
                 pass
             try:
                 self.oams.set_oams_follower(0, 0)
             except Exception:
                 pass
-            try:
-                self.oams.unload_spool()
-            except Exception:
-                pass
-            try:
-                self.oams.clear_errors()
-            except Exception:
-                pass
-            self._clear_lane_state_after_td1(cur_lane)
             self.logger.error(
                 f"Hub sensor did not trigger during TD-1 capture for {cur_lane.name}"
             )
             return False, "Hub sensor did not trigger"
 
-        # Hub detected - use OAMS load flow and encoder tracking
+        # Hub detected - use OAMS load flow and encoder tracking (no manual follower feed)
         try:
             encoder_before = int(self.oams.encoder_clicks)
         except Exception:
@@ -2599,20 +2456,6 @@ class afcAMS(afcUnit):
             self.logger.error(
                 f"Unable to read encoder before TD-1 capture for {cur_lane.name}"
             )
-            # Cancel the in-progress load (marks spool as loaded), then unload + clean up
-            try:
-                self._cancel_and_mark_loaded(spool_index, cur_lane.name)
-            except Exception:
-                pass
-            try:
-                self.oams.unload_spool()
-            except Exception:
-                pass
-            try:
-                self.oams.clear_errors()
-            except Exception:
-                pass
-            self._clear_lane_state_after_td1(cur_lane)
             return False, "Unable to read encoder before capture"
 
         target_clicks = max(0, int(cur_lane.td1_bowden_length))
@@ -2669,7 +2512,7 @@ class afcAMS(afcUnit):
                 break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
-        # Read TD-1 data while filament is at/passing the sensor
+        # Read TD-1 as soon as encoder target is reached
         td1_detected = _capture_td1_if_fresh()
         if not td1_detected:
             td1_wait_deadline = self.afc.reactor.monotonic() + 3.5
@@ -2679,11 +2522,28 @@ class afcAMS(afcUnit):
                     break
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
-        # Cancel the load now that we have TD-1 data (or timed out), mark as loaded, then unload
-        try:
-            self._cancel_and_mark_loaded(spool_index, cur_lane.name)
-        except Exception:
-            pass
+        # Wait until OAMS reports load complete before unloading
+        load_deadline = self.afc.reactor.monotonic() + 30.0
+        while self.afc.reactor.monotonic() < load_deadline:
+            action_status = getattr(self.oams, "action_status", None)
+            action_status_code = getattr(self.oams, "action_status_code", None)
+            queried_spool = None
+            try:
+                if hasattr(self.oams, "determine_current_spool"):
+                    queried_spool = self.oams.determine_current_spool()
+            except Exception:
+                queried_spool = None
+            current_spool = getattr(self.oams, "current_spool", None)
+            if (
+                action_status is None
+                and action_status_code == 0
+                and (current_spool == spool_index or queried_spool == spool_index)
+            ):
+                if current_spool != spool_index:
+                    self.oams.current_spool = spool_index
+                break
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+
 
         # Always unload after capture attempt, regardless of TD-1 read result
         self._unload_after_td1(cur_lane, spool_index, fps_id)
@@ -3110,13 +2970,9 @@ class afcAMS(afcUnit):
             afc_function._oams_unset_lane_loaded_original = afc_function.unset_lane_loaded
 
         def unset_lane_loaded_wrapper():
-            # Capture lane info BEFORE the original clears it
             cur_lane_loaded = afc_function.get_current_lane_obj()
             lane_name = getattr(cur_lane_loaded, "name", None) if cur_lane_loaded else None
             unit_obj = getattr(cur_lane_loaded, "unit_obj", None) if cur_lane_loaded else None
-            extruder_name = None
-            if cur_lane_loaded is not None:
-                extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None)
             is_openams = _is_openams_unit(unit_obj)
 
             result = afc_function._oams_unset_lane_loaded_original()
@@ -3124,13 +2980,9 @@ class afcAMS(afcUnit):
             if is_openams and lane_name:
                 try:
                     oams_manager = self._get_oams_manager()
+                    extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None) if cur_lane_loaded else None
                     if oams_manager is not None:
                         oams_manager.on_afc_lane_unloaded(lane_name, extruder_name=extruder_name)
-                        # Clear current_spool for THIS unit so background
-                        # sync_state_with_afc doesn't re-write the lane state
-                        oams_obj = getattr(unit_obj, "oams", None) if unit_obj else None
-                        if oams_obj is not None:
-                            oams_obj.current_spool = None
                 except Exception as e:
                     self.logger.error(f"Failed to notify OAMS manager during unset_lane_loaded: {e}")
             return result
