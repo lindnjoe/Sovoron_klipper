@@ -264,13 +264,15 @@ class afcAFCACE(afcUnit):
                 )
                 lane.loaded_to_hub = slot_loaded
 
-                # Sync material/color from RFID data
-                material = slot_info.get("material", "")
-                color = slot_info.get("color", [0, 0, 0])
-                if material and hasattr(lane, "material"):
-                    lane.material = material
-                if color and hasattr(lane, "color"):
-                    lane.color = self._ace_color_to_hex(color)
+                # Sync material/color from RFID data only if Spoolman
+                # hasn't already set them (spool_id indicates Spoolman data)
+                if not getattr(lane, "spool_id", None):
+                    material = slot_info.get("material", "")
+                    color = slot_info.get("color", [0, 0, 0])
+                    if material and hasattr(lane, "material"):
+                        lane.material = material
+                    if color and hasattr(lane, "color"):
+                        lane.color = self._ace_color_to_hex(color)
 
     def _on_hw_status_callback(self, response):
         """Process slot status from any ACE response (including heartbeat).
@@ -954,13 +956,14 @@ class afcAFCACE(afcUnit):
                 slot_ready = slot_info.get("status", "") == "ready"
                 cur_lane.loaded_to_hub = slot_ready
 
-                # Sync RFID data to lane if available
-                material = slot_info.get("material", "")
-                color = slot_info.get("color", [0, 0, 0])
-                if material and hasattr(cur_lane, "material"):
-                    cur_lane.material = material
-                if color and hasattr(cur_lane, "color"):
-                    cur_lane.color = self._ace_color_to_hex(color)
+                # Sync RFID data to lane only if Spoolman hasn't set them
+                if not getattr(cur_lane, "spool_id", None):
+                    material = slot_info.get("material", "")
+                    color = slot_info.get("color", [0, 0, 0])
+                    if material and hasattr(cur_lane, "material"):
+                        cur_lane.material = material
+                    if color and hasattr(cur_lane, "color"):
+                        cur_lane.color = self._ace_color_to_hex(color)
 
         if not cur_lane.prep_state:
             if not cur_lane.load_state:
