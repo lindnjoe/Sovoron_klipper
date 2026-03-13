@@ -1970,14 +1970,13 @@ class afcAMS(afcUnit):
         self.logger.info(msg)
         return False, msg, 0
 
-    def _cancel_and_mark_loaded(self, spool_index):
+    def _cancel_and_mark_loaded(self, spool_index, lane_name=None):
         """Cancel an in-progress load and mark the spool as loaded.
 
         The firmware cancel command stops the follower motor and considers the
         spool loaded at its current position.  We mirror that on the Klipper
-        side by waiting for the firmware CANCEL response (which clears
-        action_status) and then setting current_spool so that a subsequent
-        unload_spool() works correctly.
+        side by setting current_spool and updating the oams_manager fps_state
+        to LOADED so that a subsequent unload_spool() works correctly.
         """
         self.oams.load_spool_cancel()
         # Wait for firmware CANCEL response to clear action_status
@@ -1990,6 +1989,17 @@ class afcAMS(afcUnit):
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
         # Firmware considers this spool loaded after cancel
         self.oams.current_spool = spool_index
+        # Tell oams_manager this FPS is now LOADED (FPSLoadState.LOADED = 1)
+        try:
+            oams_manager = self._get_oams_manager()
+            if oams_manager is not None and lane_name is not None:
+                fps_name = oams_manager.get_fps_for_afc_lane(lane_name)
+                if fps_name:
+                    fps_state = oams_manager.current_state.fps_state.get(fps_name)
+                    if fps_state is not None:
+                        fps_state.state = 1  # FPSLoadState.LOADED
+        except Exception:
+            pass
 
     def _cmd_test_cancel(self, gcmd):
         """Test: load a lane, cancel after 500mm, unload, then reload."""
@@ -2041,7 +2051,7 @@ class afcAMS(afcUnit):
 
         # --- CANCEL (marks spool as loaded so unload works) ---
         try:
-            self._cancel_and_mark_loaded(spool_index)
+            self._cancel_and_mark_loaded(spool_index, lane_name)
         except Exception as e:
             gcmd.respond_info(f"  cancel error: {e}")
 
@@ -2207,7 +2217,7 @@ class afcAMS(afcUnit):
         if not hub_detected:
             # Cancel the in-progress load (marks spool as loaded), then unload + clean up
             try:
-                self._cancel_and_mark_loaded(spool_index)
+                self._cancel_and_mark_loaded(spool_index, cur_lane.name)
             except Exception:
                 pass
             try:
@@ -2230,7 +2240,7 @@ class afcAMS(afcUnit):
         # Hub loaded successfully - cancel load and take manual control with follower
         self.logger.debug(f"Hub loaded, cancelling load to take manual control for {cur_lane.name}")
         try:
-            self._cancel_and_mark_loaded(spool_index)
+            self._cancel_and_mark_loaded(spool_index, cur_lane.name)
         except Exception:
             pass
         try:
@@ -2525,7 +2535,7 @@ class afcAMS(afcUnit):
                 pass
             # Cancel the in-progress load (marks spool as loaded), then unload + clean up
             try:
-                self._cancel_and_mark_loaded(spool_index)
+                self._cancel_and_mark_loaded(spool_index, cur_lane.name)
             except Exception:
                 pass
             try:
@@ -2558,7 +2568,7 @@ class afcAMS(afcUnit):
         if not hub_detected:
             # Cancel the in-progress load (marks spool as loaded), then unload + clean up
             try:
-                self._cancel_and_mark_loaded(spool_index)
+                self._cancel_and_mark_loaded(spool_index, cur_lane.name)
             except Exception:
                 pass
             try:
@@ -2591,7 +2601,7 @@ class afcAMS(afcUnit):
             )
             # Cancel the in-progress load (marks spool as loaded), then unload + clean up
             try:
-                self._cancel_and_mark_loaded(spool_index)
+                self._cancel_and_mark_loaded(spool_index, cur_lane.name)
             except Exception:
                 pass
             try:
@@ -2671,7 +2681,7 @@ class afcAMS(afcUnit):
 
         # Cancel the load now that we have TD-1 data (or timed out), mark as loaded, then unload
         try:
-            self._cancel_and_mark_loaded(spool_index)
+            self._cancel_and_mark_loaded(spool_index, cur_lane.name)
         except Exception:
             pass
 

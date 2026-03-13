@@ -41,7 +41,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -49,7 +49,7 @@
             "remember_spool": false,
             "spool_id": 13,
             "color": "#000000",
-            "weight": 261.3985393134805,
+            "weight": 261.3597700581479,
             "extruder_temp": 240,
             "runout_lane": null,
             "filament_status": "Ready",
@@ -239,9 +239,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 0.5,
+                "td": 0.4,
                 "color": "193C59",
-                "scan_time": "2026-03-13T02:44:55.020740+00:00Z",
+                "scan_time": "2026-03-13T04:04:35.525503+00:00Z",
                 "error": null
             }
         }
