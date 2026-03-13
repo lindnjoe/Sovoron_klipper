@@ -4,8 +4,11 @@
 # Direct serial communication with Anycubic ACE PRO hardware via JSON-RPC
 # over USB serial. No dependency on ACEPRO or DuckACE.
 #
-# Protocol: Binary frames with CRC-16/MCRF4XX checksums wrapping JSON-RPC.
+# Protocol: Binary frames with CRC-16/CCITT-FALSE (reflected) checksums
+# wrapping JSON-RPC payloads.
 # Frame format: [0xFF 0xAA] [length_le16] [json_payload] [crc_le16] [0xFE]
+#
+# Reconnection and health monitoring inspired by Kobra-S1/ACEPRO.
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
@@ -29,11 +32,26 @@ FRAME_FOOTER = b'\xfe'
 MAX_PAYLOAD_SIZE = 1024
 DEFAULT_BAUD = 115200
 REQUEST_TIMEOUT = 5.0
-MAX_CONCURRENT_REQUESTS = 4
+
+# Reconnection constants
+RECONNECT_BACKOFF_MIN = 5.0
+RECONNECT_BACKOFF_MAX = 30.0
+RECONNECT_BACKOFF_FACTOR = 1.5
+
+# Health monitoring constants
+HEARTBEAT_INTERVAL = 5.0
+COMM_SUPERVISION_WINDOW = 30.0
+COMM_TIMEOUT_THRESHOLD = 15
+COMM_UNSOLICITED_THRESHOLD = 15
+SUPERVISION_CHECK_INTERVAL = 10.0
 
 
-def crc16_mcrf4xx(data: bytes) -> int:
-    """Calculate CRC-16/MCRF4XX checksum over data bytes."""
+def crc16_ccitt_reflected(data: bytes) -> int:
+    """Calculate CRC-16/CCITT-FALSE (reflected) checksum.
+
+    Compatible with ACEPRO's _calc_crc implementation.
+    Uses polynomial 0x8408 (bit-reflected 0x1021).
+    """
     crc = 0xFFFF
     for byte in data:
         crc ^= byte
@@ -56,12 +74,16 @@ class ACETimeoutError(ACESerialError):
 
 
 class ACEConnection:
-    """Low-level serial connection to a single ACE PRO hardware unit.
+    """Serial connection to a single ACE PRO hardware unit.
 
     Integrates with Klipper's reactor for non-blocking I/O. Commands are
     sent as JSON-RPC over a binary-framed USB serial protocol. Responses
-    are matched by request ID and delivered via reactor completions for
-    synchronous use during tool change operations.
+    are matched by request ID and delivered via reactor completions.
+
+    Features (modelled after Kobra-S1/ACEPRO serial_manager.py):
+    - Automatic reconnection with exponential backoff
+    - Periodic heartbeat to detect dead connections
+    - Communication health supervision (timeout/unsolicited tracking)
     """
 
     def __init__(self, reactor, serial_port, logger=None, baud_rate=DEFAULT_BAUD):
@@ -85,6 +107,23 @@ class ACEConnection:
         self.device_info = {}
         self.slot_count = 4  # ACE PRO always has 4 slots
 
+        # Reconnection state
+        self._reconnect_timer = None
+        self._reconnect_backoff = RECONNECT_BACKOFF_MIN
+        self._reconnect_enabled = True
+
+        # Heartbeat state
+        self._heartbeat_timer = None
+        self._last_rx_time = 0.0
+
+        # Health supervision
+        self._timeout_timestamps = []
+        self._unsolicited_timestamps = []
+        self._last_supervision_check = 0.0
+
+        # Callback for status updates (set by unit)
+        self.status_callback = None
+
     @property
     def connected(self):
         return self._connected
@@ -106,9 +145,8 @@ class ACEConnection:
                 port=self._serial_port,
                 baudrate=self._baud_rate,
                 timeout=0,           # Non-blocking reads
-                write_timeout=0.1,
+                write_timeout=0.5,
             )
-            # Flush any stale data
             self._serial.reset_input_buffer()
             self._serial.reset_output_buffer()
         except Exception as e:
@@ -121,6 +159,7 @@ class ACEConnection:
             self._serial.fileno(), self._handle_read
         )
         self._connected = True
+        self._last_rx_time = self._reactor.monotonic()
         self._logger.info(
             f"ACE serial connected: {self._serial_port} @ {self._baud_rate}"
         )
@@ -132,9 +171,18 @@ class ACEConnection:
         except Exception as e:
             self._logger.warning(f"ACE get_info failed (non-fatal): {e}")
 
+        # Reset backoff on successful connect
+        self._reconnect_backoff = RECONNECT_BACKOFF_MIN
+
+        # Start heartbeat
+        self._start_heartbeat()
+
     def disconnect(self):
         """Close serial port and clean up reactor registrations."""
+        was_connected = self._connected
         self._connected = False
+
+        self._stop_heartbeat()
 
         if self._fd_handle is not None:
             try:
@@ -159,15 +207,59 @@ class ACEConnection:
         self._pending.clear()
         self._read_buffer = b''
 
-        self._logger.info("ACE serial disconnected")
+        if was_connected:
+            self._logger.info("ACE serial disconnected")
+
+    def reconnect(self):
+        """Disconnect and schedule automatic reconnection."""
+        if not self._reconnect_enabled:
+            return
+
+        self.disconnect()
+
+        delay = self._reconnect_backoff
+        self._reconnect_backoff = min(
+            self._reconnect_backoff * RECONNECT_BACKOFF_FACTOR,
+            RECONNECT_BACKOFF_MAX,
+        )
+
+        self._logger.info(
+            f"ACE scheduling reconnect in {delay:.0f}s "
+            f"(next backoff: {self._reconnect_backoff:.0f}s)"
+        )
+
+        def _reconnect_callback(eventtime):
+            if not self._reconnect_enabled:
+                return self._reactor.NEVER
+            try:
+                self.connect()
+                self._logger.info("ACE reconnected successfully")
+                return self._reactor.NEVER
+            except Exception as e:
+                self._logger.warning(f"ACE reconnect failed: {e}")
+                next_delay = self._reconnect_backoff
+                self._reconnect_backoff = min(
+                    self._reconnect_backoff * RECONNECT_BACKOFF_FACTOR,
+                    RECONNECT_BACKOFF_MAX,
+                )
+                return eventtime + next_delay
+
+        if self._reconnect_timer is not None:
+            try:
+                self._reactor.unregister_timer(self._reconnect_timer)
+            except Exception:
+                pass
+
+        self._reconnect_timer = self._reactor.register_timer(
+            _reconnect_callback,
+            self._reactor.monotonic() + delay,
+        )
 
     def send_command(self, method, params=None, timeout=REQUEST_TIMEOUT):
         """Send a JSON-RPC command and wait for the response.
 
         Uses Klipper's reactor completion mechanism to block the calling
-        context while still allowing other reactor events to be processed.
-
-        Returns the 'result' field from the response dict, or raises on error.
+        greenlet while still allowing other reactor events to be processed.
         """
         if not self._connected or self._serial is None:
             raise ACESerialError("ACE not connected")
@@ -175,7 +267,6 @@ class ACEConnection:
         request_id = self._next_request_id
         self._next_request_id += 1
 
-        # Build JSON-RPC request
         request = {"id": request_id, "method": method}
         if params is not None:
             request["params"] = params
@@ -186,28 +277,27 @@ class ACEConnection:
                 f"ACE payload too large ({len(payload)} > {MAX_PAYLOAD_SIZE})"
             )
 
-        # Create completion for blocking wait
         completion = self._reactor.completion()
         self._pending[request_id] = completion
 
-        # Build and send frame
         frame = self._build_frame(payload)
         try:
             self._serial.write(frame)
             self._serial.flush()
         except Exception as e:
             self._pending.pop(request_id, None)
+            self._track_timeout()
             raise ACESerialError(f"ACE write failed: {e}")
 
         self._logger.debug(f"ACE TX: {request}")
 
-        # Wait for response (yields reactor)
         deadline = self._reactor.monotonic() + timeout
         result = completion.wait(deadline)
 
         self._pending.pop(request_id, None)
 
         if result is None:
+            self._track_timeout()
             raise ACETimeoutError(
                 f"ACE command '{method}' (id={request_id}) timed out after {timeout}s"
             )
@@ -225,10 +315,7 @@ class ACEConnection:
         return result
 
     def send_command_async(self, method, params=None):
-        """Send a JSON-RPC command without waiting for a response.
-
-        Useful for fire-and-forget commands like stop operations.
-        """
+        """Send a JSON-RPC command without waiting for a response."""
         if not self._connected or self._serial is None:
             return
 
@@ -250,13 +337,109 @@ class ACEConnection:
 
         self._logger.debug(f"ACE TX (async): {request}")
 
-    def _build_frame(self, payload: bytes) -> bytes:
-        """Build a binary frame wrapping the JSON payload.
+    # ---- Heartbeat ----
 
-        Frame: [0xFF 0xAA] [length_le16] [payload] [crc_le16] [0xFE]
-        """
+    def _start_heartbeat(self):
+        """Start periodic heartbeat to detect dead connections."""
+        if self._heartbeat_timer is not None:
+            return
+        self._heartbeat_timer = self._reactor.register_timer(
+            self._heartbeat_tick,
+            self._reactor.monotonic() + HEARTBEAT_INTERVAL,
+        )
+
+    def _stop_heartbeat(self):
+        """Stop heartbeat timer."""
+        if self._heartbeat_timer is not None:
+            try:
+                self._reactor.unregister_timer(self._heartbeat_timer)
+            except Exception:
+                pass
+            self._heartbeat_timer = None
+
+    def _heartbeat_tick(self, eventtime):
+        """Send periodic get_status to verify connection is alive."""
+        if not self._connected:
+            return self._reactor.NEVER
+
+        # Check if we've received anything recently
+        silence = eventtime - self._last_rx_time
+        if silence > HEARTBEAT_INTERVAL * 4:
+            self._logger.warning(
+                f"ACE no data received for {silence:.0f}s, reconnecting"
+            )
+            self.reconnect()
+            return self._reactor.NEVER
+
+        # Send heartbeat status request
+        try:
+            self.send_command_async("get_status")
+        except Exception:
+            pass
+
+        # Run health supervision check
+        self._supervision_check()
+
+        return eventtime + HEARTBEAT_INTERVAL
+
+    # ---- Health Supervision ----
+
+    def _track_timeout(self):
+        """Record a timeout event."""
+        now = self._reactor.monotonic()
+        self._timeout_timestamps.append(now)
+        cutoff = now - COMM_SUPERVISION_WINDOW
+        self._timeout_timestamps = [
+            t for t in self._timeout_timestamps if t > cutoff
+        ]
+
+    def _track_unsolicited(self):
+        """Record an unsolicited message event."""
+        now = self._reactor.monotonic()
+        self._unsolicited_timestamps.append(now)
+        cutoff = now - COMM_SUPERVISION_WINDOW
+        self._unsolicited_timestamps = [
+            t for t in self._unsolicited_timestamps if t > cutoff
+        ]
+
+    def _supervision_check(self):
+        """Check communication health; force reconnect if degraded."""
+        now = self._reactor.monotonic()
+        if now - self._last_supervision_check < SUPERVISION_CHECK_INTERVAL:
+            return
+        self._last_supervision_check = now
+
+        if not self._connected:
+            return
+
+        cutoff = now - COMM_SUPERVISION_WINDOW
+        self._timeout_timestamps = [
+            t for t in self._timeout_timestamps if t > cutoff
+        ]
+        self._unsolicited_timestamps = [
+            t for t in self._unsolicited_timestamps if t > cutoff
+        ]
+
+        timeout_count = len(self._timeout_timestamps)
+        unsolicited_count = len(self._unsolicited_timestamps)
+
+        if (timeout_count >= COMM_TIMEOUT_THRESHOLD
+                and unsolicited_count >= COMM_UNSOLICITED_THRESHOLD):
+            self._logger.warning(
+                f"ACE communication unhealthy: {timeout_count} timeouts + "
+                f"{unsolicited_count} unsolicited in {COMM_SUPERVISION_WINDOW}s, "
+                "forcing reconnect"
+            )
+            self._timeout_timestamps.clear()
+            self._unsolicited_timestamps.clear()
+            self.reconnect()
+
+    # ---- Frame Protocol ----
+
+    def _build_frame(self, payload: bytes) -> bytes:
+        """Build a binary frame wrapping the JSON payload."""
         length = len(payload)
-        crc = crc16_mcrf4xx(payload)
+        crc = crc16_ccitt_reflected(payload)
         return (
             FRAME_HEADER
             + struct.pack('<H', length)
@@ -271,55 +454,48 @@ class ACEConnection:
             data = self._serial.read(4096)
         except Exception as e:
             self._logger.error(f"ACE read error: {e}")
+            self.reconnect()
             return
 
         if not data:
             return
 
+        self._last_rx_time = eventtime
         self._read_buffer += data
         self._parse_frames()
 
     def _parse_frames(self):
         """Extract and process complete frames from the read buffer."""
         while True:
-            # Find frame header
             header_pos = self._read_buffer.find(FRAME_HEADER)
             if header_pos < 0:
-                # No header found - discard buffer
                 self._read_buffer = b''
                 return
             if header_pos > 0:
-                # Discard bytes before header
                 self._read_buffer = self._read_buffer[header_pos:]
 
-            # Need at least header(2) + length(2) = 4 bytes to read length
-            if len(self._read_buffer) < 4:
+            if len(self._read_buffer) < 7:
                 return
 
             payload_length = struct.unpack_from('<H', self._read_buffer, 2)[0]
 
-            # Total frame size: header(2) + length(2) + payload + crc(2) + footer(1)
             frame_size = 2 + 2 + payload_length + 2 + 1
             if len(self._read_buffer) < frame_size:
-                return  # Incomplete frame, wait for more data
+                return
 
-            # Extract frame components
             payload = self._read_buffer[4:4 + payload_length]
             crc_received = struct.unpack_from(
                 '<H', self._read_buffer, 4 + payload_length
             )[0]
             footer = self._read_buffer[4 + payload_length + 2]
 
-            # Consume this frame from buffer
             self._read_buffer = self._read_buffer[frame_size:]
 
-            # Validate footer
             if footer != FRAME_FOOTER[0]:
                 self._logger.warning("ACE frame: invalid footer byte")
                 continue
 
-            # Validate CRC
-            crc_calculated = crc16_mcrf4xx(payload)
+            crc_calculated = crc16_ccitt_reflected(payload)
             if crc_received != crc_calculated:
                 self._logger.warning(
                     f"ACE frame: CRC mismatch (recv=0x{crc_received:04x}, "
@@ -327,7 +503,6 @@ class ACEConnection:
                 )
                 continue
 
-            # Parse JSON payload
             try:
                 response = json.loads(payload.decode('utf-8'))
             except (json.JSONDecodeError, UnicodeDecodeError) as e:
@@ -340,8 +515,15 @@ class ACEConnection:
     def _handle_response(self, response: dict):
         """Route a parsed response to its pending request completion."""
         response_id = response.get("id")
+
         if response_id is None:
-            self._logger.debug(f"ACE unsolicited message: {response}")
+            # Unsolicited notification
+            self._track_unsolicited()
+            if self.status_callback:
+                try:
+                    self.status_callback(response)
+                except Exception:
+                    pass
             return
 
         completion = self._pending.get(response_id)
@@ -351,6 +533,7 @@ class ACEConnection:
             except Exception:
                 pass
         else:
+            self._track_unsolicited()
             self._logger.debug(
                 f"ACE response for unknown request id={response_id}"
             )
