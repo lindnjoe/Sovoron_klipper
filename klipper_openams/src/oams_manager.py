@@ -2481,6 +2481,7 @@ class OAMSManager:
                     # Firmware considers spool loaded after cancel
                     if spool_idx is not None:
                         oam.current_spool = spool_idx
+                    fps_state.state = FPSLoadState.LOADED
                     return
                 gcmd.respond_info("OAMS unit not found for active load")
                 return
@@ -4894,6 +4895,7 @@ class OAMSManager:
             spool_idx = fps_state.current_spool_idx
             if spool_idx is not None:
                 oam.current_spool = spool_idx
+            fps_state.state = FPSLoadState.LOADED
         except Exception as e:
             self.logger.error(f"Failed to cancel stuck load operation for {lane_name}: {e}")
 
@@ -5098,6 +5100,7 @@ class OAMSManager:
                 spool_idx = fps_state.current_spool_idx
                 if spool_idx is not None:
                     oam.current_spool = spool_idx
+                fps_state.state = FPSLoadState.LOADED
             except Exception as e:
                 self.logger.error(f"Failed to cancel load operation before engagement retry for {lane_name}: {e}")
 
@@ -6747,6 +6750,7 @@ class OAMSManager:
             oams.action_status = None
             if spool_idx is not None:
                 oams.current_spool = spool_idx
+            fps_state.state = FPSLoadState.LOADED
 
         self.logger.info(
             f"{fps_name}: Stuck spool on {lane_name} - scheduling auto-recovery (unload+reload+resume)"
@@ -6794,6 +6798,7 @@ class OAMSManager:
             oams.action_status = None
             if spool_idx is not None:
                 oams.current_spool = spool_idx
+            fps_state.state = FPSLoadState.LOADED
 
         # Pause printer with error message
         # Do NOT notify AFC during stuck spool pause - AFC will try to unload which fails
@@ -7203,6 +7208,7 @@ class OAMSManager:
                     oams.action_status = None
                     if fps_state.current_spool_idx is not None:
                         oams.current_spool = fps_state.current_spool_idx
+                    fps_state.state = FPSLoadState.LOADED
                     self.logger.info(f"Cancelled stuck load operation on {fps_name}")
             except Exception as e:
                 self.logger.error(f"Failed to cancel load operation on {fps_name}: {e}")
