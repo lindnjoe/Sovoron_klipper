@@ -236,12 +236,12 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "Loaded",
+            "status": "None",
             "dist_hub": 60,
             "td1_data": {
-                "td": 0.4,
+                "td": 0.5,
                 "color": "193C59",
-                "scan_time": "2026-03-13T04:04:35.525503+00:00Z",
+                "scan_time": "2026-03-13T04:40:30.658794+00:00Z",
                 "error": null
             }
         }
