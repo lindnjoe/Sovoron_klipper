@@ -837,6 +837,15 @@ class afcAMS(afcUnit):
         except Exception:
             pass
 
+        try:
+            self.gcode.register_command(
+                'AFC_OAMS_TEST_CANCEL',
+                self._cmd_test_cancel,
+                desc="Test: load lane, cancel after 500mm, unload, reload",
+            )
+        except Exception:
+            pass
+
         # Ensure all AMS lanes have buffer_obj = None
         # AMS units don't have physical buffers - this prevents buffer monitoring
         # from running even if users accidentally configure buffers at lane level
@@ -1960,6 +1969,96 @@ class afcAMS(afcUnit):
         ).format(self.name, self.name, self.name)
         self.logger.info(msg)
         return False, msg, 0
+
+    def _cmd_test_cancel(self, gcmd):
+        """Test: load a lane, cancel after 500mm, unload, then reload."""
+        lane_name = gcmd.get("LANE", None)
+        if lane_name is None:
+            raise gcmd.error("LANE is required (e.g. AFC_OAMS_TEST_CANCEL LANE=lane11)")
+
+        cur_lane = self.lanes.get(lane_name)
+        if cur_lane is None:
+            raise gcmd.error(f"Lane '{lane_name}' not found in {self.name}")
+
+        if self.oams is None:
+            raise gcmd.error("OpenAMS hardware not available")
+
+        spool_index = self._get_openams_spool_index(cur_lane)
+        if spool_index is None:
+            raise gcmd.error(f"Unable to resolve spool index for {lane_name}")
+
+        from extras.oams import OAMSStatus
+
+        target_clicks = gcmd.get_int("CLICKS", 500)
+        gcmd.respond_info(f"Step 1: Loading {lane_name} (spool {spool_index})...")
+
+        # --- LOAD ---
+        self.oams.action_status = OAMSStatus.LOADING
+        self.oams.oams_load_spool_cmd.send([spool_index])
+
+        try:
+            encoder_start = int(self.oams.encoder_clicks)
+        except Exception:
+            encoder_start = 0
+
+        # Wait for encoder to reach target clicks
+        deadline = self.afc.reactor.monotonic() + 30.0
+        while self.afc.reactor.monotonic() < deadline:
+            try:
+                clicks = abs(int(self.oams.encoder_clicks) - encoder_start)
+            except Exception:
+                clicks = 0
+            if clicks >= target_clicks:
+                break
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+
+        try:
+            final_clicks = abs(int(self.oams.encoder_clicks) - encoder_start)
+        except Exception:
+            final_clicks = 0
+        gcmd.respond_info(f"Step 2: Cancelling load at {final_clicks} clicks...")
+
+        # --- CANCEL ---
+        try:
+            self.oams.load_spool_cancel()
+        except Exception as e:
+            gcmd.respond_info(f"  cancel error: {e}")
+        try:
+            self.oams.abort_current_action()
+        except Exception as e:
+            gcmd.respond_info(f"  abort error: {e}")
+
+        gcmd.respond_info("Step 3: Unloading...")
+
+        # --- UNLOAD ---
+        try:
+            success, msg = self.oams.unload_spool()
+            gcmd.respond_info(f"  unload result: success={success} msg={msg}")
+        except Exception as e:
+            gcmd.respond_info(f"  unload exception: {e}")
+
+        try:
+            self.oams.clear_errors()
+        except Exception:
+            pass
+        self._clear_lane_state_after_td1(cur_lane)
+
+        gcmd.respond_info("Step 4: Reloading...")
+
+        # --- RELOAD ---
+        try:
+            code, msg = self.oams.load_spool(spool_index)
+            gcmd.respond_info(f"  reload result: code={code} msg={msg}")
+        except Exception as e:
+            gcmd.respond_info(f"  reload exception: {e}")
+
+        try:
+            self.oams.clear_errors()
+        except Exception:
+            pass
+        self._clear_lane_state_after_td1(cur_lane)
+
+        gcmd.respond_info(f"Test complete for {lane_name}")
 
     def _clear_lane_state_after_td1(self, cur_lane):
         """Clear AFC-level lane loaded state that background detection may have set
