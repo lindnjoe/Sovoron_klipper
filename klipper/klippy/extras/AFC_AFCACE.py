@@ -939,15 +939,22 @@ class afcAFCACE(afcUnit):
 
         if not triggered:
             # Retract what we fed so filament doesn't jam
-            self._retract_slot(local_slot)
+            retract_dist = distance + 20
+            self.logger.info(f"AFCACE calibrate_bowden: retracting {retract_dist:.0f}mm")
+            self._ace.unwind_filament(local_slot, retract_dist, self.retract_speed)
+            self._wait_for_feed_complete(local_slot, retract_dist, self.retract_speed)
             msg = (
                 f"Toolhead sensor did not trigger after {distance:.0f}mm. "
                 "Check filament path and sensor wiring."
             )
             return False, msg, distance
 
-        # Retract back to the ACE unit
-        self._retract_slot(local_slot)
+        # Retract back to the ACE unit using measured distance (not config value
+        # which may be too short for the actual bowden length)
+        retract_dist = distance + 20
+        self.logger.info(f"AFCACE calibrate_bowden: retracting {retract_dist:.0f}mm")
+        self._ace.unwind_filament(local_slot, retract_dist, self.retract_speed)
+        self._wait_for_feed_complete(local_slot, retract_dist, self.retract_speed)
 
         # Round to nearest integer for clean config values
         new_feed_length = round(distance, 0)
@@ -1054,8 +1061,11 @@ class afcAFCACE(afcUnit):
             f"AFCACE calibrate_td1: TD-1 detected filament at {bow_pos:.1f}mm"
         )
 
-        # Retract back to ACE unit
-        self._retract_slot(local_slot)
+        # Retract back to ACE unit using measured distance
+        retract_dist = bow_pos + 20
+        self.logger.info(f"AFCACE calibrate_td1: retracting {retract_dist:.0f}mm")
+        self._ace.unwind_filament(local_slot, retract_dist, self.retract_speed)
+        self._wait_for_feed_complete(local_slot, retract_dist, self.retract_speed)
 
         # Save td1_bowden_length to the lane's config section
         old_td1 = getattr(cur_lane, "td1_bowden_length", None)
