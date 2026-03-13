@@ -88,6 +88,11 @@ class afcAFCACE(afcUnit):
         self.type = "AFCACE"
         self.logger = self.afc.logger
 
+        # ACE units don't have physical buffers - force buffer_obj to None
+        # This prevents buffer monitoring/fault detection from running on ACE lanes
+        # even if user accidentally configured a buffer parameter
+        self.buffer_obj = None
+
         # Serial port configuration
         self.serial_port = config.get("serial_port")
 
@@ -159,6 +164,19 @@ class afcAFCACE(afcUnit):
 
     def _deferred_init(self, eventtime):
         """Connect to ACE hardware after reactor is fully running."""
+        # Re-enforce buffer_obj = None on all ACE lanes FIRST
+        # This runs during klippy:ready AFTER AFC_lane._handle_ready() has initialized lanes
+        # AFC_lane._handle_ready() may assign buffers from unit/extruder, we must override to None
+        # MUST run BEFORE any early returns to ensure buffers are always cleared
+        for lane in self.lanes.values():
+            if lane.buffer_obj is not None:
+                buffer_name = getattr(lane.buffer_obj, 'name', 'unknown')
+                self.logger.warning(
+                    f"Lane {lane.name} was assigned buffer '{buffer_name}' during initialization, "
+                    f"but ACE units don't have physical buffers. Removing buffer assignment."
+                )
+                lane.buffer_obj = None
+
         try:
             self._ace = ACEConnection(
                 reactor=self.afc.reactor,
@@ -368,6 +386,17 @@ class afcAFCACE(afcUnit):
     def handle_connect(self):
         super().handle_connect()
         self._register_gcode_commands()
+
+        # Ensure all ACE lanes have buffer_obj = None
+        # ACE units don't have physical buffers - this prevents buffer monitoring
+        # from running even if users accidentally configure buffers at lane level
+        for lane in self.lanes.values():
+            if lane.buffer_obj is not None:
+                self.logger.warning(
+                    f"Lane {lane.name} had buffer '{lane.buffer_obj.name}' configured, "
+                    f"but ACE units don't have physical buffers. Removing buffer assignment."
+                )
+            lane.buffer_obj = None
 
         self.logo = '<span class=success--text>R  _____ _____ _____\n'
         self.logo += 'E | AFC | ACE |     |\n'
@@ -611,79 +640,23 @@ class afcAFCACE(afcUnit):
             else:
                 afc.gcode.run_script_from_command(afc.form_tip_cmd)
 
-        # Retract filament out of the extruder/nozzle using tool_stn_unload
-        if cur_extruder.tool_start == "buffer":
-            # Buffer mode: retract until buffer decompresses
-            cur_lane.unsync_to_extruder()
-            num_tries = 0
-            while not cur_lane.get_trailing() and afc.tool_max_unload_attempts > 0:
-                num_tries += 1
-                cur_lane.move_advanced(
-                    cur_lane.short_move_dis * -1, 1  # SpeedMode.SHORT
-                )
-                afc.reactor.pause(afc.reactor.monotonic() + 0.1)
-                if num_tries > afc.tool_max_unload_attempts:
-                    message = (
-                        f"Buffer did not decompress after {afc.tool_max_unload_attempts} "
-                        f"retract moves during unload.\n"
-                        "Please check filament is free from toolhead extruder."
-                    )
-                    afc.error.handle_lane_failure(cur_lane, message)
-                    return False
-            cur_lane.sync_to_extruder(False)
-            # Retract tool_stn_unload distance to clear extruder gears
-            if cur_extruder.tool_stn_unload > 0:
-                self.logger.info(
-                    f"AFCACE unload: buffer retract {cur_extruder.tool_stn_unload}mm "
-                    f"@ {cur_extruder.tool_unload_speed}mm/min"
-                )
-                afc.move_e_pos(
-                    cur_extruder.tool_stn_unload * -1,
-                    cur_extruder.tool_unload_speed, "Buffer Move"
-                )
-        else:
-            # Standard mode: retract tool_stn_unload to pull filament out of nozzle
-            if cur_extruder.tool_stn_unload == 0:
-                # No tool_stn_unload configured: retract until sensor clears
-                cur_lane.unsync_to_extruder()
-                num_tries = 0
-                while cur_lane.get_toolhead_pre_sensor_state():
-                    num_tries += 1
-                    cur_lane.move_advanced(
-                        cur_lane.short_move_dis * -1, 1  # SpeedMode.SHORT
-                    )
-                    if num_tries > afc.tool_max_unload_attempts:
-                        message = (
-                            "Failed to clear toolhead sensor during unload.\n"
-                            "Filament may be stuck in toolhead."
-                        )
-                        afc.error.handle_lane_failure(cur_lane, message)
-                        return False
-                    afc.reactor.pause(afc.reactor.monotonic() + 0.1)
-            else:
-                # Retract tool_stn_unload distance with extruder
-                num_tries = 0
-                while (cur_lane.get_toolhead_pre_sensor_state()
-                       or cur_extruder.tool_end_state):
-                    num_tries += 1
-                    if num_tries > afc.tool_max_unload_attempts:
-                        message = (
-                            "Failed to unload filament from toolhead. "
-                            "Filament stuck in toolhead."
-                        )
-                        afc.error.handle_lane_failure(cur_lane, message)
-                        return False
-                    self.logger.info(
-                        f"AFCACE unload: sensor retract try {num_tries}, "
-                        f"{cur_extruder.tool_stn_unload}mm "
-                        f"@ {cur_extruder.tool_unload_speed}mm/min"
-                    )
-                    cur_lane.sync_to_extruder()
-                    afc.move_e_pos(
-                        cur_extruder.tool_stn_unload * -1,
-                        cur_extruder.tool_unload_speed,
-                        "Sensor move", wait_tool=True
-                    )
+        # Retract filament out of the nozzle/extruder gears using extruder motor.
+        # ACE units don't have a lane stepper so we use move_e_pos exclusively
+        # for the toolhead-side retraction, then delegate the full bowden retraction
+        # to the ACE hardware via _retract_slot (unwind_filament).
+        # This avoids the sensor-based retraction loop that fails on ACE because
+        # the extruder motor alone cannot pull filament through a long bowden tube.
+        retract_distance = cur_extruder.tool_stn_unload
+        if retract_distance > 0:
+            self.logger.info(
+                f"AFCACE unload: extruder retract {retract_distance}mm "
+                f"@ {cur_extruder.tool_unload_speed}mm/min to clear nozzle/gears"
+            )
+            afc.move_e_pos(
+                retract_distance * -1,
+                cur_extruder.tool_unload_speed,
+                "ACE nozzle retract", wait_tool=True
+            )
 
         # Move past the sensor-after-extruder if configured
         if cur_extruder.tool_sensor_after_extruder > 0:
@@ -703,6 +676,7 @@ class afcAFCACE(afcUnit):
                 f"for lane {cur_lane.name} (mode={self.mode})"
             )
 
+            # ACE hardware retracts the filament through the entire bowden tube
             self._retract_slot(local_slot)
 
             if self.mode == MODE_COMBINED:
