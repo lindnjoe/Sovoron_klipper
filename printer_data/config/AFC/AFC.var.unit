@@ -131,7 +131,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -218,7 +218,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": false,
+            "loaded_to_hub": true,
             "material": "ASA",
             "density": 1.0,
             "diameter": 1.75,
@@ -234,9 +234,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 0.3,
-                "color": "0F1D3F",
-                "scan_time": "2026-02-23T20:52:06.988018+00:00Z",
+                "td": 0.6,
+                "color": "193B57",
+                "scan_time": "2026-03-12T22:28:56.082505+00:00Z",
                 "error": null
             }
         }

@@ -1965,15 +1965,11 @@ class afcAMS(afcUnit):
         """
         Unload filament after TD-1 operation by reversing follower and spool motor until hub clears.
         """
-        # Cancel any in-progress load before unloading (only if a load is active)
-        if self.oams.action_status is not None:
-            try:
-                self.oams.load_spool_cancel()
-            except Exception:
-                self.logger.debug(f"Failed to cancel load before unload for {cur_lane.name}")
-        # Always clear software state
-        self.oams.action_status = None
-        self.oams.action_status_code = None
+        # Clean up any lingering software state before unloading
+        try:
+            self.oams.abort_current_action(wait=True, code=0)
+        except Exception:
+            self.logger.debug(f"Failed to abort existing action before unload for {cur_lane.name}")
 
         hub_cleared = False
         unload_wait = 5.0
@@ -2112,12 +2108,18 @@ class afcAMS(afcUnit):
                 break
 
         if not hub_detected:
-            # Cancel the load operation and stop the follower
+            # Cancel the load on hardware, then wait for firmware to acknowledge
             try:
                 self.oams.load_spool_cancel()
             except Exception as e:
                 self.logger.error(f"Failed to cancel load for {cur_lane.name}: {e}")
+            cancel_deadline = self.afc.reactor.monotonic() + 5.0
+            while self.oams.action_status is not None:
+                if self.afc.reactor.monotonic() > cancel_deadline:
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
             self.oams.action_status = None
+            self.oams.action_status_code = None
             try:
                 self.oams.set_oams_follower(0, 0)
             except Exception as e:
@@ -2133,9 +2135,15 @@ class afcAMS(afcUnit):
             self.oams.load_spool_cancel()
         except Exception as e:
             self.logger.error(f"Failed to cancel load for {cur_lane.name}: {e}")
-        # Give firmware time to stop, then clear software state
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+        # Wait for firmware to acknowledge the cancel
+        cancel_deadline = self.afc.reactor.monotonic() + 5.0
+        while self.oams.action_status is not None:
+            if self.afc.reactor.monotonic() > cancel_deadline:
+                self.logger.warning(f"Cancel response timeout for {cur_lane.name}, forcing clear")
+                break
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
         self.oams.action_status = None
+        self.oams.action_status_code = None
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception as e:
@@ -2449,12 +2457,18 @@ class afcAMS(afcUnit):
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
         if not hub_detected:
-            # Cancel the load operation and stop the follower
+            # Cancel the load on hardware, then wait for firmware to acknowledge
             try:
                 self.oams.load_spool_cancel()
             except Exception:
                 pass
+            cancel_deadline = self.afc.reactor.monotonic() + 5.0
+            while self.oams.action_status is not None:
+                if self.afc.reactor.monotonic() > cancel_deadline:
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
             self.oams.action_status = None
+            self.oams.action_status_code = None
             try:
                 self.oams.set_oams_follower(0, 0)
             except Exception:
@@ -2535,9 +2549,15 @@ class afcAMS(afcUnit):
             self.oams.load_spool_cancel()
         except Exception as e:
             self.logger.warning(f"Failed to cancel load at TD-1 position for {cur_lane.name}: {e}")
-        # Give firmware time to stop, then clear software state
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+        # Wait for firmware to acknowledge the cancel (action_status cleared by response)
+        cancel_deadline = self.afc.reactor.monotonic() + 5.0
+        while self.oams.action_status is not None:
+            if self.afc.reactor.monotonic() > cancel_deadline:
+                self.logger.warning(f"Cancel response timeout for {cur_lane.name}, forcing clear")
+                break
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
         self.oams.action_status = None
+        self.oams.action_status_code = None
 
         # Read TD-1 data now that filament is stopped at the sensor
         td1_detected = _capture_td1_if_fresh()
