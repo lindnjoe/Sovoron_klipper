@@ -2506,15 +2506,11 @@ class OAMSManager:
             # 2. determine_state() -> reads hardware sensors (F1S, hub, etc.)
             # 3. If sensors show lane loaded -> _sync_afc_lane_loaded() writes back to AFC
             # 4. If sensors show empty -> AFC stays unset
-            has_loaded_state = any(
-                state.state == FPSLoadState.LOADED
-                for state in self.current_state.fps_state.values()
-            )
-            has_loaded_state = has_loaded_state or any(
-                getattr(oam, "current_spool", None) is not None
-                for oam in ready_oams.values()
-            )
-            if ready_oams and not has_loaded_state:
+            # Always clear AFC lane_loaded state on explicit CLEAR_ERRORS.
+            # After cancel, both fps_state and current_spool may be set to LOADED
+            # but the filament may not actually be in the toolhead. Skipping the
+            # clear would leave stale AFC state that blocks subsequent operations.
+            if ready_oams:
                 try:
                     afc = self._get_afc()
                     afc_function = getattr(afc, "function", None) if afc is not None else None
@@ -2530,10 +2526,6 @@ class OAMSManager:
                 except Exception as e:
                     # Don't block CLEAR_ERRORS if UNSET fails, but log it
                     self.logger.warning(f"Failed to clear AFC lane state during OAMSM_CLEAR_ERRORS: {e}")
-            else:
-                self.logger.debug(
-                    "Skipped clearing AFC lane_loaded state (filament already loaded or MCU not ready)"
-                )
 
             # Reset all runout monitors to clear COASTING and other states
             for fps_name, monitor in list(self.runout_monitors.items()):
