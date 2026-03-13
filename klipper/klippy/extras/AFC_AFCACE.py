@@ -122,7 +122,7 @@ class afcAFCACE(afcUnit):
         # instead of blindly feeding a fixed distance. This enables calibration.
         self.sensor_approach_margin = config.getfloat("sensor_approach_margin", 60.0)  # mm before expected sensor to switch to incremental
         self.sensor_step = config.getfloat("sensor_step", 20.0)                       # mm per check during sensor approach
-        self.calibration_step = config.getfloat("calibration_step", 10.0)              # mm per check during calibration (more precise)
+        self.calibration_step = config.getfloat("calibration_step", 50.0)              # mm per check during calibration
         self.max_feed_overshoot = config.getfloat("max_feed_overshoot", 100.0)         # mm extra to try past feed_length before giving up
 
         # Sensor polling interval for status/runout monitoring
