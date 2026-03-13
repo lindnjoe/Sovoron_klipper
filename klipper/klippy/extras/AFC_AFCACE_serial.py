@@ -596,7 +596,15 @@ class ACEConnection:
             except Exception:
                 pass
         else:
+            # Heartbeat (send_command_async) responses land here - they have
+            # a valid id but no pending completion.  Forward to the status
+            # callback so the unit can process slot data in near-real-time.
             self._track_unsolicited()
+            if self.status_callback:
+                try:
+                    self.status_callback(response)
+                except Exception:
+                    pass
             self._logger.debug(
                 f"ACE response for unknown request id={response_id}"
             )

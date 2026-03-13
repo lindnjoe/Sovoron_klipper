@@ -195,6 +195,9 @@ class afcAFCACE(afcUnit):
         self._sync_inventory()
         self._sync_slot_loaded_state()
 
+        # Register callback so heartbeat responses update slot status
+        self._ace.status_callback = self._on_hw_status_callback
+
         # Start runout detection polling
         self._start_slot_status_monitor()
 
@@ -268,6 +271,85 @@ class afcAFCACE(afcUnit):
                     lane.material = material
                 if color and hasattr(lane, "color"):
                     lane.color = self._ace_color_to_hex(color)
+
+    def _on_hw_status_callback(self, response):
+        """Process slot status from any ACE response (including heartbeat).
+
+        Called from the serial layer's reactor thread for every response that
+        doesn't match a pending synchronous request - primarily the heartbeat
+        get_status responses that fire every 2 seconds.
+        """
+        if not isinstance(response, dict):
+            return
+
+        # Extract result payload (JSON-RPC wraps it)
+        result = response.get("result", response)
+        if not isinstance(result, dict):
+            return
+
+        slots = result.get("slots")
+        if not slots or not isinstance(slots, list):
+            return
+
+        # Update cached hardware status and slot inventory
+        self._cached_hw_status = result
+        for i, slot_data in enumerate(slots):
+            if i < self.SLOTS_PER_UNIT and isinstance(slot_data, dict):
+                self._slot_inventory[i]["status"] = slot_data.get("status", "")
+
+        # Run transition detection on each lane
+        for lane in self.lanes.values():
+            local_slot = self._get_local_slot_for_lane(lane)
+            if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
+                continue
+
+            slot_info = self._slot_inventory[local_slot]
+            slot_ready = bool(
+                slot_info and slot_info.get("status", "") == "ready"
+            )
+
+            # Keep loaded_to_hub in sync
+            lane.loaded_to_hub = slot_ready
+
+            prev_ready = self._prev_slot_states.get(lane.name)
+            self._prev_slot_states[lane.name] = slot_ready
+
+            if prev_ready is None:
+                # First callback before any poll - seed state
+                if slot_ready and getattr(lane, '_afc_prep_done', False) and lane.status == AFCLaneState.NONE:
+                    self.logger.info(
+                        f"AFCACE callback: {lane.name} loaded (slot {local_slot})"
+                    )
+                    lane.set_loaded()
+                    self.lane_illuminate_spool(lane)
+                    self.afc.save_vars()
+                continue
+
+            # Detect not-ready -> ready (filament inserted)
+            if not prev_ready and slot_ready:
+                if getattr(lane, '_afc_prep_done', False) and lane.status == AFCLaneState.NONE:
+                    self.logger.info(
+                        f"AFCACE filament detected (callback) on {lane.name} (slot {local_slot})"
+                    )
+                    lane.set_loaded()
+                    self.lane_illuminate_spool(lane)
+                    self.afc.save_vars()
+
+            # Detect ready -> not-ready (filament removed/runout)
+            elif prev_ready and not slot_ready:
+                if lane.status == AFCLaneState.TOOLED:
+                    self.logger.info(
+                        f"AFCACE runout detected (callback) on {lane.name} (slot {local_slot})"
+                    )
+                    lane.loaded_to_hub = False
+                    if lane.runout_lane:
+                        try:
+                            lane._perform_infinite_runout()
+                        except Exception as e:
+                            self.logger.error(
+                                f"AFCACE infinite spool failed for {lane.name}: "
+                                f"{e}\n{traceback.format_exc()}"
+                            )
 
     def get_slot_info(self, local_slot):
         """Return cached slot info dict for a slot index."""
