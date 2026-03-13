@@ -113,7 +113,7 @@ class afc_hub:
                 unit_obj = getattr(lane, "unit_obj", None)
                 unit_type = getattr(unit_obj, "type", None)
                 is_hw_managed = (
-                    unit_type in ("OpenAMS", "ACE")
+                    unit_type in ("OpenAMS", "ACE", "AFCACE")
                     or hasattr(unit_obj, "oams_name")
                 )
                 if lane.load is None and not is_hw_managed:
@@ -140,7 +140,7 @@ class afc_hub:
                 unit_obj = getattr(lane, "unit_obj", None)
                 unit_type = getattr(unit_obj, "type", None)
                 is_hw_managed = (
-                    unit_type in ("OpenAMS", "ACE")
+                    unit_type in ("OpenAMS", "ACE", "AFCACE")
                     or hasattr(unit_obj, "oams_name")
                 )
                 if is_hw_managed:

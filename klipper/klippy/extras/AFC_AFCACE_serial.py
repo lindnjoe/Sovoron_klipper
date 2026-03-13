@@ -506,6 +506,9 @@ class ACEConnection:
         self._read_buffer += data
         self._parse_frames()
 
+    # Maximum sane payload size to reject false headers with garbage lengths
+    _MAX_PAYLOAD = 8192
+
     def _parse_frames(self):
         """Extract and process complete frames from the read buffer."""
         while True:
@@ -521,6 +524,15 @@ class ACEConnection:
 
             payload_length = struct.unpack_from('<H', self._read_buffer, 2)[0]
 
+            # Reject impossibly large payloads (likely a false header in data)
+            if payload_length > self._MAX_PAYLOAD:
+                self._logger.debug(
+                    f"ACE frame: payload length {payload_length} exceeds max, "
+                    "skipping false header"
+                )
+                self._read_buffer = self._read_buffer[2:]
+                continue
+
             frame_size = 2 + 2 + payload_length + 2 + 1
             if len(self._read_buffer) < frame_size:
                 return
@@ -531,19 +543,28 @@ class ACEConnection:
             )[0]
             footer = self._read_buffer[4 + payload_length + 2]
 
-            self._read_buffer = self._read_buffer[frame_size:]
-
+            # Validate footer and CRC BEFORE consuming the frame.
+            # On failure, skip past just the header bytes and rescan,
+            # since a false header in data would produce garbage framing.
             if footer != FRAME_FOOTER[0]:
-                self._logger.warning("ACE frame: invalid footer byte")
+                self._logger.warning(
+                    f"ACE frame: invalid footer byte 0x{footer:02x}, "
+                    "rescanning for next header"
+                )
+                self._read_buffer = self._read_buffer[2:]
                 continue
 
             crc_calculated = crc16_ccitt_reflected(payload)
             if crc_received != crc_calculated:
                 self._logger.warning(
                     f"ACE frame: CRC mismatch (recv=0x{crc_received:04x}, "
-                    f"calc=0x{crc_calculated:04x})"
+                    f"calc=0x{crc_calculated:04x}), rescanning"
                 )
+                self._read_buffer = self._read_buffer[2:]
                 continue
+
+            # Frame is valid - consume it from the buffer
+            self._read_buffer = self._read_buffer[frame_size:]
 
             try:
                 response = json.loads(payload.decode('utf-8'))

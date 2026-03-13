@@ -180,7 +180,18 @@ class afcAFCACE(afcUnit):
                 f"AFCACE {self.name}: enable_rfid failed (non-fatal): {e}"
             )
 
-        # Sync slot inventory and loaded states
+        # Seed slot status from get_status (needed before _sync_slot_loaded_state)
+        try:
+            hw_status = self._ace.get_status(timeout=2.0)
+            if isinstance(hw_status, dict):
+                self._cached_hw_status = hw_status
+                for i, slot_data in enumerate(hw_status.get("slots", [])):
+                    if i < self.SLOTS_PER_UNIT and isinstance(slot_data, dict):
+                        self._slot_inventory[i]["status"] = slot_data.get("status", "")
+        except Exception as e:
+            self.logger.debug(f"AFCACE {self.name}: initial get_status failed: {e}")
+
+        # Sync RFID data and lane loaded states
         self._sync_inventory()
         self._sync_slot_loaded_state()
 
@@ -985,8 +996,21 @@ class afcAFCACE(afcUnit):
             # Always sync loaded_to_hub so prep/status is accurate
             lane.loaded_to_hub = slot_ready
 
-            prev_ready = self._prev_slot_states.get(lane.name, slot_ready)
+            prev_ready = self._prev_slot_states.get(lane.name)
             self._prev_slot_states[lane.name] = slot_ready
+
+            if prev_ready is None:
+                # First poll: seed state, but also fix lanes that are
+                # loaded in hardware but stuck in NONE state (e.g., filament
+                # inserted between PREP and first poll)
+                if slot_ready and lane._afc_prep_done and lane.status == AFCLaneState.NONE:
+                    self.logger.info(
+                        f"AFCACE first poll: {lane.name} loaded (slot {local_slot})"
+                    )
+                    lane.set_loaded()
+                    self.lane_illuminate_spool(lane)
+                    self.afc.save_vars()
+                continue
 
             # Detect not-ready -> ready transition (filament inserted)
             if not prev_ready and slot_ready:
