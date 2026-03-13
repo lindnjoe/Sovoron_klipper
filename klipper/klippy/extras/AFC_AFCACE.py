@@ -218,16 +218,12 @@ class afcAFCACE(afcUnit):
     def _get_local_slot_for_lane(self, lane) -> int:
         """Map an AFC lane to a local ACE slot index (0-3).
 
-        Lane's unit field is 'UnitName:SlotIndex' where SlotIndex is 1-based
-        in the config. We convert to 0-based for ACE hardware.
+        AFC_lane stores the slot index as lane.index (1-based from config
+        'unit: ace1:1'). We convert to 0-based for ACE hardware.
         """
-        unit_field = getattr(lane, "unit", "")
-        if ":" in str(unit_field):
-            try:
-                slot_str = str(unit_field).split(":")[-1]
-                return int(slot_str) - 1  # Config is 1-based, ACE is 0-based
-            except (ValueError, IndexError):
-                pass
+        index = getattr(lane, "index", 0)
+        if isinstance(index, int) and 1 <= index <= self.SLOTS_PER_UNIT:
+            return index - 1  # Config is 1-based, ACE is 0-based
         return -1
 
     # ---- Inventory / State Sync ----
@@ -297,7 +293,7 @@ class afcAFCACE(afcUnit):
             if i < self.SLOTS_PER_UNIT and isinstance(slot_data, dict):
                 self._slot_inventory[i]["status"] = slot_data.get("status", "")
 
-        # Run transition detection on each lane
+        # Sync slot states and ensure lane consistency
         for lane in self.lanes.values():
             local_slot = self._get_local_slot_for_lane(lane)
             if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
@@ -311,45 +307,20 @@ class afcAFCACE(afcUnit):
             # Keep loaded_to_hub in sync
             lane.loaded_to_hub = slot_ready
 
-            prev_ready = self._prev_slot_states.get(lane.name)
+            prep_done = getattr(lane, '_afc_prep_done', False)
+
+            # State consistency: if hardware says ready but lane is stuck
+            # in NONE, fix it regardless of transition detection
+            if slot_ready and prep_done and lane.status == AFCLaneState.NONE:
+                self.logger.info(
+                    f"AFCACE callback: {lane.name} slot {local_slot} ready, "
+                    f"setting loaded"
+                )
+                lane.set_loaded()
+                self.lane_illuminate_spool(lane)
+                self.afc.save_vars()
+
             self._prev_slot_states[lane.name] = slot_ready
-
-            if prev_ready is None:
-                # First callback before any poll - seed state
-                if slot_ready and getattr(lane, '_afc_prep_done', False) and lane.status == AFCLaneState.NONE:
-                    self.logger.info(
-                        f"AFCACE callback: {lane.name} loaded (slot {local_slot})"
-                    )
-                    lane.set_loaded()
-                    self.lane_illuminate_spool(lane)
-                    self.afc.save_vars()
-                continue
-
-            # Detect not-ready -> ready (filament inserted)
-            if not prev_ready and slot_ready:
-                if getattr(lane, '_afc_prep_done', False) and lane.status == AFCLaneState.NONE:
-                    self.logger.info(
-                        f"AFCACE filament detected (callback) on {lane.name} (slot {local_slot})"
-                    )
-                    lane.set_loaded()
-                    self.lane_illuminate_spool(lane)
-                    self.afc.save_vars()
-
-            # Detect ready -> not-ready (filament removed/runout)
-            elif prev_ready and not slot_ready:
-                if lane.status == AFCLaneState.TOOLED:
-                    self.logger.info(
-                        f"AFCACE runout detected (callback) on {lane.name} (slot {local_slot})"
-                    )
-                    lane.loaded_to_hub = False
-                    if lane.runout_lane:
-                        try:
-                            lane._perform_infinite_runout()
-                        except Exception as e:
-                            self.logger.error(
-                                f"AFCACE infinite spool failed for {lane.name}: "
-                                f"{e}\n{traceback.format_exc()}"
-                            )
 
     def get_slot_info(self, local_slot):
         """Return cached slot info dict for a slot index."""
@@ -1081,28 +1052,15 @@ class afcAFCACE(afcUnit):
             prev_ready = self._prev_slot_states.get(lane.name)
             self._prev_slot_states[lane.name] = slot_ready
 
-            if prev_ready is None:
-                # First poll: seed state, but also fix lanes that are
-                # loaded in hardware but stuck in NONE state (e.g., filament
-                # inserted between PREP and first poll)
-                if slot_ready and lane._afc_prep_done and lane.status == AFCLaneState.NONE:
-                    self.logger.info(
-                        f"AFCACE first poll: {lane.name} loaded (slot {local_slot})"
-                    )
-                    lane.set_loaded()
-                    self.lane_illuminate_spool(lane)
-                    self.afc.save_vars()
-                continue
-
-            # Detect not-ready -> ready transition (filament inserted)
-            if not prev_ready and slot_ready:
-                if lane._afc_prep_done and lane.status in (AFCLaneState.NONE,):
-                    self.logger.info(
-                        f"AFCACE filament detected on {lane.name} (slot {local_slot})"
-                    )
-                    lane.set_loaded()
-                    self.lane_illuminate_spool(lane)
-                    self.afc.save_vars()
+            # State consistency: if hardware says ready but lane is stuck
+            # in NONE, fix it (covers first poll, missed transitions, etc.)
+            if slot_ready and lane._afc_prep_done and lane.status == AFCLaneState.NONE:
+                self.logger.info(
+                    f"AFCACE poll: {lane.name} slot {local_slot} ready, setting loaded"
+                )
+                lane.set_loaded()
+                self.lane_illuminate_spool(lane)
+                self.afc.save_vars()
 
             # Detect ready -> not-ready transition (filament runout)
             elif prev_ready and not slot_ready:
