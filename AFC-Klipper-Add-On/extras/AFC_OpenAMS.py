@@ -1992,6 +1992,22 @@ class afcAMS(afcUnit):
         except Exception as e:
             self.logger.debug(f"Failed to clear_errors after TD-1 unload for {cur_lane.name}: {e}")
 
+        # Clear AFC-level lane loaded state that background state detection may
+        # have set during our temporary TD-1 load. Without this, the system
+        # persists lane as "loaded to toolhead" in AFC.var.unit and subsequent
+        # operations fail because the firmware knows nothing is loaded.
+        try:
+            if getattr(cur_lane, "tool_loaded", False):
+                cur_lane.set_tool_unloaded()
+                self.logger.debug(f"Cleared tool_loaded state for {cur_lane.name} after TD-1")
+            elif getattr(cur_lane, "extruder_obj", None) is not None:
+                if getattr(cur_lane.extruder_obj, "lane_loaded", None) == cur_lane.name:
+                    cur_lane.extruder_obj.lane_loaded = None
+                    self.logger.debug(f"Cleared extruder lane_loaded for {cur_lane.name} after TD-1")
+        except Exception as e:
+            self.logger.debug(f"Failed to clear lane state after TD-1 for {cur_lane.name}: {e}")
+        self.afc.save_vars()
+
         if not success:
             self.logger.warning(f"TD-1 unload did not fully clear for {cur_lane.name}")
 
