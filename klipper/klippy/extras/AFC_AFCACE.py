@@ -445,10 +445,10 @@ class afcAFCACE(afcUnit):
             afc.error.handle_lane_failure(cur_lane, message)
             return False
 
-        # Buffer/ramming mode: if tool_start == "buffer", the buffer's advance_state
-        # is used as the toolhead sensor. After loading, the buffer should be compressed
-        # (advance_state True). We need to back off until it decompresses to confirm load.
+        # Verify toolhead sensor triggered
         if cur_extruder.tool_start == "buffer" and cur_lane.buffer_obj is not None:
+            # Buffer/ramming mode: buffer's advance_state is the sensor.
+            # Retract off the buffer sensor to confirm load and reset buffer.
             try:
                 cur_lane.unsync_to_extruder()
                 load_checks = 0
@@ -471,7 +471,7 @@ class afcAFCACE(afcUnit):
                 self.logger.error(f"{message}\n{traceback.format_exc()}")
                 afc.error.handle_lane_failure(cur_lane, message)
                 return False
-        else:
+        elif cur_extruder.tool_start:
             # Standard toolhead sensor verification
             if not cur_lane.get_toolhead_pre_sensor_state():
                 message = (
@@ -485,6 +485,39 @@ class afcAFCACE(afcUnit):
                     )
                 afc.error.handle_lane_failure(cur_lane, message)
                 return False
+
+        # Sync to extruder and load filament into the nozzle using tool_stn
+        cur_lane.status = AFCLaneState.TOOL_LOADED
+        afc.save_vars()
+        cur_lane.sync_to_extruder()
+
+        # If tool_end sensor exists, feed until it triggers
+        if cur_extruder.tool_end:
+            tool_attempts = 0
+            while not cur_extruder.tool_end_state:
+                tool_attempts += 1
+                afc.move_e_pos(
+                    cur_lane.short_move_dis, cur_extruder.tool_load_speed,
+                    "Tool end", wait_tool=True
+                )
+                if tool_attempts > 20:
+                    message = (
+                        "AFCACE load: filament failed to trigger post-extruder sensor.\n"
+                        "To resolve, set lane loaded with "
+                        f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                    )
+                    afc.error.handle_lane_failure(cur_lane, message)
+                    return False
+
+        # Push filament into the nozzle using tool_stn distance
+        if cur_extruder.tool_stn:
+            self.logger.info(
+                f"AFCACE load: advancing {cur_extruder.tool_stn}mm into nozzle "
+                f"@ {cur_extruder.tool_load_speed}mm/min"
+            )
+            afc.move_e_pos(
+                cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn"
+            )
 
         cur_lane.set_tool_loaded()
         cur_lane.enable_buffer(disable_fault=True)
@@ -530,20 +563,107 @@ class afcAFCACE(afcUnit):
         # Shared toolhead steps: cut, park, form tip
         if afc.tool_cut:
             cur_lane.extruder_obj.estats.increase_cut_total()
-            afc.gcode.run_script_from_command(afc.tool_cut_cmd)
+            afc.gcode.run_script_from_command(
+                f"{afc.tool_cut_cmd} EXTRUDER={cur_extruder.name}"
+            )
 
             if afc.park:
-                afc.gcode.run_script_from_command(afc.park_cmd)
+                afc.gcode.run_script_from_command(
+                    f"{afc.park_cmd} EXTRUDER={cur_extruder.name}"
+                )
 
         if afc.form_tip:
             if afc.park:
-                afc.gcode.run_script_from_command(afc.park_cmd)
+                afc.gcode.run_script_from_command(
+                    f"{afc.park_cmd} EXTRUDER={cur_extruder.name}"
+                )
 
             if afc.form_tip_cmd == "AFC":
                 afc.tip = self.printer.lookup_object("AFC_form_tip")
                 afc.tip.tip_form()
             else:
                 afc.gcode.run_script_from_command(afc.form_tip_cmd)
+
+        # Retract filament out of the extruder/nozzle using tool_stn_unload
+        if cur_extruder.tool_start == "buffer":
+            # Buffer mode: retract until buffer decompresses
+            cur_lane.unsync_to_extruder()
+            num_tries = 0
+            while not cur_lane.get_trailing() and afc.tool_max_unload_attempts > 0:
+                num_tries += 1
+                cur_lane.move_advanced(
+                    cur_lane.short_move_dis * -1, 1  # SpeedMode.SHORT
+                )
+                afc.reactor.pause(afc.reactor.monotonic() + 0.1)
+                if num_tries > afc.tool_max_unload_attempts:
+                    message = (
+                        f"Buffer did not decompress after {afc.tool_max_unload_attempts} "
+                        f"retract moves during unload.\n"
+                        "Please check filament is free from toolhead extruder."
+                    )
+                    afc.error.handle_lane_failure(cur_lane, message)
+                    return False
+            cur_lane.sync_to_extruder(False)
+            # Retract tool_stn_unload distance to clear extruder gears
+            if cur_extruder.tool_stn_unload > 0:
+                self.logger.info(
+                    f"AFCACE unload: buffer retract {cur_extruder.tool_stn_unload}mm "
+                    f"@ {cur_extruder.tool_unload_speed}mm/min"
+                )
+                afc.move_e_pos(
+                    cur_extruder.tool_stn_unload * -1,
+                    cur_extruder.tool_unload_speed, "Buffer Move"
+                )
+        else:
+            # Standard mode: retract tool_stn_unload to pull filament out of nozzle
+            if cur_extruder.tool_stn_unload == 0:
+                # No tool_stn_unload configured: retract until sensor clears
+                cur_lane.unsync_to_extruder()
+                num_tries = 0
+                while cur_lane.get_toolhead_pre_sensor_state():
+                    num_tries += 1
+                    cur_lane.move_advanced(
+                        cur_lane.short_move_dis * -1, 1  # SpeedMode.SHORT
+                    )
+                    if num_tries > afc.tool_max_unload_attempts:
+                        message = (
+                            "Failed to clear toolhead sensor during unload.\n"
+                            "Filament may be stuck in toolhead."
+                        )
+                        afc.error.handle_lane_failure(cur_lane, message)
+                        return False
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.1)
+            else:
+                # Retract tool_stn_unload distance with extruder
+                num_tries = 0
+                while (cur_lane.get_toolhead_pre_sensor_state()
+                       or cur_extruder.tool_end_state):
+                    num_tries += 1
+                    if num_tries > afc.tool_max_unload_attempts:
+                        message = (
+                            "Failed to unload filament from toolhead. "
+                            "Filament stuck in toolhead."
+                        )
+                        afc.error.handle_lane_failure(cur_lane, message)
+                        return False
+                    self.logger.info(
+                        f"AFCACE unload: sensor retract try {num_tries}, "
+                        f"{cur_extruder.tool_stn_unload}mm "
+                        f"@ {cur_extruder.tool_unload_speed}mm/min"
+                    )
+                    cur_lane.sync_to_extruder()
+                    afc.move_e_pos(
+                        cur_extruder.tool_stn_unload * -1,
+                        cur_extruder.tool_unload_speed,
+                        "Sensor move", wait_tool=True
+                    )
+
+        # Move past the sensor-after-extruder if configured
+        if cur_extruder.tool_sensor_after_extruder > 0:
+            afc.move_e_pos(
+                cur_extruder.tool_sensor_after_extruder * -1,
+                cur_extruder.tool_unload_speed, "After extruder"
+            )
 
         local_slot = self._get_local_slot_for_lane(cur_lane)
 
