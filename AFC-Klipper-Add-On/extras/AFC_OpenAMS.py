@@ -1961,6 +1961,21 @@ class afcAMS(afcUnit):
         self.logger.info(msg)
         return False, msg, 0
 
+    def _clear_lane_state_after_td1(self, cur_lane):
+        """Clear AFC-level lane loaded state that background detection may have set
+        during a temporary TD-1 load, and persist the clean state."""
+        try:
+            if getattr(cur_lane, "tool_loaded", False):
+                cur_lane.set_tool_unloaded()
+                self.logger.debug(f"Cleared tool_loaded state for {cur_lane.name} after TD-1")
+            elif getattr(cur_lane, "extruder_obj", None) is not None:
+                if getattr(cur_lane.extruder_obj, "lane_loaded", None) == cur_lane.name:
+                    cur_lane.extruder_obj.lane_loaded = None
+                    self.logger.debug(f"Cleared extruder lane_loaded for {cur_lane.name} after TD-1")
+        except Exception as e:
+            self.logger.debug(f"Failed to clear lane state after TD-1 for {cur_lane.name}: {e}")
+        self.afc.save_vars()
+
     def _unload_after_td1(self, cur_lane, spool_index, fps_id):
         """
         Unload filament after TD-1 operation using the proper firmware unload_spool().
@@ -1993,20 +2008,8 @@ class afcAMS(afcUnit):
             self.logger.debug(f"Failed to clear_errors after TD-1 unload for {cur_lane.name}: {e}")
 
         # Clear AFC-level lane loaded state that background state detection may
-        # have set during our temporary TD-1 load. Without this, the system
-        # persists lane as "loaded to toolhead" in AFC.var.unit and subsequent
-        # operations fail because the firmware knows nothing is loaded.
-        try:
-            if getattr(cur_lane, "tool_loaded", False):
-                cur_lane.set_tool_unloaded()
-                self.logger.debug(f"Cleared tool_loaded state for {cur_lane.name} after TD-1")
-            elif getattr(cur_lane, "extruder_obj", None) is not None:
-                if getattr(cur_lane.extruder_obj, "lane_loaded", None) == cur_lane.name:
-                    cur_lane.extruder_obj.lane_loaded = None
-                    self.logger.debug(f"Cleared extruder lane_loaded for {cur_lane.name} after TD-1")
-        except Exception as e:
-            self.logger.debug(f"Failed to clear lane state after TD-1 for {cur_lane.name}: {e}")
-        self.afc.save_vars()
+        # have set during our temporary TD-1 load.
+        self._clear_lane_state_after_td1(cur_lane)
 
         if not success:
             self.logger.warning(f"TD-1 unload did not fully clear for {cur_lane.name}")
@@ -2101,6 +2104,7 @@ class afcAMS(afcUnit):
                 self.oams.clear_errors()
             except Exception:
                 pass
+            self._clear_lane_state_after_td1(cur_lane)
             msg = f"Hub sensor did not trigger during TD-1 calibration for {cur_lane.name}"
             self.logger.error(msg)
             return False, msg, 0
@@ -2415,6 +2419,7 @@ class afcAMS(afcUnit):
                 self.oams.clear_errors()
             except Exception:
                 pass
+            self._clear_lane_state_after_td1(cur_lane)
             return False, "Unable to resolve FPS"
 
         # Wait for hub to load (should happen within a few seconds)
@@ -2449,6 +2454,7 @@ class afcAMS(afcUnit):
                 self.oams.clear_errors()
             except Exception:
                 pass
+            self._clear_lane_state_after_td1(cur_lane)
             self.logger.error(
                 f"Hub sensor did not trigger during TD-1 capture for {cur_lane.name}"
             )
@@ -2464,6 +2470,18 @@ class afcAMS(afcUnit):
             self.logger.error(
                 f"Unable to read encoder before TD-1 capture for {cur_lane.name}"
             )
+            # Load is in progress — wait for it to complete, then clean up
+            load_deadline = self.afc.reactor.monotonic() + 30.0
+            while self.oams.action_status is not None:
+                if self.afc.reactor.monotonic() > load_deadline:
+                    self.oams.action_status = None
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            try:
+                self.oams.clear_errors()
+            except Exception:
+                pass
+            self._clear_lane_state_after_td1(cur_lane)
             return False, "Unable to read encoder before capture"
 
         target_clicks = max(0, int(cur_lane.td1_bowden_length))
