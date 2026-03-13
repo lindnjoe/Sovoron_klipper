@@ -227,11 +227,10 @@ class afcAFCACE(afcUnit):
             try:
                 info = self._ace.get_filament_info(slot)
                 if isinstance(info, dict):
-                    self._slot_inventory[slot] = {
-                        "status": info.get("status", "unknown"),
-                        "material": info.get("material", info.get("type", "")),
-                        "color": info.get("color", [0, 0, 0]),
-                    }
+                    # Update material/color from RFID data, preserve status
+                    # (status comes from get_status, not get_filament_info)
+                    self._slot_inventory[slot]["material"] = info.get("material", info.get("type", ""))
+                    self._slot_inventory[slot]["color"] = info.get("color", [0, 0, 0])
             except Exception as e:
                 self.logger.debug(
                     f"AFCACE {self.name}: slot {slot} inventory query failed: {e}"
@@ -648,22 +647,31 @@ class afcAFCACE(afcUnit):
         cur_lane.unsync_to_extruder(False)
         self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.7)
 
-        # Query slot status from hardware
+        # Query slot status directly from hardware (cache may not be populated yet)
         if self._ace is not None and self._ace.connected:
             local_slot = self._get_local_slot_for_lane(cur_lane)
             if 0 <= local_slot < self.SLOTS_PER_UNIT:
-                slot_info = self._slot_inventory[local_slot]
-                if slot_info:
-                    slot_ready = slot_info.get("status", "") == "ready"
-                    cur_lane.loaded_to_hub = slot_ready
+                try:
+                    hw_status = self._ace.get_status(timeout=2.0)
+                    if isinstance(hw_status, dict):
+                        slots = hw_status.get("slots", [])
+                        for i, slot_data in enumerate(slots):
+                            if i < self.SLOTS_PER_UNIT and isinstance(slot_data, dict):
+                                self._slot_inventory[i]["status"] = slot_data.get("status", "")
+                except Exception as e:
+                    self.logger.debug(f"AFCACE {self.name}: get_status failed during PREP: {e}")
 
-                    # Sync RFID data to lane
-                    material = slot_info.get("material", "")
-                    color = slot_info.get("color", [0, 0, 0])
-                    if material and hasattr(cur_lane, "material"):
-                        cur_lane.material = material
-                    if color and hasattr(cur_lane, "color"):
-                        cur_lane.color = self._ace_color_to_hex(color)
+                slot_info = self._slot_inventory[local_slot]
+                slot_ready = slot_info.get("status", "") == "ready"
+                cur_lane.loaded_to_hub = slot_ready
+
+                # Sync RFID data to lane if available
+                material = slot_info.get("material", "")
+                color = slot_info.get("color", [0, 0, 0])
+                if material and hasattr(cur_lane, "material"):
+                    cur_lane.material = material
+                if color and hasattr(cur_lane, "color"):
+                    cur_lane.color = self._ace_color_to_hex(color)
 
         if not cur_lane.prep_state:
             if not cur_lane.load_state:
