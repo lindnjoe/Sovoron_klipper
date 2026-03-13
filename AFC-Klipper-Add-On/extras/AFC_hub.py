@@ -144,7 +144,10 @@ class afc_hub:
                     or hasattr(unit_obj, "oams_name")
                 )
                 if is_hw_managed:
-                    lane_states.append(bool(getattr(lane, "loaded_to_hub", False)))
+                    # For ACE/AFCACE, loaded_to_hub means "filament ready in slot",
+                    # not "filament physically in hub path". Only report hub as
+                    # occupied when filament has actually been fed to toolhead.
+                    lane_states.append(bool(getattr(lane, "tool_loaded", False)))
                 else:
                     lane_states.append(bool(getattr(lane, "_load_state", False)))
             state = any(lane_states)
