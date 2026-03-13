@@ -32,6 +32,7 @@ class OAMSOpCode:
     SPOOL_ALREADY_IN_BAY = 3
     NO_SPOOL_IN_BAY = 4
     ERROR_KLIPPER_CALL = 5
+    CANCEL = 6
 
 
 class RetryState:
@@ -256,9 +257,22 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             )
             
             self.clear_errors()
-            
+
         except Exception as e:
             self.logger.error(f"Failed to initialize OAMS commands: {e}")
+
+        # Cancel command requires firmware >= 2.0.23; gracefully degrade if absent
+        try:
+            self.oams_load_spool_cancel_cmd = self.mcu.lookup_command(
+                "oams_cmd_load_spool_cancel"
+            )
+        except Exception as e:
+            self.oams_load_spool_cancel_cmd = None
+            self.logger.warning(
+                "Failed to initialize OAMS load filament cancel "
+                "command: %s\nMost likely the firmware needs to be "
+                "updated to support this command.", e
+            )
     def handle_ready(self):
         # Clear any stale action status from previous sessions
         self.action_status = None
@@ -415,6 +429,16 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             retry.last_attempt = self.reactor.monotonic()
 
             success, message = self.load_spool(spool_idx)
+
+            # If the load was cancelled by the user, stop retrying immediately
+            if self.action_status_code == OAMSOpCode.CANCEL:
+                self._reset_load_retry_count(spool_idx)
+                lane_name  = self._resolve_lane_name(spool_idx)
+                lane_label = f"lane {lane_name}" if lane_name else f"lane (spool {spool_idx})"
+                self.logger.info(
+                    f"OAMS[{self.oams_idx}]: Load cancelled for {lane_label}"
+                )
+                return False, message
 
             if success:
                 self._last_successful_load[spool_idx] = self.reactor.monotonic()
@@ -668,6 +692,12 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         else:
             gcmd.error("Calibration of PTFE length failed")
 
+    def load_spool_cancel(self):
+        if self.oams_load_spool_cancel_cmd is not None:
+            self.oams_load_spool_cancel_cmd.send()
+            return "OAMS load spool operation cancelled"
+        return "OAMS load spool cancel command not available on firmware"
+
     def load_spool(self, spool_idx):
         self.action_status = OAMSStatus.LOADING
         self.oams_load_spool_cmd.send([spool_idx])
@@ -688,6 +718,8 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             return False, "Spool loading stopped by klipper monitor"
         elif self.action_status_code == OAMSOpCode.ERROR_BUSY:
             return False, "OAMS is busy"
+        elif self.action_status_code == OAMSOpCode.CANCEL:
+            return False, "Spool loading cancelled"
         else:
             return False, "Unknown error from OAMS with code %d" % self.action_status_code
 
