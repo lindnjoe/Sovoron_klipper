@@ -298,6 +298,15 @@ class afcAFCACE(afcUnit):
             "klippy:shutdown", self._persistence.on_shutdown
         )
 
+        # Register temperature_ace sensor factory so [temperature_sensor]
+        # sections with sensor_type: temperature_ace work without needing
+        # a separate [temperature_ace] config section.
+        try:
+            from extras.temperature_ace import _register_sensor_factory
+            _register_sensor_factory(self.printer)
+        except Exception:
+            pass
+
     def _handle_ready(self):
         """Schedule deferred init - reactor pause is disabled during klippy:ready."""
         self.afc.reactor.register_callback(self._deferred_init)
