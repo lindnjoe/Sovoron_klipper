@@ -1633,15 +1633,24 @@ class afcAFCACE(afcUnit):
             step_size = self.calibration_step
 
         ace = self._ace
-
-        # Ensure ACE is not still busy from a previous operation
-        self._wait_for_ace_ready()
-
         total_fed = 0.0
 
         while total_fed < max_length:
             step = min(step_size, max_length - total_fed)
-            ace.feed_filament(slot_index, step, self.feed_speed)
+            # Ensure ACE is ready before each step — after the previous
+            # step completes, the ACE overall status may briefly stay
+            # "busy" for internal housekeeping.  Sending feed_filament
+            # while busy returns FORBIDDEN and kills the calibration.
+            self._wait_for_ace_ready()
+            try:
+                ace.feed_filament(slot_index, step, self.feed_speed)
+            except Exception as e:
+                self.logger.warning(
+                    f"AFCACE calibration: feed_filament failed at "
+                    f"{total_fed:.0f}mm, retrying: {e}"
+                )
+                self._wait_for_ace_ready(timeout=15.0)
+                ace.feed_filament(slot_index, step, self.feed_speed)
             # Wait for ACE to physically complete this step
             sensor_hit = self._wait_for_feed_complete(
                 slot_index, step, self.feed_speed, lane=lane,
