@@ -844,7 +844,13 @@ class afcAFCACE(afcUnit):
         # Feed assist stays enabled after loading to maintain filament tension
         # during printing. It is stopped in _unload_sequence_inner before retraction.
         if self._get_feed_assist_for_slot(slot_index):
-            ace.start_feed_assist(slot_index)
+            try:
+                ace.start_feed_assist(slot_index)
+            except Exception as e:
+                self.logger.warning(
+                    f"AFCACE feed: start_feed_assist failed for slot "
+                    f"{slot_index}: {e}"
+                )
 
             # Use extruder motor to pull filament into hotend
             if self.extruder_assist_length > 0:
@@ -878,6 +884,12 @@ class afcAFCACE(afcUnit):
         deadline = self.afc.reactor.monotonic() + max_wait
         sensor_triggered = False
 
+        # Initial delay: give the ACE time to start the motor and update
+        # its slot status before we begin polling. Without this, the first
+        # poll can see the slot still in "ready" state (or missing status)
+        # and exit immediately before the motor has begun moving.
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.0)
+
         while self.afc.reactor.monotonic() < deadline:
             self.afc.reactor.pause(
                 self.afc.reactor.monotonic() + poll_interval
@@ -889,6 +901,22 @@ class afcAFCACE(afcUnit):
                 self.logger.debug(
                     f"AFCACE wait: toolhead sensor triggered for slot {slot_index}"
                 )
+                # Stop the ACE feed — the motor is still running for the
+                # full requested distance but we don't need any more filament.
+                # Without this, the ACE stays "busy/feeding" for minutes,
+                # blocking feed_assist and causing RFID reads to return empty.
+                try:
+                    ace.stop_feed_filament(slot_index)
+                    self.logger.debug(
+                        f"AFCACE wait: stopped feed for slot {slot_index} "
+                        "(sensor triggered early)"
+                    )
+                    # Brief pause for ACE to transition out of "feeding" state
+                    self.afc.reactor.pause(
+                        self.afc.reactor.monotonic() + 0.5
+                    )
+                except Exception:
+                    pass
                 return True
 
             # Poll ACE status to check if movement is done
@@ -900,8 +928,11 @@ class afcAFCACE(afcUnit):
                         slot_data = slots[slot_index]
                         if isinstance(slot_data, dict):
                             status = slot_data.get("status", "")
-                            # If slot is back to "ready" or "empty", movement is done
-                            if status in ("ready", "empty", ""):
+                            # If slot is back to "ready" or "empty",
+                            # movement is done. Empty/missing status is
+                            # NOT treated as complete — it likely means the
+                            # ACE hasn't updated yet.
+                            if status in ("ready", "empty"):
                                 self.logger.debug(
                                     f"AFCACE wait: slot {slot_index} movement "
                                     f"complete (status={status})"
