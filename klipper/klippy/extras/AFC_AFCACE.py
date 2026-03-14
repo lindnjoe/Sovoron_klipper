@@ -253,6 +253,10 @@ class afcAFCACE(afcUnit):
         self.fps_threshold = config.getfloat("fps_threshold", 0.9)
         self._fps_obj = None       # resolved FPS object (fps.py)
         self._fps_extruder = None  # the extruder object associated with FPS
+        # Latch: during active operations (calibration/feed), once the FPS
+        # crosses the threshold we latch tool_start_state=True so that
+        # pulsed ACE feeding doesn't clear it between motor pulses.
+        self._fps_latched = False
 
         # Sensor polling interval for status/runout monitoring
         self.poll_interval = config.getfloat("poll_interval", 1.0)
@@ -445,27 +449,50 @@ class afcAFCACE(afcUnit):
 
         self._fps_extruder = extruder_obj
 
-        # Scan printer objects for fps instances matching our extruder
-        objects = getattr(self.printer, "objects", {})
-        for obj_name, obj in objects.items():
-            if not obj_name.startswith("fps "):
+        # Scan printer objects for fps instances matching our extruder.
+        # Try known fps names (fps1, fps2, ...) via lookup_object, then
+        # fall back to iterating printer.objects if available.
+        found = False
+        for i in range(1, 9):
+            fps_name = f"fps fps{i}"
+            fps_obj = self.printer.lookup_object(fps_name, None)
+            if fps_obj is None:
                 continue
-            fps_extruder = getattr(obj, "extruder_name", None)
-            if fps_extruder and fps_extruder == extruder_name:
-                self._fps_obj = obj
+            fps_ext = getattr(fps_obj, "extruder_name", None)
+            if fps_ext and fps_ext == extruder_name:
+                self._fps_obj = fps_obj
                 self.logger.info(
-                    f"AFCACE {self.name}: linked to FPS '{obj_name}' "
+                    f"AFCACE {self.name}: linked to FPS '{fps_name}' "
                     f"(extruder={extruder_name}, pin_tool_start={tool_start}, "
                     f"threshold={self.fps_threshold})"
                 )
-                # Register callback for real-time sensor state updates
-                obj.add_callback(self._fps_adc_callback)
-                return
+                fps_obj.add_callback(self._fps_adc_callback)
+                found = True
+                break
 
-        self.logger.warning(
-            f"AFCACE {self.name}: extruder '{extruder_name}' uses "
-            f"pin_tool_start={tool_start} but no matching FPS found"
-        )
+        if not found:
+            # Fallback: iterate printer.objects dict if accessible
+            objects = getattr(self.printer, "objects", {})
+            for obj_name, obj in objects.items():
+                if not obj_name.startswith("fps "):
+                    continue
+                fps_ext = getattr(obj, "extruder_name", None)
+                if fps_ext and fps_ext == extruder_name:
+                    self._fps_obj = obj
+                    self.logger.info(
+                        f"AFCACE {self.name}: linked to FPS '{obj_name}' "
+                        f"(extruder={extruder_name}, pin_tool_start={tool_start}, "
+                        f"threshold={self.fps_threshold})"
+                    )
+                    obj.add_callback(self._fps_adc_callback)
+                    found = True
+                    break
+
+        if not found:
+            self.logger.warning(
+                f"AFCACE {self.name}: extruder '{extruder_name}' uses "
+                f"pin_tool_start={tool_start} but no matching FPS found"
+            )
 
     def _fps_adc_callback(self, read_time, fps_value):
         """ADC callback from the FPS sensor -update the virtual tool sensor.
@@ -474,12 +501,32 @@ class afcAFCACE(afcUnit):
         When the value crosses the threshold, updates the extruder's
         tool_start_state so that ``lane.get_toolhead_pre_sensor_state()``
         reflects filament presence at the extruder gears.
+
+        During active operations (calibration/feeding), the state is
+        latched: once triggered it stays True until the operation clears
+        the latch.  This prevents pulsed ACE feeding from briefly
+        dropping the FPS value between motor pulses and clearing the
+        triggered state before the calibration loop can see it.
         """
         extruder = self._fps_extruder
         if extruder is None:
             return
 
         triggered = fps_value >= self.fps_threshold
+
+        if self._operation_active:
+            # Latch mode: once triggered, stay triggered
+            if triggered and not self._fps_latched:
+                self._fps_latched = True
+                extruder.tool_start_state = True
+                self.logger.debug(
+                    f"AFCACE FPS: tool_start_state LATCHED True "
+                    f"(fps_value={fps_value:.3f}, threshold={self.fps_threshold})"
+                )
+            # Don't clear tool_start_state while latched
+            return
+
+        # Normal mode: track the sensor state directly
         if extruder.tool_start_state != triggered:
             extruder.tool_start_state = triggered
             self.logger.debug(
@@ -822,10 +869,12 @@ class afcAFCACE(afcUnit):
         """
         afc = self.afc
         self._operation_active = True
+        self._fps_latched = False
         try:
             return self._load_sequence_inner(cur_lane, cur_hub, cur_extruder)
         finally:
             self._operation_active = False
+            self._fps_latched = False
 
     def _load_sequence_inner(self, cur_lane, cur_hub, cur_extruder):
         afc = self.afc
@@ -1090,10 +1139,12 @@ class afcAFCACE(afcUnit):
         """Unload filament: shared toolhead steps then ACE retraction."""
         afc = self.afc
         self._operation_active = True
+        self._fps_latched = False
         try:
             return self._unload_sequence_inner(cur_lane, cur_hub, cur_extruder)
         finally:
             self._operation_active = False
+            self._fps_latched = False
 
     def _unload_sequence_inner(self, cur_lane, cur_hub, cur_extruder):
         afc = self.afc
@@ -1658,10 +1709,12 @@ class afcAFCACE(afcUnit):
     def calibrate_bowden(self, cur_lane, dis, tol):
         """Calibrate bowden length by feeding until toolhead sensor triggers."""
         self._operation_active = True
+        self._fps_latched = False
         try:
             return self._calibrate_bowden_inner(cur_lane, dis, tol)
         finally:
             self._operation_active = False
+            self._fps_latched = False
 
     def _calibrate_bowden_inner(self, cur_lane, dis, tol):
         if self._ace is None or not self._ace.connected:
@@ -1758,10 +1811,12 @@ class afcAFCACE(afcUnit):
     def calibrate_td1(self, cur_lane, dis, tol):
         """Calibrate TD-1 bowden length by feeding until TD-1 device detects filament."""
         self._operation_active = True
+        self._fps_latched = False
         try:
             return self._calibrate_td1_inner(cur_lane, dis, tol)
         finally:
             self._operation_active = False
+            self._fps_latched = False
 
     def _calibrate_td1_inner(self, cur_lane, dis, tol):
         if self._ace is None or not self._ace.connected:
