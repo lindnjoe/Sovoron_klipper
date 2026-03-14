@@ -184,8 +184,6 @@ class afc:
         self.wipe_cmd               = config.get('wipe_cmd', None)                  # Macro to use when nozzle wiping. Change macro name if you would like to use your own wipe macro
         self.poop                   = config.getboolean("poop", False)              # Set to True to enable pooping(purging color) after lane loads
         self.poop_cmd               = config.get('poop_cmd', None)                  # Macro to use when pooping. Change macro name if you would like to use your own poop/purge macro
-        self.dock_purge             = config.getboolean("dock_purge", False)        # Set to True to enable dock purge (dropoff/pickup cycle to wipe nozzle) after lane loads
-        self.dock_purge_cmd         = config.get('dock_purge_cmd', 'AFC_DOCK_PURGE')# Macro to use for dock purge. Performs a tool dropoff and pickup to wipe the nozzle on the dock pad
 
         self.post_load_macro        = config.get("post_load_macro", None)
         self.post_unload_macro      = config.get("post_unload_macro", None)
@@ -1318,11 +1316,6 @@ class afc:
                             self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.wipe_cmd, cur_extruder.name))
                             self.afcDeltaTime.log_with_time("TOOL_LOAD: After first wipe")
                             self.function.log_toolhead_pos()
-
-                    if self.dock_purge:
-                        self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.dock_purge_cmd, cur_extruder.name))
-                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After dock purge")
-                        self.function.log_toolhead_pos()
 
                     if self.kick:
                         self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.kick_cmd, cur_extruder.name))

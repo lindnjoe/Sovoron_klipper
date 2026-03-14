@@ -104,8 +104,11 @@ class afcError:
     def pause_print(self):
         """
         pause_print function verifies that the printer is homed and not currently paused before calling
-        the base pause command
+        the base pause command.  Guards against recursive calls when multiple faults fire simultaneously.
         """
+        if self.afc.error_state:
+            self.logger.debug("pause_print: already in error state, skipping duplicate PAUSE")
+            return
         self.set_error_state( True )
         self.logger.info ('PAUSING')
         self.afc.gcode.run_script_from_command('PAUSE')

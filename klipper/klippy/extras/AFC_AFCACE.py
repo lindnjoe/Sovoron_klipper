@@ -125,6 +125,11 @@ class afcAFCACE(afcUnit):
         self.calibration_step = config.getfloat("calibration_step", 50.0)              # mm per check during calibration
         self.max_feed_overshoot = config.getfloat("max_feed_overshoot", 100.0)         # mm extra to try past feed_length before giving up
 
+        # Dock purge: drop tool at dock, load filament, purge in dock, then pick up
+        self.dock_purge = config.getboolean("dock_purge", False)                       # Set to True to enable dock purge during load
+        self.dock_purge_length = config.getfloat("dock_purge_length", 50.0)            # mm of filament to extrude while docked for purging
+        self.dock_purge_speed = config.getfloat("dock_purge_speed", 5.0)               # mm/s extrude speed during dock purge
+
         # Sensor polling interval for status/runout monitoring
         self.poll_interval = config.getfloat("poll_interval", 1.0)
 
@@ -461,6 +466,12 @@ class afcAFCACE(afcUnit):
         if afc._check_extruder_temp(cur_lane):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
 
+        # Dock purge phase 1: drop off tool at dock before feeding filament
+        if self.dock_purge:
+            self.logger.info("AFCACE dock purge: dropping tool off at dock before feed")
+            afc.gcode.run_script_from_command("AFC_DOCK_PURGE PHASE=dropoff")
+            afc.afcDeltaTime.log_with_time("AFCACE: After dock purge dropoff")
+
         local_slot = self._get_local_slot_for_lane(cur_lane)
         if local_slot < 0:
             afc.error.handle_lane_failure(
@@ -578,6 +589,19 @@ class afcAFCACE(afcUnit):
             afc.move_e_pos(
                 cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn"
             )
+
+        # Dock purge phase 2: extrude purge amount in dock, then pick up tool
+        if self.dock_purge:
+            purge_speed_mm_min = self.dock_purge_speed * 60
+            self.logger.info(
+                f"AFCACE dock purge: extruding {self.dock_purge_length}mm "
+                f"@ {self.dock_purge_speed}mm/s in dock, then picking up"
+            )
+            afc.move_e_pos(
+                self.dock_purge_length, purge_speed_mm_min, "dock purge extrude"
+            )
+            afc.gcode.run_script_from_command("AFC_DOCK_PURGE PHASE=pickup")
+            afc.afcDeltaTime.log_with_time("AFCACE: After dock purge pickup")
 
         cur_lane.set_tool_loaded()
         cur_lane.enable_buffer(disable_fault=True)
