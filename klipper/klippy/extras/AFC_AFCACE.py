@@ -1266,9 +1266,6 @@ class afcAFCACE(afcUnit):
             afc.error.handle_lane_failure(cur_lane, message)
             return False
 
-        # Let the ACE build tension on the spool before the extruder retracts
-        afc.reactor.pause(afc.reactor.monotonic() + 2.0)
-
         if cur_extruder.tool_start == "buffer" and cur_lane.buffer_obj is not None:
             # Buffer mode: retract until buffer decompresses using extruder motor
             num_tries = 0
