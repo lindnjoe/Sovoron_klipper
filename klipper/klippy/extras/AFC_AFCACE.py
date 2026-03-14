@@ -868,11 +868,11 @@ class afcAFCACE(afcUnit):
         elif cur_extruder.tool_start:
             # Standard toolhead sensor verification with retry.
             # If the sensor hasn't triggered after the full feed, do up to 5
-            # additional 10mm feeds checking the sensor after each one.  This
+            # additional 20mm feeds checking the sensor after each one.  This
             # handles slight bowden length variations without immediately
             # failing the load.
             if not cur_lane.get_toolhead_pre_sensor_state():
-                smart_load_step = 10.0   # mm per retry
+                smart_load_step = 20.0   # mm per retry
                 smart_load_max  = 5      # max retries
                 for attempt in range(1, smart_load_max + 1):
                     self.logger.info(
