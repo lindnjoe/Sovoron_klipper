@@ -248,7 +248,7 @@ class afcAFCACE(afcUnit):
 
         # FPS (Filament Pressure Sensor) integration: when the extruder uses
         # an AMS_extruder# virtual pin (shared FPS with OpenAMS), the FPS
-        # value is used as the toolhead sensor.  fps_value 0→1, where 1 means
+        # value is used as the toolhead sensor.  fps_value 0-1, where 1 means
         # filament is fully compressed against extruder gears.
         self.fps_threshold = config.getfloat("fps_threshold", 0.9)
         self._fps_obj = None       # resolved FPS object (fps.py)
@@ -398,7 +398,7 @@ class afcAFCACE(afcUnit):
         """Find the FPS object that feeds into this unit's extruder.
 
         Only activates when the extruder's ``pin_tool_start`` is set to an
-        ``AMS_extruder#`` value — this indicates the extruder uses a shared
+        ``AMS_extruder#`` value -this indicates the extruder uses a shared
         FPS as its toolhead sensor.
 
         Iterates over all ``fps <name>`` printer objects and picks the one
@@ -458,7 +458,7 @@ class afcAFCACE(afcUnit):
         )
 
     def _fps_adc_callback(self, read_time, fps_value):
-        """ADC callback from the FPS sensor — update the virtual tool sensor.
+        """ADC callback from the FPS sensor -update the virtual tool sensor.
 
         Called every ~100 ms with the current pressure reading (0.0-1.0).
         When the value crosses the threshold, updates the extruder's
@@ -1005,7 +1005,7 @@ class afcAFCACE(afcUnit):
                         )
                         break
                 else:
-                    # All retries exhausted — error out
+                    # All retries exhausted -error out
                     message = (
                         f"AFCACE load did not trigger toolhead sensor after "
                         f"{smart_load_max * smart_load_step:.0f}mm of extra feeding. "
@@ -1665,7 +1665,7 @@ class afcAFCACE(afcUnit):
         if cur_lane.get_toolhead_pre_sensor_state():
             return False, "Toolhead sensor already triggered - unload first", 0
 
-        # AFCACE always needs the full range — the 'dis' parameter from
+        # AFCACE always needs the full range -the 'dis' parameter from
         # CALIBRATE_AFC DISTANCE=N is designed for stepper-based units and
         # is far too small (default 25mm) for bowden-length calibration.
         max_distance = 6000
