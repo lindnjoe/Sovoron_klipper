@@ -125,6 +125,11 @@ class afcAFCACE(afcUnit):
         self.calibration_step = config.getfloat("calibration_step", 50.0)              # mm per check during calibration
         self.max_feed_overshoot = config.getfloat("max_feed_overshoot", 100.0)         # mm extra to try past feed_length before giving up
 
+        # Dock purge: drop tool at dock, load filament, purge in dock, then pick up
+        self.dock_purge = config.getboolean("dock_purge", False)                       # Set to True to enable dock purge during load
+        self.dock_purge_length = config.getfloat("dock_purge_length", 50.0)            # mm of filament to extrude while docked for purging
+        self.dock_purge_speed = config.getfloat("dock_purge_speed", 5.0)               # mm/s extrude speed during dock purge
+
         # Sensor polling interval for status/runout monitoring
         self.poll_interval = config.getfloat("poll_interval", 1.0)
 
@@ -248,6 +253,47 @@ class afcAFCACE(afcUnit):
                     f"lane {lane_name} to prevent cross-lane fault detection"
                 )
                 buf.disable_buffer()
+
+    def _dock_purge_dropoff(self):
+        """Drop off current tool at dock for dock purging.
+
+        Enters docking mode and runs the toolchanger's dropoff gcode so the
+        nozzle rests on the dock pad while filament is loaded and purged.
+        """
+        tc = self.printer.lookup_object('toolchanger')
+        tool = tc.active_tool
+        if not tool:
+            self.logger.warning("AFCACE dock purge: no active tool, skipping dropoff")
+            return
+
+        self.afc.gcode.run_script_from_command("ENTER_DOCKING_MODE")
+
+        gcode_pos = list(tc.gcode_move.get_status()['gcode_position'])
+        start_pos = tc._position_with_tool_offset(gcode_pos, None)
+        self._dock_purge_context = {
+            'dropoff_tool': tool.name,
+            'pickup_tool': tool.name,
+            'start_position': tc._position_to_xyz(start_pos, 'xyz'),
+            'restore_position': tc._position_to_xyz(start_pos, 'XYZ'),
+        }
+
+        tc.run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
+
+    def _dock_purge_pickup(self):
+        """Pick up tool from dock after purging.
+
+        Runs the toolchanger's pickup gcode (nozzle wipes on pad during pickup)
+        and exits docking mode to restore normal operation.
+        """
+        tc = self.printer.lookup_object('toolchanger')
+        tool = tc.active_tool
+        if not tool or not hasattr(self, '_dock_purge_context'):
+            self.logger.warning("AFCACE dock purge: no context for pickup, skipping")
+            return
+
+        tc.run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
+        self.afc.gcode.run_script_from_command("EXIT_DOCKING_MODE")
+        self._dock_purge_context = None
 
     # ---- Inventory / State Sync ----
 
@@ -461,6 +507,12 @@ class afcAFCACE(afcUnit):
         if afc._check_extruder_temp(cur_lane):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
 
+        # Dock purge phase 1: drop off tool at dock before feeding filament
+        if self.dock_purge:
+            self.logger.info("AFCACE dock purge: dropping tool off at dock before feed")
+            self._dock_purge_dropoff()
+            afc.afcDeltaTime.log_with_time("AFCACE: After dock purge dropoff")
+
         local_slot = self._get_local_slot_for_lane(cur_lane)
         if local_slot < 0:
             afc.error.handle_lane_failure(
@@ -578,6 +630,19 @@ class afcAFCACE(afcUnit):
             afc.move_e_pos(
                 cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn"
             )
+
+        # Dock purge phase 2: extrude purge amount in dock, then pick up tool
+        if self.dock_purge:
+            purge_speed_mm_min = self.dock_purge_speed * 60
+            self.logger.info(
+                f"AFCACE dock purge: extruding {self.dock_purge_length}mm "
+                f"@ {self.dock_purge_speed}mm/s in dock, then picking up"
+            )
+            afc.move_e_pos(
+                self.dock_purge_length, purge_speed_mm_min, "dock purge extrude"
+            )
+            self._dock_purge_pickup()
+            afc.afcDeltaTime.log_with_time("AFCACE: After dock purge pickup")
 
         cur_lane.set_tool_loaded()
         cur_lane.enable_buffer(disable_fault=True)
@@ -1177,7 +1242,7 @@ class afcAFCACE(afcUnit):
 
         # Round to nearest integer for clean config values
         new_feed_length = round(distance, 0)
-        new_retract_length = round(distance + 20, 0)
+        new_retract_length = round(distance, 0)
 
         # Update in-memory values
         old_feed = self.feed_length
