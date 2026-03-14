@@ -11,10 +11,9 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
-import logging
 import traceback
 
-from configparser import Error as ConfigError
+from configfile import error as config_error
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
@@ -22,34 +21,20 @@ if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
     from configfile import ConfigWrapper
 
-try:
-    from extras.AFC_utils import ERROR_STR
-except Exception:
-    trace = traceback.format_exc()
-    raise ConfigError(f"Error when trying to import AFC_utils.ERROR_STR\n{trace}")
+try: from extras.AFC_utils import ERROR_STR
+except: raise config_error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
 
-try:
-    from extras.AFC_unit import afcUnit
-except Exception:
-    raise ConfigError(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
+try: from extras.AFC_unit import afcUnit
+except: raise config_error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
 
-try:
-    from extras.AFC_lane import AFCLane, AFCLaneState
-except Exception:
-    raise ConfigError(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
+try: from extras.AFC_lane import AFCLane, AFCLaneState
+except: raise config_error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
-try:
-    from extras.AFC_respond import AFCprompt
-except Exception:
-    raise ConfigError(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
+try: from extras.AFC_respond import AFCprompt
+except: raise config_error(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
 
-try:
-    from extras.AFC_AFCACE_serial import ACEConnection, ACESerialError, ACETimeoutError
-except Exception:
-    raise ConfigError(ERROR_STR.format(import_lib="AFC_AFCACE_serial", trace=traceback.format_exc()))
-
-
-_module_logger = logging.getLogger(__name__)
+try: from extras.AFC_AFCACE_serial import ACEConnection, ACESerialError, ACETimeoutError
+except: raise config_error(ERROR_STR.format(import_lib="AFC_AFCACE_serial", trace=traceback.format_exc()))
 
 # Operational modes
 MODE_COMBINED = "combined"  # Multiple slots -> one toolhead (retract before feed)
@@ -195,7 +180,7 @@ class afcAFCACE(afcUnit):
         # Operational mode
         mode = config.get("mode", MODE_COMBINED).lower().strip()
         if mode not in (MODE_COMBINED, MODE_DIRECT):
-            raise ConfigError(
+            raise config_error(
                 f"[{config.get_name()}] invalid mode '{mode}'. "
                 f"Must be '{MODE_COMBINED}' or '{MODE_DIRECT}'"
             )

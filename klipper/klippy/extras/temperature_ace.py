@@ -18,6 +18,9 @@ import logging
 ACE_REPORT_TIME = 1.0  # seconds between samples
 _REGISTERED = False
 
+# Fallback logger for early init before AFC logger is available
+_fallback_logger = logging.getLogger("temperature_ace")
+
 
 class TemperatureACE:
     """Temperature sensor that reads ACE device temperature from an
@@ -38,6 +41,8 @@ class TemperatureACE:
 
         # AFC_AFCACE reference resolved on ready
         self._ace_unit = None
+        # AFC logger reference (resolved in handle_ready)
+        self._logger = None
 
         # Klipper temperature callback
         self._callback = None
@@ -54,17 +59,30 @@ class TemperatureACE:
         )
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
+    def _log(self):
+        """Return AFC logger if available, otherwise fallback."""
+        if self._logger is not None:
+            return self._logger
+        return _fallback_logger
+
     def handle_ready(self):
         """Resolve AFC_AFCACE unit reference once Klipper is ready."""
         self._ace_unit = self._resolve_unit()
 
+        # Try to grab AFC's logger for consistent log output
+        try:
+            afc = self.printer.lookup_object("AFC")
+            self._logger = afc.logger
+        except Exception:
+            pass
+
         if self._ace_unit:
-            logging.info(
+            self._log().info(
                 "temperature_ace: linked to AFC_AFCACE unit '%s'",
                 self.ace_unit_name,
             )
         else:
-            logging.warning(
+            self._log().warning(
                 "temperature_ace: AFC_AFCACE unit '%s' not found; "
                 "reporting 0C",
                 self.ace_unit_name,
@@ -113,7 +131,7 @@ class TemperatureACE:
                 ace_temp = float(hw_status.get("temp", 0.0) or 0.0)
 
                 if not hasattr(self, "_sample_logged") and ace_temp > 0:
-                    logging.info(
+                    self._log().info(
                         "temperature_ace: first sample from '%s' = %.1fC",
                         self.ace_unit_name,
                         ace_temp,
@@ -139,7 +157,7 @@ class TemperatureACE:
             else:
                 self.temp = 0.0
         except Exception:
-            logging.exception("temperature_ace: error sampling ACE temperature")
+            self._log().error("temperature_ace: error sampling ACE temperature")
             self.temp = 0.0
 
         if self._callback:
@@ -182,7 +200,7 @@ def _register_sensor_factory(printer):
         try:
             heaters = printer.load_object(printer, "heaters")
         except Exception as e:
-            logging.warning("temperature_ace: failed to load heaters: %s", e)
+            _fallback_logger.warning("temperature_ace: failed to load heaters: %s", e)
             return
 
     heaters.add_sensor_factory("temperature_ace", TemperatureACE)
