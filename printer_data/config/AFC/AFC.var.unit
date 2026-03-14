@@ -98,7 +98,7 @@
             "map": "T15",
             "load": true,
             "prep": true,
-            "tool_loaded": false,
+            "tool_loaded": true,
             "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.24,
@@ -107,11 +107,11 @@
             "remember_spool": false,
             "spool_id": 5,
             "color": "#f20808",
-            "weight": 394.16802890892495,
+            "weight": 393.00673773646236,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
@@ -385,7 +385,7 @@
             "remember_spool": false,
             "spool_id": 11,
             "color": "#27EA51",
-            "weight": 586.7800130469441,
+            "weight": 586.1809459784442,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "In Tool",
@@ -415,7 +415,7 @@
             "remember_spool": false,
             "spool_id": 14,
             "color": "#4d5a8e",
-            "weight": 520.7727113961848,
+            "weight": 521.6230687011314,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "In Tool",
@@ -445,7 +445,7 @@
             "remember_spool": false,
             "spool_id": 37,
             "color": "#C12E1F",
-            "weight": 249.30355690232093,
+            "weight": 250.15391420726758,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "In Tool",
@@ -487,13 +487,13 @@
         }
     },
     "system": {
-        "current_load": null,
+        "current_load": "lane15",
         "num_units": 5,
         "num_lanes": 16,
         "num_extruders": 6,
         "extruders": {
             "extruder5": {
-                "lane_loaded": null
+                "lane_loaded": "lane15"
             },
             "extruder4": {
                 "lane_loaded": null
