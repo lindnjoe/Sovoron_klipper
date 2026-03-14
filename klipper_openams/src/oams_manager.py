@@ -1056,7 +1056,69 @@ class OAMSManager:
         else:
             self.logger.debug("Skipping tool crash detection command; none available")
         return False
-    
+
+    def _dock_purge_dropoff(self):
+        """Drop off current tool at dock for dock purging.
+
+        Enters docking mode and runs the toolchanger's dropoff gcode so the
+        nozzle rests on the dock pad while filament is loaded and purged.
+        This keeps the shuttle at the dock and avoids wasted gantry moves.
+        """
+        try:
+            tc = self.printer.lookup_object('toolchanger')
+        except Exception:
+            self.logger.warning("OAMS dock purge: toolchanger not found, skipping dropoff")
+            return
+        tool = tc.active_tool
+        if not tool:
+            self.logger.warning("OAMS dock purge: no active tool, skipping dropoff")
+            return
+
+        gcode = self._gcode_obj
+        if gcode is None:
+            gcode = self.printer.lookup_object("gcode")
+            self._gcode_obj = gcode
+
+        gcode.run_script_from_command("ENTER_DOCKING_MODE")
+
+        gcode_pos = list(tc.gcode_move.get_status()['gcode_position'])
+        start_pos = tc._position_with_tool_offset(gcode_pos, None)
+        self._dock_purge_context = {
+            'dropoff_tool': tool.name,
+            'pickup_tool': tool.name,
+            'start_position': tc._position_to_xyz(start_pos, 'xyz'),
+            'restore_position': tc._position_to_xyz(start_pos, 'XYZ'),
+        }
+
+        tc.run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
+        self.logger.info("OAMS dock purge: tool dropped off at dock")
+
+    def _dock_purge_pickup(self):
+        """Pick up tool from dock after purging.
+
+        Runs the toolchanger's pickup gcode (nozzle wipes on pad during pickup)
+        and exits docking mode to restore normal operation.
+        """
+        try:
+            tc = self.printer.lookup_object('toolchanger')
+        except Exception:
+            self.logger.warning("OAMS dock purge: toolchanger not found, skipping pickup")
+            return
+        tool = tc.active_tool
+        if not tool or not hasattr(self, '_dock_purge_context') or self._dock_purge_context is None:
+            self.logger.warning("OAMS dock purge: no context for pickup, skipping")
+            return
+
+        gcode = self._gcode_obj
+        if gcode is None:
+            gcode = self.printer.lookup_object("gcode")
+            self._gcode_obj = gcode
+
+        tc.run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
+        gcode.run_script_from_command("EXIT_DOCKING_MODE")
+        self._dock_purge_context = None
+        self.logger.info("OAMS dock purge: tool picked up from dock")
+
     def __init__(self, config):
         self.config = config
         self.printer = config.get_printer()
@@ -1069,6 +1131,7 @@ class OAMSManager:
 
         self.current_state = OAMSState()
         self._afc_logged   = False
+        self._dock_purge_context = None
 
         self.monitor_timers   = []
         self.runout_monitors  = {}
@@ -4876,7 +4939,7 @@ class OAMSManager:
         except Exception as e:
             self.logger.error(f"Failed to retract extruder after stuck spool detection for {lane_name}: {e}")
 
-        # STEP 3: Cancel the stuck load on hardware — firmware treats spool as loaded
+        # STEP 3: Cancel the stuck load on hardware   firmware treats spool as loaded
         try:
             oam.load_spool_cancel()
             self.logger.info(f"Cancelled stuck load operation for {lane_name} before unload")
@@ -5082,7 +5145,7 @@ class OAMSManager:
             except Exception as e:
                 self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}: {e}")
 
-            # Cancel any lingering load on hardware — firmware treats spool as loaded
+            # Cancel any lingering load on hardware   firmware treats spool as loaded
             try:
                 oam.load_spool_cancel()
                 # Wait for firmware CANCEL response
@@ -5388,11 +5451,9 @@ class OAMSManager:
                 self._gcode_obj = gcode
             if gcode is not None:
                 if not self._run_tool_crash_detection(False):
-                    self.logger.warning("Failed to stop tool crash detection before dock unload")
-                try:
-                    gcode.run_script_from_command("AFC_UNSELECT_TOOL")
-                except Exception as e:
-                    self.logger.warning(f"Failed to dock tool before loading {lane_name}")
+                    self.logger.warning("Failed to stop tool crash detection before dock dropoff")
+                self.logger.info("OAMS dock purge: dropping tool off at dock before feed")
+                self._dock_purge_dropoff()
             else:
                 self.logger.warning(f"Failed to dock tool before loading {lane_name}")
 
@@ -5575,12 +5636,14 @@ class OAMSManager:
 
         # Monitors are already running globally, no need to restart them
         if getattr(oam, "dock_load", False):
-            extruder_obj = getattr(lane, "extruder_obj", None)
-            extruder_name = getattr(extruder_obj, "name", None) if extruder_obj else None
             purge_length = getattr(oam, "post_load_purge", 0.0) or 0.0
             if purge_length > 0:
                 _, purge_speed = self._get_reload_params(lane_name)
                 purge_feed = purge_speed if purge_speed is not None else 1200.0
+                self.logger.info(
+                    f"OAMS dock purge: extruding {purge_length:.1f}mm "
+                    f"@ {purge_feed:.0f}mm/min in dock, then picking up"
+                )
                 try:
                     gcode = self._gcode_obj
                     if gcode is None:
@@ -5596,19 +5659,10 @@ class OAMSManager:
                         gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_post_purge")
                 except Exception as e:
                     self.logger.warning(f"Failed to run post-load purge for {lane_name}")
-            if extruder_name:
-                try:
-                    gcode = self._gcode_obj
-                    if gcode is None:
-                        gcode = self.printer.lookup_object("gcode")
-                        self._gcode_obj = gcode
-                    if not self._run_tool_crash_detection(True):
-                        self.logger.warning("Failed to start tool crash detection before tool select")
-                    gcode.run_script_from_command(f"AFC_SELECT_TOOL TOOL={extruder_name}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to select tool {extruder_name} after loading {lane_name}")
-            else:
-                self.logger.warning(f"No extruder name available to select tool after loading {lane_name}")
+            # Pick tool back up from dock and restore position
+            self._dock_purge_pickup()
+            if not self._run_tool_crash_detection(True):
+                self.logger.warning("Failed to start tool crash detection after dock pickup")
         return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
 
         # Fallback - should not be hit, but return a failure tuple instead of None
@@ -6742,7 +6796,7 @@ class OAMSManager:
                 oams.load_spool_cancel()
             except Exception as e:
                 self.logger.error(f"Failed to cancel OAMS load on {fps_name}: {e}")
-            # Timer callback — can't wait, force-clear and mark loaded
+            # Timer callback   can't wait, force-clear and mark loaded
             oams.action_status = None
             if spool_idx is not None:
                 oams.current_spool = spool_idx
@@ -6784,13 +6838,13 @@ class OAMSManager:
             except Exception as e:
                 self.logger.error(f"Failed to set stuck spool LED on {fps_name} spool {spool_idx}: {e}")
 
-        # Cancel load on hardware — firmware treats spool as loaded
+        # Cancel load on hardware   firmware treats spool as loaded
         if oams is not None:
             try:
                 oams.load_spool_cancel()
             except Exception as e:
                 self.logger.error(f"Failed to cancel load on {fps_name} during stuck spool pause: {e}")
-            # Timer callback — can't wait, force-clear and mark loaded
+            # Timer callback   can't wait, force-clear and mark loaded
             oams.action_status = None
             if spool_idx is not None:
                 oams.current_spool = spool_idx
@@ -7200,7 +7254,7 @@ class OAMSManager:
                 self.logger.info(f"Detected stuck spool on {fps_name}: {stuck_reason}")
                 if fps_state.current_oams and oams is not None:
                     oams.load_spool_cancel()
-                    # Timer callback — can't wait, force-clear and mark loaded
+                    # Timer callback   can't wait, force-clear and mark loaded
                     oams.action_status = None
                     if fps_state.current_spool_idx is not None:
                         oams.current_spool = fps_state.current_spool_idx
