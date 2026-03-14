@@ -878,6 +878,12 @@ class afcAFCACE(afcUnit):
         deadline = self.afc.reactor.monotonic() + max_wait
         sensor_triggered = False
 
+        # Initial delay: give the ACE time to start the motor and update
+        # its slot status before we begin polling. Without this, the first
+        # poll can see the slot still in "ready" state (or missing status)
+        # and exit immediately before the motor has begun moving.
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.0)
+
         while self.afc.reactor.monotonic() < deadline:
             self.afc.reactor.pause(
                 self.afc.reactor.monotonic() + poll_interval
@@ -900,8 +906,11 @@ class afcAFCACE(afcUnit):
                         slot_data = slots[slot_index]
                         if isinstance(slot_data, dict):
                             status = slot_data.get("status", "")
-                            # If slot is back to "ready" or "empty", movement is done
-                            if status in ("ready", "empty", ""):
+                            # If slot is back to "ready" or "empty",
+                            # movement is done. Empty/missing status is
+                            # NOT treated as complete — it likely means the
+                            # ACE hasn't updated yet.
+                            if status in ("ready", "empty"):
                                 self.logger.debug(
                                     f"AFCACE wait: slot {slot_index} movement "
                                     f"complete (status={status})"
