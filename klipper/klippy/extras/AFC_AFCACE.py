@@ -537,7 +537,15 @@ class afcAFCACE(afcUnit):
             # Don't clear tool_start_state while latched
             return
 
-        # Normal mode: track the sensor state directly
+        # Normal mode: track the sensor state directly.
+        # When a lane is loaded to the toolhead, do NOT clear the sensor
+        # on pressure drop.  The FPS is pressure-based: it only reads high
+        # while the ACE motor is actively pushing.  After feeding stops the
+        # pressure falls below threshold even though filament is still
+        # present, so clearing the sensor would incorrectly signal a runout.
+        if not triggered and getattr(extruder, "lane_loaded", None) is not None:
+            return
+
         if extruder.tool_start_state != triggered:
             extruder.tool_start_state = triggered
             self._update_virtual_sensor(read_time, triggered)
