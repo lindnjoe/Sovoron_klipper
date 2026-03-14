@@ -109,10 +109,21 @@ class FPS:
             # callback argument.
             self.adc.setup_adc_callback(self._adc_callback)
 
-    def _adc_callback(self, read_time: float, read_value: Optional[float] = None) -> None:
-        """Process new ADC reading and notify callbacks."""
-        # Compatibility path for callbacks that only pass a single value.
-        if read_value is None:
+    def _adc_callback(self, read_time, read_value: Optional[float] = None) -> None:
+        """Process new ADC reading and notify callbacks.
+
+        Klipper's MCU ADC calls this with a single argument: a list of
+        (sample_time, sample_value) tuples.  Kalico may call it with two
+        separate floats (time, value).  Handle both signatures.
+        """
+        if isinstance(read_time, list):
+            # Klipper-style: read_time is actually a list of samples.
+            # Use the last sample as the most recent reading.
+            if not read_time:
+                return
+            read_time, read_value = read_time[-1]
+        elif read_value is None:
+            # Single-value compatibility path.
             read_value = read_time
             read_time = self.reactor.monotonic()
 
