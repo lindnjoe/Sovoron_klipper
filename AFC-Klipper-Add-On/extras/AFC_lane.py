@@ -132,7 +132,7 @@ class AFCLane:
         self.hub: str           = config.get('hub',None)                                # Hub name(AFC_hub) that belongs to this stepper, overrides hub that is set in unit(AFC_BoxTurtle/NightOwl/etc) section.
         # Overrides buffers set at the unit and extruder level
         self.buffer_name: str   = config.get("buffer", None)                            # Buffer name(AFC_buffer) that belongs to this stepper, overrides buffer that is set in extruder(AFC_extruder) or unit(AFC_BoxTurtle/NightOwl/etc) sections.
-        self.unit               = unit.split(':')[0]
+        self.unit               = unit.split(':')[0].lower()
         try:
             self.index              = int(unit.split(':')[1])
         except:
