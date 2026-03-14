@@ -1745,12 +1745,30 @@ class afcAFCACE(afcUnit):
                 self.lane_illuminate_spool(cur_lane)
 
                 if cur_lane.tool_loaded:
+                    # For AFCACE with AMS virtual pin, the FPS reads zero
+                    # at startup (motor off) so tool_start_state is False.
+                    # If saved state confirms this lane is loaded, set the
+                    # virtual sensor directly (like OpenAMS does for its
+                    # lanes) so the toolhead-pre-sensor check passes the
+                    # same way a physical switch would on BoxTurtle.
+                    extruder_obj = cur_lane.extruder_obj
+                    if extruder_obj.lane_loaded == cur_lane.name:
+                        extruder_obj.tool_start_state = True
+                        fila = getattr(extruder_obj, "fila_tool_start", None)
+                        helper = getattr(fila, "runout_helper", None) if fila else None
+                        if helper is not None:
+                            eventtime = self.afc.reactor.monotonic()
+                            try:
+                                helper.note_filament_present(eventtime, is_filament_present=True)
+                            except TypeError:
+                                helper.note_filament_present(is_filament_present=True)
+
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
-                        or cur_lane.extruder_obj.tool_start == "buffer"
-                        or cur_lane.extruder_obj.tool_end_state
+                        or extruder_obj.tool_start == "buffer"
+                        or extruder_obj.tool_end_state
                     )
-                    if tool_ready and cur_lane.extruder_obj.lane_loaded == cur_lane.name:
+                    if tool_ready and extruder_obj.lane_loaded == cur_lane.name:
                         cur_lane.sync_to_extruder()
                         msg += '<span class=primary--text> in ToolHead</span>'
                         if cur_lane.extruder_obj.tool_start == "buffer":
