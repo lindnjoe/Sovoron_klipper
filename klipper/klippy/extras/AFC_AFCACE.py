@@ -306,12 +306,13 @@ class afcAFCACE(afcUnit):
             "klippy:shutdown", self._persistence.on_shutdown
         )
 
-        # Register temperature_ace sensor factory so [temperature_sensor]
-        # sections with sensor_type: temperature_ace work without needing
-        # a separate [temperature_ace] config section.
+        # Register temperature_ace sensor factory early enough for
+        # [temperature_sensor] sections to resolve sensor_type: temperature_ace.
+        # Must happen during config parsing (before sensors are instantiated).
         try:
-            from extras.temperature_ace import _register_sensor_factory
-            _register_sensor_factory(self.printer)
+            from extras.temperature_ace import TemperatureACE
+            pheaters = self.printer.load_object(config, "heaters")
+            pheaters.add_sensor_factory("temperature_ace", TemperatureACE)
         except Exception:
             pass
 
