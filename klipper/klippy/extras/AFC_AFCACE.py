@@ -587,6 +587,7 @@ class afcAFCACE(afcUnit):
                     )
                     # Stop feed assist on old slot before retracting
                     try:
+                        self._wait_for_ace_ready()
                         self._ace.stop_feed_assist(self._current_loaded_slot)
                     except Exception:
                         pass
@@ -711,6 +712,7 @@ class afcAFCACE(afcUnit):
         local_slot = self._get_local_slot_for_lane(cur_lane)
         if local_slot >= 0 and self._get_feed_assist_for_slot(local_slot):
             try:
+                self._wait_for_ace_ready()
                 self._ace.start_feed_assist(local_slot)
                 self.logger.debug(
                     f"AFCACE load: feed assist enabled for slot {local_slot}"
@@ -751,6 +753,7 @@ class afcAFCACE(afcUnit):
         local_slot = self._get_local_slot_for_lane(cur_lane)
         if local_slot >= 0 and self._ace is not None:
             try:
+                self._wait_for_ace_ready()
                 self._ace.stop_feed_assist(local_slot)
                 self.logger.debug(
                     f"AFCACE unload: feed assist stopped for slot {local_slot}"
@@ -1004,6 +1007,7 @@ class afcAFCACE(afcUnit):
         # during printing. It is stopped in _unload_sequence_inner before retraction.
         if self._get_feed_assist_for_slot(slot_index):
             try:
+                self._wait_for_ace_ready()
                 ace.start_feed_assist(slot_index)
             except Exception as e:
                 self.logger.warning(
