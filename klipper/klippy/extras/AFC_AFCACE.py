@@ -912,6 +912,36 @@ class afcAFCACE(afcUnit):
 
         return response
 
+    def lane_tool_loaded(self, lane):
+        """Set the virtual tool sensor when an AFCACE lane loads into the toolhead.
+
+        The base class only updates LEDs.  For AFCACE with a shared AMS virtual
+        pin, the FPS pressure is zero when the ACE motor isn't running, so the
+        virtual sensor must be set explicitly whenever a lane becomes tool-loaded
+        (normal load sequence, SET_LANE_LOADED recovery macro, etc.).
+        """
+        super().lane_tool_loaded(lane)
+        extruder = self._fps_extruder
+        if extruder is None:
+            return
+        eventtime = self.afc.reactor.monotonic()
+        extruder.tool_start_state = True
+        self._update_virtual_sensor(eventtime, True)
+
+    def lane_tool_unloaded(self, lane):
+        """Clear the virtual tool sensor when an AFCACE lane unloads.
+
+        Mirrors lane_tool_loaded: explicitly clears the sensor so the extruder
+        knows the toolhead is empty.
+        """
+        super().lane_tool_unloaded(lane)
+        extruder = self._fps_extruder
+        if extruder is None:
+            return
+        eventtime = self.afc.reactor.monotonic()
+        extruder.tool_start_state = False
+        self._update_virtual_sensor(eventtime, False)
+
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
         """Load filament from ACE slot into the toolhead.
 
