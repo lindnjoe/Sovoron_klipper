@@ -246,6 +246,14 @@ class afcAFCACE(afcUnit):
             crash_detection_mode = "disabled"
         self.crash_detection_mode = crash_detection_mode
 
+        # FPS (Filament Pressure Sensor) integration: when the extruder uses
+        # an AMS_extruder# virtual pin (shared FPS with OpenAMS), the FPS
+        # value is used as the toolhead sensor.  fps_value 0→1, where 1 means
+        # filament is fully compressed against extruder gears.
+        self.fps_threshold = config.getfloat("fps_threshold", 0.9)
+        self._fps_obj = None       # resolved FPS object (fps.py)
+        self._fps_extruder = None  # the extruder object associated with FPS
+
         # Sensor polling interval for status/runout monitoring
         self.poll_interval = config.getfloat("poll_interval", 1.0)
 
@@ -366,6 +374,9 @@ class afcAFCACE(afcUnit):
         self._ace.status_callback = self._on_hw_status_callback
         self._ace.reconnect_callback = self._on_ace_reconnected
 
+        # Resolve FPS sensor for this unit's extruder (if one exists)
+        self._resolve_fps_sensor()
+
         # Start runout detection polling
         self._start_slot_status_monitor()
 
@@ -380,6 +391,97 @@ class afcAFCACE(afcUnit):
         if override is not None:
             return override
         return self._default_feed_assist
+
+    # ---- FPS (Filament Pressure Sensor) Integration ----
+
+    def _resolve_fps_sensor(self):
+        """Find the FPS object that feeds into this unit's extruder.
+
+        Only activates when the extruder's ``pin_tool_start`` is set to an
+        ``AMS_extruder#`` value — this indicates the extruder uses a shared
+        FPS as its toolhead sensor.
+
+        Iterates over all ``fps <name>`` printer objects and picks the one
+        whose ``extruder_name`` matches this AFCACE unit's extruder.  When
+        found, registers an ADC callback so ``extruder.tool_start_state`` is
+        updated in real-time as the FPS value crosses the threshold.
+        """
+        extruder_name = getattr(self, "extruder", None)
+        if not extruder_name:
+            return
+
+        # Resolve the extruder object first to check pin_tool_start
+        try:
+            extruder_obj = self.printer.lookup_object(
+                f"AFC_extruder {extruder_name}", None
+            )
+        except Exception:
+            extruder_obj = None
+
+        if extruder_obj is None:
+            return
+
+        # Only activate FPS integration when pin_tool_start is AMS_extruder#
+        tool_start = getattr(extruder_obj, "tool_start", None)
+        if not tool_start or not isinstance(tool_start, str):
+            return
+        cleaned = tool_start.strip()
+        for ch in "#;":
+            idx = cleaned.find(ch)
+            if idx != -1:
+                cleaned = cleaned[:idx].strip()
+        if not cleaned.upper().startswith("AMS_"):
+            return
+
+        self._fps_extruder = extruder_obj
+
+        # Scan printer objects for fps instances matching our extruder
+        objects = getattr(self.printer, "objects", {})
+        for obj_name, obj in objects.items():
+            if not obj_name.startswith("fps "):
+                continue
+            fps_extruder = getattr(obj, "extruder_name", None)
+            if fps_extruder and fps_extruder == extruder_name:
+                self._fps_obj = obj
+                self.logger.info(
+                    f"AFCACE {self.name}: linked to FPS '{obj_name}' "
+                    f"(extruder={extruder_name}, pin_tool_start={tool_start}, "
+                    f"threshold={self.fps_threshold})"
+                )
+                # Register callback for real-time sensor state updates
+                obj.add_callback(self._fps_adc_callback)
+                return
+
+        self.logger.warning(
+            f"AFCACE {self.name}: extruder '{extruder_name}' uses "
+            f"pin_tool_start={tool_start} but no matching FPS found"
+        )
+
+    def _fps_adc_callback(self, read_time, fps_value):
+        """ADC callback from the FPS sensor — update the virtual tool sensor.
+
+        Called every ~100 ms with the current pressure reading (0.0-1.0).
+        When the value crosses the threshold, updates the extruder's
+        tool_start_state so that ``lane.get_toolhead_pre_sensor_state()``
+        reflects filament presence at the extruder gears.
+        """
+        extruder = self._fps_extruder
+        if extruder is None:
+            return
+
+        triggered = fps_value >= self.fps_threshold
+        if extruder.tool_start_state != triggered:
+            extruder.tool_start_state = triggered
+            self.logger.debug(
+                f"AFCACE FPS: tool_start_state -> {triggered} "
+                f"(fps_value={fps_value:.3f}, threshold={self.fps_threshold})"
+            )
+
+    def get_fps_value(self):
+        """Return the current FPS pressure value, or None if no FPS linked."""
+        if self._fps_obj is not None:
+            return self._fps_obj.fps_value
+        return None
 
     # ---- Slot / Lane Mapping ----
 
