@@ -234,6 +234,15 @@ class AFCTrigger:
         if cur_lane is not None and getattr(cur_lane, 'extruder_stepper', None) is None:
             return eventtime + CHECK_RUNOUT_TIMEOUT
 
+        # Skip fault detection if the active extruder is not this buffer's extruder.
+        # During tool changes the active extruder switches, and movement on the new
+        # extruder would be misinterpreted as a fault on this buffer's lane.
+        if cur_lane is not None:
+            active_extruder = self.afc.toolhead.get_extruder()
+            lane_extruder_name = getattr(cur_lane, 'extruder_name', None)
+            if lane_extruder_name and hasattr(active_extruder, 'name') and active_extruder.name != lane_extruder_name:
+                return eventtime + CHECK_RUNOUT_TIMEOUT
+
         extruder_pos = self.get_extruder_pos()
         # Check for filament problems
         if (self.afc.function.is_printing(check_movement=True)
