@@ -124,6 +124,9 @@ class ACEConnection:
         # Callback for status updates (set by unit)
         self.status_callback = None
 
+        # Called after a successful reconnect (not initial connect)
+        self.reconnect_callback = None
+
     @property
     def connected(self):
         return self._connected
@@ -234,6 +237,13 @@ class ACEConnection:
             try:
                 self.connect()
                 self._logger.info("ACE reconnected successfully")
+                if self.reconnect_callback:
+                    try:
+                        self.reconnect_callback()
+                    except Exception as e:
+                        self._logger.warning(
+                            f"ACE reconnect callback failed: {e}"
+                        )
                 return self._reactor.NEVER
             except Exception as e:
                 self._logger.warning(f"ACE reconnect failed: {e}")
@@ -268,6 +278,13 @@ class ACEConnection:
             try:
                 self.connect()
                 self._logger.debug("ACE quick reconnect succeeded")
+                if self.reconnect_callback:
+                    try:
+                        self.reconnect_callback()
+                    except Exception as e:
+                        self._logger.warning(
+                            f"ACE reconnect callback failed: {e}"
+                        )
                 return self._reactor.NEVER
             except Exception as e:
                 self._logger.warning(f"ACE quick reconnect failed: {e}")
