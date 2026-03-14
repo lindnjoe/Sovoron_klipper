@@ -1563,7 +1563,10 @@ class afcAFCACE(afcUnit):
         if cur_lane.get_toolhead_pre_sensor_state():
             return False, "Toolhead sensor already triggered - unload first", 0
 
-        max_distance = dis if dis > 0 else 6000
+        # AFCACE always needs the full range — the 'dis' parameter from
+        # CALIBRATE_AFC DISTANCE=N is designed for stepper-based units and
+        # is far too small (default 25mm) for bowden-length calibration.
+        max_distance = 6000
 
         self.logger.info(
             f"AFCACE calibrate_bowden: feeding slot {local_slot} "
