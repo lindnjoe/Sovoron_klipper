@@ -794,17 +794,27 @@ class afcAFCACE(afcUnit):
             self._restore_feed_assist()
             self._feed_assist_refresh_counter = 0
 
-        # Periodically re-send start_feed_assist to keep the ACE motor
-        # running.  The ACE firmware can silently drop feed assist due to
-        # internal timeouts or transient busy states.  Refreshing every
-        # ~30s (15 heartbeats × 2s) is cheap and keeps it alive.
-        if self._feed_assist_active and not self._operation_active:
+        # Periodic feed assist enforcement: any lane that is tool_loaded on
+        # its active extruder should have feed assist running if configured.
+        # This catches cases where _feed_assist_active lost track of a slot
+        # (e.g. startup recovery, manual SET_LANE_LOADED, firmware drop).
+        # Also re-sends the command every ~30s to guard against the ACE
+        # firmware silently disabling the assist motor.
+        if not self._operation_active and self._ace is not None:
             self._feed_assist_refresh_counter += 1
             if self._feed_assist_refresh_counter >= self._FEED_ASSIST_REFRESH_INTERVAL:
                 self._feed_assist_refresh_counter = 0
-                for slot_index in sorted(self._feed_assist_active):
+                for lane in self.lanes.values():
+                    if not getattr(lane, "tool_loaded", False):
+                        continue
+                    local_slot = self._get_local_slot_for_lane(lane)
+                    if local_slot < 0:
+                        continue
+                    if not self._get_feed_assist_for_slot(local_slot):
+                        continue
                     try:
-                        self._ace.start_feed_assist(slot_index)
+                        self._ace.start_feed_assist(local_slot)
+                        self._feed_assist_active.add(local_slot)
                     except Exception:
                         pass
 
