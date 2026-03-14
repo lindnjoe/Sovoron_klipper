@@ -98,7 +98,7 @@ class AFCACEPersistence:
         return self._dirty
 
     def save(self):
-        """Save AFC state — immediately or deferred depending on mode."""
+        """Save AFC state -immediately or deferred depending on mode."""
         if self._immediate:
             self._dirty = False
             try:
@@ -687,13 +687,56 @@ class afcAFCACE(afcUnit):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
 
         # Dock purge phase 1: drop off tool at dock before feeding filament
+        dock_dropped_off = False
         if self.dock_purge:
             if not self._run_tool_crash_detection(False):
                 self.logger.warning("Failed to stop tool crash detection before dock dropoff")
             self.logger.info("AFCACE dock purge: dropping tool off at dock before feed")
             self._dock_purge_dropoff()
+            dock_dropped_off = True
             afc.afcDeltaTime.log_with_time("AFCACE: After dock purge dropoff")
 
+        # Wrap the rest of the load in try/finally so the tool is always
+        # picked back up from the dock even if the load fails.
+        load_result = False
+        try:
+            load_result = self._load_sequence_feed_and_verify(
+                cur_lane, cur_hub, cur_extruder, afc
+            )
+        finally:
+            if dock_dropped_off:
+                # Always pick up the tool -even on failure
+                if load_result and self.dock_purge:
+                    # Success path: purge in dock, then pick up
+                    purge_speed_mm_min = self.dock_purge_speed * 60
+                    self.logger.info(
+                        f"AFCACE dock purge: extruding {self.dock_purge_length}mm "
+                        f"@ {self.dock_purge_speed}mm/s in dock, then picking up"
+                    )
+                    afc.move_e_pos(
+                        self.dock_purge_length, purge_speed_mm_min,
+                        "dock purge extrude"
+                    )
+                else:
+                    self.logger.info(
+                        "AFCACE dock purge: picking up tool after load failure"
+                    )
+                self._dock_purge_pickup()
+                afc.afcDeltaTime.log_with_time("AFCACE: After dock purge pickup")
+                if not self._run_tool_crash_detection(True):
+                    self.logger.warning(
+                        "Failed to start tool crash detection after dock pickup"
+                    )
+
+        return load_result
+
+    def _load_sequence_feed_and_verify(self, cur_lane, cur_hub,
+                                       cur_extruder, afc):
+        """Feed filament and verify it reached the toolhead.
+
+        Separated from _load_sequence_inner so dock purge pickup always
+        runs via the try/finally wrapper even on failure.
+        """
         local_slot = self._get_local_slot_for_lane(cur_lane)
         if local_slot < 0:
             afc.error.handle_lane_failure(
@@ -812,21 +855,6 @@ class afcAFCACE(afcUnit):
             afc.move_e_pos(
                 cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn"
             )
-
-        # Dock purge phase 2: extrude purge amount in dock, then pick up tool
-        if self.dock_purge:
-            purge_speed_mm_min = self.dock_purge_speed * 60
-            self.logger.info(
-                f"AFCACE dock purge: extruding {self.dock_purge_length}mm "
-                f"@ {self.dock_purge_speed}mm/s in dock, then picking up"
-            )
-            afc.move_e_pos(
-                self.dock_purge_length, purge_speed_mm_min, "dock purge extrude"
-            )
-            self._dock_purge_pickup()
-            afc.afcDeltaTime.log_with_time("AFCACE: After dock purge pickup")
-            if not self._run_tool_crash_detection(True):
-                self.logger.warning("Failed to start tool crash detection after dock pickup")
 
         cur_lane.set_tool_loaded()
         cur_lane.enable_buffer(disable_fault=True)
@@ -1189,7 +1217,7 @@ class afcAFCACE(afcUnit):
                 self.logger.debug(
                     f"AFCACE wait: toolhead sensor triggered for slot {slot_index}"
                 )
-                # Stop the ACE feed — the motor is still running for the
+                # Stop the ACE feed -the motor is still running for the
                 # full requested distance but we don't need any more filament.
                 # Without this, the ACE stays "busy/feeding" for minutes,
                 # blocking feed_assist and causing RFID reads to return empty.
@@ -1218,7 +1246,7 @@ class afcAFCACE(afcUnit):
                             status = slot_data.get("status", "")
                             # If slot is back to "ready" or "empty",
                             # movement is done. Empty/missing status is
-                            # NOT treated as complete — it likely means the
+                            # NOT treated as complete -it likely means the
                             # ACE hasn't updated yet.
                             if status in ("ready", "empty"):
                                 self.logger.debug(
