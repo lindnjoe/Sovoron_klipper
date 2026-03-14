@@ -1051,6 +1051,7 @@ class afcAFCACE(afcUnit):
                             self._feed_assist_active.add(local_slot)
                         except Exception:
                             pass
+                    self._wait_for_ace_ready()
                     self._ace.feed_filament(local_slot, smart_load_step, self.feed_speed)
                     self._wait_for_feed_complete(
                         local_slot, smart_load_step, self.feed_speed,
