@@ -452,7 +452,7 @@ class AFCExtruderStepper(AFCLane):
         hub_pin = self.hub_endstop
         if hub_pin is None:
             hub_name = getattr(self, 'hub', None)
-            if not hub_name or hub_name == 'direct':
+            if not hub_name or 'direct' in hub_name:
                 hub_name = self._inherit_from_unit('hub')
             hub_pin = self._get_section_value('AFC_hub', hub_name, 'switch_pin')
 
@@ -586,7 +586,8 @@ class AFCExtruderStepper(AFCLane):
         Perform's a homing move using the specified endstop, speed/accel and distance.
 
         :param movepos: target absolute position along the filament axis
-        :param speed/accel: motion params (fallbacks applied if None)
+        :param speed: The speed of the movement.
+        :param accel: The acceleration of the movement.
         :param endstop_spec: 'load' | raw pin string
         :param triggered/check_trigger: same semantics as manual_stepper
         :param assist_active: When true espoolers(if configured) activate during homing move
@@ -680,8 +681,8 @@ class AFCExtruderStepper(AFCLane):
             raise self.gcode.error(str(e))
 
     # ------------------ Convenience homing helpers ------------------
-    def home_to(self, endstop_spec:AFCHomingPoints, distance:Optional[float], speed, accel,
-                triggered=True, check_trigger=True, assist_active=True) -> tuple[bool, float]:
+    def home_to(self, endstop_spec:AFCHomingPoints, distance:Optional[float], speed: float, accel: float,
+                triggered=True, check_trigger=True, assist_active=True) -> tuple[bool, float, bool]:
         """
         Home towards an endstop relative to current position by distance (mm).
         If 'distance' is None, callers should prefer the typed helpers which pick a
@@ -691,15 +692,20 @@ class AFCExtruderStepper(AFCLane):
                              or a logical name such as 'load', 'toolhead', etc.
         :param distance: Relative distance to move toward the endstop in millimeters.
                          Required unless using a helper method.
+        :param speed: The speed of the movement.
+        :param accel: The acceleration of the movement.
         :param speed_mode: Enum or configuration selecting the speed and acceleration
                            profile to use for this move. Defaults to `SpeedMode`.
         :param triggered: If True, movement stops when the endstop triggers. Defaults to True.
         :param check_trigger: If True, verify that the endstop is actually triggered at the
                               end of the move. Defaults to True.
-        :return tuple: bool indicated if homing was successful or not, float indicated movement
-                       weather homing was successful or not. When not successful distance
-                       will equal max move distance.
+        :return :return tuple: 3-tuple consisting of:
+                        bool: indicated if homing was successful or not.
+                        float: indicated movement wheather homing was successful or not. When not
+                               successful distance will equal max move distance.
+                        bool: indicate if an error happened while homing
         """
+        error = False
 
         if distance is None:
             raise self.gcode.error("home_to requires an explicit distance; use home_to_hub/toolhead/buffer for sensible defaults")
@@ -714,11 +720,12 @@ class AFCExtruderStepper(AFCLane):
                                                        check_trigger=check_trigger,
                                                        assist_active=assist_active)
         except Exception:
+            error = True
             msg = f"Error occurred when trying to home to {endstop_spec}, PAUSING!"
             self.afc.error.AFC_error(msg, self.afc.function.in_print())
             self.logger.debug(f"{traceback.format_exc()}")
         self.sync_print_time()
-        return homed, move_distance
+        return homed, move_distance, error
 
     cmd_AFC_STEPPER_HOME_help = "Command a manually home stepper to specified endstop"
     cmd_AFC_STEPPER_HOME_options = {"STEPPER": {"type":"string", "default":"lane1"},
@@ -760,7 +767,7 @@ class AFCExtruderStepper(AFCLane):
         Example
         ----
         ```
-        AFC_STEPPER_HOME STEPPER=lane1 MOVE=10 SPEED=5
+        AFC_STEPPER_HOME STEPPER=lane1 DIST=10 SPEED=5
         ```
         Example
         ----

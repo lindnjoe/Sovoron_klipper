@@ -859,7 +859,7 @@ class AMSRunoutCoordinator:
                 continue
 
             try:
-                error_obj.AFC_error(message, pause=pause, level=3)
+                error_obj.AFC_error(message, pause=pause, stack_name="notify_afc_error")
             except Exception as e:
                 logger = getattr(unit, "logger", None)
                 if logger is not None:

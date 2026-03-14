@@ -860,7 +860,8 @@ class afcAMS(afcUnit):
         #  Register each lane with the shared registry
         for lane in self.lanes.values():
             lane.prep_state = False
-            lane.load_state = False
+            lane._load_state = False
+            lane.loaded_to_hub = False
             lane.status = AFCLaneState.NONE
             lane.ams_share_prep_load = getattr(lane, "load", None) is None
             # Initialize OpenAMS runout tracking attributes so downstream code
@@ -3623,7 +3624,8 @@ class afcAMS(afcUnit):
                     if hasattr(lane, "_afc_prep_done"):
                         lane._afc_prep_done = False
                 lane.prep_state = lane_val_bool
-                lane.load_state = lane_val_bool
+                lane._load_state = lane_val_bool
+                lane.loaded_to_hub = lane_val_bool
             except Exception as e:
                 # This is often benign (lane already cleared), log at debug level
                 self.logger.debug(f"Could not fully clear shared lane {lane.name} after sensor cleared (lane may already be empty): {e}")
@@ -3677,7 +3679,8 @@ class afcAMS(afcUnit):
             else:
                 self.logger.debug(f"Skipping extruder unsync for {lane.name} - cross-extruder runout (AFC will handle via LANE_UNLOAD)")
         lane.prep_state = lane_val_bool
-        lane.load_state = lane_val_bool
+        lane._load_state = lane_val_bool
+        lane.loaded_to_hub = lane_val_bool
         lane.afc.save_vars()
 
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
