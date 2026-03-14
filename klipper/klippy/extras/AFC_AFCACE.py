@@ -290,6 +290,14 @@ class afcAFCACE(afcUnit):
         # prevent heartbeat/poll callbacks from modifying lane state
         self._operation_active = False
 
+        # Track which slots have feed assist actively running on hardware.
+        # Used to restore feed assist after ACE reconnection.
+        self._feed_assist_active: set = set()
+
+        # When True, the next successful heartbeat response will restore
+        # feed assist for all tracked slots before clearing the flag.
+        self._pending_feed_assist_restore = False
+
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
         self.printer.register_event_handler(
             "klippy:disconnect", self._persistence.on_disconnect
@@ -353,8 +361,9 @@ class afcAFCACE(afcUnit):
         self._sync_inventory()
         self._sync_slot_loaded_state()
 
-        # Register callback so heartbeat responses update slot status
+        # Register callbacks for heartbeat status updates and reconnection
         self._ace.status_callback = self._on_hw_status_callback
+        self._ace.reconnect_callback = self._on_ace_reconnected
 
         # Start runout detection polling
         self._start_slot_status_monitor()
@@ -562,6 +571,11 @@ class afcAFCACE(afcUnit):
         if not isinstance(response, dict):
             return
 
+        # Restore feed assist after reconnection - the first successful
+        # heartbeat response confirms the connection is stable.
+        if self._pending_feed_assist_restore:
+            self._restore_feed_assist()
+
         # Skip lane state updates during active operations (load/unload/calibration)
         if self._operation_active:
             return
@@ -609,6 +623,39 @@ class afcAFCACE(afcUnit):
                 self._persistence.save()
 
             self._prev_slot_states[lane.name] = slot_ready
+
+    def _on_ace_reconnected(self):
+        """Called after ACE reconnects (power cycle or USB disconnect).
+
+        Defers feed assist restoration until the first successful heartbeat
+        to ensure the connection is stable before sending commands.
+        """
+        if self._feed_assist_active:
+            self.logger.info(
+                f"AFCACE reconnect: deferring feed assist restore for "
+                f"slots {sorted(self._feed_assist_active)} until first heartbeat"
+            )
+            self._pending_feed_assist_restore = True
+        else:
+            self.logger.debug("AFCACE reconnect: no feed assist to restore")
+
+    def _restore_feed_assist(self):
+        """Restore feed assist for all tracked active slots after reconnect."""
+        self._pending_feed_assist_restore = False
+        if not self._feed_assist_active or self._ace is None:
+            return
+
+        for slot_index in sorted(self._feed_assist_active):
+            try:
+                self._ace.start_feed_assist(slot_index)
+                self.logger.info(
+                    f"AFCACE reconnect: feed assist restored for slot {slot_index}"
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"AFCACE reconnect: failed to restore feed assist "
+                    f"for slot {slot_index}: {e}"
+                )
 
     def get_slot_info(self, local_slot):
         """Return cached slot info dict for a slot index."""
@@ -766,6 +813,7 @@ class afcAFCACE(afcUnit):
                     try:
                         self._wait_for_ace_ready()
                         self._ace.stop_feed_assist(self._current_loaded_slot)
+                        self._feed_assist_active.discard(self._current_loaded_slot)
                     except Exception:
                         pass
                     self._retract_slot(self._current_loaded_slot)
@@ -818,19 +866,56 @@ class afcAFCACE(afcUnit):
                 afc.error.handle_lane_failure(cur_lane, message)
                 return False
         elif cur_extruder.tool_start:
-            # Standard toolhead sensor verification
+            # Standard toolhead sensor verification with retry.
+            # If the sensor hasn't triggered after the full feed, do up to 5
+            # additional 20mm feeds checking the sensor after each one.  This
+            # handles slight bowden length variations without immediately
+            # failing the load.
             if not cur_lane.get_toolhead_pre_sensor_state():
-                message = (
-                    "AFCACE load did not trigger toolhead sensor. CHECK FILAMENT PATH\n"
-                    "To resolve, set lane loaded with "
-                    f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                )
-                if afc.function.in_print():
-                    message += (
-                        "\nOnce filament is fully loaded click resume to continue printing"
+                smart_load_step = 20.0   # mm per retry
+                smart_load_max  = 5      # max retries
+                for attempt in range(1, smart_load_max + 1):
+                    self.logger.info(
+                        f"AFCACE smart load: sensor not triggered, "
+                        f"feeding {smart_load_step}mm (attempt {attempt}/{smart_load_max})"
                     )
-                afc.error.handle_lane_failure(cur_lane, message)
-                return False
+                    # Ensure feed assist is running so ACE pushes filament
+                    if (local_slot >= 0
+                            and self._get_feed_assist_for_slot(local_slot)
+                            and local_slot not in self._feed_assist_active):
+                        try:
+                            self._wait_for_ace_ready()
+                            self._ace.start_feed_assist(local_slot)
+                            self._feed_assist_active.add(local_slot)
+                        except Exception:
+                            pass
+                    self._ace.feed_filament(local_slot, smart_load_step, self.feed_speed)
+                    self._wait_for_feed_complete(
+                        local_slot, smart_load_step, self.feed_speed,
+                        lane=cur_lane, poll_interval=0.3,
+                    )
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.2)
+                    if cur_lane.get_toolhead_pre_sensor_state():
+                        self.logger.info(
+                            f"AFCACE smart load: sensor triggered after "
+                            f"{attempt * smart_load_step:.0f}mm extra feed"
+                        )
+                        break
+                else:
+                    # All retries exhausted — error out
+                    message = (
+                        f"AFCACE load did not trigger toolhead sensor after "
+                        f"{smart_load_max * smart_load_step:.0f}mm of extra feeding. "
+                        f"CHECK FILAMENT PATH\n"
+                        "To resolve, set lane loaded with "
+                        f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                    )
+                    if afc.function.in_print():
+                        message += (
+                            "\nOnce filament is fully loaded click resume to continue printing"
+                        )
+                    afc.error.handle_lane_failure(cur_lane, message)
+                    return False
 
         # Sync to extruder and load filament into the nozzle using tool_stn
         cur_lane.status = AFCLaneState.TOOL_LOADED
@@ -876,6 +961,7 @@ class afcAFCACE(afcUnit):
             try:
                 self._wait_for_ace_ready()
                 self._ace.start_feed_assist(local_slot)
+                self._feed_assist_active.add(local_slot)
                 self.logger.debug(
                     f"AFCACE load: feed assist enabled for slot {local_slot}"
                 )
@@ -917,6 +1003,7 @@ class afcAFCACE(afcUnit):
             try:
                 self._wait_for_ace_ready()
                 self._ace.stop_feed_assist(local_slot)
+                self._feed_assist_active.discard(local_slot)
                 self.logger.debug(
                     f"AFCACE unload: feed assist stopped for slot {local_slot}"
                 )
@@ -1171,6 +1258,7 @@ class afcAFCACE(afcUnit):
             try:
                 self._wait_for_ace_ready()
                 ace.start_feed_assist(slot_index)
+                self._feed_assist_active.add(slot_index)
             except Exception as e:
                 self.logger.warning(
                     f"AFCACE feed: start_feed_assist failed for slot "
