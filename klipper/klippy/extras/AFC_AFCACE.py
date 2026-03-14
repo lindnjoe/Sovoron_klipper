@@ -130,6 +130,21 @@ class afcAFCACE(afcUnit):
         self.dock_purge_length = config.getfloat("dock_purge_length", 50.0)            # mm of filament to extrude while docked for purging
         self.dock_purge_speed = config.getfloat("dock_purge_speed", 5.0)               # mm/s extrude speed during dock purge
 
+        # Tool crash detection: stop/start detection around dock operations
+        # Options: "disabled" (default), "tool", "probe"
+        crash_detection_raw = config.get("crash_detection", "disabled")
+        crash_detection_mode = str(crash_detection_raw).strip().lower()
+        if crash_detection_mode in {"0", "off", "false", "disabled", "disable"}:
+            crash_detection_mode = "disabled"
+        elif crash_detection_mode in {"tool", "probe"}:
+            pass
+        else:
+            self.logger.warning(
+                f"Unknown crash_detection '{crash_detection_raw}', defaulting to disabled."
+            )
+            crash_detection_mode = "disabled"
+        self.crash_detection_mode = crash_detection_mode
+
         # Sensor polling interval for status/runout monitoring
         self.poll_interval = config.getfloat("poll_interval", 1.0)
 
@@ -294,6 +309,45 @@ class afcAFCACE(afcUnit):
         tc.run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
         self.afc.gcode.run_script_from_command("EXIT_DOCKING_MODE")
         self._dock_purge_context = None
+
+    def _run_tool_crash_detection(self, enable):
+        """Start or stop tool crash detection around dock operations.
+
+        Mirrors OpenAMS behaviour: supports 'tool' and 'probe' modes.
+        Returns True on success or if detection is disabled (no-op).
+        """
+        if self.crash_detection_mode == "disabled":
+            return True
+        gcode = self.afc.gcode
+        if enable:
+            if self.crash_detection_mode == "probe":
+                commands = ("START_TOOL_PROBE_CRASH_DETECTION",)
+            else:
+                commands = ("START_TOOL_CRASH_DETECTION",)
+        else:
+            if self.crash_detection_mode == "probe":
+                commands = ("STOP_TOOL_PROBE_CRASH_DETECTION",)
+            else:
+                commands = ("STOP_TOOL_CRASH_DETECTION",)
+        last_exc = None
+        for command in commands:
+            for candidate in (command, command.lower()):
+                try:
+                    self.logger.debug(f"Running tool crash detection command: {candidate}")
+                    gcode.run_script_from_command(candidate)
+                    self.logger.debug(f"Tool crash detection command completed: {candidate}")
+                    return True
+                except Exception as exc:
+                    self.logger.debug(
+                        f"Tool crash detection command failed: {candidate} ({exc})"
+                    )
+                    last_exc = exc
+                    continue
+        if last_exc is not None:
+            self.logger.debug(f"Skipping tool crash detection; failed {commands}: {last_exc}")
+        else:
+            self.logger.debug("Skipping tool crash detection command; none available")
+        return False
 
     # ---- Inventory / State Sync ----
 
@@ -509,6 +563,8 @@ class afcAFCACE(afcUnit):
 
         # Dock purge phase 1: drop off tool at dock before feeding filament
         if self.dock_purge:
+            if not self._run_tool_crash_detection(False):
+                self.logger.warning("Failed to stop tool crash detection before dock dropoff")
             self.logger.info("AFCACE dock purge: dropping tool off at dock before feed")
             self._dock_purge_dropoff()
             afc.afcDeltaTime.log_with_time("AFCACE: After dock purge dropoff")
@@ -643,6 +699,8 @@ class afcAFCACE(afcUnit):
             )
             self._dock_purge_pickup()
             afc.afcDeltaTime.log_with_time("AFCACE: After dock purge pickup")
+            if not self._run_tool_crash_detection(True):
+                self.logger.warning("Failed to start tool crash detection after dock pickup")
 
         cur_lane.set_tool_loaded()
         cur_lane.enable_buffer(disable_fault=True)
