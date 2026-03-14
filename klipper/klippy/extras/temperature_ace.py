@@ -78,14 +78,12 @@ class TemperatureACE:
 
         if self._ace_unit:
             self._log().info(
-                "temperature_ace: linked to AFC_AFCACE unit '%s'",
-                self.ace_unit_name,
+                f"temperature_ace: linked to AFC_AFCACE unit '{self.ace_unit_name}'"
             )
         else:
             self._log().warning(
-                "temperature_ace: AFC_AFCACE unit '%s' not found; "
-                "reporting 0C",
-                self.ace_unit_name,
+                f"temperature_ace: AFC_AFCACE unit '{self.ace_unit_name}' not found; "
+                "reporting 0C"
             )
 
         if hasattr(self, "sample_timer"):
@@ -132,9 +130,7 @@ class TemperatureACE:
 
                 if not hasattr(self, "_sample_logged") and ace_temp > 0:
                     self._log().info(
-                        "temperature_ace: first sample from '%s' = %.1fC",
-                        self.ace_unit_name,
-                        ace_temp,
+                        f"temperature_ace: first sample from '{self.ace_unit_name}' = {ace_temp:.1f}C"
                     )
                     self._sample_logged = True
 
@@ -156,8 +152,8 @@ class TemperatureACE:
                     )
             else:
                 self.temp = 0.0
-        except Exception:
-            self._log().error("temperature_ace: error sampling ACE temperature")
+        except Exception as e:
+            self._log().error(f"temperature_ace: error sampling ACE temperature: {e}")
             self.temp = 0.0
 
         if self._callback:
@@ -200,7 +196,7 @@ def _register_sensor_factory(printer):
         try:
             heaters = printer.load_object(printer, "heaters")
         except Exception as e:
-            _fallback_logger.warning("temperature_ace: failed to load heaters: %s", e)
+            _fallback_logger.warning(f"temperature_ace: failed to load heaters: {e}")
             return
 
     heaters.add_sensor_factory("temperature_ace", TemperatureACE)
