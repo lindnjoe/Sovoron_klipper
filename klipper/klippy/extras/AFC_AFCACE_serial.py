@@ -337,8 +337,10 @@ class ACEConnection:
         # Check for error response
         if isinstance(result, dict):
             code = result.get("code", 0)
-            if code != 0:
-                msg = result.get("msg", "unknown error")
+            msg = result.get("msg", "")
+            if code != 0 or (msg and msg.upper() == "FORBIDDEN"):
+                if not msg:
+                    msg = "unknown error"
                 raise ACESerialError(
                     f"ACE command '{method}' failed: code={code}, msg={msg}"
                 )

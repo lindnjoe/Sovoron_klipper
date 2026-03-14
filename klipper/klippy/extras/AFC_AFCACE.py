@@ -844,7 +844,13 @@ class afcAFCACE(afcUnit):
         # Feed assist stays enabled after loading to maintain filament tension
         # during printing. It is stopped in _unload_sequence_inner before retraction.
         if self._get_feed_assist_for_slot(slot_index):
-            ace.start_feed_assist(slot_index)
+            try:
+                ace.start_feed_assist(slot_index)
+            except Exception as e:
+                self.logger.warning(
+                    f"AFCACE feed: start_feed_assist failed for slot "
+                    f"{slot_index}: {e}"
+                )
 
             # Use extruder motor to pull filament into hotend
             if self.extruder_assist_length > 0:
@@ -895,6 +901,22 @@ class afcAFCACE(afcUnit):
                 self.logger.debug(
                     f"AFCACE wait: toolhead sensor triggered for slot {slot_index}"
                 )
+                # Stop the ACE feed — the motor is still running for the
+                # full requested distance but we don't need any more filament.
+                # Without this, the ACE stays "busy/feeding" for minutes,
+                # blocking feed_assist and causing RFID reads to return empty.
+                try:
+                    ace.stop_feed_filament(slot_index)
+                    self.logger.debug(
+                        f"AFCACE wait: stopped feed for slot {slot_index} "
+                        "(sensor triggered early)"
+                    )
+                    # Brief pause for ACE to transition out of "feeding" state
+                    self.afc.reactor.pause(
+                        self.afc.reactor.monotonic() + 0.5
+                    )
+                except Exception:
+                    pass
                 return True
 
             # Poll ACE status to check if movement is done
