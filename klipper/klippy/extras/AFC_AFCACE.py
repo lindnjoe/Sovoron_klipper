@@ -392,6 +392,11 @@ class afcAFCACE(afcUnit):
         # Resolve FPS sensor for this unit's extruder (if one exists)
         self._resolve_fps_sensor()
 
+        # Hydrate the virtual tool sensor for lanes that were tool-loaded
+        # before restart.  OpenAMS's _hydrate_from_saved_state skips non-
+        # OpenAMS lanes, so AFCACE must set the sensor itself.
+        self._hydrate_virtual_tool_sensor(eventtime)
+
         # Start runout detection polling
         self._start_slot_status_monitor()
 
@@ -501,6 +506,32 @@ class afcAFCACE(afcUnit):
                 f"AFCACE {self.name}: extruder '{extruder_name}' uses "
                 f"pin_tool_start={tool_start} but no matching FPS found"
             )
+
+    def _hydrate_virtual_tool_sensor(self, eventtime):
+        """Set the virtual tool sensor if an AFCACE lane was loaded at shutdown.
+
+        At startup the FPS pressure is zero (ACE motor off), so the ADC
+        callback would never set the sensor.  Check saved state and set
+        it explicitly so the extruder knows filament is present.
+        """
+        extruder = self._fps_extruder
+        if extruder is None:
+            return
+
+        for lane in self.lanes.values():
+            lane_name = getattr(lane, "name", None)
+            if not getattr(lane, "tool_loaded", False):
+                continue
+            # Verify extruder agrees this lane is loaded
+            if getattr(extruder, "lane_loaded", None) != lane_name:
+                continue
+            extruder.tool_start_state = True
+            self._update_virtual_sensor(eventtime, True)
+            self.logger.info(
+                f"AFCACE {self.name}: hydrated virtual tool sensor "
+                f"for {lane_name} (tool_loaded at startup)"
+            )
+            return
 
     def _fps_adc_callback(self, read_time, fps_value):
         """ADC callback from the FPS sensor -update the virtual tool sensor.
