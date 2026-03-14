@@ -1247,6 +1247,26 @@ class afcAFCACE(afcUnit):
         # ACE lanes have no lane stepper, so all retract moves use move_e_pos
         # (extruder motor) instead of move_advanced. After clearing the toolhead,
         # the ACE hardware handles the full bowden retraction via _retract_slot.
+        local_slot = self._get_local_slot_for_lane(cur_lane)
+
+        # Start ACE unwind before extruder retract so the ACE begins pulling
+        # tension on the spool while the extruder simultaneously retracts.
+        # The command returns immediately — the motor runs asynchronously.
+        self.logger.info(
+            f"AFCACE unload: starting ACE unwind slot {local_slot} "
+            f"before extruder retract for lane {cur_lane.name}"
+        )
+        try:
+            self._wait_for_ace_ready()
+            self._ace.unwind_filament(
+                local_slot, self.retract_length, self.retract_speed
+            )
+        except Exception as e:
+            message = f"AFCACE unload: failed to start ACE unwind for {cur_lane.name}: {e}"
+            self.logger.error(f"{message}\n{traceback.format_exc()}")
+            afc.error.handle_lane_failure(cur_lane, message)
+            return False
+
         if cur_extruder.tool_start == "buffer" and cur_lane.buffer_obj is not None:
             # Buffer mode: retract until buffer decompresses using extruder motor
             num_tries = 0
@@ -1278,11 +1298,8 @@ class afcAFCACE(afcUnit):
                     wait_tool=True
                 )
         else:
-            # Standard mode (no buffer): retract tool_stn_unload with extruder motor
-            # to clear nozzle/gears, then ACE hardware handles the bowden retraction.
-            # Unlike stepper-based units, we do NOT loop on the toolhead sensor here
-            # because the extruder motor alone cannot pull filament through a long
-            # bowden tube - the ACE's own unwind motor handles that via _retract_slot.
+            # Standard mode (no buffer): retract with extruder motor while
+            # ACE is already pulling from the spool side.
             retract_distance = cur_extruder.tool_stn_unload
             if retract_distance > 0:
                 self.logger.info(
@@ -1302,19 +1319,17 @@ class afcAFCACE(afcUnit):
                 cur_extruder.tool_unload_speed, "After extruder"
             )
 
-        local_slot = self._get_local_slot_for_lane(cur_lane)
-
         try:
-            # Unsync from extruder before ACE retraction
+            # Unsync from extruder before waiting for ACE retraction
             cur_lane.unsync_to_extruder()
 
             self.logger.info(
-                f"AFCACE unload: retracting slot {local_slot} "
-                f"for lane {cur_lane.name} (mode={self.mode})"
+                f"AFCACE unload: waiting for ACE unwind to complete "
+                f"slot {local_slot} for lane {cur_lane.name}"
             )
-
-            # ACE hardware retracts the filament through the entire bowden tube
-            self._retract_slot(local_slot)
+            self._wait_for_feed_complete(
+                local_slot, self.retract_length, self.retract_speed
+            )
 
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = -1
