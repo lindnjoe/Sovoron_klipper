@@ -1809,7 +1809,7 @@ class afcAFCACE(afcUnit):
 
         # Round to nearest integer for clean config values
         new_feed_length = round(distance, 0)
-        new_retract_length = round(distance, 0)
+        new_retract_length = round(distance - 200, 0)
 
         # Update in-memory values
         old_feed = self.feed_length
