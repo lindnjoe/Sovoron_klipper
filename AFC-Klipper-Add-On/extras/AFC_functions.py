@@ -5,7 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 #
 # This file includes code modified from the Shaketune Project. https://github.com/Frix-x/klippain-shaketune
-# Originally authored by F�lix Boisselier and licensed under the GNU General Public License v3.0.
+# Originally authored by Félix Boisselier and licensed under the GNU General Public License v3.0.
 #
 # Full license text available at: https://www.gnu.org/licenses/gpl-3.0.html
 from __future__ import annotations
@@ -15,6 +15,7 @@ import random
 import re
 import traceback
 import configparser
+import inspect
 
 from configfile import error
 from datetime import datetime
@@ -128,8 +129,6 @@ class afcFunction:
         Helper function to get stock macros, rename to something and replace stock macro with AFC functions
         """
         # Renaming users Resume macro so that RESUME calls AFC_Resume function instead
-        self.afc = self.printer.lookup_object('AFC')
-        self.logger = self.afc.logger
         prev_cmd = self.afc.gcode.register_command(base_name, None)
         if prev_cmd is not None:
             pdesc = "Renamed builtin of '%s'" % (base_name,)
@@ -172,7 +171,7 @@ class afcFunction:
         taskdone = False
         sectionfound = False
         # Creating regex pattern based off rawsection
-        pattern = re.compile("^\[\s*{}\s*\]".format(rawsection))
+        pattern = re.compile("^\\[\\s*{}\\s*\\]".format(rawsection))
         for filename in os.listdir(self.afc.cfgloc):
             file_path = os.path.join(self.afc.cfgloc, filename)
             if os.path.isfile(file_path) and filename.endswith(".cfg"):
@@ -280,11 +279,13 @@ class afcFunction:
                         self.afc.gcode.run_script_from_command(self.afc.auto_level_macro)
                         self.afc.toolhead.wait_moves()
                     else:
-                        self.afc.error.AFC_error("Auto level macro defined, but not found in printer configuration.", False, level=2)
+                        self.afc.error.AFC_error("Auto level macro defined, but not found in printer configuration.",
+                                                 False, stack_name=inspect.currentframe().f_back.f_code.co_name)
                         return False
                 return True
             else:
-                self.afc.error.AFC_error("Please home printer before doing a tool load", False, level=2)
+                self.afc.error.AFC_error("Please home printer before doing a tool load",
+                                         False, stack_name=inspect.currentframe().f_back.f_code.co_name)
                 return False
         else:
             return True
@@ -947,6 +948,8 @@ class afcFunction:
             lane = self.afc.lanes.get(str(cali)) if cali is not None else None
             if lane:
                 buttons.append(("Reset lane", self._lane_reset_command(lane, dis), "primary"))
+            else:
+                buttons.append(("Reset lane", "AFC_LANE_RESET LANE={} DISTANCE={}".format(cali, dis), "primary"))
 
         if fail_message:
             text += f"\nFail message: {fail_message}"
@@ -1423,22 +1426,11 @@ class afcFunction:
         fail_message    = gcmd.get("MSG", "")
         self._afc_cali_fail(cali, dis, reset_lane, title, fail_message, gcmd)
 
-    def _unit_lane_reset_command(self, lane, dis):
-        """Return a unit-provided lane reset command, if available."""
-        if lane and hasattr(lane.unit_obj, 'get_lane_reset_command'):
-            return lane.unit_obj.get_lane_reset_command(lane, dis)
-        return None
-
-    def _lane_uses_custom_reset_command(self, lane, dis) -> bool:
-        """Return True when *lane* should be reset with a unit-specific command."""
-        return self._unit_lane_reset_command(lane, dis) is not None
-
     def _lane_reset_command(self, lane, dis):
-        """Return the GCode command to reset *lane*."""
-        custom_command = self._unit_lane_reset_command(lane, dis)
+        """Return the GCode command to reset *lane*, using unit override if available."""
+        custom_command = lane.unit_obj.get_lane_reset_command(lane, dis)
         if custom_command is not None:
             return custom_command
-
         if dis is not None:
             return "AFC_LANE_RESET LANE={} DISTANCE={}".format(lane.name, dis)
         return "AFC_LANE_RESET LANE={}".format(lane.name)
@@ -1473,32 +1465,17 @@ class afcFunction:
         title = 'AFC RESET'
         text = 'Select a loaded lane to reset'
 
-        has_custom = False
-        has_standard = False
-
         # Create buttons for each loaded lane
         for index, LANE in enumerate(self.afc.lanes.values()):
-            if LANE.load_state:
+            if LANE.raw_load_state:
                 button_command = self._lane_reset_command(LANE, dis)
-                if self._lane_uses_custom_reset_command(LANE, dis):
-                    has_custom = True
-                    custom_cmd = button_command.split()[0] if button_command else "CUSTOM"
-                    button_label = "{} ({})".format(LANE.name, custom_cmd)
-                    buttons.append((button_label, button_command, "info"))
-                else:
-                    has_standard = True
-                    button_label = "{}".format(LANE.name)
-                    button_style = "primary" if index % 2 == 0 else "secondary"
-                    buttons.append((button_label, button_command, button_style))
+                button_label = "{}".format(LANE.name)
+                button_style = "primary" if index % 2 == 0 else "secondary"
+                buttons.append((button_label, button_command, button_style))
 
-        if not buttons:
+        total_buttons = sum(len(group) for group in buttons)
+        if total_buttons == 0:
             text = 'No lanes are loaded, a lane must be loaded to be reset'
-        elif has_custom and not has_standard:
-            text = ('Loaded lanes for this setup use unit-specific reset commands. '
-                    'Select a lane below to run its custom reset action.')
-        elif has_custom and has_standard:
-            text = ('Select a loaded lane to reset. '
-                    'Lanes marked with command names will run unit-specific reset actions instead of AFC_LANE_RESET.')
 
         prompt.create_custom_p(title, text, buttons,
                         True, None)
@@ -1553,7 +1530,9 @@ class afcFunction:
                 return
 
         cur_lane: Union[AFCLane, AFCExtruderStepper] = self.afc.lanes[lane]
-        custom_reset_command = self._unit_lane_reset_command(cur_lane, long_dis)
+
+        # Allow unit to provide custom lane reset command
+        custom_reset_command = cur_lane.unit_obj.get_lane_reset_command(cur_lane, long_dis)
         if custom_reset_command is not None:
             prompt.p_end()
             self.afc.gcode.respond_info(
@@ -1588,7 +1567,7 @@ class afcFunction:
             cur_lane.move(short_move * -1, cur_lane.short_moves_speed, cur_lane.short_moves_accel, True)
             pos -= short_move
 
-            if not cur_lane.load_state:
+            if not cur_lane.raw_load_state:
                 self.afc.error.AFC_error(fail_state_msg.format(cur_lane, "load"), pause=False)
                 return
 
@@ -1903,7 +1882,7 @@ class afcDeltaTime:
             curr_time = datetime.now()
             self.delta_time = (curr_time - self.last_time ).total_seconds()
             total_time = (curr_time - self.start_time).total_seconds()
-            msg = "{} (?t:{:.3f}s, t:{:.3f})".format( msg, self.delta_time, total_time )
+            msg = "{} (Δt:{:.3f}s, t:{:.3f})".format( msg, self.delta_time, total_time )
             if debug:
                 self.logger.debug( msg )
             else:

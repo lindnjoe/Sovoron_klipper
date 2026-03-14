@@ -35,8 +35,6 @@ class afc_hub:
 
         # switch_pin is optional for OpenAMS/virtual hub usage; default to virtual when omitted
         self.switch_pin             = config.get('switch_pin', 'virtual')           # Pin hub sensor it connected to
-        # HUB Cut variables
-        # Next two variables are used in AFC
         self.hub_clear_move_dis     = config.getfloat("hub_clear_move_dis", 65)     # How far to move filament so that it's not block the hub exit
         self.afc_bowden_length      = config.getfloat("afc_bowden_length", 900)     # Length of the Bowden tube from the hub to the toolhead sensor in mm.
         self.td1_bowden_length      = config.getfloat("td1_bowden_length", self.afc_bowden_length-50)     # Length of the Bowden tube from the hub to a TD-1 device in mm.
@@ -60,7 +58,6 @@ class afc_hub:
         self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui",    self.afc.enable_sensors_in_gui) # Set to True to show hub sensor switches as filament sensor in mainsail/fluidd gui, overrides value set in AFC.cfg
         self.debounce_delay         = config.getfloat("debounce_delay",             self.afc.debounce_delay)
         self.enable_runout          = config.getboolean("enable_hub_runout",        self.afc.enable_hub_runout)
-        self.switch_pin = str(self.switch_pin).strip() or "virtual"
 
         if self.switch_pin.lower() != "virtual":
             buttons = self.printer.load_object(config, "buttons")
@@ -126,10 +123,10 @@ class afc_hub:
     @property
     def state(self):
         """
-        Returns current state of switch.
+        Returns current state of switch. If using virtual sensor returns True if any lanes load
+        sensor is triggered.
 
-        For classic virtual hubs (no real hub sensor), infer hub occupancy from lane load
-        sensors. For hardware-managed units (OpenAMS, ACE), use per-lane ``loaded_to_hub``
+        For hardware-managed units (OpenAMS, ACE), use per-lane ``loaded_to_hub``
         because the hardware provides the hub sensor value and ``load_state`` only indicates
         spool/load presence, not hub-path occupancy.
         """
@@ -144,12 +141,9 @@ class afc_hub:
                     or hasattr(unit_obj, "oams_name")
                 )
                 if is_hw_managed:
-                    # For ACE/AFCACE, loaded_to_hub means "filament ready in slot",
-                    # not "filament physically in hub path". Only report hub as
-                    # occupied when filament has actually been fed to toolhead.
                     lane_states.append(bool(getattr(lane, "tool_loaded", False)))
                 else:
-                    lane_states.append(bool(getattr(lane, "_load_state", False)))
+                    lane_states.append(lane.raw_load_state)
             state = any(lane_states)
         return state
 

@@ -323,7 +323,6 @@ class AFCTrigger:
         if self.current_lane.extruder_stepper is None: return
 
         cur_stepper = self.current_lane.extruder_stepper.stepper
-        if cur_stepper is None: return
 
         self.current_lane.update_rotation_distance( multiplier )
         if multiplier > 1:
@@ -349,7 +348,6 @@ class AFCTrigger:
         if self.current_lane.extruder_stepper is None: return
 
         cur_stepper = self.current_lane.extruder_stepper.stepper
-        if cur_stepper is None: return
 
         self.current_lane.update_rotation_distance( 1 )
         self.logger.info(
@@ -632,13 +630,11 @@ class AFCTrigger:
         # Add current rotation distance if buffer is enabled and lane is loaded
         if self.enable:
             if (self.current_lane is not None
-                and self.current_lane.name in self.lanes):
-                if (self.current_lane.extruder_stepper is not None
-                    and self.current_lane.extruder_stepper.stepper is not None):
-                    stepper = self.current_lane.extruder_stepper.stepper
-                    self.response['rotation_distance'] = stepper.get_rotation_distance()[0]
-                else:
-                    self.response['rotation_distance'] = None
+                and self.current_lane.name in self.lanes
+                and self.current_lane.extruder_stepper is not None
+                and self.current_lane.extruder_stepper.stepper is not None):
+                stepper = self.current_lane.extruder_stepper.stepper
+                self.response['rotation_distance'] = stepper.get_rotation_distance()[0]
                 self.response['active_lane'] = self.current_lane.name
         else:
             self.response['rotation_distance'] = None
