@@ -292,6 +292,12 @@ class afcAFCACE(afcUnit):
         # Used to restore feed assist after ACE reconnection.
         self._feed_assist_active: set = set()
 
+        # Periodic feed assist refresh: re-send start_feed_assist every
+        # ~30 seconds to guard against the ACE firmware silently dropping
+        # the assist motor (internal timeout, brief busy state, etc.).
+        self._feed_assist_refresh_counter = 0
+        self._FEED_ASSIST_REFRESH_INTERVAL = 15  # heartbeats (~30s at 2s interval)
+
         # When True, the next successful heartbeat response will restore
         # feed assist for all tracked slots before clearing the flag.
         self._pending_feed_assist_restore = False
@@ -786,6 +792,21 @@ class afcAFCACE(afcUnit):
         # heartbeat response confirms the connection is stable.
         if self._pending_feed_assist_restore:
             self._restore_feed_assist()
+            self._feed_assist_refresh_counter = 0
+
+        # Periodically re-send start_feed_assist to keep the ACE motor
+        # running.  The ACE firmware can silently drop feed assist due to
+        # internal timeouts or transient busy states.  Refreshing every
+        # ~30s (15 heartbeats × 2s) is cheap and keeps it alive.
+        if self._feed_assist_active and not self._operation_active:
+            self._feed_assist_refresh_counter += 1
+            if self._feed_assist_refresh_counter >= self._FEED_ASSIST_REFRESH_INTERVAL:
+                self._feed_assist_refresh_counter = 0
+                for slot_index in sorted(self._feed_assist_active):
+                    try:
+                        self._ace.start_feed_assist(slot_index)
+                    except Exception:
+                        pass
 
         # Skip lane state updates during active operations (load/unload/calibration)
         if self._operation_active:
