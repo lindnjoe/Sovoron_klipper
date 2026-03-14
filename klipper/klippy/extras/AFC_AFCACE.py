@@ -253,6 +253,7 @@ class afcAFCACE(afcUnit):
         self.fps_threshold = config.getfloat("fps_threshold", 0.9)
         self._fps_obj = None       # resolved FPS object (fps.py)
         self._fps_extruder = None  # the extruder object associated with FPS
+        self._fps_runout_helper = None  # cached runout helper for virtual sensor
         # Latch: during active operations (calibration/feed), once the FPS
         # crosses the threshold we latch tool_start_state=True so that
         # pulsed ACE feeding doesn't clear it between motor pulses.
@@ -449,6 +450,13 @@ class afcAFCACE(afcUnit):
 
         self._fps_extruder = extruder_obj
 
+        # Cache the virtual filament sensor's runout helper so the FPS
+        # callback can update it (drives Klipper's filament sensor state
+        # and runout detection).
+        fila = getattr(extruder_obj, "fila_tool_start", None)
+        helper = getattr(fila, "runout_helper", None) if fila else None
+        self._fps_runout_helper = helper
+
         # Scan printer objects for fps instances matching our extruder.
         # Try known fps names (fps1, fps2, ...) via lookup_object, then
         # fall back to iterating printer.objects if available.
@@ -500,7 +508,9 @@ class afcAFCACE(afcUnit):
         Called every ~100 ms with the current pressure reading (0.0-1.0).
         When the value crosses the threshold, updates the extruder's
         tool_start_state so that ``lane.get_toolhead_pre_sensor_state()``
-        reflects filament presence at the extruder gears.
+        reflects filament presence at the extruder gears.  Also updates
+        the virtual filament sensor (fila_tool_start) so Klipper's
+        filament sensor system tracks the state and can trigger runout.
 
         During active operations (calibration/feeding), the state is
         latched: once triggered it stays True until the operation clears
@@ -519,6 +529,7 @@ class afcAFCACE(afcUnit):
             if triggered and not self._fps_latched:
                 self._fps_latched = True
                 extruder.tool_start_state = True
+                self._update_virtual_sensor(read_time, True)
                 self.logger.debug(
                     f"AFCACE FPS: tool_start_state LATCHED True "
                     f"(fps_value={fps_value:.3f}, threshold={self.fps_threshold})"
@@ -529,10 +540,26 @@ class afcAFCACE(afcUnit):
         # Normal mode: track the sensor state directly
         if extruder.tool_start_state != triggered:
             extruder.tool_start_state = triggered
+            self._update_virtual_sensor(read_time, triggered)
             self.logger.debug(
                 f"AFCACE FPS: tool_start_state -> {triggered} "
                 f"(fps_value={fps_value:.3f}, threshold={self.fps_threshold})"
             )
+
+    def _update_virtual_sensor(self, eventtime, filament_present):
+        """Push filament state into the virtual filament sensor.
+
+        Updates the runout helper on the extruder's fila_tool_start so
+        that Klipper's filament sensor system (QUERY_FILAMENT_SENSOR,
+        SET_FILAMENT_SENSOR, runout detection) reflects the FPS state.
+        """
+        helper = self._fps_runout_helper
+        if helper is None:
+            return
+        try:
+            helper.note_filament_present(eventtime, is_filament_present=filament_present)
+        except TypeError:
+            helper.note_filament_present(is_filament_present=filament_present)
 
     def get_fps_value(self):
         """Return the current FPS pressure value, or None if no FPS linked."""
