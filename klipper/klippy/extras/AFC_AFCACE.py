@@ -833,6 +833,39 @@ class afcAFCACE(afcUnit):
 
     # ---- Low-Level Slot Operations ----
 
+    def _wait_for_ace_ready(self, timeout=10.0):
+        """Wait for the overall ACE status to be 'ready' before sending commands.
+
+        After a retract/feed completes, the slot may report 'ready'/'empty'
+        before the ACE controller finishes its internal housekeeping.  Sending
+        a new feed_filament while the ACE is still 'busy' returns FORBIDDEN.
+        """
+        ace = self._ace
+        if ace is None or not ace.connected:
+            return
+        poll_interval = 0.5
+        elapsed = 0.0
+        while elapsed < timeout:
+            try:
+                hw_status = ace.get_status(timeout=2.0)
+                if isinstance(hw_status, dict):
+                    if hw_status.get("status", "") == "ready":
+                        return
+                    self.logger.debug(
+                        f"AFCACE: waiting for ACE ready "
+                        f"(status={hw_status.get('status', '?')}, "
+                        f"{elapsed:.1f}s/{timeout:.0f}s)"
+                    )
+            except Exception:
+                pass
+            self.afc.reactor.pause(
+                self.afc.reactor.monotonic() + poll_interval
+            )
+            elapsed += poll_interval
+        self.logger.warning(
+            f"AFCACE: ACE did not become ready within {timeout:.0f}s, proceeding anyway"
+        )
+
     def _feed_slot(self, slot_index, lane=None):
         """Feed filament from an ACE slot through to the toolhead.
 
@@ -845,6 +878,9 @@ class afcAFCACE(afcUnit):
         If no lane is provided (no sensor to check), falls back to fixed-distance feed.
         """
         ace = self._ace
+
+        # Ensure ACE is not still busy from a previous operation
+        self._wait_for_ace_ready()
 
         self.logger.debug(
             f"AFCACE feed: slot {slot_index}, "
@@ -1025,6 +1061,10 @@ class afcAFCACE(afcUnit):
             step_size = self.calibration_step
 
         ace = self._ace
+
+        # Ensure ACE is not still busy from a previous operation
+        self._wait_for_ace_ready()
+
         total_fed = 0.0
 
         while total_fed < max_length:
@@ -1048,6 +1088,9 @@ class afcAFCACE(afcUnit):
     def _retract_slot(self, slot_index):
         """Retract filament from the toolhead back into the ACE slot."""
         ace = self._ace
+
+        # Ensure ACE is not still busy from a previous operation
+        self._wait_for_ace_ready()
 
         self.logger.debug(
             f"AFCACE retract: slot {slot_index}, "
@@ -1225,6 +1268,7 @@ class afcAFCACE(afcUnit):
             f"@ {self.retract_speed}mm/min"
         )
         try:
+            self._wait_for_ace_ready()
             self._ace.unwind_filament(local_slot, retract_dist, self.retract_speed)
             self._wait_for_feed_complete(
                 local_slot, retract_dist, self.retract_speed
@@ -1324,6 +1368,9 @@ class afcAFCACE(afcUnit):
             f"max {max_bowden_length}mm, TD-1 device={cur_lane.td1_device_id}"
         )
 
+        # Ensure ACE is not still busy from a previous operation
+        self._wait_for_ace_ready()
+
         # Feed incrementally until TD-1 detects filament
         bow_pos = 0.0
         compare_time = datetime.now()
@@ -1352,6 +1399,7 @@ class afcAFCACE(afcUnit):
             f"@ {self.retract_speed}mm/min"
         )
         try:
+            self._wait_for_ace_ready()
             self._ace.unwind_filament(local_slot, retract_dist, self.retract_speed)
             self._wait_for_feed_complete(
                 local_slot, retract_dist, self.retract_speed
