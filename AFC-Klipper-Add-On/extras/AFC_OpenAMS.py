@@ -1081,7 +1081,11 @@ class afcAMS(afcUnit):
                 # Extruder confirms this lane is loaded
                 return True
             elif lane_loaded is not None and lane_loaded != lane_name:
-                # Extruder has a different lane loaded
+                # Extruder has a different lane loaded.
+                # If the loaded lane doesn't belong to this unit, return None
+                # (no opinion) so we don't override another unit's sensor state.
+                if lane_loaded not in self.lanes:
+                    return None
                 return False
             elif lane_loaded is None:
                 # Extruder lost track (e.g., during BT_PREP system test). Rehydrate from saved state, then lane state
