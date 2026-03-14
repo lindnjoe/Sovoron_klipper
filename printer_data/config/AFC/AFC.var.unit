@@ -1,11 +1,10 @@
 {
-    "Tools": {},
-    "ace1": {
+    "Ace1": {
         "lane12": {
             "name": "lane12",
-            "unit": "ace1",
-            "hub": "ace_hub",
-            "extruder": "extruder3",
+            "unit": "Ace1",
+            "hub": "ace_hub1",
+            "extruder": "extruder5",
             "buffer": null,
             "buffer_status": null,
             "lane": 1,
@@ -15,14 +14,14 @@
             "tool_loaded": false,
             "loaded_to_hub": true,
             "material": "PLA",
-            "density": 1.24,
+            "density": 1.23,
             "diameter": 1.75,
             "empty_spool_weight": 170.0,
             "remember_spool": false,
-            "spool_id": null,
-            "color": "",
-            "weight": 1000,
-            "extruder_temp": null,
+            "spool_id": 42,
+            "color": "#ffffff",
+            "weight": 592.4701669902086,
+            "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
@@ -32,9 +31,9 @@
         },
         "lane13": {
             "name": "lane13",
-            "unit": "ace1",
-            "hub": "ace_hub",
-            "extruder": "extruder3",
+            "unit": "Ace1",
+            "hub": "ace_hub1",
+            "extruder": "extruder5",
             "buffer": null,
             "buffer_status": null,
             "lane": 2,
@@ -43,13 +42,13 @@
             "prep": false,
             "tool_loaded": false,
             "loaded_to_hub": false,
-            "material": null,
+            "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
             "empty_spool_weight": 190,
             "remember_spool": false,
             "spool_id": null,
-            "color": "#000000",
+            "color": null,
             "weight": 0,
             "extruder_temp": null,
             "runout_lane": null,
@@ -61,38 +60,38 @@
         },
         "lane14": {
             "name": "lane14",
-            "unit": "ace1",
-            "hub": "ace_hub",
-            "extruder": "extruder3",
+            "unit": "Ace1",
+            "hub": "ace_hub1",
+            "extruder": "extruder5",
             "buffer": null,
             "buffer_status": null,
             "lane": 3,
             "map": "T14",
-            "load": false,
-            "prep": false,
+            "load": true,
+            "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": false,
-            "material": null,
-            "density": 1.24,
+            "loaded_to_hub": true,
+            "material": "PLA",
+            "density": 1.21,
             "diameter": 1.75,
-            "empty_spool_weight": 190,
+            "empty_spool_weight": 240.0,
             "remember_spool": false,
-            "spool_id": null,
-            "color": "#000000",
-            "weight": 0,
-            "extruder_temp": null,
+            "spool_id": 23,
+            "color": "#76603c",
+            "weight": 966.90777640701,
+            "extruder_temp": 210,
             "runout_lane": null,
-            "filament_status": "Not Ready",
-            "filament_status_led": "#ff0000",
-            "status": "None",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
         "lane15": {
             "name": "lane15",
-            "unit": "ace1",
-            "hub": "ace_hub",
-            "extruder": "extruder3",
+            "unit": "Ace1",
+            "hub": "ace_hub1",
+            "extruder": "extruder5",
             "buffer": null,
             "buffer_status": null,
             "lane": 4,
@@ -104,10 +103,10 @@
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
-            "empty_spool_weight": 190,
+            "empty_spool_weight": 250.0,
             "remember_spool": false,
             "spool_id": null,
-            "color": "#000000",
+            "color": "",
             "weight": 1000,
             "extruder_temp": null,
             "runout_lane": null,
@@ -118,6 +117,7 @@
             "td1_data": {}
         }
     },
+    "Tools": {},
     "AMS_1": {
         "lane4": {
             "name": "lane4",
@@ -168,7 +168,7 @@
             "remember_spool": false,
             "spool_id": 13,
             "color": "#000000",
-            "weight": 261.3597700581479,
+            "weight": 246.63458566474435,
             "extruder_temp": 240,
             "runout_lane": null,
             "filament_status": "Ready",
@@ -385,7 +385,7 @@
             "remember_spool": false,
             "spool_id": 11,
             "color": "#27EA51",
-            "weight": 587.6303703518906,
+            "weight": 584.7315216049976,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "In Tool",
@@ -483,7 +483,7 @@
             "status": "None",
             "dist_hub": 2195.8452031250004,
             "td1_data": {},
-            "endstops": "load,tool_start,buffer_advance,buffer_trailing,lane3_prep,lane3_load,lane3_buffer,lane3_tool"
+            "endstops": "load,tool_start,buffer_advance,buffer_trailing,lane3_prep,lane3_load,lane3_buffer"
         }
     },
     "system": {
@@ -492,23 +492,23 @@
         "num_lanes": 16,
         "num_extruders": 6,
         "extruders": {
-            "extruder": {
-                "lane_loaded": "lane0"
-            },
-            "extruder3": {
+            "extruder5": {
                 "lane_loaded": null
             },
             "extruder4": {
                 "lane_loaded": null
             },
-            "extruder5": {
-                "lane_loaded": null
+            "extruder": {
+                "lane_loaded": "lane0"
             },
             "extruder1": {
                 "lane_loaded": "lane1"
             },
             "extruder2": {
                 "lane_loaded": "lane2"
+            },
+            "extruder3": {
+                "lane_loaded": null
             }
         },
         "bypass": {
