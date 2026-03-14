@@ -254,6 +254,47 @@ class afcAFCACE(afcUnit):
                 )
                 buf.disable_buffer()
 
+    def _dock_purge_dropoff(self):
+        """Drop off current tool at dock for dock purging.
+
+        Enters docking mode and runs the toolchanger's dropoff gcode so the
+        nozzle rests on the dock pad while filament is loaded and purged.
+        """
+        tc = self.printer.lookup_object('toolchanger')
+        tool = tc.active_tool
+        if not tool:
+            self.logger.warning("AFCACE dock purge: no active tool, skipping dropoff")
+            return
+
+        self.afc.gcode.run_script_from_command("ENTER_DOCKING_MODE")
+
+        gcode_pos = list(tc.gcode_move.get_status()['gcode_position'])
+        start_pos = tc._position_with_tool_offset(gcode_pos, None)
+        self._dock_purge_context = {
+            'dropoff_tool': tool.name,
+            'pickup_tool': tool.name,
+            'start_position': tc._position_to_xyz(start_pos, 'xyz'),
+            'restore_position': tc._position_to_xyz(start_pos, 'XYZ'),
+        }
+
+        tc.run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
+
+    def _dock_purge_pickup(self):
+        """Pick up tool from dock after purging.
+
+        Runs the toolchanger's pickup gcode (nozzle wipes on pad during pickup)
+        and exits docking mode to restore normal operation.
+        """
+        tc = self.printer.lookup_object('toolchanger')
+        tool = tc.active_tool
+        if not tool or not hasattr(self, '_dock_purge_context'):
+            self.logger.warning("AFCACE dock purge: no context for pickup, skipping")
+            return
+
+        tc.run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
+        self.afc.gcode.run_script_from_command("EXIT_DOCKING_MODE")
+        self._dock_purge_context = None
+
     # ---- Inventory / State Sync ----
 
     def _sync_inventory(self):
@@ -469,7 +510,7 @@ class afcAFCACE(afcUnit):
         # Dock purge phase 1: drop off tool at dock before feeding filament
         if self.dock_purge:
             self.logger.info("AFCACE dock purge: dropping tool off at dock before feed")
-            afc.gcode.run_script_from_command("AFC_DOCK_PURGE PHASE=dropoff")
+            self._dock_purge_dropoff()
             afc.afcDeltaTime.log_with_time("AFCACE: After dock purge dropoff")
 
         local_slot = self._get_local_slot_for_lane(cur_lane)
@@ -600,7 +641,7 @@ class afcAFCACE(afcUnit):
             afc.move_e_pos(
                 self.dock_purge_length, purge_speed_mm_min, "dock purge extrude"
             )
-            afc.gcode.run_script_from_command("AFC_DOCK_PURGE PHASE=pickup")
+            self._dock_purge_pickup()
             afc.afcDeltaTime.log_with_time("AFCACE: After dock purge pickup")
 
         cur_lane.set_tool_loaded()
