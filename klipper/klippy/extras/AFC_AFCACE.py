@@ -324,6 +324,16 @@ class afcAFCACE(afcUnit):
         except Exception:
             pass
 
+        # Apply the OpenAMS virtual pin patch so that AMS_extruder# values
+        # in pin_tool_start are handled correctly.  AFC_AFCACE configs load
+        # alphabetically before AFC_OpenAMS, so without this the patch would
+        # not be in place when [AFC_extruder] sections are parsed.
+        try:
+            from extras.AFC_OpenAMS import _patch_extruder_for_virtual_ams
+            _patch_extruder_for_virtual_ams()
+        except Exception:
+            pass
+
     def _handle_ready(self):
         """Schedule deferred init - reactor pause is disabled during klippy:ready."""
         self.afc.reactor.register_callback(self._deferred_init)
