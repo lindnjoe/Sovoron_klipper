@@ -1856,8 +1856,9 @@ class afcAFCACE(afcUnit):
             local_slot, cur_lane, max_distance, step_size=self.calibration_step
         )
 
-        # Always retract after calibration (whether sensor triggered or not)
-        retract_dist = distance + 50
+        # Retract after calibration - use slightly less than fed distance
+        # to avoid pulling filament out of the unit
+        retract_dist = distance - 5 if triggered else distance
         self.logger.info(
             f"AFCACE calibrate_bowden: retracting {retract_dist:.0f}mm "
             f"@ {self.retract_speed}mm/min"
