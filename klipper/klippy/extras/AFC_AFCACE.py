@@ -953,13 +953,12 @@ class afcAFCACE(afcUnit):
                 # Always pick up the tool -even on failure
                 if load_result and self.dock_purge:
                     # Success path: purge in dock, then pick up
-                    purge_speed_mm_min = self.dock_purge_speed * 60
                     self.logger.info(
                         f"AFCACE dock purge: extruding {self.dock_purge_length}mm "
                         f"@ {self.dock_purge_speed}mm/s in dock, then picking up"
                     )
                     afc.move_e_pos(
-                        self.dock_purge_length, purge_speed_mm_min,
+                        self.dock_purge_length, self.dock_purge_speed,
                         "dock purge extrude"
                     )
                 else:
@@ -1134,7 +1133,7 @@ class afcAFCACE(afcUnit):
         if cur_extruder.tool_stn:
             self.logger.info(
                 f"AFCACE load: advancing {cur_extruder.tool_stn}mm into nozzle "
-                f"@ {cur_extruder.tool_load_speed}mm/min"
+                f"@ {cur_extruder.tool_load_speed}mm/s"
             )
             afc.move_e_pos(
                 cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn"
@@ -1290,7 +1289,7 @@ class afcAFCACE(afcUnit):
             if cur_extruder.tool_stn_unload > 0:
                 self.logger.info(
                     f"AFCACE unload: buffer retract {cur_extruder.tool_stn_unload}mm "
-                    f"@ {cur_extruder.tool_unload_speed}mm/min"
+                    f"@ {cur_extruder.tool_unload_speed}mm/s"
                 )
                 afc.move_e_pos(
                     cur_extruder.tool_stn_unload * -1,
@@ -1304,7 +1303,7 @@ class afcAFCACE(afcUnit):
             if retract_distance > 0:
                 self.logger.info(
                     f"AFCACE unload: extruder retract {retract_distance}mm "
-                    f"@ {cur_extruder.tool_unload_speed}mm/min to clear nozzle/gears"
+                    f"@ {cur_extruder.tool_unload_speed}mm/s to clear nozzle/gears"
                 )
                 afc.move_e_pos(
                     retract_distance * -1,
