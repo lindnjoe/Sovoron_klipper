@@ -43,6 +43,7 @@ class TemperatureACE:
         self._ace_unit = None
         # AFC logger reference (resolved in handle_ready)
         self._logger = None
+        self._sample_error_logged = False
 
         # Klipper temperature callback
         self._callback = None
@@ -128,12 +129,6 @@ class TemperatureACE:
                 hw_status = getattr(self._ace_unit, "_cached_hw_status", {})
                 ace_temp = float(hw_status.get("temp", 0.0) or 0.0)
 
-                if not hasattr(self, "_sample_logged") and ace_temp > 0:
-                    self._log().info(
-                        f"temperature_ace: first sample from '{self.ace_unit_name}' = {ace_temp:.1f}C"
-                    )
-                    self._sample_logged = True
-
                 self.temp = ace_temp
 
                 if self.temp > 0:
@@ -153,7 +148,9 @@ class TemperatureACE:
             else:
                 self.temp = 0.0
         except Exception as e:
-            self._log().error(f"temperature_ace: error sampling ACE temperature: {e}")
+            if not self._sample_error_logged:
+                self._log().error(f"temperature_ace: error sampling ACE temperature: {e}")
+                self._sample_error_logged = True
             self.temp = 0.0
 
         if self._callback:
