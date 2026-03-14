@@ -866,19 +866,56 @@ class afcAFCACE(afcUnit):
                 afc.error.handle_lane_failure(cur_lane, message)
                 return False
         elif cur_extruder.tool_start:
-            # Standard toolhead sensor verification
+            # Standard toolhead sensor verification with retry.
+            # If the sensor hasn't triggered after the full feed, do up to 5
+            # additional 10mm feeds checking the sensor after each one.  This
+            # handles slight bowden length variations without immediately
+            # failing the load.
             if not cur_lane.get_toolhead_pre_sensor_state():
-                message = (
-                    "AFCACE load did not trigger toolhead sensor. CHECK FILAMENT PATH\n"
-                    "To resolve, set lane loaded with "
-                    f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                )
-                if afc.function.in_print():
-                    message += (
-                        "\nOnce filament is fully loaded click resume to continue printing"
+                smart_load_step = 10.0   # mm per retry
+                smart_load_max  = 5      # max retries
+                for attempt in range(1, smart_load_max + 1):
+                    self.logger.info(
+                        f"AFCACE smart load: sensor not triggered, "
+                        f"feeding {smart_load_step}mm (attempt {attempt}/{smart_load_max})"
                     )
-                afc.error.handle_lane_failure(cur_lane, message)
-                return False
+                    # Ensure feed assist is running so ACE pushes filament
+                    if (local_slot >= 0
+                            and self._get_feed_assist_for_slot(local_slot)
+                            and local_slot not in self._feed_assist_active):
+                        try:
+                            self._wait_for_ace_ready()
+                            self._ace.start_feed_assist(local_slot)
+                            self._feed_assist_active.add(local_slot)
+                        except Exception:
+                            pass
+                    self._ace.feed_filament(local_slot, smart_load_step, self.feed_speed)
+                    self._wait_for_feed_complete(
+                        local_slot, smart_load_step, self.feed_speed,
+                        lane=cur_lane, poll_interval=0.3,
+                    )
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.2)
+                    if cur_lane.get_toolhead_pre_sensor_state():
+                        self.logger.info(
+                            f"AFCACE smart load: sensor triggered after "
+                            f"{attempt * smart_load_step:.0f}mm extra feed"
+                        )
+                        break
+                else:
+                    # All retries exhausted — error out
+                    message = (
+                        f"AFCACE load did not trigger toolhead sensor after "
+                        f"{smart_load_max * smart_load_step:.0f}mm of extra feeding. "
+                        f"CHECK FILAMENT PATH\n"
+                        "To resolve, set lane loaded with "
+                        f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                    )
+                    if afc.function.in_print():
+                        message += (
+                            "\nOnce filament is fully loaded click resume to continue printing"
+                        )
+                    afc.error.handle_lane_failure(cur_lane, message)
+                    return False
 
         # Sync to extruder and load filament into the nozzle using tool_stn
         cur_lane.status = AFCLaneState.TOOL_LOADED
