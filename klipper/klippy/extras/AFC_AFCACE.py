@@ -296,7 +296,7 @@ class afcAFCACE(afcUnit):
         # ~30 seconds to guard against the ACE firmware silently dropping
         # the assist motor (internal timeout, brief busy state, etc.).
         self._feed_assist_refresh_counter = 0
-        self._FEED_ASSIST_REFRESH_INTERVAL = 15  # heartbeats (~30s at 2s interval)
+        self._FEED_ASSIST_REFRESH_INTERVAL = 7  # heartbeats (~15s at 2s interval)
 
         # When True, the next successful heartbeat response will restore
         # feed assist for all tracked slots before clearing the flag.
@@ -798,7 +798,7 @@ class afcAFCACE(afcUnit):
         # its active extruder should have feed assist running if configured.
         # This catches cases where _feed_assist_active lost track of a slot
         # (e.g. startup recovery, manual SET_LANE_LOADED, firmware drop).
-        # Also re-sends the command every ~30s to guard against the ACE
+        # Also re-sends the command every ~15s to guard against the ACE
         # firmware silently disabling the assist motor.
         if not self._operation_active and self._ace is not None:
             self._feed_assist_refresh_counter += 1
