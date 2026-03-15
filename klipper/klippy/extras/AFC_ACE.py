@@ -944,6 +944,7 @@ class afcACE(afcUnit):
     def handle_connect(self):
         super().handle_connect()
         self._register_gcode_commands()
+        self._wrap_get_current_lane()
 
         self.logo = '<span class=success--text>R  _____ _____ _____\n'
         self.logo += 'E | AFC | ACE |     |\n'
@@ -1046,7 +1047,7 @@ class afcACE(afcUnit):
         # on the same extruder) from triggering "AFC NOT FEEDING" during ACE ops.
         self._disable_extruder_buffers(cur_extruder, cur_lane)
 
-        # Check if already loaded
+        # Check if this lane is already loaded
         if (cur_lane.get_toolhead_pre_sensor_state()
                 and hasattr(cur_lane, "tool_loaded") and cur_lane.tool_loaded):
             self.logger.debug(
@@ -1055,6 +1056,25 @@ class afcACE(afcUnit):
             cur_lane.set_tool_loaded()
             self._persistence.save()
             return True
+
+        # Check if a different lane is loaded on this extruder and unload it
+        # first.  This handles the case where CHANGE_TOOL's normal unload was
+        # skipped (e.g. shuttle was empty at startup so self.current was None).
+        loaded_lane_name = cur_extruder.lane_loaded
+        if loaded_lane_name is not None and loaded_lane_name != cur_lane.name:
+            loaded_lane = afc.lanes.get(loaded_lane_name)
+            if loaded_lane is not None:
+                self.logger.info(
+                    f"ACE load: {loaded_lane_name} still loaded on "
+                    f"{cur_extruder.name}, unloading first"
+                )
+                if not afc.TOOL_UNLOAD(loaded_lane, set_start_time=False):
+                    afc.error.handle_lane_failure(
+                        cur_lane,
+                        f"ACE load failed: could not unload {loaded_lane_name} "
+                        f"from {cur_extruder.name}",
+                    )
+                    return False
 
         if afc._check_extruder_temp(cur_lane):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
@@ -1885,16 +1905,19 @@ class afcACE(afcUnit):
                         msg += f'<span class=primary--text> in ToolHead{on_shuttle}</span>'
                         if cur_lane.extruder_obj.tool_start == "buffer":
                             msg += '<span class=warning--text> Ram sensor enabled, confirm tool is loaded</span>'
+
+                        # Restore combined mode tracking regardless of shuttle
+                        # state so ACE knows which slot is loaded for the next
+                        # tool change even when the shuttle starts empty.
+                        if self.mode == MODE_COMBINED:
+                            local_slot = self._get_local_slot_for_lane(cur_lane)
+                            if local_slot >= 0:
+                                self._current_loaded_slot = local_slot
+
                         if self.afc.function.get_current_lane() == cur_lane.name:
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             cur_lane.unit_obj.lane_tool_loaded(cur_lane)
                             cur_lane.status = AFCLaneState.TOOLED
-
-                            # Restore combined mode tracking
-                            if self.mode == MODE_COMBINED:
-                                local_slot = self._get_local_slot_for_lane(cur_lane)
-                                if local_slot >= 0:
-                                    self._current_loaded_slot = local_slot
 
                             # Start feed assist so ACE pushes filament
                             # immediately — don't wait for the periodic
@@ -2282,6 +2305,53 @@ class afcACE(afcUnit):
         """Public method to force-sync RFID/spool data from ACE hardware."""
         self._sync_inventory()
         self._sync_slot_loaded_state()
+
+    # ---- AFC Function Wrappers ----
+
+    def _wrap_get_current_lane(self):
+        """Wrap AFC's get_current_lane to return the loaded lane even when
+        the toolchanger shuttle is empty.
+
+        Upstream's get_current_lane() gates on on_shuttle(), which returns
+        False when no tool is detected (e.g. after a power cycle with the
+        shuttle parked).  This causes CHANGE_TOOL to skip the unload step
+        because self.current returns None, leaving stale filament in the
+        hub/bowden path.
+
+        The wrapper falls back to extruder.lane_loaded for ACE lanes so
+        that CHANGE_TOOL properly triggers TOOL_UNLOAD (which does its own
+        tool_swap to pick up the shuttle before unloading).
+        """
+        afc_function = getattr(self.afc, "function", None)
+        if afc_function is None:
+            return
+
+        # Only wrap once across all ACE instances
+        if hasattr(afc_function, "_ace_get_current_lane_original"):
+            return
+
+        afc_function._ace_get_current_lane_original = afc_function.get_current_lane
+
+        def get_current_lane_wrapper():
+            result = afc_function._ace_get_current_lane_original()
+            if result is not None:
+                return result
+
+            # Fallback: check if the active Klipper extruder has an ACE
+            # lane loaded according to saved state.
+            if self.printer.state_message != 'Printer is ready':
+                return None
+            current_extruder_name = self.afc.toolhead.get_extruder().name
+            tool_obj = self.afc.tools.get(current_extruder_name)
+            if tool_obj is None or tool_obj.lane_loaded is None:
+                return None
+            lane_obj = self.afc.lanes.get(tool_obj.lane_loaded)
+            if lane_obj is not None and isinstance(lane_obj.unit_obj, afcACE):
+                return tool_obj.lane_loaded
+            return None
+
+        afc_function.get_current_lane = get_current_lane_wrapper
+        self.logger.debug("Wrapped AFC.function.get_current_lane for ACE shuttle-empty fallback")
 
     # ---- GCode Commands ----
 
