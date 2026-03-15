@@ -10,7 +10,7 @@ import traceback
 from contextlib import contextmanager
 from functools import partial
 
-from extras.openams_integration import (
+from extras.AFC_OpenAMS import (
     AMSRunoutCoordinator,
     AMSHardwareService,
     normalize_extruder_name as _normalize_extruder_name,

@@ -243,57 +243,6 @@ def _make_afcace_serial_mock():
     return mod
 
 
-def _make_openams_integration_mock():
-    """Mock for extras.openams_integration (OpenAMS hardware integration)."""
-    mod = types.ModuleType("extras.openams_integration")
-
-    class AMSHardwareService:
-        @classmethod
-        def for_printer(cls, printer, oams_name, logger):
-            return cls()
-
-        def get_slot_status(self, slot):
-            return {}
-
-    class AMSRunoutCoordinator:
-        @classmethod
-        def register_afc_unit(cls, unit):
-            return AMSHardwareService()
-
-    class LaneRegistry:
-        @classmethod
-        def for_printer(cls, printer):
-            return cls()
-
-        def register(self, lane):
-            pass
-
-    class AMSEventBus:
-        _instance = None
-
-        @classmethod
-        def get_instance(cls):
-            if cls._instance is None:
-                cls._instance = cls()
-            return cls._instance
-
-        def subscribe(self, event, callback, priority=0):
-            pass
-
-        def publish(self, event, **kwargs):
-            pass
-
-    def normalize_extruder_name(name):
-        return name
-
-    mod.AMSHardwareService = AMSHardwareService
-    mod.AMSRunoutCoordinator = AMSRunoutCoordinator
-    mod.LaneRegistry = LaneRegistry
-    mod.AMSEventBus = AMSEventBus
-    mod.normalize_extruder_name = normalize_extruder_name
-    return mod
-
-
 def _make_temperature_ace_mock():
     """Mock for extras.temperature_ace."""
     mod = types.ModuleType("extras.temperature_ace")
@@ -321,7 +270,6 @@ sys.modules.setdefault("klippy", _make_klippy_ready_mock())
 
 # ACE/OpenAMS-specific mocks
 sys.modules.setdefault("extras.AFC_AFCACE_serial", _make_afcace_serial_mock())
-sys.modules.setdefault("extras.openams_integration", _make_openams_integration_mock())
 sys.modules.setdefault("extras.temperature_ace", _make_temperature_ace_mock())
 
 _led_mock = _make_led_mock()

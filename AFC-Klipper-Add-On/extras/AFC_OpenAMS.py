@@ -9,6 +9,8 @@ import json
 import logging
 import os
 import re
+import time
+import threading
 import traceback
 from textwrap import dedent
 from datetime import datetime
@@ -55,16 +57,525 @@ try:
 except Exception:
     _raise_import_error("AFC_respond", template=ERROR_STR)
 
-try:
-    from extras.openams_integration import (
-        AMSHardwareService,
-        AMSRunoutCoordinator,
-        LaneRegistry,
-        AMSEventBus,
-        normalize_extruder_name,
-    )
-except Exception:
-    _raise_import_error("openams_integration", template=ERROR_STR)
+# ── OpenAMS integration classes (formerly extras/openams_integration.py) ──────
+
+OPENAMS_VERSION = "0.0.3"
+
+
+def normalize_extruder_name(name):
+    if not name or not isinstance(name, str):
+        return None
+    normalized = name.strip()
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+    if lowered.startswith("ams_"):
+        lowered = lowered[4:]
+    return lowered or None
+
+
+def normalize_oams_name(name, *, default="default"):
+    if not name:
+        return default
+    normalized = str(name).strip()
+    if not normalized:
+        return default
+    if normalized.lower().startswith("oams "):
+        normalized = normalized[5:].strip()
+    return normalized or default
+
+
+class AMSEventBus:
+    _instance = None
+    _lock = threading.RLock()
+    _MAX_HISTORY = 500
+    _HISTORY_TTL = 3600.0
+
+    def __init__(self):
+        self._subscribers = {}
+        self._event_history = []
+        self.logger = None
+
+    @classmethod
+    def get_instance(cls, logger=None):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = cls()
+            if logger is not None and cls._instance.logger is None:
+                cls._instance.logger = logger
+            return cls._instance
+
+    def subscribe(self, event_type, callback, *, priority=0):
+        with self._lock:
+            if event_type not in self._subscribers:
+                self._subscribers[event_type] = []
+            subscribers = self._subscribers[event_type]
+            insert_idx = 0
+            for i, (existing_callback, existing_priority) in enumerate(subscribers):
+                if priority > existing_priority:
+                    insert_idx = i
+                    break
+                insert_idx = i + 1
+            subscribers.insert(insert_idx, (callback, priority))
+            if self.logger is not None:
+                self.logger.debug(f"Subscribed to '{event_type}' (priority={priority}, total={len(subscribers)})")
+
+    def publish(self, event_type, **kwargs):
+        eventtime = kwargs.get('eventtime', time.time())
+        with self._lock:
+            self._event_history.append((event_type, eventtime, dict(kwargs)))
+            if len(self._event_history) > self._MAX_HISTORY:
+                cutoff = time.monotonic() - self._HISTORY_TTL
+                self._event_history = [e for e in self._event_history if e[1] > cutoff]
+                if len(self._event_history) > self._MAX_HISTORY:
+                    self._event_history = self._event_history[-self._MAX_HISTORY:]
+            subscribers = list(self._subscribers.get(event_type, []))
+        if not subscribers:
+            return 0
+        success_count = 0
+        for callback, priority in subscribers:
+            try:
+                callback(event_type=event_type, **kwargs)
+                success_count += 1
+            except Exception as e:
+                if self.logger is not None:
+                    self.logger.error(f"Event handler failed for '{event_type}' (priority={priority}): {e}")
+        return success_count
+
+
+class LaneInfo:
+    def __init__(self, lane_name, unit_name, spool_index, extruder,
+                 fps_name=None, hub_name=None, led_index=None,
+                 custom_load_cmd=None, custom_unload_cmd=None):
+        self.lane_name = lane_name
+        self.unit_name = unit_name
+        self.spool_index = spool_index
+        self.extruder = extruder
+        self.fps_name = fps_name
+        self.hub_name = hub_name
+        self.led_index = led_index
+        self.custom_load_cmd = custom_load_cmd
+        self.custom_unload_cmd = custom_unload_cmd
+
+
+class LaneRegistry:
+    _instances = {}
+    _lock = threading.RLock()
+
+    def __init__(self, printer, logger=None):
+        self.printer = printer
+        self.logger = logger
+        self._lanes = []
+        self._by_lane_name = {}
+        self._by_lane_name_lower = {}
+        self._by_spool = {}
+        self._by_extruder = {}
+        self.event_bus = AMSEventBus.get_instance(logger=self.logger)
+
+    @classmethod
+    def for_printer(cls, printer, logger=None):
+        with cls._lock:
+            key = id(printer)
+            if key not in cls._instances:
+                cls._instances[key] = cls(printer, logger=logger)
+            elif logger is not None:
+                cls._instances[key].logger = logger
+            return cls._instances[key]
+
+    def register_lane(self, lane_name, unit_name, spool_index, extruder, *,
+                      fps_name=None, hub_name=None, led_index=None,
+                      custom_load_cmd=None, custom_unload_cmd=None):
+        with self._lock:
+            existing = self._by_lane_name.get(lane_name)
+            if existing is not None:
+                self.logger.warning(f"Lane '{lane_name}' already registered, updating")
+                self._unregister_lane(existing)
+            info = LaneInfo(
+                lane_name=lane_name, unit_name=unit_name,
+                spool_index=spool_index, extruder=extruder,
+                fps_name=fps_name, hub_name=hub_name, led_index=led_index,
+                custom_load_cmd=custom_load_cmd, custom_unload_cmd=custom_unload_cmd,
+            )
+            self._lanes.append(info)
+            self._by_lane_name[lane_name] = info
+            self._by_lane_name_lower[lane_name.lower()] = info
+            self._by_spool[(unit_name, spool_index)] = info
+            if extruder not in self._by_extruder:
+                self._by_extruder[extruder] = []
+            self._by_extruder[extruder].append(info)
+            self.logger.info(f"Registered lane: {lane_name} - {unit_name}[{spool_index}] (extruder={extruder}, fps={fps_name})")
+            return info
+
+    def _unregister_lane(self, info):
+        if info in self._lanes:
+            self._lanes.remove(info)
+        self._by_lane_name.pop(info.lane_name, None)
+        self._by_lane_name_lower.pop(info.lane_name.lower(), None)
+        self._by_spool.pop((info.unit_name, info.spool_index), None)
+        extruder_lanes = self._by_extruder.get(info.extruder, [])
+        if info in extruder_lanes:
+            extruder_lanes.remove(info)
+            if not extruder_lanes:
+                self._by_extruder.pop(info.extruder, None)
+
+    def get_by_lane(self, lane_name):
+        with self._lock:
+            return self._by_lane_name.get(lane_name)
+
+    def get_by_spool(self, unit_name, spool_index):
+        with self._lock:
+            return self._by_spool.get((unit_name, spool_index))
+
+    def resolve_lane_token(self, token):
+        with self._lock:
+            return self._by_lane_name_lower.get(token.lower())
+
+    def resolve_lane_name(self, unit_name, spool_index):
+        info = self.get_by_spool(unit_name, spool_index)
+        return info.lane_name if info else None
+
+    def resolve_extruder(self, lane_name):
+        info = self.get_by_lane(lane_name)
+        return info.extruder if info else None
+
+
+class AMSHardwareService:
+    _instances = {}
+
+    def __init__(self, printer, name, logger=None):
+        self.printer = printer
+        self.name = name
+        if logger is not None:
+            self.logger = logger
+        else:
+            self.logger = printer.lookup_object("AFC").logger
+        self._controller = None
+        self._lock = threading.RLock()
+        self._status = {}
+        self._lane_snapshots = {}
+        self._status_callbacks = []
+        self.registry = LaneRegistry.for_printer(printer, logger=self.logger)
+        self.event_bus = AMSEventBus.get_instance(logger=self.logger)
+        self._reactor = None
+        self._polling_timer = None
+        self._polling_interval = 2.0
+        self._polling_interval_idle = 4.0
+        self._consecutive_idle_polls = 0
+        self._idle_poll_threshold = 3
+        self._last_encoder_clicks = None
+        self._last_f1s_hes = [None, None, None, None]
+        self._last_hub_hes = [None, None, None, None]
+        self._last_fps_value = None
+        self._polling_enabled = False
+
+    @classmethod
+    def for_printer(cls, printer, name="default", logger=None):
+        key = (id(printer), AMSRunoutCoordinator._canonical_oams_name(name))
+        try:
+            service = cls._instances[key]
+        except KeyError:
+            service = cls(printer, AMSRunoutCoordinator._canonical_oams_name(name), logger)
+            cls._instances[key] = service
+        else:
+            if logger is not None:
+                service.logger = logger
+        return service
+
+    def attach_controller(self, controller):
+        with self._lock:
+            self._controller = controller
+        if controller is not None:
+            try:
+                status = controller.get_status(self._monotonic())
+            except Exception:
+                status = None
+            if status:
+                self._update_status(status)
+            self.logger.debug(f"Attached OAMS controller {controller}")
+
+    def resolve_controller(self):
+        with self._lock:
+            controller = self._controller
+        if controller is not None:
+            return controller
+        lookup_name = f"oams {self.name}"
+        try:
+            controller = self.printer.lookup_object(lookup_name, None)
+        except Exception:
+            controller = None
+        if controller is not None:
+            self.attach_controller(controller)
+        return controller
+
+    def _monotonic(self):
+        if self._reactor is None:
+            reactor = getattr(self.printer, "get_reactor", None)
+            if callable(reactor):
+                try:
+                    self._reactor = reactor()
+                except Exception:
+                    pass
+            if self._reactor is None:
+                try:
+                    self._reactor = self.printer.get_reactor()
+                except Exception:
+                    return 0.0
+        try:
+            return self._reactor.monotonic()
+        except Exception:
+            return 0.0
+
+    def start_polling(self):
+        if self._polling_timer is not None:
+            self.logger.warning(f"Polling already started for {self.name}")
+            return
+        if self._reactor is None:
+            self._monotonic()
+        if self._reactor is None:
+            self.logger.error("Cannot start polling: reactor not available")
+            return
+        self._polling_enabled = True
+        self._polling_timer = self._reactor.register_timer(
+            self._polling_callback, self._reactor.NOW + 1.0
+        )
+        self.logger.info(f"Started unified hardware polling for {self.name} (offset by 1s)")
+
+    def stop_polling(self):
+        self._polling_enabled = False
+        if self._polling_timer is not None and self._reactor is not None:
+            self._reactor.unregister_timer(self._polling_timer)
+            self._polling_timer = None
+
+    def _polling_callback(self, eventtime):
+        if not self._polling_enabled:
+            return self._reactor.NEVER
+        try:
+            status = self.poll_status()
+            if not status:
+                return eventtime + self._polling_interval_idle
+            encoder_changed = False
+            encoder_clicks = status.get("encoder_clicks")
+            if encoder_clicks is not None:
+                if self._last_encoder_clicks is not None:
+                    if encoder_clicks != self._last_encoder_clicks:
+                        encoder_changed = True
+                        self._consecutive_idle_polls = 0
+                self._last_encoder_clicks = encoder_clicks
+            f1s_values = status.get("f1s_hes_value", [])
+            for bay in range(min(len(f1s_values), 4)):
+                new_val = bool(f1s_values[bay])
+                old_val = self._last_f1s_hes[bay]
+                if old_val is None or new_val != old_val:
+                    self.event_bus.publish(
+                        "f1s_changed", unit_name=self.name, bay=bay,
+                        value=new_val, eventtime=eventtime
+                    )
+                    if old_val is None:
+                        self.logger.info(f"f1s[{bay}] initial state: {new_val}")
+                    else:
+                        self.logger.debug(f"f1s[{bay}] changed: {old_val} -> {new_val}")
+                self._last_f1s_hes[bay] = new_val
+            hub_values = status.get("hub_hes_value", [])
+            for bay in range(min(len(hub_values), 4)):
+                new_val = bool(hub_values[bay])
+                old_val = self._last_hub_hes[bay]
+                if old_val is None or new_val != old_val:
+                    self.event_bus.publish(
+                        "hub_changed", unit_name=self.name, bay=bay,
+                        value=new_val, eventtime=eventtime
+                    )
+                    if old_val is None:
+                        self.logger.info(f"hub[{bay}] initial state: {new_val}")
+                    else:
+                        self.logger.debug(f"hub[{bay}] changed: {old_val} -> {new_val}")
+                self._last_hub_hes[bay] = new_val
+            fps_value = status.get("fps_value")
+            if fps_value is not None:
+                old_fps = self._last_fps_value
+                if old_fps is not None and abs(fps_value - old_fps) > 0.05:
+                    self.event_bus.publish(
+                        "fps_changed", unit_name=self.name, value=fps_value,
+                        old_value=old_fps, eventtime=eventtime
+                    )
+                self._last_fps_value = fps_value
+            if encoder_changed:
+                return eventtime + self._polling_interval
+            self._consecutive_idle_polls += 1
+            if self._consecutive_idle_polls > self._idle_poll_threshold:
+                return eventtime + self._polling_interval_idle
+            return eventtime + self._polling_interval
+        except Exception as e:
+            self.logger.error(f"Error in unified polling callback for {self.name}: {e}\n{traceback.format_exc()}")
+            return eventtime + self._polling_interval_idle
+
+    def poll_status(self):
+        controller = self.resolve_controller()
+        if controller is None:
+            return None
+        eventtime = self._monotonic()
+        try:
+            status = controller.get_status(eventtime)
+        except Exception:
+            status = {
+                "current_spool": getattr(controller, "current_spool", None),
+                "f1s_hes_value": list(getattr(controller, "f1s_hes_value", []) or []),
+                "hub_hes_value": list(getattr(controller, "hub_hes_value", []) or []),
+                "fps_value": getattr(controller, "fps_value", 0.0),
+            }
+            encoder = getattr(controller, "encoder_clicks", None)
+            if encoder is not None:
+                status["encoder_clicks"] = encoder
+        self._update_status(status)
+        return status
+
+    def _update_status(self, status):
+        with self._lock:
+            self._status = dict(status)
+
+    def latest_status(self):
+        with self._lock:
+            return dict(self._status)
+
+    def resolve_lane_for_spool(self, unit_name, spool_index):
+        if spool_index is None:
+            return None
+        try:
+            normalized = int(spool_index)
+        except (TypeError, ValueError):
+            return None
+        return self.registry.resolve_lane_name(unit_name, normalized)
+
+    def resolve_lane_for_spool_with_afc(self, unit_name, spool_index):
+        lane_name = self.resolve_lane_for_spool(unit_name, spool_index)
+        if lane_name is not None:
+            return lane_name
+        return self._resolve_lane_name_from_afc(unit_name, spool_index)
+
+    def _resolve_lane_name_from_afc(self, unit_name, spool_index):
+        if spool_index is None:
+            return None
+        try:
+            normalized_index = int(spool_index)
+        except (TypeError, ValueError):
+            return None
+        try:
+            afc = self.printer.lookup_object("AFC", None)
+        except Exception:
+            afc = None
+        if afc is None or not hasattr(afc, 'units'):
+            return None
+        for unit_obj in afc.units.values():
+            if not hasattr(unit_obj, 'oams_name'):
+                continue
+            if unit_obj.oams_name != unit_name:
+                continue
+            target_slot = normalized_index + 1
+            for lane_name, lane_obj in getattr(unit_obj, 'lanes', {}).items():
+                lane_unit = getattr(lane_obj, 'unit', None)
+                if lane_unit and ':' in lane_unit:
+                    try:
+                        slot = int(lane_unit.split(':', 1)[1])
+                    except (ValueError, IndexError):
+                        continue
+                    if slot == target_slot:
+                        return lane_name
+        return None
+
+
+class AMSRunoutCoordinator:
+    """Coordinates runout events between OpenAMS and AFC."""
+    _units = {}
+    _monitors = {}
+    _lock = threading.RLock()
+
+    @staticmethod
+    def _canonical_oams_name(name):
+        return normalize_oams_name(name)
+
+    @classmethod
+    def _key(cls, printer, name):
+        return (id(printer), cls._canonical_oams_name(name))
+
+    @classmethod
+    def register_afc_unit(cls, unit):
+        service = AMSHardwareService.for_printer(unit.printer, unit.oams_name, unit.logger)
+        key = cls._key(unit.printer, unit.oams_name)
+        with cls._lock:
+            cls._units.setdefault(key, [])
+            if unit not in cls._units[key]:
+                cls._units[key].append(unit)
+        return service
+
+    @classmethod
+    def register_runout_monitor(cls, monitor):
+        printer = getattr(monitor, "printer", None)
+        state = getattr(monitor, "fps_state", None)
+        oams_name = getattr(state, "current_oams", None) if state else None
+        if not oams_name:
+            oams_name = getattr(monitor, "fps_name", "default")
+        key = cls._key(printer, oams_name)
+        with cls._lock:
+            cls._monitors.setdefault(key, [])
+            if monitor not in cls._monitors[key]:
+                cls._monitors[key].append(monitor)
+        return AMSHardwareService.for_printer(printer, oams_name)
+
+    @classmethod
+    def notify_runout_detected(cls, monitor, spool_index, *, lane_name=None):
+        printer = getattr(monitor, "printer", None)
+        state = getattr(monitor, "fps_state", None)
+        oams_name = getattr(state, "current_oams", None) if state else None
+        if not oams_name:
+            oams_name = getattr(monitor, "fps_name", "default")
+        key = cls._key(printer, oams_name)
+        with cls._lock:
+            units = list(cls._units.get(key, ()))
+        lane_hint = lane_name or getattr(monitor, "latest_lane_name", None)
+        for unit in units:
+            try:
+                unit.handle_runout_detected(spool_index, monitor, lane_name=lane_hint)
+            except Exception as e:
+                unit.logger.error(f"Failed to propagate OpenAMS runout to AFC unit {unit.name}: {e}")
+
+    @classmethod
+    def notify_afc_error(cls, printer, name, message, *, pause=False):
+        key = cls._key(printer, name)
+        with cls._lock:
+            units = list(cls._units.get(key, ()))
+        for unit in units:
+            afc = getattr(unit, "afc", None)
+            if afc is None:
+                continue
+            error_obj = getattr(afc, "error", None)
+            if error_obj is None:
+                continue
+            try:
+                error_obj.AFC_error(message, pause=pause, stack_name="notify_afc_error")
+            except Exception as e:
+                logger = getattr(unit, "logger", None)
+                if logger is not None:
+                    logger.error(f"Failed to deliver OpenAMS error '{message}' to AFC unit {unit}: {e}")
+
+    @classmethod
+    def notify_lane_tool_state(cls, printer, name, lane_name, *, loaded, spool_index=None, eventtime=None):
+        key = cls._key(printer, name)
+        with cls._lock:
+            units = list(cls._units.get(key, ()))
+        if not units:
+            return False
+        if eventtime is None:
+            try:
+                eventtime = printer.get_reactor().monotonic()
+            except Exception:
+                eventtime = None
+        handled = False
+        for unit in units:
+            try:
+                if unit.handle_openams_lane_tool_state(lane_name, loaded, spool_index=spool_index, eventtime=eventtime):
+                    handled = True
+            except Exception as e:
+                unit.logger.error(f"Failed to update AFC lane {lane_name} from OpenAMS tool state: {e}")
+        return handled
 
 _module_logger = logging.getLogger(__name__)
 
@@ -1786,19 +2297,6 @@ class afcAMS(afcUnit):
 
         saved_value = self._get_saved_lane_field(lane_name, "runout_lane")
         return saved_value
-
-    def record_load(self, extruder: Optional[str] = None, lane_name: Optional[str] = None) -> Optional[str]:
-        canonical = self._canonical_lane_name(lane_name)
-
-        return canonical
-
-    def get_last_loaded_lane(self, extruder: Optional[str] = None) -> Optional[str]:
-        extruder_name = extruder or getattr(self, "extruder", None)
-        if extruder_name is None:
-            return None
-
-        extruder_obj = self.afc.extruders.get(extruder_name) if hasattr(self, "afc") else None
-        return getattr(extruder_obj, "lane_loaded", None) if extruder_obj else None
 
     cmd_SYNC_TOOL_SENSOR_help = "Synchronise the AMS virtual tool-start sensor with the assigned lane."
     def cmd_SYNC_TOOL_SENSOR(self, gcmd):

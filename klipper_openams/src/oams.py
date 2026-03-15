@@ -9,7 +9,7 @@ import mcu
 import struct
 from math import pi
 
-from extras.openams_integration import AMSHardwareService
+from extras.AFC_OpenAMS import AMSHardwareService
 
 # Pre-compiled struct formats for float conversions
 _FLOAT_STRUCT = struct.Struct("f")
