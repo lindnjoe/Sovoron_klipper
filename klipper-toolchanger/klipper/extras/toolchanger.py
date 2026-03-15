@@ -860,7 +860,7 @@ class Toolchanger:
 
     def _ensure_toolchanger_ready(self, gcmd):
         if self.status not in [STATUS_READY, STATUS_CHANGING]:
-            raise gcmd.error("VERIFY_TOOL_DETECTED: toolchanger not ready: status = %s", (self.status,))
+            raise gcmd.error("VERIFY_TOOL_DETECTED: toolchanger not ready: status = %s" % (self.status,))
 
 class FanSwitcher:
     def __init__(self, toolchanger, config):
