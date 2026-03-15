@@ -978,7 +978,7 @@ class AFCLane:
 
     @property
     def load_state(self) -> bool:
-        if self.unit_obj.type in ("ViViD", "OpenAMS", "ACE"):
+        if self.unit_obj.type in ("ViViD", "ACE"):
             return self.loaded_to_hub
         else:
             return bool(self._load_state)
@@ -989,7 +989,7 @@ class AFCLane:
 
     @property
     def prep_state(self) -> bool:
-        if self.unit_obj.type in ("OpenAMS", "ACE"):
+        if self.unit_obj.type in ("ACE",):
             return self.loaded_to_hub
         return self._prep_state
 
