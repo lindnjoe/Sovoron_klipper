@@ -974,6 +974,7 @@ class afcACE(afcUnit):
         )
         response["ace_serial_port"] = self.serial_port
         response["ace_status"] = self._cached_hw_status
+        response["ace_drying"] = self._drying_active
 
         return response
 
