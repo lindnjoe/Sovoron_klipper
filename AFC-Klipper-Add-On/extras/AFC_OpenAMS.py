@@ -5105,9 +5105,6 @@ class afcAMS(afcUnit):
         unit_name = kwargs.get("unit_name")
         if not self._is_event_for_unit(unit_name):
             return
-        # Skip events fired before moonraker is ready (startup race)
-        if getattr(self.afc, "moonraker", None) is None:
-            return
 
         spool_index = kwargs.get("spool_index")
         try:
@@ -5216,9 +5213,6 @@ class afcAMS(afcUnit):
         """Update local state in response to a spool_unloaded event."""
         unit_name = kwargs.get("unit_name")
         if not self._is_event_for_unit(unit_name):
-            return
-        # Skip events fired before moonraker is ready (startup race)
-        if getattr(self.afc, "moonraker", None) is None:
             return
 
         spool_index = kwargs.get("spool_index")
