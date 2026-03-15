@@ -332,22 +332,49 @@ class afcACE(afcUnit):
         """Schedule deferred init - reactor pause is disabled during klippy:ready."""
         self.afc.reactor.register_callback(self._deferred_init)
 
+    # USB devices may not be enumerated yet at Klipper startup.
+    # Retry with backoff so a full reboot doesn't require a manual
+    # FIRMWARE_RESTART just to bring the ACE online.
+    _CONNECT_MAX_RETRIES = 5
+    _CONNECT_RETRY_DELAYS = [2.0, 3.0, 5.0, 8.0, 10.0]
+
     def _deferred_init(self, eventtime):
         """Connect to ACE hardware after reactor is fully running."""
-        try:
-            self._ace = ACEConnection(
-                reactor=self.afc.reactor,
-                serial_port=self.serial_port,
-                logger=self.logger,
-                baud_rate=self.baud_rate,
-            )
-            self._ace.connect()
-        except Exception as e:
+        last_err = None
+        for attempt in range(self._CONNECT_MAX_RETRIES):
+            try:
+                self._ace = ACEConnection(
+                    reactor=self.afc.reactor,
+                    serial_port=self.serial_port,
+                    logger=self.logger,
+                    baud_rate=self.baud_rate,
+                )
+                self._ace.connect()
+                if attempt > 0:
+                    self.logger.info(
+                        f"ACE {self.name}: connected on attempt "
+                        f"{attempt + 1}"
+                    )
+                break
+            except Exception as e:
+                last_err = e
+                self._ace = None
+                delay = self._CONNECT_RETRY_DELAYS[attempt]
+                if attempt < self._CONNECT_MAX_RETRIES - 1:
+                    self.logger.info(
+                        f"ACE {self.name}: serial port not available, "
+                        f"retrying in {delay:.0f}s "
+                        f"(attempt {attempt + 1}/{self._CONNECT_MAX_RETRIES})"
+                    )
+                    self.afc.reactor.pause(
+                        self.afc.reactor.monotonic() + delay
+                    )
+        else:
             self.logger.error(
                 f"ACE {self.name}: failed to connect to ACE at "
-                f"{self.serial_port}: {e}\n{traceback.format_exc()}"
+                f"{self.serial_port} after {self._CONNECT_MAX_RETRIES} "
+                f"attempts: {last_err}\n{traceback.format_exc()}"
             )
-            self._ace = None
             return
 
         # Enable RFID reader so get_filament_info returns spool data
