@@ -1782,6 +1782,11 @@ class afcACE(afcUnit):
                 cur_lane._load_state = slot_ready
                 cur_lane.prep_state = slot_ready
 
+                # ACE filament is only "at the hub" when actively fed to
+                # toolhead.  Clear any stale persisted value — the
+                # tool_loaded check below will restore it if needed.
+                cur_lane.loaded_to_hub = False
+
                 # Apply filament defaults if lane doesn't have values set
                 self._apply_slot_filament_defaults(cur_lane, slot_info)
 
