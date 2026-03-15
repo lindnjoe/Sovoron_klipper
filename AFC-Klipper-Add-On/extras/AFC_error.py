@@ -296,4 +296,4 @@ class afcError:
         cur_lane.status = AFCLaneState.ERROR
         msg = "{} {}".format(cur_lane.name, message)
         self.AFC_error(msg, pause, stack_name=inspect.currentframe().f_back.f_code.co_name)
-        self.afc.function.afc_led(self.afc.led_fault, cur_lane.led_index)
+        cur_lane.unit_obj.lane_fault(cur_lane)

@@ -33,7 +33,6 @@ class afc_hub:
         self.lanes: Dict[str, AFCLane] = {}
         self._state: bool = False
 
-        self.switch_pin = config.get('switch_pin', None)
         # HUB Cut variables
         # Next two variables are used in AFC
         self.switch_pin             = config.get('switch_pin', 'virtual')           # Pin hub sensor it connected to, default 'virtual' for units without physical hub sensors

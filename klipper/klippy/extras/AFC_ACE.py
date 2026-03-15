@@ -1381,7 +1381,7 @@ class afcACE(afcUnit):
 
         # Start ACE unwind before extruder retract so the ACE begins pulling
         # tension on the spool while the extruder simultaneously retracts.
-        # The command returns immediately   the motor runs asynchronously.
+        # The command returns immediately ï¿½ the motor runs asynchronously.
         self.logger.info(
             f"ACE unload: starting ACE unwind slot {local_slot} "
             f"before extruder retract for lane {cur_lane.name}"
@@ -1714,7 +1714,7 @@ class afcACE(afcUnit):
 
         while total_fed < max_length:
             step = min(step_size, max_length - total_fed)
-            # Ensure ACE is ready before each step   after the previous
+            # Ensure ACE is ready before each step ï¿½ after the previous
             # step completes, the ACE overall status may briefly stay
             # "busy" for internal housekeeping.  Sending feed_filament
             # while busy returns FORBIDDEN and kills the calibration.
@@ -1823,7 +1823,7 @@ class afcACE(afcUnit):
                 cur_lane.prep_state = slot_ready
 
                 # ACE filament is only "at the hub" when actively fed to
-                # toolhead.  Clear any stale persisted value — the
+                # toolhead.  Clear any stale persisted value â€” the
                 # tool_loaded check below will restore it if needed.
                 cur_lane.loaded_to_hub = False
 
@@ -1897,7 +1897,7 @@ class afcACE(afcUnit):
                                     self._current_loaded_slot = local_slot
 
                             # Start feed assist so ACE pushes filament
-                            # immediately — don't wait for the periodic
+                            # immediately â€” don't wait for the periodic
                             # refresh (~15 s) which could starve the
                             # extruder if a print resumes right away.
                             fa_slot = self._get_local_slot_for_lane(cur_lane)

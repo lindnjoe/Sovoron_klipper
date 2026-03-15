@@ -1,4 +1,4 @@
-# Support for toolchangers
+# Support for toolchnagers
 #
 # Copyright (C) 2023 Viesturs Zarins <viesturz@gmail.com>
 #
@@ -774,15 +774,15 @@ class Toolchanger:
         current = tool.gcode_z_offset
         new_z   = current + adjust if adjust is not None else z
 
-        # Step 1   wait for move queue, then update in-memory offset
+        # Step 1 – wait for move queue, then update in-memory offset
         toolhead = self.printer.lookup_object('toolhead')
         toolhead.wait_moves()
         tool.set_parameter('gcode_z_offset', new_z)
 
-        # Step 2   sync gcode reported position to the new offset
+        # Step 2 – sync gcode reported position to the new offset
         self.gcode_move.reset_last_position()
 
-        # Step 3   persist to printer.cfg
+        # Step 3 – persist to printer.cfg
         tool.save_parameter('gcode_z_offset')
 
         gcmd.respond_info(
