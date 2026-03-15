@@ -531,8 +531,7 @@ class Espooler:
         :param eventtime: Reactor time when callback was called
         :return float   : Time when to call the callback again
         """
-        lane_active = (self.lane_obj is not None and self.lane_obj.tool_loaded)
-        if self.enable_assist and (self.afc.function.in_print() or lane_active) and not self.afc.function.is_paused() and not self.afc.in_toolchange:
+        if self.enable_assist and self.afc.function.in_print() and not self.afc.function.is_paused() and not self.afc.in_toolchange:
             extruder_pos = self.afc.function.get_extruder_pos( eventtime, self.past_extruder_position )
             delta_length = extruder_pos - self.past_extruder_position
 
