@@ -4077,16 +4077,14 @@ class afcAMS(afcUnit):
         if bool(getattr(lane, "tool_loaded", False)):
             return False
 
-        # Read actual hub hardware sensor instead of lane.loaded_to_hub
-        # so hub display and unload gating are decoupled.
-        hub_state = False
-        try:
-            spool_idx = self._get_openams_spool_index(lane)
-            hub_values = getattr(self.oams, "hub_hes_value", None) if self.oams else None
-            if hub_values is not None and spool_idx is not None and 0 <= spool_idx < len(hub_values):
-                hub_state = bool(hub_values[spool_idx])
-        except Exception:
-            pass
+        hub_state = getattr(lane, "loaded_to_hub", False)
+        if self.hardware_service is not None:
+            try:
+                snapshot = self.hardware_service.latest_lane_snapshot(self.oams_name, lane.name)
+                if snapshot is not None:
+                    hub_state = snapshot.get("hub_state", hub_state)
+            except Exception:
+                pass
 
         return not bool(hub_state)
 
@@ -4270,11 +4268,7 @@ class afcAMS(afcUnit):
                 self.logger.debug(f"Skipping extruder unsync for {lane.name} - cross-extruder runout (AFC will handle via LANE_UNLOAD)")
         lane.prep_state = lane_val_bool
         lane._load_state = lane_val_bool
-        # Only clear loaded_to_hub when spool is removed. Hub state for
-        # loaded spools is managed by sync_openams_sensors / _on_hub_changed
-        # which read actual hub_hes_value hardware sensors per lane.
-        if not lane_val_bool:
-            lane.loaded_to_hub = False
+        lane.loaded_to_hub = lane_val_bool
         lane.afc.save_vars()
 
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
