@@ -193,6 +193,7 @@ class afcACE(afcUnit):
         self._cached_ace_obj = _UNSET
         self._backend: Optional[_AceBackend] = None
 
+        self._operation_active = False
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
     def _handle_ready(self):
@@ -347,6 +348,13 @@ class afcACE(afcUnit):
 
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
         """ACE load sequence - delegates filament feeding to ACE hardware."""
+        self._operation_active = True
+        try:
+            return self._load_sequence_inner(cur_lane, cur_hub, cur_extruder)
+        finally:
+            self._operation_active = False
+
+    def _load_sequence_inner(self, cur_lane, cur_hub, cur_extruder):
         afc = self.afc
         backend = self._get_backend()
 
@@ -444,6 +452,13 @@ class afcACE(afcUnit):
 
     def unload_sequence(self, cur_lane, cur_hub, cur_extruder):
         """ACE unload sequence - shared toolhead steps then ACE retraction."""
+        self._operation_active = True
+        try:
+            return self._unload_sequence_inner(cur_lane, cur_hub, cur_extruder)
+        finally:
+            self._operation_active = False
+
+    def _unload_sequence_inner(self, cur_lane, cur_hub, cur_extruder):
         afc = self.afc
         backend = self._get_backend()
 
@@ -602,15 +617,34 @@ class afcACE(afcUnit):
                 self.lane_illuminate_spool(cur_lane)
 
                 if cur_lane.tool_loaded:
+                    # For ACE with virtual pin, the FPS reads zero at startup
+                    # (motor off) so tool_start_state is False. If saved state
+                    # confirms this lane is loaded, set the virtual sensor
+                    # directly so the toolhead-pre-sensor check passes.
+                    extruder_obj = cur_lane.extruder_obj
+                    if extruder_obj.lane_loaded == cur_lane.name:
+                        extruder_obj.tool_start_state = True
+                        fila = getattr(extruder_obj, "fila_tool_start", None)
+                        helper = getattr(fila, "runout_helper", None) if fila else None
+                        if helper is not None:
+                            eventtime = self.afc.reactor.monotonic()
+                            try:
+                                helper.note_filament_present(eventtime, is_filament_present=True)
+                            except TypeError:
+                                helper.note_filament_present(is_filament_present=True)
+
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
-                        or cur_lane.extruder_obj.tool_start == "buffer"
-                        or cur_lane.extruder_obj.tool_end_state
+                        or extruder_obj.tool_start == "buffer"
+                        or extruder_obj.tool_end_state
                     )
-                    if tool_ready and cur_lane.extruder_obj.lane_loaded == cur_lane.name:
+                    if tool_ready and extruder_obj.lane_loaded == cur_lane.name:
                         cur_lane.sync_to_extruder()
-                        msg += '<span class=primary--text> in ToolHead</span>'
-                        if cur_lane.extruder_obj.tool_start == "buffer":
+                        on_shuttle = ""
+                        if extruder_obj.tool_obj and extruder_obj.tc_unit_name:
+                            on_shuttle = " and toolhead on shuttle" if extruder_obj.on_shuttle() else ""
+                        msg += f'<span class=primary--text> in ToolHead{on_shuttle}</span>'
+                        if extruder_obj.tool_start == "buffer":
                             msg += '<span class=warning--text> Ram sensor enabled, confirm tool is loaded</span>'
                         if self.afc.function.get_current_lane() == cur_lane.name:
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
@@ -840,16 +874,20 @@ class afcACE(afcUnit):
         )
 
     def _poll_slot_status(self, eventtime):
-        """Periodic callback to detect slot status changes during printing."""
-        try:
-            if not self.afc.function.is_printing():
-                return eventtime + 2.0
-        except Exception:
+        """Periodic callback to sync slot states and detect runout during printing."""
+        # Skip during active operations (load/unload) to avoid false triggers
+        if self._operation_active:
             return eventtime + 2.0
 
         backend = self._get_backend()
         if backend is None:
             return eventtime + 2.0
+
+        is_printing = False
+        try:
+            is_printing = self.afc.function.is_printing()
+        except Exception:
+            pass
 
         for lane in self.lanes.values():
             local_slot = self._get_local_slot_for_lane(lane)
@@ -857,16 +895,35 @@ class afcACE(afcUnit):
                 continue
 
             slot_info = backend.get_slot_info(local_slot)
-            slot_ready = bool(slot_info and slot_info.get("status", "") == "ready")
-            prev_ready = self._prev_slot_states.get(lane.name, slot_ready)
-            self._prev_slot_states[lane.name] = slot_ready
+            slot_status = slot_info.get("status", "") if slot_info else ""
+            slot_ready = slot_status == "ready"
 
-            # Detect ready ? not-ready transition (filament runout).
-            # Only act on TOOLED lanes � LOADED lanes are at the hub, not
-            # actively printing. After a previous infinite-spool swap the old
-            # lane stays LOADED; the user removing that spool later must not
-            # re-trigger the runout sequence.
-            if prev_ready and not slot_ready:
+            # "shifting" is a transient state during feed_assist start -
+            # don't treat it as not-ready or it will false-trigger runout.
+            slot_shifting = slot_status == "shifting"
+
+            # Always sync loaded_to_hub so prep/status is accurate
+            lane.loaded_to_hub = slot_ready
+
+            prev_ready = self._prev_slot_states.get(lane.name)
+            # Don't update prev state during transient "shifting" - wait
+            # for a definitive ready/empty to avoid false runout triggers.
+            if not slot_shifting:
+                self._prev_slot_states[lane.name] = slot_ready
+
+            # State consistency: if hardware says ready but lane is stuck
+            # in NONE, fix it (covers first poll, missed transitions, etc.)
+            if slot_ready and lane._afc_prep_done and lane.status == AFCLaneState.NONE:
+                self.logger.info(
+                    f"ACE poll: {lane.name} slot {local_slot} ready, setting loaded"
+                )
+                lane.set_loaded()
+                self.lane_illuminate_spool(lane)
+                self.afc.save_vars()
+
+            # Detect ready -> not-ready transition (filament runout).
+            # Only trigger during active printing to avoid startup crashes.
+            elif is_printing and prev_ready and not slot_ready and not slot_shifting:
                 if lane.status == AFCLaneState.TOOLED:
                     self.logger.info(
                         f"ACE slot monitor: runout detected on {lane.name} "
@@ -884,18 +941,14 @@ class afcACE(afcUnit):
                             )
                             lane._perform_pause_runout()
                         finally:
-                            # Clear loaded_to_hub after the swap so the old
-                            # lane's virtual sensors reflect empty state and
-                            # don't false-trigger on the next poll cycle.
                             lane.loaded_to_hub = False
                     else:
                         lane._perform_pause_runout()
                 elif lane.status == AFCLaneState.LOADED:
-                    # Slot went empty on a non-active lane � just update
-                    # virtual sensor state, no runout action needed.
+                    # Slot went empty on a non-active lane - just update sensor state
                     lane.loaded_to_hub = False
 
-        return eventtime + 1.0
+        return eventtime + (1.0 if is_printing else 2.0)
 
 
 def load_config_prefix(config):
