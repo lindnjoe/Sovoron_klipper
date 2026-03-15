@@ -1885,16 +1885,19 @@ class afcACE(afcUnit):
                         msg += f'<span class=primary--text> in ToolHead{on_shuttle}</span>'
                         if cur_lane.extruder_obj.tool_start == "buffer":
                             msg += '<span class=warning--text> Ram sensor enabled, confirm tool is loaded</span>'
+
+                        # Restore combined mode tracking regardless of shuttle
+                        # state so ACE knows which slot is loaded for the next
+                        # tool change even when the shuttle starts empty.
+                        if self.mode == MODE_COMBINED:
+                            local_slot = self._get_local_slot_for_lane(cur_lane)
+                            if local_slot >= 0:
+                                self._current_loaded_slot = local_slot
+
                         if self.afc.function.get_current_lane() == cur_lane.name:
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             cur_lane.unit_obj.lane_tool_loaded(cur_lane)
                             cur_lane.status = AFCLaneState.TOOLED
-
-                            # Restore combined mode tracking
-                            if self.mode == MODE_COMBINED:
-                                local_slot = self._get_local_slot_for_lane(cur_lane)
-                                if local_slot >= 0:
-                                    self._current_loaded_slot = local_slot
 
                             # Start feed assist so ACE pushes filament
                             # immediately — don't wait for the periodic
