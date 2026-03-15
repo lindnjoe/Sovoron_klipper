@@ -1341,7 +1341,7 @@ class afcACE(afcUnit):
 
         # Start ACE unwind before extruder retract so the ACE begins pulling
         # tension on the spool while the extruder simultaneously retracts.
-        # The command returns immediately ï¿½ the motor runs asynchronously.
+        # The command returns immediately   the motor runs asynchronously.
         self.logger.info(
             f"ACE unload: starting ACE unwind slot {local_slot} "
             f"before extruder retract for lane {cur_lane.name}"
@@ -1674,7 +1674,7 @@ class afcACE(afcUnit):
 
         while total_fed < max_length:
             step = min(step_size, max_length - total_fed)
-            # Ensure ACE is ready before each step ï¿½ after the previous
+            # Ensure ACE is ready before each step   after the previous
             # step completes, the ACE overall status may briefly stay
             # "busy" for internal housekeeping.  Sending feed_filament
             # while busy returns FORBIDDEN and kills the calibration.
@@ -1783,7 +1783,7 @@ class afcACE(afcUnit):
                 cur_lane.prep_state = slot_ready
 
                 # ACE filament is only "at the hub" when actively fed to
-                # toolhead.  Clear any stale persisted value â€” the
+                # toolhead.  Clear any stale persisted value — the
                 # tool_loaded check below will restore it if needed.
                 cur_lane.loaded_to_hub = False
 
@@ -1855,6 +1855,27 @@ class afcACE(afcUnit):
                                 local_slot = self._get_local_slot_for_lane(cur_lane)
                                 if local_slot >= 0:
                                     self._current_loaded_slot = local_slot
+
+                            # Start feed assist so ACE pushes filament
+                            # immediately — don't wait for the periodic
+                            # refresh (~15 s) which could starve the
+                            # extruder if a print resumes right away.
+                            fa_slot = self._get_local_slot_for_lane(cur_lane)
+                            if (fa_slot >= 0
+                                    and self._get_feed_assist_for_slot(fa_slot)
+                                    and self._ace is not None):
+                                try:
+                                    self._ace.start_feed_assist(fa_slot)
+                                    self._feed_assist_active.add(fa_slot)
+                                    self.logger.info(
+                                        f"PREP: feed assist started for "
+                                        f"slot {fa_slot} ({cur_lane.name})"
+                                    )
+                                except Exception as e:
+                                    self.logger.debug(
+                                        f"PREP: feed assist start failed "
+                                        f"for slot {fa_slot}: {e}"
+                                    )
                         else:
                             cur_lane.unit_obj.lane_tool_loaded_idle(cur_lane)
                     elif tool_ready:
