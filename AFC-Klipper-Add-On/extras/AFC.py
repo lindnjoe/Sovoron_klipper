@@ -1288,102 +1288,94 @@ class afc:
         if cur_lane.name != self.current:
             # Lookup extruder and hub objects associated with the lane.
             cur_hub = cur_lane.hub_obj
-            cur_extruder = cur_lane.extruder_obj
 
-            # Allow unit to provide custom load sequence before generic checks.
-            # Units with custom load logic (e.g. ACE) handle their own hub
-            # clearing and preconditions internally.
-            custom_result = cur_lane.unit_obj.load_sequence(cur_lane, cur_hub, cur_extruder)
-            if custom_result is False:
-                return False
+            # Check if the lane is in a state ready to load and hub is clear.
+            if cur_lane.load_state and (not cur_hub.state or cur_lane.is_direct_hub()):
 
-            # For default units (custom_result is None), check hub and lane state.
-            if custom_result is None:
-                if not (cur_lane.load_state and (not cur_hub.state or cur_lane.is_direct_hub())):
-                    # Handle errors if the hub is not clear or the lane is not ready for loading.
-                    if cur_hub is not None and cur_hub.state:
-                        message = 'Hub not clear when trying to load.\nPlease check that hub does not contain broken filament and is clear'
-                        if self.function.in_print():
-                            message += '\nOnce issue is resolved please manually load {} with {} macro and click resume to continue printing.'.format(cur_lane.name, cur_lane.map)
-                        self.error.handle_lane_failure(cur_lane, message, pause=self.function.in_print())
-                        return False
-                    if not cur_lane.load_state:
-                        message = 'Current lane not loaded, LOAD TRIGGER NOT TRIGGERED\n||==>--||----||-----||\nTRG   LOAD   HUB   TOOL'
-                        message += '\nPlease load lane before continuing.'
-                        if self.function.in_print():
-                            message += '\nOnce issue is resolved please manually load {} with {} macro and click resume to continue printing.'.format(cur_lane.name, cur_lane.map)
-                        self.error.handle_lane_failure(cur_lane, message, pause=self.function.in_print())
-                        return False
+                self.logger.info("Loading {}".format(cur_lane.name))
 
-            self.logger.info("Loading {}".format(cur_lane.name))
+                cur_extruder = cur_lane.extruder_obj
 
-            cur_extruder = cur_lane.extruder_obj
+                self.current_state = State.LOADING
+                self.current_loading = cur_lane.name
 
-            self.current_state = State.LOADING
-            self.current_loading = cur_lane.name
+                # Set the lane status to 'loading' and activate the loading LED.
+                cur_lane.status = AFCLaneState.TOOL_LOADING
+                self.save_vars()
+                cur_lane.unit_obj.lane_loading( cur_lane )
 
-            # Set the lane status to 'loading' and activate the loading LED.
-            cur_lane.status = AFCLaneState.TOOL_LOADING
-            self.save_vars()
-            cur_lane.unit_obj.lane_loading( cur_lane )
-
-            temp_state = self._capture_toolhead_temp()
-            try:
-                if custom_result is None:
+                temp_state = self._capture_toolhead_temp()
+                try:
                     # Run the load sequence, which may include custom gcode commands.
                     success = self.load_sequence(cur_lane, cur_hub, cur_extruder)
                     if not success:
                         return success
 
-                # Activate the tool-loaded LED and handle filament operations if enabled.
-                cur_lane.unit_obj.lane_tool_loaded( cur_lane )
-                cur_lane.espooler.do_assist_move()
-                if self.poop:
-                    if purge_length is not None:
-                        self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(self.poop_cmd, purge_length, cur_extruder.name))
+                    # Activate the tool-loaded LED and handle filament operations if enabled.
+                    cur_lane.unit_obj.lane_tool_loaded( cur_lane )
+                    cur_lane.espooler.do_assist_move()
+                    if self.poop:
+                        if purge_length is not None:
+                            self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(self.poop_cmd, purge_length, cur_extruder.name))
 
-                    else:
-                        self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.poop_cmd, cur_extruder.name))
+                        else:
+                            self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.poop_cmd, cur_extruder.name))
 
-                    self.afcDeltaTime.log_with_time("TOOL_LOAD: After poop")
-                    self.function.log_toolhead_pos()
+                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After poop")
+                        self.function.log_toolhead_pos()
+
+                        if self.wipe:
+                            self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.wipe_cmd, cur_extruder.name))
+                            self.afcDeltaTime.log_with_time("TOOL_LOAD: After first wipe")
+                            self.function.log_toolhead_pos()
+
+                    if self.kick:
+                        self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.kick_cmd, cur_extruder.name))
+                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After kick")
+                        self.function.log_toolhead_pos()
 
                     if self.wipe:
                         self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.wipe_cmd, cur_extruder.name))
-                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After first wipe")
+                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After second wipe")
                         self.function.log_toolhead_pos()
 
-                if self.kick:
-                    self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.kick_cmd, cur_extruder.name))
-                    self.afcDeltaTime.log_with_time("TOOL_LOAD: After kick")
-                    self.function.log_toolhead_pos()
+                    cur_lane.enable_fault_detection()
+                    # Update lane and extruder state for tracking.
+                    cur_extruder.lane_loaded = cur_lane.name
+                    self.spool.set_active_spool(cur_lane.spool_id)
+                    cur_lane.unit_obj.lane_tool_loaded( cur_lane )
+                    self.save_vars()
+                    self.current_state = State.IDLE
+                    cur_lane.get_td1_data_load()
+                    load_time = self.afcDeltaTime.log_major_delta("{} is now loaded in toolhead".format(cur_lane.name), False)
+                    self.afc_stats.average_tool_load_time.average_time(load_time)
 
-                if self.wipe:
-                    self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.wipe_cmd, cur_extruder.name))
-                    self.afcDeltaTime.log_with_time("TOOL_LOAD: After second wipe")
-                    self.function.log_toolhead_pos()
+                    # Increment stat counts
+                    cur_lane.extruder_obj.estats.tc_tool_load.increase_count()
+                    cur_lane.lane_load_count.increase_count()
+                    cur_lane.espooler.stats.update_database()
 
-                cur_lane.enable_fault_detection()
-                # Update lane and extruder state for tracking.
-                cur_extruder.lane_loaded = cur_lane.name
-                self.spool.set_active_spool(cur_lane.spool_id)
-                cur_lane.unit_obj.lane_tool_loaded( cur_lane )
-                self.save_vars()
-                self.current_state = State.IDLE
-                cur_lane.get_td1_data_load()
-                load_time = self.afcDeltaTime.log_major_delta("{} is now loaded in toolhead".format(cur_lane.name), False)
-                self.afc_stats.average_tool_load_time.average_time(load_time)
+                    if self.post_load_macro is not None:
+                        self.gcode.run_script_from_command(self.post_load_macro)
+                        # TODO: Add afcDeltaTime log
+                finally:
+                    self._restore_toolhead_temp(temp_state)
 
-                # Increment stat counts
-                cur_lane.extruder_obj.estats.tc_tool_load.increase_count()
-                cur_lane.lane_load_count.increase_count()
-                cur_lane.espooler.stats.update_database()
-
-                if self.post_load_macro is not None:
-                    self.gcode.run_script_from_command(self.post_load_macro)
-                    # TODO: Add afcDeltaTime log
-            finally:
-                self._restore_toolhead_temp(temp_state)
+            else:
+                # Handle errors if the hub is not clear or the lane is not ready for loading.
+                if cur_hub is not None and cur_hub.state:
+                    message = 'Hub not clear when trying to load.\nPlease check that hub does not contain broken filament and is clear'
+                    if self.function.in_print():
+                        message += '\nOnce issue is resolved please manually load {} with {} macro and click resume to continue printing.'.format(cur_lane.name, cur_lane.map)
+                    self.error.handle_lane_failure(cur_lane, message, pause=self.function.in_print())
+                    return False
+                if not cur_lane.load_state:
+                    message = 'Current lane not loaded, LOAD TRIGGER NOT TRIGGERED\n||==>--||----||-----||\nTRG   LOAD   HUB   TOOL'
+                    message += '\nPlease load lane before continuing.'
+                    if self.function.in_print():
+                        message += '\nOnce issue is resolved please manually load {} with {} macro and click resume to continue printing.'.format(cur_lane.name, cur_lane.map)
+                    self.error.handle_lane_failure(cur_lane, message, pause=self.function.in_print())
+                    return False
         return True
 
     def load_sequence(self, cur_lane: AFCLane, cur_hub: afc_hub, cur_extruder: AFCExtruder):
