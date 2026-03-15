@@ -1816,8 +1816,8 @@ class afcACE(afcUnit):
         return None
 
     def get_lane_reset_command(self, lane, dis) -> str:
-        """ACE units use TOOL_UNLOAD for lane reset."""
-        return f"TOOL_UNLOAD LANE={lane.name}"
+        """ACE lanes retract via ACE hardware, bypassing TOOL_UNLOAD."""
+        return f"ACE_LANE_RESET UNIT={self.name} LANE={lane.name}"
 
     # ---- System Test / PREP ----
 
@@ -2399,6 +2399,11 @@ class afcACE(afcUnit):
             self.cmd_ACE_CALIBRATE,
             desc="Calibrate ACE bowden length by feeding until toolhead sensor triggers",
         )
+        self.gcode.register_mux_command(
+            "ACE_LANE_RESET", "UNIT", self.name,
+            self.cmd_ACE_LANE_RESET,
+            desc="Retract ACE lane filament back into the unit",
+        )
 
     def cmd_ACE_STATUS(self, gcmd):
         """Query and display ACE hardware status.
@@ -2547,6 +2552,77 @@ class afcACE(afcUnit):
             gcmd.respond_info(
                 f"ACE {self.name}: inventory sync failed: {e}"
             )
+
+    def cmd_ACE_LANE_RESET(self, gcmd):
+        """Retract ACE lane filament back into the unit.
+
+        Unlike TOOL_UNLOAD this skips homing, z-hop, tip forming and other
+        toolhead operations.  It simply tells the ACE hardware to retract
+        the slot and updates lane state.
+
+        Usage: ACE_LANE_RESET UNIT=<unit> LANE=<lane>
+        """
+        lane_name = gcmd.get("LANE", None)
+        if lane_name is None or lane_name not in self.afc.lanes:
+            gcmd.respond_info(f"ACE_LANE_RESET: invalid lane '{lane_name}'")
+            return
+
+        cur_lane = self.afc.lanes[lane_name]
+        if cur_lane.unit_obj is not self:
+            gcmd.respond_info(
+                f"ACE_LANE_RESET: {lane_name} does not belong to {self.name}"
+            )
+            return
+
+        local_slot = self._get_local_slot_for_lane(cur_lane)
+        if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
+            gcmd.respond_info(
+                f"ACE_LANE_RESET: {lane_name} has no valid slot mapping"
+            )
+            return
+
+        if self._ace is None or not self._ace.connected:
+            gcmd.respond_info(
+                f"ACE_LANE_RESET: ACE {self.name} not connected"
+            )
+            return
+
+        self.logger.info(f"ACE lane reset: retracting {lane_name} slot {local_slot}")
+
+        # Stop feed assist if running
+        try:
+            self._wait_for_ace_ready()
+            self._ace.stop_feed_assist(local_slot)
+            self._feed_assist_active.discard(local_slot)
+        except Exception as e:
+            self.logger.warning(
+                f"ACE lane reset: failed to stop feed assist: {e}"
+            )
+
+        # Retract filament back into the ACE
+        try:
+            self._retract_slot(local_slot)
+        except Exception as e:
+            self.logger.error(f"ACE lane reset failed for {lane_name}: {e}")
+            gcmd.respond_info(f"ACE_LANE_RESET: retract failed for {lane_name}: {e}")
+            return
+
+        # Update lane state
+        if self.mode == MODE_COMBINED:
+            self._current_loaded_slot = -1
+        cur_lane.loaded_to_hub = False
+        cur_lane.set_tool_unloaded()
+        cur_lane.status = AFCLaneState.LOADED
+        self.lane_tool_unloaded(cur_lane)
+
+        # Clear extruder's lane_loaded if this lane was loaded
+        cur_extruder = cur_lane.extruder_obj
+        if cur_extruder is not None and cur_extruder.lane_loaded == lane_name:
+            cur_extruder.lane_loaded = None
+
+        self._persistence.save()
+        self.afc.save_vars()
+        gcmd.respond_info(f"ACE lane reset: {lane_name} retracted successfully")
 
     def cmd_ACE_CALIBRATE(self, gcmd):
         """Calibrate bowden length by feeding until toolhead sensor triggers.
