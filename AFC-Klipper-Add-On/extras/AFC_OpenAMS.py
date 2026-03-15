@@ -57,7 +57,7 @@ try:
 except Exception:
     _raise_import_error("AFC_respond", template=ERROR_STR)
 
-# -- OpenAMS integration classes (formerly extras/openams_integration.py) ------
+# ── OpenAMS integration classes (formerly extras/openams_integration.py) ──────
 
 OPENAMS_VERSION = "0.0.3"
 
