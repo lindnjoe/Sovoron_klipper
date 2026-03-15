@@ -436,6 +436,93 @@ class AMSHardwareService:
         with self._lock:
             return dict(self._status)
 
+    def update_lane_snapshot(self, unit_name: str, lane_name: str, lane_state: bool,
+                           hub_state: Optional[bool], eventtime: float, *,
+                           spool_index: Optional[int] = None,
+                           tool_state: Optional[bool] = None,
+                           emit_spool_event: bool = True) -> None:
+        """Update the cached state snapshot for a specific lane."""
+        key = f"{unit_name}:{lane_name}"
+
+        normalized_index: Optional[int]
+        if spool_index is not None:
+            try:
+                normalized_index = int(spool_index)
+            except (TypeError, ValueError):
+                normalized_index = None
+            else:
+                if normalized_index < 0:
+                    normalized_index = None
+        else:
+            normalized_index = None
+
+        with self._lock:
+            old_snapshot = self._lane_snapshots.get(key, {})
+
+            self._lane_snapshots[key] = {
+                "unit": unit_name,
+                "lane": lane_name,
+                "lane_state": bool(lane_state),
+                "hub_state": None if hub_state is None else bool(hub_state),
+                "timestamp": eventtime,
+            }
+            if normalized_index is not None:
+                self._lane_snapshots[key]["spool_index"] = normalized_index
+            elif "spool_index" in old_snapshot:
+                self._lane_snapshots[key]["spool_index"] = old_snapshot["spool_index"]
+            if tool_state is not None:
+                self._lane_snapshots[key]["tool_state"] = bool(tool_state)
+
+        event_spool_index = normalized_index
+        if event_spool_index is None:
+            event_spool_index = old_snapshot.get("spool_index")
+
+        old_lane_state = old_snapshot.get("lane_state")
+        new_lane_state = bool(lane_state)
+
+        if emit_spool_event and old_lane_state is not None and old_lane_state != new_lane_state and event_spool_index is not None:
+            event_type = "spool_loaded" if new_lane_state else "spool_unloaded"
+            self.event_bus.publish(
+                event_type,
+                unit_name=unit_name,
+                lane_name=lane_name,
+                spool_index=event_spool_index,
+                eventtime=eventtime,
+            )
+
+        old_hub_state = old_snapshot.get("hub_state")
+        new_hub_state = hub_state
+
+        if old_hub_state is not None and new_hub_state is not None:
+            if old_hub_state != new_hub_state:
+                event_type = "lane_hub_loaded" if new_hub_state else "lane_hub_unloaded"
+                self.event_bus.publish(
+                    event_type,
+                    unit_name=unit_name,
+                    lane_name=lane_name,
+                    spool_index=spool_index,
+                    eventtime=eventtime
+                )
+
+        if tool_state is not None:
+            old_tool_state = old_snapshot.get("tool_state")
+            if old_tool_state is not None and old_tool_state != tool_state:
+                event_type = "lane_tool_loaded" if tool_state else "lane_tool_unloaded"
+                self.event_bus.publish(
+                    event_type,
+                    unit_name=unit_name,
+                    lane_name=lane_name,
+                    spool_index=spool_index,
+                    eventtime=eventtime
+                )
+
+    def latest_lane_snapshot(self, unit_name: str, lane_name: str):
+        """Return the most recent state snapshot for a specific lane."""
+        key = f"{unit_name}:{lane_name}"
+        with self._lock:
+            snapshot = self._lane_snapshots.get(key)
+        return dict(snapshot) if snapshot else None
+
     def resolve_lane_for_spool(self, unit_name, spool_index):
         if spool_index is None:
             return None
@@ -1958,6 +2045,10 @@ class afcAMS(afcUnit):
             return resolved
 
         return lookup
+
+    def record_load(self, extruder: Optional[str] = None, lane_name: Optional[str] = None) -> Optional[str]:
+        canonical = self._canonical_lane_name(lane_name)
+        return canonical
 
     def _get_extruder_object(self, extruder_name: Optional[str]):
         # Cache extruder object lookups
