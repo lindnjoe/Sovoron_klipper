@@ -299,8 +299,6 @@ def _patch_extruder_for_virtual_ams() -> None:
 class afcAMS(afcUnit):
     """AFC unit subclass that synchronises state with OpenAMS"""
 
-    hub_managed = True
-
     _sync_command_registered = False
     _sync_instances: Dict[str, "afcAMS"] = {}
     _hydrated_extruders: Set[str] = set()

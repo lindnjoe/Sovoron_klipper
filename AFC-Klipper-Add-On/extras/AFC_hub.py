@@ -108,11 +108,8 @@ class afc_hub:
             msg = "The following lanes need load sensors for virtual hub sensor to work correctly:"
             report_error = False
             for lane in self.lanes.values():
-                if lane.load is None:
-                    # Skip lanes whose unit manages hub detection (e.g. OpenAMS, ACE)
-                    unit_obj = getattr(lane, "unit_obj", None)
-                    if unit_obj is not None and getattr(unit_obj, "hub_managed", False):
-                        continue
+                if lane.load is None and lane.prep is not None:
+                    # Lane has prep sensor but no load sensor - likely a config error
                     report_error = True
                     msg += f"\n{lane.fullname}"
 
