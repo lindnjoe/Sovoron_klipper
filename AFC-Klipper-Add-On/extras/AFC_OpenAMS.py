@@ -5155,10 +5155,8 @@ class afcAMS(afcUnit):
         in_prep = not getattr(self.afc, "prep_done", True)
         if in_prep:
             self.logger.debug(
-                "Skipping set_loaded for %s during PREP (spool_index=%s) "
-                "to preserve spool metadata from database",
-                lane.name,
-                spool_index,
+                f"Skipping set_loaded for {lane.name} during PREP (spool_index={spool_index}) "
+                "to preserve spool metadata from database"
             )
         else:
             # PHASE 1 REFACTOR: Use AFC native set_loaded() instead of direct state assignment
@@ -5262,10 +5260,8 @@ class afcAMS(afcUnit):
         in_prep = not getattr(self.afc, "prep_done", True)
         if in_prep:
             self.logger.debug(
-                "Skipping spool_unloaded for %s during PREP (spool_index=%s) "
-                "to preserve spool metadata from database",
-                lane.name,
-                normalized_index,
+                f"Skipping spool_unloaded for {lane.name} during PREP (spool_index={normalized_index}) "
+                "to preserve spool metadata from database"
             )
             return
 
