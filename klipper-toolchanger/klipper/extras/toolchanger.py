@@ -1,4 +1,4 @@
-# Support for toolchnagers
+# Support for toolchangers
 #
 # Copyright (C) 2023 Viesturs Zarins <viesturz@gmail.com>
 #
@@ -223,13 +223,14 @@ class Toolchanger:
         self.gcode_transform.next_transform = self.gcode_move.set_move_transform(self.gcode_transform, force=True)
 
     def _handle_command_error(self):
-        # Only clear active_tool when a tool change or init was in progress.
-        # Errors during STATUS_READY (e.g. AFC lane failures) leave the mounted
-        # tool unchanged so Z/XY offsets remain valid for the rest of the print.
+        # Only uninitialize when a tool change or init was in progress.
+        # Errors during STATUS_READY (e.g. AFC lane failures, ACE commands)
+        # leave the toolchanger ready and the mounted tool unchanged so
+        # Z/XY offsets remain valid and VERIFY_TOOL_DETECTED still works.
         was_mid_change = self.status in (STATUS_CHANGING, STATUS_INITIALIZING)
-        self.status = STATUS_UNINITALIZED
-        self.tool_missing_helper.deactivate()
         if was_mid_change:
+            self.status = STATUS_UNINITALIZED
+            self.tool_missing_helper.deactivate()
             self.active_tool = None
             self.gcode_transform.tool = None
 
@@ -773,15 +774,15 @@ class Toolchanger:
         current = tool.gcode_z_offset
         new_z   = current + adjust if adjust is not None else z
 
-        # Step 1 – wait for move queue, then update in-memory offset
+        # Step 1   wait for move queue, then update in-memory offset
         toolhead = self.printer.lookup_object('toolhead')
         toolhead.wait_moves()
         tool.set_parameter('gcode_z_offset', new_z)
 
-        # Step 2 – sync gcode reported position to the new offset
+        # Step 2   sync gcode reported position to the new offset
         self.gcode_move.reset_last_position()
 
-        # Step 3 – persist to printer.cfg
+        # Step 3   persist to printer.cfg
         tool.save_parameter('gcode_z_offset')
 
         gcmd.respond_info(
