@@ -728,7 +728,7 @@ class afcACE(afcUnit):
                 )
 
     def _sync_slot_loaded_state(self):
-        """Sync ACE slot status to lane loaded_to_hub for virtual sensors."""
+        """Sync ACE slot status to lane load/prep state."""
         if self._ace is None or not self._ace.connected:
             return
 
@@ -739,7 +739,8 @@ class afcACE(afcUnit):
                 slot_loaded = bool(
                     slot_info and slot_info.get("status", "") == "ready"
                 )
-                lane.loaded_to_hub = slot_loaded
+                lane._load_state = slot_loaded
+                lane.prep_state = slot_loaded
 
                 # Only set material/color if the lane doesn't already have
                 # values (from Spoolman, manual set, or previous RFID read).
@@ -846,8 +847,9 @@ class afcACE(afcUnit):
             slot_ready = slot_status == "ready"
             slot_shifting = slot_status == "shifting"
 
-            # Keep loaded_to_hub in sync
-            lane.loaded_to_hub = slot_ready
+            # Keep load/prep state in sync with slot status
+            lane._load_state = slot_ready
+            lane.prep_state = slot_ready
 
             prep_done = getattr(lane, '_afc_prep_done', False)
 
@@ -1102,6 +1104,9 @@ class afcACE(afcUnit):
 
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = local_slot
+
+            # Filament has been fed through the hub into the bowden
+            cur_lane.loaded_to_hub = True
 
         except Exception as e:
             message = f"ACE load failed for {cur_lane.name}: {e}"
@@ -1419,7 +1424,7 @@ class afcACE(afcUnit):
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = -1
 
-            cur_lane.loaded_to_hub = True
+            cur_lane.loaded_to_hub = False
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.LOADED
             self.lane_tool_unloaded(cur_lane)
@@ -1774,7 +1779,8 @@ class afcACE(afcUnit):
 
                 slot_info = self._slot_inventory[local_slot]
                 slot_ready = slot_info.get("status", "") == "ready"
-                cur_lane.loaded_to_hub = slot_ready
+                cur_lane._load_state = slot_ready
+                cur_lane.prep_state = slot_ready
 
                 # Apply filament defaults if lane doesn't have values set
                 self._apply_slot_filament_defaults(cur_lane, slot_info)
@@ -1801,6 +1807,8 @@ class afcACE(afcUnit):
                 self.lane_illuminate_spool(cur_lane)
 
                 if cur_lane.tool_loaded:
+                    # Filament is in the toolhead, so it's also in the hub path
+                    cur_lane.loaded_to_hub = True
                     # For ACE with AMS virtual pin, the FPS reads zero
                     # at startup (motor off) so tool_start_state is False.
                     # If saved state confirms this lane is loaded, set the
@@ -2147,8 +2155,9 @@ class afcACE(afcUnit):
             # don't treat it as not-ready or it will false-trigger runout.
             slot_shifting = slot_status == "shifting"
 
-            # Always sync loaded_to_hub so prep/status is accurate
-            lane.loaded_to_hub = slot_ready
+            # Always sync load/prep state so status is accurate
+            lane._load_state = slot_ready
+            lane.prep_state = slot_ready
 
             prev_ready = self._prev_slot_states.get(lane.name)
             # Don't update prev state during transient "shifting" - wait
