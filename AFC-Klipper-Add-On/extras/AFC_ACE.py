@@ -1855,6 +1855,27 @@ class afcACE(afcUnit):
                                 local_slot = self._get_local_slot_for_lane(cur_lane)
                                 if local_slot >= 0:
                                     self._current_loaded_slot = local_slot
+
+                            # Start feed assist so ACE pushes filament
+                            # immediately — don't wait for the periodic
+                            # refresh (~15 s) which could starve the
+                            # extruder if a print resumes right away.
+                            fa_slot = self._get_local_slot_for_lane(cur_lane)
+                            if (fa_slot >= 0
+                                    and self._get_feed_assist_for_slot(fa_slot)
+                                    and self._ace is not None):
+                                try:
+                                    self._ace.start_feed_assist(fa_slot)
+                                    self._feed_assist_active.add(fa_slot)
+                                    self.logger.info(
+                                        f"PREP: feed assist started for "
+                                        f"slot {fa_slot} ({cur_lane.name})"
+                                    )
+                                except Exception as e:
+                                    self.logger.debug(
+                                        f"PREP: feed assist start failed "
+                                        f"for slot {fa_slot}: {e}"
+                                    )
                         else:
                             cur_lane.unit_obj.lane_tool_loaded_idle(cur_lane)
                     elif tool_ready:
