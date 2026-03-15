@@ -844,9 +844,9 @@ class afcAFCACE(afcUnit):
                 continue
 
             slot_info = self._slot_inventory[local_slot]
-            slot_ready = bool(
-                slot_info and slot_info.get("status", "") == "ready"
-            )
+            slot_status = slot_info.get("status", "") if slot_info else ""
+            slot_ready = slot_status == "ready"
+            slot_shifting = slot_status == "shifting"
 
             # Keep loaded_to_hub in sync
             lane.loaded_to_hub = slot_ready
@@ -864,7 +864,10 @@ class afcAFCACE(afcUnit):
                 self.lane_illuminate_spool(lane)
                 self._persistence.save()
 
-            self._prev_slot_states[lane.name] = slot_ready
+            # Don't update prev state during transient "shifting" to
+            # avoid false runout triggers in _poll_slot_status.
+            if not slot_shifting:
+                self._prev_slot_states[lane.name] = slot_ready
 
     def _on_ace_reconnected(self):
         """Called after ACE reconnects (power cycle or USB disconnect).
@@ -1335,7 +1338,7 @@ class afcAFCACE(afcUnit):
 
         # Start ACE unwind before extruder retract so the ACE begins pulling
         # tension on the spool while the extruder simultaneously retracts.
-        # The command returns immediately — the motor runs asynchronously.
+        # The command returns immediately   the motor runs asynchronously.
         self.logger.info(
             f"AFCACE unload: starting ACE unwind slot {local_slot} "
             f"before extruder retract for lane {cur_lane.name}"
@@ -1668,7 +1671,7 @@ class afcAFCACE(afcUnit):
 
         while total_fed < max_length:
             step = min(step_size, max_length - total_fed)
-            # Ensure ACE is ready before each step — after the previous
+            # Ensure ACE is ready before each step   after the previous
             # step completes, the ACE overall status may briefly stay
             # "busy" for internal housekeeping.  Sending feed_filament
             # while busy returns FORBIDDEN and kills the calibration.
@@ -2136,15 +2139,21 @@ class afcAFCACE(afcUnit):
                 continue
 
             slot_info = self._slot_inventory[local_slot]
-            slot_ready = bool(
-                slot_info and slot_info.get("status", "") == "ready"
-            )
+            slot_status = slot_info.get("status", "") if slot_info else ""
+            slot_ready = slot_status == "ready"
+
+            # "shifting" is a transient state during feed_assist start -
+            # don't treat it as not-ready or it will false-trigger runout.
+            slot_shifting = slot_status == "shifting"
 
             # Always sync loaded_to_hub so prep/status is accurate
             lane.loaded_to_hub = slot_ready
 
             prev_ready = self._prev_slot_states.get(lane.name)
-            self._prev_slot_states[lane.name] = slot_ready
+            # Don't update prev state during transient "shifting" - wait
+            # for a definitive ready/empty to avoid false runout triggers.
+            if not slot_shifting:
+                self._prev_slot_states[lane.name] = slot_ready
 
             # State consistency: if hardware says ready but lane is stuck
             # in NONE, fix it (covers first poll, missed transitions, etc.)
@@ -2157,7 +2166,8 @@ class afcAFCACE(afcUnit):
                 self._persistence.save()
 
             # Detect ready -> not-ready transition (filament runout)
-            elif prev_ready and not slot_ready:
+            # Only trigger during active printing to avoid startup crashes.
+            elif is_printing and prev_ready and not slot_ready and not slot_shifting:
                 if lane.status == AFCLaneState.TOOLED:
                     self.logger.info(
                         f"AFCACE runout detected on {lane.name} (slot {local_slot})"
