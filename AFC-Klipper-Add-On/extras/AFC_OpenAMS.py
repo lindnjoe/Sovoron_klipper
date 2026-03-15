@@ -4268,7 +4268,19 @@ class afcAMS(afcUnit):
                 self.logger.debug(f"Skipping extruder unsync for {lane.name} - cross-extruder runout (AFC will handle via LANE_UNLOAD)")
         lane.prep_state = lane_val_bool
         lane._load_state = lane_val_bool
-        lane.loaded_to_hub = lane_val_bool
+        # Do NOT blindly copy F1S sensor to loaded_to_hub -- hub has its own
+        # hardware sensor (hub_hes_value).  Read the actual hub state instead.
+        try:
+            spool_idx = self._get_openams_spool_index(lane)
+            hub_values = getattr(self.oams, "hub_hes_value", None) if self.oams else None
+            if hub_values is not None and spool_idx is not None and 0 <= spool_idx < len(hub_values):
+                lane.loaded_to_hub = bool(hub_values[spool_idx])
+            elif not lane_val_bool:
+                # Spool removed from bay -> hub definitely empty
+                lane.loaded_to_hub = False
+        except Exception:
+            if not lane_val_bool:
+                lane.loaded_to_hub = False
         lane.afc.save_vars()
 
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
@@ -5137,17 +5149,29 @@ class afcAMS(afcUnit):
 
         eventtime = kwargs.get("eventtime", 0.0)
 
-        # PHASE 1 REFACTOR: Use AFC native set_loaded() instead of direct state assignment
-        # lane.set_loaded() handles:
-        # - Sets lane.status = AFCLaneState.LOADED
-        # - Calls self.unit_obj.lane_loaded(self) for LED updates
-        # - Calls self.afc.spool._set_values(self) for spool metadata
-        # This eliminates manual state management and ensures proper state transitions
-        try:
-            lane.set_loaded()
-        except AttributeError:
-            # moonraker not ready yet during startup; state vars already set
-            pass
+        # Skip set_loaded() during PREP/startup to prevent spool metadata from
+        # being overwritten with defaults before the database values are restored.
+        # The PREP sequence will handle initial state setup independently.
+        in_prep = not getattr(self.afc, "prep_done", True)
+        if in_prep:
+            self.logger.debug(
+                "Skipping set_loaded for %s during PREP (spool_index=%s) "
+                "to preserve spool metadata from database",
+                lane.name,
+                spool_index,
+            )
+        else:
+            # PHASE 1 REFACTOR: Use AFC native set_loaded() instead of direct state assignment
+            # lane.set_loaded() handles:
+            # - Sets lane.status = AFCLaneState.LOADED
+            # - Calls self.unit_obj.lane_loaded(self) for LED updates
+            # - Calls self.afc.spool._set_values(self) for spool metadata
+            # This eliminates manual state management and ensures proper state transitions
+            try:
+                lane.set_loaded()
+            except AttributeError:
+                # moonraker not ready yet during startup; state vars already set
+                pass
 
         # Schedule TD-1 capture with 4.2-second delay if capture_td1_data is enabled in AFC_prep
         # The delay allows AMS auto-load sequence to complete (pushes to hub -> retracts -> settles)
@@ -5156,7 +5180,7 @@ class afcAMS(afcUnit):
 
         # During PREP, skip event-based TD-1 capture - PREP's _td1_prep handles sequential capture
         # This prevents all lanes from trying to capture simultaneously when their timers fire
-        in_prep = not getattr(self.afc, "prep_done", True)
+        # (in_prep already set above)
 
         should_capture = (
             not previous_loaded
@@ -5236,9 +5260,10 @@ class afcAMS(afcUnit):
         if previous_loaded is not None:
             previous_loaded = bool(previous_loaded)
         in_prep = not getattr(self.afc, "prep_done", True)
-        if in_prep and previous_loaded is False:
+        if in_prep:
             self.logger.debug(
-                "Skipping spool_unloaded baseline for %s during PREP (spool_index=%s)",
+                "Skipping spool_unloaded for %s during PREP (spool_index=%s) "
+                "to preserve spool metadata from database",
                 lane.name,
                 normalized_index,
             )
