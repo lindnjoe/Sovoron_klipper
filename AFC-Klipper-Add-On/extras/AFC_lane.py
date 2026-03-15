@@ -210,7 +210,7 @@ class AFCLane:
         # lane triggers
         buttons = self.printer.load_object(config, "buttons")
         self.prep = config.get('prep', None)                                    # MCU pin for prep trigger
-        self.prep_state = False
+        self._prep_state = False
         if self.prep is not None:
             buttons.register_buttons([self.prep], self.prep_callback)
 
@@ -977,8 +977,17 @@ class AFCLane:
                 self.logger.info(f"Cannot get TD-1 data for {self.name}, either toolhead is loaded or hub shows filament in path")
 
     @property
+    def _hub_is_virtual(self) -> bool:
+        """True when the lane's hub uses a virtual sensor (no physical switch_pin)."""
+        hub = getattr(self, "hub_obj", None)
+        if hub is None:
+            return True
+        pin = getattr(hub, "switch_pin", "virtual")
+        return str(pin).lower() == "virtual"
+
+    @property
     def load_state(self) -> bool:
-        if self.unit_obj.type in ("ViViD", "ACE", "AFCACE"):
+        if self.unit_obj.type in ("ViViD", "ACE", "AFCACE") and self._hub_is_virtual:
             return self.loaded_to_hub
         else:
             return bool(self._load_state)
@@ -986,6 +995,16 @@ class AFCLane:
     @property
     def raw_load_state(self) -> bool:
         return bool(self._load_state)
+
+    @property
+    def prep_state(self) -> bool:
+        if self.unit_obj.type in ("ACE", "AFCACE") and self._hub_is_virtual:
+            return self.loaded_to_hub
+        return self._prep_state
+
+    @prep_state.setter
+    def prep_state(self, state):
+        self._prep_state = bool(state)
 
     def selector_callback(self, eventtime: float, state):
         self._selector_state = state
