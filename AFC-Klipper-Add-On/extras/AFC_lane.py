@@ -1540,8 +1540,6 @@ class AFCLane:
         Sends lane data to moonrakers `machine/set_lane_data` endpoint
         """
         if self.map is not None and "T" in self.map:
-            if self.afc.moonraker is None:
-                return
             scan_time = self.td1_data['scan_time'] if 'scan_time' in self.td1_data else ""
             td        = self.td1_data['td']        if 'td'        in self.td1_data else ""
 
@@ -1567,8 +1565,6 @@ class AFCLane:
         Clears lane data that is currently stored at moonrakers `machine/set_lane_data` endpoint
         """
         if self.map is not None and "T" in self.map:
-            if self.afc.moonraker is None:
-                return
             lane_number = self.map.replace("T", "")
             lane_data = {
                 "namespace": "lane_data",
