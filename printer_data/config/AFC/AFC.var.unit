@@ -9,22 +9,22 @@
             "buffer_status": null,
             "lane": 1,
             "map": "T12",
-            "load": false,
-            "prep": false,
+            "load": true,
+            "prep": true,
             "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "PLA",
-            "density": 1.23,
+            "density": 1.24,
             "diameter": 1.75,
             "empty_spool_weight": 170.0,
             "remember_spool": false,
             "spool_id": 42,
             "color": "#ffffff",
-            "weight": 590.0448594354409,
+            "weight": 1000,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "Not Ready",
-            "filament_status_led": "#ff0000",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
@@ -98,8 +98,8 @@
             "map": "T15",
             "load": true,
             "prep": true,
-            "tool_loaded": true,
-            "loaded_to_hub": true,
+            "tool_loaded": false,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -107,12 +107,12 @@
             "remember_spool": false,
             "spool_id": 5,
             "color": "#f20808",
-            "weight": 369.8788696318761,
+            "weight": 369.34436264399596,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "In Tool",
-            "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "filament_status": "Ready",
+            "filament_status_led": "#00cc00",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         }
@@ -477,13 +477,13 @@
         }
     },
     "system": {
-        "current_load": "lane15",
+        "current_load": null,
         "num_units": 5,
         "num_lanes": 16,
         "num_extruders": 6,
         "extruders": {
             "extruder5": {
-                "lane_loaded": "lane15"
+                "lane_loaded": null
             },
             "extruder4": {
                 "lane_loaded": null
