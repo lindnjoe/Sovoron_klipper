@@ -306,7 +306,6 @@ class afcAMS(afcUnit):
     def __init__(self, config):
         super().__init__(config)
         self.type = "OpenAMS"
-        self.logger = self.afc.logger
 
         # AMS units don't have physical buffers - force buffer_obj to None
         # This prevents buffer monitoring/fault detection from running on AMS lanes
