@@ -167,6 +167,7 @@ class afcAFCACE(afcUnit):
         extruder: extruder
     """
 
+    hub_managed = True
     SLOTS_PER_UNIT = 4
 
     def __init__(self, config: ConfigWrapper):

@@ -628,6 +628,11 @@ class afcUnit:
     def calibration_lane_message(self) -> str:
         return ""
 
+    @property
+    def hub_managed(self):
+        """True if the unit manages hub state detection itself (no physical hub/load sensors needed)."""
+        return False
+
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
         """Override in subclass for custom load logic. Return non-None to skip default AFC load."""
         return None

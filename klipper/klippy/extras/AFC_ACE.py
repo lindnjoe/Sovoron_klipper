@@ -175,6 +175,7 @@ class afcACE(afcUnit):
     Each afcACE instance maps to one physical ACE PRO unit with 4 filament slots.
     """
 
+    hub_managed = True
     SLOTS_PER_UNIT = 4
 
     def __init__(self, config: ConfigWrapper):

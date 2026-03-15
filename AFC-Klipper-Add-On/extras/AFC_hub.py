@@ -33,8 +33,10 @@ class afc_hub:
         self.lanes: Dict[str, AFCLane] = {}
         self._state: bool = False
 
-        # switch_pin is optional for OpenAMS/virtual hub usage; default to virtual when omitted
-        self.switch_pin             = config.get('switch_pin', 'virtual')           # Pin hub sensor it connected to
+        self.switch_pin = config.get('switch_pin', None)
+        # HUB Cut variables
+        # Next two variables are used in AFC
+        self.switch_pin             = config.get('switch_pin', 'virtual')           # Pin hub sensor it connected to, default 'virtual' for units without physical hub sensors
         self.hub_clear_move_dis     = config.getfloat("hub_clear_move_dis", 65)     # How far to move filament so that it's not block the hub exit
         self.afc_bowden_length      = config.getfloat("afc_bowden_length", 900)     # Length of the Bowden tube from the hub to the toolhead sensor in mm.
         self.td1_bowden_length      = config.getfloat("td1_bowden_length", self.afc_bowden_length-50)     # Length of the Bowden tube from the hub to a TD-1 device in mm.
@@ -106,14 +108,11 @@ class afc_hub:
             msg = "The following lanes need load sensors for virtual hub sensor to work correctly:"
             report_error = False
             for lane in self.lanes.values():
-                # OpenAMS/ACE lanes use hardware sensors instead of AFC load pins
-                unit_obj = getattr(lane, "unit_obj", None)
-                unit_type = getattr(unit_obj, "type", None)
-                is_hw_managed = (
-                    unit_type in ("OpenAMS", "ACE", "AFCACE")
-                    or hasattr(unit_obj, "oams_name")
-                )
-                if lane.load is None and not is_hw_managed:
+                if lane.load is None:
+                    # Skip lanes whose unit manages hub detection (e.g. OpenAMS, ACE)
+                    unit_obj = getattr(lane, "unit_obj", None)
+                    if unit_obj is not None and getattr(unit_obj, "hub_managed", False):
+                        continue
                     report_error = True
                     msg += f"\n{lane.fullname}"
 
@@ -124,27 +123,15 @@ class afc_hub:
     def state(self):
         """
         Returns current state of switch. If using virtual sensor returns True if any lanes load
-        sensor is triggered.
-
-        For hardware-managed units (OpenAMS, ACE), use per-lane ``loaded_to_hub``
-        because the hardware provides the hub sensor value and ``load_state`` only indicates
-        spool/load presence, not hub-path occupancy.
+        sensor is triggered.  Falls back to load_state for lanes without a physical load sensor
+        (e.g. OpenAMS, ACE).
         """
         state = self._state
         if self.switch_pin.lower() == "virtual":
-            lane_states = []
-            for lane in self.lanes.values():
-                unit_obj = getattr(lane, "unit_obj", None)
-                unit_type = getattr(unit_obj, "type", None)
-                is_hw_managed = (
-                    unit_type in ("OpenAMS", "ACE", "AFCACE")
-                    or hasattr(unit_obj, "oams_name")
-                )
-                if is_hw_managed:
-                    lane_states.append(bool(getattr(lane, "tool_loaded", False)))
-                else:
-                    lane_states.append(lane.raw_load_state)
-            state = any(lane_states)
+            state = any(
+                lane.raw_load_state if lane.load is not None else lane.load_state
+                for lane in self.lanes.values()
+            )
         return state
 
     def switch_pin_callback(self, eventtime, state):
