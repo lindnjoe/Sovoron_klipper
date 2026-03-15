@@ -73,6 +73,7 @@ class afc:
 
         self.function: afcFunction   = self.printer.load_object(config, 'AFC_functions')
         self.function.afc = self
+        self.function.logger = self.logger
         self.gcode: GCodeDispatch = self.printer.load_object(config, 'gcode')
 
         # Registering stepper callback so that mux macro can be set properly with valid lane names
@@ -1564,7 +1565,7 @@ class afc:
                         msg += "manually extrude filament and clean nozzle."
                         if self.function.in_print():
                             msg += '\nOnce issue is resolved click resume to continue printing'
-                        self.error.handle_lane_failure(cur_lane, msg, pause=self.function.in_print())
+                        self.error.handle_lane_failure(cur_lane, msg)
                         return False
                 cur_lane.sync_to_extruder()
 
@@ -1815,7 +1816,7 @@ class afc:
                             msg += f"with {self.lanes[self.next_lane_load].map} macro.\n"
                             if self.function.in_print():
                                 msg += "Once lane is loaded click resume to continue printing"
-                        self.error.handle_lane_failure(cur_lane, msg, pause=self.function.in_print())
+                        self.error.handle_lane_failure(cur_lane, msg)
                         return False
                 cur_lane.sync_to_extruder(False)
                 # we only need to do this if we need to move off the extruder gears
