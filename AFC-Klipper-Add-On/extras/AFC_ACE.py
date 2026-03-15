@@ -891,7 +891,13 @@ class afcACE(afcUnit):
                     f"ACE callback: {lane.name} slot {local_slot} ready, "
                     f"setting loaded"
                 )
+                # Clear stale spool metadata from previous filament so we
+                # don't carry over old spool info to the new insertion.
+                # next_spool_id (if set) is applied inside set_loaded().
+                self.afc.spool.clear_values(lane)
                 lane.set_loaded()
+                slot_info = self._slot_inventory[local_slot]
+                self._apply_slot_filament_defaults(lane, slot_info)
                 self.lane_illuminate_spool(lane)
                 self._persistence.save()
 
@@ -2260,7 +2266,13 @@ class afcACE(afcUnit):
                 self.logger.info(
                     f"ACE poll: {lane.name} slot {local_slot} ready, setting loaded"
                 )
+                # Clear stale spool metadata from previous filament so we
+                # don't carry over old spool info to the new insertion.
+                # next_spool_id (if set) is applied inside set_loaded().
+                self.afc.spool.clear_values(lane)
                 lane.set_loaded()
+                slot_info = self._slot_inventory[local_slot]
+                self._apply_slot_filament_defaults(lane, slot_info)
                 self.lane_illuminate_spool(lane)
                 self._persistence.save()
 
