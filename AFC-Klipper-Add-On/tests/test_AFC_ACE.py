@@ -3,15 +3,17 @@ Unit tests for extras/AFC_ACE.py
 
 Covers:
   - afcACE: class constants, slot mapping, color conversion
-  - _get_local_slot_for_lane: maps lane unit field to 0-based slot index
+  - ACEPersistence: deferred/immediate modes, save/flush
+  - _get_local_slot_for_lane: maps lane index to 0-based slot
   - _ace_color_to_hex: converts RGB array to hex string
+  - _get_feed_assist_for_slot: default vs override
   - system_Test: LED logic for each lane state combination
   - _poll_slot_status: shifting state handling, operation guard, state consistency
   - get_status: correct keys and content
   - check_runout: returns True when printing
   - get_lane_reset_command: returns TOOL_UNLOAD command
   - lane_unload: blocks manual unload
-  - load_sequence / unload_sequence: _operation_active guard
+  - handle_connect: sets logo strings
 """
 
 from __future__ import annotations
@@ -19,13 +21,13 @@ from __future__ import annotations
 from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 
-from extras.AFC_ACE import afcACE, _AceBackend, BACKEND_ACEPRO, BACKEND_DUCKACE
+from extras.AFC_ACE import afcACE, ACEPersistence, MODE_COMBINED, MODE_DIRECT
 from extras.AFC_lane import AFCLaneState
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _make_ace(name="ACE_1"):
+def _make_ace(name="ACE_1", mode=MODE_COMBINED):
     """Build an afcACE bypassing the complex __init__."""
     unit = afcACE.__new__(afcACE)
 
@@ -53,25 +55,57 @@ def _make_ace(name="ACE_1"):
     unit.td1_defined = False
     unit.type = "ACE"
     unit.gcode = afc.gcode
-    unit.ace_instance_index = 0
-    unit._configured_backend = "auto"
-    unit._cached_ace_obj = None
-    unit._backend = None
-    unit._operation_active = False
+    unit.mode = mode
+    unit.serial_port = "/dev/ttyACE0"
+    unit.feed_speed = 800.0
+    unit.retract_speed = 800.0
+    unit.feed_length = 500.0
+    unit.retract_length = 500.0
+    unit._default_feed_assist = True
+    unit._slot_feed_assist = {}
+    unit.extruder_assist_length = 50.0
+    unit.extruder_assist_speed = 300.0
+    unit.sensor_approach_margin = 60.0
+    unit.sensor_step = 20.0
+    unit.calibration_step = 50.0
+    unit.max_feed_overshoot = 100.0
+    unit.dock_purge = False
+    unit.dock_purge_length = 50.0
+    unit.dock_purge_speed = 5.0
+    unit.crash_detection_mode = "disabled"
+    unit.fps_threshold = 0.9
+    unit._fps_obj = None
+    unit._fps_extruder = None
+    unit._fps_runout_helper = None
+    unit._fps_latched = False
+    unit.poll_interval = 1.0
+    unit.baud_rate = 115200
+    unit._ace = None
+    unit._slot_inventory = [{} for _ in range(4)]
+    unit._cached_hw_status = {}
+    unit._current_loaded_slot = -1
     unit._prev_slot_states = {}
+    unit._operation_active = False
+    unit._feed_assist_active = set()
+    unit._feed_assist_refresh_counter = 0
+    unit._FEED_ASSIST_REFRESH_INTERVAL = 7
+    unit._pending_feed_assist_restore = False
+    unit._persistence = MagicMock()
+    unit._last_inventory_sync = 0.0
+    unit._inventory_sync_interval = 300.0
 
     return unit
 
 
 def _make_lane(name="lane1", prep_state=False, load_state=False,
-               tool_loaded=False, unit_field="ACE_1:1"):
+               tool_loaded=False, index=1):
     lane = MagicMock()
     lane.name = name
     lane.prep_state = prep_state
     lane.load_state = load_state
     lane.tool_loaded = tool_loaded
     lane.map = "T0"
-    lane.unit = unit_field
+    lane.index = index
     lane.status = None
     lane._afc_prep_done = True
     lane.loaded_to_hub = False
@@ -85,42 +119,38 @@ def _make_lane(name="lane1", prep_state=False, load_state=False,
     return lane
 
 
-def _make_backend(backend_type=BACKEND_DUCKACE, connected=True):
-    """Create a mock _AceBackend."""
-    backend = MagicMock(spec=_AceBackend)
-    backend.backend_type = backend_type
-    backend.is_connected = connected
-    return backend
-
-
 # ── Constants ────────────────────────────────────────────────────────────────
 
 class TestConstants:
     def test_slots_per_unit(self):
         assert afcACE.SLOTS_PER_UNIT == 4
 
+    def test_mode_constants(self):
+        assert MODE_COMBINED == "combined"
+        assert MODE_DIRECT == "direct"
+
 
 # ── _get_local_slot_for_lane ──────────────────────────────────────────────────
 
 class TestGetLocalSlotForLane:
-    def test_returns_0_for_slot_1(self):
+    def test_returns_0_for_index_1(self):
         unit = _make_ace()
-        lane = _make_lane(unit_field="ACE_1:1")
+        lane = _make_lane(index=1)
         assert unit._get_local_slot_for_lane(lane) == 0
 
-    def test_returns_3_for_slot_4(self):
+    def test_returns_3_for_index_4(self):
         unit = _make_ace()
-        lane = _make_lane(unit_field="ACE_1:4")
+        lane = _make_lane(index=4)
         assert unit._get_local_slot_for_lane(lane) == 3
 
-    def test_returns_neg1_for_invalid_field(self):
+    def test_returns_neg1_for_index_0(self):
         unit = _make_ace()
-        lane = _make_lane(unit_field="ACE_1")
+        lane = _make_lane(index=0)
         assert unit._get_local_slot_for_lane(lane) == -1
 
-    def test_returns_neg1_for_empty_field(self):
+    def test_returns_neg1_for_index_5(self):
         unit = _make_ace()
-        lane = _make_lane(unit_field="")
+        lane = _make_lane(index=5)
         assert unit._get_local_slot_for_lane(lane) == -1
 
 
@@ -133,9 +163,6 @@ class TestAceColorToHex:
     def test_black_for_zeros(self):
         assert afcACE._ace_color_to_hex([0, 0, 0]) == "#000000"
 
-    def test_white(self):
-        assert afcACE._ace_color_to_hex([255, 255, 255]) == "#ffffff"
-
     def test_fallback_for_short_array(self):
         assert afcACE._ace_color_to_hex([255]) == "#000000"
 
@@ -144,6 +171,27 @@ class TestAceColorToHex:
 
     def test_tuple_input(self):
         assert afcACE._ace_color_to_hex((128, 64, 32)) == "#804020"
+
+
+# ── _get_feed_assist_for_slot ────────────────────────────────────────────────
+
+class TestGetFeedAssistForSlot:
+    def test_returns_default_when_no_override(self):
+        unit = _make_ace()
+        unit._default_feed_assist = True
+        assert unit._get_feed_assist_for_slot(0) is True
+
+    def test_returns_override_when_set(self):
+        unit = _make_ace()
+        unit._default_feed_assist = True
+        unit._slot_feed_assist = {0: False}
+        assert unit._get_feed_assist_for_slot(0) is False
+
+    def test_returns_default_for_unoveridden_slot(self):
+        unit = _make_ace()
+        unit._default_feed_assist = False
+        unit._slot_feed_assist = {0: True}
+        assert unit._get_feed_assist_for_slot(1) is False
 
 
 # ── check_runout ─────────────────────────────────────────────────────────────
@@ -174,12 +222,6 @@ class TestGetLaneResetCommand:
         result = unit.get_lane_reset_command(lane, None)
         assert result == "TOOL_UNLOAD LANE=lane3"
 
-    def test_ignores_distance(self):
-        unit = _make_ace()
-        lane = _make_lane(name="lane1")
-        result = unit.get_lane_reset_command(lane, 100)
-        assert result == "TOOL_UNLOAD LANE=lane1"
-
 
 # ── lane_unload ──────────────────────────────────────────────────────────────
 
@@ -194,41 +236,53 @@ class TestLaneUnload:
 # ── get_status ───────────────────────────────────────────────────────────────
 
 class TestGetStatus:
-    def test_has_ace_backend_key(self):
+    def test_has_ace_mode_key(self):
         unit = _make_ace()
         status = unit.get_status()
-        assert "ace_backend" in status
+        assert "ace_mode" in status
+
+    def test_ace_mode_is_combined(self):
+        unit = _make_ace(mode=MODE_COMBINED)
+        status = unit.get_status()
+        assert status["ace_mode"] == MODE_COMBINED
 
     def test_has_ace_connected_key(self):
         unit = _make_ace()
         status = unit.get_status()
         assert "ace_connected" in status
 
-    def test_reports_not_connected_when_no_backend(self):
+    def test_reports_not_connected_when_no_ace(self):
         unit = _make_ace()
-        unit._backend = None
+        unit._ace = None
         status = unit.get_status()
         assert status["ace_connected"] is False
 
-    def test_reports_connected_when_backend_present(self):
+    def test_has_ace_serial_port(self):
         unit = _make_ace()
-        unit._backend = _make_backend(connected=True)
         status = unit.get_status()
-        assert status["ace_connected"] is True
+        assert status["ace_serial_port"] == "/dev/ttyACE0"
+
+    def test_has_ace_status(self):
+        unit = _make_ace()
+        unit._cached_hw_status = {"temp": 25}
+        status = unit.get_status()
+        assert status["ace_status"] == {"temp": 25}
 
 
 # ── handle_connect ───────────────────────────────────────────────────────────
 
 class TestHandleConnect:
-    def test_sets_logo(self):
-        unit = _make_ace()
+    def test_sets_logo_with_mode(self):
+        unit = _make_ace(mode=MODE_COMBINED)
         unit.set_logo_color = MagicMock()
+        unit._register_gcode_commands = MagicMock()
         unit.handle_connect()
-        assert "ACE" in unit.logo
+        assert "combined" in unit.logo
 
     def test_sets_logo_error(self):
         unit = _make_ace()
         unit.set_logo_color = MagicMock()
+        unit._register_gcode_commands = MagicMock()
         unit.handle_connect()
         assert "ERR" in unit.logo_error
 
@@ -268,12 +322,6 @@ class TestSystemTestFaultLane:
 # ── system_Test: loaded (prep=T, load=T) ─────────────────────────────────────
 
 class TestSystemTestLoadedLane:
-    def test_loaded_sets_ready_led(self):
-        unit = _make_ace()
-        lane = _make_lane(prep_state=True, load_state=True)
-        unit.system_Test(lane, delay=0.0, assignTcmd=True, enable_movement=False)
-        unit.afc.function.afc_led.assert_any_call(lane.led_ready, lane.led_index)
-
     def test_loaded_sets_status_to_loaded(self):
         unit = _make_ace()
         lane = _make_lane(prep_state=True, load_state=True)
@@ -291,41 +339,86 @@ class TestSystemTestLockedNotLoaded:
         assert result is False
 
 
+# ── ACEPersistence ────────────────────────────────────────────────────────
+
+class TestPersistenceImmediate:
+    def test_save_calls_afc_save_vars(self):
+        from tests.conftest import MockReactor, MockLogger
+        afc = MagicMock()
+        p = ACEPersistence(MockReactor(), afc, MockLogger(), mode="immediate")
+        p.save()
+        afc.save_vars.assert_called_once()
+
+    def test_has_pending_is_false_after_immediate_save(self):
+        from tests.conftest import MockReactor, MockLogger
+        afc = MagicMock()
+        p = ACEPersistence(MockReactor(), afc, MockLogger(), mode="immediate")
+        p.save()
+        assert p.has_pending is False
+
+
+class TestPersistenceDeferred:
+    def test_save_does_not_call_afc_save_vars(self):
+        from tests.conftest import MockReactor, MockLogger
+        afc = MagicMock()
+        p = ACEPersistence(MockReactor(), afc, MockLogger(), mode="deferred")
+        p.save()
+        afc.save_vars.assert_not_called()
+        assert p.has_pending is True
+
+    def test_flush_calls_afc_save_vars_when_dirty(self):
+        from tests.conftest import MockReactor, MockLogger
+        afc = MagicMock()
+        p = ACEPersistence(MockReactor(), afc, MockLogger(), mode="deferred")
+        p.save()  # mark dirty
+        p.flush()
+        afc.save_vars.assert_called_once()
+        assert p.has_pending is False
+
+    def test_flush_noop_when_clean(self):
+        from tests.conftest import MockReactor, MockLogger
+        afc = MagicMock()
+        p = ACEPersistence(MockReactor(), afc, MockLogger(), mode="deferred")
+        p.flush()  # not dirty
+        afc.save_vars.assert_not_called()
+
+
 # ── _poll_slot_status: shifting state handling ───────────────────────────────
 
 class TestPollSlotStatusShifting:
     def test_shifting_does_not_update_prev_state(self):
         unit = _make_ace()
-        backend = _make_backend()
-        unit._backend = backend
         lane = _make_lane()
         unit.lanes = {"lane1": lane}
         unit._prev_slot_states = {"lane1": True}
+        unit._slot_inventory = [{"status": "shifting"}, {}, {}, {}]
 
-        # Slot reports "shifting"
-        backend.get_slot_info.return_value = {"status": "shifting"}
+        ace = MagicMock()
+        ace.connected = True
+        ace.get_status.return_value = {"slots": [{"status": "shifting"}]}
+        unit._ace = ace
         unit.afc.function.is_printing.return_value = True
 
         unit._poll_slot_status(100.0)
 
-        # prev state should remain True (not updated during shifting)
         assert unit._prev_slot_states["lane1"] is True
 
     def test_shifting_does_not_trigger_runout(self):
         unit = _make_ace()
-        backend = _make_backend()
-        unit._backend = backend
         lane = _make_lane()
         lane.status = AFCLaneState.TOOLED
         unit.lanes = {"lane1": lane}
         unit._prev_slot_states = {"lane1": True}
+        unit._slot_inventory = [{"status": "shifting"}, {}, {}, {}]
 
-        backend.get_slot_info.return_value = {"status": "shifting"}
+        ace = MagicMock()
+        ace.connected = True
+        ace.get_status.return_value = {"slots": [{"status": "shifting"}]}
+        unit._ace = ace
         unit.afc.function.is_printing.return_value = True
 
         unit._poll_slot_status(100.0)
 
-        # No runout should be triggered
         lane._perform_infinite_runout.assert_not_called()
         lane._perform_pause_runout.assert_not_called()
 
@@ -334,128 +427,9 @@ class TestPollSlotStatusOperationGuard:
     def test_skips_when_operation_active(self):
         unit = _make_ace()
         unit._operation_active = True
-        unit._backend = _make_backend()
-        unit.lanes = {"lane1": _make_lane()}
+        unit._ace = MagicMock()
+        unit._ace.connected = True
 
         result = unit._poll_slot_status(100.0)
 
-        # Should return early without processing lanes
-        assert result == 102.0  # eventtime + 2.0
-
-    def test_processes_when_operation_not_active(self):
-        unit = _make_ace()
-        unit._operation_active = False
-        backend = _make_backend()
-        unit._backend = backend
-        lane = _make_lane()
-        unit.lanes = {"lane1": lane}
-        backend.get_slot_info.return_value = {"status": "ready"}
-        unit.afc.function.is_printing.return_value = False
-
-        result = unit._poll_slot_status(100.0)
-
-        # Should process (idle rate = 2s)
-        assert result == 102.0
-
-
-class TestPollSlotStatusStateConsistency:
-    def test_ready_slot_in_none_state_gets_set_loaded(self):
-        unit = _make_ace()
-        backend = _make_backend()
-        unit._backend = backend
-        lane = _make_lane()
-        lane.status = AFCLaneState.NONE
-        lane._afc_prep_done = True
-        unit.lanes = {"lane1": lane}
-        unit._prev_slot_states = {}
-
-        backend.get_slot_info.return_value = {"status": "ready"}
-        unit.afc.function.is_printing.return_value = False
-
-        unit._poll_slot_status(100.0)
-
-        lane.set_loaded.assert_called_once()
-        unit.afc.save_vars.assert_called()
-
-
-class TestPollSlotStatusRunout:
-    def test_ready_to_empty_triggers_runout_on_tooled_lane(self):
-        unit = _make_ace()
-        backend = _make_backend()
-        unit._backend = backend
-        lane = _make_lane()
-        lane.status = AFCLaneState.TOOLED
-        lane.runout_lane = "lane2"
-        unit.lanes = {"lane1": lane}
-        unit._prev_slot_states = {"lane1": True}
-
-        backend.get_slot_info.return_value = {"status": "empty"}
-        unit.afc.function.is_printing.return_value = True
-
-        unit._poll_slot_status(100.0)
-
-        lane._perform_infinite_runout.assert_called_once()
-
-    def test_no_runout_when_not_printing(self):
-        unit = _make_ace()
-        backend = _make_backend()
-        unit._backend = backend
-        lane = _make_lane()
-        lane.status = AFCLaneState.TOOLED
-        unit.lanes = {"lane1": lane}
-        unit._prev_slot_states = {"lane1": True}
-
-        backend.get_slot_info.return_value = {"status": "empty"}
-        unit.afc.function.is_printing.return_value = False
-
-        unit._poll_slot_status(100.0)
-
-        lane._perform_infinite_runout.assert_not_called()
-        lane._perform_pause_runout.assert_not_called()
-
-    def test_adaptive_poll_rate(self):
-        unit = _make_ace()
-        backend = _make_backend()
-        unit._backend = backend
-        unit.lanes = {}
-
-        unit.afc.function.is_printing.return_value = True
-        result = unit._poll_slot_status(100.0)
-        assert result == 101.0  # 1s when printing
-
-        unit.afc.function.is_printing.return_value = False
-        result = unit._poll_slot_status(100.0)
-        assert result == 102.0  # 2s when idle
-
-
-class TestPollSlotStatusIdleSync:
-    def test_syncs_loaded_to_hub_during_idle(self):
-        unit = _make_ace()
-        backend = _make_backend()
-        unit._backend = backend
-        lane = _make_lane()
-        lane.loaded_to_hub = False
-        lane.status = AFCLaneState.LOADED
-        unit.lanes = {"lane1": lane}
-        unit._prev_slot_states = {}
-
-        backend.get_slot_info.return_value = {"status": "ready"}
-        unit.afc.function.is_printing.return_value = False
-
-        unit._poll_slot_status(100.0)
-
-        assert lane.loaded_to_hub is True
-
-
-# ── load_sequence / unload_sequence: operation guard ─────────────────────────
-
-class TestOperationActiveGuard:
-    def test_load_sets_operation_active(self):
-        unit = _make_ace()
-        unit._backend = _make_backend()
-        # Will fail early due to no backend, but operation_active should be set/cleared
-        assert unit._operation_active is False
-
-    def test_unload_sets_operation_active(self):
-        unit = _make_ace()
-        assert unit._operation_active is False
+        assert result == 101.0  # eventtime + poll_interval

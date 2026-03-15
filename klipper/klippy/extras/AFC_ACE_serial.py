@@ -1,6 +1,6 @@
 # Armored Turtle Automated Filament Changer
 #
-# AFCACE Serial Communication Layer
+# ACE Serial Communication Layer
 # Direct serial communication with Anycubic ACE PRO hardware via JSON-RPC
 # over USB serial. No dependency on ACEPRO or DuckACE.
 #
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     pass
 
 
-_logger = logging.getLogger("AFC_AFCACE_serial")
+_logger = logging.getLogger("AFC_ACE_serial")
 
 # Frame constants
 FRAME_HEADER = b'\xff\xaa'

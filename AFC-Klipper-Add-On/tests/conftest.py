@@ -196,8 +196,8 @@ def _make_klippy_ready_mock():
 
 
 def _make_afcace_serial_mock():
-    """Mock for AFC_AFCACE_serial (hardware serial communication)."""
-    mod = types.ModuleType("extras.AFC_AFCACE_serial")
+    """Mock for AFC_ACE_serial (hardware serial communication)."""
+    mod = types.ModuleType("extras.AFC_ACE_serial")
 
     class ACESerialError(Exception):
         pass
@@ -269,7 +269,7 @@ sys.modules.setdefault("extras.force_move", _make_force_move_mock())
 sys.modules.setdefault("klippy", _make_klippy_ready_mock())
 
 # ACE/OpenAMS-specific mocks
-sys.modules.setdefault("extras.AFC_AFCACE_serial", _make_afcace_serial_mock())
+sys.modules.setdefault("extras.AFC_ACE_serial", _make_afcace_serial_mock())
 sys.modules.setdefault("extras.temperature_ace", _make_temperature_ace_mock())
 
 _led_mock = _make_led_mock()
