@@ -5143,7 +5143,11 @@ class afcAMS(afcUnit):
         # - Calls self.unit_obj.lane_loaded(self) for LED updates
         # - Calls self.afc.spool._set_values(self) for spool metadata
         # This eliminates manual state management and ensures proper state transitions
-        lane.set_loaded()
+        try:
+            lane.set_loaded()
+        except AttributeError:
+            # moonraker not ready yet during startup; state vars already set
+            pass
 
         # Schedule TD-1 capture with 4.2-second delay if capture_td1_data is enabled in AFC_prep
         # The delay allows AMS auto-load sequence to complete (pushes to hub -> retracts -> settles)
@@ -5252,7 +5256,11 @@ class afcAMS(afcUnit):
         #
         # PHASE 2 REFACTOR: Removed dictionary updates
         # AFC native lane.set_unloaded() handles all state cleanup
-        lane.set_unloaded()
+        try:
+            lane.set_unloaded()
+        except AttributeError:
+            # moonraker not ready yet during startup; state vars already set
+            pass
 
         eventtime = kwargs.get("eventtime", 0.0)
         if self.hardware_service is not None and normalized_index is not None:
