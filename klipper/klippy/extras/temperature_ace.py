@@ -1,15 +1,15 @@
 # Optional ACE temperature sensor for Klipper.
-# Reads the ACE device temperature from an AFC_AFCACE unit's cached
+# Reads the ACE device temperature from an AFC_ACE unit's cached
 # hardware status and exposes it as a standard temperature_sensor.
 #
-# Adapted from Kobra-S1/ACEPRO temperature_ace.py for the AFC_AFCACE
+# Adapted from Kobra-S1/ACEPRO temperature_ace.py for the AFC_ACE
 # driver used in this project.
 #
-# Configuration example (place AFTER your [AFC_AFCACE ...] section):
+# Configuration example (place AFTER your [AFC_ACE ...] section):
 #
 #   [temperature_sensor ace_temp]
 #   sensor_type: temperature_ace
-#   ace_unit: Ace1           # Name of your AFC_AFCACE unit (default: Ace1)
+#   ace_unit: Ace1           # Name of your AFC_ACE unit (default: Ace1)
 #   min_temp: 0
 #   max_temp: 70
 
@@ -24,7 +24,7 @@ _fallback_logger = logging.getLogger("temperature_ace")
 
 class TemperatureACE:
     """Temperature sensor that reads ACE device temperature from an
-    AFC_AFCACE unit's cached hardware status."""
+    AFC_ACE unit's cached hardware status."""
 
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -39,7 +39,7 @@ class TemperatureACE:
         self.measured_min = float("inf")
         self.measured_max = 0.0
 
-        # AFC_AFCACE reference resolved on ready
+        # AFC_ACE reference resolved on ready
         self._ace_unit = None
         # AFC logger reference (resolved in handle_ready)
         self._logger = None
@@ -67,7 +67,7 @@ class TemperatureACE:
         return _fallback_logger
 
     def handle_ready(self):
-        """Resolve AFC_AFCACE unit reference once Klipper is ready."""
+        """Resolve AFC_ACE unit reference once Klipper is ready."""
         self._ace_unit = self._resolve_unit()
 
         # Try to grab AFC's logger for consistent log output
@@ -79,11 +79,11 @@ class TemperatureACE:
 
         if self._ace_unit:
             self._log().info(
-                f"temperature_ace: linked to AFC_AFCACE unit '{self.ace_unit_name}'"
+                f"temperature_ace: linked to AFC_ACE unit '{self.ace_unit_name}'"
             )
         else:
             self._log().warning(
-                f"temperature_ace: AFC_AFCACE unit '{self.ace_unit_name}' not found; "
+                f"temperature_ace: AFC_ACE unit '{self.ace_unit_name}' not found; "
                 "reporting 0C"
             )
 
@@ -101,7 +101,7 @@ class TemperatureACE:
         return ACE_REPORT_TIME
 
     def _resolve_unit(self):
-        """Look up the AFC_AFCACE unit object via AFC's units dict."""
+        """Look up the AFC_ACE unit object via AFC's units dict."""
         try:
             afc = self.printer.lookup_object("AFC")
             units = getattr(afc, "units", {})
@@ -114,7 +114,7 @@ class TemperatureACE:
         # Fallback: try direct printer object lookup
         try:
             return self.printer.lookup_object(
-                f"AFC_AFCACE {self.ace_unit_name}", None
+                f"AFC_ACE {self.ace_unit_name}", None
             )
         except Exception:
             return None
