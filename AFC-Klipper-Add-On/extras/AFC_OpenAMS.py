@@ -1032,6 +1032,28 @@ class afcAMS(afcUnit):
             return False, None, None
         return manager.clear_fps_state_for_lane(lane_name, eventtime=eventtime)
 
+    def get_status(self, eventtime=None):
+        """Return status dict with OpenAMS connection info."""
+        response = super().get_status(eventtime)
+
+        # OpenAMS controller connection status
+        oams = self.oams
+        oams_connected = False
+        if oams is not None:
+            mcu = getattr(oams, "mcu", None)
+            if mcu is not None:
+                try:
+                    if hasattr(mcu, "is_connected"):
+                        oams_connected = bool(mcu.is_connected())
+                    elif not (hasattr(mcu, "is_shutdown") and mcu.is_shutdown()):
+                        oams_connected = True
+                except Exception:
+                    pass
+        response["oams_connected"] = oams_connected
+        response["oams_name"] = self.oams_name
+
+        return response
+
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
         """OpenAMS load sequence - delegates to OAMSManager instead of stepper-based loading.
 

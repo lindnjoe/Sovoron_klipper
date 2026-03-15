@@ -976,6 +976,14 @@ class afcACE(afcUnit):
         response["ace_status"] = self._cached_hw_status
         response["ace_drying"] = self._drying_active
 
+        # Hardware temps/humidity from cached get_status response
+        hw = self._cached_hw_status
+        response["ace_temp"] = hw.get("temp")
+        response["ace_humidity"] = hw.get("humidity")
+
+        # Feed assist state: list of slot indices with active feed assist
+        response["ace_feed_assist_slots"] = sorted(self._feed_assist_active)
+
         return response
 
     def lane_tool_loaded(self, lane):
