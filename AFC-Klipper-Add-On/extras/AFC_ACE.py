@@ -758,6 +758,28 @@ class afcACE(afcUnit):
                     f"ACE {self.name}: slot {slot} inventory query failed: {e}"
                 )
 
+    def _clear_slot_inventory(self, slot):
+        """Clear cached RFID data for a slot so stale info isn't reapplied."""
+        if 0 <= slot < self.SLOTS_PER_UNIT:
+            self._slot_inventory[slot]["material"] = ""
+            self._slot_inventory[slot]["color"] = [0, 0, 0]
+
+    def _refresh_slot_inventory(self, slot):
+        """Fetch fresh RFID data for a single slot from ACE hardware."""
+        if self._ace is None or not self._ace.connected:
+            return
+        if slot < 0 or slot >= self.SLOTS_PER_UNIT:
+            return
+        try:
+            info = self._ace.get_filament_info(slot)
+            if isinstance(info, dict):
+                self._slot_inventory[slot]["material"] = info.get("material", info.get("type", ""))
+                self._slot_inventory[slot]["color"] = info.get("color", [0, 0, 0])
+        except Exception as e:
+            self.logger.debug(
+                f"ACE {self.name}: slot {slot} RFID refresh failed: {e}"
+            )
+
     def _sync_slot_loaded_state(self):
         """Sync ACE slot status to lane load/prep state."""
         if self._ace is None or not self._ace.connected:
@@ -896,10 +918,21 @@ class afcACE(afcUnit):
                 # next_spool_id (if set) is applied inside set_loaded().
                 self.afc.spool.clear_values(lane)
                 lane.set_loaded()
+                # Fetch fresh RFID data for this slot before applying defaults
+                # so we don't reapply stale cached info from the old spool.
+                self._refresh_slot_inventory(local_slot)
                 slot_info = self._slot_inventory[local_slot]
                 self._apply_slot_filament_defaults(lane, slot_info)
                 self.lane_illuminate_spool(lane)
                 self._persistence.save()
+
+            # Clear cached RFID data when a slot goes empty so stale
+            # material/color from the old spool isn't reapplied on
+            # the next insertion.
+            if not slot_ready and not slot_shifting:
+                prev_ready_cb = self._prev_slot_states.get(lane.name)
+                if prev_ready_cb:
+                    self._clear_slot_inventory(local_slot)
 
             # Don't update prev state during transient "shifting" to
             # avoid false runout triggers in _poll_slot_status.
@@ -2271,6 +2304,9 @@ class afcACE(afcUnit):
                 # next_spool_id (if set) is applied inside set_loaded().
                 self.afc.spool.clear_values(lane)
                 lane.set_loaded()
+                # Fetch fresh RFID data for this slot before applying defaults
+                # so we don't reapply stale cached info from the old spool.
+                self._refresh_slot_inventory(local_slot)
                 slot_info = self._slot_inventory[local_slot]
                 self._apply_slot_filament_defaults(lane, slot_info)
                 self.lane_illuminate_spool(lane)
@@ -2302,6 +2338,7 @@ class afcACE(afcUnit):
                         lane._perform_pause_runout()
                 elif lane.status == AFCLaneState.LOADED:
                     # Slot went empty on a non-active lane - just update sensor state
+                    self._clear_slot_inventory(local_slot)
                     lane.set_unloaded()
                     self.lane_not_ready(lane)
                     self._persistence.save()
