@@ -14,13 +14,13 @@
             "tool_loaded": false,
             "loaded_to_hub": false,
             "material": "PLA",
-            "density": 1.24,
+            "density": 1.23,
             "diameter": 1.75,
             "empty_spool_weight": 170.0,
             "remember_spool": false,
             "spool_id": 42,
             "color": "#ffffff",
-            "weight": 1000,
+            "weight": 588.5550936262744,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "Ready",
@@ -83,7 +83,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "Loaded",
+            "status": "Tool Loading",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -107,7 +107,7 @@
             "remember_spool": false,
             "spool_id": 5,
             "color": "#f20808",
-            "weight": 369.34436264399596,
+            "weight": 369.03119494381826,
             "extruder_temp": 220,
             "runout_lane": null,
             "filament_status": "Ready",
@@ -130,8 +130,8 @@
             "map": "T4",
             "load": true,
             "prep": true,
-            "tool_loaded": false,
-            "loaded_to_hub": false,
+            "tool_loaded": true,
+            "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -139,12 +139,12 @@
             "remember_spool": false,
             "spool_id": 8,
             "color": "#00AE42",
-            "weight": 847.817799244852,
+            "weight": 847.5046315446743,
             "extruder_temp": 220,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
-            "status": "Loaded",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tooled",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -486,7 +486,7 @@
                 "lane_loaded": null
             },
             "extruder4": {
-                "lane_loaded": null
+                "lane_loaded": "lane4"
             },
             "extruder": {
                 "lane_loaded": "lane0"
