@@ -286,6 +286,10 @@ class afcACE(afcUnit):
         # prevent heartbeat/poll callbacks from modifying lane state
         self._operation_active = False
 
+        # Set True while ACE dryer is running so slot status polling
+        # skips runout detection (drying can cause transient slot changes)
+        self._drying_active = False
+
         # Track which slots have feed assist actively running on hardware.
         # Used to restore feed assist after ACE reconnection.
         self._feed_assist_active: set = set()
@@ -2230,7 +2234,9 @@ class afcACE(afcUnit):
 
             # Detect ready -> not-ready transition (filament runout)
             # Only trigger during active printing to avoid startup crashes.
-            elif is_printing and prev_ready and not slot_ready and not slot_shifting:
+            # Skip runout detection while dryer is running - drying can
+            # cause transient slot state changes that aren't real runouts.
+            elif is_printing and not self._drying_active and prev_ready and not slot_ready and not slot_shifting:
                 if lane.status == AFCLaneState.TOOLED:
                     self.logger.info(
                         f"ACE runout detected on {lane.name} (slot {local_slot})"
@@ -2333,6 +2339,7 @@ class afcACE(afcUnit):
 
         try:
             self._ace.start_drying(temp, fan, duration)
+            self._drying_active = True
             gcmd.respond_info(
                 f"ACE {self.name}: drying started "
                 f"({temp}C, {duration}min, fan={fan}rpm)"
@@ -2351,8 +2358,10 @@ class afcACE(afcUnit):
 
         try:
             self._ace.stop_drying()
+            self._drying_active = False
             gcmd.respond_info(f"ACE {self.name}: drying stopped")
         except Exception as e:
+            self._drying_active = False
             gcmd.respond_info(f"ACE {self.name}: stop drying failed: {e}")
 
     def cmd_ACE_FEED_ASSIST(self, gcmd):
