@@ -2103,22 +2103,6 @@ class afc:
                         msg = (' UNLOAD ERROR NOT CLEARED')
                         self.error.fix(msg, self.lanes[self.current])  #send to error handling
                         return
-                else:
-                    # Empty shuttle (toolchanger): self.current is None because
-                    # no tool is on the shuttle, but the target extruder may
-                    # still have a lane loaded from a previous session.
-                    # TOOL_UNLOAD handles the tool_swap internally.
-                    loaded_lane_name = cur_lane.extruder_obj.lane_loaded
-                    if loaded_lane_name and loaded_lane_name != cur_lane.name:
-                        if loaded_lane_name not in self.lanes:
-                            self.error.AFC_error('{} Unknown'.format(loaded_lane_name))
-                            return
-                        self.logger.info("Extruder {} has {} loaded, unloading first".format(
-                            cur_lane.extruder_obj.name, loaded_lane_name))
-                        if not self.TOOL_UNLOAD(self.lanes[loaded_lane_name], set_start_time=False):
-                            msg = (' UNLOAD ERROR NOT CLEARED')
-                            self.error.fix(msg, self.lanes[loaded_lane_name])
-                            return
 
             if infinite_runout:
                 infinite_extruder = cur_lane.extruder_obj
