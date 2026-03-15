@@ -1,6 +1,6 @@
 # Armored Turtle Automated Filament Changer
 #
-# AFCACE Unit Type - Direct ACE PRO hardware integration without ACEPRO/DuckACE
+# ACE Unit Type - Direct ACE PRO hardware integration without ACEPRO/DuckACE
 #
 # Supports two operational modes:
 #   combined: Multiple ACE slots share one toolhead path (combiner/splitter).
@@ -33,15 +33,15 @@ except: raise config_error(ERROR_STR.format(import_lib="AFC_lane", trace=traceba
 try: from extras.AFC_respond import AFCprompt
 except: raise config_error(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
 
-try: from extras.AFC_AFCACE_serial import ACEConnection, ACESerialError, ACETimeoutError
-except: raise config_error(ERROR_STR.format(import_lib="AFC_AFCACE_serial", trace=traceback.format_exc()))
+try: from extras.AFC_ACE_serial import ACEConnection, ACESerialError, ACETimeoutError
+except: raise config_error(ERROR_STR.format(import_lib="AFC_ACE_serial", trace=traceback.format_exc()))
 
 # Operational modes
 MODE_COMBINED = "combined"  # Multiple slots -> one toolhead (retract before feed)
 MODE_DIRECT = "direct"      # Each slot -> its own extruder (independent operation)
 
 
-class AFCACEPersistence:
+class ACEPersistence:
     """Deferred-flush wrapper around AFC's save_vars().
 
     In ``deferred`` mode (default), calls to ``save()`` only mark state
@@ -74,7 +74,7 @@ class AFCACEPersistence:
             )
 
         self._logger.info(
-            f"AFCACE persistence: mode={mode}, "
+            f"ACE persistence: mode={mode}, "
             f"flush_interval={flush_interval:.0f}s"
         )
 
@@ -89,7 +89,7 @@ class AFCACEPersistence:
             try:
                 self._afc.save_vars()
             except Exception:
-                self._logger.error("AFCACE persistence: immediate save failed")
+                self._logger.error("ACE persistence: immediate save failed")
             return
 
         # Deferred: mark dirty and (re)start auto-flush timer
@@ -107,9 +107,9 @@ class AFCACEPersistence:
         try:
             self._afc.save_vars()
             self._dirty = False
-            self._logger.debug("AFCACE persistence: flushed to disk")
+            self._logger.debug("ACE persistence: flushed to disk")
         except Exception:
-            self._logger.error("AFCACE persistence: flush failed")
+            self._logger.error("ACE persistence: flush failed")
 
         if self._flush_timer is not None:
             self._reactor.update_timer(
@@ -119,7 +119,7 @@ class AFCACEPersistence:
     def _auto_flush_callback(self, eventtime):
         if self._dirty:
             self._logger.debug(
-                f"AFCACE persistence: auto-flush after "
+                f"ACE persistence: auto-flush after "
                 f"{self._flush_interval:.0f}s idle"
             )
             self.flush()
@@ -127,30 +127,29 @@ class AFCACEPersistence:
 
     def on_disconnect(self):
         if self._dirty:
-            self._logger.info("AFCACE persistence: flushing on disconnect")
+            self._logger.info("ACE persistence: flushing on disconnect")
             self.flush()
 
     def on_shutdown(self):
         if self._dirty:
-            self._logger.info("AFCACE persistence: flushing on shutdown")
+            self._logger.info("ACE persistence: flushing on shutdown")
             try:
                 self._afc.save_vars()
                 self._dirty = False
             except Exception:
                 self._logger.error(
-                    "AFCACE persistence: shutdown flush failed"
+                    "ACE persistence: shutdown flush failed"
                 )
 
 
-class afcAFCACE(afcUnit):
+class afcACE(afcUnit):
     """AFC unit that talks directly to Anycubic ACE PRO hardware.
 
-    Unlike AFC_ACE.py which wraps ACEPRO/DuckACE backends, this unit owns the
-    serial communication and implements both combined (shared toolhead) and
-    direct (per-extruder) operational modes.
+    Owns the serial communication to ACE PRO hardware and implements both
+    combined (shared toolhead) and direct (per-extruder) operational modes.
 
     Config example:
-        [AFC_AFCACE ace1]
+        [AFC_ACE ace1]
         serial_port: /dev/ttyACM0
         hub: ace_hub
         extruder: extruder
@@ -171,8 +170,7 @@ class afcAFCACE(afcUnit):
 
     def __init__(self, config: ConfigWrapper):
         super().__init__(config)
-        self.type = "AFCACE"
-        self.logger = self.afc.logger
+        self.type = "ACE"
 
         # Serial port configuration
         self.serial_port = config.get("serial_port")
@@ -260,7 +258,7 @@ class afcAFCACE(afcUnit):
             )
             persistence_mode = "deferred"
         flush_interval = config.getfloat("flush_interval", 30.0)
-        self._persistence = AFCACEPersistence(
+        self._persistence = ACEPersistence(
             reactor=self.afc.reactor,
             afc=self.afc,
             logger=self.logger,
@@ -321,7 +319,7 @@ class afcAFCACE(afcUnit):
             pass
 
         # Apply the OpenAMS virtual pin patch so that AMS_extruder# values
-        # in pin_tool_start are handled correctly.  AFC_AFCACE configs load
+        # in pin_tool_start are handled correctly.  AFC_ACE configs load
         # alphabetically before AFC_OpenAMS, so without this the patch would
         # not be in place when [AFC_extruder] sections are parsed.
         try:
@@ -346,7 +344,7 @@ class afcAFCACE(afcUnit):
             self._ace.connect()
         except Exception as e:
             self.logger.error(
-                f"AFCACE {self.name}: failed to connect to ACE at "
+                f"ACE {self.name}: failed to connect to ACE at "
                 f"{self.serial_port}: {e}\n{traceback.format_exc()}"
             )
             self._ace = None
@@ -355,10 +353,10 @@ class afcAFCACE(afcUnit):
         # Enable RFID reader so get_filament_info returns spool data
         try:
             self._ace.enable_rfid()
-            self.logger.debug(f"AFCACE {self.name}: RFID enabled")
+            self.logger.debug(f"ACE {self.name}: RFID enabled")
         except Exception as e:
             self.logger.warning(
-                f"AFCACE {self.name}: enable_rfid failed (non-fatal): {e}"
+                f"ACE {self.name}: enable_rfid failed (non-fatal): {e}"
             )
 
         # Seed slot status from get_status (needed before _sync_slot_loaded_state)
@@ -370,7 +368,7 @@ class afcAFCACE(afcUnit):
                     if i < self.SLOTS_PER_UNIT and isinstance(slot_data, dict):
                         self._slot_inventory[i]["status"] = slot_data.get("status", "")
         except Exception as e:
-            self.logger.debug(f"AFCACE {self.name}: initial get_status failed: {e}")
+            self.logger.debug(f"ACE {self.name}: initial get_status failed: {e}")
 
         # Sync RFID data and lane loaded states
         self._sync_inventory()
@@ -385,14 +383,14 @@ class afcAFCACE(afcUnit):
 
         # Hydrate the virtual tool sensor for lanes that were tool-loaded
         # before restart.  OpenAMS's _hydrate_from_saved_state skips non-
-        # OpenAMS lanes, so AFCACE must set the sensor itself.
+        # OpenAMS lanes, so ACE must set the sensor itself.
         self._hydrate_virtual_tool_sensor(eventtime)
 
         # Start runout detection polling
         self._start_slot_status_monitor()
 
         self.logger.info(
-            f"AFCACE {self.name}: connected, mode={self.mode}, "
+            f"ACE {self.name}: connected, mode={self.mode}, "
             f"port={self.serial_port}, slots={self.SLOTS_PER_UNIT}"
         )
 
@@ -413,7 +411,7 @@ class afcAFCACE(afcUnit):
         FPS as its toolhead sensor.
 
         Iterates over all ``fps <name>`` printer objects and picks the one
-        whose ``extruder_name`` matches this AFCACE unit's extruder.  When
+        whose ``extruder_name`` matches this ACE unit's extruder.  When
         found, registers an ADC callback so ``extruder.tool_start_state`` is
         updated in real-time as the FPS value crosses the threshold.
         """
@@ -466,7 +464,7 @@ class afcAFCACE(afcUnit):
             if fps_ext and fps_ext == extruder_name:
                 self._fps_obj = fps_obj
                 self.logger.info(
-                    f"AFCACE {self.name}: linked to FPS '{fps_name}' "
+                    f"ACE {self.name}: linked to FPS '{fps_name}' "
                     f"(extruder={extruder_name}, pin_tool_start={tool_start}, "
                     f"threshold={self.fps_threshold})"
                 )
@@ -484,7 +482,7 @@ class afcAFCACE(afcUnit):
                 if fps_ext and fps_ext == extruder_name:
                     self._fps_obj = obj
                     self.logger.info(
-                        f"AFCACE {self.name}: linked to FPS '{obj_name}' "
+                        f"ACE {self.name}: linked to FPS '{obj_name}' "
                         f"(extruder={extruder_name}, pin_tool_start={tool_start}, "
                         f"threshold={self.fps_threshold})"
                     )
@@ -494,12 +492,12 @@ class afcAFCACE(afcUnit):
 
         if not found:
             self.logger.warning(
-                f"AFCACE {self.name}: extruder '{extruder_name}' uses "
+                f"ACE {self.name}: extruder '{extruder_name}' uses "
                 f"pin_tool_start={tool_start} but no matching FPS found"
             )
 
     def _hydrate_virtual_tool_sensor(self, eventtime):
-        """Set the virtual tool sensor if an AFCACE lane was loaded at shutdown.
+        """Set the virtual tool sensor if an ACE lane was loaded at shutdown.
 
         At startup the FPS pressure is zero (ACE motor off), so the ADC
         callback would never set the sensor.  Check saved state and set
@@ -519,7 +517,7 @@ class afcAFCACE(afcUnit):
             extruder.tool_start_state = True
             self._update_virtual_sensor(eventtime, True)
             self.logger.info(
-                f"AFCACE {self.name}: hydrated virtual tool sensor "
+                f"ACE {self.name}: hydrated virtual tool sensor "
                 f"for {lane_name} (tool_loaded at startup)"
             )
             return
@@ -553,7 +551,7 @@ class afcAFCACE(afcUnit):
                 extruder.tool_start_state = True
                 self._update_virtual_sensor(read_time, True)
                 self.logger.debug(
-                    f"AFCACE FPS: tool_start_state LATCHED True "
+                    f"ACE FPS: tool_start_state LATCHED True "
                     f"(fps_value={fps_value:.3f}, threshold={self.fps_threshold})"
                 )
             # Don't clear tool_start_state while latched
@@ -572,7 +570,7 @@ class afcAFCACE(afcUnit):
             extruder.tool_start_state = triggered
             self._update_virtual_sensor(read_time, triggered)
             self.logger.debug(
-                f"AFCACE FPS: tool_start_state -> {triggered} "
+                f"ACE FPS: tool_start_state -> {triggered} "
                 f"(fps_value={fps_value:.3f}, threshold={self.fps_threshold})"
             )
 
@@ -624,7 +622,7 @@ class afcAFCACE(afcUnit):
             buf = getattr(lane, "buffer_obj", None)
             if buf is not None and getattr(buf, "enable", False):
                 self.logger.info(
-                    f"AFCACE: disabling buffer '{buf.name}' on shared extruder "
+                    f"ACE: disabling buffer '{buf.name}' on shared extruder "
                     f"lane {lane_name} to prevent cross-lane fault detection"
                 )
                 buf.disable_buffer()
@@ -638,7 +636,7 @@ class afcAFCACE(afcUnit):
         tc = self.printer.lookup_object('toolchanger')
         tool = tc.active_tool
         if not tool:
-            self.logger.warning("AFCACE dock purge: no active tool, skipping dropoff")
+            self.logger.warning("ACE dock purge: no active tool, skipping dropoff")
             return
 
         self.afc.gcode.run_script_from_command("ENTER_DOCKING_MODE")
@@ -663,7 +661,7 @@ class afcAFCACE(afcUnit):
         tc = self.printer.lookup_object('toolchanger')
         tool = tc.active_tool
         if not tool or not hasattr(self, '_dock_purge_context'):
-            self.logger.warning("AFCACE dock purge: no context for pickup, skipping")
+            self.logger.warning("ACE dock purge: no context for pickup, skipping")
             return
 
         tc.run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
@@ -726,7 +724,7 @@ class afcAFCACE(afcUnit):
                     self._slot_inventory[slot]["color"] = info.get("color", [0, 0, 0])
             except Exception as e:
                 self.logger.debug(
-                    f"AFCACE {self.name}: slot {slot} inventory query failed: {e}"
+                    f"ACE {self.name}: slot {slot} inventory query failed: {e}"
                 )
 
     def _sync_slot_loaded_state(self):
@@ -857,7 +855,7 @@ class afcAFCACE(afcUnit):
             # in NONE, fix it regardless of transition detection
             if slot_ready and prep_done and lane.status == AFCLaneState.NONE:
                 self.logger.info(
-                    f"AFCACE callback: {lane.name} slot {local_slot} ready, "
+                    f"ACE callback: {lane.name} slot {local_slot} ready, "
                     f"setting loaded"
                 )
                 lane.set_loaded()
@@ -877,12 +875,12 @@ class afcAFCACE(afcUnit):
         """
         if self._feed_assist_active:
             self.logger.info(
-                f"AFCACE reconnect: deferring feed assist restore for "
+                f"ACE reconnect: deferring feed assist restore for "
                 f"slots {sorted(self._feed_assist_active)} until first heartbeat"
             )
             self._pending_feed_assist_restore = True
         else:
-            self.logger.debug("AFCACE reconnect: no feed assist to restore")
+            self.logger.debug("ACE reconnect: no feed assist to restore")
 
     def _restore_feed_assist(self):
         """Restore feed assist for all tracked active slots after reconnect."""
@@ -894,11 +892,11 @@ class afcAFCACE(afcUnit):
             try:
                 self._ace.start_feed_assist(slot_index)
                 self.logger.info(
-                    f"AFCACE reconnect: feed assist restored for slot {slot_index}"
+                    f"ACE reconnect: feed assist restored for slot {slot_index}"
                 )
             except Exception as e:
                 self.logger.warning(
-                    f"AFCACE reconnect: failed to restore feed assist "
+                    f"ACE reconnect: failed to restore feed assist "
                     f"for slot {slot_index}: {e}"
                 )
 
@@ -947,9 +945,9 @@ class afcAFCACE(afcUnit):
         return response
 
     def lane_tool_loaded(self, lane):
-        """Set the virtual tool sensor when an AFCACE lane loads into the toolhead.
+        """Set the virtual tool sensor when an ACE lane loads into the toolhead.
 
-        The base class only updates LEDs.  For AFCACE with a shared AMS virtual
+        The base class only updates LEDs.  For ACE with a shared AMS virtual
         pin, the FPS pressure is zero when the ACE motor isn't running, so the
         virtual sensor must be set explicitly whenever a lane becomes tool-loaded
         (normal load sequence, SET_LANE_LOADED recovery macro, etc.).
@@ -963,7 +961,7 @@ class afcAFCACE(afcUnit):
         self._update_virtual_sensor(eventtime, True)
 
     def lane_tool_unloaded(self, lane):
-        """Clear the virtual tool sensor when an AFCACE lane unloads.
+        """Clear the virtual tool sensor when an ACE lane unloads.
 
         Mirrors lane_tool_loaded: explicitly clears the sensor so the extruder
         knows the toolhead is empty.
@@ -997,7 +995,7 @@ class afcAFCACE(afcUnit):
         if self._ace is None or not self._ace.connected:
             afc.error.handle_lane_failure(
                 cur_lane,
-                f"AFCACE load failed: ACE not connected ({self.serial_port})",
+                f"ACE load failed: ACE not connected ({self.serial_port})",
             )
             return False
 
@@ -1024,10 +1022,10 @@ class afcAFCACE(afcUnit):
         if self.dock_purge:
             if not self._run_tool_crash_detection(False):
                 self.logger.warning("Failed to stop tool crash detection before dock dropoff")
-            self.logger.info("AFCACE dock purge: dropping tool off at dock before feed")
+            self.logger.info("ACE dock purge: dropping tool off at dock before feed")
             self._dock_purge_dropoff()
             dock_dropped_off = True
-            afc.afcDeltaTime.log_with_time("AFCACE: After dock purge dropoff")
+            afc.afcDeltaTime.log_with_time("ACE: After dock purge dropoff")
 
         # Wrap the rest of the load in try/finally so the tool is always
         # picked back up from the dock even if the load fails.
@@ -1042,7 +1040,7 @@ class afcAFCACE(afcUnit):
                 if load_result and self.dock_purge:
                     # Success path: purge in dock, then pick up
                     self.logger.info(
-                        f"AFCACE dock purge: extruding {self.dock_purge_length}mm "
+                        f"ACE dock purge: extruding {self.dock_purge_length}mm "
                         f"@ {self.dock_purge_speed}mm/s in dock, then picking up"
                     )
                     afc.move_e_pos(
@@ -1051,10 +1049,10 @@ class afcAFCACE(afcUnit):
                     )
                 else:
                     self.logger.info(
-                        "AFCACE dock purge: picking up tool after load failure"
+                        "ACE dock purge: picking up tool after load failure"
                     )
                 self._dock_purge_pickup()
-                afc.afcDeltaTime.log_with_time("AFCACE: After dock purge pickup")
+                afc.afcDeltaTime.log_with_time("ACE: After dock purge pickup")
                 if not self._run_tool_crash_detection(True):
                     self.logger.warning(
                         "Failed to start tool crash detection after dock pickup"
@@ -1073,7 +1071,7 @@ class afcAFCACE(afcUnit):
         if local_slot < 0:
             afc.error.handle_lane_failure(
                 cur_lane,
-                f"AFCACE load failed: cannot determine slot for {cur_lane.name}",
+                f"ACE load failed: cannot determine slot for {cur_lane.name}",
             )
             return False
 
@@ -1082,7 +1080,7 @@ class afcAFCACE(afcUnit):
             if self.mode == MODE_COMBINED and self._current_loaded_slot >= 0:
                 if self._current_loaded_slot != local_slot:
                     self.logger.info(
-                        f"AFCACE combined mode: retracting slot "
+                        f"ACE combined mode: retracting slot "
                         f"{self._current_loaded_slot} before loading slot {local_slot}"
                     )
                     # Stop feed assist on old slot before retracting
@@ -1097,7 +1095,7 @@ class afcAFCACE(afcUnit):
 
             # Feed the target slot (pass lane for sensor-based stopping)
             self.logger.info(
-                f"AFCACE load: feeding slot {local_slot} for lane {cur_lane.name} "
+                f"ACE load: feeding slot {local_slot} for lane {cur_lane.name} "
                 f"(mode={self.mode})"
             )
             self._feed_slot(local_slot, lane=cur_lane)
@@ -1106,7 +1104,7 @@ class afcAFCACE(afcUnit):
                 self._current_loaded_slot = local_slot
 
         except Exception as e:
-            message = f"AFCACE load failed for {cur_lane.name}: {e}"
+            message = f"ACE load failed for {cur_lane.name}: {e}"
             self.logger.error(f"{message}\n{traceback.format_exc()}")
             afc.error.handle_lane_failure(cur_lane, message)
             return False
@@ -1137,7 +1135,7 @@ class afcAFCACE(afcUnit):
                         afc.error.handle_lane_failure(cur_lane, message)
                         return False
             except Exception as e:
-                message = f"AFCACE buffer load check failed for {cur_lane.name}: {e}"
+                message = f"ACE buffer load check failed for {cur_lane.name}: {e}"
                 self.logger.error(f"{message}\n{traceback.format_exc()}")
                 afc.error.handle_lane_failure(cur_lane, message)
                 return False
@@ -1152,7 +1150,7 @@ class afcAFCACE(afcUnit):
                 smart_load_max  = 5      # max retries
                 for attempt in range(1, smart_load_max + 1):
                     self.logger.info(
-                        f"AFCACE smart load: sensor not triggered, "
+                        f"ACE smart load: sensor not triggered, "
                         f"feeding {smart_load_step}mm (attempt {attempt}/{smart_load_max})"
                     )
                     # Ensure feed assist is running so ACE pushes filament
@@ -1174,14 +1172,14 @@ class afcAFCACE(afcUnit):
                     afc.reactor.pause(afc.reactor.monotonic() + 0.2)
                     if cur_lane.get_toolhead_pre_sensor_state():
                         self.logger.info(
-                            f"AFCACE smart load: sensor triggered after "
+                            f"ACE smart load: sensor triggered after "
                             f"{attempt * smart_load_step:.0f}mm extra feed"
                         )
                         break
                 else:
                     # All retries exhausted -error out
                     message = (
-                        f"AFCACE load did not trigger toolhead sensor after "
+                        f"ACE load did not trigger toolhead sensor after "
                         f"{smart_load_max * smart_load_step:.0f}mm of extra feeding. "
                         f"CHECK FILAMENT PATH\n"
                         "To resolve, set lane loaded with "
@@ -1210,7 +1208,7 @@ class afcAFCACE(afcUnit):
                 )
                 if tool_attempts > 20:
                     message = (
-                        "AFCACE load: filament failed to trigger post-extruder sensor.\n"
+                        "ACE load: filament failed to trigger post-extruder sensor.\n"
                         "To resolve, set lane loaded with "
                         f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
                     )
@@ -1220,7 +1218,7 @@ class afcAFCACE(afcUnit):
         # Push filament into the nozzle using tool_stn distance
         if cur_extruder.tool_stn:
             self.logger.info(
-                f"AFCACE load: advancing {cur_extruder.tool_stn}mm into nozzle "
+                f"ACE load: advancing {cur_extruder.tool_stn}mm into nozzle "
                 f"@ {cur_extruder.tool_load_speed}mm/s"
             )
             afc.move_e_pos(
@@ -1240,11 +1238,11 @@ class afcAFCACE(afcUnit):
                 self._ace.start_feed_assist(local_slot)
                 self._feed_assist_active.add(local_slot)
                 self.logger.debug(
-                    f"AFCACE load: feed assist enabled for slot {local_slot}"
+                    f"ACE load: feed assist enabled for slot {local_slot}"
                 )
             except Exception as e:
                 self.logger.warning(
-                    f"AFCACE load: failed to start feed assist for slot {local_slot}: {e}"
+                    f"ACE load: failed to start feed assist for slot {local_slot}: {e}"
                 )
 
         self._persistence.save()
@@ -1267,7 +1265,7 @@ class afcAFCACE(afcUnit):
         if self._ace is None or not self._ace.connected:
             afc.error.handle_lane_failure(
                 cur_lane,
-                f"AFCACE unload failed: ACE not connected ({self.serial_port})",
+                f"ACE unload failed: ACE not connected ({self.serial_port})",
             )
             return False
 
@@ -1284,11 +1282,11 @@ class afcAFCACE(afcUnit):
                 self._ace.stop_feed_assist(local_slot)
                 self._feed_assist_active.discard(local_slot)
                 self.logger.debug(
-                    f"AFCACE unload: feed assist stopped for slot {local_slot}"
+                    f"ACE unload: feed assist stopped for slot {local_slot}"
                 )
             except Exception as e:
                 self.logger.warning(
-                    f"AFCACE unload: failed to stop feed assist for slot {local_slot}: {e}"
+                    f"ACE unload: failed to stop feed assist for slot {local_slot}: {e}"
                 )
 
         # Disable buffer before unloading (safe no-op if no buffer)
@@ -1338,9 +1336,9 @@ class afcAFCACE(afcUnit):
 
         # Start ACE unwind before extruder retract so the ACE begins pulling
         # tension on the spool while the extruder simultaneously retracts.
-        # The command returns immediately   the motor runs asynchronously.
+        # The command returns immediately � the motor runs asynchronously.
         self.logger.info(
-            f"AFCACE unload: starting ACE unwind slot {local_slot} "
+            f"ACE unload: starting ACE unwind slot {local_slot} "
             f"before extruder retract for lane {cur_lane.name}"
         )
         try:
@@ -1349,7 +1347,7 @@ class afcAFCACE(afcUnit):
                 local_slot, self.retract_length, self.retract_speed
             )
         except Exception as e:
-            message = f"AFCACE unload: failed to start ACE unwind for {cur_lane.name}: {e}"
+            message = f"ACE unload: failed to start ACE unwind for {cur_lane.name}: {e}"
             self.logger.error(f"{message}\n{traceback.format_exc()}")
             afc.error.handle_lane_failure(cur_lane, message)
             return False
@@ -1376,7 +1374,7 @@ class afcAFCACE(afcUnit):
             # Retract tool_stn_unload distance to clear extruder gears
             if cur_extruder.tool_stn_unload > 0:
                 self.logger.info(
-                    f"AFCACE unload: buffer retract {cur_extruder.tool_stn_unload}mm "
+                    f"ACE unload: buffer retract {cur_extruder.tool_stn_unload}mm "
                     f"@ {cur_extruder.tool_unload_speed}mm/s"
                 )
                 afc.move_e_pos(
@@ -1390,7 +1388,7 @@ class afcAFCACE(afcUnit):
             retract_distance = cur_extruder.tool_stn_unload
             if retract_distance > 0:
                 self.logger.info(
-                    f"AFCACE unload: extruder retract {retract_distance}mm "
+                    f"ACE unload: extruder retract {retract_distance}mm "
                     f"@ {cur_extruder.tool_unload_speed}mm/s to clear nozzle/gears"
                 )
                 afc.move_e_pos(
@@ -1411,7 +1409,7 @@ class afcAFCACE(afcUnit):
             cur_lane.unsync_to_extruder()
 
             self.logger.info(
-                f"AFCACE unload: waiting for ACE unwind to complete "
+                f"ACE unload: waiting for ACE unwind to complete "
                 f"slot {local_slot} for lane {cur_lane.name}"
             )
             self._wait_for_feed_complete(
@@ -1428,7 +1426,7 @@ class afcAFCACE(afcUnit):
             self._persistence.save()
 
         except Exception as e:
-            message = f"AFCACE unload failed for {cur_lane.name}: {e}"
+            message = f"ACE unload failed for {cur_lane.name}: {e}"
             self.logger.error(f"{message}\n{traceback.format_exc()}")
             afc.error.handle_lane_failure(cur_lane, message)
             return False
@@ -1456,7 +1454,7 @@ class afcAFCACE(afcUnit):
                     if hw_status.get("status", "") == "ready":
                         return
                     self.logger.debug(
-                        f"AFCACE: waiting for ACE ready "
+                        f"ACE: waiting for ACE ready "
                         f"(status={hw_status.get('status', '?')}, "
                         f"{elapsed:.1f}s/{timeout:.0f}s)"
                     )
@@ -1467,7 +1465,7 @@ class afcAFCACE(afcUnit):
             )
             elapsed += poll_interval
         self.logger.warning(
-            f"AFCACE: ACE did not become ready within {timeout:.0f}s, proceeding anyway"
+            f"ACE: ACE did not become ready within {timeout:.0f}s, proceeding anyway"
         )
 
     def _feed_slot(self, slot_index, lane=None):
@@ -1487,7 +1485,7 @@ class afcAFCACE(afcUnit):
         self._wait_for_ace_ready()
 
         self.logger.debug(
-            f"AFCACE feed: slot {slot_index}, "
+            f"ACE feed: slot {slot_index}, "
             f"length={self.feed_length}mm @ {self.feed_speed}mm/min"
         )
 
@@ -1514,7 +1512,7 @@ class afcAFCACE(afcUnit):
                 if lane.get_toolhead_pre_sensor_state():
                     sensor_triggered = True
                     self.logger.info(
-                        f"AFCACE feed: toolhead sensor triggered during bulk feed "
+                        f"ACE feed: toolhead sensor triggered during bulk feed "
                         f"at ~{total_fed:.0f}mm"
                     )
 
@@ -1533,7 +1531,7 @@ class afcAFCACE(afcUnit):
                 if sensor_hit or lane.get_toolhead_pre_sensor_state():
                     sensor_triggered = True
                     self.logger.info(
-                        f"AFCACE feed: toolhead sensor triggered at {total_fed:.0f}mm"
+                        f"ACE feed: toolhead sensor triggered at {total_fed:.0f}mm"
                     )
         else:
             # No lane/sensor - just feed the remaining fixed distance
@@ -1555,7 +1553,7 @@ class afcAFCACE(afcUnit):
                 self._feed_assist_active.add(slot_index)
             except Exception as e:
                 self.logger.warning(
-                    f"AFCACE feed: start_feed_assist failed for slot "
+                    f"ACE feed: start_feed_assist failed for slot "
                     f"{slot_index}: {e}"
                 )
 
@@ -1606,7 +1604,7 @@ class afcAFCACE(afcUnit):
             if lane is not None and lane.get_toolhead_pre_sensor_state():
                 sensor_triggered = True
                 self.logger.debug(
-                    f"AFCACE wait: toolhead sensor triggered for slot {slot_index}"
+                    f"ACE wait: toolhead sensor triggered for slot {slot_index}"
                 )
                 # Stop the ACE feed -the motor is still running for the
                 # full requested distance but we don't need any more filament.
@@ -1615,7 +1613,7 @@ class afcAFCACE(afcUnit):
                 try:
                     ace.stop_feed_filament(slot_index)
                     self.logger.debug(
-                        f"AFCACE wait: stopped feed for slot {slot_index} "
+                        f"ACE wait: stopped feed for slot {slot_index} "
                         "(sensor triggered early)"
                     )
                     # Brief pause for ACE to transition out of "feeding" state
@@ -1641,7 +1639,7 @@ class afcAFCACE(afcUnit):
                             # ACE hasn't updated yet.
                             if status in ("ready", "empty"):
                                 self.logger.debug(
-                                    f"AFCACE wait: slot {slot_index} movement "
+                                    f"ACE wait: slot {slot_index} movement "
                                     f"complete (status={status})"
                                 )
                                 return sensor_triggered
@@ -1650,7 +1648,7 @@ class afcAFCACE(afcUnit):
                 pass
 
         self.logger.debug(
-            f"AFCACE wait: timeout waiting for slot {slot_index} "
+            f"ACE wait: timeout waiting for slot {slot_index} "
             f"movement ({max_wait:.1f}s)"
         )
         return sensor_triggered
@@ -1671,7 +1669,7 @@ class afcAFCACE(afcUnit):
 
         while total_fed < max_length:
             step = min(step_size, max_length - total_fed)
-            # Ensure ACE is ready before each step   after the previous
+            # Ensure ACE is ready before each step � after the previous
             # step completes, the ACE overall status may briefly stay
             # "busy" for internal housekeeping.  Sending feed_filament
             # while busy returns FORBIDDEN and kills the calibration.
@@ -1680,7 +1678,7 @@ class afcAFCACE(afcUnit):
                 ace.feed_filament(slot_index, step, self.feed_speed)
             except Exception as e:
                 self.logger.warning(
-                    f"AFCACE calibration: feed_filament failed at "
+                    f"ACE calibration: feed_filament failed at "
                     f"{total_fed:.0f}mm, retrying: {e}"
                 )
                 self._wait_for_ace_ready(timeout=15.0)
@@ -1694,7 +1692,7 @@ class afcAFCACE(afcUnit):
 
             if sensor_hit or lane.get_toolhead_pre_sensor_state():
                 self.logger.info(
-                    f"AFCACE calibration: sensor triggered at {total_fed:.1f}mm"
+                    f"ACE calibration: sensor triggered at {total_fed:.1f}mm"
                 )
                 return total_fed, True
 
@@ -1708,7 +1706,7 @@ class afcAFCACE(afcUnit):
         self._wait_for_ace_ready()
 
         self.logger.debug(
-            f"AFCACE retract: slot {slot_index}, "
+            f"ACE retract: slot {slot_index}, "
             f"length={self.retract_length}mm @ {self.retract_speed}mm/min"
         )
         ace.unwind_filament(slot_index, self.retract_length, self.retract_speed)
@@ -1731,7 +1729,7 @@ class afcAFCACE(afcUnit):
         """ACE units don't support stepper-based lane ejection."""
         lane_name = getattr(lane, "name", "unknown")
         message = (
-            f"LANE_UNLOAD is not supported for AFCACE lane {lane_name}. "
+            f"LANE_UNLOAD is not supported for ACE lane {lane_name}. "
             "ACE units handle filament automatically - just remove the spool physically. "
             "Use TOOL_UNLOAD if you need to unload from the toolhead."
         )
@@ -1772,7 +1770,7 @@ class afcAFCACE(afcUnit):
                             if i < self.SLOTS_PER_UNIT and isinstance(slot_data, dict):
                                 self._slot_inventory[i]["status"] = slot_data.get("status", "")
                 except Exception as e:
-                    self.logger.debug(f"AFCACE {self.name}: get_status failed during PREP: {e}")
+                    self.logger.debug(f"ACE {self.name}: get_status failed during PREP: {e}")
 
                 slot_info = self._slot_inventory[local_slot]
                 slot_ready = slot_info.get("status", "") == "ready"
@@ -1803,7 +1801,7 @@ class afcAFCACE(afcUnit):
                 self.lane_illuminate_spool(cur_lane)
 
                 if cur_lane.tool_loaded:
-                    # For AFCACE with AMS virtual pin, the FPS reads zero
+                    # For ACE with AMS virtual pin, the FPS reads zero
                     # at startup (motor off) so tool_start_state is False.
                     # If saved state confirms this lane is loaded, set the
                     # virtual sensor directly (like OpenAMS does for its
@@ -1878,7 +1876,7 @@ class afcAFCACE(afcUnit):
 
     def _calibrate_bowden_inner(self, cur_lane, dis, tol):
         if self._ace is None or not self._ace.connected:
-            return False, "AFCACE not connected", 0
+            return False, "ACE not connected", 0
 
         local_slot = self._get_local_slot_for_lane(cur_lane)
         if local_slot < 0:
@@ -1888,13 +1886,13 @@ class afcAFCACE(afcUnit):
         if cur_lane.get_toolhead_pre_sensor_state():
             return False, "Toolhead sensor already triggered - unload first", 0
 
-        # AFCACE always needs the full range -the 'dis' parameter from
+        # ACE always needs the full range -the 'dis' parameter from
         # CALIBRATE_AFC DISTANCE=N is designed for stepper-based units and
         # is far too small (default 25mm) for bowden-length calibration.
         max_distance = 6000
 
         self.logger.info(
-            f"AFCACE calibrate_bowden: feeding slot {local_slot} "
+            f"ACE calibrate_bowden: feeding slot {local_slot} "
             f"in {self.calibration_step}mm steps, max {max_distance}mm"
         )
 
@@ -1906,7 +1904,7 @@ class afcAFCACE(afcUnit):
         # to avoid pulling filament out of the unit
         retract_dist = distance - 5 if triggered else distance
         self.logger.info(
-            f"AFCACE calibrate_bowden: retracting {retract_dist:.0f}mm "
+            f"ACE calibrate_bowden: retracting {retract_dist:.0f}mm "
             f"@ {self.retract_speed}mm/min"
         )
         try:
@@ -1915,9 +1913,9 @@ class afcAFCACE(afcUnit):
             self._wait_for_feed_complete(
                 local_slot, retract_dist, self.retract_speed
             )
-            self.logger.info("AFCACE calibrate_bowden: retract complete")
+            self.logger.info("ACE calibrate_bowden: retract complete")
         except Exception as e:
-            self.logger.error(f"AFCACE calibrate_bowden: retract failed: {e}")
+            self.logger.error(f"ACE calibrate_bowden: retract failed: {e}")
 
         if not triggered:
             msg = (
@@ -1949,7 +1947,7 @@ class afcAFCACE(afcUnit):
         self._persistence.save()
 
         msg = (
-            f"AFCACE bowden calibration: toolhead sensor triggered at {distance:.1f}mm.\n"
+            f"ACE bowden calibration: toolhead sensor triggered at {distance:.1f}mm.\n"
             f"feed_length: {new_feed_length:.0f} (was {old_feed:.0f})\n"
             f"retract_length: {new_retract_length:.0f} (was {old_retract:.0f})\n"
             f"Values saved to config."
@@ -1958,13 +1956,13 @@ class afcAFCACE(afcUnit):
 
     def calibrate_hub(self, cur_lane, tol):
         """Hub calibration not applicable - ACE manages hub state internally."""
-        return False, "AFCACE hub is managed by ACE hardware. No calibration needed.", 0
+        return False, "ACE hub is managed by ACE hardware. No calibration needed.", 0
 
     def calibrate_lane(self, cur_lane, tol):
-        """Lane calibration: alias for bowden calibration on AFCACE units.
+        """Lane calibration: alias for bowden calibration on ACE units.
 
         On stepper units, calibrate_lane measures extruder-to-hub distance.
-        On AFCACE, there's only one distance that matters: ACE slot to toolhead.
+        On ACE, there's only one distance that matters: ACE slot to toolhead.
         This delegates to calibrate_bowden for the same measurement.
         """
         return self.calibrate_bowden(cur_lane, 0, tol)
@@ -1981,7 +1979,7 @@ class afcAFCACE(afcUnit):
 
     def _calibrate_td1_inner(self, cur_lane, dis, tol):
         if self._ace is None or not self._ace.connected:
-            return False, "AFCACE not connected", 0
+            return False, "ACE not connected", 0
 
         # Validate TD-1 device ID
         if cur_lane.td1_device_id is None:
@@ -2008,7 +2006,7 @@ class afcAFCACE(afcUnit):
         max_bowden_length = 6000
 
         self.logger.info(
-            f"AFCACE calibrate_td1: feeding slot {local_slot} in {step_size}mm steps, "
+            f"ACE calibrate_td1: feeding slot {local_slot} in {step_size}mm steps, "
             f"max {max_bowden_length}mm, TD-1 device={cur_lane.td1_device_id}"
         )
 
@@ -2033,13 +2031,13 @@ class afcAFCACE(afcUnit):
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
 
         self.logger.info(
-            f"AFCACE calibrate_td1: TD-1 detected filament at {bow_pos:.1f}mm"
+            f"ACE calibrate_td1: TD-1 detected filament at {bow_pos:.1f}mm"
         )
 
         # Retract back to ACE unit using measured distance
         retract_dist = bow_pos + 50
         self.logger.info(
-            f"AFCACE calibrate_td1: retracting {retract_dist:.0f}mm "
+            f"ACE calibrate_td1: retracting {retract_dist:.0f}mm "
             f"@ {self.retract_speed}mm/min"
         )
         try:
@@ -2048,9 +2046,9 @@ class afcAFCACE(afcUnit):
             self._wait_for_feed_complete(
                 local_slot, retract_dist, self.retract_speed
             )
-            self.logger.info("AFCACE calibrate_td1: retract complete")
+            self.logger.info("ACE calibrate_td1: retract complete")
         except Exception as e:
-            self.logger.error(f"AFCACE calibrate_td1: retract failed: {e}")
+            self.logger.error(f"ACE calibrate_td1: retract failed: {e}")
 
         # Save td1_bowden_length to the lane's config section
         old_td1 = getattr(cur_lane, "td1_bowden_length", None)
@@ -2063,7 +2061,7 @@ class afcAFCACE(afcUnit):
         self._persistence.save()
 
         msg = (
-            f"AFCACE TD-1 calibration: filament detected at {bow_pos:.1f}mm.\n"
+            f"ACE TD-1 calibration: filament detected at {bow_pos:.1f}mm.\n"
             f"td1_bowden_length: {bow_pos:.0f} (was {old_td1})\n"
             f"Value saved to config."
         )
@@ -2089,7 +2087,7 @@ class afcAFCACE(afcUnit):
             self.afc.reactor.monotonic() + 5.0,
         )
         self.logger.info(
-            f"AFCACE {self.name}: started slot status monitor "
+            f"ACE {self.name}: started slot status monitor "
             f"(interval={self.poll_interval}s)"
         )
 
@@ -2162,7 +2160,7 @@ class afcAFCACE(afcUnit):
             # in NONE, fix it (covers first poll, missed transitions, etc.)
             if slot_ready and lane._afc_prep_done and lane.status == AFCLaneState.NONE:
                 self.logger.info(
-                    f"AFCACE poll: {lane.name} slot {local_slot} ready, setting loaded"
+                    f"ACE poll: {lane.name} slot {local_slot} ready, setting loaded"
                 )
                 lane.set_loaded()
                 self.lane_illuminate_spool(lane)
@@ -2173,7 +2171,7 @@ class afcAFCACE(afcUnit):
             elif is_printing and prev_ready and not slot_ready and not slot_shifting:
                 if lane.status == AFCLaneState.TOOLED:
                     self.logger.info(
-                        f"AFCACE runout detected on {lane.name} (slot {local_slot})"
+                        f"ACE runout detected on {lane.name} (slot {local_slot})"
                     )
                     lane.loaded_to_hub = False
 
@@ -2182,7 +2180,7 @@ class afcAFCACE(afcUnit):
                             lane._perform_infinite_runout()
                         except Exception as e:
                             self.logger.error(
-                                f"AFCACE infinite spool failed for {lane.name}: "
+                                f"ACE infinite spool failed for {lane.name}: "
                                 f"{e}\n{traceback.format_exc()}"
                             )
                             lane._perform_pause_runout()
@@ -2211,60 +2209,60 @@ class afcAFCACE(afcUnit):
     # ---- GCode Commands ----
 
     def _register_gcode_commands(self):
-        """Register AFCACE-specific GCode commands."""
+        """Register ACE-specific GCode commands."""
         self.gcode.register_mux_command(
-            "AFCACE_STATUS", "UNIT", self.name,
-            self.cmd_AFCACE_STATUS,
-            desc="Query AFCACE hardware status",
+            "ACE_STATUS", "UNIT", self.name,
+            self.cmd_ACE_STATUS,
+            desc="Query ACE hardware status",
         )
         self.gcode.register_mux_command(
-            "AFCACE_DRY", "UNIT", self.name,
-            self.cmd_AFCACE_DRY,
+            "ACE_DRY", "UNIT", self.name,
+            self.cmd_ACE_DRY,
             desc="Start ACE filament dryer",
         )
         self.gcode.register_mux_command(
-            "AFCACE_DRY_STOP", "UNIT", self.name,
-            self.cmd_AFCACE_DRY_STOP,
+            "ACE_DRY_STOP", "UNIT", self.name,
+            self.cmd_ACE_DRY_STOP,
             desc="Stop ACE filament dryer",
         )
         self.gcode.register_mux_command(
-            "AFCACE_FEED_ASSIST", "UNIT", self.name,
-            self.cmd_AFCACE_FEED_ASSIST,
-            desc="Enable/disable feed assist for AFCACE unit",
+            "ACE_FEED_ASSIST", "UNIT", self.name,
+            self.cmd_ACE_FEED_ASSIST,
+            desc="Enable/disable feed assist for ACE unit",
         )
         self.gcode.register_mux_command(
-            "AFCACE_SYNC_INVENTORY", "UNIT", self.name,
-            self.cmd_AFCACE_SYNC_INVENTORY,
+            "ACE_SYNC_INVENTORY", "UNIT", self.name,
+            self.cmd_ACE_SYNC_INVENTORY,
             desc="Refresh RFID/spool inventory from ACE hardware",
         )
         self.gcode.register_mux_command(
-            "AFCACE_CALIBRATE", "UNIT", self.name,
-            self.cmd_AFCACE_CALIBRATE,
-            desc="Calibrate AFCACE bowden length by feeding until toolhead sensor triggers",
+            "ACE_CALIBRATE", "UNIT", self.name,
+            self.cmd_ACE_CALIBRATE,
+            desc="Calibrate ACE bowden length by feeding until toolhead sensor triggers",
         )
 
-    def cmd_AFCACE_STATUS(self, gcmd):
-        """Query and display AFCACE hardware status.
+    def cmd_ACE_STATUS(self, gcmd):
+        """Query and display ACE hardware status.
 
-        Usage: AFCACE_STATUS UNIT=<name>
+        Usage: ACE_STATUS UNIT=<name>
         """
         if self._ace is None or not self._ace.connected:
-            gcmd.respond_info(f"AFCACE {self.name}: not connected")
+            gcmd.respond_info(f"ACE {self.name}: not connected")
             return
 
         try:
             status = self._ace.get_status()
-            gcmd.respond_info(f"AFCACE {self.name} status: {status}")
+            gcmd.respond_info(f"ACE {self.name} status: {status}")
         except Exception as e:
-            gcmd.respond_info(f"AFCACE {self.name} status query failed: {e}")
+            gcmd.respond_info(f"ACE {self.name} status query failed: {e}")
 
-    def cmd_AFCACE_DRY(self, gcmd):
+    def cmd_ACE_DRY(self, gcmd):
         """Start ACE filament dryer.
 
-        Usage: AFCACE_DRY UNIT=<name> TEMP=<celsius> DURATION=<minutes> [FAN=<rpm>]
+        Usage: ACE_DRY UNIT=<name> TEMP=<celsius> DURATION=<minutes> [FAN=<rpm>]
         """
         if self._ace is None or not self._ace.connected:
-            gcmd.respond_info(f"AFCACE {self.name}: not connected")
+            gcmd.respond_info(f"ACE {self.name}: not connected")
             return
 
         temp = gcmd.get_int("TEMP", 50)
@@ -2274,42 +2272,42 @@ class afcAFCACE(afcUnit):
         try:
             self._ace.start_drying(temp, fan, duration)
             gcmd.respond_info(
-                f"AFCACE {self.name}: drying started "
+                f"ACE {self.name}: drying started "
                 f"({temp}C, {duration}min, fan={fan}rpm)"
             )
         except Exception as e:
-            gcmd.respond_info(f"AFCACE {self.name}: drying failed: {e}")
+            gcmd.respond_info(f"ACE {self.name}: drying failed: {e}")
 
-    def cmd_AFCACE_DRY_STOP(self, gcmd):
+    def cmd_ACE_DRY_STOP(self, gcmd):
         """Stop ACE filament dryer.
 
-        Usage: AFCACE_DRY_STOP UNIT=<name>
+        Usage: ACE_DRY_STOP UNIT=<name>
         """
         if self._ace is None or not self._ace.connected:
-            gcmd.respond_info(f"AFCACE {self.name}: not connected")
+            gcmd.respond_info(f"ACE {self.name}: not connected")
             return
 
         try:
             self._ace.stop_drying()
-            gcmd.respond_info(f"AFCACE {self.name}: drying stopped")
+            gcmd.respond_info(f"ACE {self.name}: drying stopped")
         except Exception as e:
-            gcmd.respond_info(f"AFCACE {self.name}: stop drying failed: {e}")
+            gcmd.respond_info(f"ACE {self.name}: stop drying failed: {e}")
 
-    def cmd_AFCACE_FEED_ASSIST(self, gcmd):
+    def cmd_ACE_FEED_ASSIST(self, gcmd):
         """Enable or disable feed assist, globally or per-slot.
 
         Usage:
-            AFCACE_FEED_ASSIST UNIT=<name>                    # query all slots
-            AFCACE_FEED_ASSIST UNIT=<name> ENABLE=<0|1>       # set default for all
-            AFCACE_FEED_ASSIST UNIT=<name> SLOT=<1-4> ENABLE=<0|1>  # set per-slot
-            AFCACE_FEED_ASSIST UNIT=<name> SLOT=<1-4> ENABLE=default # clear per-slot override
+            ACE_FEED_ASSIST UNIT=<name>                    # query all slots
+            ACE_FEED_ASSIST UNIT=<name> ENABLE=<0|1>       # set default for all
+            ACE_FEED_ASSIST UNIT=<name> SLOT=<1-4> ENABLE=<0|1>  # set per-slot
+            ACE_FEED_ASSIST UNIT=<name> SLOT=<1-4> ENABLE=default # clear per-slot override
         """
         slot_num = gcmd.get_int("SLOT", default=None)
         enable_str = gcmd.get("ENABLE", default=None)
 
         # Query mode: no ENABLE param
         if enable_str is None:
-            lines = [f"AFCACE {self.name} feed assist:"]
+            lines = [f"ACE {self.name} feed assist:"]
             default_str = "enabled" if self._default_feed_assist else "disabled"
             lines.append(f"  Default: {default_str}")
             for s in range(self.SLOTS_PER_UNIT):
@@ -2328,7 +2326,7 @@ class afcAFCACE(afcUnit):
             slot_index = slot_num - 1  # Config is 1-based
             if slot_index < 0 or slot_index >= self.SLOTS_PER_UNIT:
                 gcmd.respond_info(
-                    f"AFCACE {self.name}: invalid slot {slot_num} (must be 1-{self.SLOTS_PER_UNIT})"
+                    f"ACE {self.name}: invalid slot {slot_num} (must be 1-{self.SLOTS_PER_UNIT})"
                 )
                 return
 
@@ -2338,14 +2336,14 @@ class afcAFCACE(afcUnit):
                 effective = self._get_feed_assist_for_slot(slot_index)
                 state = "enabled" if effective else "disabled"
                 gcmd.respond_info(
-                    f"AFCACE {self.name}: slot {slot_num} feed assist reset to default ({state})"
+                    f"ACE {self.name}: slot {slot_num} feed assist reset to default ({state})"
                 )
             else:
                 enable = bool(int(enable_str))
                 self._slot_feed_assist[slot_index] = enable
                 state = "enabled" if enable else "disabled"
                 gcmd.respond_info(
-                    f"AFCACE {self.name}: slot {slot_num} feed assist {state}"
+                    f"ACE {self.name}: slot {slot_num} feed assist {state}"
                 )
             return
 
@@ -2353,15 +2351,15 @@ class afcAFCACE(afcUnit):
         enable = bool(int(enable_str))
         self._default_feed_assist = enable
         state = "enabled" if enable else "disabled"
-        gcmd.respond_info(f"AFCACE {self.name}: feed assist default {state}")
+        gcmd.respond_info(f"ACE {self.name}: feed assist default {state}")
 
-    def cmd_AFCACE_SYNC_INVENTORY(self, gcmd):
+    def cmd_ACE_SYNC_INVENTORY(self, gcmd):
         """Refresh RFID/spool inventory from ACE hardware and sync to lanes.
 
-        Usage: AFCACE_SYNC_INVENTORY UNIT=<name>
+        Usage: ACE_SYNC_INVENTORY UNIT=<name>
         """
         if self._ace is None or not self._ace.connected:
-            gcmd.respond_info(f"AFCACE {self.name}: not connected")
+            gcmd.respond_info(f"ACE {self.name}: not connected")
             return
 
         try:
@@ -2372,7 +2370,7 @@ class afcAFCACE(afcUnit):
             self._sync_slot_loaded_state()
 
             # Report what we found
-            lines = [f"AFCACE {self.name} inventory:"]
+            lines = [f"ACE {self.name} inventory:"]
             for slot in range(self.SLOTS_PER_UNIT):
                 info = self._slot_inventory[slot]
                 status = info.get("status", "unknown")
@@ -2385,25 +2383,25 @@ class afcAFCACE(afcUnit):
             gcmd.respond_info("\n".join(lines))
         except Exception as e:
             gcmd.respond_info(
-                f"AFCACE {self.name}: inventory sync failed: {e}"
+                f"ACE {self.name}: inventory sync failed: {e}"
             )
 
-    def cmd_AFCACE_CALIBRATE(self, gcmd):
+    def cmd_ACE_CALIBRATE(self, gcmd):
         """Calibrate bowden length by feeding until toolhead sensor triggers.
 
         Feeds filament from the specified lane's ACE slot in small increments,
         checking the toolhead sensor between each step. Reports the measured
         distance when the sensor triggers.
 
-        Usage: AFCACE_CALIBRATE UNIT=<name> LANE=<lane_name> [MAX=<mm>]
+        Usage: ACE_CALIBRATE UNIT=<name> LANE=<lane_name> [MAX=<mm>]
         """
         if self._ace is None or not self._ace.connected:
-            gcmd.respond_info(f"AFCACE {self.name}: not connected")
+            gcmd.respond_info(f"ACE {self.name}: not connected")
             return
 
         lane_name = gcmd.get("LANE", default=None)
         if lane_name is None:
-            gcmd.respond_info("AFCACE_CALIBRATE requires LANE=<lane_name>")
+            gcmd.respond_info("ACE_CALIBRATE requires LANE=<lane_name>")
             return
 
         cur_lane = self.lanes.get(lane_name)
@@ -2417,7 +2415,7 @@ class afcAFCACE(afcUnit):
         max_distance = gcmd.get_float("MAX", 6000)
 
         gcmd.respond_info(
-            f"AFCACE {self.name}: starting bowden calibration for {lane_name}...\n"
+            f"ACE {self.name}: starting bowden calibration for {lane_name}...\n"
             f"Feeding in {self.calibration_step}mm steps, max {max_distance:.0f}mm"
         )
 
@@ -2436,4 +2434,4 @@ class afcAFCACE(afcUnit):
 
 
 def load_config_prefix(config):
-    return afcAFCACE(config)
+    return afcACE(config)
