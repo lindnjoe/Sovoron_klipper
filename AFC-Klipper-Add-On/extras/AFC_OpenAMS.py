@@ -4268,7 +4268,11 @@ class afcAMS(afcUnit):
                 self.logger.debug(f"Skipping extruder unsync for {lane.name} - cross-extruder runout (AFC will handle via LANE_UNLOAD)")
         lane.prep_state = lane_val_bool
         lane._load_state = lane_val_bool
-        lane.loaded_to_hub = lane_val_bool
+        # Do not set loaded_to_hub from F1S sensor. Hub state is managed
+        # by sync_openams_sensors / _on_hub_changed reading actual
+        # hub_hes_value hardware sensors per lane, like Box Turtle hubs.
+        if not lane_val_bool:
+            lane.loaded_to_hub = False
         lane.afc.save_vars()
 
     def _apply_lane_sensor_state(self, lane, lane_val, eventtime):
