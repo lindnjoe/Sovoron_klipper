@@ -492,9 +492,9 @@ class afcACE(afcUnit):
         if helper is None:
             return
         try:
-            helper.note_filament_present(eventtime, is_filament_present=filament_present)
+            helper.note_filament_present(eventtime, filament_present)
         except TypeError:
-            helper.note_filament_present(is_filament_present=filament_present)
+            helper.note_filament_present(filament_present)
 
     def get_fps_value(self):
         """Return the current FPS pressure value, or None if no FPS linked."""
@@ -729,9 +729,9 @@ class afcACE(afcUnit):
         if helper is not None:
             eventtime = self.afc.reactor.monotonic()
             try:
-                helper.note_filament_present(eventtime, is_filament_present=True)
+                helper.note_filament_present(eventtime, True)
             except TypeError:
-                helper.note_filament_present(is_filament_present=True)
+                helper.note_filament_present(True)
 
         self.lane_tool_loaded(lane)
 
@@ -1862,9 +1862,9 @@ class afcACE(afcUnit):
                         if helper is not None:
                             eventtime = self.afc.reactor.monotonic()
                             try:
-                                helper.note_filament_present(eventtime, is_filament_present=True)
+                                helper.note_filament_present(eventtime, True)
                             except TypeError:
-                                helper.note_filament_present(is_filament_present=True)
+                                helper.note_filament_present(True)
 
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
