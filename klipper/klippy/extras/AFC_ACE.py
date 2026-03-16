@@ -816,6 +816,9 @@ class afcACE(afcUnit):
         lane.sync_to_extruder()
         self.afc.spool.set_active_spool(lane.spool_id)
 
+        # Filament is in the hub path to the toolhead — set virtual hub sensor
+        self._set_hub_state(lane, True)
+
         # Hydrate virtual sensor so extruder knows filament is present
         extruder = lane.extruder_obj
         extruder.tool_start_state = True
@@ -953,6 +956,8 @@ class afcACE(afcUnit):
                     slot_info = self._slot_inventory[local_slot]
                     self._apply_slot_filament_defaults(lane, slot_info)
                     self.lane_illuminate_spool(lane)
+                    # New filament clears any previous suppression
+                    self._hub_load_suppressed.discard(lane.name)
                     self.afc.save_vars()
                     # Feed filament to hub if load_to_hub is enabled
                     try:
@@ -1257,6 +1262,10 @@ class afcACE(afcUnit):
                     f"(mode={self.mode})"
                 )
 
+            # Filament is about to feed through the hub — set virtual hub
+            # sensor so downstream checks see it as occupied.
+            self._set_hub_state(cur_lane, True)
+
             self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
 
             if self.mode == MODE_COMBINED:
@@ -1267,6 +1276,8 @@ class afcACE(afcUnit):
             cur_lane._pre_fed_to_hub = False
 
         except Exception as e:
+            # Load failed — clear virtual hub since filament may not be in path
+            self._set_hub_state(cur_lane, False)
             message = f"ACE load failed for {cur_lane.name}: {e}"
             self.logger.error(f"{message}\n{traceback.format_exc()}")
             afc.error.handle_lane_failure(cur_lane, message)
@@ -1645,9 +1656,10 @@ class afcACE(afcUnit):
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = -1
 
-            # Filament is staged near hub in both cases, ready for fast
-            # reload. The virtual hub sensor (AFC_hub.state) already
-            # excludes ACE lanes so this won't block other lanes.
+            # Filament is staged near hub, ready for fast reload.
+            # Clear virtual hub sensor — filament is no longer in the
+            # hub path, just nearby for convenience.
+            self._set_hub_state(cur_lane, False)
             cur_lane.loaded_to_hub = True
             cur_lane._pre_fed_to_hub = False
             cur_lane.set_tool_unloaded()
@@ -1664,6 +1676,27 @@ class afcACE(afcUnit):
         return True
 
     # ---- Low-Level Slot Operations ----
+
+    def _set_hub_state(self, lane, state: bool):
+        """Set the virtual hub sensor state for an ACE lane.
+
+        Uses switch_pin_callback consistent with how OpenAMS drives
+        virtual hub state, so the hub sensor and any associated
+        runout_helper stay in sync.
+        """
+        hub = getattr(lane, "hub_obj", None)
+        if hub is None:
+            return
+        eventtime = self.afc.reactor.monotonic()
+        hub.switch_pin_callback(eventtime, state)
+        fila = getattr(hub, "fila", None)
+        if fila is not None:
+            helper = getattr(fila, "runout_helper", None)
+            if helper is not None:
+                try:
+                    helper.note_filament_present(eventtime, state)
+                except TypeError:
+                    helper.note_filament_present(state)
 
     def _wait_for_ace_ready(self, timeout=10.0):
         """Wait for the overall ACE status to be 'ready' before sending commands.
@@ -2024,19 +2057,20 @@ class afcACE(afcUnit):
                 )
                 return
             except Exception as e:
-                is_forbidden = "FORBIDDEN" in str(e).upper()
-                if is_forbidden and attempt < max_attempts - 1:
+                if attempt < max_attempts - 1:
                     wait = 5.0 * (attempt + 1)
                     self.logger.warning(
-                        f"ACE prep_post_load: FORBIDDEN on attempt "
-                        f"{attempt + 1}, retrying in {wait:.0f}s"
+                        f"ACE prep_post_load: failed on attempt "
+                        f"{attempt + 1}/{max_attempts}, retrying in "
+                        f"{wait:.0f}s: {e}"
                     )
                     self.afc.reactor.pause(
                         self.afc.reactor.monotonic() + wait
                     )
                     continue
                 self.logger.error(
-                    f"ACE prep_post_load failed for {lane.name}: {e}"
+                    f"ACE prep_post_load failed for {lane.name} after "
+                    f"{max_attempts} attempts: {e}"
                 )
 
     def eject_lane(self, lane):
@@ -2090,6 +2124,7 @@ class afcACE(afcUnit):
             )
             lane.loaded_to_hub = False
             lane._pre_fed_to_hub = False
+            self._set_hub_state(lane, False)
             self._hub_load_suppressed.add(lane_name)
             self.afc.save_vars()
             self.logger.info(f"ACE eject_lane: {lane_name} retracted to spool")
@@ -2186,6 +2221,8 @@ class afcACE(afcUnit):
                 if cur_lane.tool_loaded:
                     # Filament is in the toolhead, so it's also in the hub path
                     cur_lane.loaded_to_hub = True
+                    # Set virtual hub sensor — filament is actively through hub
+                    self._set_hub_state(cur_lane, True)
                     # For ACE with AMS virtual pin, the FPS reads zero
                     # at startup (motor off) so tool_start_state is False.
                     # If saved state confirms this lane is loaded, set the
@@ -2793,6 +2830,8 @@ class afcACE(afcUnit):
                     slot_info = self._slot_inventory[local_slot]
                     self._apply_slot_filament_defaults(lane, slot_info)
                     self.lane_illuminate_spool(lane)
+                    # New filament clears any previous suppression
+                    self._hub_load_suppressed.discard(lane.name)
                     self.afc.save_vars()
                     # Feed filament to hub if load_to_hub is enabled
                     try:
@@ -2813,6 +2852,7 @@ class afcACE(afcUnit):
                         f"ACE runout detected on {lane.name} (slot {local_slot})"
                     )
                     lane.loaded_to_hub = False
+                    self._set_hub_state(lane, False)
 
                     if lane.runout_lane:
                         try:
@@ -3173,6 +3213,7 @@ class afcACE(afcUnit):
             self._current_loaded_slot = -1
         cur_lane.loaded_to_hub = False
         cur_lane._pre_fed_to_hub = False
+        self._set_hub_state(cur_lane, False)
         self._hub_load_suppressed.add(lane_name)
         cur_lane.set_tool_unloaded()
         cur_lane.status = AFCLaneState.LOADED
