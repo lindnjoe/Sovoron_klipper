@@ -1329,12 +1329,15 @@ class afcAMS(afcUnit):
         load when the hub sensor triggers - leaving filament staged at the
         hub for faster tool changes.
         """
-        # Resolve load_to_hub: lane override > unit override > AFC global
-        load_to_hub = getattr(lane, 'load_to_hub', None)
-        if load_to_hub is None:
+        # Resolve load_to_hub: unit override > lane (which defaults from
+        # global) > AFC global.  Unit-level takes priority because the lane
+        # config always has a value (it defaults from the AFC global, not
+        # from the unit), so the lane value can never fall through to unit.
+        if self._unit_load_to_hub is not None:
             load_to_hub = self._unit_load_to_hub
-        if load_to_hub is None:
-            load_to_hub = getattr(self.afc, 'load_to_hub', False)
+        else:
+            load_to_hub = getattr(lane, 'load_to_hub',
+                                  getattr(self.afc, 'load_to_hub', False))
         if not load_to_hub:
             self.logger.debug(f"prep_post_load: load_to_hub disabled for {lane.name}")
             return
