@@ -1497,14 +1497,17 @@ class afcACE(afcUnit):
         # the ACE hardware handles the full bowden retraction via _retract_slot.
         local_slot = self._get_local_slot_for_lane(cur_lane)
 
-        # Two-phase retract: only retract from toolhead back to hub
-        # (not all the way to the spool). This leaves filament staged at
-        # the hub for faster re-loading. The remaining hub-to-spool
-        # retract happens in eject_lane / LANE_UNLOAD.
+        # Retract from toolhead back toward hub. For virtual hubs,
+        # include hub_clear_move_dis so filament clears the hub exit.
+        # For real hub pins, just retract to the hub — the sensor
+        # check loop after unwind handles the rest.
         full_retract = self._get_retract_length(cur_lane)
         dist_hub = self._get_dist_hub(cur_lane)
+        has_real_hub_pin = cur_hub.switch_pin.lower() != "virtual"
         if dist_hub > 0 and dist_hub < full_retract:
             retract_length = full_retract - dist_hub
+            if not has_real_hub_pin:
+                retract_length += cur_hub.hub_clear_move_dis
         else:
             retract_length = full_retract
 
@@ -1590,14 +1593,63 @@ class afcACE(afcUnit):
                 local_slot, retract_length, self.retract_speed
             )
 
+            # If hub has a physical sensor, retract in small steps until
+            # the hub sensor clears, then retract hub_clear_move_dis extra
+            # to ensure filament is fully out of the hub exit path.
+            has_real_hub_pin = (
+                cur_hub.switch_pin.lower() != "virtual"
+            )
+            if has_real_hub_pin:
+                hub_clear_step = 10  # mm per check
+                max_hub_clear_tries = 30
+                num_tries = 0
+                while cur_hub.state:
+                    num_tries += 1
+                    if num_tries > max_hub_clear_tries:
+                        message = (
+                            f"Hub sensor did not clear after "
+                            f"{num_tries * hub_clear_step}mm retract "
+                            f"for {cur_lane.name}. Filament may be stuck."
+                        )
+                        afc.error.handle_lane_failure(cur_lane, message)
+                        return False
+                    self.logger.debug(
+                        f"ACE unload: hub still triggered, retracting "
+                        f"{hub_clear_step}mm (attempt {num_tries})"
+                    )
+                    self._wait_for_ace_ready()
+                    self._ace.unwind_filament(
+                        local_slot, hub_clear_step, self.retract_speed
+                    )
+                    self._wait_for_feed_complete(
+                        local_slot, hub_clear_step, self.retract_speed
+                    )
+                    self.afc.reactor.pause(
+                        self.afc.reactor.monotonic() + 0.1
+                    )
+
+                # Hub sensor clear — retract extra to fully clear the path
+                clear_dis = cur_hub.hub_clear_move_dis
+                self.logger.info(
+                    f"ACE unload: hub cleared, retracting "
+                    f"{clear_dis:.0f}mm hub_clear_move_dis"
+                )
+                self._wait_for_ace_ready()
+                self._ace.unwind_filament(
+                    local_slot, clear_dis, self.retract_speed
+                )
+                self._wait_for_feed_complete(
+                    local_slot, clear_dis, self.retract_speed
+                )
+
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = -1
 
-            # Filament retracted to hub, not all the way to spool.
-            # Use _pre_fed_to_hub (not loaded_to_hub) so the virtual hub
-            # sensor doesn't report occupied and block other lanes.
-            cur_lane.loaded_to_hub = False
-            cur_lane._pre_fed_to_hub = True
+            # Filament is staged near hub in both cases, ready for fast
+            # reload. The virtual hub sensor (AFC_hub.state) already
+            # excludes ACE lanes so this won't block other lanes.
+            cur_lane.loaded_to_hub = True
+            cur_lane._pre_fed_to_hub = False
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.LOADED
             self.lane_tool_unloaded(cur_lane)
@@ -2119,6 +2171,18 @@ class afcACE(afcUnit):
                 msg += '<span class=success--text> AND LOADED</span>'
                 self.lane_illuminate_spool(cur_lane)
 
+                # If load_to_hub is enabled, assume filament is already
+                # at the hub on startup so prep_post_load doesn't re-feed
+                # and push filament further on every restart.
+                if not cur_lane.tool_loaded and not cur_lane.loaded_to_hub:
+                    if self._unit_load_to_hub is not None:
+                        load_to_hub = self._unit_load_to_hub
+                    else:
+                        load_to_hub = getattr(cur_lane, 'load_to_hub',
+                                              getattr(self.afc, 'load_to_hub', False))
+                    if load_to_hub:
+                        cur_lane.loaded_to_hub = True
+
                 if cur_lane.tool_loaded:
                     # Filament is in the toolhead, so it's also in the hub path
                     cur_lane.loaded_to_hub = True
@@ -2431,9 +2495,11 @@ class afcACE(afcUnit):
                 "Check filament path and hub sensor wiring."
             ), total_fed
 
-        # Save calibrated dist_hub
+        # Save calibrated dist_hub with 50mm safety margin so
+        # load-to-hub feeds don't jam filament into/past the hub sensor.
         lane_name = cur_lane.name
-        new_dist_hub = round(total_fed, 0)
+        hub_clearance = 50
+        new_dist_hub = round(total_fed - hub_clearance, 0)
         old_dist_hub = self._lane_dist_hub.get(lane_name, self.dist_hub)
 
         # Update in-memory per-lane override
@@ -2449,7 +2515,8 @@ class afcACE(afcUnit):
 
         msg = (
             f"ACE hub calibration: hub sensor triggered at {total_fed:.1f}mm.\n"
-            f"dist_hub: {new_dist_hub:.0f} (was {old_dist_hub:.0f})\n"
+            f"dist_hub: {new_dist_hub:.0f} ({total_fed:.0f} - {hub_clearance}mm clearance)"
+            f" (was {old_dist_hub:.0f})\n"
             f"Value saved to lane config [{lane_section}]."
         )
         return True, msg, total_fed
