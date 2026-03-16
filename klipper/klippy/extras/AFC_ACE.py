@@ -68,6 +68,9 @@ class afcACE(afcUnit):
         unit: Ace_1:1            # Unit:Slot (1-based in config, 0-based internal)
         hub: ace_hub1
         extruder: extruder
+        feed_length: 2800        # (optional) per-lane override
+        retract_length: 2500     # (optional) per-lane override
+        use_feed_assist: True    # (optional) per-lane override
     """
 
     SLOTS_PER_UNIT = 4
@@ -100,6 +103,13 @@ class afcACE(afcUnit):
         # Per-slot feed assist overrides (populated at runtime)
         # None = use default, True/False = explicit override
         self._slot_feed_assist: Dict[int, Optional[bool]] = {}
+
+        # Per-lane overrides for feed/retract parameters.
+        # Keyed by lane name (e.g. "lane12").  None values omitted.
+        self._lane_feed_length: Dict[str, float] = {}
+        self._lane_retract_length: Dict[str, float] = {}
+        self._lane_feed_assist: Dict[str, bool] = {}
+        self._parse_lane_overrides(config)
 
         # Extruder assist length: how far to advance with extruder motor
         # during feed assist (after filament reaches toolhead sensor area)
@@ -212,6 +222,27 @@ class afcACE(afcUnit):
         except Exception:
             pass
 
+    def _parse_lane_overrides(self, config: ConfigWrapper):
+        """Scan [AFC_lane] sections for per-lane feed/retract overrides."""
+        unit_name = self.name
+        for section in config.fileconfig.sections():
+            if not section.startswith("AFC_lane "):
+                continue
+            lane_cfg = config.getsection(section)
+            unit_val = lane_cfg.get("unit", "")
+            if unit_val.split(":")[0] != unit_name:
+                continue
+            lane_name = section.split()[-1]
+            feed_len = lane_cfg.getfloat("feed_length", None)
+            retract_len = lane_cfg.getfloat("retract_length", None)
+            feed_assist = lane_cfg.getboolean("use_feed_assist", None)
+            if feed_len is not None:
+                self._lane_feed_length[lane_name] = feed_len
+            if retract_len is not None:
+                self._lane_retract_length[lane_name] = retract_len
+            if feed_assist is not None:
+                self._lane_feed_assist[lane_name] = feed_assist
+
     def _handle_ready(self):
         """Schedule deferred init - reactor pause is disabled during klippy:ready."""
         self.afc.reactor.register_callback(self._deferred_init)
@@ -314,20 +345,26 @@ class afcACE(afcUnit):
 
     def _get_feed_length(self, lane=None) -> float:
         """Get effective feed_length, checking lane override first."""
-        if lane is not None and getattr(lane, 'feed_length', None) is not None:
-            return lane.feed_length
+        if lane is not None:
+            name = getattr(lane, 'name', None)
+            if name and name in self._lane_feed_length:
+                return self._lane_feed_length[name]
         return self.feed_length
 
     def _get_retract_length(self, lane=None) -> float:
         """Get effective retract_length, checking lane override first."""
-        if lane is not None and getattr(lane, 'retract_length', None) is not None:
-            return lane.retract_length
+        if lane is not None:
+            name = getattr(lane, 'name', None)
+            if name and name in self._lane_retract_length:
+                return self._lane_retract_length[name]
         return self.retract_length
 
     def _get_feed_assist(self, slot_index, lane=None) -> bool:
-        """Get effective feed assist, checking lane override first, then slot override, then unit default."""
-        if lane is not None and getattr(lane, 'use_feed_assist', None) is not None:
-            return lane.use_feed_assist
+        """Get effective feed assist: lane override > slot override > unit default."""
+        if lane is not None:
+            name = getattr(lane, 'name', None)
+            if name and name in self._lane_feed_assist:
+                return self._lane_feed_assist[name]
         return self._get_feed_assist_for_slot(slot_index)
 
     # ---- FPS (Filament Pressure Sensor) Integration ----
