@@ -118,15 +118,20 @@ class afc_hub:
     @property
     def state(self):
         """
-        Returns current state of switch. If using virtual sensor returns True if any lanes load
-        sensor is triggered.  Only considers lanes with a physical load sensor; lanes without
-        one (e.g. ACE) manage their own load state via loaded_to_hub and should not drive the
-        virtual hub pin — otherwise multiple pre-fed lanes would make the hub appear occupied
-        and block loading/switching.
+        Returns current state of hub sensor.
+
+        For physical pins, returns the hardware switch state.
+
+        For virtual sensors, returns True when:
+        - Any lane with a physical load sensor is triggered (e.g. BoxTurtle), OR
+        - ``_state`` has been explicitly set True by a unit that manages its own
+          hub state (e.g. ACE sets this during active load/unload so the hub
+          only shows occupied when filament is actually in the hub path, not
+          merely staged nearby via loaded_to_hub).
         """
         state = self._state
         if self.switch_pin.lower() == "virtual":
-            state = any(
+            state = self._state or any(
                 lane.raw_load_state
                 for lane in self.lanes.values()
                 if lane.load is not None
