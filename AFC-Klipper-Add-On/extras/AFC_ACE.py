@@ -205,8 +205,10 @@ class afcACE(afcUnit):
         try:
             from extras.AFC_OpenAMS import _patch_extruder_for_virtual_fps
             _patch_extruder_for_virtual_fps()
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger("AFC_ACE").warning(
+                "Failed to apply virtual FPS pin patch: %s", e)
 
     def _handle_ready(self):
         """Schedule deferred init - reactor pause is disabled during klippy:ready."""

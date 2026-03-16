@@ -69,7 +69,9 @@ def normalize_extruder_name(name):
     if not normalized:
         return None
     lowered = normalized.lower()
-    if lowered.startswith("ams_"):
+    if lowered.startswith("fps_"):
+        lowered = lowered[4:]
+    elif lowered.startswith("ams_"):
         lowered = lowered[4:]
     return lowered or None
 
