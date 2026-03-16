@@ -2804,6 +2804,25 @@ class afcACE(afcUnit):
             desc="Retract ACE lane filament back into the unit",
         )
 
+    def cmd_UNIT_CALIBRATION(self, gcmd):
+        """Override base calibration menu to show ACE-specific options."""
+        prompt = AFCprompt(gcmd, self.logger)
+        title = f"{self.name} Calibration"
+        text = "Select ACE calibration type"
+        buttons = []
+
+        buttons.append((
+            "Calibrate Lanes (bowden length)",
+            f"UNIT_LANE_CALIBRATION UNIT={self.name}", "primary"
+        ))
+        buttons.append((
+            "Calibrate Hub Distance",
+            f"UNIT_BOW_CALIBRATION UNIT={self.name}", "secondary"
+        ))
+
+        back = [("Back", "AFC_CALIBRATION", "info")]
+        prompt.create_custom_p(title, text, buttons, True, None, back)
+
     def cmd_ACE_STATUS(self, gcmd):
         """Query and display ACE hardware status.
 

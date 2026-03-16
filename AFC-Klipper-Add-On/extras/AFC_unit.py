@@ -283,10 +283,9 @@ class afcUnit:
         # Selection buttons
         buttons.append(("Calibrate Lanes", "UNIT_LANE_CALIBRATION UNIT={}".format(self.name), "primary"))
 
-        unit_lanes = [lane for lane in self.afc.lanes.values() if getattr(lane, 'unit_obj', None) is self]
-        direct_hubs = any(lane.is_direct_hub() for lane in unit_lanes)
-        lanes_loaded = any(lane.load_state and not lane.is_direct_hub() for lane in unit_lanes)
-        any_lane_has_td1_ids = any(lane.td1_device_id for lane in unit_lanes)
+        direct_hubs = any( lane.is_direct_hub() for lane in self.afc.lanes.values())
+        lanes_loaded = any( lane.load_state and not lane.is_direct_hub() for lane in self.afc.lanes.values())
+        any_lane_has_td1_ids = any( lane.td1_device_id for lane in self.afc.lanes.values())
 
         if not direct_hubs or lanes_loaded:
             buttons.append(("Calibrate afc_bowden_length", "UNIT_BOW_CALIBRATION UNIT={}".format(self.name), "secondary"))
