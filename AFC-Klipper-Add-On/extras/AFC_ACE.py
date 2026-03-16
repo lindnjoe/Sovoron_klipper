@@ -772,6 +772,8 @@ class afcACE(afcUnit):
             default_color = getattr(self.afc, "default_color", None)
             if default_color:
                 lane.color = default_color
+        if not getattr(lane, "weight", 0):
+            lane.weight = 1000
 
     def _restore_tool_loaded_state(self, lane):
         """Restore a lane to TOOLED state after klipper restart.
