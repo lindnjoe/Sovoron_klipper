@@ -143,11 +143,11 @@ class DebounceButton:
         self.physical_state = None
         self.latest_eventtime = None
 
-    def button_handler(self, is_filament_present):
-        self._button_handler(self.reactor.monotonic(), is_filament_present)
+    def button_handler(self, state):
+        self._button_handler(self.reactor.monotonic(), state)
 
-    def _button_handler(self, eventtime, is_filament_present):
-        self.physical_state = is_filament_present
+    def _button_handler(self, eventtime, state):
+        self.physical_state = state
         self.latest_eventtime = eventtime
         # if there would be no state transition, ignore the event:
         if self.logical_state == self.physical_state:
