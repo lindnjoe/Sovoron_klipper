@@ -2017,7 +2017,12 @@ class afcACE(afcUnit):
             self._operation_active = False
             self._fps_latched = False
 
-    def _calibrate_bowden_inner(self, cur_lane, dis, tol):
+    def _measure_bowden_distance(self, cur_lane):
+        """Feed filament until toolhead sensor triggers and retract.
+
+        Returns (success, distance, new_feed_length, new_retract_length).
+        On failure, distance is how far was fed before giving up.
+        """
         if self._ace is None or not self._ace.connected:
             return False, "ACE not connected", 0
 
@@ -2035,7 +2040,7 @@ class afcACE(afcUnit):
         max_distance = 6000
 
         self.logger.info(
-            f"ACE calibrate_bowden: feeding slot {local_slot} "
+            f"ACE calibrate: feeding slot {local_slot} "
             f"in {self.calibration_step}mm steps, max {max_distance}mm"
         )
 
@@ -2048,7 +2053,7 @@ class afcACE(afcUnit):
         # (matches how retract_length is stored as feed_length - 200)
         retract_dist = distance - 200 if triggered else distance
         self.logger.info(
-            f"ACE calibrate_bowden: retracting {retract_dist:.0f}mm "
+            f"ACE calibrate: retracting {retract_dist:.0f}mm "
             f"@ {self.retract_speed}mm/min"
         )
         try:
@@ -2057,9 +2062,9 @@ class afcACE(afcUnit):
             self._wait_for_feed_complete(
                 local_slot, retract_dist, self.retract_speed
             )
-            self.logger.info("ACE calibrate_bowden: retract complete")
+            self.logger.info("ACE calibrate: retract complete")
         except Exception as e:
-            self.logger.error(f"ACE calibrate_bowden: retract failed: {e}")
+            self.logger.error(f"ACE calibrate: retract failed: {e}")
 
         if not triggered:
             msg = (
@@ -2068,17 +2073,24 @@ class afcACE(afcUnit):
             )
             return False, msg, distance
 
+        return True, "", distance
+
+    def _calibrate_bowden_inner(self, cur_lane, dis, tol):
+        success, msg, distance = self._measure_bowden_distance(cur_lane)
+        if not success:
+            return False, msg, distance
+
         # Round to nearest integer for clean config values
         new_feed_length = round(distance, 0)
         new_retract_length = round(distance - 200, 0)
 
-        # Update in-memory values
+        # Update in-memory unit-level values
         old_feed = self.feed_length
         old_retract = self.retract_length
         self.feed_length = new_feed_length
         self.retract_length = new_retract_length
 
-        # Write calibrated values back to config file
+        # Write calibrated values to the unit config section
         unit_section = " ".join(self.full_name)
         cal_msg = f"\n feed_length: New: {new_feed_length} Old: {old_feed}"
         self.afc.function.ConfigRewrite(
@@ -2094,7 +2106,7 @@ class afcACE(afcUnit):
             f"ACE bowden calibration: toolhead sensor triggered at {distance:.1f}mm.\n"
             f"feed_length: {new_feed_length:.0f} (was {old_feed:.0f})\n"
             f"retract_length: {new_retract_length:.0f} (was {old_retract:.0f})\n"
-            f"Values saved to config."
+            f"Values saved to unit config [{unit_section}]."
         )
         return True, msg, distance
 
@@ -2103,13 +2115,54 @@ class afcACE(afcUnit):
         return False, "ACE hub is managed by ACE hardware. No calibration needed.", 0
 
     def calibrate_lane(self, cur_lane, tol):
-        """Lane calibration: alias for bowden calibration on ACE units.
+        """Calibrate per-lane bowden length and save to the lane config section.
 
         On stepper units, calibrate_lane measures extruder-to-hub distance.
-        On ACE, there's only one distance that matters: ACE slot to toolhead.
-        This delegates to calibrate_bowden for the same measurement.
+        On ACE, it measures ACE slot to toolhead and writes the result to
+        the [AFC_lane] section so each lane can have its own feed/retract length.
         """
-        return self.calibrate_bowden(cur_lane, 0, tol)
+        self._operation_active = True
+        self._fps_latched = False
+        try:
+            return self._calibrate_lane_inner(cur_lane, tol)
+        finally:
+            self._operation_active = False
+            self._fps_latched = False
+
+    def _calibrate_lane_inner(self, cur_lane, tol):
+        success, msg, distance = self._measure_bowden_distance(cur_lane)
+        if not success:
+            return False, msg, distance
+
+        lane_name = cur_lane.name
+        new_feed_length = round(distance, 0)
+        new_retract_length = round(distance - 200, 0)
+
+        # Update in-memory per-lane overrides
+        old_feed = self._lane_feed_length.get(lane_name, self.feed_length)
+        old_retract = self._lane_retract_length.get(lane_name, self.retract_length)
+        self._lane_feed_length[lane_name] = new_feed_length
+        self._lane_retract_length[lane_name] = new_retract_length
+
+        # Write calibrated values to the lane config section
+        lane_section = f"AFC_lane {lane_name}"
+        cal_msg = f"\n feed_length: New: {new_feed_length} Old: {old_feed}"
+        self.afc.function.ConfigRewrite(
+            lane_section, "feed_length", new_feed_length, cal_msg
+        )
+        cal_msg = f"\n retract_length: New: {new_retract_length} Old: {old_retract}"
+        self.afc.function.ConfigRewrite(
+            lane_section, "retract_length", new_retract_length, cal_msg
+        )
+        self.afc.save_vars()
+
+        msg = (
+            f"ACE lane calibration: toolhead sensor triggered at {distance:.1f}mm.\n"
+            f"feed_length: {new_feed_length:.0f} (was {old_feed:.0f})\n"
+            f"retract_length: {new_retract_length:.0f} (was {old_retract:.0f})\n"
+            f"Values saved to lane config [{lane_section}]."
+        )
+        return True, msg, distance
 
     def calibrate_td1(self, cur_lane, dis, tol):
         """Calibrate TD-1 bowden length by feeding until TD-1 device detects filament."""
@@ -2678,13 +2731,13 @@ class afcACE(afcUnit):
         gcmd.respond_info(f"ACE lane reset: {lane_name} retracted successfully")
 
     def cmd_ACE_CALIBRATE(self, gcmd):
-        """Calibrate bowden length by feeding until toolhead sensor triggers.
+        """Calibrate per-lane bowden length by feeding until toolhead sensor triggers.
 
         Feeds filament from the specified lane's ACE slot in small increments,
-        checking the toolhead sensor between each step. Reports the measured
-        distance when the sensor triggers.
+        checking the toolhead sensor between each step. Saves the measured
+        feed_length and retract_length to the lane's config section.
 
-        Usage: ACE_CALIBRATE UNIT=<name> LANE=<lane_name> [MAX=<mm>]
+        Usage: ACE_CALIBRATE UNIT=<name> LANE=<lane_name>
         """
         if self._ace is None or not self._ace.connected:
             gcmd.respond_info(f"ACE {self.name}: not connected")
@@ -2703,14 +2756,12 @@ class afcACE(afcUnit):
             gcmd.respond_info(f"Lane '{lane_name}' not found")
             return
 
-        max_distance = gcmd.get_float("MAX", 6000)
-
         gcmd.respond_info(
-            f"ACE {self.name}: starting bowden calibration for {lane_name}...\n"
-            f"Feeding in {self.calibration_step}mm steps, max {max_distance:.0f}mm"
+            f"ACE {self.name}: starting lane calibration for {lane_name}...\n"
+            f"Feeding in {self.calibration_step}mm steps"
         )
 
-        success, msg, distance = self.calibrate_bowden(cur_lane, max_distance, 0)
+        success, msg, distance = self.calibrate_lane(cur_lane, 0)
         gcmd.respond_info(msg)
 
     # ---- Utilities ----
