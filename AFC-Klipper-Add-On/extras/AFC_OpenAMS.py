@@ -1487,18 +1487,18 @@ class afcAMS(afcUnit):
                         )
                     except Exception as e:
                         self.logger.error(f"Failed to register lane {lane_name} with registry: {e}")
-        self.logo  = '<span class=success--text>R  _______________\n'
-        self.logo += 'E | Open |  AMS  |\n'
-        self.logo += 'A | (</span><span class=info--text>o</span><span class=success--text>) (</span><span class=info--text>o</span><span class=success--text>) (</span><span class=info--text>o</span><span class=success--text>) (</span><span class=info--text>o</span><span class=success--text>) |\n'
-        self.logo += 'D |  1   2   3   4  |\n'
-        self.logo += 'Y |_______________|</span>\n'
+        self.logo  = '<span class=success--text>R  _________________\n'
+        self.logo += 'E | Open  |  AMS   |\n'
+        self.logo += 'A | (</span><span class=info--text>o</span><span class=success--text>)(</span><span class=info--text>o</span><span class=success--text>)(</span><span class=info--text>o</span><span class=success--text>)(</span><span class=info--text>o</span><span class=success--text>) |\n'
+        self.logo += 'D | _1__2__3__4_ |\n'
+        self.logo += 'Y |_________________|</span>\n'
         self.logo += '  ' + self.name + '\n'
 
-        self.logo_error  = '<span class=error--text>E  _______________\n'
-        self.logo_error += 'R | Open |  AMS  |\n'
-        self.logo_error += 'R | (<span class=secondary--text>X</span>) (<span class=secondary--text>X</span>) (<span class=secondary--text>X</span>) (<span class=secondary--text>X</span>) |\n'
-        self.logo_error += 'O |  1   2   3   4  |\n'
-        self.logo_error += 'R |_______________|</span>\n'
+        self.logo_error  = '<span class=error--text>E  _________________\n'
+        self.logo_error += 'R | Open  |  AMS   |\n'
+        self.logo_error += 'R | (<span class=secondary--text>X</span>)(<span class=secondary--text>X</span>)(<span class=secondary--text>X</span>)(<span class=secondary--text>X</span>) |\n'
+        self.logo_error += 'O | _1__2__3__4_ |\n'
+        self.logo_error += 'R |_________________|</span>\n'
         self.logo_error += '  ' + self.name + '\n'
 
     def _ensure_virtual_tool_sensor(self) -> bool:
