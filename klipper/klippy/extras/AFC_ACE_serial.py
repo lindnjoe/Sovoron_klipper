@@ -172,7 +172,7 @@ class ACEConnection:
             self.device_info = self.send_command("get_info", timeout=3.0)
             self._logger.info(f"ACE device info: {self.device_info}")
         except Exception as e:
-            self._logger.warning(f"ACE get_info failed (non-fatal): {e}")
+            self._logger.debug(f"ACE get_info failed (non-fatal): {e}")
 
         # Reset backoff on successful connect
         self._reconnect_backoff = RECONNECT_BACKOFF_MIN
