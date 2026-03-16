@@ -1487,29 +1487,19 @@ class afcAMS(afcUnit):
                         )
                     except Exception as e:
                         self.logger.error(f"Failed to register lane {lane_name} with registry: {e}")
-        first_leg = ("<span class=warning--text>|</span>"
-                    "<span class=error--text>_</span>")
-        second_leg = f"{first_leg}<span class=warning--text>|</span>"
-        self.logo = dedent("""\
-            <span class=success--text>R  _____     ____
-            E /      \\  |  </span><span class=info--text>o</span><span class=success--text> |
-            A |       |/ ___/
-            D |_________/
-            Y {first}{second} {first}{second}
-              {name}
-            </span>
-            """).format(first=first_leg, second=second_leg, name=self.name)
+        self.logo  = '<span class=success--text>R  ___________________\n'
+        self.logo += 'E | Open  |   AMS    |\n'
+        self.logo += 'A | (o) (o) (o) (o)  |\n'
+        self.logo += 'D |___________________|\n'
+        self.logo += 'Y |_1__|_2__|_3__|_4__|\n'
+        self.logo += '  ' + self.name + '</span>\n'
 
-        self.logo_error = dedent("""\
-            <span class=error--text>E  _ _   _ _
-            R |_|_|_|_|_|
-            R |         \\____
-            O |              \\
-            R |          |\\ <span class=secondary--text>X</span> |
-            ! \\_________/ |___|
-              {name}
-            </span>
-            """).format(name=self.name)
+        self.logo_error  = '<span class=error--text>E  ___________________\n'
+        self.logo_error += 'R | Open  |   AMS    |\n'
+        self.logo_error += 'R | (X) (X) (X) (X)  |\n'
+        self.logo_error += 'O |___________________|\n'
+        self.logo_error += 'R |_X__|_X__|_X__|_X__|\n'
+        self.logo_error += '  ' + self.name + '</span>\n'
 
     def _ensure_virtual_tool_sensor(self) -> bool:
         """Resolve or create the virtual tool-start sensor for AMS extruders."""
