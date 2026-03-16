@@ -16,7 +16,7 @@
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
-            "empty_spool_weight": 170.0,
+            "empty_spool_weight": 250.0,
             "remember_spool": false,
             "spool_id": null,
             "color": "",
@@ -26,7 +26,7 @@
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
             "status": "Loaded",
-            "dist_hub": 60,
+            "dist_hub": 800.0,
             "td1_data": {}
         },
         "lane13": {

@@ -1912,7 +1912,7 @@ class afcACE(afcUnit):
             return
         if lane.loaded_to_hub:
             return
-        if not lane.load_state or not lane.prep_state:
+        if not lane.prep_state:
             return
         if self._ace is None or not self._ace.connected:
             return
