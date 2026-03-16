@@ -2089,9 +2089,8 @@ class afcACE(afcUnit):
     def eject_lane(self, lane):
         """Retract filament from hub back to spool for ACE lane.
 
-        If filament is at the hub (loaded_to_hub=True), retract dist_hub
-        distance to pull it back into the ACE slot. If filament is at the
-        toolhead, use TOOL_UNLOAD instead.
+        Retracts dist_hub distance to pull filament back into the ACE slot.
+        If filament is at the toolhead, use TOOL_UNLOAD instead.
         """
         lane_name = getattr(lane, "name", "unknown")
 
@@ -2107,15 +2106,6 @@ class afcACE(afcUnit):
                 pass
             return
 
-        if not getattr(lane, "loaded_to_hub", False):
-            message = f"ACE lane {lane_name} is not loaded to hub, nothing to eject."
-            self.logger.info(message)
-            try:
-                self.gcode.respond_info(message)
-            except Exception:
-                pass
-            return
-
         if self._ace is None or not self._ace.connected:
             self.logger.error(f"ACE eject_lane: ACE not connected for {lane_name}")
             return
@@ -2123,6 +2113,25 @@ class afcACE(afcUnit):
         local_slot = self._get_local_slot_for_lane(lane)
         if local_slot < 0:
             return
+
+        # Check if slot has filament — don't gate on loaded_to_hub alone
+        # since that flag can get out of sync with the physical state.
+        slot_info = self._slot_inventory.get(local_slot, {})
+        slot_ready = slot_info.get("status", "") == "ready"
+        if not lane.loaded_to_hub and not slot_ready:
+            message = f"ACE lane {lane_name} is not loaded to hub and slot is not ready, nothing to eject."
+            self.logger.info(message)
+            try:
+                self.gcode.respond_info(message)
+            except Exception:
+                pass
+            return
+
+        if not lane.loaded_to_hub:
+            self.logger.warning(
+                f"ACE eject_lane: {lane_name} loaded_to_hub is False but slot "
+                f"is ready — retracting anyway"
+            )
 
         dist_hub = self._get_dist_hub(lane)
         self.logger.info(
@@ -2150,9 +2159,29 @@ class afcACE(afcUnit):
             self.logger.error(f"ACE eject_lane failed for {lane_name}: {e}")
 
     def lane_unload(self, cur_lane):
-        """Retract ACE lane filament from hub back to spool."""
+        """Full ACE lane unload: retract from hub and clean up state.
+
+        Returns True to prevent the generic LANE_UNLOAD path from also
+        running (which would double-call eject_lane and apply BoxTurtle
+        cleanup logic that doesn't apply to ACE).
+        """
+        lane_name = getattr(cur_lane, "name", "unknown")
+
+        cur_lane.status = AFCLaneState.EJECTING
+        self.afc.save_vars()
+
         self.eject_lane(cur_lane)
-        return None
+
+        cur_lane.loaded_to_hub = False
+        cur_lane.status = AFCLaneState.NONE
+        self.afc.save_vars()
+
+        # Remove spool association since it was ejected
+        self.afc.spool.set_spoolID(cur_lane, None)
+        self.logger.info(f"LANE {lane_name} eject done")
+        self.lane_not_ready(cur_lane)
+
+        return True
 
     def get_lane_reset_command(self, lane, dis) -> str:
         """ACE lanes retract via ACE hardware, bypassing TOOL_UNLOAD."""
