@@ -1645,9 +1645,10 @@ class afcACE(afcUnit):
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = -1
 
-            # Virtual hub: filament staged near hub, ready for fast reload.
-            # Real hub pin: filament pulled past sensor + clearance, not at hub.
-            cur_lane.loaded_to_hub = not has_real_hub_pin
+            # Filament is staged near hub in both cases, ready for fast
+            # reload. The virtual hub sensor (AFC_hub.state) already
+            # excludes ACE lanes so this won't block other lanes.
+            cur_lane.loaded_to_hub = True
             cur_lane._pre_fed_to_hub = False
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.LOADED
