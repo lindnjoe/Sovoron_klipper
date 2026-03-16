@@ -1975,10 +1975,10 @@ class afcACE(afcUnit):
             local_slot, cur_lane, max_distance, step_size=self.calibration_step
         )
 
-        # Retract after calibration - retract the fed distance plus 200mm
-        # to fully pull filament back into the ACE unit (retract_length is
-        # stored as feed_length - 200, so we need the extra margin here)
-        retract_dist = distance + 200 if triggered else distance
+        # Retract after calibration - retract 200mm less than fed distance
+        # to avoid pulling filament out of the ACE unit during rewind
+        # (matches how retract_length is stored as feed_length - 200)
+        retract_dist = distance - 200 if triggered else distance
         self.logger.info(
             f"ACE calibrate_bowden: retracting {retract_dist:.0f}mm "
             f"@ {self.retract_speed}mm/min"
