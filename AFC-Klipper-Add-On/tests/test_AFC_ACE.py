@@ -3,7 +3,6 @@ Unit tests for extras/AFC_ACE.py
 
 Covers:
   - afcACE: class constants, slot mapping, color conversion
-  - ACEPersistence: deferred/immediate modes, save/flush
   - _get_local_slot_for_lane: maps lane index to 0-based slot
   - _ace_color_to_hex: converts RGB array to hex string
   - _get_feed_assist_for_slot: default vs override
@@ -21,7 +20,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, PropertyMock, patch
 import pytest
 
-from extras.AFC_ACE import afcACE, ACEPersistence, MODE_COMBINED, MODE_DIRECT
+from extras.AFC_ACE import afcACE, MODE_COMBINED, MODE_DIRECT
 from extras.AFC_lane import AFCLaneState
 
 
@@ -338,50 +337,6 @@ class TestSystemTestLockedNotLoaded:
         lane = _make_lane(prep_state=True, load_state=False)
         result = unit.system_Test(lane, delay=0.0, assignTcmd=True, enable_movement=False)
         assert result is False
-
-
-# ── ACEPersistence ────────────────────────────────────────────────────────
-
-class TestPersistenceImmediate:
-    def test_save_calls_afc_save_vars(self):
-        from tests.conftest import MockReactor, MockLogger
-        afc = MagicMock()
-        p = ACEPersistence(MockReactor(), afc, MockLogger(), mode="immediate")
-        p.save()
-        afc.save_vars.assert_called_once()
-
-    def test_has_pending_is_false_after_immediate_save(self):
-        from tests.conftest import MockReactor, MockLogger
-        afc = MagicMock()
-        p = ACEPersistence(MockReactor(), afc, MockLogger(), mode="immediate")
-        p.save()
-        assert p.has_pending is False
-
-
-class TestPersistenceDeferred:
-    def test_save_does_not_call_afc_save_vars(self):
-        from tests.conftest import MockReactor, MockLogger
-        afc = MagicMock()
-        p = ACEPersistence(MockReactor(), afc, MockLogger(), mode="deferred")
-        p.save()
-        afc.save_vars.assert_not_called()
-        assert p.has_pending is True
-
-    def test_flush_calls_afc_save_vars_when_dirty(self):
-        from tests.conftest import MockReactor, MockLogger
-        afc = MagicMock()
-        p = ACEPersistence(MockReactor(), afc, MockLogger(), mode="deferred")
-        p.save()  # mark dirty
-        p.flush()
-        afc.save_vars.assert_called_once()
-        assert p.has_pending is False
-
-    def test_flush_noop_when_clean(self):
-        from tests.conftest import MockReactor, MockLogger
-        afc = MagicMock()
-        p = ACEPersistence(MockReactor(), afc, MockLogger(), mode="deferred")
-        p.flush()  # not dirty
-        afc.save_vars.assert_not_called()
 
 
 # ── _poll_slot_status: shifting state handling ───────────────────────────────
