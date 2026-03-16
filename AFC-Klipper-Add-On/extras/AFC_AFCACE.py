@@ -395,8 +395,22 @@ class afcAFCACE(afcUnit):
             f"port={self.serial_port}, slots={self.SLOTS_PER_UNIT}"
         )
 
-    def _get_feed_assist_for_slot(self, slot_index) -> bool:
-        """Check if feed assist is enabled for a specific slot."""
+    def _get_feed_length(self, lane=None) -> float:
+        """Get feed length, using lane override if set."""
+        if lane is not None and getattr(lane, 'feed_length', None) is not None:
+            return lane.feed_length
+        return self.feed_length
+
+    def _get_retract_length(self, lane=None) -> float:
+        """Get retract length, using lane override if set."""
+        if lane is not None and getattr(lane, 'retract_length', None) is not None:
+            return lane.retract_length
+        return self.retract_length
+
+    def _get_feed_assist_for_slot(self, slot_index, lane=None) -> bool:
+        """Check if feed assist is enabled for a specific slot/lane."""
+        if lane is not None and getattr(lane, 'use_feed_assist', None) is not None:
+            return lane.use_feed_assist
         override = self._slot_feed_assist.get(slot_index)
         if override is not None:
             return override
@@ -809,7 +823,7 @@ class afcAFCACE(afcUnit):
                     local_slot = self._get_local_slot_for_lane(lane)
                     if local_slot < 0:
                         continue
-                    if not self._get_feed_assist_for_slot(local_slot):
+                    if not self._get_feed_assist_for_slot(local_slot, lane=lane):
                         continue
                     try:
                         self._ace.start_feed_assist(local_slot)
@@ -1156,7 +1170,7 @@ class afcAFCACE(afcUnit):
                     )
                     # Ensure feed assist is running so ACE pushes filament
                     if (local_slot >= 0
-                            and self._get_feed_assist_for_slot(local_slot)
+                            and self._get_feed_assist_for_slot(local_slot, lane=cur_lane)
                             and local_slot not in self._feed_assist_active):
                         try:
                             self._wait_for_ace_ready()
@@ -1233,7 +1247,7 @@ class afcAFCACE(afcUnit):
         # _feed_slot starts it during phase 3, but if the sensor triggered
         # early (during bulk feed) phase 3 may not have run.
         local_slot = self._get_local_slot_for_lane(cur_lane)
-        if local_slot >= 0 and self._get_feed_assist_for_slot(local_slot):
+        if local_slot >= 0 and self._get_feed_assist_for_slot(local_slot, lane=cur_lane):
             try:
                 self._wait_for_ace_ready()
                 self._ace.start_feed_assist(local_slot)
@@ -1338,6 +1352,7 @@ class afcAFCACE(afcUnit):
         # Start ACE unwind before extruder retract so the ACE begins pulling
         # tension on the spool while the extruder simultaneously retracts.
         # The command returns immediately � the motor runs asynchronously.
+        retract_len = self._get_retract_length(cur_lane)
         self.logger.info(
             f"AFCACE unload: starting ACE unwind slot {local_slot} "
             f"before extruder retract for lane {cur_lane.name}"
@@ -1345,7 +1360,7 @@ class afcAFCACE(afcUnit):
         try:
             self._wait_for_ace_ready()
             self._ace.unwind_filament(
-                local_slot, self.retract_length, self.retract_speed
+                local_slot, retract_len, self.retract_speed
             )
         except Exception as e:
             message = f"AFCACE unload: failed to start ACE unwind for {cur_lane.name}: {e}"
@@ -1414,7 +1429,7 @@ class afcAFCACE(afcUnit):
                 f"slot {local_slot} for lane {cur_lane.name}"
             )
             self._wait_for_feed_complete(
-                local_slot, self.retract_length, self.retract_speed
+                local_slot, retract_len, self.retract_speed
             )
 
             if self.mode == MODE_COMBINED:
@@ -1481,17 +1496,18 @@ class afcAFCACE(afcUnit):
         If no lane is provided (no sensor to check), falls back to fixed-distance feed.
         """
         ace = self._ace
+        feed_len = self._get_feed_length(lane)
 
         # Ensure ACE is not still busy from a previous operation
         self._wait_for_ace_ready()
 
         self.logger.debug(
             f"AFCACE feed: slot {slot_index}, "
-            f"length={self.feed_length}mm @ {self.feed_speed}mm/min"
+            f"length={feed_len}mm @ {self.feed_speed}mm/min"
         )
 
         # Phase 1: Bulk feed (skip the last sensor_approach_margin mm)
-        bulk_distance = max(0, self.feed_length - self.sensor_approach_margin)
+        bulk_distance = max(0, feed_len - self.sensor_approach_margin)
         if bulk_distance > 0:
             ace.feed_filament(slot_index, bulk_distance, self.feed_speed)
             # Wait for ACE to physically complete the bulk feed movement
@@ -1518,7 +1534,7 @@ class afcAFCACE(afcUnit):
                     )
 
             # Incremental feed until sensor triggers or max distance reached
-            max_total = self.feed_length + self.max_feed_overshoot
+            max_total = feed_len + self.max_feed_overshoot
             while not sensor_triggered and total_fed < max_total:
                 step = min(self.sensor_step, max_total - total_fed)
                 ace.feed_filament(slot_index, step, self.feed_speed)
@@ -1536,18 +1552,18 @@ class afcAFCACE(afcUnit):
                     )
         else:
             # No lane/sensor - just feed the remaining fixed distance
-            remaining = self.feed_length - bulk_distance
+            remaining = feed_len - bulk_distance
             if remaining > 0:
                 ace.feed_filament(slot_index, remaining, self.feed_speed)
                 self._wait_for_feed_complete(
                     slot_index, remaining, self.feed_speed
                 )
-                total_fed = self.feed_length
+                total_fed = feed_len
 
         # Phase 3: Feed assist + extruder assist for the last stretch
         # Feed assist stays enabled after loading to maintain filament tension
         # during printing. It is stopped in _unload_sequence_inner before retraction.
-        if self._get_feed_assist_for_slot(slot_index):
+        if self._get_feed_assist_for_slot(slot_index, lane=lane):
             try:
                 self._wait_for_ace_ready()
                 ace.start_feed_assist(slot_index)
@@ -1699,21 +1715,22 @@ class afcAFCACE(afcUnit):
 
         return total_fed, False
 
-    def _retract_slot(self, slot_index):
+    def _retract_slot(self, slot_index, lane=None):
         """Retract filament from the toolhead back into the ACE slot."""
         ace = self._ace
+        retract_len = self._get_retract_length(lane)
 
         # Ensure ACE is not still busy from a previous operation
         self._wait_for_ace_ready()
 
         self.logger.debug(
             f"AFCACE retract: slot {slot_index}, "
-            f"length={self.retract_length}mm @ {self.retract_speed}mm/min"
+            f"length={retract_len}mm @ {self.retract_speed}mm/min"
         )
-        ace.unwind_filament(slot_index, self.retract_length, self.retract_speed)
+        ace.unwind_filament(slot_index, retract_len, self.retract_speed)
         # Wait for ACE to physically complete the retraction
         self._wait_for_feed_complete(
-            slot_index, self.retract_length, self.retract_speed
+            slot_index, retract_len, self.retract_speed
         )
 
     # ---- No-Op / Unsupported Operations ----

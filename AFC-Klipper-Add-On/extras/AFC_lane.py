@@ -180,6 +180,10 @@ class AFCLane:
         self.load_undershoot: float    = config.getfloat("load_undershoot", None)
         self.extruder_clear_dis: float = config.getfloat("extruder_clear_dis", None)
 
+        self.feed_length: float       = config.getfloat("feed_length", None)               # Distance from unit to toolhead in mm. Setting value here overrides values set in unit(AFC_ACE/etc) section
+        self.retract_length: float    = config.getfloat("retract_length", None)             # Distance to retract back to unit in mm. Setting value here overrides values set in unit(AFC_ACE/etc) section
+        self.use_feed_assist: bool    = config.getboolean("use_feed_assist", None)          # Enable/disable feed assist for this lane. Setting value here overrides values set in unit(AFC_ACE/etc) section
+
         # Custom Load/unload Commands
         self.custom_load_cmd = config.get('custom_load_cmd', None)  # Custom command to run when loading lane, this will bypass the typical load sequence and run the command instead.
         self.custom_unload_cmd = config.get('custom_unload_cmd', None)  # Custom command to run when unloading lane, this will bypass the typical unload sequence and run the command instead.
@@ -626,6 +630,9 @@ class AFCLane:
         if self.td1_device_id               is None: self.td1_device_id     = self.unit_obj.td1_device_id
         if self.extruder_clear_dis          is None: self.extruder_clear_dis= self.unit_obj.extruder_clear_dis
         if self.post_prep_macro             is None: self.post_prep_macro   = self.unit_obj.post_prep_macro
+        if self.feed_length                 is None: self.feed_length       = getattr(self.unit_obj, 'feed_length', None)
+        if self.retract_length              is None: self.retract_length    = getattr(self.unit_obj, 'retract_length', None)
+        if self.use_feed_assist             is None: self.use_feed_assist   = getattr(self.unit_obj, '_default_feed_assist', None)
 
         if self.td1_bowden_length           is None:
             if not self.is_direct_hub():
