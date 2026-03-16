@@ -48,10 +48,14 @@ class afcACE(afcUnit):
     Owns the serial communication to ACE PRO hardware and implements both
     combined (shared toolhead) and direct (per-extruder) operational modes.
 
+    Hub config (required - virtual sensor since ACE has no physical hub sensor):
+        [AFC_hub ace_hub1]
+        switch_pin: virtual
+
     Config example:
-        [AFC_ACE ace1]
+        [AFC_ACE Ace_1]
         serial_port: /dev/ttyACM0
-        hub: ace_hub
+        hub: ace_hub1
         extruder: extruder
         mode: combined          # or "direct" for multi-extruder
         feed_speed: 800         # mm/min
@@ -61,8 +65,8 @@ class afcACE(afcUnit):
 
     Lane config:
         [AFC_lane lane1]
-        unit: ace1:1            # Unit:Slot (1-based in config, 0-based internal)
-        hub: ace_hub
+        unit: Ace_1:1            # Unit:Slot (1-based in config, 0-based internal)
+        hub: ace_hub1
         extruder: extruder
     """
 
