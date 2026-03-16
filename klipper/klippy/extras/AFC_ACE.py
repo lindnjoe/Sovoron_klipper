@@ -41,106 +41,6 @@ MODE_COMBINED = "combined"  # Multiple slots -> one toolhead (retract before fee
 MODE_DIRECT = "direct"      # Each slot -> its own extruder (independent operation)
 
 
-class ACEPersistence:
-    """Deferred-flush wrapper around AFC's save_vars().
-
-    In ``deferred`` mode (default), calls to ``save()`` only mark state
-    dirty.  The actual ``afc.save_vars()`` disk write is deferred until
-    ``flush()`` is called explicitly (print end / disconnect) or the
-    auto-flush timer fires after ``flush_interval`` seconds of idle.
-
-    In ``immediate`` mode, ``save()`` calls ``afc.save_vars()`` directly
-    (legacy behaviour).
-
-    Config:
-        persistence_mode: deferred   # or "immediate"
-        flush_interval: 30           # seconds; 0 disables auto-flush
-    """
-
-    def __init__(self, reactor, afc, logger, mode="deferred",
-                 flush_interval=30.0):
-        self._reactor = reactor
-        self._afc = afc
-        self._logger = logger
-        self._immediate = (mode == "immediate")
-        self._dirty = False
-        self._flush_interval = flush_interval
-
-        # Auto-flush timer (deferred mode only)
-        self._flush_timer = None
-        if not self._immediate and flush_interval > 0:
-            self._flush_timer = reactor.register_timer(
-                self._auto_flush_callback
-            )
-
-        self._logger.info(
-            f"ACE persistence: mode={mode}, "
-            f"flush_interval={flush_interval:.0f}s"
-        )
-
-    @property
-    def has_pending(self):
-        return self._dirty
-
-    def save(self):
-        """Save AFC state -immediately or deferred depending on mode."""
-        if self._immediate:
-            self._dirty = False
-            try:
-                self._afc.save_vars()
-            except Exception:
-                self._logger.error("ACE persistence: immediate save failed")
-            return
-
-        # Deferred: mark dirty and (re)start auto-flush timer
-        self._dirty = True
-        if self._flush_timer is not None:
-            self._reactor.update_timer(
-                self._flush_timer,
-                self._reactor.monotonic() + self._flush_interval,
-            )
-
-    def flush(self):
-        """Write pending state to disk if dirty."""
-        if not self._dirty:
-            return
-        try:
-            self._afc.save_vars()
-            self._dirty = False
-            self._logger.debug("ACE persistence: flushed to disk")
-        except Exception:
-            self._logger.error("ACE persistence: flush failed")
-
-        if self._flush_timer is not None:
-            self._reactor.update_timer(
-                self._flush_timer, self._reactor.NEVER
-            )
-
-    def _auto_flush_callback(self, eventtime):
-        if self._dirty:
-            self._logger.debug(
-                f"ACE persistence: auto-flush after "
-                f"{self._flush_interval:.0f}s idle"
-            )
-            self.flush()
-        return self._reactor.NEVER
-
-    def on_disconnect(self):
-        if self._dirty:
-            self._logger.info("ACE persistence: flushing on disconnect")
-            self.flush()
-
-    def on_shutdown(self):
-        if self._dirty:
-            self._logger.info("ACE persistence: flushing on shutdown")
-            try:
-                self._afc.save_vars()
-                self._dirty = False
-            except Exception:
-                self._logger.error(
-                    "ACE persistence: shutdown flush failed"
-                )
-
 
 class afcACE(afcUnit):
     """AFC unit that talks directly to Anycubic ACE PRO hardware.
@@ -248,24 +148,6 @@ class afcACE(afcUnit):
         # Baud rate (ACE default is 115200)
         self.baud_rate = config.getint("baud_rate", 115200)
 
-        # Persistence mode: deferred (default) skips disk writes during
-        # time-critical paths; immediate writes every time (legacy).
-        persistence_mode = config.get("persistence_mode", "deferred").lower().strip()
-        if persistence_mode not in ("deferred", "immediate"):
-            self.logger.warning(
-                f"Unknown persistence_mode '{persistence_mode}', "
-                f"defaulting to deferred."
-            )
-            persistence_mode = "deferred"
-        flush_interval = config.getfloat("flush_interval", 30.0)
-        self._persistence = ACEPersistence(
-            reactor=self.afc.reactor,
-            afc=self.afc,
-            logger=self.logger,
-            mode=persistence_mode,
-            flush_interval=flush_interval,
-        )
-
         # Serial connection (created on ready)
         self._ace: Optional[ACEConnection] = None
 
@@ -301,12 +183,6 @@ class afcACE(afcUnit):
         self._pending_feed_assist_restore = False
 
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
-        self.printer.register_event_handler(
-            "klippy:disconnect", self._persistence.on_disconnect
-        )
-        self.printer.register_event_handler(
-            "klippy:shutdown", self._persistence.on_shutdown
-        )
 
         # Register temperature_ace sensor factory early enough for
         # [temperature_sensor] sections to resolve sensor_type: temperature_ace.
@@ -860,7 +736,7 @@ class afcACE(afcUnit):
                 )
                 lane.set_loaded()
                 self.lane_illuminate_spool(lane)
-                self._persistence.save()
+                self.afc.save_vars()
 
             # Don't update prev state during transient "shifting" to
             # avoid false runout triggers in _poll_slot_status.
@@ -1011,7 +887,7 @@ class afcACE(afcUnit):
                 f"Lane {cur_lane.name} already loaded to toolhead, skipping"
             )
             cur_lane.set_tool_loaded()
-            self._persistence.save()
+            self.afc.save_vars()
             return True
 
         if afc._check_extruder_temp(cur_lane):
@@ -1194,7 +1070,7 @@ class afcACE(afcUnit):
 
         # Sync to extruder and load filament into the nozzle using tool_stn
         cur_lane.status = AFCLaneState.TOOL_LOADED
-        self._persistence.save()
+        self.afc.save_vars()
         cur_lane.sync_to_extruder()
 
         # If tool_end sensor exists, feed until it triggers
@@ -1245,7 +1121,7 @@ class afcACE(afcUnit):
                     f"ACE load: failed to start feed assist for slot {local_slot}: {e}"
                 )
 
-        self._persistence.save()
+        self.afc.save_vars()
         return True
 
     def unload_sequence(self, cur_lane, cur_hub, cur_extruder):
@@ -1423,7 +1299,7 @@ class afcACE(afcUnit):
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.LOADED
             self.lane_tool_unloaded(cur_lane)
-            self._persistence.save()
+            self.afc.save_vars()
 
         except Exception as e:
             message = f"ACE unload failed for {cur_lane.name}: {e}"
@@ -1944,7 +1820,7 @@ class afcACE(afcUnit):
         self.afc.function.ConfigRewrite(
             unit_section, "retract_length", new_retract_length, cal_msg
         )
-        self._persistence.save()
+        self.afc.save_vars()
 
         msg = (
             f"ACE bowden calibration: toolhead sensor triggered at {distance:.1f}mm.\n"
@@ -2058,7 +1934,7 @@ class afcACE(afcUnit):
         self.afc.function.ConfigRewrite(
             fullname, "td1_bowden_length", bow_pos, cal_msg
         )
-        self._persistence.save()
+        self.afc.save_vars()
 
         msg = (
             f"ACE TD-1 calibration: filament detected at {bow_pos:.1f}mm.\n"
@@ -2164,7 +2040,7 @@ class afcACE(afcUnit):
                 )
                 lane.set_loaded()
                 self.lane_illuminate_spool(lane)
-                self._persistence.save()
+                self.afc.save_vars()
 
             # Detect ready -> not-ready transition (filament runout)
             # Only trigger during active printing to avoid startup crashes.
@@ -2192,7 +2068,7 @@ class afcACE(afcUnit):
                     # Slot went empty on a non-active lane - just update sensor state
                     lane.set_unloaded()
                     self.lane_not_ready(lane)
-                    self._persistence.save()
+                    self.afc.save_vars()
 
         # Polling rates: 2s when printing (runout detection), 5s when idle
         if is_printing:
