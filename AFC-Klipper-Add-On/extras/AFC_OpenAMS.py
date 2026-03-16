@@ -4314,6 +4314,17 @@ class afcAMS(afcUnit):
 
             self._mirror_lane_to_virtual_sensor(lane, eventtime)
 
+            # For shared-sensor lanes, the AFC_lane prep_callback flow may
+            # not reach prep_post_load (guards like _afc_prep_done can block
+            # it). Call directly here; loaded_to_hub guard prevents double-run.
+            try:
+                self.prep_post_load(lane)
+            except Exception as e:
+                self.logger.error(
+                    f"_update_shared_lane: prep_post_load error for "
+                    f"{lane.name}: {e}"
+                )
+
             # Publish spool_loaded event immediately (TD-1 capture delay happens in event handler)
             # Pass previous_loaded state since lane.load_state is already updated by callbacks above
             if self.event_bus is not None:
