@@ -102,6 +102,10 @@ class afcACE(afcUnit):
         # Default 800mm is a safe starting point; calibrate with ACE_CALIBRATE_HUB.
         self.dist_hub = config.getfloat("dist_hub", 800.0)             # mm
 
+        # load_to_hub: unit-level override.  Inherits from AFC global if not set.
+        # Can also be overridden per-lane in [AFC_lane] sections.
+        self._unit_load_to_hub = config.getboolean("load_to_hub", None)
+
         # Feed assist: default enable/disable for all slots
         self._default_feed_assist = config.getboolean("use_feed_assist", True)
 
@@ -1898,7 +1902,13 @@ class afcACE(afcUnit):
         tool changes.  Only runs if load_to_hub is enabled, the lane
         is not already at the hub, and the slot shows filament ready.
         """
-        if not getattr(lane, 'load_to_hub', False):
+        # Resolve load_to_hub: lane override > unit override > AFC global
+        load_to_hub = getattr(lane, 'load_to_hub', None)
+        if load_to_hub is None:
+            load_to_hub = self._unit_load_to_hub
+        if load_to_hub is None:
+            load_to_hub = getattr(self.afc, 'load_to_hub', False)
+        if not load_to_hub:
             return
         if lane.loaded_to_hub:
             return
@@ -2793,6 +2803,33 @@ class afcACE(afcUnit):
             self.cmd_ACE_LANE_RESET,
             desc="Retract ACE lane filament back into the unit",
         )
+
+    def cmd_UNIT_CALIBRATION(self, gcmd):
+        """Override base calibration menu to show ACE-specific options."""
+        prompt = AFCprompt(gcmd, self.logger)
+        title = f"{self.name} Calibration"
+        text = "Select ACE calibration type"
+        buttons = []
+
+        buttons.append((
+            "Calibrate Lanes (bowden length)",
+            f"UNIT_LANE_CALIBRATION UNIT={self.name}", "primary"
+        ))
+        buttons.append((
+            "Calibrate Hub Distance",
+            f"UNIT_BOW_CALIBRATION UNIT={self.name}", "secondary"
+        ))
+
+        # Show TD-1 calibration only if this unit's lanes have TD-1 configured
+        any_lane_has_td1_ids = any(lane.td1_device_id for lane in self.lanes.values())
+        if self.afc.td1_defined and any_lane_has_td1_ids:
+            buttons.append((
+                "Calibrate TD-1 Length",
+                f"AFC_UNIT_TD_ONE_CALIBRATION UNIT={self.name}", "secondary"
+            ))
+
+        back = [("Back", "AFC_CALIBRATION", "info")]
+        prompt.create_custom_p(title, text, buttons, True, None, back)
 
     def cmd_ACE_STATUS(self, gcmd):
         """Query and display ACE hardware status.

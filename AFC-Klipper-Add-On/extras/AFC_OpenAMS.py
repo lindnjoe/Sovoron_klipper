@@ -921,6 +921,10 @@ class afcAMS(afcUnit):
 
         self.oams_name = config.get("oams", "oams1")
 
+        # load_to_hub: unit-level override.  Inherits from AFC global if not set.
+        # Can also be overridden per-lane in [AFC_lane] sections.
+        self._unit_load_to_hub = config.getboolean("load_to_hub", None)
+
         # When True, a stuck spool detected during printing triggers an automatic
         # unload + reload + resume cycle instead of just pausing for user intervention.
         # Defaults to False (pause-only) so the behaviour is opt-in.
@@ -1325,7 +1329,13 @@ class afcAMS(afcUnit):
         load when the hub sensor triggers - leaving filament staged at the
         hub for faster tool changes.
         """
-        if not getattr(lane, 'load_to_hub', False):
+        # Resolve load_to_hub: lane override > unit override > AFC global
+        load_to_hub = getattr(lane, 'load_to_hub', None)
+        if load_to_hub is None:
+            load_to_hub = self._unit_load_to_hub
+        if load_to_hub is None:
+            load_to_hub = getattr(self.afc, 'load_to_hub', False)
+        if not load_to_hub:
             return
         if lane.loaded_to_hub:
             return
