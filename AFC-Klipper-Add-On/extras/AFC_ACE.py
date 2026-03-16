@@ -1502,44 +1502,14 @@ class afcACE(afcUnit):
             else:
                 afc.gcode.run_script_from_command(afc.form_tip_cmd)
 
-        # Retract filament out of the nozzle/extruder gears.
         # ACE lanes have no lane stepper, so all retract moves use move_e_pos
-        # (extruder motor) instead of move_advanced. After clearing the toolhead,
-        # the ACE hardware handles the full bowden retraction via _retract_slot.
+        # (extruder motor). The extruder must retract first to clear the
+        # nozzle/gears before the ACE hardware retracts the bowden length.
         local_slot = self._get_local_slot_for_lane(cur_lane)
 
-        # Retract from toolhead back toward hub. For virtual hubs,
-        # include hub_clear_move_dis so filament clears the hub exit.
-        # For real hub pins, just retract to the hub — the sensor
-        # check loop after unwind handles the rest.
-        full_retract = self._get_retract_length(cur_lane)
-        dist_hub = self._get_dist_hub(cur_lane)
-        has_real_hub_pin = cur_hub.switch_pin.lower() != "virtual"
-        if dist_hub > 0 and dist_hub < full_retract:
-            retract_length = full_retract - dist_hub
-            if not has_real_hub_pin:
-                retract_length += cur_hub.hub_clear_move_dis
-        else:
-            retract_length = full_retract
-
-        # Start ACE unwind before extruder retract so the ACE begins pulling
-        # tension on the spool while the extruder simultaneously retracts.
-        # The command returns immediately - the motor runs asynchronously.
-        self.logger.info(
-            f"ACE unload: starting ACE unwind slot {local_slot} "
-            f"{retract_length:.0f}mm (to hub) for lane {cur_lane.name}"
-        )
-        try:
-            self._wait_for_ace_ready()
-            self._ace.unwind_filament(
-                local_slot, retract_length, self.retract_speed
-            )
-        except Exception as e:
-            message = f"ACE unload: failed to start ACE unwind for {cur_lane.name}: {e}"
-            self.logger.error(f"{message}\n{traceback.format_exc()}")
-            afc.error.handle_lane_failure(cur_lane, message)
-            return False
-
+        # Step 1: Retract filament out of the nozzle/extruder gears FIRST.
+        # This must complete before ACE unwind starts, otherwise the ACE
+        # pulls against the extruder grip and the filament catches.
         if cur_extruder.tool_start == "buffer" and cur_lane.buffer_obj is not None:
             # Buffer mode: retract until buffer decompresses using extruder motor
             num_tries = 0
@@ -1571,8 +1541,7 @@ class afcACE(afcUnit):
                     wait_tool=True
                 )
         else:
-            # Standard mode (no buffer): retract with extruder motor while
-            # ACE is already pulling from the spool side.
+            # Standard mode: retract with extruder motor to clear nozzle/gears
             retract_distance = cur_extruder.tool_stn_unload
             if retract_distance > 0:
                 self.logger.info(
@@ -1592,10 +1561,45 @@ class afcACE(afcUnit):
                 cur_extruder.tool_unload_speed, "After extruder"
             )
 
-        try:
-            # Unsync from extruder before waiting for ACE retraction
-            cur_lane.unsync_to_extruder()
+        # Step 2: Unsync from extruder now that filament is clear of the gears
+        cur_lane.unsync_to_extruder()
 
+        # Step 3: ACE hardware retracts the bowden length back toward the hub.
+        # Now that the extruder is clear, the ACE can pull freely without
+        # fighting the extruder grip.
+        full_retract = self._get_retract_length(cur_lane)
+        dist_hub = self._get_dist_hub(cur_lane)
+        has_real_hub_pin = cur_hub.switch_pin.lower() != "virtual"
+        if dist_hub > 0 and dist_hub < full_retract:
+            retract_length = full_retract - dist_hub
+            if not has_real_hub_pin:
+                retract_length += cur_hub.hub_clear_move_dis
+        else:
+            retract_length = full_retract
+
+        self.logger.info(
+            f"ACE unload: starting ACE unwind slot {local_slot} "
+            f"{retract_length:.0f}mm (to hub) for lane {cur_lane.name}"
+        )
+        try:
+            self._wait_for_ace_ready()
+            self._ace.unwind_filament(
+                local_slot, retract_length, self.retract_speed
+            )
+        except Exception as e:
+            message = f"ACE unload: failed to start ACE unwind for {cur_lane.name}: {e}"
+            self.logger.error(f"{message}\n{traceback.format_exc()}")
+            afc.error.handle_lane_failure(cur_lane, message)
+            return False
+
+        # Small extruder retract while ACE unwinds to ensure filament tip
+        # is fully clear of the extruder/hotend path
+        afc.move_e_pos(
+            -10, cur_extruder.tool_unload_speed,
+            "ACE unwind assist retract", wait_tool=True
+        )
+
+        try:
             self.logger.info(
                 f"ACE unload: waiting for ACE unwind to complete "
                 f"slot {local_slot} for lane {cur_lane.name}"
