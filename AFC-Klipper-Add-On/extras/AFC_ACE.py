@@ -1240,7 +1240,9 @@ class afcACE(afcUnit):
             # remaining hub-to-toolhead distance.
             full_feed = self._get_feed_length(cur_lane)
             dist_hub = self._get_dist_hub(cur_lane)
-            if cur_lane.loaded_to_hub and dist_hub > 0:
+            pre_fed = (cur_lane.loaded_to_hub
+                       or getattr(cur_lane, '_pre_fed_to_hub', False))
+            if pre_fed and dist_hub > 0:
                 feed_distance = max(full_feed - dist_hub, 0)
                 self.logger.info(
                     f"ACE load: filament at hub, feeding {feed_distance:.0f}mm "
@@ -1262,6 +1264,7 @@ class afcACE(afcUnit):
 
             # Filament has been fed through the hub into the bowden
             cur_lane.loaded_to_hub = True
+            cur_lane._pre_fed_to_hub = False
 
         except Exception as e:
             message = f"ACE load failed for {cur_lane.name}: {e}"
@@ -1592,6 +1595,7 @@ class afcACE(afcUnit):
 
             # Filament retracted to hub, not all the way to spool
             cur_lane.loaded_to_hub = True
+            cur_lane._pre_fed_to_hub = False
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.LOADED
             self.lane_tool_unloaded(cur_lane)
@@ -1929,7 +1933,7 @@ class afcACE(afcUnit):
                                   getattr(self.afc, 'load_to_hub', False))
         if not load_to_hub:
             return
-        if lane.loaded_to_hub:
+        if lane.loaded_to_hub or getattr(lane, '_pre_fed_to_hub', False):
             return
         if getattr(lane, 'name', '') in self._hub_load_suppressed:
             return
@@ -1956,10 +1960,10 @@ class afcACE(afcUnit):
             self._wait_for_feed_complete(
                 local_slot, dist_hub, self.feed_speed
             )
-            lane.loaded_to_hub = True
+            lane._pre_fed_to_hub = True
             self.afc.save_vars()
             self.logger.info(
-                f"ACE prep_post_load: {lane.name} loaded to hub "
+                f"ACE prep_post_load: {lane.name} pre-fed to hub "
                 f"({dist_hub:.0f}mm)"
             )
         except Exception as e:
@@ -2017,6 +2021,7 @@ class afcACE(afcUnit):
                 local_slot, dist_hub, self.retract_speed
             )
             lane.loaded_to_hub = False
+            lane._pre_fed_to_hub = False
             self._hub_load_suppressed.add(lane_name)
             self.afc.save_vars()
             self.logger.info(f"ACE eject_lane: {lane_name} retracted to spool")
@@ -3084,6 +3089,7 @@ class afcACE(afcUnit):
         if self.mode == MODE_COMBINED:
             self._current_loaded_slot = -1
         cur_lane.loaded_to_hub = False
+        cur_lane._pre_fed_to_hub = False
         self._hub_load_suppressed.add(lane_name)
         cur_lane.set_tool_unloaded()
         cur_lane.status = AFCLaneState.LOADED
