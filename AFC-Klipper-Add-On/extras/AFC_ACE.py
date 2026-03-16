@@ -2820,6 +2820,14 @@ class afcACE(afcUnit):
             f"UNIT_BOW_CALIBRATION UNIT={self.name}", "secondary"
         ))
 
+        # Show TD-1 calibration only if this unit's lanes have TD-1 configured
+        any_lane_has_td1_ids = any(lane.td1_device_id for lane in self.lanes.values())
+        if self.afc.td1_defined and any_lane_has_td1_ids:
+            buttons.append((
+                "Calibrate TD-1 Length",
+                f"AFC_UNIT_TD_ONE_CALIBRATION UNIT={self.name}", "secondary"
+            ))
+
         back = [("Back", "AFC_CALIBRATION", "info")]
         prompt.create_custom_p(title, text, buttons, True, None, back)
 
