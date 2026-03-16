@@ -944,6 +944,18 @@ class afcACE(afcUnit):
                         f"restoring TOOLED state from saved vars"
                     )
                     self._restore_tool_loaded_state(lane)
+                elif lane.name in self._hub_load_suppressed:
+                    # Lane was explicitly ejected — slot is still ready but
+                    # we must NOT treat this as new filament.  Restore LOADED
+                    # state so the lane isn't stuck in NONE, but keep the
+                    # suppression flag so prep_post_load won't re-feed to hub.
+                    self.logger.info(
+                        f"ACE callback: {lane.name} slot {local_slot} ready "
+                        f"but hub-load suppressed (ejected), setting loaded "
+                        f"without re-feed"
+                    )
+                    lane.set_loaded()
+                    self.afc.save_vars()
                 else:
                     self.logger.info(
                         f"ACE callback: {lane.name} slot {local_slot} ready, "
@@ -2818,6 +2830,18 @@ class afcACE(afcUnit):
                         f"restoring TOOLED state from saved vars"
                     )
                     self._restore_tool_loaded_state(lane)
+                elif lane.name in self._hub_load_suppressed:
+                    # Lane was explicitly ejected — slot is still ready but
+                    # we must NOT treat this as new filament.  Restore LOADED
+                    # state so the lane isn't stuck in NONE, but keep the
+                    # suppression flag so prep_post_load won't re-feed to hub.
+                    self.logger.info(
+                        f"ACE poll: {lane.name} slot {local_slot} ready "
+                        f"but hub-load suppressed (ejected), setting loaded "
+                        f"without re-feed"
+                    )
+                    lane.set_loaded()
+                    self.afc.save_vars()
                 else:
                     self.logger.info(
                         f"ACE poll: {lane.name} slot {local_slot} ready, "

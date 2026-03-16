@@ -1089,7 +1089,7 @@ class AFCLane:
             # Hacky way for do{}while(0) loop, DO NOT return from this for loop, use break instead so that self.prep_state variable gets sets correctly
             #  before exiting function
             with self.mutex:
-                if self.printer.state_message == 'Printer is ready' and self._afc_prep_done and self.status != AFCLaneState.TOOL_UNLOADING:
+                if self.printer.state_message == 'Printer is ready' and self._afc_prep_done and self.status not in (AFCLaneState.TOOL_UNLOADING, AFCLaneState.EJECTING):
                     # Only try to load when load state trigger is false
                     if self.prep_state and not self.raw_load_state:
                         self.logger.debug(f"Prep: callback triggered {self.name}")
