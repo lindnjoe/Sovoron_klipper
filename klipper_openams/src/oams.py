@@ -591,7 +591,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "Load to hub timed out"
 
-            # Check hub HES — cancel as soon as filament reaches the hub
+            # Check hub HES  -  cancel as soon as filament reaches the hub
             if not cancel_sent and self.is_bay_loaded(spool_idx):
                 cancel_sent = True
                 self.logger.info(
@@ -633,7 +633,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         if spool_idx is None:
             spool_idx = self.current_spool
         if spool_idx is None:
-            return False, "No spool loaded — cannot determine hub distance"
+            return False, "No spool loaded  -  cannot determine hub distance"
 
         if not (0 <= spool_idx < len(self.hub_distance)):
             return False, f"Invalid spool index {spool_idx}"
@@ -654,7 +654,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         if retract_target <= 0:
             return False, (
                 f"hub_distance ({hub_dist}) >= ptfe_length ({ptfe_clicks}) "
-                f"— check calibration"
+                f" -  check calibration"
             )
 
         # Snapshot encoder position before starting unload
@@ -693,7 +693,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
         code = self.action_status_code
         if code == OAMSOpCode.SUCCESS:
-            # Full unload completed before cancel — filament back in bay
+            # Full unload completed before cancel  -  filament back in bay
             self.current_spool = None
             return True, "Full unload completed (filament in bay)"
 
@@ -857,7 +857,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             return False, f"Invalid spool index {spool_idx}", 0
 
         if self.is_bay_loaded(spool_idx):
-            return False, "Hub HES already triggered — clear the hub first", 0
+            return False, "Hub HES already triggered  -  clear the hub first", 0
 
         # Snapshot encoder
         start_clicks = self.encoder_clicks
