@@ -1497,14 +1497,17 @@ class afcACE(afcUnit):
         # the ACE hardware handles the full bowden retraction via _retract_slot.
         local_slot = self._get_local_slot_for_lane(cur_lane)
 
-        # Two-phase retract: only retract from toolhead back to hub
-        # (not all the way to the spool). This leaves filament staged at
-        # the hub for faster re-loading. The remaining hub-to-spool
-        # retract happens in eject_lane / LANE_UNLOAD.
+        # Retract from toolhead back toward hub. For virtual hubs,
+        # include hub_clear_move_dis so filament clears the hub exit.
+        # For real hub pins, just retract to the hub — the sensor
+        # check loop after unwind handles the rest.
         full_retract = self._get_retract_length(cur_lane)
         dist_hub = self._get_dist_hub(cur_lane)
+        has_real_hub_pin = cur_hub.switch_pin.lower() != "virtual"
         if dist_hub > 0 and dist_hub < full_retract:
             retract_length = full_retract - dist_hub
+            if not has_real_hub_pin:
+                retract_length += cur_hub.hub_clear_move_dis
         else:
             retract_length = full_retract
 
@@ -1642,8 +1645,9 @@ class afcACE(afcUnit):
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = -1
 
-            # Filament retracted to hub (or past it with real pin).
-            cur_lane.loaded_to_hub = not has_real_hub_pin
+            # Filament retracted past hub (real pin: sensor loop + clear,
+            # virtual: unwind included hub_clear_move_dis).
+            cur_lane.loaded_to_hub = False
             cur_lane._pre_fed_to_hub = False
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.LOADED
