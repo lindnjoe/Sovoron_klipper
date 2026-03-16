@@ -918,11 +918,13 @@ class afcACE(afcUnit):
             slot_info = self._slot_inventory[local_slot]
             slot_status = slot_info.get("status", "") if slot_info else ""
             slot_ready = slot_status == "ready"
-            slot_shifting = slot_status == "shifting"
+            slot_transient = slot_status in ("shifting", "feeding", "unwinding")
 
-            # Keep load/prep state in sync with slot status
-            lane._load_state = slot_ready
-            lane.prep_state = slot_ready
+            # Keep load/prep state in sync with slot status, but skip
+            # transient motor states so the lane doesn't briefly show empty.
+            if not slot_transient:
+                lane._load_state = slot_ready
+                lane.prep_state = slot_ready
 
             prep_done = getattr(lane, '_afc_prep_done', False)
 
@@ -963,7 +965,7 @@ class afcACE(afcUnit):
 
             # When a slot goes empty, transition the lane to unloaded
             # so new filament insertion is properly detected (NONE gate).
-            if not slot_ready and not slot_shifting:
+            if not slot_ready and not slot_transient:
                 prev_ready_cb = self._prev_slot_states.get(lane.name)
                 if prev_ready_cb:
                     self._hub_load_suppressed.discard(lane.name)
@@ -973,9 +975,9 @@ class afcACE(afcUnit):
                         self.lane_not_ready(lane)
                         self.afc.save_vars()
 
-            # Don't update prev state during transient "shifting" to
+            # Don't update prev state during transient states to
             # avoid false runout triggers in _poll_slot_status.
-            if not slot_shifting:
+            if not slot_transient:
                 self._prev_slot_states[lane.name] = slot_ready
 
     def _on_ace_reconnected(self):
@@ -2659,16 +2661,23 @@ class afcACE(afcUnit):
 
             # "shifting" is a transient state during feed_assist start -
             # don't treat it as not-ready or it will false-trigger runout.
-            slot_shifting = slot_status == "shifting"
+            # "feeding" and "unwinding" are motor operations (prep_post_load,
+            # eject, calibration) - don't clear load/prep state or update
+            # prev_slot_states or the lane will briefly show empty in the UI
+            # and then re-trigger set_loaded + prep_post_load when the slot
+            # returns to "ready".
+            slot_transient = slot_status in ("shifting", "feeding", "unwinding")
 
-            # Always sync load/prep state so status is accurate
-            lane._load_state = slot_ready
-            lane.prep_state = slot_ready
+            # Always sync load/prep state so status is accurate,
+            # but skip during transient motor operations.
+            if not slot_transient:
+                lane._load_state = slot_ready
+                lane.prep_state = slot_ready
 
             prev_ready = self._prev_slot_states.get(lane.name)
-            # Don't update prev state during transient "shifting" - wait
+            # Don't update prev state during transient states - wait
             # for a definitive ready/empty to avoid false runout triggers.
-            if not slot_shifting:
+            if not slot_transient:
                 self._prev_slot_states[lane.name] = slot_ready
 
             # State consistency: if hardware says ready but lane is stuck
@@ -2709,7 +2718,7 @@ class afcACE(afcUnit):
             # Detect ready -> not-ready transition (filament runout)
             # Skip runout detection while dryer is running - drying can
             # cause transient slot state changes that aren't real runouts.
-            elif not self._drying_active and prev_ready and not slot_ready and not slot_shifting:
+            elif not self._drying_active and prev_ready and not slot_ready and not slot_transient:
                 self._hub_load_suppressed.discard(lane.name)
                 if is_printing and lane.status == AFCLaneState.TOOLED:
                     self.logger.info(
