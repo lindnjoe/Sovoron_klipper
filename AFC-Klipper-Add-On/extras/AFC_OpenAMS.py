@@ -1487,29 +1487,19 @@ class afcAMS(afcUnit):
                         )
                     except Exception as e:
                         self.logger.error(f"Failed to register lane {lane_name} with registry: {e}")
-        first_leg = ("<span class=warning--text>|</span>"
-                    "<span class=error--text>_</span>")
-        second_leg = f"{first_leg}<span class=warning--text>|</span>"
-        self.logo = dedent("""\
-            <span class=success--text>R  _____     ____
-            E /      \\  |  </span><span class=info--text>o</span><span class=success--text> |
-            A |       |/ ___/
-            D |_________/
-            Y {first}{second} {first}{second}
-              {name}
-            </span>
-            """).format(first=first_leg, second=second_leg, name=self.name)
+        self.logo  = '<span class=success--text>R  _______________\n'
+        self.logo += 'E | Open |  AMS  |\n'
+        self.logo += 'A | (</span><span class=info--text>o</span><span class=success--text>) (</span><span class=info--text>o</span><span class=success--text>) (</span><span class=info--text>o</span><span class=success--text>) (</span><span class=info--text>o</span><span class=success--text>) |\n'
+        self.logo += 'D |  1   2   3   4  |\n'
+        self.logo += 'Y |_______________|</span>\n'
+        self.logo += '  ' + self.name + '\n'
 
-        self.logo_error = dedent("""\
-            <span class=error--text>E  _ _   _ _
-            R |_|_|_|_|_|
-            R |         \\____
-            O |              \\
-            R |          |\\ <span class=secondary--text>X</span> |
-            ! \\_________/ |___|
-              {name}
-            </span>
-            """).format(name=self.name)
+        self.logo_error  = '<span class=error--text>E  _______________\n'
+        self.logo_error += 'R | Open |  AMS  |\n'
+        self.logo_error += 'R | (<span class=secondary--text>X</span>) (<span class=secondary--text>X</span>) (<span class=secondary--text>X</span>) (<span class=secondary--text>X</span>) |\n'
+        self.logo_error += 'O |  1   2   3   4  |\n'
+        self.logo_error += 'R |_______________|</span>\n'
+        self.logo_error += '  ' + self.name + '\n'
 
     def _ensure_virtual_tool_sensor(self) -> bool:
         """Resolve or create the virtual tool-start sensor for AMS extruders."""
