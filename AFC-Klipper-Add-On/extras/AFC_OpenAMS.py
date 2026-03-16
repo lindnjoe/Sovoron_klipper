@@ -1487,14 +1487,14 @@ class afcAMS(afcUnit):
                         )
                     except Exception as e:
                         self.logger.error(f"Failed to register lane {lane_name} with registry: {e}")
-        self.logo  = '<span class=success--text>R  ___________________\n'
+        self.logo  = '<span class=success--text>R  __________________\n'
         self.logo += 'E | Open  |   AMS    |\n'
         self.logo += 'A | (o) (o) (o) (o)  |\n'
         self.logo += 'D |__________________|\n'
         self.logo += 'Y |_1__|_2__|_3__|_4_|\n'
         self.logo += '  ' + self.name + '</span>\n'
 
-        self.logo_error  = '<span class=error--text>E  ___________________\n'
+        self.logo_error  = '<span class=error--text>E  __________________\n'
         self.logo_error += 'R | Open  |   AMS    |\n'
         self.logo_error += 'R | (X) (X) (X) (X)  |\n'
         self.logo_error += 'O |__________________|\n'
