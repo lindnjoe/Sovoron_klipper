@@ -1956,22 +1956,36 @@ class afcACE(afcUnit):
             f"ACE prep_post_load: feeding slot {local_slot} "
             f"{dist_hub:.0f}mm to hub for {lane.name}"
         )
-        try:
-            self._wait_for_ace_ready()
-            self._ace.feed_filament(local_slot, dist_hub, self.feed_speed)
-            self._wait_for_feed_complete(
-                local_slot, dist_hub, self.feed_speed
-            )
-            lane._pre_fed_to_hub = True
-            self.afc.save_vars()
-            self.logger.info(
-                f"ACE prep_post_load: {lane.name} pre-fed to hub "
-                f"({dist_hub:.0f}mm)"
-            )
-        except Exception as e:
-            self.logger.error(
-                f"ACE prep_post_load failed for {lane.name}: {e}"
-            )
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                self._wait_for_ace_ready(timeout=30.0)
+                self._ace.feed_filament(local_slot, dist_hub, self.feed_speed)
+                self._wait_for_feed_complete(
+                    local_slot, dist_hub, self.feed_speed
+                )
+                lane._pre_fed_to_hub = True
+                self.afc.save_vars()
+                self.logger.info(
+                    f"ACE prep_post_load: {lane.name} pre-fed to hub "
+                    f"({dist_hub:.0f}mm)"
+                )
+                return
+            except Exception as e:
+                is_forbidden = "FORBIDDEN" in str(e).upper()
+                if is_forbidden and attempt < max_attempts - 1:
+                    wait = 5.0 * (attempt + 1)
+                    self.logger.warning(
+                        f"ACE prep_post_load: FORBIDDEN on attempt "
+                        f"{attempt + 1}, retrying in {wait:.0f}s"
+                    )
+                    self.afc.reactor.pause(
+                        self.afc.reactor.monotonic() + wait
+                    )
+                    continue
+                self.logger.error(
+                    f"ACE prep_post_load failed for {lane.name}: {e}"
+                )
 
     def eject_lane(self, lane):
         """Retract filament from hub back to spool for ACE lane.
