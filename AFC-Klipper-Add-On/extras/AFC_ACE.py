@@ -1245,8 +1245,7 @@ class afcACE(afcUnit):
             # remaining hub-to-toolhead distance.
             full_feed = self._get_feed_length(cur_lane)
             dist_hub = self._get_dist_hub(cur_lane)
-            pre_fed = (cur_lane.loaded_to_hub
-                       or getattr(cur_lane, '_pre_fed_to_hub', False))
+            pre_fed = cur_lane.loaded_to_hub
             if pre_fed and dist_hub > 0:
                 feed_distance = max(full_feed - dist_hub, 0)
                 self.logger.info(
@@ -1273,7 +1272,6 @@ class afcACE(afcUnit):
 
             # Filament has been fed through the hub into the bowden
             cur_lane.loaded_to_hub = True
-            cur_lane._pre_fed_to_hub = False
 
         except Exception as e:
             # Load failed — clear virtual hub since filament may not be in path
@@ -1665,7 +1663,6 @@ class afcACE(afcUnit):
             # hub path, just nearby for convenience.
             self._set_hub_state(cur_lane, False)
             cur_lane.loaded_to_hub = True
-            cur_lane._pre_fed_to_hub = False
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.LOADED
             self.lane_tool_unloaded(cur_lane)
@@ -2024,7 +2021,7 @@ class afcACE(afcUnit):
                                   getattr(self.afc, 'load_to_hub', False))
         if not load_to_hub:
             return
-        if lane.loaded_to_hub or getattr(lane, '_pre_fed_to_hub', False):
+        if lane.loaded_to_hub:
             return
         if getattr(lane, 'name', '') in self._hub_load_suppressed:
             return
@@ -2053,10 +2050,10 @@ class afcACE(afcUnit):
                 self._wait_for_feed_complete(
                     local_slot, dist_hub, self.feed_speed
                 )
-                lane._pre_fed_to_hub = True
+                lane.loaded_to_hub = True
                 self.afc.save_vars()
                 self.logger.info(
-                    f"ACE prep_post_load: {lane.name} pre-fed to hub "
+                    f"ACE prep_post_load: {lane.name} fed to hub "
                     f"({dist_hub:.0f}mm)"
                 )
                 return
@@ -2127,7 +2124,6 @@ class afcACE(afcUnit):
                 local_slot, dist_hub, self.retract_speed
             )
             lane.loaded_to_hub = False
-            lane._pre_fed_to_hub = False
             self._set_hub_state(lane, False)
             self._hub_load_suppressed.add(lane_name)
             self.afc.save_vars()
@@ -3216,7 +3212,6 @@ class afcACE(afcUnit):
         if self.mode == MODE_COMBINED:
             self._current_loaded_slot = -1
         cur_lane.loaded_to_hub = False
-        cur_lane._pre_fed_to_hub = False
         self._set_hub_state(cur_lane, False)
         self._hub_load_suppressed.add(lane_name)
         cur_lane.set_tool_unloaded()

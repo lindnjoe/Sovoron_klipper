@@ -93,6 +93,8 @@ def _make_ace(name="ACE_1", mode=MODE_COMBINED):
     unit._persistence = MagicMock()
     unit._last_inventory_sync = 0.0
     unit._inventory_sync_interval = 300.0
+    unit._unit_load_to_hub = None
+    unit._hub_load_suppressed = set()
 
     return unit
 
