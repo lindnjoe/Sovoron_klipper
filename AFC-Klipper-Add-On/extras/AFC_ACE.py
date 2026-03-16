@@ -1594,10 +1594,8 @@ class afcACE(afcUnit):
                 self._current_loaded_slot = -1
 
             # Filament retracted to hub, not all the way to spool.
-            # Use _pre_fed_to_hub (not loaded_to_hub) so the virtual hub
-            # sensor doesn't report occupied and block other lanes.
-            cur_lane.loaded_to_hub = False
-            cur_lane._pre_fed_to_hub = True
+            cur_lane.loaded_to_hub = True
+            cur_lane._pre_fed_to_hub = False
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.LOADED
             self.lane_tool_unloaded(cur_lane)
@@ -2119,6 +2117,18 @@ class afcACE(afcUnit):
                 msg += '<span class=success--text> AND LOADED</span>'
                 self.lane_illuminate_spool(cur_lane)
 
+                # If load_to_hub is enabled, assume filament is already
+                # at the hub on startup so prep_post_load doesn't re-feed
+                # and push filament further on every restart.
+                if not cur_lane.tool_loaded and not cur_lane.loaded_to_hub:
+                    if self._unit_load_to_hub is not None:
+                        load_to_hub = self._unit_load_to_hub
+                    else:
+                        load_to_hub = getattr(cur_lane, 'load_to_hub',
+                                              getattr(self.afc, 'load_to_hub', False))
+                    if load_to_hub:
+                        cur_lane.loaded_to_hub = True
+
                 if cur_lane.tool_loaded:
                     # Filament is in the toolhead, so it's also in the hub path
                     cur_lane.loaded_to_hub = True
@@ -2431,9 +2441,11 @@ class afcACE(afcUnit):
                 "Check filament path and hub sensor wiring."
             ), total_fed
 
-        # Save calibrated dist_hub
+        # Save calibrated dist_hub with 50mm safety margin so
+        # load-to-hub feeds don't jam filament into/past the hub sensor.
         lane_name = cur_lane.name
-        new_dist_hub = round(total_fed, 0)
+        hub_clearance = 50
+        new_dist_hub = round(total_fed - hub_clearance, 0)
         old_dist_hub = self._lane_dist_hub.get(lane_name, self.dist_hub)
 
         # Update in-memory per-lane override
@@ -2449,7 +2461,8 @@ class afcACE(afcUnit):
 
         msg = (
             f"ACE hub calibration: hub sensor triggered at {total_fed:.1f}mm.\n"
-            f"dist_hub: {new_dist_hub:.0f} (was {old_dist_hub:.0f})\n"
+            f"dist_hub: {new_dist_hub:.0f} ({total_fed:.0f} - {hub_clearance}mm clearance)"
+            f" (was {old_dist_hub:.0f})\n"
             f"Value saved to lane config [{lane_section}]."
         )
         return True, msg, total_fed
