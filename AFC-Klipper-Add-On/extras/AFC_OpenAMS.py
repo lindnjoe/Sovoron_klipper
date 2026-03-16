@@ -856,7 +856,7 @@ def _patch_extruder_for_virtual_fps() -> None:
 
         if normalized:
             upper = normalized.upper()
-            if upper.startswith("FPS_") or upper.startswith("AMS_"):
+            if upper.startswith("FPS_"):
                 try:
                     printer = config.get_printer()
                     afc_obj = printer.lookup_object("AFC", None)
@@ -1531,7 +1531,7 @@ class afcAMS(afcUnit):
 
         original_pin = tool_pin
         upper = normalized.upper()
-        if not (upper.startswith("FPS_") or upper.startswith("AMS_")):
+        if not upper.startswith("FPS_"):
             return False
 
         sensor = getattr(extruder, "fila_tool_start", None)
@@ -3665,8 +3665,8 @@ class afcAMS(afcUnit):
                                             if lane_extruder is not None:
                                                 extruder_name = getattr(lane_extruder, 'name', None)
                                                 upper_name = extruder_name.upper() if extruder_name else ''
-                                                if extruder_name and (upper_name.startswith('FPS_') or upper_name.startswith('AMS_')):
-                                                    sensor_name = extruder_name.replace('fps_', '').replace('FPS_', '').replace('ams_', '').replace('AMS_', '')
+                                                if extruder_name and upper_name.startswith('FPS_'):
+                                                    sensor_name = extruder_name.replace('fps_', '').replace('FPS_', '')
                                                     sensor = self.printer.lookup_object("filament_switch_sensor {}".format(sensor_name), None)
                                                     if sensor and hasattr(sensor, 'runout_helper'):
                                                         sensor.runout_helper.note_filament_present(self.reactor.monotonic(), is_filament_present=False)

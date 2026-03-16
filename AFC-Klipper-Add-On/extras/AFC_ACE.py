@@ -346,8 +346,7 @@ class afcACE(afcUnit):
             idx = cleaned.find(ch)
             if idx != -1:
                 cleaned = cleaned[:idx].strip()
-        upper = cleaned.upper()
-        if not (upper.startswith("FPS_") or upper.startswith("AMS_")):
+        if not cleaned.upper().startswith("FPS_"):
             return
 
         self._fps_extruder = extruder_obj
