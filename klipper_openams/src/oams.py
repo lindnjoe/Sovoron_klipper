@@ -83,15 +83,6 @@ class OAMS:
         self.filament_path_length = config.getfloat("ptfe_length")
         self.oams_idx             = config.getint("oams_idx")
 
-        # Hub distance: bay-to-hub distance in encoder clicks (per-bay).
-        # Used for two-phase loading (stop at hub) and unloading (retract
-        # only the hub-to-toolhead portion).  Calibrate with
-        # OAMS_CALIBRATE_HUB_DISTANCE.  Default 0 = not calibrated.
-        hub_dist_raw = config.get("hub_distance", "0,0,0,0")
-        self.hub_distance = list(
-            map(lambda x: int(float(x.strip())), hub_dist_raw.split(","))
-        )
-
         # PID control - pressure
         self.kd = config.getfloat("kd", 0.0)
         self.ki = config.getfloat("ki", 0.0)
@@ -198,7 +189,6 @@ class OAMS:
             "f1s_hes_value": list(self.f1s_hes_value),
             "hub_hes_value": list(self.hub_hes_value),
             "fps_value": self.fps_value,
-            "hub_distance": list(self.hub_distance),
             # Retry failure statistics
             "load_retry_failures": self._load_retry_failures,
             "unload_retry_failures": self._unload_retry_failures,
@@ -564,141 +554,6 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             return "OAMS load spool operation cancelled"
         return "OAMS load spool cancel command not available on this firmware"
 
-    def load_to_hub(self, spool_idx):
-        """Load filament from a bay, stopping when the hub HES triggers.
-
-        Starts a normal load_spool, monitors hub_hes_value, and sends
-        load_spool_cancel when the hub sensor triggers.  This leaves
-        filament staged at the hub for faster tool changes.
-
-        Returns (success: bool, message: str).
-        """
-        if self.oams_load_spool_cancel_cmd is None:
-            return False, "Load cancel not supported by firmware"
-
-        if not (0 <= spool_idx < len(self.hub_hes_value)):
-            return False, f"Invalid spool index {spool_idx}"
-
-        self.action_status = OAMSStatus.LOADING
-        self.oams_load_spool_cmd.send([spool_idx])
-
-        timeout = self.reactor.monotonic() + 30.0
-        cancel_sent = False
-
-        while self.action_status is not None:
-            if self.reactor.monotonic() > timeout:
-                self.action_status = None
-                self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
-                return False, "Load to hub timed out"
-
-            # Check hub HES  -  cancel as soon as filament reaches the hub
-            if not cancel_sent and self.is_bay_loaded(spool_idx):
-                cancel_sent = True
-                self.logger.info(
-                    f"OAMS[{self.oams_idx}]: hub HES triggered for "
-                    f"bay {spool_idx}, cancelling load"
-                )
-                self.load_spool_cancel()
-                # Continue waiting for firmware CANCEL response
-
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
-
-        if cancel_sent or self.is_bay_loaded(spool_idx):
-            return True, "Filament loaded to hub"
-
-        code = self.action_status_code
-        if code == OAMSOpCode.SUCCESS:
-            # Full load completed before we could cancel (hub HES might
-            # have triggered between polls).  Filament is past the hub.
-            return True, "Full load completed (filament past hub)"
-
-        return False, f"Load did not reach hub (status code: {code})"
-
-    def unload_to_hub(self, spool_idx=None):
-        """Unload filament from toolhead, stopping at the hub.
-
-        Starts a normal unload_spool, monitors the encoder to track how
-        far filament has retracted, and sends load_spool_cancel when the
-        retract distance reaches the hub-to-toolhead portion
-        (ptfe_length - hub_distance).
-
-        :param spool_idx: Bay index (0-3) to look up hub_distance.
-            Falls back to current_spool if not provided.
-
-        Returns (success: bool, message: str).
-        """
-        if self.oams_load_spool_cancel_cmd is None:
-            return False, "Cancel command not supported by firmware"
-
-        if spool_idx is None:
-            spool_idx = self.current_spool
-        if spool_idx is None:
-            return False, "No spool loaded  -  cannot determine hub distance"
-
-        if not (0 <= spool_idx < len(self.hub_distance)):
-            return False, f"Invalid spool index {spool_idx}"
-
-        hub_dist = self.hub_distance[spool_idx]
-        if hub_dist <= 0:
-            return False, (
-                f"hub_distance not calibrated for bay {spool_idx}. "
-                f"Run OAMS_CALIBRATE_HUB_DISTANCE SPOOL={spool_idx} first."
-            )
-
-        ptfe_clicks = self.filament_path_length
-        if ptfe_clicks <= 0:
-            return False, "ptfe_length not calibrated"
-
-        # Hub-to-toolhead distance = total - bay-to-hub
-        retract_target = ptfe_clicks - hub_dist
-        if retract_target <= 0:
-            return False, (
-                f"hub_distance ({hub_dist}) >= ptfe_length ({ptfe_clicks}) "
-                f" -  check calibration"
-            )
-
-        # Snapshot encoder position before starting unload
-        start_clicks = self.encoder_clicks
-
-        self.action_status = OAMSStatus.UNLOADING
-        self.oams_unload_spool_cmd.send()
-
-        timeout = self.reactor.monotonic() + 60.0
-        cancel_sent = False
-
-        while self.action_status is not None:
-            if self.reactor.monotonic() > timeout:
-                self.action_status = None
-                self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
-                return False, "Unload to hub timed out"
-
-            # Track retract distance via encoder delta
-            if not cancel_sent:
-                retract_clicks = abs(self.encoder_clicks - start_clicks)
-                if retract_clicks >= retract_target:
-                    cancel_sent = True
-                    self.logger.info(
-                        f"OAMS[{self.oams_idx}]: encoder retract "
-                        f"{retract_clicks} >= target {retract_target} "
-                        f"(ptfe={ptfe_clicks} - hub={hub_dist}), "
-                        f"cancelling unload (filament at hub)"
-                    )
-                    self.load_spool_cancel()
-                    # Continue waiting for firmware response
-
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
-
-        if cancel_sent:
-            return True, "Filament retracted to hub"
-
-        code = self.action_status_code
-        if code == OAMSOpCode.SUCCESS:
-            # Full unload completed before cancel  -  filament back in bay
-            self.current_spool = None
-            return True, "Full unload completed (filament in bay)"
-
-        return False, f"Unload failed (status code: {code})"
-
     cmd_OAMS_CURRENT_PID_SET_help = "Set the PID values for the current sensor"
     def cmd_OAMS_CURRENT_PID_SET(self, gcmd):
         p = gcmd.get_float("P", None)
@@ -830,80 +685,6 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
         else:
             gcmd.error("Calibration of PTFE length failed")
-
-    cmd_OAMS_CALIBRATE_HUB_DISTANCE_help = "Calibrate bay-to-hub distance by feeding until hub HES triggers"
-    def cmd_OAMS_CALIBRATE_HUB_DISTANCE(self, gcmd):
-        spool_idx = gcmd.get_int("SPOOL", None)
-        if spool_idx is None:
-            raise gcmd.error("SPOOL index is required")
-        if spool_idx < 0 or spool_idx > 3:
-            raise gcmd.error("SPOOL must be 0-3")
-
-        success, msg, clicks = self.calibrate_hub_distance(spool_idx)
-        if success:
-            gcmd.respond_info(msg)
-        else:
-            gcmd.error(msg)
-
-    def calibrate_hub_distance(self, spool_idx):
-        """Feed from bay until hub HES triggers, measure encoder clicks.
-
-        Returns (success, message, clicks).
-        """
-        if self.oams_load_spool_cancel_cmd is None:
-            return False, "Cancel command not supported by firmware", 0
-
-        if not (0 <= spool_idx < len(self.hub_hes_value)):
-            return False, f"Invalid spool index {spool_idx}", 0
-
-        if self.is_bay_loaded(spool_idx):
-            return False, "Hub HES already triggered  -  clear the hub first", 0
-
-        # Snapshot encoder
-        start_clicks = self.encoder_clicks
-
-        # Start loading
-        self.action_status = OAMSStatus.LOADING
-        self.oams_load_spool_cmd.send([spool_idx])
-
-        timeout = self.reactor.monotonic() + 30.0
-        cancel_sent = False
-
-        while self.action_status is not None:
-            if self.reactor.monotonic() > timeout:
-                self.action_status = None
-                self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
-                return False, "Hub distance calibration timed out", 0
-
-            if not cancel_sent and self.is_bay_loaded(spool_idx):
-                cancel_sent = True
-                self.load_spool_cancel()
-
-            self.reactor.pause(self.reactor.monotonic() + 0.1)
-
-        if not cancel_sent:
-            return False, "Hub HES did not trigger during load", 0
-
-        measured_clicks = abs(self.encoder_clicks - start_clicks)
-
-        # Save to config
-        self.hub_distance[spool_idx] = measured_clicks
-        configfile = self.printer.lookup_object("configfile", None)
-        if configfile is not None:
-            values = ",".join(map(str, self.hub_distance))
-            configfile.set(self.name, "hub_distance", values)
-
-        # Retract back to bay
-        self.logger.info(
-            f"OAMS[{self.oams_idx}]: hub distance calibrated for bay "
-            f"{spool_idx}: {measured_clicks} clicks. Retracting..."
-        )
-        self.unload_spool()
-
-        return True, (
-            f"Hub distance for bay {spool_idx}: {measured_clicks} encoder clicks.\n"
-            f"Saved to config. Update hub_distance in your configuration."
-        ), measured_clicks
 
     def load_spool(self, spool_idx):
         self.action_status = OAMSStatus.LOADING
