@@ -90,6 +90,7 @@ def _make_ace(name="ACE_1", mode=MODE_COMBINED):
     unit._feed_assist_refresh_counter = 0
     unit._FEED_ASSIST_REFRESH_INTERVAL = 7
     unit._pending_feed_assist_restore = False
+    unit._drying_active = False
     unit._persistence = MagicMock()
     unit._last_inventory_sync = 0.0
     unit._inventory_sync_interval = 300.0
@@ -216,11 +217,11 @@ class TestCheckRunout:
 # ── get_lane_reset_command ───────────────────────────────────────────────────
 
 class TestGetLaneResetCommand:
-    def test_returns_tool_unload(self):
+    def test_returns_ace_lane_reset(self):
         unit = _make_ace()
         lane = _make_lane(name="lane3")
         result = unit.get_lane_reset_command(lane, None)
-        assert result == "TOOL_UNLOAD LANE=lane3"
+        assert result == "ACE_LANE_RESET UNIT=ACE_1 LANE=lane3"
 
 
 # ── lane_unload ──────────────────────────────────────────────────────────────
