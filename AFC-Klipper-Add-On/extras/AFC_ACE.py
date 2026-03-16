@@ -1645,9 +1645,9 @@ class afcACE(afcUnit):
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = -1
 
-            # Filament retracted past hub (real pin: sensor loop + clear,
-            # virtual: unwind included hub_clear_move_dis).
-            cur_lane.loaded_to_hub = False
+            # Filament retracted past hub sensor but still staged near hub,
+            # ready for fast reload.
+            cur_lane.loaded_to_hub = True
             cur_lane._pre_fed_to_hub = False
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.LOADED
