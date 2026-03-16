@@ -314,7 +314,7 @@ class afcACE(afcUnit):
         """Find the FPS object that feeds into this unit's extruder.
 
         Only activates when the extruder's ``pin_tool_start`` is set to an
-        ``FPS_extruder#`` value — this indicates the extruder uses a shared
+        ``FPS_extruder#`` value - this indicates the extruder uses a shared
         FPS as its toolhead sensor.
 
         Iterates over all ``fps <name>`` printer objects and picks the one
