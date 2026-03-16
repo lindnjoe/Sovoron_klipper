@@ -1825,7 +1825,7 @@ class afcACE(afcUnit):
 
         while total_fed < max_length:
             step = min(step_size, max_length - total_fed)
-            # Ensure ACE is ready before each step � after the previous
+            # Ensure ACE is ready before each step - after the previous
             # step completes, the ACE overall status may briefly stay
             # "busy" for internal housekeeping.  Sending feed_filament
             # while busy returns FORBIDDEN and kills the calibration.
@@ -2037,7 +2037,7 @@ class afcACE(afcUnit):
 
                 # If slot is empty, filament can't be at the hub.
                 # If slot is ready, preserve the persisted loaded_to_hub
-                # value — filament may be staged at the hub from
+                # value  -  filament may be staged at the hub from
                 # prep_post_load or a prior tool change.
                 if not slot_ready:
                     cur_lane.loaded_to_hub = False
@@ -2115,7 +2115,7 @@ class afcACE(afcUnit):
                             cur_lane.status = AFCLaneState.TOOLED
 
                             # Start feed assist so ACE pushes filament
-                            # immediately — don't wait for the periodic
+                            # immediately  -  don't wait for the periodic
                             # refresh (~15 s) which could starve the
                             # extruder if a print resumes right away.
                             fa_slot = self._get_local_slot_for_lane(cur_lane)
@@ -2291,7 +2291,7 @@ class afcACE(afcUnit):
         if hub_obj is None:
             return False, "No hub object for this lane", 0
 
-        # Virtual hubs can't be calibrated — user must set dist_hub manually
+        # Virtual hubs can't be calibrated  -  user must set dist_hub manually
         if getattr(hub_obj, 'switch_pin', 'virtual').lower() == 'virtual':
             return False, (
                 "Hub calibration requires a physical hub sensor. "
