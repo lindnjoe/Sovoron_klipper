@@ -203,8 +203,8 @@ class afcACE(afcUnit):
         # alphabetically before AFC_OpenAMS, so without this the patch
         # would not be in place when [AFC_extruder] sections are parsed.
         try:
-            from extras.AFC_OpenAMS import _patch_extruder_for_virtual_ams
-            _patch_extruder_for_virtual_ams()
+            from extras.AFC_OpenAMS import _patch_extruder_for_virtual_fps
+            _patch_extruder_for_virtual_fps()
         except Exception:
             pass
 

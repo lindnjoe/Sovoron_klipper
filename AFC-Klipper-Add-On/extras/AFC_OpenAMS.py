@@ -823,7 +823,7 @@ def _normalize_fps_pin_value(pin_value) -> Optional[str]:
 
     return cleaned or None
 
-def _patch_extruder_for_virtual_ams() -> None:
+def _patch_extruder_for_virtual_fps() -> None:
     """Patch AFC extruders so FPS_* tool pins avoid config-time errors."""
     extruder_cls = getattr(_afc_extruder_mod, "AFCExtruder", None)
     if extruder_cls is None or getattr(extruder_cls, "_fps_virtual_tool_patched", False):
@@ -5923,6 +5923,6 @@ def load_config_prefix(config):
 
     # Always apply patches during config load for any afc_openams sections
     # The patches will only take effect if OpenAMS hardware is actually present
-    _patch_extruder_for_virtual_ams()
+    _patch_extruder_for_virtual_fps()
     _patch_infinite_runout_handler()
     return afcAMS(config)
