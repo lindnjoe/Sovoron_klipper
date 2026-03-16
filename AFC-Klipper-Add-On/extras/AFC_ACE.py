@@ -130,9 +130,9 @@ class afcACE(afcUnit):
         self.crash_detection_mode = crash_detection_mode
 
         # FPS (Filament Pressure Sensor) integration: when the extruder uses
-        # an FPS_extruder# virtual pin (shared FPS), the FPS value is used
-        # as the toolhead sensor.  fps_value 0-1, where 1 means filament is
-        # fully compressed against extruder gears.
+        # an AMS_extruder# virtual pin (shared FPS with OpenAMS), the FPS
+        # value is used as the toolhead sensor.  fps_value 0-1, where 1 means
+        # filament is fully compressed against extruder gears.
         self.fps_threshold = config.getfloat("fps_threshold", 0.9)
         self._fps_obj = None       # resolved FPS object (fps.py)
         self._fps_extruder = None  # the extruder object associated with FPS
@@ -198,17 +198,15 @@ class afcACE(afcUnit):
         except Exception:
             pass
 
-        # Apply the virtual pin patch so that FPS_extruder# values in
-        # pin_tool_start are handled correctly.  AFC_ACE configs load
-        # alphabetically before AFC_OpenAMS, so without this the patch
-        # would not be in place when [AFC_extruder] sections are parsed.
+        # Apply the OpenAMS virtual pin patch so that AMS_extruder# values
+        # in pin_tool_start are handled correctly.  AFC_ACE configs load
+        # alphabetically before AFC_OpenAMS, so without this the patch would
+        # not be in place when [AFC_extruder] sections are parsed.
         try:
-            from extras.AFC_OpenAMS import _patch_extruder_for_virtual_fps
-            _patch_extruder_for_virtual_fps()
-        except Exception as e:
-            import logging
-            logging.getLogger("AFC_ACE").warning(
-                "Failed to apply virtual FPS pin patch: %s", e)
+            from extras.AFC_OpenAMS import _patch_extruder_for_virtual_ams
+            _patch_extruder_for_virtual_ams()
+        except Exception:
+            pass
 
     def _handle_ready(self):
         """Schedule deferred init - reactor pause is disabled during klippy:ready."""
@@ -291,8 +289,8 @@ class afcACE(afcUnit):
         self._resolve_fps_sensor()
 
         # Hydrate the virtual tool sensor for lanes that were tool-loaded
-        # before restart.  Other unit types skip non-matching lanes, so
-        # ACE must set the sensor itself.
+        # before restart.  OpenAMS's _hydrate_from_saved_state skips non-
+        # OpenAMS lanes, so ACE must set the sensor itself.
         self._hydrate_virtual_tool_sensor(eventtime)
 
         # Start runout detection polling
@@ -316,7 +314,7 @@ class afcACE(afcUnit):
         """Find the FPS object that feeds into this unit's extruder.
 
         Only activates when the extruder's ``pin_tool_start`` is set to an
-        ``FPS_extruder#`` value - this indicates the extruder uses a shared
+        ``AMS_extruder#`` value -this indicates the extruder uses a shared
         FPS as its toolhead sensor.
 
         Iterates over all ``fps <name>`` printer objects and picks the one
@@ -339,7 +337,7 @@ class afcACE(afcUnit):
         if extruder_obj is None:
             return
 
-        # Only activate FPS integration when pin_tool_start is FPS_extruder#
+        # Only activate FPS integration when pin_tool_start is AMS_extruder#
         tool_start = getattr(extruder_obj, "tool_start", None)
         if not tool_start or not isinstance(tool_start, str):
             return
@@ -348,7 +346,7 @@ class afcACE(afcUnit):
             idx = cleaned.find(ch)
             if idx != -1:
                 cleaned = cleaned[:idx].strip()
-        if not cleaned.upper().startswith("FPS_"):
+        if not cleaned.upper().startswith("AMS_"):
             return
 
         self._fps_extruder = extruder_obj
@@ -580,7 +578,7 @@ class afcACE(afcUnit):
     def _run_tool_crash_detection(self, enable):
         """Start or stop tool crash detection around dock operations.
 
-        Supports 'tool' and 'probe' crash detection modes.
+        Mirrors OpenAMS behaviour: supports 'tool' and 'probe' modes.
         Returns True on success or if detection is disabled (no-op).
         """
         if self.crash_detection_mode == "disabled":
@@ -1850,11 +1848,12 @@ class afcACE(afcUnit):
                 if cur_lane.tool_loaded:
                     # Filament is in the toolhead, so it's also in the hub path
                     cur_lane.loaded_to_hub = True
-                    # For ACE with FPS virtual pin, the FPS reads zero
+                    # For ACE with AMS virtual pin, the FPS reads zero
                     # at startup (motor off) so tool_start_state is False.
                     # If saved state confirms this lane is loaded, set the
-                    # virtual sensor directly so the toolhead-pre-sensor
-                    # check passes the same way a physical switch would.
+                    # virtual sensor directly (like OpenAMS does for its
+                    # lanes) so the toolhead-pre-sensor check passes the
+                    # same way a physical switch would on BoxTurtle.
                     extruder_obj = cur_lane.extruder_obj
                     if extruder_obj.lane_loaded == cur_lane.name:
                         extruder_obj.tool_start_state = True

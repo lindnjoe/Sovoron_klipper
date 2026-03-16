@@ -69,9 +69,7 @@ def normalize_extruder_name(name):
     if not normalized:
         return None
     lowered = normalized.lower()
-    if lowered.startswith("fps_"):
-        lowered = lowered[4:]
-    elif lowered.startswith("ams_"):
+    if lowered.startswith("ams_"):
         lowered = lowered[4:]
     return lowered or None
 
@@ -804,8 +802,8 @@ class _VirtualFilamentSensor:
 # available here.
 _normalize_extruder_name = normalize_extruder_name
 
-def _normalize_fps_pin_value(pin_value) -> Optional[str]:
-    """Return the cleaned FPS_* token stripped of comments and modifiers."""
+def _normalize_ams_pin_value(pin_value) -> Optional[str]:
+    """Return the cleaned AMS_* token stripped of comments and modifiers."""
     if not isinstance(pin_value, str):
         return None
 
@@ -825,29 +823,22 @@ def _normalize_fps_pin_value(pin_value) -> Optional[str]:
 
     return cleaned or None
 
-def _patch_extruder_for_virtual_fps() -> None:
-    """Patch AFC extruders so FPS_* tool pins skip hardware pin setup.
-
-    When pin_tool_start is an FPS_extruder# value the base __init__ must
-    NOT try to register it as a real MCU pin (the afc object is not a real
-    chip with setup_pin).  Instead we feed None to base_init so it skips
-    buttons/filament_switch setup, then create a VirtualFilamentSensor
-    afterwards.
-    """
+def _patch_extruder_for_virtual_ams() -> None:
+    """Patch AFC extruders so AMS_* tool pins avoid config-time errors."""
     extruder_cls = getattr(_afc_extruder_mod, "AFCExtruder", None)
-    if extruder_cls is None or getattr(extruder_cls, "_fps_virtual_tool_patched", False):
+    if extruder_cls is None or getattr(extruder_cls, "_ams_virtual_tool_patched", False):
         return
 
     base_init = extruder_cls.__init__
 
     class _ProxyConfig:
-        """Return None for pin_tool_start so base_init skips pin setup."""
-        def __init__(self, original):
+        def __init__(self, original, pin_override):
             self._original = original
+            self._pin_override = pin_override
 
         def get(self, key, *args, **kwargs):
             if key == "pin_tool_start":
-                return None
+                return self._pin_override
             return self._original.get(key, *args, **kwargs)
 
         def __getattr__(self, item):
@@ -860,15 +851,28 @@ def _patch_extruder_for_virtual_fps() -> None:
             _module_logger.debug(f"Failed to read pin_tool_start from config: {e}")
             pin_value = None
 
-        normalized = _normalize_fps_pin_value(pin_value)
+        normalized = _normalize_ams_pin_value(pin_value)
+        proxy_config = config
 
-        if normalized and normalized.upper().startswith("FPS_"):
-            # Skip hardware pin setup in base_init; we create a virtual
-            # sensor below instead.
-            proxy_config = _ProxyConfig(config)
-        else:
-            proxy_config = config
-            normalized = None
+        if normalized:
+            if normalized.upper().startswith("AMS_"):
+                try:
+                    printer = config.get_printer()
+                    afc_obj = printer.lookup_object("AFC", None)
+                    pins = printer.lookup_object("pins", None)
+                    if afc_obj is not None and pins is not None:
+                        if not getattr(afc_obj, "_virtual_ams_chip_registered", False):
+                            pins.register_chip("afc_virtual_ams", afc_obj)
+                            afc_obj._virtual_ams_chip_registered = True
+                        pin_override = f"afc_virtual_ams:{normalized}"
+                        proxy_config = _ProxyConfig(config, pin_override)
+                    else:
+                        normalized = None
+                except Exception as e:
+                    _module_logger.debug(f"Failed to set up virtual AMS pin for {normalized}: {e}")
+                    normalized = None
+            else:
+                normalized = None
 
         base_init(self, proxy_config)
 
@@ -879,7 +883,7 @@ def _patch_extruder_for_virtual_fps() -> None:
         enable_runout = getattr(self, "enable_runout", False)
         runout_cb = getattr(self, "handle_start_runout", None)
 
-        setattr(self, "_fps_virtual_tool_name", normalized)
+        setattr(self, "_ams_virtual_tool_name", normalized)
 
         virtual = _VirtualFilamentSensor(self.printer, normalized, show_in_gui=show_sensor, runout_cb=runout_cb, enable_runout=enable_runout)
 
@@ -888,7 +892,7 @@ def _patch_extruder_for_virtual_fps() -> None:
         self.tool_start_state = bool(virtual.runout_helper.filament_present)
 
     extruder_cls.__init__ = _patched_init
-    extruder_cls._fps_virtual_tool_patched = True
+    extruder_cls._ams_virtual_tool_patched = True
 
 class afcAMS(afcUnit):
     """AFC unit subclass that synchronises state with OpenAMS"""
@@ -1508,7 +1512,7 @@ class afcAMS(afcUnit):
             """).format(name=self.name)
 
     def _ensure_virtual_tool_sensor(self) -> bool:
-        """Resolve or create the virtual tool-start sensor for FPS extruders."""
+        """Resolve or create the virtual tool-start sensor for AMS extruders."""
         if self._virtual_tool_sensor is not None:
             return True
 
@@ -1517,16 +1521,15 @@ class afcAMS(afcUnit):
             return False
 
         tool_pin = getattr(extruder, "tool_start", None)
-        normalized = _normalize_fps_pin_value(tool_pin)
+        normalized = _normalize_ams_pin_value(tool_pin)
         if normalized is None:
-            normalized = getattr(extruder, "_fps_virtual_tool_name", None)
+            normalized = getattr(extruder, "_ams_virtual_tool_name", None)
 
         if not normalized or normalized.lower() in {"buffer", "none", "unknown"}:
             return False
 
         original_pin = tool_pin
-        upper = normalized.upper()
-        if not upper.startswith("FPS_"):
+        if not normalized.upper().startswith("AMS_"):
             return False
 
         sensor = getattr(extruder, "fila_tool_start", None)
@@ -1538,13 +1541,13 @@ class afcAMS(afcUnit):
             pins = self.printer.lookup_object("pins", None)
             if pins is None:
                 return False
-            if not getattr(self.afc, "_virtual_fps_chip_registered", False):
+            if not getattr(self.afc, "_virtual_ams_chip_registered", False):
                 try:
-                    pins.register_chip("afc_virtual_fps", self.afc)
+                    pins.register_chip("afc_virtual_ams", self.afc)
                 except Exception:
                     return False
                 else:
-                    self.afc._virtual_fps_chip_registered = True
+                    self.afc._virtual_ams_chip_registered = True
 
             enable_gui = False
             runout_cb = getattr(extruder, "handle_start_runout", None)
@@ -1552,10 +1555,10 @@ class afcAMS(afcUnit):
             debounce = getattr(extruder, "debounce_delay", 0.0)
 
             try:
-                created = add_filament_switch(normalized, f"afc_virtual_fps:{normalized}", self.printer, enable_gui, runout_cb, enable_runout, debounce)
+                created = add_filament_switch(normalized, f"afc_virtual_ams:{normalized}", self.printer, enable_gui, runout_cb, enable_runout, debounce)
             except TypeError:
                 try:
-                    created = add_filament_switch(normalized, f"afc_virtual_fps:{normalized}", self.printer, enable_gui)
+                    created = add_filament_switch(normalized, f"afc_virtual_ams:{normalized}", self.printer, enable_gui)
                 except Exception:
                     return False
             except Exception:
@@ -3654,14 +3657,13 @@ class afcAMS(afcUnit):
                                         except Exception as e:
                                             self.logger.error(f"Failed to notify AFC about lane {lane_name} unload: {e}")
 
-                                        # Also manually set the virtual tool sensor to False for FPS virtual extruders
-                                        # This ensures virtual sensor (e.g., FPS_Extruder4) shows correct state
+                                        # Also manually set the virtual tool sensor to False for AMS virtual extruders
+                                        # This ensures virtual sensor (e.g., AMS_Extruder4) shows correct state
                                         try:
                                             if lane_extruder is not None:
                                                 extruder_name = getattr(lane_extruder, 'name', None)
-                                                upper_name = extruder_name.upper() if extruder_name else ''
-                                                if extruder_name and upper_name.startswith('FPS_'):
-                                                    sensor_name = extruder_name.replace('fps_', '').replace('FPS_', '')
+                                                if extruder_name and extruder_name.upper().startswith('AMS_'):
+                                                    sensor_name = extruder_name.replace('ams_', '').replace('AMS_', '')
                                                     sensor = self.printer.lookup_object("filament_switch_sensor {}".format(sensor_name), None)
                                                     if sensor and hasattr(sensor, 'runout_helper'):
                                                         sensor.runout_helper.note_filament_present(self.reactor.monotonic(), is_filament_present=False)
@@ -5711,11 +5713,11 @@ class afcAMS(afcUnit):
         return bool(is_printing)
 
     def _register_sync_dispatcher(self) -> None:
-        """Ensure the shared sync command is available for all FPS units."""
+        """Ensure the shared sync command is available for all AMS units."""
         cls = self.__class__
         if not cls._sync_command_registered:
             self.gcode.register_command(
-                "AFC_FPS_SYNC_TOOL_SENSOR",
+                "AFC_AMS_SYNC_TOOL_SENSOR",
                 cls._dispatch_sync_tool_sensor,
                 desc=self.cmd_SYNC_TOOL_SENSOR_help,
             )
@@ -5918,6 +5920,6 @@ def load_config_prefix(config):
 
     # Always apply patches during config load for any afc_openams sections
     # The patches will only take effect if OpenAMS hardware is actually present
-    _patch_extruder_for_virtual_fps()
+    _patch_extruder_for_virtual_ams()
     _patch_infinite_runout_handler()
     return afcAMS(config)
