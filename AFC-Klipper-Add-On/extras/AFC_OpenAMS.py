@@ -1322,7 +1322,7 @@ class afcAMS(afcUnit):
         """Feed filament to hub after spool is detected in OpenAMS bay.
 
         Starts a normal load_spool, monitors the hub HES, and cancels the
-        load when the hub sensor triggers — leaving filament staged at the
+        load when the hub sensor triggers - leaving filament staged at the
         hub for faster tool changes.
         """
         if not getattr(lane, 'load_to_hub', False):
