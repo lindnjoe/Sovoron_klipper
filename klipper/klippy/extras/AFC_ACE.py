@@ -188,6 +188,11 @@ class afcACE(afcUnit):
         # Previous slot states for runout detection
         self._prev_slot_states: Dict[str, bool] = {}
 
+        # Lanes where load-to-hub is suppressed after an explicit eject.
+        # Cleared when the slot goes empty (spool removed), so reinsertion
+        # triggers a fresh load-to-hub.
+        self._hub_load_suppressed: set = set()
+
         # Set True during active operations (load, unload, calibration) to
         # prevent heartbeat/poll callbacks from modifying lane state
         self._operation_active = False
@@ -961,6 +966,7 @@ class afcACE(afcUnit):
             if not slot_ready and not slot_shifting:
                 prev_ready_cb = self._prev_slot_states.get(lane.name)
                 if prev_ready_cb:
+                    self._hub_load_suppressed.discard(lane.name)
                     self._clear_slot_inventory(local_slot)
                     if lane.status == AFCLaneState.LOADED:
                         lane.set_unloaded()
@@ -1923,6 +1929,8 @@ class afcACE(afcUnit):
             return
         if lane.loaded_to_hub:
             return
+        if getattr(lane, 'name', '') in self._hub_load_suppressed:
+            return
         if not lane.prep_state:
             return
         if self._ace is None or not self._ace.connected:
@@ -2007,6 +2015,7 @@ class afcACE(afcUnit):
                 local_slot, dist_hub, self.retract_speed
             )
             lane.loaded_to_hub = False
+            self._hub_load_suppressed.add(lane_name)
             self.afc.save_vars()
             self.logger.info(f"ACE eject_lane: {lane_name} retracted to spool")
             try:
@@ -2701,6 +2710,7 @@ class afcACE(afcUnit):
             # Skip runout detection while dryer is running - drying can
             # cause transient slot state changes that aren't real runouts.
             elif not self._drying_active and prev_ready and not slot_ready and not slot_shifting:
+                self._hub_load_suppressed.discard(lane.name)
                 if is_printing and lane.status == AFCLaneState.TOOLED:
                     self.logger.info(
                         f"ACE runout detected on {lane.name} (slot {local_slot})"
@@ -3065,6 +3075,7 @@ class afcACE(afcUnit):
         if self.mode == MODE_COMBINED:
             self._current_loaded_slot = -1
         cur_lane.loaded_to_hub = False
+        self._hub_load_suppressed.add(lane_name)
         cur_lane.set_tool_unloaded()
         cur_lane.status = AFCLaneState.LOADED
         self.lane_tool_unloaded(cur_lane)
