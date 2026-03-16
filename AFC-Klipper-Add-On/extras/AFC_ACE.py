@@ -1593,9 +1593,11 @@ class afcACE(afcUnit):
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = -1
 
-            # Filament retracted to hub, not all the way to spool
-            cur_lane.loaded_to_hub = True
-            cur_lane._pre_fed_to_hub = False
+            # Filament retracted to hub, not all the way to spool.
+            # Use _pre_fed_to_hub (not loaded_to_hub) so the virtual hub
+            # sensor doesn't report occupied and block other lanes.
+            cur_lane.loaded_to_hub = False
+            cur_lane._pre_fed_to_hub = True
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.LOADED
             self.lane_tool_unloaded(cur_lane)
