@@ -1902,12 +1902,15 @@ class afcACE(afcUnit):
         tool changes.  Only runs if load_to_hub is enabled, the lane
         is not already at the hub, and the slot shows filament ready.
         """
-        # Resolve load_to_hub: lane override > unit override > AFC global
-        load_to_hub = getattr(lane, 'load_to_hub', None)
-        if load_to_hub is None:
+        # Resolve load_to_hub: unit override > lane (which defaults from
+        # global) > AFC global.  Unit-level takes priority because the lane
+        # config always has a value (it defaults from the AFC global, not
+        # from the unit), so the lane value can never fall through to unit.
+        if self._unit_load_to_hub is not None:
             load_to_hub = self._unit_load_to_hub
-        if load_to_hub is None:
-            load_to_hub = getattr(self.afc, 'load_to_hub', False)
+        else:
+            load_to_hub = getattr(lane, 'load_to_hub',
+                                  getattr(self.afc, 'load_to_hub', False))
         if not load_to_hub:
             return
         if lane.loaded_to_hub:
