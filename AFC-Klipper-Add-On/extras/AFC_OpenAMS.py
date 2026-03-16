@@ -1338,6 +1338,16 @@ class afcAMS(afcUnit):
         if spool_idx is None or spool_idx < 0:
             return
 
+        # Only attempt load-to-hub if hub HES is calibrated for this bay
+        # and cancel command is available. Without these, load_to_hub would
+        # push filament all the way to the toolhead uncontrolled.
+        oam = self.oams
+        hub_hes_on = getattr(oam, 'hub_hes_on', None)
+        if hub_hes_on is None or spool_idx >= len(hub_hes_on) or hub_hes_on[spool_idx] == 0:
+            return
+        if getattr(oam, 'oams_load_spool_cancel_cmd', None) is None:
+            return
+
         self.logger.info(
             f"OpenAMS prep_post_load: loading bay {spool_idx} to hub "
             f"for {lane.name}"
