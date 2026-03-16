@@ -751,6 +751,10 @@ class afcACE(afcUnit):
         # Try ACE RFID data from slot inventory
         rfid_material = slot_info.get("material", "") if slot_info else ""
         rfid_color = slot_info.get("color", [0, 0, 0]) if slot_info else [0, 0, 0]
+
+        # Treat "unknown" material from 3rd-party spools as empty
+        if rfid_material and rfid_material.lower() == "unknown":
+            rfid_material = ""
         rfid_has_data = bool(rfid_material) or rfid_color != [0, 0, 0]
 
         if rfid_has_data:
@@ -758,12 +762,16 @@ class afcACE(afcUnit):
                 lane.material = rfid_material
             if not has_color and rfid_color != [0, 0, 0]:
                 lane.color = self._ace_color_to_hex(rfid_color)
-        else:
-            # No RFID data - apply AFC defaults if lane is still empty
-            if not has_material:
-                default_mat = getattr(self.afc, "default_material_type", None)
-                if default_mat:
-                    lane.material = default_mat
+
+        # Apply AFC defaults for anything still missing
+        if not has_material and not getattr(lane, "material", None):
+            default_mat = getattr(self.afc, "default_material_type", None)
+            if default_mat:
+                lane.material = default_mat
+        if not has_color and not getattr(lane, "color", None):
+            default_color = getattr(self.afc, "default_color", None)
+            if default_color:
+                lane.color = default_color
 
     def _restore_tool_loaded_state(self, lane):
         """Restore a lane to TOOLED state after klipper restart.
