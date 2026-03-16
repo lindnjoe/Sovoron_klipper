@@ -2063,6 +2063,27 @@ class afcACE(afcUnit):
                 local_slot, retract_dist, self.retract_speed
             )
             self.logger.info("ACE calibrate: retract complete")
+            # Wait for ACE to finish internal rewind/housekeeping so the hub
+            # is clear before the next lane's calibration starts.
+            self._wait_for_ace_ready(timeout=15.0)
+
+            # Clear the FPS latch and tool_start_state so the next lane's
+            # calibration doesn't see a stale "sensor triggered" from this
+            # lane's filament.  Then pause to let the FPS ADC callback run
+            # at least one cycle (~100ms) with no filament present so the
+            # sensor state reflects reality.
+            self._fps_latched = False
+            extruder = self._fps_extruder
+            if extruder is not None:
+                extruder.tool_start_state = False
+                self._update_virtual_sensor(
+                    self.afc.reactor.monotonic(), False
+                )
+            # Allow sensor polling to catch up and hub to physically clear
+            self.afc.reactor.pause(
+                self.afc.reactor.monotonic() + 3.0
+            )
+            self.logger.info("ACE calibrate: post-retract settle complete")
         except Exception as e:
             self.logger.error(f"ACE calibrate: retract failed: {e}")
 
