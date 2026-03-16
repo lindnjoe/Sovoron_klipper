@@ -1336,16 +1336,21 @@ class afcAMS(afcUnit):
         if load_to_hub is None:
             load_to_hub = getattr(self.afc, 'load_to_hub', False)
         if not load_to_hub:
+            self.logger.debug(f"prep_post_load: load_to_hub disabled for {lane.name}")
             return
         if lane.loaded_to_hub:
+            self.logger.debug(f"prep_post_load: {lane.name} already loaded to hub")
             return
-        if not lane.load_state or not lane.prep_state:
+        if not lane.prep_state:
+            self.logger.debug(f"prep_post_load: {lane.name} prep_state is False")
             return
         if self.oams is None:
+            self.logger.debug(f"prep_post_load: {lane.name} oams is None")
             return
 
         spool_idx = self._get_openams_spool_index(lane)
         if spool_idx is None or spool_idx < 0:
+            self.logger.debug(f"prep_post_load: {lane.name} invalid spool_idx={spool_idx}")
             return
 
         # Only attempt load-to-hub if hub HES is calibrated for this bay
@@ -1354,8 +1359,13 @@ class afcAMS(afcUnit):
         oam = self.oams
         hub_hes_on = getattr(oam, 'hub_hes_on', None)
         if hub_hes_on is None or spool_idx >= len(hub_hes_on) or hub_hes_on[spool_idx] == 0:
+            self.logger.debug(
+                f"prep_post_load: {lane.name} hub HES not calibrated "
+                f"(hub_hes_on={hub_hes_on}, spool_idx={spool_idx})"
+            )
             return
         if getattr(oam, 'oams_load_spool_cancel_cmd', None) is None:
+            self.logger.debug(f"prep_post_load: {lane.name} load_spool_cancel cmd not available")
             return
 
         self.logger.info(
