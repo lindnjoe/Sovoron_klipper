@@ -102,6 +102,10 @@ class afcACE(afcUnit):
         # Default 800mm is a safe starting point; calibrate with ACE_CALIBRATE_HUB.
         self.dist_hub = config.getfloat("dist_hub", 800.0)             # mm
 
+        # load_to_hub: unit-level override.  Inherits from AFC global if not set.
+        # Can also be overridden per-lane in [AFC_lane] sections.
+        self._unit_load_to_hub = config.getboolean("load_to_hub", None)
+
         # Feed assist: default enable/disable for all slots
         self._default_feed_assist = config.getboolean("use_feed_assist", True)
 
@@ -1898,7 +1902,13 @@ class afcACE(afcUnit):
         tool changes.  Only runs if load_to_hub is enabled, the lane
         is not already at the hub, and the slot shows filament ready.
         """
-        if not getattr(lane, 'load_to_hub', False):
+        # Resolve load_to_hub: lane override > unit override > AFC global
+        load_to_hub = getattr(lane, 'load_to_hub', None)
+        if load_to_hub is None:
+            load_to_hub = self._unit_load_to_hub
+        if load_to_hub is None:
+            load_to_hub = getattr(self.afc, 'load_to_hub', False)
+        if not load_to_hub:
             return
         if lane.loaded_to_hub:
             return
