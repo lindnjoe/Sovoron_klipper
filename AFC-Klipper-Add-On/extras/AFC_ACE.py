@@ -2048,10 +2048,10 @@ class afcACE(afcUnit):
             local_slot, cur_lane, max_distance, step_size=self.calibration_step
         )
 
-        # Retract after calibration - retract 200mm less than fed distance
+        # Retract after calibration - retract 100mm less than fed distance
         # to avoid pulling filament out of the ACE unit during rewind
-        # (matches how retract_length is stored as feed_length - 200)
-        retract_dist = distance - 200 if triggered else distance
+        # (matches how retract_length is stored as feed_length - 100)
+        retract_dist = distance - 100 if triggered else distance
         self.logger.info(
             f"ACE calibrate: retracting {retract_dist:.0f}mm "
             f"@ {self.retract_speed}mm/min"
@@ -2103,7 +2103,7 @@ class afcACE(afcUnit):
 
         # Round to nearest integer for clean config values
         new_feed_length = round(distance, 0)
-        new_retract_length = round(distance - 200, 0)
+        new_retract_length = round(distance - 100, 0)
 
         # Update in-memory unit-level values
         old_feed = self.feed_length
@@ -2157,7 +2157,7 @@ class afcACE(afcUnit):
 
         lane_name = cur_lane.name
         new_feed_length = round(distance, 0)
-        new_retract_length = round(distance - 200, 0)
+        new_retract_length = round(distance - 100, 0)
 
         # Update in-memory per-lane overrides
         old_feed = self._lane_feed_length.get(lane_name, self.feed_length)
