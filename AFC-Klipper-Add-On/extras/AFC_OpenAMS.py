@@ -826,7 +826,14 @@ def _normalize_fps_pin_value(pin_value) -> Optional[str]:
     return cleaned or None
 
 def _patch_extruder_for_virtual_fps() -> None:
-    """Patch AFC extruders so FPS_* tool pins avoid config-time errors."""
+    """Patch AFC extruders so FPS_* tool pins skip hardware pin setup.
+
+    When pin_tool_start is an FPS_extruder# value the base __init__ must
+    NOT try to register it as a real MCU pin (the afc object is not a real
+    chip with setup_pin).  Instead we feed None to base_init so it skips
+    buttons/filament_switch setup, then create a VirtualFilamentSensor
+    afterwards.
+    """
     extruder_cls = getattr(_afc_extruder_mod, "AFCExtruder", None)
     if extruder_cls is None or getattr(extruder_cls, "_fps_virtual_tool_patched", False):
         return
@@ -834,13 +841,13 @@ def _patch_extruder_for_virtual_fps() -> None:
     base_init = extruder_cls.__init__
 
     class _ProxyConfig:
-        def __init__(self, original, pin_override):
+        """Return None for pin_tool_start so base_init skips pin setup."""
+        def __init__(self, original):
             self._original = original
-            self._pin_override = pin_override
 
         def get(self, key, *args, **kwargs):
             if key == "pin_tool_start":
-                return self._pin_override
+                return None
             return self._original.get(key, *args, **kwargs)
 
         def __getattr__(self, item):
@@ -854,28 +861,14 @@ def _patch_extruder_for_virtual_fps() -> None:
             pin_value = None
 
         normalized = _normalize_fps_pin_value(pin_value)
-        proxy_config = config
 
-        if normalized:
-            upper = normalized.upper()
-            if upper.startswith("FPS_"):
-                try:
-                    printer = config.get_printer()
-                    afc_obj = printer.lookup_object("AFC", None)
-                    pins = printer.lookup_object("pins", None)
-                    if afc_obj is not None and pins is not None:
-                        if not getattr(afc_obj, "_virtual_fps_chip_registered", False):
-                            pins.register_chip("afc_virtual_fps", afc_obj)
-                            afc_obj._virtual_fps_chip_registered = True
-                        pin_override = f"afc_virtual_fps:{normalized}"
-                        proxy_config = _ProxyConfig(config, pin_override)
-                    else:
-                        normalized = None
-                except Exception as e:
-                    _module_logger.debug(f"Failed to set up virtual FPS pin for {normalized}: {e}")
-                    normalized = None
-            else:
-                normalized = None
+        if normalized and normalized.upper().startswith("FPS_"):
+            # Skip hardware pin setup in base_init; we create a virtual
+            # sensor below instead.
+            proxy_config = _ProxyConfig(config)
+        else:
+            proxy_config = config
+            normalized = None
 
         base_init(self, proxy_config)
 
