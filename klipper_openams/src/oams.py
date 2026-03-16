@@ -554,6 +554,56 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             return "OAMS load spool operation cancelled"
         return "OAMS load spool cancel command not available on this firmware"
 
+    def load_to_hub(self, spool_idx):
+        """Load filament from a bay, stopping when the hub HES triggers.
+
+        Starts a normal load_spool, monitors hub_hes_value, and sends
+        load_spool_cancel when the hub sensor triggers.  This leaves
+        filament staged at the hub for faster tool changes.
+
+        Returns (success: bool, message: str).
+        """
+        if self.oams_load_spool_cancel_cmd is None:
+            return False, "Load cancel not supported by firmware"
+
+        if not (0 <= spool_idx < len(self.hub_hes_value)):
+            return False, f"Invalid spool index {spool_idx}"
+
+        self.action_status = OAMSStatus.LOADING
+        self.oams_load_spool_cmd.send([spool_idx])
+
+        timeout = self.reactor.monotonic() + 30.0
+        cancel_sent = False
+
+        while self.action_status is not None:
+            if self.reactor.monotonic() > timeout:
+                self.action_status = None
+                self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
+                return False, "Load to hub timed out"
+
+            # Check hub HES — cancel as soon as filament reaches the hub
+            if not cancel_sent and self.is_bay_loaded(spool_idx):
+                cancel_sent = True
+                self.logger.info(
+                    f"OAMS[{self.oams_idx}]: hub HES triggered for "
+                    f"bay {spool_idx}, cancelling load"
+                )
+                self.load_spool_cancel()
+                # Continue waiting for firmware CANCEL response
+
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+
+        if cancel_sent or self.is_bay_loaded(spool_idx):
+            return True, "Filament loaded to hub"
+
+        code = self.action_status_code
+        if code == OAMSOpCode.SUCCESS:
+            # Full load completed before we could cancel (hub HES might
+            # have triggered between polls).  Filament is past the hub.
+            return True, "Full load completed (filament past hub)"
+
+        return False, f"Load did not reach hub (status code: {code})"
+
     cmd_OAMS_CURRENT_PID_SET_help = "Set the PID values for the current sensor"
     def cmd_OAMS_CURRENT_PID_SET(self, gcmd):
         p = gcmd.get_float("P", None)
