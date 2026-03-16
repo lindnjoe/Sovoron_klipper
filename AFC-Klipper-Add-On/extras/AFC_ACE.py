@@ -1590,11 +1590,60 @@ class afcACE(afcUnit):
                 local_slot, retract_length, self.retract_speed
             )
 
+            # If hub has a physical sensor, retract in small steps until
+            # the hub sensor clears, then retract hub_clear_move_dis extra
+            # to ensure filament is fully out of the hub exit path.
+            has_real_hub_pin = (
+                cur_hub.switch_pin.lower() != "virtual"
+            )
+            if has_real_hub_pin:
+                hub_clear_step = 10  # mm per check
+                max_hub_clear_tries = 30
+                num_tries = 0
+                while cur_hub.state:
+                    num_tries += 1
+                    if num_tries > max_hub_clear_tries:
+                        message = (
+                            f"Hub sensor did not clear after "
+                            f"{num_tries * hub_clear_step}mm retract "
+                            f"for {cur_lane.name}. Filament may be stuck."
+                        )
+                        afc.error.handle_lane_failure(cur_lane, message)
+                        return False
+                    self.logger.debug(
+                        f"ACE unload: hub still triggered, retracting "
+                        f"{hub_clear_step}mm (attempt {num_tries})"
+                    )
+                    self._wait_for_ace_ready()
+                    self._ace.unwind_filament(
+                        local_slot, hub_clear_step, self.retract_speed
+                    )
+                    self._wait_for_feed_complete(
+                        local_slot, hub_clear_step, self.retract_speed
+                    )
+                    self.afc.reactor.pause(
+                        self.afc.reactor.monotonic() + 0.1
+                    )
+
+                # Hub sensor clear — retract extra to fully clear the path
+                clear_dis = cur_hub.hub_clear_move_dis
+                self.logger.info(
+                    f"ACE unload: hub cleared, retracting "
+                    f"{clear_dis:.0f}mm hub_clear_move_dis"
+                )
+                self._wait_for_ace_ready()
+                self._ace.unwind_filament(
+                    local_slot, clear_dis, self.retract_speed
+                )
+                self._wait_for_feed_complete(
+                    local_slot, clear_dis, self.retract_speed
+                )
+
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = -1
 
-            # Filament retracted to hub, not all the way to spool.
-            cur_lane.loaded_to_hub = True
+            # Filament retracted to hub (or past it with real pin).
+            cur_lane.loaded_to_hub = not has_real_hub_pin
             cur_lane._pre_fed_to_hub = False
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.LOADED
