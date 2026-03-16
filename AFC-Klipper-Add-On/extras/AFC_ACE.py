@@ -2063,6 +2063,13 @@ class afcACE(afcUnit):
                 local_slot, retract_dist, self.retract_speed
             )
             self.logger.info("ACE calibrate: retract complete")
+            # Wait for ACE to finish internal rewind/housekeeping so the hub
+            # is clear before the next lane's calibration starts.
+            self._wait_for_ace_ready(timeout=15.0)
+            self.afc.reactor.pause(
+                self.afc.reactor.monotonic() + 3.0
+            )
+            self.logger.info("ACE calibrate: post-retract settle complete")
         except Exception as e:
             self.logger.error(f"ACE calibrate: retract failed: {e}")
 
