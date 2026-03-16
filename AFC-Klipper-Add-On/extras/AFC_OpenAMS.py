@@ -1490,15 +1490,15 @@ class afcAMS(afcUnit):
         self.logo  = '<span class=success--text>R  ___________________\n'
         self.logo += 'E | Open  |   AMS    |\n'
         self.logo += 'A | (o) (o) (o) (o)  |\n'
-        self.logo += 'D |___________________|\n'
-        self.logo += 'Y |_1__|_2__|_3__|_4__|\n'
+        self.logo += 'D |__________________|\n'
+        self.logo += 'Y |_1__|_2__|_3__|_4_|\n'
         self.logo += '  ' + self.name + '</span>\n'
 
         self.logo_error  = '<span class=error--text>E  ___________________\n'
         self.logo_error += 'R | Open  |   AMS    |\n'
         self.logo_error += 'R | (X) (X) (X) (X)  |\n'
-        self.logo_error += 'O |___________________|\n'
-        self.logo_error += 'R |_X__|_X__|_X__|_X__|\n'
+        self.logo_error += 'O |__________________|\n'
+        self.logo_error += 'R |_X__|_X__|_X__|_X_|\n'
         self.logo_error += '  ' + self.name + '</span>\n'
 
     def _ensure_virtual_tool_sensor(self) -> bool:
