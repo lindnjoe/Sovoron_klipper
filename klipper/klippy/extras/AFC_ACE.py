@@ -652,6 +652,55 @@ class afcACE(afcUnit):
                 if default_mat:
                     lane.material = default_mat
 
+    def _restore_tool_loaded_state(self, lane):
+        """Restore a lane to TOOLED state after klipper restart.
+
+        Called when the heartbeat/poll detects a slot is ready and the lane's
+        saved state indicates it was previously loaded to the toolhead.  This
+        covers the timing gap where _deferred_init completes after PREP has
+        already restored saved vars but system_Test couldn't reach the ACE.
+        """
+        lane.loaded_to_hub = True
+        lane.tool_loaded = True
+        lane.status = AFCLaneState.TOOLED
+        lane.extruder_obj.lane_loaded = lane.name
+        lane.sync_to_extruder()
+        self.afc.spool.set_active_spool(lane.spool_id)
+
+        # Hydrate virtual sensor so extruder knows filament is present
+        extruder = lane.extruder_obj
+        extruder.tool_start_state = True
+        fila = getattr(extruder, "fila_tool_start", None)
+        helper = getattr(fila, "runout_helper", None) if fila else None
+        if helper is not None:
+            eventtime = self.afc.reactor.monotonic()
+            try:
+                helper.note_filament_present(eventtime, is_filament_present=True)
+            except TypeError:
+                helper.note_filament_present(is_filament_present=True)
+
+        self.lane_tool_loaded(lane)
+
+        # Start feed assist immediately
+        local_slot = self._get_local_slot_for_lane(lane)
+        if (local_slot >= 0
+                and self._get_feed_assist_for_slot(local_slot)
+                and self._ace is not None):
+            try:
+                self._ace.start_feed_assist(local_slot)
+                self._feed_assist_active.add(local_slot)
+            except Exception:
+                pass
+
+        # Restore combined mode slot tracking
+        if self.mode == MODE_COMBINED and local_slot >= 0:
+            self._current_loaded_slot = local_slot
+
+        self.afc.save_vars()
+        self.logger.info(
+            f"ACE: restored TOOLED state for {lane.name}"
+        )
+
     def _on_hw_status_callback(self, response):
         """Process slot status from any ACE response (including heartbeat).
 
@@ -730,13 +779,40 @@ class afcACE(afcUnit):
             # State consistency: if hardware says ready but lane is stuck
             # in NONE, fix it regardless of transition detection
             if slot_ready and prep_done and lane.status == AFCLaneState.NONE:
-                self.logger.info(
-                    f"ACE callback: {lane.name} slot {local_slot} ready, "
-                    f"setting loaded"
-                )
-                lane.set_loaded()
-                self.lane_illuminate_spool(lane)
-                self.afc.save_vars()
+                # Check if this lane was tool-loaded before restart -
+                # restore TOOLED state instead of just LOADED.
+                if (lane.tool_loaded
+                        and hasattr(lane, 'extruder_obj')
+                        and lane.extruder_obj.lane_loaded == lane.name):
+                    self.logger.info(
+                        f"ACE callback: {lane.name} slot {local_slot} ready, "
+                        f"restoring TOOLED state from saved vars"
+                    )
+                    self._restore_tool_loaded_state(lane)
+                else:
+                    self.logger.info(
+                        f"ACE callback: {lane.name} slot {local_slot} ready, "
+                        f"setting loaded"
+                    )
+                    # New filament insertion: clear old data, apply fresh.
+                    self.afc.spool.clear_values(lane)
+                    lane.set_loaded()
+                    self._refresh_slot_inventory(local_slot)
+                    slot_info = self._slot_inventory[local_slot]
+                    self._apply_slot_filament_defaults(lane, slot_info)
+                    self.lane_illuminate_spool(lane)
+                    self.afc.save_vars()
+
+            # When a slot goes empty, transition the lane to unloaded
+            # so new filament insertion is properly detected (NONE gate).
+            if not slot_ready and not slot_shifting:
+                prev_ready_cb = self._prev_slot_states.get(lane.name)
+                if prev_ready_cb:
+                    self._clear_slot_inventory(local_slot)
+                    if lane.status == AFCLaneState.LOADED:
+                        lane.set_unloaded()
+                        self.lane_not_ready(lane)
+                        self.afc.save_vars()
 
             # Don't update prev state during transient "shifting" to
             # avoid false runout triggers in _poll_slot_status.
@@ -2035,17 +2111,35 @@ class afcACE(afcUnit):
             # State consistency: if hardware says ready but lane is stuck
             # in NONE, fix it (covers first poll, missed transitions, etc.)
             if slot_ready and lane._afc_prep_done and lane.status == AFCLaneState.NONE:
-                self.logger.info(
-                    f"ACE poll: {lane.name} slot {local_slot} ready, setting loaded"
-                )
-                lane.set_loaded()
-                self.lane_illuminate_spool(lane)
-                self.afc.save_vars()
+                # Check if this lane was tool-loaded before restart -
+                # restore TOOLED state instead of just LOADED.
+                if (lane.tool_loaded
+                        and hasattr(lane, 'extruder_obj')
+                        and lane.extruder_obj.lane_loaded == lane.name):
+                    self.logger.info(
+                        f"ACE poll: {lane.name} slot {local_slot} ready, "
+                        f"restoring TOOLED state from saved vars"
+                    )
+                    self._restore_tool_loaded_state(lane)
+                else:
+                    self.logger.info(
+                        f"ACE poll: {lane.name} slot {local_slot} ready, "
+                        f"setting loaded"
+                    )
+                    # New filament insertion: clear old data, apply fresh.
+                    self.afc.spool.clear_values(lane)
+                    lane.set_loaded()
+                    self._refresh_slot_inventory(local_slot)
+                    slot_info = self._slot_inventory[local_slot]
+                    self._apply_slot_filament_defaults(lane, slot_info)
+                    self.lane_illuminate_spool(lane)
+                    self.afc.save_vars()
 
             # Detect ready -> not-ready transition (filament runout)
-            # Only trigger during active printing to avoid startup crashes.
-            elif is_printing and prev_ready and not slot_ready and not slot_shifting:
-                if lane.status == AFCLaneState.TOOLED:
+            # Skip runout detection while dryer is running - drying can
+            # cause transient slot state changes that aren't real runouts.
+            elif not self._drying_active and prev_ready and not slot_ready and not slot_shifting:
+                if is_printing and lane.status == AFCLaneState.TOOLED:
                     self.logger.info(
                         f"ACE runout detected on {lane.name} (slot {local_slot})"
                     )
@@ -2065,7 +2159,9 @@ class afcACE(afcUnit):
                     else:
                         lane._perform_pause_runout()
                 elif lane.status == AFCLaneState.LOADED:
-                    # Slot went empty on a non-active lane - just update sensor state
+                    # Slot went empty - transition to unloaded so new
+                    # filament insertion is properly detected.
+                    self._clear_slot_inventory(local_slot)
                     lane.set_unloaded()
                     self.lane_not_ready(lane)
                     self.afc.save_vars()
