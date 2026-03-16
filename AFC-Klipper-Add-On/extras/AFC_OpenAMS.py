@@ -1064,9 +1064,14 @@ class afcAMS(afcUnit):
                 afc.afcDeltaTime.major_delta_time = now
                 afc.afcDeltaTime.last_time = now
             afc._oams_suppress_tool_swap_timer = True
-            self.logger.debug(
-                f"OpenAMS load: delegating to OAMSM_LOAD_FILAMENT for lane {cur_lane.name}"
-            )
+            if cur_lane.loaded_to_hub:
+                self.logger.info(
+                    f"OpenAMS load: filament at hub, loading hub->toolhead for {cur_lane.name}"
+                )
+            else:
+                self.logger.debug(
+                    f"OpenAMS load: full load for lane {cur_lane.name}"
+                )
             oams_manager = self._get_oams_manager()
             if oams_manager is None:
                 afc.error.handle_lane_failure(cur_lane, "OpenAMS load failed: oams_manager not available")
@@ -1164,41 +1169,67 @@ class afcAMS(afcUnit):
             # OAMSM_UNLOAD_FILAMENT can control the spool independently.
             cur_lane.unsync_to_extruder()
 
-            oams_manager = self._get_oams_manager()
-            if oams_manager is None:
-                afc.error.handle_lane_failure(cur_lane, "OpenAMS unload failed: oams_manager not available")
-                return False
+            # Two-phase unload: try to stop at hub using encoder + hub_distance.
+            # Falls back to full manager unload if hub_distance isn't calibrated.
+            spool_idx = self._get_openams_spool_index(cur_lane)
+            oam = self.oams
+            used_hub_unload = False
 
-            fps_name = oams_manager.get_fps_for_afc_lane(cur_lane.name)
-            if not fps_name:
-                message = "OpenAMS unload failed for {}: unable to resolve FPS".format(cur_lane.name)
-                afc.error.handle_lane_failure(cur_lane, message)
-                return False
-
-            fps_id = fps_name.split(" ", 1)[1] if fps_name.startswith("fps ") else fps_name
-            self.logger.debug(
-                "OpenAMS unload: delegating to manager helper for lane {} (FPS {})".format(
-                    cur_lane.name, fps_id
+            if (oam is not None
+                    and spool_idx is not None
+                    and 0 <= spool_idx < len(getattr(oam, 'hub_distance', []))
+                    and oam.hub_distance[spool_idx] > 0):
+                self.logger.info(
+                    f"OpenAMS unload: two-phase retract to hub for {cur_lane.name}"
                 )
-            )
-            success, message = self._manager_unload_with_prep_for_fps(fps_name)
-            if not success:
-                message = message or "OpenAMS unload failed for {}".format(cur_lane.name)
-                afc.error.handle_lane_failure(cur_lane, message)
-                return False
+                success, message = oam.unload_to_hub(spool_idx)
+                if success:
+                    used_hub_unload = True
+                else:
+                    self.logger.warning(
+                        f"OpenAMS unload_to_hub failed ({message}), "
+                        f"falling back to full unload for {cur_lane.name}"
+                    )
 
-            # After unload, read the actual hub sensor to determine if filament
-            # is still at the hub.  The OAMS unload retracts filament back to the
-            # spool bay (past the hub sensor), so hub_hes_value will typically be 0.
-            # Hardcoding True here previously caused stale hub status on swaps.
-            hub_loaded = False
-            try:
-                spool_idx = self._get_openams_spool_index(cur_lane)
-                hub_values = getattr(self.oams, "hub_hes_value", None)
-                if hub_values is not None and spool_idx is not None and 0 <= spool_idx < len(hub_values):
-                    hub_loaded = bool(hub_values[spool_idx])
-            except Exception:
+            if not used_hub_unload:
+                # Full unload via manager (retracts all the way to bay)
+                oams_manager = self._get_oams_manager()
+                if oams_manager is None:
+                    afc.error.handle_lane_failure(cur_lane, "OpenAMS unload failed: oams_manager not available")
+                    return False
+
+                fps_name = oams_manager.get_fps_for_afc_lane(cur_lane.name)
+                if not fps_name:
+                    message = "OpenAMS unload failed for {}: unable to resolve FPS".format(cur_lane.name)
+                    afc.error.handle_lane_failure(cur_lane, message)
+                    return False
+
+                fps_id = fps_name.split(" ", 1)[1] if fps_name.startswith("fps ") else fps_name
+                self.logger.debug(
+                    "OpenAMS unload: full retract via manager for lane {} (FPS {})".format(
+                        cur_lane.name, fps_id
+                    )
+                )
+                success, message = self._manager_unload_with_prep_for_fps(fps_name)
+                if not success:
+                    message = message or "OpenAMS unload failed for {}".format(cur_lane.name)
+                    afc.error.handle_lane_failure(cur_lane, message)
+                    return False
+
+            # Determine hub state after unload
+            if used_hub_unload:
+                # Two-phase: filament should be at hub
+                hub_loaded = True
+            else:
+                # Full unload: read hub HES to confirm
                 hub_loaded = False
+                try:
+                    hub_values = getattr(oam, "hub_hes_value", None)
+                    if hub_values is not None and spool_idx is not None and 0 <= spool_idx < len(hub_values):
+                        hub_loaded = bool(hub_values[spool_idx])
+                except Exception:
+                    hub_loaded = False
+
             cur_lane.loaded_to_hub = hub_loaded
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.LOADED
@@ -1211,26 +1242,76 @@ class afcAMS(afcUnit):
 
         return True
 
-    def lane_unload(self, cur_lane):
-        """Block manual LANE_UNLOAD for OpenAMS lanes.
+    def eject_lane(self, lane):
+        """Retract filament from hub back to bay using OAMS unload.
 
-        OpenAMS units have no AFC stepper path for lane ejection. Users should
-        remove spools physically or use TOOL_UNLOAD for toolhead-side unloads.
+        If filament is at the hub (loaded_to_hub=True), triggers an OAMS
+        unload to pull it back into the bay. If filament is at the toolhead,
+        directs user to TOOL_UNLOAD instead.
         """
-        lane_name = getattr(cur_lane, "name", "unknown")
-        message = (
-            f"LANE_UNLOAD is not supported for OpenAMS lane {lane_name}. "
-            "OpenAMS units handle filament automatically - just remove the spool physically. "
-            "Use TOOL_UNLOAD if you need to unload from the toolhead."
-        )
-        self.logger.info(message)
+        lane_name = getattr(lane, "name", "unknown")
 
+        if getattr(lane, "tool_loaded", False):
+            message = (
+                f"OpenAMS lane {lane_name} is loaded to toolhead. "
+                "Use TOOL_UNLOAD to unload from toolhead first."
+            )
+            self.logger.info(message)
+            try:
+                gcode = self.gcode or self.printer.lookup_object("gcode")
+                if gcode:
+                    gcode.respond_info(message)
+            except Exception:
+                pass
+            return
+
+        if not getattr(lane, "loaded_to_hub", False):
+            message = f"OpenAMS lane {lane_name} is not loaded to hub, nothing to eject."
+            self.logger.info(message)
+            try:
+                gcode = self.gcode or self.printer.lookup_object("gcode")
+                if gcode:
+                    gcode.respond_info(message)
+            except Exception:
+                pass
+            return
+
+        if self.oams is None:
+            self.logger.error(f"OpenAMS eject_lane: OAMS not available for {lane_name}")
+            return
+
+        self.logger.info(
+            f"OpenAMS eject_lane: retracting {lane_name} from hub via OAMS unload"
+        )
         try:
-            gcode = self.gcode or self.printer.lookup_object("gcode")
-            if gcode:
-                gcode.respond_info(message)
+            success, msg = self.oams.unload_spool()
+            if success:
+                lane.loaded_to_hub = False
+                self.afc.save_vars()
+                self.logger.info(f"OpenAMS eject_lane: {lane_name} retracted to bay")
+                try:
+                    gcode = self.gcode or self.printer.lookup_object("gcode")
+                    if gcode:
+                        gcode.respond_info(
+                            f"OpenAMS lane {lane_name} retracted from hub to bay"
+                        )
+                except Exception:
+                    pass
+            else:
+                self.logger.error(f"OpenAMS eject_lane failed for {lane_name}: {msg}")
+                try:
+                    gcode = self.gcode or self.printer.lookup_object("gcode")
+                    if gcode:
+                        gcode.respond_info(f"OpenAMS eject failed: {msg}")
+                except Exception:
+                    pass
         except Exception as e:
-            self.logger.debug(f"Failed to send LANE_UNLOAD info response for {lane_name}: {e}")
+            self.logger.error(f"OpenAMS eject_lane failed for {lane_name}: {e}")
+
+    def lane_unload(self, cur_lane):
+        """Retract OpenAMS lane filament from hub back to bay."""
+        self.eject_lane(cur_lane)
+        return None
 
         return None
 
@@ -1238,7 +1319,61 @@ class afcAMS(afcUnit):
         """No-op for OpenAMS: hardware drives filament to the load sensor directly."""
 
     def prep_post_load(self, lane):
-        """No-op for OpenAMS: hardware handles hub loading internally."""
+        """Feed filament to hub after spool is detected in OpenAMS bay.
+
+        Starts a normal load_spool, monitors the hub HES, and cancels the
+        load when the hub sensor triggers — leaving filament staged at the
+        hub for faster tool changes.
+        """
+        if not getattr(lane, 'load_to_hub', False):
+            return
+        if lane.loaded_to_hub:
+            return
+        if not lane.load_state or not lane.prep_state:
+            return
+        if self.oams is None:
+            return
+
+        spool_idx = self._get_openams_spool_index(lane)
+        if spool_idx is None or spool_idx < 0:
+            return
+
+        # Only attempt load-to-hub if hub HES is calibrated for this bay
+        # and cancel command is available. Without these, load_to_hub would
+        # push filament all the way to the toolhead uncontrolled.
+        oam = self.oams
+        hub_hes_on = getattr(oam, 'hub_hes_on', None)
+        if hub_hes_on is None or spool_idx >= len(hub_hes_on) or hub_hes_on[spool_idx] == 0:
+            return
+        if getattr(oam, 'oams_load_spool_cancel_cmd', None) is None:
+            return
+
+        self.logger.info(
+            f"OpenAMS prep_post_load: loading bay {spool_idx} to hub "
+            f"for {lane.name}"
+        )
+        success, msg = self._load_to_hub(spool_idx)
+        if success:
+            lane.loaded_to_hub = True
+            self.afc.save_vars()
+            self.logger.info(
+                f"OpenAMS prep_post_load: {lane.name} loaded to hub"
+            )
+        else:
+            self.logger.error(
+                f"OpenAMS prep_post_load failed for {lane.name}: {msg}"
+            )
+
+    def _load_to_hub(self, spool_idx):
+        """Start OAMS load, cancel when hub HES triggers.
+
+        Delegates to oam.load_to_hub() which handles the load/poll/cancel loop.
+        Returns (success, message).
+        """
+        oam = self.oams
+        if oam is None:
+            return False, "OAMS not available"
+        return oam.load_to_hub(spool_idx)
 
     def _get_fps_id_for_lane(self, lane_name: str) -> Optional[str]:
         oams_manager = self._get_oams_manager()
@@ -3294,15 +3429,21 @@ class afcAMS(afcUnit):
         )
 
     def calibrate_hub(self, cur_lane, tol):
-        """OpenAMS units use different calibration commands."""
-        msg = (
-            "OpenAMS units do not support standard AFC hub calibration. "
-            "Use OpenAMS-specific calibration commands instead:\n"
-            "  - AFC_OAMS_CALIBRATE_HUB_HES UNIT={} SPOOL=<spool_index>\n"
-            "  - AFC_OAMS_CALIBRATE_HUB_HES_ALL UNIT={}"
-        ).format(self.name, self.name)
-        self.logger.info(msg)
-        return False, msg, 0
+        """Calibrate bay-to-hub distance using encoder + hub HES.
+
+        Feeds filament from bay, measures encoder clicks until hub HES
+        triggers, saves hub_distance to OAMS config.
+        """
+        oam = self.oams
+        if oam is None:
+            return False, "OAMS not available", 0
+
+        spool_idx = self._get_openams_spool_index(cur_lane)
+        if spool_idx is None or spool_idx < 0:
+            return False, f"Cannot determine spool index for {cur_lane.name}", 0
+
+        success, msg, clicks = oam.calibrate_hub_distance(spool_idx)
+        return success, msg, clicks
 
     def _sync_afc_from_hardware_at_startup(self):
         """Align AFC state with OpenAMS hardware sensors.
