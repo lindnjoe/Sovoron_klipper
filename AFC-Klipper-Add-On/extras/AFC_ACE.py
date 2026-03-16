@@ -947,6 +947,14 @@ class afcACE(afcUnit):
                     self._apply_slot_filament_defaults(lane, slot_info)
                     self.lane_illuminate_spool(lane)
                     self.afc.save_vars()
+                    # Feed filament to hub if load_to_hub is enabled
+                    try:
+                        self.prep_post_load(lane)
+                    except Exception as e:
+                        self.logger.error(
+                            f"ACE callback: prep_post_load error for "
+                            f"{lane.name}: {e}"
+                        )
 
             # When a slot goes empty, transition the lane to unloaded
             # so new filament insertion is properly detected (NONE gate).
@@ -2165,6 +2173,15 @@ class afcACE(afcUnit):
             )
         )
         cur_lane.set_afc_prep_done()
+        # After startup prep, feed loaded lanes to hub if configured.
+        # Must happen after set_afc_prep_done so the lane is fully ready.
+        if succeeded and cur_lane.prep_state and not cur_lane.tool_loaded:
+            try:
+                self.prep_post_load(cur_lane)
+            except Exception as e:
+                self.logger.error(
+                    f"PREP: prep_post_load error for {cur_lane.name}: {e}"
+                )
         return succeeded
 
     # ---- Calibration ----
@@ -2671,6 +2688,14 @@ class afcACE(afcUnit):
                     self._apply_slot_filament_defaults(lane, slot_info)
                     self.lane_illuminate_spool(lane)
                     self.afc.save_vars()
+                    # Feed filament to hub if load_to_hub is enabled
+                    try:
+                        self.prep_post_load(lane)
+                    except Exception as e:
+                        self.logger.error(
+                            f"ACE poll: prep_post_load error for "
+                            f"{lane.name}: {e}"
+                        )
 
             # Detect ready -> not-ready transition (filament runout)
             # Skip runout detection while dryer is running - drying can
