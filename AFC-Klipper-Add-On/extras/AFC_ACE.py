@@ -11,10 +11,12 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
+import logging
 import traceback
 
 from configfile import error as config_error
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
 if TYPE_CHECKING:
@@ -35,6 +37,11 @@ except: raise config_error(ERROR_STR.format(import_lib="AFC_respond", trace=trac
 
 try: from extras.AFC_ACE_serial import ACEConnection, ACESerialError, ACETimeoutError
 except: raise config_error(ERROR_STR.format(import_lib="AFC_ACE_serial", trace=traceback.format_exc()))
+
+try: from extras.AFC_logger import AFC_QueueListener
+except: pass  # Fallback: serial logger will use module-level default
+
+from queuelogger import QueueHandler
 
 # Operational modes
 MODE_COMBINED = "combined"  # Multiple slots -> one toolhead (retract before feed)
@@ -265,6 +272,28 @@ class afcACE(afcUnit):
         """Schedule deferred init - reactor pause is disabled during klippy:ready."""
         self.afc.reactor.register_callback(self._deferred_init)
 
+    def _create_serial_logger(self):
+        """Create a dedicated logger for ACE serial comms (writes to AFC_ACE_serial.log)."""
+        logger = logging.getLogger("AFC_ACE_serial_file")
+        if logger.handlers:
+            return logger  # Already set up (e.g. multiple ACE units)
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+        try:
+            log_path = self.printer.start_args.get("log_file", None)
+            if log_path:
+                log_file = Path(log_path).parent / "AFC_ACE_serial.log"
+                ql = AFC_QueueListener(log_file)
+                ql.setFormatter(logging.Formatter(
+                    "%(asctime)s %(message)s", datefmt="%H:%M:%S"
+                ))
+                handler = QueueHandler(ql.bg_queue)
+                logger.addHandler(handler)
+                return logger
+        except Exception:
+            pass
+        return None  # Caller will fall back to main AFC logger
+
     # USB devices may not be enumerated yet at Klipper startup.
     # Retry with backoff so a full reboot doesn't require a manual
     # FIRMWARE_RESTART just to bring the ACE online.
@@ -273,13 +302,14 @@ class afcACE(afcUnit):
 
     def _deferred_init(self, eventtime):
         """Connect to ACE hardware after reactor is fully running."""
+        serial_logger = self._create_serial_logger() or self.logger
         last_err = None
         for attempt in range(self._CONNECT_MAX_RETRIES):
             try:
                 self._ace = ACEConnection(
                     reactor=self.afc.reactor,
                     serial_port=self.serial_port,
-                    logger=self.logger,
+                    logger=serial_logger,
                     baud_rate=self.baud_rate,
                 )
                 self._ace.connect()
