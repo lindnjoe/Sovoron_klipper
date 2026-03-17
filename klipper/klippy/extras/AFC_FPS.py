@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+import logging
 from configparser import Error as error
 from typing import TYPE_CHECKING, Optional
 
@@ -65,6 +66,8 @@ class AFCFPSBuffer:
         self.last_state = "Unknown"
         self.enable = False
         self.current_lane: Optional[AFCLane | AFCExtruderStepper] = None
+        self.advance_state = False
+        self.trailing_state = False
 
         self.debug = config.getboolean("debug", False)
 
@@ -105,6 +108,31 @@ class AFCFPSBuffer:
         # Gives headroom for fast retractions and tool changes without fighting.
         # Default 0.30 → window from .35 to .65 (set_point ± deadband/2)
         self.deadband: float = config.getfloat('deadband', 0.30, minval=0.0, maxval=0.6)
+
+        # Validate that low_point < set_point < high_point
+        if self.low_point >= self.set_point:
+            raise error(
+                "AFC_FPS {}: low_point ({}) must be less than set_point ({})".format(
+                    self.name, self.low_point, self.set_point))
+        if self.high_point <= self.set_point:
+            raise error(
+                "AFC_FPS {}: high_point ({}) must be greater than set_point ({})".format(
+                    self.name, self.high_point, self.set_point))
+
+        # Validate deadband doesn't exceed the available range
+        half_db = self.deadband / 2.0
+        if self.set_point - half_db <= self.low_point:
+            raise error(
+                "AFC_FPS {}: deadband ({}) too wide — neutral_low ({:.3f}) "
+                "must be above low_point ({})".format(
+                    self.name, self.deadband,
+                    self.set_point - half_db, self.low_point))
+        if self.set_point + half_db >= self.high_point:
+            raise error(
+                "AFC_FPS {}: deadband ({}) too wide — neutral_high ({:.3f}) "
+                "must be below high_point ({})".format(
+                    self.name, self.deadband,
+                    self.set_point + half_db, self.high_point))
 
         # Smoothing factor for exponential moving average (0 = no smoothing, 1 = max)
         self.smoothing: float = config.getfloat('smoothing', 0.3, minval=0.0, maxval=0.95)
@@ -176,6 +204,11 @@ class AFCFPSBuffer:
         # Register with AFC buffer registry
         self.afc.buffers[self.name] = self
 
+        # Also register under the AFC_buffer namespace so the upstream
+        # AFC_unit buffer lookup (printer.lookup_object('AFC_buffer <name>'))
+        # finds us without needing changes to AFC_unit.py.
+        self.printer.add_object('AFC_buffer {}'.format(self.name), self)
+
     def __str__(self):
         return self.name
 
@@ -242,6 +275,8 @@ class AFCFPSBuffer:
         if neutral_low <= reading <= neutral_high:
             self.set_multiplier(1.0)
             self.last_state = NEUTRAL_STATE_NAME
+            self.advance_state = False
+            self.trailing_state = False
             if self.led:
                 self.afc.function.afc_led(self.led_neutral, self.led_index)
             return eventtime + self.update_interval
@@ -257,6 +292,8 @@ class AFCFPSBuffer:
                 fraction = 1.0
             multiplier = 1.0 - fraction * (1.0 - self.multiplier_low)
             self.last_state = TRAILING_STATE_NAME
+            self.advance_state = False
+            self.trailing_state = True
             if self.led:
                 self.afc.function.afc_led(self.led_trailing, self.led_index)
         else:
@@ -270,6 +307,8 @@ class AFCFPSBuffer:
                 fraction = 1.0
             multiplier = 1.0 + fraction * (self.multiplier_high - 1.0)
             self.last_state = ADVANCING_STATE_NAME
+            self.advance_state = True
+            self.trailing_state = False
             if self.led:
                 self.afc.function.afc_led(self.led_advancing, self.led_index)
 
@@ -295,7 +334,7 @@ class AFCFPSBuffer:
         self.enable = True
 
         if self.led:
-            self.afc.function.afc_led(self.led_buffer_disabled, self.led_index)
+            self.afc.function.afc_led(self.led_neutral, self.led_index)
 
         # Reset smoothed value to current reading
         self.smoothed_fps = self.fps_value
@@ -643,5 +682,199 @@ class AFCFPSBuffer:
         self.disable_buffer()
 
 
+# ---------------------------------------------------------------------------
+#  Virtual filament sensor & extruder patch
+#
+#  When pin_tool_start references an FPS buffer name (e.g. "FPS_buffer1"),
+#  AFCExtruder.__init__ would try to register it as a GPIO pin and fail.
+#  The patch below temporarily rewrites the config value to "buffer" (which
+#  the base init harmlessly skips), then creates a lightweight virtual
+#  filament sensor so the extruder has a valid fila_tool_start object.
+# ---------------------------------------------------------------------------
+
+_fps_logger = logging.getLogger(__name__)
+
+
+class VirtualRunoutHelper:
+    """Minimal runout helper used by FPS virtual sensors."""
+
+    def __init__(self, printer, name, runout_cb=None, enable_runout=False):
+        self.printer = printer
+        self._reactor = printer.get_reactor()
+        self.name = name
+        self.runout_callback = runout_cb
+        self.sensor_enabled = bool(enable_runout)
+        self.filament_present = False
+        self.insert_gcode = None
+        self.runout_gcode = None
+        self.event_delay = 0.0
+        self.min_event_systime = self._reactor.NEVER
+
+    def note_filament_present(self, eventtime=None, is_filament_present=False, **_kwargs):
+        if eventtime is None:
+            eventtime = self._reactor.monotonic()
+
+        new_state = bool(is_filament_present)
+        if new_state == self.filament_present:
+            return
+
+        self.filament_present = new_state
+
+        if (not new_state and self.sensor_enabled and callable(self.runout_callback)):
+            try:
+                self.runout_callback(eventtime)
+            except TypeError:
+                self.runout_callback(eventtime=eventtime)
+
+    def get_status(self, _eventtime=None):
+        return {
+            "filament_detected": bool(self.filament_present),
+            "enabled": bool(self.sensor_enabled),
+        }
+
+
+class VirtualFilamentSensor:
+    """Lightweight filament sensor placeholder for FPS virtual pins."""
+
+    QUERY_HELP = "Query the status of the Filament Sensor"
+    SET_HELP = "Sets the filament sensor on/off"
+
+    def __init__(self, printer, name, show_in_gui=True, runout_cb=None, enable_runout=False):
+        self.printer = printer
+        self.name = name
+        self._object_name = f"filament_switch_sensor {name}"
+        self.runout_helper = VirtualRunoutHelper(printer, name, runout_cb=runout_cb, enable_runout=enable_runout)
+
+        objects = getattr(printer, "objects", None)
+        if isinstance(objects, dict):
+            objects.setdefault(self._object_name, self)
+            if not show_in_gui:
+                hidden_key = "_" + self._object_name
+                objects[hidden_key] = objects.pop(self._object_name)
+
+        gcode = printer.lookup_object("gcode", None)
+        if gcode is None:
+            return
+        try:
+            gcode.register_mux_command("QUERY_FILAMENT_SENSOR", "SENSOR", name, self.cmd_QUERY_FILAMENT_SENSOR, desc=self.QUERY_HELP)
+        except Exception:
+            pass
+        try:
+            gcode.register_mux_command("SET_FILAMENT_SENSOR", "SENSOR", name, self.cmd_SET_FILAMENT_SENSOR, desc=self.SET_HELP)
+        except Exception:
+            pass
+
+    def get_status(self, eventtime):
+        return self.runout_helper.get_status(eventtime)
+
+    def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
+        status = self.runout_helper.get_status(None)
+        if status["filament_detected"]:
+            msg = f"Filament Sensor {self.name}: filament detected"
+        else:
+            msg = f"Filament Sensor {self.name}: filament not detected"
+        gcmd.respond_info(msg)
+
+    def cmd_SET_FILAMENT_SENSOR(self, gcmd):
+        self.runout_helper.sensor_enabled = bool(gcmd.get_int("ENABLE", 1))
+
+
+def normalize_pin_value(pin_value) -> Optional[str]:
+    """Return the cleaned FPS_* token stripped of comments and modifiers."""
+    if not isinstance(pin_value, str):
+        return None
+
+    cleaned = pin_value.strip()
+    if not cleaned:
+        return None
+
+    for comment_char in ("#", ";"):
+        idx = cleaned.find(comment_char)
+        if idx != -1:
+            cleaned = cleaned[:idx].strip()
+    if not cleaned:
+        return None
+
+    while cleaned and cleaned[0] in "!^":
+        cleaned = cleaned[1:]
+
+    return cleaned or None
+
+
+def is_fps_buffer_pin(pin_value) -> bool:
+    """Return True if pin_value references an AFC_FPS buffer name."""
+    cleaned = normalize_pin_value(pin_value)
+    if not cleaned:
+        return False
+    return cleaned.upper().startswith("FPS_")
+
+
+def patch_extruder_for_virtual_fps() -> None:
+    """Patch AFC extruders so FPS_* tool pins create virtual filament sensors.
+
+    When pin_tool_start is an FPS buffer name (e.g. "FPS_buffer1"), the
+    base AFCExtruder.__init__ would try to register it as a GPIO pin on the
+    MCU and fail.  This patch temporarily rewrites the config value to
+    "buffer" (which base_init skips), then sets up a virtual filament
+    sensor after base_init returns.
+    """
+    try:
+        import extras.AFC_extruder as _afc_extruder_mod
+    except Exception:
+        return
+
+    extruder_cls = getattr(_afc_extruder_mod, "AFCExtruder", None)
+    if extruder_cls is None or getattr(extruder_cls, "_fps_virtual_tool_patched", False):
+        return
+
+    base_init = extruder_cls.__init__
+
+    def _patched_init(self, config):
+        try:
+            pin_value = config.get("pin_tool_start", None)
+        except Exception as e:
+            _fps_logger.debug(f"Failed to read pin_tool_start from config: {e}")
+            pin_value = None
+
+        normalized = normalize_pin_value(pin_value)
+        is_fps = is_fps_buffer_pin(pin_value)
+
+        if normalized and not is_fps:
+            normalized = None
+
+        # If this is an FPS buffer pin, temporarily set pin_tool_start to
+        # "buffer" so base_init skips GPIO registration.  Restore after.
+        if normalized:
+            section = config.get_name()
+            config.fileconfig.set(section, "pin_tool_start", "buffer")
+
+        try:
+            base_init(self, config)
+        finally:
+            # Restore the original value so it's visible in config dumps
+            if normalized and pin_value is not None:
+                section = config.get_name()
+                config.fileconfig.set(section, "pin_tool_start", pin_value)
+
+        if not normalized:
+            return
+
+        show_sensor = False
+        enable_runout = getattr(self, "enable_runout", False)
+        runout_cb = getattr(self, "handle_start_runout", None)
+
+        setattr(self, "_fps_virtual_tool_name", normalized)
+
+        virtual = VirtualFilamentSensor(self.printer, normalized, show_in_gui=show_sensor, runout_cb=runout_cb, enable_runout=enable_runout)
+
+        self.tool_start = pin_value
+        self.fila_tool_start = virtual
+        self.tool_start_state = bool(virtual.runout_helper.filament_present)
+
+    extruder_cls.__init__ = _patched_init
+    extruder_cls._fps_virtual_tool_patched = True
+
+
 def load_config_prefix(config):
+    patch_extruder_for_virtual_fps()
     return AFCFPSBuffer(config)

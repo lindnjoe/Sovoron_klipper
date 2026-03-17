@@ -109,6 +109,31 @@ class AFCFPSBuffer:
         # Default 0.30 → window from .35 to .65 (set_point ± deadband/2)
         self.deadband: float = config.getfloat('deadband', 0.30, minval=0.0, maxval=0.6)
 
+        # Validate that low_point < set_point < high_point
+        if self.low_point >= self.set_point:
+            raise error(
+                "AFC_FPS {}: low_point ({}) must be less than set_point ({})".format(
+                    self.name, self.low_point, self.set_point))
+        if self.high_point <= self.set_point:
+            raise error(
+                "AFC_FPS {}: high_point ({}) must be greater than set_point ({})".format(
+                    self.name, self.high_point, self.set_point))
+
+        # Validate deadband doesn't exceed the available range
+        half_db = self.deadband / 2.0
+        if self.set_point - half_db <= self.low_point:
+            raise error(
+                "AFC_FPS {}: deadband ({}) too wide — neutral_low ({:.3f}) "
+                "must be above low_point ({})".format(
+                    self.name, self.deadband,
+                    self.set_point - half_db, self.low_point))
+        if self.set_point + half_db >= self.high_point:
+            raise error(
+                "AFC_FPS {}: deadband ({}) too wide — neutral_high ({:.3f}) "
+                "must be below high_point ({})".format(
+                    self.name, self.deadband,
+                    self.set_point + half_db, self.high_point))
+
         # Smoothing factor for exponential moving average (0 = no smoothing, 1 = max)
         self.smoothing: float = config.getfloat('smoothing', 0.3, minval=0.0, maxval=0.95)
         self.smoothed_fps: float = 0.5
@@ -309,7 +334,7 @@ class AFCFPSBuffer:
         self.enable = True
 
         if self.led:
-            self.afc.function.afc_led(self.led_buffer_disabled, self.led_index)
+            self.afc.function.afc_led(self.led_neutral, self.led_index)
 
         # Reset smoothed value to current reading
         self.smoothed_fps = self.fps_value
