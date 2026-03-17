@@ -816,7 +816,7 @@ class afcACE(afcUnit):
         lane.sync_to_extruder()
         self.afc.spool.set_active_spool(lane.spool_id)
 
-        # Filament is in the hub path to the toolhead — set virtual hub sensor
+        # Filament is in the hub path to the toolhead â€” set virtual hub sensor
         self._set_hub_state(lane, True)
 
         # Hydrate virtual sensor so extruder knows filament is present
@@ -945,7 +945,7 @@ class afcACE(afcUnit):
                     )
                     self._restore_tool_loaded_state(lane)
                 elif lane.name in self._hub_load_suppressed:
-                    # Lane was explicitly ejected — slot is still ready but
+                    # Lane was explicitly ejected â€” slot is still ready but
                     # we must NOT treat this as new filament.  Restore LOADED
                     # state so the lane isn't stuck in NONE, but keep the
                     # suppression flag so prep_post_load won't re-feed to hub.
@@ -1273,7 +1273,7 @@ class afcACE(afcUnit):
                     f"(mode={self.mode})"
                 )
 
-            # Filament is about to feed through the hub — set virtual hub
+            # Filament is about to feed through the hub â€” set virtual hub
             # sensor so downstream checks see it as occupied.
             self._set_hub_state(cur_lane, True)
 
@@ -1286,7 +1286,7 @@ class afcACE(afcUnit):
             cur_lane.loaded_to_hub = True
 
         except Exception as e:
-            # Load failed — clear virtual hub since filament may not be in path
+            # Load failed â€” clear virtual hub since filament may not be in path
             self._set_hub_state(cur_lane, False)
             message = f"ACE load failed for {cur_lane.name}: {e}"
             self.logger.error(f"{message}\n{traceback.format_exc()}")
@@ -1653,7 +1653,7 @@ class afcACE(afcUnit):
                         self.afc.reactor.monotonic() + 0.1
                     )
 
-                # Hub sensor clear — retract extra to fully clear the path
+                # Hub sensor clear â€” retract extra to fully clear the path
                 clear_dis = cur_hub.hub_clear_move_dis
                 self.logger.info(
                     f"ACE unload: hub cleared, retracting "
@@ -1671,7 +1671,7 @@ class afcACE(afcUnit):
                 self._current_loaded_slot = -1
 
             # Filament is staged near hub, ready for fast reload.
-            # Clear virtual hub sensor — filament is no longer in the
+            # Clear virtual hub sensor â€” filament is no longer in the
             # hub path, just nearby for convenience.
             self._set_hub_state(cur_lane, False)
             cur_lane.loaded_to_hub = True
@@ -2114,7 +2114,7 @@ class afcACE(afcUnit):
         if local_slot < 0:
             return
 
-        # Check if slot has filament — don't gate on loaded_to_hub alone
+        # Check if slot has filament â€” don't gate on loaded_to_hub alone
         # since that flag can get out of sync with the physical state.
         slot_info = self._slot_inventory.get(local_slot, {})
         slot_ready = slot_info.get("status", "") == "ready"
@@ -2130,7 +2130,7 @@ class afcACE(afcUnit):
         if not lane.loaded_to_hub:
             self.logger.warning(
                 f"ACE eject_lane: {lane_name} loaded_to_hub is False but slot "
-                f"is ready — retracting anyway"
+                f"is ready â€” retracting anyway"
             )
 
         dist_hub = self._get_dist_hub(lane)
@@ -2262,7 +2262,7 @@ class afcACE(afcUnit):
                 if cur_lane.tool_loaded:
                     # Filament is in the toolhead, so it's also in the hub path
                     cur_lane.loaded_to_hub = True
-                    # Set virtual hub sensor — filament is actively through hub
+                    # Set virtual hub sensor â€” filament is actively through hub
                     self._set_hub_state(cur_lane, True)
                     # For ACE with AMS virtual pin, the FPS reads zero
                     # at startup (motor off) so tool_start_state is False.
@@ -2860,7 +2860,7 @@ class afcACE(afcUnit):
                     )
                     self._restore_tool_loaded_state(lane)
                 elif lane.name in self._hub_load_suppressed:
-                    # Lane was explicitly ejected — slot is still ready but
+                    # Lane was explicitly ejected â€” slot is still ready but
                     # we must NOT treat this as new filament.  Restore LOADED
                     # state so the lane isn't stuck in NONE, but keep the
                     # suppression flag so prep_post_load won't re-feed to hub.
