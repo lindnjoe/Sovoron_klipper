@@ -1016,14 +1016,43 @@ class afcACE(afcUnit):
                             f"{lane.name}: {e}"
                         )
 
-            # When a slot goes empty, transition the lane to unloaded
-            # so new filament insertion is properly detected (NONE gate).
+            # When a slot goes empty, handle runout for TOOLED lanes
+            # or transition LOADED lanes to unloaded.
             if not slot_ready and not slot_transient:
                 prev_ready_cb = self._prev_slot_states.get(lane.name)
                 if prev_ready_cb:
                     self._hub_load_suppressed.discard(lane.name)
-                    self._clear_slot_inventory(local_slot)
-                    if lane.status == AFCLaneState.LOADED:
+                    is_printing = False
+                    try:
+                        is_printing = self.afc.function.is_printing()
+                    except Exception:
+                        pass
+                    if (not self._drying_active
+                            and is_printing
+                            and lane.status == AFCLaneState.TOOLED):
+                        self.logger.info(
+                            f"ACE runout detected on {lane.name} "
+                            f"(slot {local_slot})"
+                        )
+                        self._clear_slot_inventory(local_slot)
+                        lane.loaded_to_hub = False
+                        self._set_hub_state(lane, False)
+                        if lane.runout_lane:
+                            try:
+                                lane._perform_infinite_runout()
+                            except Exception as e:
+                                self.logger.error(
+                                    f"ACE infinite spool failed for "
+                                    f"{lane.name}: {e}\n"
+                                    f"{traceback.format_exc()}"
+                                )
+                                lane._perform_pause_runout()
+                            finally:
+                                lane.loaded_to_hub = False
+                        else:
+                            self._ace_pause_runout(lane)
+                    elif lane.status == AFCLaneState.LOADED:
+                        self._clear_slot_inventory(local_slot)
                         lane.set_unloaded()
                         self.lane_not_ready(lane)
                         self.afc.save_vars()
