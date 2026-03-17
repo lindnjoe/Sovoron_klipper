@@ -321,6 +321,20 @@ class afcUnit:
         index = 0
         title = '{} Lane Calibration'.format(self.name)
 
+        # Check for virtual hub on ACE units - cannot calibrate dist_hub without physical hub
+        is_ace = getattr(self, 'type', None) == 'ACE'
+        hub_is_virtual = False
+        if self.hub_obj is not None:
+            hub_pin = getattr(self.hub_obj, 'switch_pin', 'virtual')
+            hub_is_virtual = str(hub_pin).lower() == 'virtual'
+
+        if is_ace and hub_is_virtual:
+            text = ('{} has a virtual hub. Lane calibration requires a physical hub sensor. '
+                    'Set dist_hub manually in config.').format(self.name)
+            back = [('Back', 'UNIT_CALIBRATION UNIT={}'.format(self.name), 'info')]
+            prompt.create_custom_p(title, text, None, True, None, back)
+            return
+
         text = ""
         # Check to see if lanes that need to be ejected have already been calibrated and add
         # message so user knows which lanes will be ejected and then calibrated on next filament
@@ -389,15 +403,39 @@ class afcUnit:
         group_buttons = []
         index = 0
         title = 'Bowden Calibration {}'.format(self.name)
-        text = ('Select a loaded lane from {} to measure Bowden length. '
-                'ONLY CALIBRATE BOWDEN USING 1 LANE PER UNIT/hub.'
-                'Config option: afc_bowden_length').format(self.name)
+
+        # Check for virtual hub on ACE units - cannot calibrate without physical hub
+        is_ace = getattr(self, 'type', None) == 'ACE'
+        hub_is_virtual = False
+        if self.hub_obj is not None:
+            hub_pin = getattr(self.hub_obj, 'switch_pin', 'virtual')
+            hub_is_virtual = str(hub_pin).lower() == 'virtual'
+
+        if is_ace and hub_is_virtual:
+            text = ('{} has a virtual hub. Bowden calibration requires a physical hub sensor. '
+                    'Set feed_length and retract_length manually in config.').format(self.name)
+            back = [('Back', 'UNIT_CALIBRATION UNIT={}'.format(self.name), 'info')]
+            prompt.create_custom_p(title, text, None, True, None, back)
+            return
+
+        if is_ace:
+            text = ('Select a loaded lane from {} to measure Bowden length. '
+                    'Each lane is calibrated individually. '
+                    'Config option: feed_length / retract_length').format(self.name)
+        else:
+            text = ('Select a loaded lane from {} to measure Bowden length. '
+                    'ONLY CALIBRATE BOWDEN USING 1 LANE PER UNIT/hub. '
+                    'Config option: afc_bowden_length').format(self.name)
 
         for lane in self.lanes.values():
             if lane.load_state and not lane.is_direct_hub():
                 # Create a button for each lane
                 button_label = "{}".format(lane)
-                button_command = "CALIBRATE_AFC BOWDEN={}".format(lane)
+                # ACE uses per-lane calibration; stepper units use unit-level bowden calibration
+                if is_ace:
+                    button_command = "CALIBRATE_AFC LANE={}".format(lane)
+                else:
+                    button_command = "CALIBRATE_AFC BOWDEN={}".format(lane)
                 button_style = "primary" if index % 2 == 0 else "secondary"
                 group_buttons.append((button_label, button_command, button_style))
 
@@ -440,10 +478,31 @@ class afcUnit:
         group_buttons = []
         index = 0
         title = 'TD-1 Bowden Calibration {}'.format(self.name)
-        text = ('Select a loaded lane from {} to measure Bowden length to your TD-1 Device. '
-                'ONLY CALIBRATE BOWDEN USING 1 LANE PER UNIT/hub. '
-                'WARNING: This could take some time to complete. '
-                'Config option: td1_bowden_length').format(self.name)
+
+        # Check for virtual hub on ACE units - cannot calibrate TD-1 without physical hub
+        is_ace = getattr(self, 'type', None) == 'ACE'
+        hub_is_virtual = False
+        if self.hub_obj is not None:
+            hub_pin = getattr(self.hub_obj, 'switch_pin', 'virtual')
+            hub_is_virtual = str(hub_pin).lower() == 'virtual'
+
+        if is_ace and hub_is_virtual:
+            text = ('{} has a virtual hub. TD-1 calibration requires a physical hub sensor. '
+                    'Set td1_bowden_length manually in config.').format(self.name)
+            back = [('Back', 'UNIT_CALIBRATION UNIT={}'.format(self.name), 'info')]
+            prompt.create_custom_p(title, text, None, True, None, back)
+            return
+
+        if is_ace:
+            text = ('Select a loaded lane from {} to measure Bowden length to your TD-1 Device. '
+                    'Each lane is calibrated individually. '
+                    'WARNING: This could take some time to complete. '
+                    'Config option: td1_bowden_length').format(self.name)
+        else:
+            text = ('Select a loaded lane from {} to measure Bowden length to your TD-1 Device. '
+                    'ONLY CALIBRATE BOWDEN USING 1 LANE PER UNIT/hub. '
+                    'WARNING: This could take some time to complete. '
+                    'Config option: td1_bowden_length').format(self.name)
 
         for lane in self.lanes.values():
             if (lane.td1_device_id
