@@ -485,7 +485,7 @@ class AFCFPSBuffer:
     # G-code commands
     # ------------------------------------------------------------------
     cmd_QUERY_BUFFER_help = "Report FPS buffer sensor state"
-    cmd_QUERY_BUFFER_options = {"BUFFER": {"type": "string"}}
+    cmd_QUERY_BUFFER_options = {"BUFFER": {"type": "string", "default": ""}}
 
     def cmd_QUERY_BUFFER(self, gcmd):
         """
