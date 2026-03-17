@@ -177,6 +177,11 @@ class AFCFPSBuffer:
         # Register with AFC buffer registry
         self.afc.buffers[self.name] = self
 
+        # Also register under the AFC_buffer namespace so the upstream
+        # AFC_unit buffer lookup (printer.lookup_object('AFC_buffer <name>'))
+        # finds us without needing changes to AFC_unit.py.
+        self.printer.add_object('AFC_buffer {}'.format(self.name), self)
+
     def __str__(self):
         return self.name
 
