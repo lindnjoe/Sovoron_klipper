@@ -202,6 +202,19 @@ class AFCFPSBuffer:
             if led is None:
                 raise error(error_string)
 
+    @property
+    def extruder(self):
+        """Return the active Klipper extruder object for this buffer's lane.
+
+        The oams_manager uses fps.extruder.last_position to track filament
+        movement for runout coasting, engagement verification, and clog
+        detection.
+        """
+        toolhead = getattr(self, 'toolhead', None)
+        if toolhead is not None:
+            return toolhead.get_extruder()
+        return None
+
     def get_fps_value(self) -> float:
         """Get current FPS pressure value (0.0-1.0)."""
         return self.fps_value
