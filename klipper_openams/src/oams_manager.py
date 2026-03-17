@@ -5293,6 +5293,10 @@ class OAMSManager:
         if not fps_name:
             return False, f"No FPS buffer found for OAMS {oams_name}"
 
+        fps = self.fpss.get(fps_name)
+        if fps is None:
+            return False, f"FPS buffer object '{fps_name}' not found"
+
         fps_state = self.current_state.fps_state[fps_name]
 
         # Synchronize with actual loaded lane before deciding how to handle the request
