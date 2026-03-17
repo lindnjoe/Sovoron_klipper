@@ -469,6 +469,9 @@ class AFCExtruder:
 
         Matches names that appear as [AFC_FPS <name>] config sections.
         These are resolved at klippy:ready time by the FPS buffer driver.
+
+        Must work during early init before the AFC_FPS module is loaded,
+        so we also check the raw config for a matching section.
         """
         if name is None:
             return False
@@ -476,8 +479,17 @@ class AFCExtruder:
         fps_obj = self.afc.buffers.get(name, None)
         if fps_obj is not None and hasattr(fps_obj, 'get_fps_value'):
             return True
-        # Also check by printer object name for early init
-        return self.printer.lookup_object("AFC_FPS {}".format(name), None) is not None
+        # Check by printer object name
+        if self.printer.lookup_object("AFC_FPS {}".format(name), None) is not None:
+            return True
+        # Check raw config sections — handles early init before AFC_FPS
+        # module is loaded (AFC_extruder is parsed before AFC_FPS).
+        pconfig = self.printer.lookup_object("configfile", None)
+        if pconfig is not None:
+            section = "afc_fps {}".format(name).lower()
+            if pconfig.fileconfig.has_section(section):
+                return True
+        return False
 
     def tool_start_callback(self, eventtime, state):
         """
