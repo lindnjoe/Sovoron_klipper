@@ -602,3 +602,60 @@ class TestEdgeCases:
         buf._correction_event(100.0)
         # At low_point, fraction=1.0, multiplier = 1.0 + 1.0*(1.5-1.0) = 1.5
         buf.current_lane.update_rotation_distance.assert_called_with(pytest.approx(1.5))
+
+
+# ── Extruder Property (oams_manager compatibility) ──────────────────────────
+
+class TestExtruderProperty:
+    def test_returns_active_extruder(self):
+        """extruder property returns the active toolhead extruder."""
+        buf = _make_fps_buffer()
+        mock_extruder = MagicMock()
+        mock_extruder.last_position = 42.5
+        buf.toolhead.get_extruder.return_value = mock_extruder
+        assert buf.extruder is mock_extruder
+        assert buf.extruder.last_position == 42.5
+
+    def test_returns_none_before_ready(self):
+        """extruder property returns None when toolhead not yet initialized."""
+        buf = _make_fps_buffer(overrides={"toolhead": None})
+        assert buf.extruder is None
+
+    def test_oams_style_access_pattern(self):
+        """Verify the fps.extruder.last_position pattern used by oams_manager."""
+        buf = _make_fps_buffer()
+        mock_extruder = MagicMock()
+        mock_extruder.last_position = 100.0
+        buf.toolhead.get_extruder.return_value = mock_extruder
+        # This is the exact pattern oams_manager uses:
+        pos = float(getattr(buf.extruder, "last_position", 0.0))
+        assert pos == 100.0
+
+
+# ── Fault Detection Skipped for Stepper-less Lanes ──────────────────────────
+
+class TestFaultDetectionOpenAMS:
+    def test_no_fault_timer_for_stepperless_lane(self):
+        """enable_buffer should NOT start fault detection for stepper-less lanes."""
+        buf = _make_fps_buffer(overrides={"error_sensitivity": 5, "fault_sensitivity": 60})
+        buf.start_fault_detection = MagicMock()
+        lane = _make_mock_lane(has_stepper=False)
+        buf.enable_buffer(lane)
+        buf.start_fault_detection.assert_not_called()
+
+    def test_fault_timer_starts_for_stepper_lane(self):
+        """enable_buffer SHOULD start fault detection for stepper-based lanes."""
+        buf = _make_fps_buffer(overrides={"error_sensitivity": 5, "fault_sensitivity": 60})
+        buf.start_fault_detection = MagicMock()
+        lane = _make_mock_lane(has_stepper=True)
+        buf.enable_buffer(lane)
+        buf.start_fault_detection.assert_called_once()
+
+    def test_extruder_pos_event_skips_stepperless(self):
+        """extruder_pos_update_event should bail for stepper-less lanes."""
+        buf = _make_fps_buffer(overrides={
+            "current_lane": _make_mock_lane(has_stepper=False),
+        })
+        result = buf.extruder_pos_update_event(100.0)
+        # Should return next check time without doing fault detection
+        assert result == pytest.approx(100.5)  # CHECK_RUNOUT_TIMEOUT = 0.5
