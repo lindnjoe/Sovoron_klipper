@@ -3157,6 +3157,54 @@ class afcACE(afcUnit):
         except Exception:
             return False
 
+    def _ace_pause_runout(self, lane):
+        """ACE-specific pause runout when no runout lane is configured.
+
+        When unload_on_runout is enabled, automatically runs TOOL_UNLOAD
+        to retract filament from the toolhead and then LANE_UNLOAD to
+        eject filament from the hub back to the ACE slot.
+
+        When unload_on_runout is disabled, pauses the print and tells
+        the user which commands to run to clear the filament path.
+        """
+        lane_name = getattr(lane, "name", "unknown")
+
+        if self.unload_on_runout:
+            self.logger.info(
+                f"ACE runout on {lane_name}: auto-unloading from "
+                f"toolhead and ejecting lane"
+            )
+            self.afc.error.pause_resume.send_pause_command()
+            self.afc.save_pos()
+            self.afc.TOOL_UNLOAD(lane)
+            if not self.afc.error_state:
+                self.afc.LANE_UNLOAD(lane)
+        else:
+            self.logger.info(
+                f"ACE runout on {lane_name}: pausing print "
+                f"(unload_on_runout disabled)"
+            )
+
+        lane.status = AFCLaneState.NONE
+        self.lane_not_ready(lane)
+
+        if self.unload_on_runout:
+            msg = (
+                f"Runout detected on {lane_name}. "
+                f"Filament has been automatically unloaded.\n"
+                f"Please load a new spool and resume the print."
+            )
+        else:
+            msg = (
+                f"Runout detected on {lane_name} and no runout lane "
+                f"is configured.\n"
+                f"To clear the filament path, run these commands:\n"
+                f"  TOOL_UNLOAD LANE={lane_name}\n"
+                f"  LANE_UNLOAD LANE={lane_name}\n"
+                f"Then load a new spool and resume the print."
+            )
+        self.afc.error.AFC_error(msg)
+
     def _start_slot_status_monitor(self):
         """Start periodic polling for slot status changes (runout detection)."""
         self._prev_slot_states = {}
@@ -3318,7 +3366,7 @@ class afcACE(afcUnit):
                         finally:
                             lane.loaded_to_hub = False
                     else:
-                        lane._perform_pause_runout()
+                        self._ace_pause_runout(lane)
                 elif lane.status == AFCLaneState.LOADED:
                     # Slot went empty - transition to unloaded so new
                     # filament insertion is properly detected.
