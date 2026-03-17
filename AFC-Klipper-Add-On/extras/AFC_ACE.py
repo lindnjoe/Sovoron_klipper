@@ -423,6 +423,12 @@ class afcACE(afcUnit):
                 return self._lane_feed_assist[name]
         return self._get_feed_assist_for_slot(slot_index)
 
+    def _quiet_speed(self, speed):
+        """Return *speed* halved when AFC quiet mode is active, else unchanged."""
+        if self.afc._get_quiet_mode():
+            return speed * 0.5
+        return speed
+
     # ---- FPS (Filament Pressure Sensor) Integration ----
 
     def _resolve_fps_sensor(self):
@@ -1228,12 +1234,13 @@ class afcACE(afcUnit):
                 # Always pick up the tool -even on failure
                 if load_result and self.dock_purge:
                     # Success path: purge in dock, then pick up
+                    purge_spd = self._quiet_speed(self.dock_purge_speed)
                     self.logger.info(
                         f"ACE dock purge: extruding {self.dock_purge_length}mm "
-                        f"@ {self.dock_purge_speed}mm/s in dock, then picking up"
+                        f"@ {purge_spd}mm/s in dock, then picking up"
                     )
                     afc.move_e_pos(
-                        self.dock_purge_length, self.dock_purge_speed,
+                        self.dock_purge_length, purge_spd,
                         "dock purge extrude"
                     )
                 else:
@@ -1378,9 +1385,10 @@ class afcACE(afcUnit):
                         except Exception:
                             pass
                     self._wait_for_ace_ready()
-                    self._ace.feed_filament(local_slot, smart_load_step, self.feed_speed)
+                    smart_spd = self._quiet_speed(self.feed_speed)
+                    self._ace.feed_filament(local_slot, smart_load_step, smart_spd)
                     self._wait_for_feed_complete(
-                        local_slot, smart_load_step, self.feed_speed,
+                        local_slot, smart_load_step, smart_spd,
                         lane=cur_lane, poll_interval=0.3,
                     )
                     afc.reactor.pause(afc.reactor.monotonic() + 0.2)
@@ -1621,10 +1629,11 @@ class afcACE(afcUnit):
             f"ACE unload: starting ACE unwind slot {local_slot} "
             f"{retract_length:.0f}mm (to hub) for lane {cur_lane.name}"
         )
+        unload_spd = self._quiet_speed(self.retract_speed)
         try:
             self._wait_for_ace_ready()
             self._ace.unwind_filament(
-                local_slot, retract_length, self.retract_speed
+                local_slot, retract_length, unload_spd
             )
         except Exception as e:
             message = f"ACE unload: failed to start ACE unwind for {cur_lane.name}: {e}"
@@ -1645,7 +1654,7 @@ class afcACE(afcUnit):
                 f"slot {local_slot} for lane {cur_lane.name}"
             )
             self._wait_for_feed_complete(
-                local_slot, retract_length, self.retract_speed
+                local_slot, retract_length, unload_spd
             )
 
             # If hub has a physical sensor, retract in small steps until
@@ -1674,10 +1683,10 @@ class afcACE(afcUnit):
                     )
                     self._wait_for_ace_ready()
                     self._ace.unwind_filament(
-                        local_slot, hub_clear_step, self.retract_speed
+                        local_slot, hub_clear_step, unload_spd
                     )
                     self._wait_for_feed_complete(
-                        local_slot, hub_clear_step, self.retract_speed
+                        local_slot, hub_clear_step, unload_spd
                     )
                     self.afc.reactor.pause(
                         self.afc.reactor.monotonic() + 0.1
@@ -1691,10 +1700,10 @@ class afcACE(afcUnit):
                 )
                 self._wait_for_ace_ready()
                 self._ace.unwind_filament(
-                    local_slot, clear_dis, self.retract_speed
+                    local_slot, clear_dis, unload_spd
                 )
                 self._wait_for_feed_complete(
-                    local_slot, clear_dis, self.retract_speed
+                    local_slot, clear_dis, unload_spd
                 )
 
             if self.mode == MODE_COMBINED:
@@ -1794,19 +1803,20 @@ class afcACE(afcUnit):
         # Ensure ACE is not still busy from a previous operation
         self._wait_for_ace_ready()
 
+        # Phase 1: Bulk feed (skip the last sensor_approach_margin mm)
+        feed_spd = self._quiet_speed(self.feed_speed)
+
         self.logger.debug(
             f"ACE feed: slot {slot_index}, "
-            f"length={feed_length}mm @ {self.feed_speed}mm/min"
+            f"length={feed_length}mm @ {feed_spd}mm/min"
         )
-
-        # Phase 1: Bulk feed (skip the last sensor_approach_margin mm)
         bulk_distance = max(0, feed_length - self.sensor_approach_margin)
         if bulk_distance > 0:
-            ace.feed_filament(slot_index, bulk_distance, self.feed_speed)
+            ace.feed_filament(slot_index, bulk_distance, feed_spd)
             # Wait for ACE to physically complete the bulk feed movement
             # (ACE ACKs the command before the motor finishes)
             sensor_triggered_early = self._wait_for_feed_complete(
-                slot_index, bulk_distance, self.feed_speed, lane=lane
+                slot_index, bulk_distance, feed_spd, lane=lane
             )
         else:
             sensor_triggered_early = False
@@ -1830,10 +1840,10 @@ class afcACE(afcUnit):
             max_total = feed_length + self.max_feed_overshoot
             while not sensor_triggered and total_fed < max_total:
                 step = min(self.sensor_step, max_total - total_fed)
-                ace.feed_filament(slot_index, step, self.feed_speed)
+                ace.feed_filament(slot_index, step, feed_spd)
                 # Wait for this small step to physically complete
                 sensor_hit = self._wait_for_feed_complete(
-                    slot_index, step, self.feed_speed, lane=lane,
+                    slot_index, step, feed_spd, lane=lane,
                     poll_interval=0.3
                 )
                 total_fed += step
@@ -1847,9 +1857,9 @@ class afcACE(afcUnit):
             # No lane/sensor - just feed the remaining fixed distance
             remaining = feed_length - bulk_distance
             if remaining > 0:
-                ace.feed_filament(slot_index, remaining, self.feed_speed)
+                ace.feed_filament(slot_index, remaining, feed_spd)
                 self._wait_for_feed_complete(
-                    slot_index, remaining, self.feed_speed
+                    slot_index, remaining, feed_spd
                 )
                 total_fed = feed_length
 
@@ -1869,9 +1879,10 @@ class afcACE(afcUnit):
 
             # Use extruder motor to pull filament into hotend
             if self.extruder_assist_length > 0:
+                ext_spd = self._quiet_speed(self.extruder_assist_speed)
                 self.afc.gcode.run_script_from_command(
                     f"G92 E0\n"
-                    f"G1 E{self.extruder_assist_length} F{self.extruder_assist_speed}"
+                    f"G1 E{self.extruder_assist_length} F{ext_spd}"
                 )
 
         return total_fed, sensor_triggered
@@ -2027,15 +2038,16 @@ class afcACE(afcUnit):
         # Ensure ACE is not still busy from a previous operation
         self._wait_for_ace_ready()
 
+        retract_spd = self._quiet_speed(self.retract_speed)
         self.logger.debug(
             f"ACE retract: slot {slot_index}, "
             f"length={retract_length}mm (to_hub={to_hub}) "
-            f"@ {self.retract_speed}mm/min"
+            f"@ {retract_spd}mm/min"
         )
-        ace.unwind_filament(slot_index, retract_length, self.retract_speed)
+        ace.unwind_filament(slot_index, retract_length, retract_spd)
         # Wait for ACE to physically complete the retraction
         self._wait_for_feed_complete(
-            slot_index, retract_length, self.retract_speed
+            slot_index, retract_length, retract_spd
         )
 
     # ---- No-Op / Unsupported Operations ----
@@ -2088,9 +2100,10 @@ class afcACE(afcUnit):
         for attempt in range(max_attempts):
             try:
                 self._wait_for_ace_ready(timeout=30.0)
-                self._ace.feed_filament(local_slot, dist_hub, self.feed_speed)
+                hub_feed_spd = self._quiet_speed(self.feed_speed)
+                self._ace.feed_filament(local_slot, dist_hub, hub_feed_spd)
                 self._wait_for_feed_complete(
-                    local_slot, dist_hub, self.feed_speed
+                    local_slot, dist_hub, hub_feed_spd
                 )
                 lane.loaded_to_hub = True
                 self.afc.save_vars()
