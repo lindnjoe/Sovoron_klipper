@@ -1362,13 +1362,23 @@ class afcACE(afcUnit):
                 return False
         elif cur_extruder.tool_start:
             # Standard toolhead sensor verification with retry.
-            # If the sensor hasn't triggered after the full feed, do up to 5
-            # additional 20mm feeds checking the sensor after each one.  This
-            # handles slight bowden length variations without immediately
-            # failing the load.
+            # When home_to_tool is active, scale retries using
+            # tool_homing_distance so the ACE searches the same range
+            # a BoxTurtle stepper would during endstop homing.
             if not cur_lane.get_toolhead_pre_sensor_state():
                 smart_load_step = 20.0   # mm per retry
-                smart_load_max  = 5      # max retries
+                homing_active = (getattr(afc, 'homing_enabled', False)
+                                 and getattr(afc, 'home_to_tool', False))
+                if homing_active:
+                    homing_dist = getattr(afc, 'tool_homing_distance', 200.0)
+                    smart_load_max = max(5, int(homing_dist / smart_load_step))
+                    self.logger.info(
+                        f"ACE smart load: home_to_tool active — "
+                        f"max retries={smart_load_max} "
+                        f"(tool_homing_distance={homing_dist:.0f}mm)"
+                    )
+                else:
+                    smart_load_max = 5
                 for attempt in range(1, smart_load_max + 1):
                     self.logger.info(
                         f"ACE smart load: sensor not triggered, "
@@ -1400,13 +1410,21 @@ class afcACE(afcUnit):
                         break
                 else:
                     # All retries exhausted -error out
+                    total_searched = smart_load_max * smart_load_step
                     message = (
                         f"ACE load did not trigger toolhead sensor after "
-                        f"{smart_load_max * smart_load_step:.0f}mm of extra feeding. "
+                        f"{total_searched:.0f}mm of extra feeding. "
                         f"CHECK FILAMENT PATH\n"
                         "To resolve, set lane loaded with "
                         f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
                     )
+                    if homing_active:
+                        message += (
+                            f"\nFilament can also be reset back to hub by "
+                            f"running AFC_RESET command then select "
+                            f"{cur_lane.name} to reset back to hub. Once lane "
+                            f"is reset try reload lane with {cur_lane.map} macro."
+                        )
                     if afc.function.in_print():
                         message += (
                             "\nOnce filament is fully loaded click resume to continue printing"
@@ -1803,14 +1821,36 @@ class afcACE(afcUnit):
         # Ensure ACE is not still busy from a previous operation
         self._wait_for_ace_ready()
 
-        # Phase 1: Bulk feed (skip the last sensor_approach_margin mm)
+        # Determine homing behaviour from AFC global config.  When
+        # home_to_tool and homing_enabled are both True we simulate
+        # BoxTurtle-style "home to tool" by giving the sensor approach
+        # phase a much larger search distance (tool_homing_distance)
+        # instead of the small max_feed_overshoot.  load_undershoot
+        # overrides sensor_approach_margin so the blind bulk feed stops
+        # further from the expected sensor, giving more room for the
+        # incremental search.
+        afc = self.afc
+        homing_active = getattr(afc, 'homing_enabled', False) and getattr(afc, 'home_to_tool', False)
+
+        if homing_active:
+            approach_margin = getattr(afc, 'load_undershoot', self.sensor_approach_margin)
+            overshoot = getattr(afc, 'tool_homing_distance', self.max_feed_overshoot)
+            self.logger.info(
+                f"ACE feed: home_to_tool active — approach_margin={approach_margin:.0f}mm, "
+                f"search_distance={overshoot:.0f}mm (tool_homing_distance)"
+            )
+        else:
+            approach_margin = self.sensor_approach_margin
+            overshoot = self.max_feed_overshoot
+
+        # Phase 1: Bulk feed (skip the last approach_margin mm)
         feed_spd = self._quiet_speed(self.feed_speed)
 
         self.logger.debug(
             f"ACE feed: slot {slot_index}, "
             f"length={feed_length}mm @ {feed_spd}mm/min"
         )
-        bulk_distance = max(0, feed_length - self.sensor_approach_margin)
+        bulk_distance = max(0, feed_length - approach_margin)
         if bulk_distance > 0:
             ace.feed_filament(slot_index, bulk_distance, feed_spd)
             # Wait for ACE to physically complete the bulk feed movement
@@ -1821,7 +1861,11 @@ class afcACE(afcUnit):
         else:
             sensor_triggered_early = False
 
-        # Phase 2: Sensor approach - feed in increments, checking sensor
+        # Phase 2: Sensor approach - feed in increments, checking sensor.
+        # When home_to_tool is active the search window is
+        # tool_homing_distance instead of max_feed_overshoot, giving the
+        # ACE the same long runway a BoxTurtle stepper would have when
+        # homing to the toolhead sensor.
         total_fed = bulk_distance
         sensor_triggered = sensor_triggered_early
 
@@ -1837,7 +1881,7 @@ class afcACE(afcUnit):
                     )
 
             # Incremental feed until sensor triggers or max distance reached
-            max_total = feed_length + self.max_feed_overshoot
+            max_total = feed_length + overshoot
             while not sensor_triggered and total_fed < max_total:
                 step = min(self.sensor_step, max_total - total_fed)
                 ace.feed_filament(slot_index, step, feed_spd)
