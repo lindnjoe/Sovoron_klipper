@@ -2388,6 +2388,219 @@ class afcACE(afcUnit):
                 )
         return succeeded
 
+    # ---- Calibration UI overrides ----
+
+    def _hub_is_virtual(self):
+        """Return True when the unit's hub uses a virtual sensor."""
+        if self.hub_obj is None:
+            return True
+        return getattr(self.hub_obj, 'switch_pin', 'virtual').lower() == 'virtual'
+
+    def cmd_UNIT_CALIBRATION(self, gcmd):
+        """Override base calibration menu to show ACE-specific options."""
+        prompt = AFCprompt(gcmd, self.logger)
+        title = f"{self.name} Calibration"
+        text = "Select ACE calibration type"
+        buttons = []
+
+        # Per-lane full PTFE length (slot to toolhead)
+        buttons.append(("Calibrate Lanes", f"UNIT_LANE_CALIBRATION UNIT={self.name}", "primary"))
+
+        # Unit-level bowden length (fallback when per-lane not set)
+        lanes_loaded = any(lane.load_state and not lane.is_direct_hub() for lane in self.lanes.values())
+        direct_hubs = any(lane.is_direct_hub() for lane in self.lanes.values())
+        if not direct_hubs or lanes_loaded:
+            buttons.append(("Calibrate Bowden Length", f"UNIT_BOW_CALIBRATION UNIT={self.name}", "secondary"))
+
+        # Hub calibration (slot to hub sensor) - only if physical hub
+        if not self._hub_is_virtual():
+            buttons.append(("Calibrate Hub", f"ACE_HUB_CALIBRATION UNIT={self.name}", "secondary"))
+
+        # TD-1 calibration
+        any_lane_has_td1_ids = any(lane.td1_device_id for lane in self.lanes.values())
+        if self.afc.td1_defined and any_lane_has_td1_ids:
+            buttons.append(("Calibrate TD-1 Length", f"AFC_UNIT_TD_ONE_CALIBRATION UNIT={self.name}", "secondary"))
+
+        back = [("Back to unit selection", "AFC_CALIBRATION", "info")]
+        prompt.create_custom_p(title, text, None, True, [buttons], back)
+
+    def cmd_UNIT_BOW_CALIBRATION(self, gcmd):
+        """Override base bowden calibration prompt for ACE units.
+
+        ACE stores per-lane feed_length/retract_length.  The unit-level bowden
+        calibration is kept as a fallback when per-lane values are not set.
+        """
+        prompt = AFCprompt(gcmd, self.logger)
+        buttons = []
+        group_buttons = []
+        index = 0
+        title = f"Bowden Calibration {self.name}"
+        text = (
+            f"Select a loaded lane from {self.name} to measure Bowden length. "
+            "This sets the unit-level feed_length / retract_length used when "
+            "per-lane values are not configured."
+        )
+
+        for lane in self.lanes.values():
+            if lane.load_state and not lane.is_direct_hub():
+                button_label = f"{lane}"
+                button_command = f"CALIBRATE_AFC BOWDEN={lane}"
+                button_style = "primary" if index % 2 == 0 else "secondary"
+                group_buttons.append((button_label, button_command, button_style))
+
+                if (index + 1) % 2 == 0 or index == len(self.lanes) - 1:
+                    buttons.append(list(group_buttons))
+                    group_buttons = []
+                index += 1
+
+        if group_buttons:
+            buttons.append(list(group_buttons))
+
+        total_buttons = sum(len(group) for group in buttons)
+        if total_buttons == 0:
+            text = "No lanes are loaded, please load before calibration"
+
+        back = [("Back", f"UNIT_CALIBRATION UNIT={self.name}", "info")]
+        prompt.create_custom_p(title, text, None, True, buttons, back)
+
+    def cmd_UNIT_LANE_CALIBRATION(self, gcmd):
+        """Override base lane calibration prompt for ACE units.
+
+        On ACE, lane calibration measures the full PTFE length (slot to
+        toolhead) and saves per-lane feed_length / retract_length.
+        """
+        prompt = AFCprompt(gcmd, self.logger)
+        buttons = []
+        group_buttons = []
+        index = 0
+        title = f"{self.name} Lane Calibration"
+        text = (
+            f"Select a loaded lane from {self.name} to calibrate. "
+            "Each lane is measured individually (slot to toolhead). "
+            "Config option: feed_length / retract_length"
+        )
+
+        for lane in self.lanes.values():
+            if lane.load_state and not lane.tool_loaded:
+                button_label = f"{lane}"
+                button_command = f"CALIBRATE_AFC LANE={lane}"
+                button_style = "primary" if index % 2 == 0 else "secondary"
+                group_buttons.append((button_label, button_command, button_style))
+
+                if (index + 1) % 2 == 0 or index == len(self.lanes) - 1:
+                    buttons.append(list(group_buttons))
+                    group_buttons = []
+                index += 1
+
+        if group_buttons:
+            buttons.append(list(group_buttons))
+
+        total_buttons = sum(len(group) for group in buttons)
+        if total_buttons == 0:
+            text = "No lanes are loaded, please load before calibration"
+
+        back = [("Back", f"UNIT_CALIBRATION UNIT={self.name}", "info")]
+        prompt.create_custom_p(title, text, None, True, buttons, back)
+
+    def cmd_ACE_HUB_CALIBRATION(self, gcmd):
+        """Prompt to calibrate dist_hub (slot to hub sensor) per lane.
+
+        Only available when the unit has a physical hub sensor.
+        """
+        if self._hub_is_virtual():
+            prompt = AFCprompt(gcmd, self.logger)
+            title = f"Hub Calibration {self.name}"
+            text = (
+                f"{self.name} has a virtual hub. Hub calibration requires a physical hub sensor. "
+                "Set dist_hub manually in config."
+            )
+            back = [("Back", f"UNIT_CALIBRATION UNIT={self.name}", "info")]
+            prompt.create_custom_p(title, text, None, True, None, back)
+            return
+
+        prompt = AFCprompt(gcmd, self.logger)
+        buttons = []
+        group_buttons = []
+        index = 0
+        title = f"Hub Calibration {self.name}"
+        text = (
+            f"Select a loaded lane from {self.name} to measure distance from slot to hub. "
+            "Each lane is calibrated individually. "
+            "Config option: dist_hub"
+        )
+
+        for lane in self.lanes.values():
+            if lane.load_state and not lane.tool_loaded:
+                button_label = f"{lane}"
+                button_command = f"ACE_CALIBRATE_HUB UNIT={self.name} LANE={lane.name}"
+                button_style = "primary" if index % 2 == 0 else "secondary"
+                group_buttons.append((button_label, button_command, button_style))
+
+                if (index + 1) % 2 == 0 or index == len(self.lanes) - 1:
+                    buttons.append(list(group_buttons))
+                    group_buttons = []
+                index += 1
+
+        if group_buttons:
+            buttons.append(list(group_buttons))
+
+        total_buttons = sum(len(group) for group in buttons)
+        if total_buttons == 0:
+            text = "No lanes are loaded, please load before calibration"
+
+        back = [("Back", f"UNIT_CALIBRATION UNIT={self.name}", "info")]
+        prompt.create_custom_p(title, text, None, True, buttons, back)
+
+    def cmd_AFC_UNIT_TD_ONE_CALIBRATION(self, gcmd):
+        """Override base TD-1 calibration prompt for ACE units.
+
+        Each lane is calibrated individually.  Virtual hubs block calibration.
+        """
+        if self._hub_is_virtual():
+            prompt = AFCprompt(gcmd, self.logger)
+            title = f"TD-1 Bowden Calibration {self.name}"
+            text = (
+                f"{self.name} has a virtual hub. TD-1 calibration requires a physical hub sensor. "
+                "Set td1_bowden_length manually in config."
+            )
+            back = [("Back", f"UNIT_CALIBRATION UNIT={self.name}", "info")]
+            prompt.create_custom_p(title, text, None, True, None, back)
+            return
+
+        prompt = AFCprompt(gcmd, self.logger)
+        buttons = []
+        group_buttons = []
+        index = 0
+        title = f"TD-1 Bowden Calibration {self.name}"
+        text = (
+            f"Select a loaded lane from {self.name} to measure Bowden length to your TD-1 Device. "
+            "Each lane is calibrated individually. "
+            "WARNING: This could take some time to complete. "
+            "Config option: td1_bowden_length"
+        )
+
+        for lane in self.lanes.values():
+            if lane.td1_device_id and lane.load_state:
+                button_label = f"{lane}"
+                button_command = f"CALIBRATE_AFC TD1={lane} DISTANCE=50"
+                button_style = "primary" if index % 2 == 0 else "secondary"
+                group_buttons.append((button_label, button_command, button_style))
+
+                if (index + 1) % 2 == 0 or index == len(self.lanes) - 1:
+                    buttons.append(list(group_buttons))
+                    group_buttons = []
+                index += 1
+
+        if group_buttons:
+            buttons.append(list(group_buttons))
+
+        total_buttons = sum(len(group) for group in buttons)
+        if total_buttons == 0:
+            text = "No lanes are loaded, please load before calibration"
+
+        back = [("Back", f"UNIT_CALIBRATION UNIT={self.name}", "info")]
+        prompt.create_custom_p(title, text, None, True, buttons, back)
+
     # ---- Calibration ----
 
     def calibrate_bowden(self, cur_lane, dis, tol):
@@ -3057,37 +3270,15 @@ class afcACE(afcUnit):
             desc="Calibrate ACE dist_hub by feeding until hub sensor triggers",
         )
         self.gcode.register_mux_command(
+            "ACE_HUB_CALIBRATION", "UNIT", self.name,
+            self.cmd_ACE_HUB_CALIBRATION,
+            desc="Show ACE hub calibration menu",
+        )
+        self.gcode.register_mux_command(
             "ACE_LANE_RESET", "UNIT", self.name,
             self.cmd_ACE_LANE_RESET,
             desc="Retract ACE lane filament back into the unit",
         )
-
-    def cmd_UNIT_CALIBRATION(self, gcmd):
-        """Override base calibration menu to show ACE-specific options."""
-        prompt = AFCprompt(gcmd, self.logger)
-        title = f"{self.name} Calibration"
-        text = "Select ACE calibration type"
-        buttons = []
-
-        buttons.append((
-            "Calibrate Lanes (bowden length)",
-            f"UNIT_LANE_CALIBRATION UNIT={self.name}", "primary"
-        ))
-        buttons.append((
-            "Calibrate Hub Distance",
-            f"UNIT_BOW_CALIBRATION UNIT={self.name}", "secondary"
-        ))
-
-        # Show TD-1 calibration only if this unit's lanes have TD-1 configured
-        any_lane_has_td1_ids = any(lane.td1_device_id for lane in self.lanes.values())
-        if self.afc.td1_defined and any_lane_has_td1_ids:
-            buttons.append((
-                "Calibrate TD-1 Length",
-                f"AFC_UNIT_TD_ONE_CALIBRATION UNIT={self.name}", "secondary"
-            ))
-
-        back = [("Back", "AFC_CALIBRATION", "info")]
-        prompt.create_custom_p(title, text, buttons, True, None, back)
 
     def cmd_ACE_STATUS(self, gcmd):
         """Query and display ACE hardware status.
