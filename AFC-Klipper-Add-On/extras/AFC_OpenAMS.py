@@ -2769,10 +2769,11 @@ class afcAMS(afcUnit):
             self.logger.error(f"Failed to start spool load for TD-1 calibration on {cur_lane.name}: {e}")
             return False, "Failed to start spool load", 0
 
-        # Wait for hub to load and STOP immediately when hub sensor triggers
+        # Wait for hub sensor to trigger while loading
         # IMPORTANT: Always use OAMS hardware sensor, not hub_obj (which doesn't update in real-time)
         hub_timeout = self.afc.reactor.monotonic() + 10.0
         hub_detected = False
+        encoder_before = None
         check_count = 0
 
         self.logger.debug(f"TD-1 calibration: using OAMS hardware sensor hub_hes_value[{spool_index}] for {cur_lane.name}")
@@ -2784,7 +2785,6 @@ class afcAMS(afcUnit):
             hub_loaded = None
             try:
                 hub_loaded = bool(self.oams.hub_hes_value[spool_index])
-                # Log every 10th check to avoid spam
                 if check_count % 10 == 0:
                     self.logger.debug(f"TD-1 calibration check #{check_count}: hub_hes_value[{spool_index}] = {self.oams.hub_hes_value[spool_index]}")
             except Exception as e:
@@ -2794,11 +2794,18 @@ class afcAMS(afcUnit):
 
             if hub_loaded:
                 hub_detected = True
-                self.logger.info(f"Hub sensor triggered for {cur_lane.name} after {check_count} checks (~{check_count * 0.1:.1f}s)")
+                # Read encoder immediately at hub trigger as our reference point
+                try:
+                    encoder_before = int(self.oams.encoder_clicks)
+                except Exception:
+                    encoder_before = None
+                self.logger.info(
+                    f"Hub sensor triggered for {cur_lane.name} after {check_count} checks "
+                    f"(~{check_count * 0.1:.1f}s), encoder reference={encoder_before}"
+                )
                 break
 
         if not hub_detected:
-            # Cancel the in-progress load (marks spool as loaded), then unload + clean up
             try:
                 self._cancel_and_mark_loaded(spool_index, cur_lane.name)
             except Exception:
@@ -2820,29 +2827,28 @@ class afcAMS(afcUnit):
             self.logger.error(msg)
             return False, msg, 0
 
-        # Hub loaded successfully - cancel load and take manual control with follower
-        self.logger.debug(f"Hub loaded, cancelling load to take manual control for {cur_lane.name}")
+        if encoder_before is None:
+            msg = "Unable to read encoder at hub trigger for TD-1 calibration"
+            self.logger.error(msg)
+            try:
+                self._cancel_and_mark_loaded(spool_index, cur_lane.name)
+            except Exception:
+                pass
+            self._unload_after_td1(cur_lane, spool_index, fps_id)
+            return False, msg, 0
+
+        # Hub triggered - keep feeding and watch for TD-1 detection
+        # Cancel the firmware load so we can control feeding with the follower
+        self.logger.debug(f"Hub loaded, cancelling load to feed with follower for {cur_lane.name}")
         try:
             self._cancel_and_mark_loaded(spool_index, cur_lane.name)
         except Exception:
             pass
-        try:
-            self.oams.set_oams_follower(0, 0)
-        except Exception as e:
-            self.logger.error(f"Failed to stop follower for {cur_lane.name}: {e}")
-
-        # Give it a moment for the follower to stop
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
-
-        try:
-            encoder_before = int(self.oams.encoder_clicks)
-        except Exception:
-            encoder_before = None
 
         compare_time = datetime.now()
         td1_timeout = self.afc.reactor.monotonic() + 180.0
         td1_detected = False
-        td1_scan_time = None  # Will store actual TD-1 detection time
+        td1_scan_time = None
         next_td1_poll = self.afc.reactor.monotonic()
         last_clicks_moved = 0
         last_progress_time = self.afc.reactor.monotonic()
@@ -2892,8 +2898,7 @@ class afcAMS(afcUnit):
             last_scan_times[cur_lane.td1_device_id] = scan_time
             return True, scan_time
 
-        self.logger.debug(f"Starting continuous follower feed for TD-1 detection on {cur_lane.name}")
-        follower_start_time = datetime.now().astimezone()  # Track when follower started
+        self.logger.debug(f"Starting follower feed for TD-1 detection on {cur_lane.name}")
         try:
             self.oams.set_oams_follower(1, 1)
         except Exception as e:
@@ -2937,52 +2942,53 @@ class afcAMS(afcUnit):
                         break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
-        # Disable follower after detection attempt
-        follower_stop_time = datetime.now().astimezone()  # Track when follower stopped
+        # Stop follower
         try:
             self.oams.set_oams_follower(0, 0)
         except Exception as e:
             self.logger.error(f"Failed to disable follower after TD-1 calibration for {cur_lane.name}: {e}")
 
         if not td1_detected:
-            # Filament reached hub but not TD-1 - unload it
             self._unload_after_td1(cur_lane, spool_index, fps_id)
             msg = f"TD-1 failed to detect filament for {cur_lane.name}"
             return False, msg, 0
 
+        # Read encoder at TD-1 detection - delta from hub trigger is the bowden length
         try:
             encoder_after = int(self.oams.encoder_clicks)
         except Exception:
             encoder_after = None
 
-        if encoder_before is None or encoder_after is None:
-            msg = "Unable to read encoder clicks for TD-1 calibration"
+        if encoder_after is None:
+            msg = "Unable to read encoder after TD-1 detection"
             self.logger.error(msg)
             self._unload_after_td1(cur_lane, spool_index, fps_id)
             return False, msg, 0
 
-        encoder_delta_raw = abs(encoder_after - encoder_before)
+        encoder_delta = abs(encoder_after - encoder_before)
 
-        # Apply scan_time correction to account for detection latency
-        # The follower continues feeding between when TD-1 actually detected the filament
-        # and when we polled and stopped the follower. Use the scan_time to correct for this.
-        encoder_delta = encoder_delta_raw
-        if td1_scan_time is not None and follower_start_time is not None:
+        # Apply scan_time correction if available to account for polling delay
+        # Between TD-1 actually detecting and us polling, the follower kept feeding
+        if td1_scan_time is not None:
             try:
-                total_duration = (follower_stop_time - follower_start_time).total_seconds()
-                actual_duration = (td1_scan_time - follower_start_time).total_seconds()
+                follower_stop_time = datetime.now().astimezone()
+                compare_start = compare_time.astimezone()
+                total_duration = (follower_stop_time - compare_start).total_seconds()
+                actual_duration = (td1_scan_time - compare_start).total_seconds()
 
                 if total_duration > 0 and actual_duration > 0 and actual_duration < total_duration:
                     correction_factor = actual_duration / total_duration
-                    encoder_delta = int(encoder_delta_raw * correction_factor)
-                    overshoot_clicks = encoder_delta_raw - encoder_delta
+                    corrected_delta = int(encoder_delta * correction_factor)
+                    overshoot_clicks = encoder_delta - corrected_delta
                     self.logger.info(
-                        f"TD-1 calibration correction: raw={encoder_delta_raw} corrected={encoder_delta} "
-                        f"(removed {overshoot_clicks} clicks, {total_duration - actual_duration:.2f}s overshoot)"
+                        f"TD-1 calibration: raw={encoder_delta} corrected={corrected_delta} "
+                        f"(removed {overshoot_clicks} clicks overshoot)"
                     )
+                    encoder_delta = corrected_delta
                 else:
                     self.logger.debug(
-                        f"TD-1 calibration: no correction applied (total={total_duration:.2f}s actual={actual_duration:.2f}s)"
+                        f"TD-1 calibration: no correction applied "
+                        f"(total={total_duration:.2f}s actual={actual_duration:.2f}s)"
                     )
             except Exception as e:
                 self.logger.debug(f"TD-1 calibration: correction calculation failed: {e}")
