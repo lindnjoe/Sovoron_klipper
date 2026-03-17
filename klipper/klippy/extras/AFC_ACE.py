@@ -3387,6 +3387,13 @@ class afcACE(afcUnit):
                     lane.set_unloaded()
                     self.lane_not_ready(lane)
                     self.afc.save_vars()
+                else:
+                    # Filament physically removed after eject or while in
+                    # NONE/EJECTING state — clear stale inventory so a
+                    # fresh spool is properly detected on next insertion.
+                    self._clear_slot_inventory(local_slot)
+                    self.lane_not_ready(lane)
+                    self.afc.save_vars()
 
         # Polling rates: 2s when printing (runout detection), 5s when idle
         if is_printing:

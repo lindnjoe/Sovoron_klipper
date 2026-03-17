@@ -68,6 +68,7 @@ class AFCFPSBuffer:
         self.current_lane: Optional[AFCLane | AFCExtruderStepper] = None
         self.advance_state = False
         self.trailing_state = False
+        self.toolhead = None  # Set in _handle_ready
 
         self.debug = config.getboolean("debug", False)
 
@@ -227,6 +228,20 @@ class AFCFPSBuffer:
             if led is None:
                 raise error(error_string)
 
+    @property
+    def extruder(self):
+        """Return the active toolhead extruder.
+
+        The native fps.py stored a direct extruder reference.  oams_manager
+        accesses ``fps.extruder.last_position`` in many places for runout
+        coasting and clog detection.  This property provides the same
+        interface without requiring an extruder config option — it simply
+        returns whatever extruder is currently active on the toolhead.
+        """
+        if self.toolhead is not None:
+            return self.toolhead.get_extruder()
+        return None
+
     def get_fps_value(self) -> float:
         """Get current FPS pressure value (0.0-1.0)."""
         return self.fps_value
@@ -342,8 +357,12 @@ class AFCFPSBuffer:
         # Start the proportional correction timer
         self.reactor.update_timer(self.correction_timer, self.reactor.NOW)
 
-        # Start fault detection if configured
-        if self.fault_detection_enabled():
+        # Start fault detection if configured — but only for stepper-based
+        # units.  OpenAMS (and similar non-stepper units) have their own
+        # clog/runout detection in oams_manager; running AFC's extruder-
+        # position-based fault timer on those lanes just causes errors.
+        if (self.fault_detection_enabled()
+                and getattr(lane, 'extruder_stepper', None) is not None):
             self.start_fault_detection(0, 1.0)
 
         self.logger.debug(f"{self.name} FPS buffer enabled for {self.current_lane.name}")
