@@ -3198,10 +3198,10 @@ class afcACE(afcUnit):
             msg = (
                 f"Runout detected on {lane_name} and no runout lane "
                 f"is configured.\n"
-                f"To clear the filament path, run these commands:\n"
+                f"To clear the filament path, run:\n"
                 f"  TOOL_UNLOAD LANE={lane_name}\n"
-                f"  LANE_UNLOAD LANE={lane_name}\n"
-                f"Then load a new spool and resume the print."
+                f"Then manually remove the remaining filament, "
+                f"load a new spool, and resume the print."
             )
         self.afc.error.AFC_error(msg)
 
