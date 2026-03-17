@@ -710,6 +710,7 @@ _normalize_extruder_name = normalize_extruder_name
 # Virtual filament sensor and extruder patch live in AFC_FPS so the FPS
 # module owns its own fix.
 from extras.AFC_FPS import (  # noqa: E402
+    normalize_pin_value as _normalize_pin_value,
     patch_extruder_for_virtual_fps as _patch_extruder_for_virtual_fps,
 )
 
