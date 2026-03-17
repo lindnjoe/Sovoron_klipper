@@ -5,7 +5,8 @@ Covers:
   - afcAMS: class constants, type
   - _is_openams_unit: type detection helper
   - get_lane_reset_command: returns TOOL_UNLOAD command
-  - lane_unload: blocks manual unload, returns None
+  - lane_unload: blocks manual unload, returns True
+  - eject_lane: blocks eject with informative message
   - prep_load / prep_post_load: no-ops
   - check_runout: returns True when printing, False otherwise
   - get_status: correct keys
@@ -154,11 +155,11 @@ class TestGetLaneResetCommand:
 # ── lane_unload ──────────────────────────────────────────────────────────────
 
 class TestLaneUnload:
-    def test_returns_none(self):
+    def test_returns_true(self):
         unit = _make_openams()
         lane = _make_lane()
         result = unit.lane_unload(lane)
-        assert result is None
+        assert result is True
 
     def test_logs_info_message(self):
         unit = _make_openams()
@@ -166,6 +167,24 @@ class TestLaneUnload:
         unit.lane_unload(lane)
         info_msgs = [m for lvl, m in unit.logger.messages if lvl == "info"]
         assert any("lane2" in m for m in info_msgs)
+
+
+# ── eject_lane ───────────────────────────────────────────────────────────────
+
+class TestEjectLane:
+    def test_logs_info_message(self):
+        unit = _make_openams()
+        lane = _make_lane(name="lane3")
+        unit.eject_lane(lane)
+        info_msgs = [m for lvl, m in unit.logger.messages if lvl == "info"]
+        assert any("lane3" in m for m in info_msgs)
+
+    def test_message_mentions_not_supported(self):
+        unit = _make_openams()
+        lane = _make_lane(name="lane1")
+        unit.eject_lane(lane)
+        info_msgs = [m for lvl, m in unit.logger.messages if lvl == "info"]
+        assert any("not supported" in m.lower() for m in info_msgs)
 
 
 # ── prep_load / prep_post_load ───────────────────────────────────────────────

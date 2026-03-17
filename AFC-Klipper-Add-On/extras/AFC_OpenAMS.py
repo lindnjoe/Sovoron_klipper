@@ -1232,7 +1232,28 @@ class afcAMS(afcUnit):
         except Exception as e:
             self.logger.debug(f"Failed to send LANE_UNLOAD info response for {lane_name}: {e}")
 
-        return None
+        return True
+
+    def eject_lane(self, lane):
+        """Block eject for OpenAMS lanes.
+
+        OpenAMS units have no AFC stepper path for lane ejection. Users should
+        remove spools physically or use TOOL_UNLOAD for toolhead-side unloads.
+        """
+        lane_name = getattr(lane, "name", "unknown")
+        message = (
+            f"Eject is not supported for OpenAMS lane {lane_name}. "
+            "OpenAMS units handle filament automatically - just remove the spool physically. "
+            "Use TOOL_UNLOAD if you need to unload from the toolhead."
+        )
+        self.logger.info(message)
+
+        try:
+            gcode = self.gcode or self.printer.lookup_object("gcode")
+            if gcode:
+                gcode.respond_info(message)
+        except Exception as e:
+            self.logger.debug(f"Failed to send eject info response for {lane_name}: {e}")
 
     def prep_load(self, lane):
         """No-op for OpenAMS: hardware drives filament to the load sensor directly."""
