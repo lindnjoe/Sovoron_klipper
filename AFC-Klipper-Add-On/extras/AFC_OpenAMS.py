@@ -1282,16 +1282,17 @@ class afcAMS(afcUnit):
         except Exception:
             pass
 
-        # Ensure all AMS lanes have buffer_obj = None
-        # AMS units don't have physical buffers - this prevents buffer monitoring
-        # from running even if users accidentally configure buffers at lane level
+        # Strip non-FPS buffers from AMS lanes.  AMS units don't have physical
+        # TurtleNeck buffers, but AFC_FPS buffers ARE valid (they provide the ADC
+        # reading for proportional control).  Keep any buffer that exposes
+        # get_fps_value(); remove the rest.
         for lane in self.lanes.values():
-            if lane.buffer_obj is not None:
+            if lane.buffer_obj is not None and not hasattr(lane.buffer_obj, 'get_fps_value'):
                 self.logger.warning(
-                    f"Lane {lane.name} had buffer '{lane.buffer_obj.name}' configured, "
-                    f"but OpenAMS units don't have physical buffers. Removing buffer assignment."
+                    f"Lane {lane.name} had non-FPS buffer '{lane.buffer_obj.name}' configured, "
+                    f"but OpenAMS units only support FPS buffers. Removing buffer assignment."
                 )
-            lane.buffer_obj = None
+                lane.buffer_obj = None
 
         #  Register each lane with the shared registry
         for lane in self.lanes.values():
@@ -3299,16 +3300,15 @@ class afcAMS(afcUnit):
 
     def handle_ready(self):
         """Resolve the OpenAMS object once Klippy is ready."""
-        # Re-enforce buffer_obj = None on all AMS lanes FIRST
-        # This runs during klippy:ready AFTER AFC_lane._handle_ready() has initialized lanes
-        # AFC_lane._handle_ready() may assign buffers from unit/extruder, we must override to None
-        # MUST run BEFORE any early returns to ensure buffers are always cleared
+        # Strip non-FPS buffers that AFC_lane._handle_ready() may have assigned.
+        # AFC_FPS buffers are allowed (they provide ADC reading for proportional
+        # control); only remove traditional TurtleNeck-style buffers.
         for lane in self.lanes.values():
-            if lane.buffer_obj is not None:
+            if lane.buffer_obj is not None and not hasattr(lane.buffer_obj, 'get_fps_value'):
                 buffer_name = getattr(lane.buffer_obj, 'name', 'unknown')
                 self.logger.warning(
-                    f"Lane {lane.name} was assigned buffer '{buffer_name}' during initialization, "
-                    f"but OpenAMS units don't have physical buffers. Removing buffer assignment."
+                    f"Lane {lane.name} was assigned non-FPS buffer '{buffer_name}' during initialization, "
+                    f"but OpenAMS units only support FPS buffers. Removing buffer assignment."
                 )
                 lane.buffer_obj = None
 
