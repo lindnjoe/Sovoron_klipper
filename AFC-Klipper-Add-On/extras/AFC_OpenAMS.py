@@ -803,7 +803,7 @@ class _VirtualFilamentSensor:
 _normalize_extruder_name = normalize_extruder_name
 
 def _normalize_ams_pin_value(pin_value) -> Optional[str]:
-    """Return the cleaned AMS_* token stripped of comments and modifiers."""
+    """Return the cleaned AMS_* or FPS_* token stripped of comments and modifiers."""
     if not isinstance(pin_value, str):
         return None
 
@@ -822,6 +822,13 @@ def _normalize_ams_pin_value(pin_value) -> Optional[str]:
         cleaned = cleaned[1:]
 
     return cleaned or None
+
+def _is_fps_buffer_pin(pin_value) -> bool:
+    """Return True if pin_value references an AFC_FPS buffer name."""
+    cleaned = _normalize_ams_pin_value(pin_value)
+    if not cleaned:
+        return False
+    return cleaned.upper().startswith("FPS_")
 
 def _patch_extruder_for_virtual_ams() -> None:
     """Patch AFC extruders so AMS_* tool pins avoid config-time errors."""
@@ -853,6 +860,7 @@ def _patch_extruder_for_virtual_ams() -> None:
 
         normalized = _normalize_ams_pin_value(pin_value)
         proxy_config = config
+        is_fps = _is_fps_buffer_pin(pin_value)
 
         if normalized:
             if normalized.upper().startswith("AMS_"):
@@ -871,6 +879,11 @@ def _patch_extruder_for_virtual_ams() -> None:
                 except Exception as e:
                     _module_logger.debug(f"Failed to set up virtual AMS pin for {normalized}: {e}")
                     normalized = None
+            elif is_fps:
+                # FPS buffer names are handled by AFC_extruder._is_fps_buffer_name()
+                # which skips GPIO registration.  We still need the virtual sensor
+                # for tool_start_state and runout detection, so keep normalized.
+                pass
             else:
                 normalized = None
 
@@ -1542,7 +1555,7 @@ class afcAMS(afcUnit):
             return False
 
         original_pin = tool_pin
-        if not normalized.upper().startswith("AMS_"):
+        if not (normalized.upper().startswith("AMS_") or normalized.upper().startswith("FPS_")):
             return False
 
         sensor = getattr(extruder, "fila_tool_start", None)
