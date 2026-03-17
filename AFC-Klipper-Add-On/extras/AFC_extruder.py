@@ -474,7 +474,7 @@ class AFCExtruder:
             return False
         # Check the AFC buffers registry (populated during config loading)
         fps_obj = self.afc.buffers.get(name, None)
-        if fps_obj is not None and hasattr(fps_obj, 'fps_threshold'):
+        if fps_obj is not None and hasattr(fps_obj, 'get_fps_value'):
             return True
         # Also check by printer object name for early init
         return self.printer.lookup_object("AFC_FPS {}".format(name), None) is not None

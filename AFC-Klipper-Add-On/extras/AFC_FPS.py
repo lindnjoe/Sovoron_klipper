@@ -21,13 +21,15 @@
 # The driver is unit-agnostic and registers itself as an AFC buffer so any
 # lane can reference it via  buffer: <name>  in its config.
 #
-# For units WITHOUT stepper motors (OpenAMS, etc.), the driver also provides
-# tool_start_state based on an fps_threshold so it can be used as
-# pin_tool_start: FPS_buffer<N>  to detect filament at the toolhead.
+# For units WITHOUT stepper motors (OpenAMS, etc.), the driver simply
+# provides the ADC reading.  The unit's own code (AFC_OpenAMS) manages
+# tool_start_state and virtual sensors exactly as it already does — this
+# driver just acts as the FPS hardware interface and config entry point.
+# Set  pin_tool_start: <FPS_buffer_name>  on the extruder so Klipper
+# doesn't try to register a GPIO pin for it.
 
 from __future__ import annotations
 
-import traceback
 from configparser import Error as error
 from typing import TYPE_CHECKING, Optional
 
@@ -35,9 +37,6 @@ if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
     from extras.AFC_stepper import AFCExtruderStepper
     from gcode import GCodeCommand
-
-try: from extras.AFC_utils import add_filament_switch
-except: raise error("Error when trying to import AFC_utils.add_filament_switch\n{trace}".format(trace=traceback.format_exc()))
 
 TRAILING_STATE_NAME = "Trailing"
 ADVANCING_STATE_NAME = "Advancing"
@@ -139,20 +138,6 @@ class AFCFPSBuffer:
             "enable_sensors_in_gui", self.afc.enable_sensors_in_gui
         )
 
-        # ---- Tool start detection (for units without stepper-based buffers) ----
-        # When used as pin_tool_start, this threshold determines when filament
-        # is considered present at the toolhead based on FPS pressure.
-        self.fps_threshold: float = config.getfloat('fps_threshold', 0.9, minval=0.1, maxval=1.0)
-        self.tool_start_state: bool = False
-        self.advance_state: bool = False  # Compat with get_toolhead_pre_sensor_state()
-        self._tool_start_latched: bool = False
-        self._operation_active: bool = False
-
-        # Linked extruder (resolved at ready time when used as pin_tool_start)
-        self._linked_extruder = None
-        self._linked_extruder_name: Optional[str] = config.get('extruder', None)
-        self.fila_tool_start = None  # Virtual filament sensor, created at ready
-
         # ---- Correction timer ----
         self.correction_timer = self.reactor.register_timer(self._correction_event)
 
@@ -209,172 +194,6 @@ class AFCFPSBuffer:
             if led is None:
                 raise error(error_string)
 
-        # Resolve linked extruder for tool_start detection
-        self._resolve_linked_extruder()
-
-    # ------------------------------------------------------------------
-    # Extruder linking — for tool_start detection
-    # ------------------------------------------------------------------
-    def _resolve_linked_extruder(self):
-        """Find extruders that reference this FPS buffer as pin_tool_start and link to them."""
-        # Check all AFC extruders to see if any reference this buffer by name
-        for ext_name, ext_obj in self.afc.tools.items():
-            tool_start = getattr(ext_obj, 'tool_start', None)
-            if tool_start is not None and tool_start == self.name:
-                self._linked_extruder = ext_obj
-                self._linked_extruder_name = ext_name
-                self.logger.info(
-                    "FPS buffer {} linked to extruder {} as tool_start sensor "
-                    "(threshold={})".format(self.name, ext_name, self.fps_threshold)
-                )
-                # Create virtual filament sensor for runout detection
-                self._setup_virtual_tool_sensor(ext_obj)
-                return
-
-        # Also check explicit extruder config
-        if self._linked_extruder_name:
-            ext_obj = self.afc.tools.get(self._linked_extruder_name, None)
-            if ext_obj is not None:
-                self._linked_extruder = ext_obj
-                self.logger.info(
-                    "FPS buffer {} linked to extruder {} via config "
-                    "(threshold={})".format(self.name, self._linked_extruder_name, self.fps_threshold)
-                )
-                self._setup_virtual_tool_sensor(ext_obj)
-
-    def _setup_virtual_tool_sensor(self, extruder_obj):
-        """Create a virtual filament switch sensor for runout detection."""
-        sensor_name = "{}_tool_start".format(extruder_obj.name)
-        try:
-            # Register virtual pin chip if needed
-            ppins = self.printer.lookup_object('pins', None)
-            if ppins is not None:
-                if not getattr(self.afc, '_fps_virtual_chip_registered', False):
-                    try:
-                        ppins.register_chip("afc_fps_virtual", self.afc)
-                        self.afc._fps_virtual_chip_registered = True
-                    except Exception:
-                        pass
-
-            # Check if sensor already exists (e.g. from OpenAMS patching)
-            existing = self.printer.lookup_object(
-                "filament_switch_sensor {}".format(sensor_name), None
-            )
-            if existing is not None:
-                self.fila_tool_start = existing
-                self.logger.debug("FPS buffer {} reusing existing sensor {}".format(
-                    self.name, sensor_name
-                ))
-                return
-
-            # Create virtual filament sensor
-            enable_gui = self.enable_sensors_in_gui
-            runout_cb = getattr(extruder_obj, 'handle_start_runout', None)
-            enable_runout = getattr(extruder_obj, 'enable_runout', False)
-            debounce = getattr(extruder_obj, 'debounce_delay', 0.0)
-
-            virtual_pin = "afc_fps_virtual:{}".format(sensor_name)
-            try:
-                created = add_filament_switch(
-                    sensor_name, virtual_pin, self.printer,
-                    enable_gui, runout_cb, enable_runout, debounce
-                )
-            except TypeError:
-                created = add_filament_switch(
-                    sensor_name, virtual_pin, self.printer, enable_gui
-                )
-
-            sensor = created[0] if isinstance(created, tuple) else created
-            self.fila_tool_start = sensor
-
-            # Also assign to extruder if it doesn't have one
-            if getattr(extruder_obj, 'fila_tool_start', None) is None:
-                extruder_obj.fila_tool_start = sensor
-
-            self.logger.debug("FPS buffer {} created virtual sensor {}".format(
-                self.name, sensor_name
-            ))
-        except Exception as e:
-            self.logger.debug("FPS buffer {} failed to create virtual sensor: {}".format(
-                self.name, e
-            ))
-
-    def _update_tool_start_state(self, read_time, fps_value):
-        """Update tool_start_state based on FPS threshold crossing.
-
-        For units without stepper motors (OpenAMS), this provides filament
-        presence detection at the toolhead. The FPS pressure rises above
-        fps_threshold when filament is being pushed against the extruder gears.
-
-        After a lane is loaded, tool_start_state stays True even when pressure
-        drops (FPS only reads high during active pushing, not while idle with
-        filament present).
-        """
-        triggered = fps_value >= self.fps_threshold
-
-        # During active operations (loading/calibration), latch on first trigger
-        # to prevent pulsed motor operations from briefly clearing the state
-        if self._operation_active:
-            if triggered and not self._tool_start_latched:
-                self._tool_start_latched = True
-                self.tool_start_state = True
-                self.advance_state = True
-                self._push_tool_start_to_extruder(read_time, True)
-            return
-
-        # Normal mode: don't clear sensor if a lane is loaded to the toolhead.
-        # FPS pressure drops after feeding stops even though filament is present.
-        if not triggered and self._linked_extruder is not None:
-            if getattr(self._linked_extruder, 'lane_loaded', None) is not None:
-                return
-
-        # Update state on change
-        if self.tool_start_state != triggered:
-            self.tool_start_state = triggered
-            self.advance_state = triggered
-            self._push_tool_start_to_extruder(read_time, triggered)
-
-    def _push_tool_start_to_extruder(self, eventtime, filament_present):
-        """Push tool_start_state to the linked extruder and virtual sensor."""
-        if self._linked_extruder is not None:
-            self._linked_extruder.tool_start_state = filament_present
-
-        # Update virtual filament sensor for runout detection
-        sensor = self.fila_tool_start
-        if sensor is not None:
-            helper = getattr(sensor, 'runout_helper', None)
-            if helper is not None:
-                try:
-                    helper.note_filament_present(eventtime, filament_present)
-                except TypeError:
-                    try:
-                        helper.note_filament_present(filament_present)
-                    except Exception:
-                        pass
-            setattr(sensor, 'filament_present', filament_present)
-
-    def set_tool_start_loaded(self, lane_name=None):
-        """Called by unit after successful load to assert filament is at toolhead."""
-        self.tool_start_state = True
-        self.advance_state = True
-        eventtime = self.reactor.monotonic()
-        self._push_tool_start_to_extruder(eventtime, True)
-
-    def set_tool_start_unloaded(self):
-        """Called by unit after successful unload to clear toolhead state."""
-        self.tool_start_state = False
-        self.advance_state = False
-        self._tool_start_latched = False
-        eventtime = self.reactor.monotonic()
-        self._push_tool_start_to_extruder(eventtime, False)
-
-    def set_operation_active(self, active: bool):
-        """Set whether an active operation (load/calibration) is in progress.
-        While active, tool_start_state latches True on first threshold trigger."""
-        self._operation_active = active
-        if not active:
-            self._tool_start_latched = False
-
     def get_fps_value(self) -> float:
         """Get current FPS pressure value (0.0-1.0)."""
         return self.fps_value
@@ -402,10 +221,6 @@ class AFCFPSBuffer:
             self.smoothing * self.smoothed_fps
             + (1.0 - self.smoothing) * read_value
         )
-
-        # Update tool_start_state for extruders using this as pin_tool_start
-        if self._linked_extruder is not None:
-            self._update_tool_start_state(read_time, read_value)
 
     # ------------------------------------------------------------------
     # Correction timer — proportional adjustment loop
@@ -638,8 +453,6 @@ class AFCFPSBuffer:
         response['fps_value'] = round(self.fps_value, 3)
         response['smoothed_fps'] = round(self.smoothed_fps, 3)
         response['set_point'] = self.set_point
-        response['tool_start_state'] = self.tool_start_state
-        response['fps_threshold'] = self.fps_threshold
 
         if self.enable and self.current_lane is not None:
             if (self.current_lane.extruder_stepper is not None

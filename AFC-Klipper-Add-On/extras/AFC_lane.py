@@ -1452,20 +1452,12 @@ class AFCLane:
 
     def get_toolhead_pre_sensor_state(self):
         """
-        Helper function that returns current state of toolhead pre sensor or buffer if user has extruder setup for ramming.
-
-        Handles physical pins, TurtleNeck buffer advance_state, FPS buffer tool_start_state,
-        and extruder tool_start_state (for OpenAMS virtual pins).
+        Helper function that returns current state of toolhead pre sensor or buffer if user has extruder setup for ramming
 
         returns Status of toolhead pre sensor or the current buffer advance state
         """
         if self.extruder_obj.tool_start == "buffer":
             return self.buffer_obj.advance_state
-        # FPS buffer used as pin_tool_start — check buffer's tool_start_state
-        elif (self.buffer_obj is not None
-              and hasattr(self.buffer_obj, 'fps_threshold')
-              and self.buffer_obj._linked_extruder is not None):
-            return self.buffer_obj.tool_start_state
         else:
             return self.extruder_obj.tool_start_state
 
