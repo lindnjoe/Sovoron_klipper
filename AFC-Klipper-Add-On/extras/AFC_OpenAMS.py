@@ -2837,18 +2837,11 @@ class afcAMS(afcUnit):
             self._unload_after_td1(cur_lane, spool_index, fps_id)
             return False, msg, 0
 
-        # Hub triggered - keep feeding and watch for TD-1 detection
-        # Cancel the firmware load so we can control feeding with the follower
-        self.logger.debug(f"Hub loaded, cancelling load to feed with follower for {cur_lane.name}")
-        try:
-            self._cancel_and_mark_loaded(spool_index, cur_lane.name)
-        except Exception:
-            pass
-
+        # Hub triggered and encoder reference captured - let the load keep feeding
+        # and poll for TD-1 detection. No need to cancel/restart with follower.
         compare_time = datetime.now()
         td1_timeout = self.afc.reactor.monotonic() + 180.0
         td1_detected = False
-        td1_scan_time = None
         next_td1_poll = self.afc.reactor.monotonic()
         last_clicks_moved = 0
         last_progress_time = self.afc.reactor.monotonic()
@@ -2898,13 +2891,7 @@ class afcAMS(afcUnit):
             last_scan_times[cur_lane.td1_device_id] = scan_time
             return True, scan_time
 
-        self.logger.debug(f"Starting follower feed for TD-1 detection on {cur_lane.name}")
-        try:
-            self.oams.set_oams_follower(1, 1)
-        except Exception as e:
-            self.logger.error(f"Failed to enable follower for TD-1 calibration on {cur_lane.name}: {e}")
-            self._unload_after_td1(cur_lane, spool_index, fps_id)
-            return False, "Failed to enable follower", 0
+        self.logger.debug(f"Hub loaded, letting load continue feeding for TD-1 detection on {cur_lane.name}")
 
         while self.afc.reactor.monotonic() < td1_timeout:
             try:
@@ -2919,7 +2906,7 @@ class afcAMS(afcUnit):
             elif (self.afc.reactor.monotonic() - last_progress_time) > 4.2:
                 if not stall_logged:
                     self.logger.info(
-                        f"TD-1 calibration: follower stalled after {clicks_moved} clicks on {cur_lane.name}"
+                        f"TD-1 calibration: load stalled after {clicks_moved} clicks on {cur_lane.name}"
                     )
                     stall_logged = True
 
@@ -2928,32 +2915,32 @@ class afcAMS(afcUnit):
                 detected, scan_time = _capture_td1_if_fresh()
                 if detected:
                     td1_detected = True
-                    td1_scan_time = scan_time
                     self.logger.debug(f"TD-1 data detected for {cur_lane.name} at scan_time={scan_time}")
                     break
                 if self.afc.reactor.monotonic() >= td1_relaxed_ready:
                     detected, scan_time = _capture_td1_relaxed()
                     if detected:
                         td1_detected = True
-                        td1_scan_time = scan_time
                         self.logger.debug(
                             f"TD-1 data detected (relaxed) for {cur_lane.name} at scan_time={scan_time}"
                         )
                         break
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
-        # Stop follower
+        # TD-1 detected (or timeout) - cancel the load to stop filament movement
+        self.logger.debug(f"Cancelling load for {cur_lane.name} after TD-1 {'detection' if td1_detected else 'timeout'}")
         try:
-            self.oams.set_oams_follower(0, 0)
-        except Exception as e:
-            self.logger.error(f"Failed to disable follower after TD-1 calibration for {cur_lane.name}: {e}")
+            self._cancel_and_mark_loaded(spool_index, cur_lane.name)
+        except Exception:
+            pass
 
         if not td1_detected:
             self._unload_after_td1(cur_lane, spool_index, fps_id)
             msg = f"TD-1 failed to detect filament for {cur_lane.name}"
             return False, msg, 0
 
-        # Read encoder at TD-1 detection - delta from hub trigger is the bowden length
+        # Read encoder now that load is cancelled and filament is stopped
+        # Delta from hub trigger = TD-1 bowden length
         try:
             encoder_after = int(self.oams.encoder_clicks)
         except Exception:
@@ -2966,32 +2953,10 @@ class afcAMS(afcUnit):
             return False, msg, 0
 
         encoder_delta = abs(encoder_after - encoder_before)
-
-        # Apply scan_time correction if available to account for polling delay
-        # Between TD-1 actually detecting and us polling, the follower kept feeding
-        if td1_scan_time is not None:
-            try:
-                follower_stop_time = datetime.now().astimezone()
-                compare_start = compare_time.astimezone()
-                total_duration = (follower_stop_time - compare_start).total_seconds()
-                actual_duration = (td1_scan_time - compare_start).total_seconds()
-
-                if total_duration > 0 and actual_duration > 0 and actual_duration < total_duration:
-                    correction_factor = actual_duration / total_duration
-                    corrected_delta = int(encoder_delta * correction_factor)
-                    overshoot_clicks = encoder_delta - corrected_delta
-                    self.logger.info(
-                        f"TD-1 calibration: raw={encoder_delta} corrected={corrected_delta} "
-                        f"(removed {overshoot_clicks} clicks overshoot)"
-                    )
-                    encoder_delta = corrected_delta
-                else:
-                    self.logger.debug(
-                        f"TD-1 calibration: no correction applied "
-                        f"(total={total_duration:.2f}s actual={actual_duration:.2f}s)"
-                    )
-            except Exception as e:
-                self.logger.debug(f"TD-1 calibration: correction calculation failed: {e}")
+        self.logger.info(
+            f"TD-1 calibration for {cur_lane.name}: encoder at hub={encoder_before}, "
+            f"encoder at TD-1={encoder_after}, bowden length={encoder_delta}"
+        )
 
         # Unload filament after successful TD-1 calibration
         self._unload_after_td1(cur_lane, spool_index, fps_id)
