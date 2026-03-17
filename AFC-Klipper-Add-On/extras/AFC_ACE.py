@@ -2136,24 +2136,123 @@ class afcACE(afcUnit):
         if dist_hub <= 0:
             return
 
-        self.logger.info(
-            f"ACE prep_post_load: feeding slot {local_slot} "
-            f"{dist_hub:.0f}mm to hub for {lane.name}"
+        # When home_to_hub is enabled, simulate BoxTurtle behaviour:
+        # 1. Bulk-feed dist_hub - hub_clear_move_dis (fast, most of the way)
+        # 2. Incremental feeds checking the hub sensor between each step
+        #    (if the hub has a physical sensor, not virtual)
+        # 3. Once sensor triggers (or distance exhausted), retract
+        #    hub_clear_move_dis so filament clears the hub exit
+        afc = self.afc
+        homing_hub = (getattr(afc, 'homing_enabled', False)
+                      and getattr(afc, 'home_to_hub', False))
+        hub = getattr(lane, 'hub_obj', None)
+        hub_clear = getattr(hub, 'hub_clear_move_dis', 0) if hub else 0
+        has_physical_hub_sensor = (
+            hub is not None
+            and getattr(hub, 'switch_pin', 'virtual').lower() != 'virtual'
         )
+
+        if homing_hub and hub_clear > 0:
+            bulk_dist = max(0, dist_hub - hub_clear)
+            approach_dist = dist_hub - bulk_dist  # == hub_clear
+            # Allow extra search distance past dist_hub for physical sensors
+            overshoot = hub_clear if has_physical_hub_sensor else 0
+            self.logger.info(
+                f"ACE prep_post_load: home_to_hub active — bulk "
+                f"{bulk_dist:.0f}mm + approach {approach_dist:.0f}mm "
+                f"(+{overshoot:.0f}mm overshoot) then backoff "
+                f"{hub_clear:.0f}mm for {lane.name}"
+                f"{' (physical hub sensor)' if has_physical_hub_sensor else ' (virtual hub)'}"
+            )
+        else:
+            bulk_dist = dist_hub
+            approach_dist = 0
+            overshoot = 0
+            self.logger.info(
+                f"ACE prep_post_load: feeding slot {local_slot} "
+                f"{dist_hub:.0f}mm to hub for {lane.name}"
+            )
+
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
                 self._wait_for_ace_ready(timeout=30.0)
                 hub_feed_spd = self._quiet_speed(self.feed_speed)
-                self._ace.feed_filament(local_slot, dist_hub, hub_feed_spd)
-                self._wait_for_feed_complete(
-                    local_slot, dist_hub, hub_feed_spd
-                )
+
+                # Phase 1: Bulk feed (most of dist_hub)
+                if bulk_dist > 0:
+                    self._ace.feed_filament(local_slot, bulk_dist, hub_feed_spd)
+                    self._wait_for_feed_complete(
+                        local_slot, bulk_dist, hub_feed_spd
+                    )
+
+                # Phase 2: Incremental approach checking hub sensor
+                if homing_hub and (approach_dist + overshoot) > 0:
+                    step = self.sensor_step  # reuse sensor_step (20mm default)
+                    total_approach = 0
+                    max_approach = approach_dist + overshoot
+                    hub_triggered = False
+
+                    while total_approach < max_approach:
+                        cur_step = min(step, max_approach - total_approach)
+                        self._wait_for_ace_ready()
+                        self._ace.feed_filament(
+                            local_slot, cur_step, hub_feed_spd
+                        )
+                        self._wait_for_feed_complete(
+                            local_slot, cur_step, hub_feed_spd,
+                            poll_interval=0.3
+                        )
+                        total_approach += cur_step
+                        afc.reactor.pause(afc.reactor.monotonic() + 0.2)
+
+                        # Check physical hub sensor
+                        if has_physical_hub_sensor and hub.state:
+                            hub_triggered = True
+                            self.logger.info(
+                                f"ACE prep_post_load: hub sensor triggered "
+                                f"at {bulk_dist + total_approach:.0f}mm"
+                            )
+                            break
+
+                    if not hub_triggered and has_physical_hub_sensor:
+                        self.logger.warning(
+                            f"ACE prep_post_load: hub sensor did not trigger "
+                            f"after {bulk_dist + total_approach:.0f}mm for "
+                            f"{lane.name}"
+                        )
+
+                    # Phase 3: Backoff hub_clear_move_dis so filament
+                    # clears the hub exit, matching BoxTurtle positioning
+                    self._wait_for_ace_ready()
+                    retract_spd = self._quiet_speed(self.feed_speed)
+                    self._ace.unwind_filament(
+                        local_slot, hub_clear, retract_spd
+                    )
+                    self._wait_for_feed_complete(
+                        local_slot, hub_clear, retract_spd
+                    )
+                    self.logger.info(
+                        f"ACE prep_post_load: retracted {hub_clear:.0f}mm "
+                        f"hub_clear backoff for {lane.name}"
+                    )
+                else:
+                    # No homing: just feed the remaining distance
+                    remaining = dist_hub - bulk_dist
+                    if remaining > 0:
+                        self._wait_for_ace_ready()
+                        self._ace.feed_filament(
+                            local_slot, remaining, hub_feed_spd
+                        )
+                        self._wait_for_feed_complete(
+                            local_slot, remaining, hub_feed_spd
+                        )
+
                 lane.loaded_to_hub = True
                 self.afc.save_vars()
                 self.logger.info(
-                    f"ACE prep_post_load: {lane.name} fed to hub "
-                    f"({dist_hub:.0f}mm)"
+                    f"ACE prep_post_load: {lane.name} staged at hub "
+                    f"(dist_hub={dist_hub:.0f}mm)"
                 )
                 return
             except Exception as e:

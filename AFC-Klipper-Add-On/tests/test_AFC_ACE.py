@@ -228,11 +228,12 @@ class TestGetLaneResetCommand:
 # ── lane_unload ──────────────────────────────────────────────────────────────
 
 class TestLaneUnload:
-    def test_returns_none(self):
+    def test_returns_true(self):
+        """lane_unload returns True to prevent generic LANE_UNLOAD double-run."""
         unit = _make_ace()
         lane = _make_lane()
         result = unit.lane_unload(lane)
-        assert result is None
+        assert result is True
 
 
 # ── get_status ───────────────────────────────────────────────────────────────
