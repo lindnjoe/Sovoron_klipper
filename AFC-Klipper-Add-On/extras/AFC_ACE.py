@@ -106,8 +106,8 @@ class afcACE(afcUnit):
 
         # Hub distance: slot-to-hub/combiner distance.  Used for two-phase
         # loading (prep_post_load feeds to hub, load_sequence feeds hub-to-toolhead).
-        # Default 800mm is a safe starting point; calibrate with ACE_CALIBRATE_HUB.
-        self.dist_hub = config.getfloat("dist_hub", 800.0)             # mm
+        # Default 200mm is a safe starting point; calibrate with ACE_CALIBRATE_HUB.
+        self.dist_hub = config.getfloat("dist_hub", 200.0)             # mm
 
         # load_to_hub: unit-level override.  Inherits from AFC global if not set.
         # Can also be overridden per-lane in [AFC_lane] sections.
