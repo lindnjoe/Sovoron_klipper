@@ -86,6 +86,10 @@ class afcACE(afcUnit):
         super().__init__(config)
         self.type = "ACE"
 
+        # ACE detects runout when a slot goes empty, so the filament is
+        # already gone — no need to eject (LANE_UNLOAD) on runout.
+        self.skip_lane_unload_on_runout = True
+
         # Serial port configuration
         self.serial_port = config.get("serial_port")
 
@@ -3190,8 +3194,8 @@ class afcACE(afcUnit):
         """ACE-specific pause runout when no runout lane is configured.
 
         When unload_on_runout is enabled, automatically runs TOOL_UNLOAD
-        to retract filament from the toolhead and then LANE_UNLOAD to
-        eject filament from the hub back to the ACE slot.
+        to retract filament from the toolhead.  LANE_UNLOAD (eject) is
+        skipped because the ACE slot is already empty when runout fires.
 
         When unload_on_runout is disabled, pauses the print and tells
         the user which commands to run to clear the filament path.
@@ -3201,13 +3205,11 @@ class afcACE(afcUnit):
         if self.unload_on_runout:
             self.logger.info(
                 f"ACE runout on {lane_name}: auto-unloading from "
-                f"toolhead and ejecting lane"
+                f"toolhead (slot already empty, skipping eject)"
             )
             self.afc.error.pause_resume.send_pause_command()
             self.afc.save_pos()
             self.afc.TOOL_UNLOAD(lane)
-            if not self.afc.error_state:
-                self.afc.LANE_UNLOAD(lane)
         else:
             self.logger.info(
                 f"ACE runout on {lane_name}: pausing print "

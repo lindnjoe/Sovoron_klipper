@@ -72,6 +72,10 @@ class afcACE(afcUnit):
         super().__init__(config)
         self.type = "ACE"
 
+        # ACE detects runout when a slot goes empty, so the filament is
+        # already gone — no need to eject (LANE_UNLOAD) on runout.
+        self.skip_lane_unload_on_runout = True
+
         # Serial port configuration
         self.serial_port = config.get("serial_port")
 

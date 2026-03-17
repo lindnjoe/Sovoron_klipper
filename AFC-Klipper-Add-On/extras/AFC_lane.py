@@ -925,8 +925,10 @@ class AFCLane:
         if not self.afc.TOOL_UNLOAD(empty_lane):
             return
 
-        # Eject spool before loading next lane
-        self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
+        # Eject spool before loading next lane (skip for units like ACE
+        # where the slot is already empty when runout is detected)
+        if not getattr(self.unit_obj, 'skip_lane_unload_on_runout', False):
+            self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
 
         self.afc.TOOL_LOAD(change_lane)
         # Change Mapping
