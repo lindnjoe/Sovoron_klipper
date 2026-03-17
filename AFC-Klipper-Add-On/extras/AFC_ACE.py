@@ -2116,7 +2116,7 @@ class afcACE(afcUnit):
 
         # Check if slot has filament -- don't gate on loaded_to_hub alone
         # since that flag can get out of sync with the physical state.
-        slot_info = self._slot_inventory.get(local_slot, {})
+        slot_info = self._slot_inventory[local_slot] if local_slot < len(self._slot_inventory) else {}
         slot_ready = slot_info.get("status", "") == "ready"
         if not lane.loaded_to_hub and not slot_ready:
             message = f"ACE lane {lane_name} is not loaded to hub and slot is not ready, nothing to eject."
