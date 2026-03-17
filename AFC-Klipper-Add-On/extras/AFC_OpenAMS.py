@@ -1151,10 +1151,9 @@ class afcAMS(afcUnit):
                 afc.error.handle_lane_failure(cur_lane, message)
                 return False
 
-            fps_id = fps_name.split(" ", 1)[1] if fps_name.startswith("fps ") else fps_name
             self.logger.debug(
                 "OpenAMS unload: delegating to manager helper for lane {} (FPS {})".format(
-                    cur_lane.name, fps_id
+                    cur_lane.name, fps_name
                 )
             )
             success, message = self._manager_unload_with_prep_for_fps(fps_name)
@@ -1241,10 +1240,7 @@ class afcAMS(afcUnit):
         oams_manager = self._get_oams_manager()
         if oams_manager is None:
             return None
-        fps_name = oams_manager.get_fps_for_afc_lane(lane_name)
-        if not fps_name:
-            return None
-        return fps_name.split(" ", 1)[1] if fps_name.startswith("fps ") else fps_name
+        return oams_manager.get_fps_for_afc_lane(lane_name)
 
     def _format_openams_calibration_command(self, base_command, lane):
         if base_command not in {"OAMS_CALIBRATE_HUB_HES", "OAMS_CALIBRATE_PTFE_LENGTH"}:
@@ -4618,11 +4614,9 @@ class afcAMS(afcUnit):
             f"Stuck spool recovery scheduled: fps={fps_name}, lane={lane_name}"
         )
         try:
-            # G-code parameters cannot contain spaces; strip the "fps " prefix so that
-            # "fps fps1" becomes "fps1" (the handler reconstructs the full name).
-            fps_id = fps_name.split(" ", 1)[1] if fps_name and fps_name.startswith("fps ") else (fps_name or "")
+            # fps_name is the AFC_FPS buffer name (e.g., "FPS_buffer1")
             self.gcode.run_script_from_command(
-                f"_AFC_OAMS_STUCK_RECOVERY LANE={lane_name} FPS={fps_id}"
+                f"_AFC_OAMS_STUCK_RECOVERY LANE={lane_name} FPS={fps_name or ''}"
             )
         except Exception as e:
             self.logger.error(
@@ -4641,10 +4635,8 @@ class afcAMS(afcUnit):
         Triggered by oams_manager when stuck spool is detected post-engagement during printing.
         """
         lane_name = gcmd.get('LANE', None)
-        # FPS is passed without the "fps " prefix (G-code parameters can't have spaces).
-        # Reconstruct the full internal name expected by oams_manager ("fps <id>").
-        fps_id    = gcmd.get('FPS', None)
-        fps_name  = f"fps {fps_id}" if fps_id and not fps_id.startswith("fps ") else fps_id
+        # FPS is the AFC_FPS buffer name (e.g., "FPS_buffer1")
+        fps_name  = gcmd.get('FPS', None)
 
         # Use the global AFC lane registry so this works regardless of which
         # AFC_OpenAMS unit registered the gcode command first.

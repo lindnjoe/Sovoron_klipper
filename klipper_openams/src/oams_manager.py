@@ -197,7 +197,6 @@ class OAMSRunoutMonitor:
     def __init__(self,
                  printer,
                  fps_name,
-                 fps,
                  fps_state,
                  oams,
                  reload_callback,
@@ -209,7 +208,6 @@ class OAMSRunoutMonitor:
         self.printer = printer
         self.fps_name = fps_name
         self.fps_state = fps_state
-        self.fps = fps
         self.logger = logger
         self._follower_callback = follower_callback
 
@@ -1780,12 +1778,16 @@ class OAMSManager:
 
     def handle_ready(self):
         """Initialize system when printer is ready."""
-        for fps_name, fps in self.printer.lookup_objects(module="fps"):
-            self.fpss[fps_name] = fps
-            self.current_state.add_fps_state(fps_name)
+        # Look up AFC_FPS buffer objects from the AFC buffer registry
+        afc = self._get_afc()
+        if afc is not None:
+            for buf_name, buf_obj in getattr(afc, 'buffers', {}).items():
+                if hasattr(buf_obj, 'get_fps_value'):
+                    self.fpss[buf_name] = buf_obj
+                    self.current_state.add_fps_state(buf_name)
 
         if not self.fpss:
-            raise ValueError("No FPS found in system, this is required for OAMS to work")
+            raise ValueError("No AFC_FPS buffers found in system, this is required for OAMS to work")
 
 
         # Cache frequently accessed objects
@@ -2261,13 +2263,12 @@ class OAMSManager:
             )
 
     def determine_current_loaded_lane(self, fps_name):
-        fps = self.fpss.get(fps_name)
-        if fps is None:
+        if fps_name not in self.fpss:
             raise ValueError(f"FPS {fps_name} not found")
 
-        return self._determine_loaded_lane_for_fps(fps_name, fps)
+        return self._determine_loaded_lane_for_fps(fps_name)
 
-    def _determine_loaded_lane_for_fps(self, fps_name, fps):
+    def _determine_loaded_lane_for_fps(self, fps_name):
         afc = self._get_afc()
         if afc is None:
             self.logger.warning("State detection: AFC not found")
@@ -3228,7 +3229,7 @@ class OAMSManager:
         enable = gcmd.get_int('ENABLE')
         # DIRECTION is optional when disabling (ENABLE=0), defaults to 0
         direction = gcmd.get_int('DIRECTION', 0)
-        fps_name = "fps " + gcmd.get('FPS')
+        fps_name = gcmd.get('FPS')
         # Optional OAMS parameter to override auto-detection
         oams_override = gcmd.get('OAMS', None)
 
@@ -3325,7 +3326,7 @@ class OAMSManager:
     cmd_FOLLOWER_RESET_help = "Return follower to automatic control based on hub sensors"
     def cmd_FOLLOWER_RESET(self, gcmd):
         oams_param = gcmd.get("OAMS", None)
-        fps_name = "fps " + gcmd.get('FPS')
+        fps_name = gcmd.get('FPS')
 
         if fps_name not in self.fpss:
             gcmd.respond_info(f"FPS {fps_name} does not exist")
@@ -3353,9 +3354,9 @@ class OAMSManager:
             gcmd.respond_info(f"Follower state updated based on current hub sensors")
 
     def get_fps_for_afc_lane(self, lane_name: str):
-        """Get the FPS name for an AFC lane by querying its unit configuration.
+        """Get the FPS buffer name for an AFC lane by querying its unit configuration.
 
-        Returns the FPS name (e.g., "fps fps1") or None if not found.
+        Returns the FPS buffer name (e.g., "FPS_buffer1") or None if not found.
         Uses cached mapping when available for performance.
         """
         # Check cache first
@@ -3370,7 +3371,7 @@ class OAMSManager:
         return fps_name
 
     def _compute_fps_for_afc_lane(self, lane_name: str):
-        """Compute the FPS name for an AFC lane (internal helper for caching)."""
+        """Compute the FPS buffer name for an AFC lane (internal helper for caching)."""
         afc = self._get_afc()
         if afc is None:
             return None
@@ -3380,13 +3381,11 @@ class OAMSManager:
             return None
 
         # Get the unit string (e.g., "AMS_1:1")
-
         unit_str = getattr(lane, "unit", None)
         if not unit_str or not isinstance(unit_str, str):
             return None
 
         # Extract base unit name (e.g., "AMS_1" from "AMS_1:1")
-
         if ':' in unit_str:
             base_unit_name = unit_str.split(':')[0]
         else:
@@ -3401,31 +3400,12 @@ class OAMSManager:
         if unit_obj is None:
             return None
 
-        # Get the OAMS name from the unit (e.g., "oams1")
+        # Get the buffer name from the unit (e.g., "FPS_buffer1")
+        buffer_name = getattr(unit_obj, "buffer_name", None)
+        if buffer_name and buffer_name in self.fpss:
+            return buffer_name
 
-        oams_name = getattr(unit_obj, "oams_name", None)
-        if not oams_name:
-            return None
-
-        # Find which FPS has this OAMS
-        for fps_name, fps in self.fpss.items():
-            if hasattr(fps, "oams"):
-                fps_oams = fps.oams
-                # fps.oams could be a list or a single oams object
-                if isinstance(fps_oams, list):
-                    for oam in fps_oams:
-                        oam_name_full = getattr(oam, "name", None)
-                        # OAMS objects can be registered as "oams1", "oams oams1", or "OAMS oams1"
-                        if (oam_name_full == oams_name or
-                            oam_name_full == f"oams {oams_name}" or
-                            oam_name_full == f"OAMS {oams_name}"):
-                            return fps_name
-                else:
-                    oam_name_check = getattr(fps_oams, "name", None)
-                    if (oam_name_check == oams_name or
-                        oam_name_check == f"oams {oams_name}" or
-                        oam_name_check == f"OAMS {oams_name}"):
-                        return fps_name
+        return None
 
         return None
 
@@ -4823,7 +4803,7 @@ class OAMSManager:
         during COASTING transition). This method just updates the state flags.
 
         Args:
-            fps_name: Name of the FPS (e.g., "fps fps1")
+            fps_name: Name of the FPS buffer (e.g., "FPS_buffer1")
 
             fps_state: Current FPS state object
             lane_name: Name of the lane that ran out (e.g., "lane7")
@@ -5086,10 +5066,9 @@ class OAMSManager:
                 if self._is_oams_mcu_ready(oam):
                     try:
                         self._set_follower_state(fps_name, fps_state, oam, 1, 0, "stuck spool max retry", force=True)
-                        fps_param = fps_name.replace("fps ", "", 1)
                         gcode = self._gcode_obj or self.printer.lookup_object("gcode")
                         self._gcode_obj = gcode
-                        gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_param}")
+                        gcode.run_script_from_command(f"OAMSM_UNLOAD_FILAMENT FPS={fps_name}")
                     except Exception as e:
                         self.logger.error(f"Failed to unwind stuck spool before pausing on {fps_name}: {e}")
                 else:
@@ -5300,25 +5279,19 @@ class OAMSManager:
         if oam is None:
             return False, f"OAMS {oams_name} not found"
 
-        # Find which FPS has this OAMS
+        # Find the FPS buffer for this OAMS by checking AFC unit buffer names
         fps_name = None
-        fps = None
-        for fps_name_candidate, fps_candidate in self.fpss.items():
-            if hasattr(fps_candidate, "oams"):
-                fps_oams = fps_candidate.oams
-                if isinstance(fps_oams, list):
-                    if oam in fps_oams:
-                        fps_name = fps_name_candidate
-                        fps = fps_candidate
-                        break
-                else:
-                    if fps_oams == oam:
-                        fps_name = fps_name_candidate
-                        fps = fps_candidate
+        afc = self._get_afc()
+        if afc is not None:
+            for unit_obj in getattr(afc, 'units', {}).values():
+                if getattr(unit_obj, 'oams_name', None) == oams_name:
+                    buf = getattr(unit_obj, 'buffer_name', None)
+                    if buf and buf in self.fpss:
+                        fps_name = buf
                         break
 
-        if not fps_name or fps is None:
-            return False, f"No FPS found for OAMS {oams_name}"
+        if not fps_name:
+            return False, f"No FPS buffer found for OAMS {oams_name}"
 
         fps_state = self.current_state.fps_state[fps_name]
 
@@ -5756,8 +5729,7 @@ class OAMSManager:
 
     cmd_UNLOAD_FILAMENT_help = "Unload a spool from any of the OAMS if any is loaded"
     def cmd_UNLOAD_FILAMENT(self, gcmd):
-        fps_param = gcmd.get('FPS')
-        fps_name = "fps " + fps_param
+        fps_name = gcmd.get('FPS')
 
         extra_retract_raw = gcmd.get('EXTRA_RETRACT', None)
         if extra_retract_raw is not None:
@@ -6682,9 +6654,8 @@ class OAMSManager:
             self.logger.error(f"Cannot get gcode object for retry: {e}")
             return
 
-        # Extract FPS parameter (remove "fps " prefix if present)
-        # fps_name is like "fps fps1", but G-code commands need just "fps1"
-        fps_param = fps_name.replace("fps ", "", 1)
+        # fps_name is the AFC_FPS buffer name (e.g., "FPS_buffer1")
+        fps_param = fps_name
 
         # Execute stuck spool retry sequence with reactor blocking
         # Use reactor.pause() between commands to prevent MCU overwhelm
@@ -8230,7 +8201,6 @@ class OAMSManager:
             monitor = OAMSRunoutMonitor(
                 self.printer,
                 fps_name,
-                self.fpss[fps_name],
                 self.current_state.fps_state[fps_name],
                 self.oams,
                 _reload_callback,
@@ -8276,7 +8246,7 @@ class OAMSManager:
 
             # Let state detection handle the full sync
             # We just trigger it to run immediately instead of waiting for next poll
-            detected_lane_name, oam, bay_index = self._determine_loaded_lane_for_fps(fps_name, self.fpss[fps_name])
+            detected_lane_name, oam, bay_index = self._determine_loaded_lane_for_fps(fps_name)
 
             if detected_lane_name and oam and bay_index is not None:
                 # Update FPS state - store lane name (e.g., "lane8") not map (e.g., "T0")
