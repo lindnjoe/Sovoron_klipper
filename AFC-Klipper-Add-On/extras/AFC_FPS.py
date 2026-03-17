@@ -66,6 +66,8 @@ class AFCFPSBuffer:
         self.last_state = "Unknown"
         self.enable = False
         self.current_lane: Optional[AFCLane | AFCExtruderStepper] = None
+        self.advance_state = False
+        self.trailing_state = False
 
         self.debug = config.getboolean("debug", False)
 
@@ -248,6 +250,8 @@ class AFCFPSBuffer:
         if neutral_low <= reading <= neutral_high:
             self.set_multiplier(1.0)
             self.last_state = NEUTRAL_STATE_NAME
+            self.advance_state = False
+            self.trailing_state = False
             if self.led:
                 self.afc.function.afc_led(self.led_neutral, self.led_index)
             return eventtime + self.update_interval
@@ -263,6 +267,8 @@ class AFCFPSBuffer:
                 fraction = 1.0
             multiplier = 1.0 - fraction * (1.0 - self.multiplier_low)
             self.last_state = TRAILING_STATE_NAME
+            self.advance_state = False
+            self.trailing_state = True
             if self.led:
                 self.afc.function.afc_led(self.led_trailing, self.led_index)
         else:
@@ -276,6 +282,8 @@ class AFCFPSBuffer:
                 fraction = 1.0
             multiplier = 1.0 + fraction * (self.multiplier_high - 1.0)
             self.last_state = ADVANCING_STATE_NAME
+            self.advance_state = True
+            self.trailing_state = False
             if self.led:
                 self.afc.function.afc_led(self.led_advancing, self.led_index)
 
