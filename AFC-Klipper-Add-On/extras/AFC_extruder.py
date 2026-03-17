@@ -279,11 +279,6 @@ class AFCExtruder:
 
             if self.tool_start == "buffer":
                 self.logger.info("Setting up as buffer")
-            elif self._is_fps_buffer_name(self.tool_start):
-                # FPS buffer handles tool_start via ADC threshold — no GPIO pin needed.
-                # The FPS buffer driver will link to this extruder at ready time and
-                # update tool_start_state directly from its ADC readings.
-                self.logger.info("Setting up FPS buffer {} as tool_start sensor".format(self.tool_start))
             else:
                 buttons.register_buttons([self.tool_start], self.tool_start_callback)
                 self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
@@ -463,33 +458,6 @@ class AFCExtruder:
         """
         self._handle_toolhead_sensor_runout(self.fila_tool_start.runout_helper.filament_present, "tool_start")
         self.fila_tool_start.runout_helper.min_event_systime = self.reactor.monotonic() + self.fila_tool_start.runout_helper.event_delay
-
-    def _is_fps_buffer_name(self, name):
-        """Check if a pin_tool_start value refers to an AFC_FPS buffer.
-
-        Matches names that appear as [AFC_FPS <name>] config sections.
-        These are resolved at klippy:ready time by the FPS buffer driver.
-
-        Must work during early init before the AFC_FPS module is loaded,
-        so we also check the raw config for a matching section.
-        """
-        if name is None:
-            return False
-        # Check the AFC buffers registry (populated during config loading)
-        fps_obj = self.afc.buffers.get(name, None)
-        if fps_obj is not None and hasattr(fps_obj, 'get_fps_value'):
-            return True
-        # Check by printer object name
-        if self.printer.lookup_object("AFC_FPS {}".format(name), None) is not None:
-            return True
-        # Check raw config sections — handles early init before AFC_FPS
-        # module is loaded (AFC_extruder is parsed before AFC_FPS).
-        pconfig = self.printer.lookup_object("configfile", None)
-        if pconfig is not None:
-            section = "afc_fps {}".format(name).lower()
-            if pconfig.fileconfig.has_section(section):
-                return True
-        return False
 
     def tool_start_callback(self, eventtime, state):
         """

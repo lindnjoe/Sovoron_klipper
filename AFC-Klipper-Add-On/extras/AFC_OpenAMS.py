@@ -828,7 +828,14 @@ def _is_fps_buffer_pin(pin_value) -> bool:
     return cleaned.upper().startswith("FPS_")
 
 def _patch_extruder_for_virtual_fps() -> None:
-    """Patch AFC extruders so FPS_* tool pins create virtual filament sensors."""
+    """Patch AFC extruders so FPS_* tool pins create virtual filament sensors.
+
+    When pin_tool_start is an FPS buffer name (e.g. "FPS_buffer1"), the
+    base AFCExtruder.__init__ would try to register it as a GPIO pin on the
+    MCU and fail.  This patch temporarily rewrites the config value to
+    "buffer" (which base_init skips), then sets up a virtual filament
+    sensor after base_init returns.
+    """
     extruder_cls = getattr(_afc_extruder_mod, "AFCExtruder", None)
     if extruder_cls is None or getattr(extruder_cls, "_fps_virtual_tool_patched", False):
         return
@@ -848,7 +855,19 @@ def _patch_extruder_for_virtual_fps() -> None:
         if normalized and not is_fps:
             normalized = None
 
-        base_init(self, config)
+        # If this is an FPS buffer pin, temporarily set pin_tool_start to
+        # "buffer" so base_init skips GPIO registration.  Restore after.
+        if normalized:
+            section = config.get_name()
+            config.fileconfig.set(section, "pin_tool_start", "buffer")
+
+        try:
+            base_init(self, config)
+        finally:
+            # Restore the original value so it's visible in config dumps
+            if normalized and pin_value is not None:
+                section = config.get_name()
+                config.fileconfig.set(section, "pin_tool_start", pin_value)
 
         if not normalized:
             return
