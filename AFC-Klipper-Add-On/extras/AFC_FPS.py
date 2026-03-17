@@ -843,4 +843,5 @@ def patch_extruder_for_virtual_fps() -> None:
 
 
 def load_config_prefix(config):
+    patch_extruder_for_virtual_fps()
     return AFCFPSBuffer(config)
