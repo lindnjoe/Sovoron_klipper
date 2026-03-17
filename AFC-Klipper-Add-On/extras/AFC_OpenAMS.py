@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import re
 import time
@@ -46,11 +45,6 @@ try:
     from extras.AFC_utils import add_filament_switch
 except Exception:
     _raise_import_error("AFC_utils", template=ERROR_STR)
-
-try:
-    import extras.AFC_extruder as _afc_extruder_mod
-except Exception:
-    _raise_import_error("AFC_extruder", template=ERROR_STR)
 
 try:
     from extras.AFC_respond import AFCprompt
@@ -661,8 +655,6 @@ class AMSRunoutCoordinator:
                 unit.logger.error(f"Failed to update AFC lane {lane_name} from OpenAMS tool state: {e}")
         return handled
 
-_module_logger = logging.getLogger(__name__)
-
 _ORIGINAL_PERFORM_INFINITE_RUNOUT = getattr(AFCLane, "_perform_infinite_runout", None)
 
 # Sentinel distinguishing "never looked up" from "looked up and returned None".
@@ -710,163 +702,16 @@ EVENT_POLICY: Dict[str, Dict[str, bool]] = {
 }
 
 
-class _VirtualRunoutHelper:
-    """Minimal runout helper used by AMS-managed virtual sensors."""
-
-    def __init__(self, printer, name, runout_cb=None, enable_runout=False):
-        self.printer = printer
-        self._reactor = printer.get_reactor()
-        self.name = name
-        self.runout_callback = runout_cb
-        self.sensor_enabled = bool(enable_runout)
-        self.filament_present = False
-        self.insert_gcode = None
-        self.runout_gcode = None
-        self.event_delay = 0.0
-        self.min_event_systime = self._reactor.NEVER
-
-    def note_filament_present(self, eventtime=None, is_filament_present=False, **_kwargs):
-        if eventtime is None:
-            eventtime = self._reactor.monotonic()
-
-        new_state = bool(is_filament_present)
-        if new_state == self.filament_present:
-            return
-
-        self.filament_present = new_state
-
-        if (not new_state and self.sensor_enabled and callable(self.runout_callback)):
-            try:
-                self.runout_callback(eventtime)
-            except TypeError:
-                self.runout_callback(eventtime=eventtime)
-
-    def get_status(self, _eventtime=None):
-        return {
-            "filament_detected": bool(self.filament_present),
-            "enabled": bool(self.sensor_enabled),
-        }
-
-class _VirtualFilamentSensor:
-    """Lightweight filament sensor placeholder for AMS virtual pins."""
-
-    QUERY_HELP = "Query the status of the Filament Sensor"
-    SET_HELP = "Sets the filament sensor on/off"
-
-    def __init__(self, printer, name, show_in_gui=True, runout_cb=None, enable_runout=False):
-        self.printer = printer
-        self.name = name
-        self._object_name = f"filament_switch_sensor {name}"
-        self.runout_helper = _VirtualRunoutHelper(printer, name, runout_cb=runout_cb, enable_runout=enable_runout)
-
-        objects = getattr(printer, "objects", None)
-        if isinstance(objects, dict):
-            objects.setdefault(self._object_name, self)
-            if not show_in_gui:
-                hidden_key = "_" + self._object_name
-                objects[hidden_key] = objects.pop(self._object_name)
-
-        # Use lookup with None to prevent errors if gcode not yet loaded
-        gcode = printer.lookup_object("gcode", None)
-        if gcode is None:
-            return
-        try:
-            gcode.register_mux_command("QUERY_FILAMENT_SENSOR", "SENSOR", name, self.cmd_QUERY_FILAMENT_SENSOR, desc=self.QUERY_HELP)
-        except Exception:
-            pass
-
-        try:
-            gcode.register_mux_command("SET_FILAMENT_SENSOR", "SENSOR", name, self.cmd_SET_FILAMENT_SENSOR, desc=self.SET_HELP)
-        except Exception:
-            pass
-
-    def get_status(self, eventtime):
-        return self.runout_helper.get_status(eventtime)
-
-    def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
-        status = self.runout_helper.get_status(None)
-        if status["filament_detected"]:
-            msg = f"Filament Sensor {self.name}: filament detected"
-        else:
-            msg = f"Filament Sensor {self.name}: filament not detected"
-        gcmd.respond_info(msg)
-
-    def cmd_SET_FILAMENT_SENSOR(self, gcmd):
-        self.runout_helper.sensor_enabled = bool(gcmd.get_int("ENABLE", 1))
-
 # Alias to the shared implementation from openams_integration (imported above).
 # The import is guarded by a ConfigError at module load time, so it is always
 # available here.
 _normalize_extruder_name = normalize_extruder_name
 
-def _normalize_pin_value(pin_value) -> Optional[str]:
-    """Return the cleaned FPS_* token stripped of comments and modifiers."""
-    if not isinstance(pin_value, str):
-        return None
-
-    cleaned = pin_value.strip()
-    if not cleaned:
-        return None
-
-    for comment_char in ("#", ";"):
-        idx = cleaned.find(comment_char)
-        if idx != -1:
-            cleaned = cleaned[:idx].strip()
-    if not cleaned:
-        return None
-
-    while cleaned and cleaned[0] in "!^":
-        cleaned = cleaned[1:]
-
-    return cleaned or None
-
-def _is_fps_buffer_pin(pin_value) -> bool:
-    """Return True if pin_value references an AFC_FPS buffer name."""
-    cleaned = _normalize_pin_value(pin_value)
-    if not cleaned:
-        return False
-    return cleaned.upper().startswith("FPS_")
-
-def _patch_extruder_for_virtual_fps() -> None:
-    """Patch AFC extruders so FPS_* tool pins create virtual filament sensors."""
-    extruder_cls = getattr(_afc_extruder_mod, "AFCExtruder", None)
-    if extruder_cls is None or getattr(extruder_cls, "_fps_virtual_tool_patched", False):
-        return
-
-    base_init = extruder_cls.__init__
-
-    def _patched_init(self, config):
-        try:
-            pin_value = config.get("pin_tool_start", None)
-        except Exception as e:
-            _module_logger.debug(f"Failed to read pin_tool_start from config: {e}")
-            pin_value = None
-
-        normalized = _normalize_pin_value(pin_value)
-        is_fps = _is_fps_buffer_pin(pin_value)
-
-        if normalized and not is_fps:
-            normalized = None
-
-        base_init(self, config)
-
-        if not normalized:
-            return
-
-        show_sensor = False
-        enable_runout = getattr(self, "enable_runout", False)
-        runout_cb = getattr(self, "handle_start_runout", None)
-
-        setattr(self, "_fps_virtual_tool_name", normalized)
-
-        virtual = _VirtualFilamentSensor(self.printer, normalized, show_in_gui=show_sensor, runout_cb=runout_cb, enable_runout=enable_runout)
-
-        self.tool_start = pin_value
-        self.fila_tool_start = virtual
-        self.tool_start_state = bool(virtual.runout_helper.filament_present)
-
-    extruder_cls.__init__ = _patched_init
-    extruder_cls._fps_virtual_tool_patched = True
+# Virtual filament sensor and extruder patch live in AFC_FPS so the FPS
+# module owns its own fix.
+from extras.AFC_FPS import (  # noqa: E402
+    patch_extruder_for_virtual_fps as _patch_extruder_for_virtual_fps,
+)
 
 class afcAMS(afcUnit):
     """AFC unit subclass that synchronises state with OpenAMS"""
@@ -880,7 +725,7 @@ class afcAMS(afcUnit):
         self.type = "OpenAMS"
 
         # AMS units don't have physical TurtleNeck buffers.
-        # However, AFC_FPS buffers ARE allowed â€” they provide the FPS ADC reading
+        # However, AFC_FPS buffers ARE allowed — they provide the FPS ADC reading
         # and don't try to adjust stepper rotation distance (no stepper on OpenAMS).
         # If user configured an AFC_FPS buffer, keep it; otherwise force None.
         if self.buffer_obj is not None and not hasattr(self.buffer_obj, 'get_fps_value'):
