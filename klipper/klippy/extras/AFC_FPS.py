@@ -23,7 +23,7 @@
 #
 # For units WITHOUT stepper motors (OpenAMS, etc.), the driver simply
 # provides the ADC reading.  The unit's own code (AFC_OpenAMS) manages
-# tool_start_state and virtual sensors exactly as it already does — this
+# tool_start_state and virtual sensors exactly as it already does â€” this
 # driver just acts as the FPS hardware interface and config entry point.
 # Set  pin_tool_start: <FPS_buffer_name>  on the extruder so Klipper
 # doesn't try to register a GPIO pin for it.
@@ -79,7 +79,7 @@ class AFCFPSBuffer:
         self.report_time: float = config.getfloat('report_time', 0.100)
         self.reversed: bool = config.getboolean('reversed', False)
 
-        # Setup ADC sampling — handle both Klipper and Kalico APIs
+        # Setup ADC sampling â€” handle both Klipper and Kalico APIs
         try:
             self.adc.setup_adc_sample(self.sample_time, self.sample_count)
         except Exception:
@@ -97,14 +97,14 @@ class AFCFPSBuffer:
         self.low_point: float = config.getfloat('low_point', 0.1, minval=0.0, maxval=0.5)
         self.high_point: float = config.getfloat('high_point', 0.9, minval=0.5, maxval=1.0)
 
-        # Multiplier range — how aggressively the buffer corrects
+        # Multiplier range â€” how aggressively the buffer corrects
         self.multiplier_high: float = config.getfloat('multiplier_high', 1.1, minval=1.0)
         self.multiplier_low: float = config.getfloat('multiplier_low', 0.9, minval=0.0, maxval=1.0)
 
-        # Deadband — total width of the neutral window centered on set_point
+        # Deadband â€” total width of the neutral window centered on set_point
         # No correction applied when FPS is within this range.
         # Gives headroom for fast retractions and tool changes without fighting.
-        # Default 0.30 ? window from .35 to .65 (set_point ± deadband/2)
+        # Default 0.30 â†’ window from .35 to .65 (set_point Â± deadband/2)
         self.deadband: float = config.getfloat('deadband', 0.30, minval=0.0, maxval=0.6)
 
         # Smoothing factor for exponential moving average (0 = no smoothing, 1 = max)
@@ -205,7 +205,7 @@ class AFCFPSBuffer:
         return self.fps_value
 
     # ------------------------------------------------------------------
-    # ADC callback — runs at report_time intervals
+    # ADC callback â€” runs at report_time intervals
     # ------------------------------------------------------------------
     def _adc_callback(self, read_time, read_value=None):
         """Process ADC reading from FPS sensor."""
@@ -229,7 +229,7 @@ class AFCFPSBuffer:
         )
 
     # ------------------------------------------------------------------
-    # Correction timer — proportional adjustment loop
+    # Correction timer â€” proportional adjustment loop
     # ------------------------------------------------------------------
     def _correction_event(self, eventtime):
         """Periodically adjust rotation distance based on FPS reading."""
@@ -242,7 +242,7 @@ class AFCFPSBuffer:
         neutral_low = self.set_point - half_db
         neutral_high = self.set_point + half_db
 
-        # Inside deadband window (.35-.65 default) — no correction.
+        # Inside deadband window (.35-.65 default) â€” no correction.
         # Gives the buffer room for fast retractions and tool changes
         # without the correction loop fighting back.
         if neutral_low <= reading <= neutral_high:
@@ -254,7 +254,7 @@ class AFCFPSBuffer:
 
         if reading > neutral_high:
             # FPS reading is HIGH (buffer compressed / pushing too much)
-            # Need to slow down feeding ? multiplier < 1
+            # Need to slow down feeding â†’ multiplier < 1
             # Scale from 1.0 at neutral_high to multiplier_low at high_point
             range_size = self.high_point - neutral_high
             if range_size > 0:
@@ -267,7 +267,7 @@ class AFCFPSBuffer:
                 self.afc.function.afc_led(self.led_trailing, self.led_index)
         else:
             # FPS reading is LOW (buffer stretched / not feeding fast enough)
-            # Need to speed up feeding ? multiplier > 1
+            # Need to speed up feeding â†’ multiplier > 1
             # Scale from 1.0 at neutral_low to multiplier_high at low_point
             range_size = neutral_low - self.low_point
             if range_size > 0:

@@ -454,7 +454,7 @@ class AFCLane:
 
         raises error if buffer is not found
         """
-        # Try AFC_buffer first (TurtleNeck style) — use load_object to force
+        # Try AFC_buffer first (TurtleNeck style) â€” use load_object to force
         # the config section to be parsed even if it hasn't been loaded yet.
         try:
             self.buffer_obj = self.printer.load_object(self._config, "AFC_buffer {}".format(self.buffer_name))

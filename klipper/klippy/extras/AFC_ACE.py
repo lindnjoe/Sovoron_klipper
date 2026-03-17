@@ -1386,7 +1386,7 @@ class afcACE(afcUnit):
                     homing_dist = getattr(afc, 'tool_homing_distance', 200.0)
                     smart_load_max = max(5, int(homing_dist / smart_load_step))
                     self.logger.info(
-                        f"ACE smart load: home_to_tool active — "
+                        f"ACE smart load: home_to_tool active â€” "
                         f"max retries={smart_load_max} "
                         f"(tool_homing_distance={homing_dist:.0f}mm)"
                     )
@@ -1849,7 +1849,7 @@ class afcACE(afcUnit):
             approach_margin = getattr(afc, 'load_undershoot', self.sensor_approach_margin)
             overshoot = getattr(afc, 'tool_homing_distance', self.max_feed_overshoot)
             self.logger.info(
-                f"ACE feed: home_to_tool active — approach_margin={approach_margin:.0f}mm, "
+                f"ACE feed: home_to_tool active â€” approach_margin={approach_margin:.0f}mm, "
                 f"search_distance={overshoot:.0f}mm (tool_homing_distance)"
             )
         else:
@@ -2171,7 +2171,7 @@ class afcACE(afcUnit):
             # Allow extra search distance past dist_hub for physical sensors
             overshoot = hub_clear if has_physical_hub_sensor else 0
             self.logger.info(
-                f"ACE prep_post_load: home_to_hub active — bulk "
+                f"ACE prep_post_load: home_to_hub active â€” bulk "
                 f"{bulk_dist:.0f}mm + approach {approach_dist:.0f}mm "
                 f"(+{overshoot:.0f}mm overshoot) then backoff "
                 f"{hub_clear:.0f}mm for {lane.name}"

@@ -725,7 +725,7 @@ class afcAMS(afcUnit):
         self.type = "OpenAMS"
 
         # AMS units don't have physical TurtleNeck buffers.
-        # However, AFC_FPS buffers ARE allowed — they provide the FPS ADC reading
+        # However, AFC_FPS buffers ARE allowed â€” they provide the FPS ADC reading
         # and don't try to adjust stepper rotation distance (no stepper on OpenAMS).
         # If user configured an AFC_FPS buffer, keep it; otherwise force None.
         if self.buffer_obj is not None and not hasattr(self.buffer_obj, 'get_fps_value'):
