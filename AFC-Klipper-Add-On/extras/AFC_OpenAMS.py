@@ -905,10 +905,12 @@ class afcAMS(afcUnit):
         super().__init__(config)
         self.type = "OpenAMS"
 
-        # AMS units don't have physical buffers - force buffer_obj to None
-        # This prevents buffer monitoring/fault detection from running on AMS lanes
-        # even if user accidentally configured a buffer parameter
-        self.buffer_obj = None
+        # AMS units don't have physical TurtleNeck buffers.
+        # However, AFC_FPS buffers ARE allowed — they provide tool_start detection
+        # and don't try to adjust stepper rotation distance (no stepper on OpenAMS).
+        # If user configured an AFC_FPS buffer, keep it; otherwise force None.
+        if self.buffer_obj is not None and not hasattr(self.buffer_obj, 'fps_threshold'):
+            self.buffer_obj = None
 
         # Ensure LED attributes are set (inherited from AFC_unit but may not be set if AFC base is missing)
         # These are needed by AFC_lane.py handle_unit_connect (lines 391-393)
@@ -1629,6 +1631,13 @@ class afcAMS(afcUnit):
 
         return True
 
+    def _get_fps_buffer_for_lane(self, lane):
+        """Return the AFC_FPS buffer object for a lane, or None if not using one."""
+        buffer_obj = getattr(lane, 'buffer_obj', None)
+        if buffer_obj is not None and hasattr(buffer_obj, 'fps_threshold'):
+            return buffer_obj
+        return None
+
     def _lane_matches_extruder(self, lane) -> bool:
         """Return True if the lane is mapped to this AMS unit's extruder."""
         extruder_name = getattr(self, "extruder", None)
@@ -1869,7 +1878,14 @@ class afcAMS(afcUnit):
 
         eventtime = self.reactor.monotonic()
         lane_name = getattr(lane, "name", None)
-        self._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
+
+        # If this lane uses an AFC_FPS buffer as its tool_start sensor,
+        # update the FPS buffer's tool_start state directly
+        fps_buffer = self._get_fps_buffer_for_lane(lane)
+        if fps_buffer is not None:
+            fps_buffer.set_tool_start_loaded(lane_name)
+        else:
+            self._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
 
     def lane_tool_unloaded(self, lane):
         """Update the virtual tool sensor when a lane unloads from the tool."""
@@ -1896,6 +1912,11 @@ class afcAMS(afcUnit):
             self.reactor.pause(self.reactor.monotonic() + 0.05)
         except Exception:
             pass
+
+        # If this lane uses an AFC_FPS buffer, clear its tool_start state
+        fps_buffer = self._get_fps_buffer_for_lane(lane)
+        if fps_buffer is not None:
+            fps_buffer.set_tool_start_unloaded()
 
         eventtime = self.reactor.monotonic()
         lane_name = getattr(lane, "name", None)
