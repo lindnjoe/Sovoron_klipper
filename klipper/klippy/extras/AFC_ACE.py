@@ -2133,7 +2133,7 @@ class afcACE(afcUnit):
                 f"is ready -- retracting anyway"
             )
 
-        dist_hub = self._get_dist_hub(lane)
+        dist_hub = self._get_dist_hub(lane) + 400
         self.logger.info(
             f"ACE eject_lane: retracting slot {local_slot} "
             f"{dist_hub:.0f}mm from hub for {lane_name}"
