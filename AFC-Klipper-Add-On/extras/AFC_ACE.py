@@ -161,17 +161,18 @@ class afcACE(afcUnit):
         self.crash_detection_mode = crash_detection_mode
 
         # FPS (Filament Pressure Sensor) integration: when the extruder uses
-        # an AMS_extruder# virtual pin (shared FPS with OpenAMS), the FPS
-        # value is used as the toolhead sensor.  fps_value 0-1, where 1 means
-        # filament is fully compressed against extruder gears.
+        # an AFC_FPS buffer as pin_tool_start, the FPS ADC value is used as
+        # the toolhead sensor.  fps_value 0-1, where 1 means filament is
+        # fully compressed against extruder gears.
         self.fps_threshold = config.getfloat("fps_threshold", 0.9)
-        self._fps_obj = None       # resolved FPS object (fps.py)
+        self._fps_obj = None       # resolved AFC_FPS buffer object
         self._fps_extruder = None  # the extruder object associated with FPS
         self._fps_runout_helper = None  # cached runout helper for virtual sensor
         # Latch: during active operations (calibration/feed), once the FPS
         # crosses the threshold we latch tool_start_state=True so that
         # pulsed ACE feeding doesn't clear it between motor pulses.
         self._fps_latched = False
+        self._fps_poll_timer = None  # timer for polling AFC_FPS buffers
 
         # Sensor polling interval for status/runout monitoring
         self.poll_interval = config.getfloat("poll_interval", 1.0)
@@ -234,13 +235,13 @@ class afcACE(afcUnit):
         except Exception:
             pass
 
-        # Apply the OpenAMS virtual pin patch so that AMS_extruder# values
+        # Apply the FPS virtual pin patch so that FPS_buffer# values
         # in pin_tool_start are handled correctly.  AFC_ACE configs load
         # alphabetically before AFC_OpenAMS, so without this the patch would
         # not be in place when [AFC_extruder] sections are parsed.
         try:
-            from extras.AFC_OpenAMS import _patch_extruder_for_virtual_ams
-            _patch_extruder_for_virtual_ams()
+            from extras.AFC_OpenAMS import _patch_extruder_for_virtual_fps
+            _patch_extruder_for_virtual_fps()
         except Exception:
             pass
 
@@ -371,6 +372,13 @@ class afcACE(afcUnit):
         # Resolve FPS sensor for this unit's extruder (if one exists)
         self._resolve_fps_sensor()
 
+        # If linked to an AFC_FPS buffer (not native fps), start polling timer
+        # so _fps_adc_callback gets called with current FPS values
+        if self._fps_obj is not None and hasattr(self._fps_obj, 'get_fps_value'):
+            self._fps_poll_timer = self.reactor.register_timer(
+                self._fps_poll_event, self.reactor.NOW
+            )
+
         # Hydrate the virtual tool sensor for lanes that were tool-loaded
         # before restart.  OpenAMS's _hydrate_from_saved_state skips non-
         # OpenAMS lanes, so ACE must set the sensor itself.
@@ -432,25 +440,22 @@ class afcACE(afcUnit):
     # ---- FPS (Filament Pressure Sensor) Integration ----
 
     def _resolve_fps_sensor(self):
-        """Find the FPS object that feeds into this unit's extruder.
+        """Find the AFC_FPS buffer that feeds into this unit's extruder.
 
-        Only activates when the extruder's ``pin_tool_start`` is set to an
-        ``AMS_extruder#`` value -this indicates the extruder uses a shared
-        FPS as its toolhead sensor.
+        Activates when the extruder's ``pin_tool_start`` references an
+        AFC_FPS buffer name (e.g. ``FPS_buffer1``).
 
-        Iterates over all ``fps <name>`` printer objects and picks the one
-        whose ``extruder_name`` matches this ACE unit's extruder.  When
-        found, registers an ADC callback so ``extruder.tool_start_state`` is
+        Looks up the AFC_FPS buffer object from the AFC buffer registry
+        and registers an ADC callback so ``extruder.tool_start_state`` is
         updated in real-time as the FPS value crosses the threshold.
         """
         extruder_name = getattr(self, "extruder", None)
         if not extruder_name:
             return
 
-        # Resolve the extruder object first to check pin_tool_start
         try:
             extruder_obj = self.printer.lookup_object(
-                f"AFC_extruder {extruder_name}", None
+                "AFC_extruder {}".format(extruder_name), None
             )
         except Exception:
             extruder_obj = None
@@ -458,71 +463,47 @@ class afcACE(afcUnit):
         if extruder_obj is None:
             return
 
-        # Only activate FPS integration when pin_tool_start is AMS_extruder#
         tool_start = getattr(extruder_obj, "tool_start", None)
         if not tool_start or not isinstance(tool_start, str):
             return
-        cleaned = tool_start.strip()
-        for ch in "#;":
-            idx = cleaned.find(ch)
-            if idx != -1:
-                cleaned = cleaned[:idx].strip()
-        if not cleaned.upper().startswith("AMS_"):
+
+        # Check if pin_tool_start references an AFC_FPS buffer
+        fps_obj = self.afc.buffers.get(tool_start, None)
+        if fps_obj is not None and hasattr(fps_obj, 'get_fps_value'):
+            self._fps_obj = fps_obj
+            self._fps_extruder = extruder_obj
+
+            fila = getattr(extruder_obj, "fila_tool_start", None)
+            helper = getattr(fila, "runout_helper", None) if fila else None
+            self._fps_runout_helper = helper
+
+            self.logger.info(
+                "ACE {}: linked to AFC_FPS buffer '{}' "
+                "(extruder={}, threshold={})".format(
+                    self.name, tool_start, extruder_name, self.fps_threshold
+                )
+            )
             return
 
-        self._fps_extruder = extruder_obj
-
-        # Cache the virtual filament sensor's runout helper so the FPS
-        # callback can update it (drives Klipper's filament sensor state
-        # and runout detection).
-        fila = getattr(extruder_obj, "fila_tool_start", None)
-        helper = getattr(fila, "runout_helper", None) if fila else None
-        self._fps_runout_helper = helper
-
-        # Scan printer objects for fps instances matching our extruder.
-        # Try known fps names (fps1, fps2, ...) via lookup_object, then
-        # fall back to iterating printer.objects if available.
-        found = False
-        for i in range(1, 9):
-            fps_name = f"fps fps{i}"
-            fps_obj = self.printer.lookup_object(fps_name, None)
-            if fps_obj is None:
-                continue
-            fps_ext = getattr(fps_obj, "extruder_name", None)
-            if fps_ext and fps_ext == extruder_name:
-                self._fps_obj = fps_obj
-                self.logger.info(
-                    f"ACE {self.name}: linked to FPS '{fps_name}' "
-                    f"(extruder={extruder_name}, pin_tool_start={tool_start}, "
-                    f"threshold={self.fps_threshold})"
-                )
-                fps_obj.add_callback(self._fps_adc_callback)
-                found = True
-                break
-
-        if not found:
-            # Fallback: iterate printer.objects dict if accessible
-            objects = getattr(self.printer, "objects", {})
-            for obj_name, obj in objects.items():
-                if not obj_name.startswith("fps "):
-                    continue
-                fps_ext = getattr(obj, "extruder_name", None)
-                if fps_ext and fps_ext == extruder_name:
-                    self._fps_obj = obj
-                    self.logger.info(
-                        f"ACE {self.name}: linked to FPS '{obj_name}' "
-                        f"(extruder={extruder_name}, pin_tool_start={tool_start}, "
-                        f"threshold={self.fps_threshold})"
-                    )
-                    obj.add_callback(self._fps_adc_callback)
-                    found = True
-                    break
-
-        if not found:
-            self.logger.warning(
-                f"ACE {self.name}: extruder '{extruder_name}' uses "
-                f"pin_tool_start={tool_start} but no matching FPS found"
+        self.logger.debug(
+            "ACE {}: extruder '{}' pin_tool_start='{}' is not an AFC_FPS buffer".format(
+                self.name, extruder_name, tool_start
             )
+        )
+
+    def _fps_poll_event(self, eventtime):
+        """Poll the AFC_FPS buffer's fps_value and feed it to _fps_adc_callback.
+
+        Used when the FPS sensor is an AFC_FPS buffer (which doesn't support
+        add_callback like native fps objects do).  Runs at ~100ms intervals
+        matching the ADC report rate.
+        """
+        fps_obj = self._fps_obj
+        if fps_obj is None:
+            return self.reactor.NEVER
+        fps_value = fps_obj.get_fps_value()
+        self._fps_adc_callback(eventtime, fps_value)
+        return eventtime + 0.1
 
     def _hydrate_virtual_tool_sensor(self, eventtime):
         """Set the virtual tool sensor if an ACE lane was loaded at shutdown.
@@ -620,6 +601,9 @@ class afcACE(afcUnit):
     def get_fps_value(self):
         """Return the current FPS pressure value, or None if no FPS linked."""
         if self._fps_obj is not None:
+            # Works for both AFC_FPS buffers (get_fps_value()) and native fps (fps_value)
+            if hasattr(self._fps_obj, 'get_fps_value'):
+                return self._fps_obj.get_fps_value()
             return self._fps_obj.fps_value
         return None
 
