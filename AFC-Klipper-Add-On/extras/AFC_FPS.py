@@ -94,8 +94,11 @@ class AFCFPSBuffer:
         self.multiplier_high: float = config.getfloat('multiplier_high', 1.1, minval=1.0)
         self.multiplier_low: float = config.getfloat('multiplier_low', 0.9, minval=0.0, maxval=1.0)
 
-        # Deadband around set_point where no correction is applied
-        self.deadband: float = config.getfloat('deadband', 0.05, minval=0.0, maxval=0.2)
+        # Deadband — total width of the neutral window centered on set_point
+        # No correction applied when FPS is within this range.
+        # Gives headroom for fast retractions and tool changes without fighting.
+        # Default 0.30 → window from .35 to .65 (set_point ± deadband/2)
+        self.deadband: float = config.getfloat('deadband', 0.30, minval=0.0, maxval=0.6)
 
         # Smoothing factor for exponential moving average (0 = no smoothing, 1 = max)
         self.smoothing: float = config.getfloat('smoothing', 0.3, minval=0.0, maxval=0.95)
@@ -218,23 +221,28 @@ class AFCFPSBuffer:
             return self.reactor.NEVER
 
         reading = self.smoothed_fps
-        deviation = reading - self.set_point
 
-        # Inside deadband — no correction needed, hold at 1.0
-        if abs(deviation) <= self.deadband:
+        half_db = self.deadband / 2.0
+        neutral_low = self.set_point - half_db
+        neutral_high = self.set_point + half_db
+
+        # Inside deadband window (.35-.65 default) — no correction.
+        # Gives the buffer room for fast retractions and tool changes
+        # without the correction loop fighting back.
+        if neutral_low <= reading <= neutral_high:
             self.set_multiplier(1.0)
             self.last_state = NEUTRAL_STATE_NAME
             if self.led:
                 self.afc.function.afc_led(self.led_neutral, self.led_index)
             return eventtime + self.update_interval
 
-        if deviation > 0:
+        if reading > neutral_high:
             # FPS reading is HIGH (buffer compressed / pushing too much)
             # Need to slow down feeding → multiplier < 1
-            # Scale from 1.0 at deadband edge to multiplier_low at high_point
-            range_size = self.high_point - (self.set_point + self.deadband)
+            # Scale from 1.0 at neutral_high to multiplier_low at high_point
+            range_size = self.high_point - neutral_high
             if range_size > 0:
-                fraction = min((deviation - self.deadband) / range_size, 1.0)
+                fraction = min((reading - neutral_high) / range_size, 1.0)
             else:
                 fraction = 1.0
             multiplier = 1.0 - fraction * (1.0 - self.multiplier_low)
@@ -244,9 +252,10 @@ class AFCFPSBuffer:
         else:
             # FPS reading is LOW (buffer stretched / not feeding fast enough)
             # Need to speed up feeding → multiplier > 1
-            range_size = (self.set_point - self.deadband) - self.low_point
+            # Scale from 1.0 at neutral_low to multiplier_high at low_point
+            range_size = neutral_low - self.low_point
             if range_size > 0:
-                fraction = min((abs(deviation) - self.deadband) / range_size, 1.0)
+                fraction = min((neutral_low - reading) / range_size, 1.0)
             else:
                 fraction = 1.0
             multiplier = 1.0 + fraction * (self.multiplier_high - 1.0)
@@ -590,15 +599,17 @@ class AFCFPSBuffer:
         """
         Adjust the FPS target set point and deadband while running.
 
-        Usage: ``SET_FPS_SET_POINT BUFFER=<name> SET_POINT=<0.1-0.9> [DEADBAND=<0.0-0.2>]``
+        Usage: ``SET_FPS_SET_POINT BUFFER=<name> SET_POINT=<0.1-0.9> [DEADBAND=<0.0-0.6>]``
         """
         new_set_point = gcmd.get_float('SET_POINT', self.set_point, minval=0.1, maxval=0.9)
-        new_deadband = gcmd.get_float('DEADBAND', self.deadband, minval=0.0, maxval=0.2)
+        new_deadband = gcmd.get_float('DEADBAND', self.deadband, minval=0.0, maxval=0.6)
 
         self.set_point = new_set_point
         self.deadband = new_deadband
-        self.logger.info("FPS set_point={:.2f} deadband={:.3f}".format(
-            self.set_point, self.deadband
+        half_db = self.deadband / 2.0
+        self.logger.info("FPS set_point={:.2f} deadband={:.2f} (neutral window {:.2f}-{:.2f})".format(
+            self.set_point, self.deadband,
+            self.set_point - half_db, self.set_point + half_db
         ))
 
     def cmd_ENABLE_BUFFER(self, gcmd: GCodeCommand):
