@@ -1607,9 +1607,25 @@ class afcACE(afcUnit):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
 
         # Quick pull to prevent oozing
+        quick_pull_dist = 2  # mm
         afc.move_e_pos(
-            -2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False
+            -quick_pull_dist, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False
         )
+
+        # Tighten the spool loop: command the ACE to rewind the same distance
+        # the extruder just retracted.  This takes up slack before the cut so
+        # the filament rewinds cleanly onto the spool.
+        try:
+            self._wait_for_ace_ready()
+            self._ace.unwind_filament(
+                local_slot, quick_pull_dist,
+                self._quiet_speed(self.retract_speed),
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"ACE unload: pre-cut spool tighten failed for slot {local_slot}: {e}"
+            )
+
         self.lane_unloading(cur_lane)
         cur_lane.sync_to_extruder()
         cur_lane.do_enable(True)
