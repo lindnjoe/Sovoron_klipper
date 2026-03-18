@@ -705,12 +705,6 @@ EVENT_POLICY: Dict[str, Dict[str, bool]] = {
 # Alias for callers that reference the function by underscore-prefixed name.
 _normalize_extruder_name = normalize_extruder_name
 
-# Virtual filament sensor and extruder patch live in AFC_FPS so the FPS
-# module owns its own fix.
-from extras.AFC_FPS import (  # noqa: E402
-    normalize_pin_value as _normalize_pin_value,
-    patch_extruder_for_virtual_fps as _patch_extruder_for_virtual_fps,
-)
 
 class afcAMS(afcUnit):
     """AFC unit subclass that synchronises state with OpenAMS"""
@@ -1340,7 +1334,7 @@ class afcAMS(afcUnit):
         self.logo_error += '  ' + self.name + '</span>\n'
 
     def _ensure_virtual_tool_sensor(self) -> bool:
-        """Resolve or create the virtual tool-start sensor for FPS extruders."""
+        """Resolve the virtual tool-start sensor created by AFC_FPS."""
         if self._virtual_tool_sensor is not None:
             return True
 
@@ -1349,50 +1343,19 @@ class afcAMS(afcUnit):
             return False
 
         tool_pin = getattr(extruder, "tool_start", None)
-        normalized = _normalize_pin_value(tool_pin)
-        if normalized is None:
-            normalized = getattr(extruder, "_fps_virtual_tool_name", None)
-
-        if not normalized or normalized.lower() in {"buffer", "none", "unknown"}:
+        if not tool_pin or not str(tool_pin).strip().upper().startswith("FPS_"):
             return False
 
-        original_pin = tool_pin
-        if not normalized.upper().startswith("FPS_"):
-            return False
-
+        # AFC_FPS._handle_ready creates the virtual sensor and assigns it
+        # to fila_tool_start.  Just look it up.
         sensor = getattr(extruder, "fila_tool_start", None)
         if sensor is None:
-            sensor = self.printer.lookup_object(f"filament_switch_sensor {normalized}", None)
+            sensor = self.printer.lookup_object(
+                f"filament_switch_sensor {tool_pin.strip()}", None
+            )
 
         if sensor is None:
-            # Use lookup with None to prevent errors if pins not yet loaded
-            pins = self.printer.lookup_object("pins", None)
-            if pins is None:
-                return False
-            if not getattr(self.afc, "_virtual_fps_chip_registered", False):
-                try:
-                    pins.register_chip("afc_virtual_fps", self.afc)
-                except Exception:
-                    return False
-                else:
-                    self.afc._virtual_fps_chip_registered = True
-
-            enable_gui = False
-            runout_cb = getattr(extruder, "handle_start_runout", None)
-            enable_runout = getattr(extruder, "enable_runout", False)
-            debounce = getattr(extruder, "debounce_delay", 0.0)
-
-            try:
-                created = add_filament_switch(normalized, f"afc_virtual_fps:{normalized}", self.printer, enable_gui, runout_cb, enable_runout, debounce)
-            except TypeError:
-                try:
-                    created = add_filament_switch(normalized, f"afc_virtual_fps:{normalized}", self.printer, enable_gui)
-                except Exception:
-                    return False
-            except Exception:
-                return False
-
-            sensor = created[0] if isinstance(created, tuple) else created
+            return False
 
         helper = getattr(sensor, "runout_helper", None)
         if helper is None:
@@ -1401,11 +1364,6 @@ class afcAMS(afcUnit):
         helper.runout_callback = None
         helper.sensor_enabled = False
 
-
-        if getattr(extruder, "fila_tool_start", None) is None:
-            extruder.fila_tool_start = sensor
-
-        extruder.tool_start = original_pin
         self._virtual_tool_sensor = sensor
 
         # Cache the sensor helper
@@ -5719,8 +5677,5 @@ def load_config_prefix(config):
     # they may be in [include] files that haven't been processed yet.
     # The actual OAMS hardware check happens in handle_ready() after all configs load.
 
-    # Always apply patches during config load for any afc_openams sections
-    # The patches will only take effect if OpenAMS hardware is actually present
-    _patch_extruder_for_virtual_fps()
     _patch_infinite_runout_handler()
     return afcAMS(config)

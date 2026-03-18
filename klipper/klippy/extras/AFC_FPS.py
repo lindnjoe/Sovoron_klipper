@@ -30,7 +30,6 @@
 
 from __future__ import annotations
 
-import logging
 from configparser import Error as error
 from typing import TYPE_CHECKING, Optional
 
@@ -227,6 +226,45 @@ class AFCFPSBuffer:
             error_string, led = self.afc.function.verify_led_object(self.led_index)
             if led is None:
                 raise error(error_string)
+
+        # Set up virtual filament sensors for any extruders that reference
+        # this FPS buffer as their pin_tool_start.
+        self._setup_virtual_tool_sensors()
+
+    def _setup_virtual_tool_sensors(self):
+        """Create virtual filament sensors for extruders using this FPS buffer.
+
+        When an AFC_extruder has pin_tool_start pointing to this FPS buffer
+        (e.g. "FPS_buffer1"), the extruder skips GPIO registration during init.
+        This method creates the virtual sensor and assigns it to the extruder
+        so fila_tool_start / runout detection work correctly.
+        """
+        for ext_name, ext_obj in getattr(self.afc, 'extruders', {}).items():
+            pin = getattr(ext_obj, 'tool_start', None)
+            if not pin or not isinstance(pin, str):
+                continue
+            cleaned = pin.strip()
+            if cleaned != self.name:
+                continue
+            # Already set up (e.g. by a prior load)
+            if getattr(ext_obj, '_fps_virtual_tool_name', None) == cleaned:
+                continue
+
+            enable_runout = getattr(ext_obj, 'enable_runout', False)
+            runout_cb = getattr(ext_obj, 'handle_start_runout', None)
+
+            virtual = VirtualFilamentSensor(
+                self.printer, cleaned,
+                show_in_gui=False,
+                runout_cb=runout_cb,
+                enable_runout=enable_runout,
+            )
+            ext_obj._fps_virtual_tool_name = cleaned
+            ext_obj.fila_tool_start = virtual
+            ext_obj.tool_start_state = bool(virtual.runout_helper.filament_present)
+            self.logger.info(
+                f"Created virtual tool sensor for {ext_name} -> {self.name}"
+            )
 
     @property
     def extruder(self):
@@ -711,8 +749,6 @@ class AFCFPSBuffer:
 #  filament sensor so the extruder has a valid fila_tool_start object.
 # ---------------------------------------------------------------------------
 
-_fps_logger = logging.getLogger(__name__)
-
 
 class VirtualRunoutHelper:
     """Minimal runout helper used by FPS virtual sensors."""
@@ -798,102 +834,5 @@ class VirtualFilamentSensor:
         self.runout_helper.sensor_enabled = bool(gcmd.get_int("ENABLE", 1))
 
 
-def normalize_pin_value(pin_value) -> Optional[str]:
-    """Return the cleaned FPS_* token stripped of comments and modifiers."""
-    if not isinstance(pin_value, str):
-        return None
-
-    cleaned = pin_value.strip()
-    if not cleaned:
-        return None
-
-    for comment_char in ("#", ";"):
-        idx = cleaned.find(comment_char)
-        if idx != -1:
-            cleaned = cleaned[:idx].strip()
-    if not cleaned:
-        return None
-
-    while cleaned and cleaned[0] in "!^":
-        cleaned = cleaned[1:]
-
-    return cleaned or None
-
-
-def is_fps_buffer_pin(pin_value) -> bool:
-    """Return True if pin_value references an AFC_FPS buffer name."""
-    cleaned = normalize_pin_value(pin_value)
-    if not cleaned:
-        return False
-    return cleaned.upper().startswith("FPS_")
-
-
-def patch_extruder_for_virtual_fps() -> None:
-    """Patch AFC extruders so FPS_* tool pins create virtual filament sensors.
-
-    When pin_tool_start is an FPS buffer name (e.g. "FPS_buffer1"), the
-    base AFCExtruder.__init__ would try to register it as a GPIO pin on the
-    MCU and fail.  This patch temporarily rewrites the config value to
-    "buffer" (which base_init skips), then sets up a virtual filament
-    sensor after base_init returns.
-    """
-    try:
-        import extras.AFC_extruder as _afc_extruder_mod
-    except Exception:
-        return
-
-    extruder_cls = getattr(_afc_extruder_mod, "AFCExtruder", None)
-    if extruder_cls is None or getattr(extruder_cls, "_fps_virtual_tool_patched", False):
-        return
-
-    base_init = extruder_cls.__init__
-
-    def _patched_init(self, config):
-        try:
-            pin_value = config.get("pin_tool_start", None)
-        except Exception as e:
-            _fps_logger.debug(f"Failed to read pin_tool_start from config: {e}")
-            pin_value = None
-
-        normalized = normalize_pin_value(pin_value)
-        is_fps = is_fps_buffer_pin(pin_value)
-
-        if normalized and not is_fps:
-            normalized = None
-
-        # If this is an FPS buffer pin, temporarily set pin_tool_start to
-        # "buffer" so base_init skips GPIO registration.  Restore after.
-        if normalized:
-            section = config.get_name()
-            config.fileconfig.set(section, "pin_tool_start", "buffer")
-
-        try:
-            base_init(self, config)
-        finally:
-            # Restore the original value so it's visible in config dumps
-            if normalized and pin_value is not None:
-                section = config.get_name()
-                config.fileconfig.set(section, "pin_tool_start", pin_value)
-
-        if not normalized:
-            return
-
-        show_sensor = False
-        enable_runout = getattr(self, "enable_runout", False)
-        runout_cb = getattr(self, "handle_start_runout", None)
-
-        setattr(self, "_fps_virtual_tool_name", normalized)
-
-        virtual = VirtualFilamentSensor(self.printer, normalized, show_in_gui=show_sensor, runout_cb=runout_cb, enable_runout=enable_runout)
-
-        self.tool_start = pin_value
-        self.fila_tool_start = virtual
-        self.tool_start_state = bool(virtual.runout_helper.filament_present)
-
-    extruder_cls.__init__ = _patched_init
-    extruder_cls._fps_virtual_tool_patched = True
-
-
 def load_config_prefix(config):
-    patch_extruder_for_virtual_fps()
     return AFCFPSBuffer(config)

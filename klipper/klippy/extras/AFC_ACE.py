@@ -103,6 +103,7 @@ class afcACE(afcUnit):
         self.retract_speed = config.getfloat("retract_speed", 800.0)    # mm/min
         self.feed_length = config.getfloat("feed_length", 500.0)        # mm
         self.retract_length = config.getfloat("retract_length", 500.0)  # mm
+        self.unload_preretract = config.getfloat("unload_preretract", 50.0) # mm - ACE rewind before cut to tighten spool
 
         # Hub distance: slot-to-hub/combiner distance.  Used for two-phase
         # loading (prep_post_load feeds to hub, load_sequence feeds hub-to-toolhead).
@@ -245,16 +246,6 @@ class afcACE(afcUnit):
             from extras.temperature_ace import TemperatureACE
             pheaters = self.printer.load_object(config, "heaters")
             pheaters.add_sensor_factory("temperature_ace", TemperatureACE)
-        except Exception:
-            pass
-
-        # Apply the FPS virtual pin patch so that FPS_buffer# values
-        # in pin_tool_start are handled correctly.  AFC_ACE configs load
-        # alphabetically before AFC_FPS, so without this the patch would
-        # not be in place when [AFC_extruder] sections are parsed.
-        try:
-            from extras.AFC_FPS import patch_extruder_for_virtual_fps
-            patch_extruder_for_virtual_fps()
         except Exception:
             pass
 
@@ -1612,20 +1603,19 @@ class afcACE(afcUnit):
             -quick_pull_dist, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False
         )
 
-        # Tighten the spool loop: command the ACE to rewind more than the
-        # extruder retracted.  This takes up slack before the cut so the
-        # filament rewinds cleanly onto the spool.
-        pre_cut_tighten = 20  # mm — enough to remove bowden slack
-        try:
-            self._wait_for_ace_ready()
-            self._ace.unwind_filament(
-                local_slot, pre_cut_tighten,
-                self._quiet_speed(self.retract_speed),
-            )
-        except Exception as e:
-            self.logger.warning(
-                f"ACE unload: pre-cut spool tighten failed for slot {local_slot}: {e}"
-            )
+        # Tighten the spool loop: command the ACE to rewind before the cut
+        # so the filament rewinds cleanly onto the spool.
+        if self.unload_preretract > 0:
+            try:
+                self._wait_for_ace_ready()
+                self._ace.unwind_filament(
+                    local_slot, self.unload_preretract,
+                    self._quiet_speed(self.retract_speed),
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"ACE unload: pre-cut spool tighten failed for slot {local_slot}: {e}"
+                )
 
         self.lane_unloading(cur_lane)
         cur_lane.sync_to_extruder()
