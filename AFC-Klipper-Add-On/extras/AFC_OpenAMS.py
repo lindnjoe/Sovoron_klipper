@@ -1150,7 +1150,7 @@ class afcAMS(afcUnit):
         title = f"{self.name} PTFE Length Calibration"
         text = (
             "Select a loaded lane from {} to calibrate PTFE length using OpenAMS. "
-            "Command: OAMS_CALIBRATE_PTFE_LENGTH"
+            "The calibrated value will be stored in your config automatically."
         ).format(self.name)
 
         for lane in self.lanes.values():
@@ -5266,8 +5266,7 @@ class afcAMS(afcUnit):
             gcmd.respond_info("Failed to update ptfe_length in your cfg; please update it manually.")
             return False
 
-        target_name = lane_label
-        gcmd.respond_info(f"Stored OpenAMS ptfe_length {formatted_value} for {target_name} in your cfg.")
+        gcmd.respond_info(f"PTFE calibration complete for {lane_label}: ptfe_length {formatted_value} has been automatically saved to your config.")
         return True
 
     def _run_command_with_capture(self, command):

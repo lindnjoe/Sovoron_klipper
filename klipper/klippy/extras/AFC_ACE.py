@@ -2165,17 +2165,27 @@ class afcACE(afcUnit):
             and getattr(hub, 'switch_pin', 'virtual').lower() != 'virtual'
         )
 
-        if homing_hub and hub_clear > 0:
+        if homing_hub and hub_clear > 0 and has_physical_hub_sensor:
             bulk_dist = max(0, dist_hub - hub_clear)
-            approach_dist = dist_hub - bulk_dist  # == hub_clear
-            # Allow extra search distance past dist_hub for physical sensors
-            overshoot = hub_clear if has_physical_hub_sensor else 0
+            approach_dist = hub_clear
+            overshoot = hub_clear
             self.logger.info(
                 f"ACE prep_post_load: home_to_hub active — bulk "
                 f"{bulk_dist:.0f}mm + approach {approach_dist:.0f}mm "
                 f"(+{overshoot:.0f}mm overshoot) then backoff "
-                f"{hub_clear:.0f}mm for {lane.name}"
-                f"{' (physical hub sensor)' if has_physical_hub_sensor else ' (virtual hub)'}"
+                f"{hub_clear:.0f}mm for {lane.name} (physical hub sensor)"
+            )
+        elif homing_hub and hub_clear > 0:
+            # Virtual hub with homing: single move of dist_hub - hub_clear.
+            # No incremental approach / backoff since there is no physical
+            # sensor to trigger — the net position is the same but we skip
+            # the pointless feed-then-retract dance.
+            bulk_dist = max(0, dist_hub - hub_clear)
+            approach_dist = 0
+            overshoot = 0
+            self.logger.info(
+                f"ACE prep_post_load: feeding slot {local_slot} "
+                f"{bulk_dist:.0f}mm to hub for {lane.name} (virtual hub)"
             )
         else:
             bulk_dist = dist_hub
@@ -2249,7 +2259,7 @@ class afcACE(afcUnit):
                         f"ACE prep_post_load: retracted {hub_clear:.0f}mm "
                         f"hub_clear backoff for {lane.name}"
                     )
-                else:
+                elif not homing_hub:
                     # No homing: just feed the remaining distance
                     remaining = dist_hub - bulk_dist
                     if remaining > 0:
