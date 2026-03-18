@@ -108,7 +108,6 @@ class afc_hub:
             report_error = False
             for lane in self.lanes.values():
                 if lane.load is None and lane.prep is not None:
-                    # Lane has prep sensor but no load sensor - likely a config error
                     report_error = True
                     msg += f"\n{lane.fullname}"
 
@@ -119,9 +118,7 @@ class afc_hub:
     def state(self):
         """
         Returns current state of switch. If using virtual sensor returns True if any lanes load
-        sensor is triggered.  For lanes without a physical load sensor (e.g. OpenAMS, ACE),
-        the unit drives the hub state via switch_pin_callback when filament is
-        actually in the hub path (not merely staged nearby).
+        sensor is triggered or the unit has driven the state via switch_pin_callback.
         """
         state = self._state
         if self.switch_pin.lower() == "virtual":
