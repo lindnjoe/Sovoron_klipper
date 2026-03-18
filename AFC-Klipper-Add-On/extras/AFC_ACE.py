@@ -2895,7 +2895,7 @@ class afcACE(afcUnit):
 
         # Round to nearest integer for clean config values
         new_feed_length = round(distance, 0)
-        new_retract_length = round(distance - 100, 0)
+        new_retract_length = round(distance - 20, 0)
 
         # Update in-memory unit-level values
         old_feed = self.feed_length
@@ -3062,7 +3062,7 @@ class afcACE(afcUnit):
 
         lane_name = cur_lane.name
         new_feed_length = round(distance, 0)
-        new_retract_length = round(distance - 100, 0)
+        new_retract_length = round(distance - 20, 0)
 
         # Update in-memory per-lane overrides
         old_feed = self._lane_feed_length.get(lane_name, self.feed_length)
