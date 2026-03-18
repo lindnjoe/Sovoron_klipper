@@ -283,8 +283,16 @@ class AFCSpool:
         """
         Helper function for setting lane spool values
         """
-        # set defaults if there's no spool id, or the spoolman lookup fails
+        # Clear all spool metadata and reset to defaults when remember_spool is
+        # disabled.  Previously only material and weight were reset, leaving
+        # stale spool_id, color, extruder_temp, and bed_temp from the previous
+        # spool which caused AMS lanes to show old information after a spool
+        # swap.
         if not cur_lane.remember_spool:
+            cur_lane.spool_id = None
+            cur_lane.color = ''
+            cur_lane.extruder_temp = None
+            cur_lane.bed_temp = None
             cur_lane.material = self.afc.default_material_type
             cur_lane.weight = 1000 # Defaulting weight to 1000 upon load
 
