@@ -364,6 +364,10 @@ class AFCExtruder:
             #  set to current tool start state
             self.tc_lane._load_state = self.tc_lane.prep_state = self.tool_start_state
 
+            if self.tool_start == "buffer":
+                raise error(
+                    f"buffer is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
+                )
 
 
     def handle_connect(self):
