@@ -444,6 +444,9 @@ class AFCFPSBuffer:
             self.trailing_state = False
             if self.led:
                 self.afc.function.afc_led(self.led_neutral, self.led_index)
+            # Neutral = healthy — keep fault baseline fresh
+            if self.fault_detection_enabled():
+                self.update_filament_error_pos()
             return eventtime + self.update_interval
 
         if reading > neutral_high:
@@ -478,6 +481,13 @@ class AFCFPSBuffer:
                 self.afc.function.afc_led(self.led_trailing, self.led_index)
 
         self.set_multiplier(multiplier)
+
+        # When the FPS is actively correcting (not stuck), reset the fault
+        # detection baseline so it doesn't trigger a false positive.
+        # Only skip the reset when in Trailing state (not feeding) — that's
+        # the condition where a clog or runout would manifest.
+        if self.fault_detection_enabled() and self.last_state != TRAILING_STATE_NAME:
+            self.update_filament_error_pos()
 
         if self.debug:
             self.logger.debug(
