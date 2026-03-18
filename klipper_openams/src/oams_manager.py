@@ -3388,11 +3388,13 @@ class OAMSManager:
             return None
 
         # Get the unit string (e.g., "AMS_1:1")
+
         unit_str = getattr(lane, "unit", None)
         if not unit_str or not isinstance(unit_str, str):
             return None
 
         # Extract base unit name (e.g., "AMS_1" from "AMS_1:1")
+
         if ':' in unit_str:
             base_unit_name = unit_str.split(':')[0]
         else:
