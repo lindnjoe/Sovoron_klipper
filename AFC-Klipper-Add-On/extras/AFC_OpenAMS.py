@@ -4932,6 +4932,16 @@ class afcAMS(afcUnit):
 
         eventtime = kwargs.get("eventtime", 0.0)
 
+        # Clear stale spool metadata from a previously loaded spool before
+        # set_loaded() applies defaults / next_spool_id.  AFC's _set_values()
+        # only resets material and weight; spool_id, color, and temps would
+        # otherwise persist across spool swaps.
+        if not previous_loaded and not getattr(lane, "remember_spool", False):
+            try:
+                self.afc.spool.clear_values(lane)
+            except Exception:
+                pass
+
         # PHASE 1 REFACTOR: Use AFC native set_loaded() instead of direct state assignment
         # lane.set_loaded() handles:
         # - Sets lane.status = AFCLaneState.LOADED
