@@ -1446,7 +1446,15 @@ class afcACE(afcUnit):
                             pass
 
                     self._wait_for_ace_ready()
-                    self._ace.feed_filament(local_slot, smart_load_dist, smart_spd)
+                    try:
+                        self._ace.feed_filament(local_slot, smart_load_dist, smart_spd)
+                    except (ACESerialError, ACETimeoutError) as e:
+                        self.logger.warning(
+                            f"ACE smart load: feed_filament failed on "
+                            f"attempt {attempt}: {e}"
+                        )
+                        afc.reactor.pause(afc.reactor.monotonic() + 1.0)
+                        continue
                     sensor_hit = self._wait_for_feed_complete(
                         local_slot, smart_load_dist, smart_spd,
                         lane=cur_lane, poll_interval=0.1,
@@ -1831,7 +1839,7 @@ class afcACE(afcUnit):
                 except TypeError:
                     helper.note_filament_present(state)
 
-    def _wait_for_ace_ready(self, timeout=10.0):
+    def _wait_for_ace_ready(self, timeout=30.0):
         """Wait for the overall ACE status to be 'ready' before sending commands.
 
         After a retract/feed completes, the slot may report 'ready'/'empty'
