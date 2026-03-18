@@ -46,16 +46,20 @@ FPS_ENDSTOP_POLL_TIME = 0.01  # 10ms poll interval for software endstop
 
 
 class FPSEndstopWrapper:
-    """Software endstop that triggers when the FPS reading reaches high_point.
+    """Software endstop that triggers based on FPS reading threshold.
 
     Implements the MCU endstop interface so klipper's homing/drip_move system
     can use the FPS analog reading as a buffer endstop — just like a turtleneck
-    advance switch, but triggered at the configured high_point (default 0.9).
+    switch, but triggered at a configurable threshold.
+
+    For advance endstop: triggers when smoothed_fps >= high_point (buffer compressed)
+    For trailing endstop: triggers when smoothed_fps <= low_point (buffer stretched)
     """
 
-    def __init__(self, fps_buffer):
+    def __init__(self, fps_buffer, trigger_func):
         self._fps_buffer = fps_buffer
         self._reactor = fps_buffer.reactor
+        self._trigger_func = trigger_func
         self._steppers = []
         self._trigger_time = 0.
         self._completion = None
@@ -75,7 +79,7 @@ class FPSEndstopWrapper:
         self._trigger_time = 0.
         self._completion = self._reactor.completion()
         # Check if already triggered before starting poll timer
-        if self._fps_buffer.buffer_triggered == triggered:
+        if self._trigger_func() == triggered:
             mcu = self.get_mcu()
             self._trigger_time = mcu.estimated_print_time(
                 self._reactor.monotonic())
@@ -86,7 +90,7 @@ class FPSEndstopWrapper:
         return self._completion
 
     def _poll_fps(self, eventtime):
-        if self._fps_buffer.buffer_triggered:
+        if self._trigger_func():
             mcu = self.get_mcu()
             self._trigger_time = mcu.estimated_print_time(eventtime)
             self._completion.complete(True)
@@ -100,7 +104,7 @@ class FPSEndstopWrapper:
         return self._trigger_time
 
     def query_endstop(self, print_time):
-        return 1 if self._fps_buffer.buffer_triggered else 0
+        return 1 if self._trigger_func() else 0
 
 
 class AFCFPSBuffer:
@@ -260,10 +264,13 @@ class AFCFPSBuffer:
             self.cmd_SET_FPS_SET_POINT, desc=self.cmd_SET_FPS_SET_POINT_help
         )
 
-        # Software endstop wrapper — provides the MCU endstop interface so
-        # klipper's homing system can treat FPS >= high_point as "triggered",
-        # just like a turtleneck advance switch.
-        self.fps_endstop = FPSEndstopWrapper(self)
+        # Software endstop wrappers — provide the MCU endstop interface so
+        # klipper's homing system can use FPS thresholds like turtleneck switches.
+        # Advance endstop: triggers at high_point (buffer compressed, filament loaded)
+        # Trailing endstop: triggers at low_point (buffer stretched, spool stuck)
+        self.fps_endstop = FPSEndstopWrapper(self, lambda: self.buffer_triggered)
+        self.fps_trailing_endstop = FPSEndstopWrapper(
+            self, lambda: self.buffer_trailing_triggered)
 
         # Register with AFC buffer registry
         self.afc.buffers[self.name] = self
@@ -357,6 +364,15 @@ class AFCFPSBuffer:
         into the toolhead without requiring a hardware endstop.
         """
         return self.smoothed_fps >= self.high_point
+
+    @property
+    def buffer_trailing_triggered(self) -> bool:
+        """True when FPS reading indicates the buffer is stretched (at low_point).
+
+        This is the FPS equivalent of the turtleneck trailing switch being
+        triggered — indicates the spool is not feeding fast enough or is stuck.
+        """
+        return self.smoothed_fps <= self.low_point
 
     # ------------------------------------------------------------------
     # ADC callback — runs at report_time intervals

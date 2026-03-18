@@ -585,10 +585,11 @@ class AFCExtruderStepper(AFCLane):
         self._endstops[key] = (mcu_endstop, name)
 
     def _add_fps_endstop(self, buffer_name):
-        """Register an FPS buffer's software endstop as buffer_advance.
+        """Register FPS buffer software endstops as buffer_advance and buffer_trailing.
 
         Called when the buffer has no hardware advance_pin (FPS buffer type).
-        The FPS endstop triggers when smoothed_fps >= high_point (default 0.9).
+        Advance endstop triggers when smoothed_fps >= high_point (default 0.9).
+        Trailing endstop triggers when smoothed_fps <= low_point (default 0.1).
 
         :param buffer_name: Name of the AFC_FPS buffer to look up
         """
@@ -605,6 +606,7 @@ class AFCExtruderStepper(AFCLane):
         if buffer_obj is None or not hasattr(buffer_obj, 'fps_endstop'):
             return
 
+        # Register advance endstop (high_point)
         endstop = buffer_obj.fps_endstop
         name = 'buffer_adv'
         try:
@@ -618,6 +620,22 @@ class AFCExtruderStepper(AFCLane):
             pass
         self.logger.debug(f"{self.name} adding FPS software endstop buffer_advance:{buffer_name}")
         self._endstops['buffer_advance'] = (endstop, name)
+
+        # Register trailing endstop (low_point)
+        if hasattr(buffer_obj, 'fps_trailing_endstop'):
+            trail_endstop = buffer_obj.fps_trailing_endstop
+            trail_name = 'buffer_trailing'
+            try:
+                trail_endstop.add_stepper(self.extruder_stepper.stepper)
+            except Exception:
+                self.logger.info(f"Error adding stepper to FPS trailing endstop for {self.name}")
+                return
+            try:
+                self._qes.register_endstop(trail_endstop, trail_name)
+            except Exception:
+                pass
+            self.logger.debug(f"{self.name} adding FPS software endstop buffer_trailing:{buffer_name}")
+            self._endstops['buffer_trailing'] = (trail_endstop, trail_name)
 
     def do_homing_move(self, movepos: int, speed: int, accel: int, endstop_spec:str,
                        triggered=True, check_trigger=True, assist_active=True) -> tuple[bool, float]:
