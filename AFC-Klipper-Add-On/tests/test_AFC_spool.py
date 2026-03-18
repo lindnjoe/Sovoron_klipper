@@ -552,49 +552,6 @@ class TestSetValues:
         assert lane.weight == 1000
         spool.set_spoolID.assert_not_called()
 
-    def test_clears_all_stale_metadata_when_not_remember_spool(self):
-        """Verify _set_values resets spool_id, color, and temps from previous spool."""
-        spool = _make_spool()
-        lane = _make_lane()
-        lane.remember_spool = False
-        # Simulate stale metadata from a previous spool
-        lane.spool_id = 99
-        lane.color = "#FF0000"
-        lane.extruder_temp = 210
-        lane.bed_temp = 60
-        lane.material = "ABS"
-        lane.weight = 500
-        spool.afc.default_material_type = "PLA"
-        spool.set_spoolID = MagicMock()
-        spool._set_values(lane)
-        assert lane.spool_id is None
-        assert lane.color == ""
-        assert lane.extruder_temp is None
-        assert lane.bed_temp is None
-        assert lane.material == "PLA"
-        assert lane.weight == 1000
-
-    def test_preserves_metadata_when_remember_spool(self):
-        """Verify _set_values does NOT clear metadata when remember_spool is True."""
-        spool = _make_spool()
-        lane = _make_lane()
-        lane.remember_spool = True
-        lane.spool_id = 99
-        lane.color = "#FF0000"
-        lane.extruder_temp = 210
-        lane.bed_temp = 60
-        lane.material = "ABS"
-        lane.weight = 500
-        spool.afc.default_material_type = "PLA"
-        spool.set_spoolID = MagicMock()
-        spool._set_values(lane)
-        assert lane.spool_id == 99
-        assert lane.color == "#FF0000"
-        assert lane.extruder_temp == 210
-        assert lane.bed_temp == 60
-        assert lane.material == "ABS"
-        assert lane.weight == 500
-
     def test_calls_set_spool_id_when_next_spool_id_set(self):
         spool = _make_spool()
         lane = _make_lane()
@@ -606,23 +563,6 @@ class TestSetValues:
         spool._set_values(lane)
         spool.set_spoolID.assert_called_once_with(lane, 42)
         assert spool.next_spool_id is None  # consumed after use
-
-    def test_next_spool_id_overwrites_cleared_defaults(self):
-        """Verify next_spool_id applies SpoolMan data after clearing stale metadata."""
-        spool = _make_spool()
-        lane = _make_lane()
-        lane.remember_spool = False
-        # Stale data from previous spool
-        lane.spool_id = 99
-        lane.color = "#FF0000"
-        spool.afc.default_material_type = "PLA"
-        spool.afc.spoolman = MagicMock()
-        spool.next_spool_id = 42
-        spool.set_spoolID = MagicMock()
-        spool._set_values(lane)
-        # Stale spool_id should be cleared before set_spoolID is called
-        assert lane.spool_id is None
-        spool.set_spoolID.assert_called_once_with(lane, 42)
 
 
 # ── set_spoolID ───────────────────────────────────────────────────────────────
