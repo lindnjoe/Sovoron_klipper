@@ -860,9 +860,8 @@ class afcUnit:
         move the filament so that both advance and trail sensor in buffer are hit. If this is
         successful, then it's deemed that filament is actually loaded to the toolhead.
 
-        For FPS buffers (no advance_pin), filament is moved in small increments while
-        polling the FPS reading. The buffer is considered triggered when the smoothed
-        FPS value reaches the configured high_point (default 0.9).
+        Works with both turtleneck buffers (hardware advance switch) and FPS buffers
+        (software endstop that triggers at high_point / 0.9).
 
         :param lane: Lane to check if filament is loaded to toolhead.
         :return: Returns true if check is successful.
@@ -873,13 +872,7 @@ class afcUnit:
             or not self.enable_buffer_tool_check):
             loaded = lane.tool_loaded
         else:
-            buffer_obj = getattr(lane, 'buffer_obj', None)
-            if buffer_obj is not None and hasattr(buffer_obj, 'buffer_triggered'):
-                # FPS buffer: move in increments and poll the FPS reading
-                homed, move_dis = self._fps_buffer_load_check(lane, buffer_obj)
-            else:
-                # Turtleneck buffer: home to hardware advance endstop
-                homed, move_dis, _ = lane.move_to(200, SpeedMode.SHORT, AFCHomingPoints.BUFFER)
+            homed, move_dis, _ = lane.move_to(200, SpeedMode.SHORT, AFCHomingPoints.BUFFER)
 
             if not homed:
                 msg = f"Buffer toolhead loaded check failed for {lane.name}. Please verify"
@@ -892,33 +885,6 @@ class afcUnit:
                           lane.short_moves_accel, False)
             loaded = homed
         return loaded
-
-    def _fps_buffer_load_check(self, lane, buffer_obj):
-        """Move filament in increments, polling FPS reading until buffer is triggered.
-
-        :param lane: Lane to move filament through.
-        :param buffer_obj: AFCFPSBuffer object to poll for trigger state.
-        :return tuple[bool, float]: (triggered, total_distance_moved)
-        """
-        max_distance = 200
-        step_size = 10
-        total_moved = 0.0
-
-        while total_moved < max_distance:
-            remaining = max_distance - total_moved
-            move_dist = min(step_size, remaining)
-            lane.move(move_dist, lane.short_moves_speed,
-                      lane.short_moves_accel, False)
-            total_moved += move_dist
-
-            # Allow ADC readings to update
-            toolhead = self.printer.lookup_object('toolhead')
-            toolhead.wait_moves()
-
-            if buffer_obj.buffer_triggered:
-                return True, total_moved
-
-        return False, total_moved
 
     cmd_AFC_SELECT_LANE_help = "Command to home to lane selector for specified lane in selector style units."
     cmd_AFC_SELECT_LANE_options = {"LANE": {"type":"string", "default":"lane1"}}

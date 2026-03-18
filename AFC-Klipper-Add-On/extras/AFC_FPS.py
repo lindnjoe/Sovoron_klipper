@@ -42,6 +42,65 @@ TRAILING_STATE_NAME = "Trailing"
 ADVANCING_STATE_NAME = "Advancing"
 NEUTRAL_STATE_NAME = "Neutral"
 CHECK_RUNOUT_TIMEOUT = 0.5
+FPS_ENDSTOP_POLL_TIME = 0.01  # 10ms poll interval for software endstop
+
+
+class FPSEndstopWrapper:
+    """Software endstop that triggers when the FPS reading reaches high_point.
+
+    Implements the MCU endstop interface so klipper's homing/drip_move system
+    can use the FPS analog reading as a buffer endstop — just like a turtleneck
+    advance switch, but triggered at the configured high_point (default 0.9).
+    """
+
+    def __init__(self, fps_buffer):
+        self._fps_buffer = fps_buffer
+        self._reactor = fps_buffer.reactor
+        self._steppers = []
+        self._trigger_time = 0.
+        self._completion = None
+        self._poll_timer = None
+
+    def get_mcu(self):
+        return self._fps_buffer.adc.get_mcu()
+
+    def add_stepper(self, stepper):
+        self._steppers.append(stepper)
+
+    def get_steppers(self):
+        return list(self._steppers)
+
+    def home_start(self, print_time, sample_time, sample_count, rest_time,
+                   triggered=True):
+        self._trigger_time = 0.
+        self._completion = self._reactor.completion()
+        # Check if already triggered before starting poll timer
+        if self._fps_buffer.buffer_triggered == triggered:
+            mcu = self.get_mcu()
+            self._trigger_time = mcu.estimated_print_time(
+                self._reactor.monotonic())
+            self._completion.complete(True)
+        else:
+            self._poll_timer = self._reactor.register_timer(
+                self._poll_fps, self._reactor.NOW)
+        return self._completion
+
+    def _poll_fps(self, eventtime):
+        if self._fps_buffer.buffer_triggered:
+            mcu = self.get_mcu()
+            self._trigger_time = mcu.estimated_print_time(eventtime)
+            self._completion.complete(True)
+            return self._reactor.NEVER
+        return eventtime + FPS_ENDSTOP_POLL_TIME
+
+    def home_wait(self, home_end_time):
+        if self._poll_timer is not None:
+            self._reactor.unregister_timer(self._poll_timer)
+            self._poll_timer = None
+        return self._trigger_time
+
+    def query_endstop(self, print_time):
+        return 1 if self._fps_buffer.buffer_triggered else 0
 
 
 class AFCFPSBuffer:
@@ -200,6 +259,11 @@ class AFCFPSBuffer:
             "SET_FPS_SET_POINT", "BUFFER", self.name,
             self.cmd_SET_FPS_SET_POINT, desc=self.cmd_SET_FPS_SET_POINT_help
         )
+
+        # Software endstop wrapper — provides the MCU endstop interface so
+        # klipper's homing system can treat FPS >= high_point as "triggered",
+        # just like a turtleneck advance switch.
+        self.fps_endstop = FPSEndstopWrapper(self)
 
         # Register with AFC buffer registry
         self.afc.buffers[self.name] = self

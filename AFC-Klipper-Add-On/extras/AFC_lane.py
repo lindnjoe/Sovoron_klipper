@@ -293,6 +293,16 @@ class AFCLane:
             if advance_pin:
                 self._set_homing_endstop(query_endstops, ppins,
                                          advance_pin, AFCHomingPoints.BUFFER)
+            elif hasattr(self.buffer_obj, 'fps_endstop'):
+                # FPS buffer: register software endstop (triggers at high_point)
+                endstop = self.buffer_obj.fps_endstop
+                endstop_name = f"{self.name}_{AFCHomingPoints.BUFFER}"
+                try:
+                    query_endstops.register_endstop(endstop, endstop_name)
+                except Exception:
+                    pass
+                self.endstops.update({AFCHomingPoints.BUFFER: {
+                    "endstop": endstop, "endstop_name": endstop_name}})
 
         if (self.extruder_name
             and "extruder" not in self.name): # Protects against standalone lanes
