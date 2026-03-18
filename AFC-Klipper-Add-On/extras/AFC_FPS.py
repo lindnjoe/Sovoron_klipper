@@ -489,12 +489,10 @@ class AFCFPSBuffer:
 
         self.set_multiplier(multiplier)
 
-        # When the FPS is actively correcting (not stuck), reset the fault
-        # detection baseline so it doesn't trigger a false positive.
-        # Only skip the reset when in Trailing state (not feeding) — that's
-        # the condition where a clog or runout would manifest.
-        if self.fault_detection_enabled() and self.last_state != TRAILING_STATE_NAME:
-            self.update_filament_error_pos()
+        # Fault baseline is only reset in the Neutral branch above.
+        # Both Advancing (clog / not feeding) and Trailing (runout /
+        # filament slack) are abnormal — let them accumulate extruder
+        # travel toward the fault threshold.
 
         if self.debug:
             self.logger.debug(
