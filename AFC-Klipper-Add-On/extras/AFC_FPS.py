@@ -284,6 +284,16 @@ class AFCFPSBuffer:
         """Get current FPS pressure value (0.0-1.0)."""
         return self.fps_value
 
+    @property
+    def buffer_triggered(self) -> bool:
+        """True when FPS reading indicates the buffer is compressed (at high_point).
+
+        This is the FPS equivalent of the turtleneck advance switch being
+        triggered — used by tool_loaded_check to verify filament is loaded
+        into the toolhead without requiring a hardware endstop.
+        """
+        return self.smoothed_fps >= self.high_point
+
     # ------------------------------------------------------------------
     # ADC callback — runs at report_time intervals
     # ------------------------------------------------------------------
