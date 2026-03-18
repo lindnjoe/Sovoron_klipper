@@ -249,16 +249,6 @@ class afcACE(afcUnit):
         except Exception:
             pass
 
-        # Apply the FPS virtual pin patch so that FPS_buffer# values
-        # in pin_tool_start are handled correctly.  AFC_ACE configs load
-        # alphabetically before AFC_FPS, so without this the patch would
-        # not be in place when [AFC_extruder] sections are parsed.
-        try:
-            from extras.AFC_FPS import patch_extruder_for_virtual_fps
-            patch_extruder_for_virtual_fps()
-        except Exception:
-            pass
-
     def _parse_lane_overrides(self, config: ConfigWrapper):
         """Scan [AFC_lane] sections for per-lane feed/retract/dist_hub overrides."""
         unit_name = self.name

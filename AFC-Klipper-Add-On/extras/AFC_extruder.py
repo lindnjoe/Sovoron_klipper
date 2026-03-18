@@ -279,6 +279,8 @@ class AFCExtruder:
 
             if self.tool_start == "buffer":
                 self.logger.info("Setting up as buffer")
+            elif str(self.tool_start).strip().upper().startswith("FPS_"):
+                self.logger.info(f"Setting up FPS buffer as tool_start: {self.tool_start}")
             else:
                 buttons.register_buttons([self.tool_start], self.tool_start_callback)
                 self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
@@ -913,12 +915,4 @@ class AFCExtruder:
         return self.response
 
 def load_config_prefix(config):
-    # Apply the FPS virtual pin patch before any extruder is constructed.
-    # AFC_extruder sorts alphabetically before AFC_FPS, so without this
-    # the patch would not be in place when pin_tool_start is parsed.
-    try:
-        from extras.AFC_FPS import patch_extruder_for_virtual_fps
-        patch_extruder_for_virtual_fps()
-    except Exception:
-        pass
     return AFCExtruder(config)
