@@ -289,8 +289,10 @@ class AFCLane:
                                          hub_pin, AFCHomingPoints.HUB)
         if self.buffer_name:
             self._get_buffer_object()
-            self._set_homing_endstop(query_endstops, ppins,
-                                     self.buffer_obj.advance_pin, AFCHomingPoints.BUFFER)
+            advance_pin = getattr(self.buffer_obj, 'advance_pin', None)
+            if advance_pin:
+                self._set_homing_endstop(query_endstops, ppins,
+                                         advance_pin, AFCHomingPoints.BUFFER)
 
         if (self.extruder_name
             and "extruder" not in self.name): # Protects against standalone lanes
