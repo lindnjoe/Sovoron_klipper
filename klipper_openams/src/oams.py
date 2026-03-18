@@ -659,7 +659,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             self.hub_hes_on[spool_idx] = value
             values = ",".join(map(str, self.hub_hes_on))
             configfile.set(self.name, "hub_hes_on", "%s" % (values,))
-            gcmd.respond_info("Done calibrating HES; please note this value, and update parameter hub_hes_on for index %d in the configuration" % (spool_idx,))
+            gcmd.respond_info("HES calibration complete: hub_hes_on index %d has been automatically saved to your config" % (spool_idx,))
         else:
             gcmd.error("Calibration of HES %d failed" % spool_idx)
 
@@ -681,7 +681,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 return
 
             configfile.set(self.name, "ptfe_length", "%d" % (self.action_status_value,))
-            gcmd.respond_info("Done calibrating clicks, please note this value and update parameter ptfe_length in the configuration")
+            gcmd.respond_info("PTFE calibration complete: ptfe_length %d has been automatically saved to your config" % self.action_status_value)
 
         else:
             gcmd.error("Calibration of PTFE length failed")
