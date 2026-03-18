@@ -653,7 +653,7 @@ class AFCLane:
         if self.post_prep_macro             is None: self.post_prep_macro   = self.unit_obj.post_prep_macro
 
         if self.td1_bowden_length           is None:
-            if not self.is_direct_hub():
+            if not self.is_direct_hub() and self.hub_obj is not None:
                 self.td1_bowden_length = self.hub_obj.td1_bowden_length
         if self.rev_long_moves_speed_factor < 0.5: self.rev_long_moves_speed_factor = 0.5
         if self.rev_long_moves_speed_factor > 1.2: self.rev_long_moves_speed_factor = 1.2
