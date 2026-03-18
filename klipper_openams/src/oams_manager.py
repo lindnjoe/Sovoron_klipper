@@ -120,6 +120,12 @@ POST_LOAD_PRESSURE_CHECK_PERIOD = 0.5
 # Threshold for detecting failed load - if FPS stays above this during LOADING, filament isn't engaging
 LOAD_FPS_STUCK_THRESHOLD = 0.75
 
+# Minimum FPS pressure after successful engagement.  If the buffer is still
+# stretched below this value the filament has not actually made it through the
+# PTFE path (e.g. uncalibrated tube length).  Triggers unload + retry.
+POST_ENGAGEMENT_MIN_PRESSURE = 0.20
+POST_ENGAGEMENT_SETTLE_TIME = 1.0  # seconds to let buffer settle after engagement
+
 
 def _resolve_oams_entry(oams_map, oams_name, oams_obj=None):
     if not oams_name:
@@ -1200,6 +1206,7 @@ class OAMSManager:
         self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL, minval=0.0, maxval=60.0)
         self.load_fps_stuck_threshold = config.getfloat("load_fps_stuck_threshold", LOAD_FPS_STUCK_THRESHOLD, minval=0.0, maxval=1.0)
         self.engagement_pressure_threshold = config.getfloat("engagement_pressure_threshold", 0.6, minval=0.0, maxval=1.0)
+        self.post_engagement_min_pressure = config.getfloat("post_engagement_min_pressure", POST_ENGAGEMENT_MIN_PRESSURE, minval=0.0, maxval=1.0)
         self.extra_retract_default = config.getfloat("extra_retract", 10.0, minval=0.0, maxval=100.0)
 
         # Validate hysteresis: clear threshold must be > trigger threshold
@@ -5506,6 +5513,35 @@ class OAMSManager:
             # OAMS load succeeded - now verify filament engaged extruder
             engagement_ok = self._verify_engagement_with_extrude(fps_name, fps_state, fps, lane_name, oam)
             if engagement_ok:
+                # Verify FPS buffer has adequate pressure — if the buffer is
+                # still stretched (pressure near zero) the filament hasn't
+                # actually reached through the PTFE path (e.g. uncalibrated
+                # tube length).  Let the buffer settle briefly then check.
+                self.reactor.pause(
+                    self.reactor.monotonic() + POST_ENGAGEMENT_SETTLE_TIME
+                )
+                pressure = float(getattr(fps, "fps_value", 0.5))
+                if pressure < self.post_engagement_min_pressure:
+                    self.logger.warning(
+                        f"FPS pressure {pressure:.2f} below minimum "
+                        f"{self.post_engagement_min_pressure:.2f} after "
+                        f"engagement for {lane_name} — filament may not have "
+                        f"reached through buffer.  Unloading to retry."
+                    )
+                    if not self._perform_engagement_retry_cleanup(
+                        fps_name, fps_state, oam, lane_name, engagement_attempt
+                    ):
+                        last_error = (
+                            f"Failed to clean up after low FPS pressure for "
+                            f"{lane_name}"
+                        )
+                        break
+                    if engagement_attempt + 1 >= max_engagement_retries:
+                        last_error = (
+                            f"FPS pressure remained too low after "
+                            f"{max_engagement_retries} attempts for {lane_name}"
+                        )
+                    continue
                 load_success = True
                 break
 
