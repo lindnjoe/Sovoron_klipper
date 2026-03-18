@@ -135,8 +135,8 @@ class afcACE(afcUnit):
 
         # Sensor-based feeding: feed in increments near the toolhead sensor
         # instead of blindly feeding a fixed distance. This enables calibration.
-        self.sensor_approach_margin = config.getfloat("sensor_approach_margin", 60.0)  # mm before expected sensor to switch to incremental
-        self.sensor_step = config.getfloat("sensor_step", 20.0)                       # mm per check during sensor approach
+        self.sensor_approach_margin = config.getfloat("sensor_approach_margin", 30.0)  # mm before expected sensor to switch to incremental
+        self.sensor_step = config.getfloat("sensor_step", 40.0)                       # mm per check during sensor approach
         self.calibration_step = config.getfloat("calibration_step", 50.0)              # mm per check during calibration
         self.max_feed_overshoot = config.getfloat("max_feed_overshoot", 100.0)         # mm extra to try past feed_length before giving up
 
@@ -1395,7 +1395,7 @@ class afcACE(afcUnit):
             # tool_homing_distance so the ACE searches the same range
             # a BoxTurtle stepper would during endstop homing.
             if not cur_lane.get_toolhead_pre_sensor_state():
-                smart_load_step = 20.0   # mm per retry
+                smart_load_step = 40.0   # mm per retry
                 homing_active = (getattr(afc, 'homing_enabled', False)
                                  and getattr(afc, 'home_to_tool', False))
                 if homing_active:
@@ -2228,7 +2228,7 @@ class afcACE(afcUnit):
 
                 # Phase 2: Incremental approach checking hub sensor
                 if homing_hub and (approach_dist + overshoot) > 0:
-                    step = self.sensor_step  # reuse sensor_step (20mm default)
+                    step = self.sensor_step  # reuse sensor_step (40mm default)
                     total_approach = 0
                     max_approach = approach_dist + overshoot
                     hub_triggered = False
