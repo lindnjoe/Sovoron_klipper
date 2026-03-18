@@ -218,12 +218,16 @@ class afcUnit:
                     extruder=self.extruder, unit_type=self.type.replace("_", ""), unit_name=self.name )
                 raise config_error(error_string)
 
-        # Error checking for buffer
+        # Error checking for buffer (try AFC_buffer first, then AFC_FPS)
         if self.buffer_name is not None:
-            try:
-                self.buffer_obj = self.printer.lookup_object('AFC_buffer {}'.format(self.buffer_name))
-            except:
-                error_string = 'Error: No config found for buffer: {buffer} in [AFC_{unit_type} {unit_name}]. Please make sure [AFC_buffer {buffer}] section exists in your config'.format(
+            for prefix in ('AFC_buffer', 'AFC_FPS'):
+                try:
+                    self.buffer_obj = self.printer.lookup_object('{} {}'.format(prefix, self.buffer_name))
+                    break
+                except Exception:
+                    pass
+            if self.buffer_obj is None:
+                error_string = 'Error: No config found for buffer: {buffer} in [AFC_{unit_type} {unit_name}]. Please make sure [AFC_buffer {buffer}] or [AFC_FPS {buffer}] section exists in your config'.format(
                     buffer=self.buffer_name, unit_type=self.type.replace("_", ""), unit_name=self.name )
                 raise config_error(error_string)
 

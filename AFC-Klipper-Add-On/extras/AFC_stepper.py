@@ -466,21 +466,21 @@ class AFCExtruderStepper(AFCLane):
         buffer_name = getattr(self, 'buffer_name', None)
         if not buffer_name:
             buffer_name = self._get_section_value('AFC_extruder', extruder_name, 'buffer') or self._inherit_from_unit('buffer')
-        buffer_adv_pin   = self._get_section_value('AFC_buffer', buffer_name, 'advance_pin')
-        buffer_trail_pin = self._get_section_value('AFC_buffer', buffer_name, 'trailing_pin')
+        buffer_adv_pin   = self._get_buffer_value(buffer_name, 'advance_pin')
+        buffer_trail_pin = self._get_buffer_value(buffer_name, 'trailing_pin')
 
         # Check to verify that hub is not a virtual sensor
         if (hub_pin
             and hub_pin.lower() != "virtual"):
             if not self._reuse_lane_endstop('hub', AFCHomingPoints.HUB):
                 self._add_endstop('hub', hub_pin, 'hub')
-        if tool_start_pin == 'buffer':
-            # When tool_start uses the buffer advance pin, reuse the endstop
-            # already created by AFCLane.__init__ to avoid duplicate pin
-            # registration failures.
+        if tool_start_pin == 'buffer' or (tool_start_pin and str(tool_start_pin).strip().upper().startswith('FPS_')):
+            # When tool_start uses the buffer (hardware or FPS), reuse the
+            # endstop already created by AFCLane.__init__ to avoid duplicate
+            # pin registration or missing FPS software endstop.
             if not self._reuse_lane_endstop('tool_start', AFCHomingPoints.BUFFER):
                 self._add_endstop('tool_start', buffer_adv_pin, 'tool_start')
-        elif tool_start_pin and not str(tool_start_pin).strip().upper().startswith('FPS_'):
+        elif tool_start_pin:
             self._add_endstop('tool_start', tool_start_pin, 'tool_start')
         self._add_endstop('tool_end', tool_end_pin, 'tool_end')
         # Reuse lane-level endstops for buffer pins when already registered
@@ -550,6 +550,22 @@ class AFCExtruderStepper(AFCLane):
             self.logger.debug(err_str)
 
         return None
+
+    def _get_buffer_value(self, buffer_name: str, key: str, default=None) -> Optional[str]:
+        """
+        Fetch a config value from a buffer section, trying both AFC_buffer and
+        AFC_FPS prefixes so that FPS-based buffers are found correctly.
+
+        :param buffer_name: Buffer name to look up
+        :param key: Config key to fetch (e.g. 'advance_pin')
+        :param default: Default if not found
+        :return: Config value or default
+        """
+        for prefix in ('AFC_buffer', 'AFC_FPS'):
+            val = self._get_section_value(prefix, buffer_name, key)
+            if val is not None:
+                return val
+        return default
 
     def _get_section_value(self, section_prefix: str, name: str, key: str, default=None) -> Optional[str]:
         """

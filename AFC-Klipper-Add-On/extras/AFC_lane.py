@@ -613,7 +613,16 @@ class AFCLane:
               and self.extruder_obj.tool_start == "buffer"
               and len(self.extruder_obj.lanes) > 1):
             if self.extruder_obj.buffer_name is not None:
-                self.buffer_obj = self.printer.lookup_object("AFC_buffer {}".format(self.extruder_obj.buffer_name))
+                for prefix in ('AFC_buffer', 'AFC_FPS'):
+                    try:
+                        self.buffer_obj = self.printer.lookup_object("{} {}".format(prefix, self.extruder_obj.buffer_name))
+                        break
+                    except Exception:
+                        pass
+                if self.buffer_obj is None:
+                    error_string = 'Error: No config found for buffer: {buffer} in [AFC_extruder {extruder}]. Please make sure [AFC_buffer {buffer}] or [AFC_FPS {buffer}] section exists in your config'.format(
+                        buffer=self.extruder_obj.buffer_name, extruder=self.extruder_obj.name)
+                    raise error(error_string)
             else:
                 error_string = 'Error: Buffer was defined as tool_start in [AFC_extruder {extruder}] config, but buffer variable has not been configured. Please add buffer variable to either [AFC_extruder {extruder}], [AFC_stepper {name}] or [AFC_{unit_type} {unit_name}] section in your config file'.format(
                     extruder=self.extruder_obj.name, name=self.name, unit_type=self.unit_obj.type.replace("_", ""), unit_name=self.unit_obj.name )
