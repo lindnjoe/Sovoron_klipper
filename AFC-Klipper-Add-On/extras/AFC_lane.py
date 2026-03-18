@@ -610,8 +610,7 @@ class AFCLane:
 
         # Checking if buffer was defined in extruder if not defined in unit/stepper
         elif (self.buffer_obj is None
-              and self.extruder_obj.tool_start_is_buffer
-              and len(self.extruder_obj.lanes) > 1):
+              and self.extruder_obj.tool_start_is_buffer):
             if self.extruder_obj.buffer_name is not None:
                 for prefix in ('AFC_buffer', 'AFC_FPS'):
                     try:
