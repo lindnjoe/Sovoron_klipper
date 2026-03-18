@@ -610,22 +610,21 @@ class AFCLane:
 
         # Checking if buffer was defined in extruder if not defined in unit/stepper
         elif (self.buffer_obj is None
-              and self.extruder_obj.tool_start_is_buffer):
-            if self.extruder_obj.buffer_name is not None:
+              and self.extruder_obj.tool_start_is_buffer
+              and len(self.extruder_obj.lanes) > 1):
+            # Use explicit buffer config if set, otherwise derive from pin_tool_start
+            buf_name = self.extruder_obj.buffer_name or self.extruder_obj.tool_start
+            if buf_name is not None:
                 for prefix in ('AFC_buffer', 'AFC_FPS'):
                     try:
-                        self.buffer_obj = self.printer.lookup_object("{} {}".format(prefix, self.extruder_obj.buffer_name))
+                        self.buffer_obj = self.printer.lookup_object("{} {}".format(prefix, buf_name))
                         break
                     except Exception:
                         pass
                 if self.buffer_obj is None:
                     error_string = 'Error: No config found for buffer: {buffer} in [AFC_extruder {extruder}]. Please make sure [AFC_buffer {buffer}] or [AFC_FPS {buffer}] section exists in your config'.format(
-                        buffer=self.extruder_obj.buffer_name, extruder=self.extruder_obj.name)
+                        buffer=buf_name, extruder=self.extruder_obj.name)
                     raise error(error_string)
-            else:
-                error_string = 'Error: Buffer was defined as tool_start in [AFC_extruder {extruder}] config, but buffer variable has not been configured. Please add buffer variable to either [AFC_extruder {extruder}], [AFC_stepper {name}] or [AFC_{unit_type} {unit_name}] section in your config file'.format(
-                    extruder=self.extruder_obj.name, name=self.name, unit_type=self.unit_obj.type.replace("_", ""), unit_name=self.unit_obj.name )
-                raise error(error_string)
 
         # Valid to not have a buffer defined, check to make sure object exists before adding lane to buffer
         if self.buffer_obj is not None and add_to_other_obj:
