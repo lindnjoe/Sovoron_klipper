@@ -51,7 +51,7 @@ try:
 except Exception:
     _raise_import_error("AFC_respond", template=ERROR_STR)
 
-# -- OpenAMS integration classes (formerly extras/openams_integration.py) ------
+# -- OpenAMS integration classes ------
 
 OPENAMS_VERSION = "0.0.3"
 
@@ -702,9 +702,7 @@ EVENT_POLICY: Dict[str, Dict[str, bool]] = {
 }
 
 
-# Alias to the shared implementation from openams_integration (imported above).
-# The import is guarded by a ConfigError at module load time, so it is always
-# available here.
+# Alias for callers that reference the function by underscore-prefixed name.
 _normalize_extruder_name = normalize_extruder_name
 
 # Virtual filament sensor and extruder patch live in AFC_FPS so the FPS
@@ -3346,7 +3344,7 @@ class afcAMS(afcUnit):
         # Subscribe to hardware sensor events (requires AMSHardwareService)
         if self.hardware_service is None:
             self.logger.error(
-                f"AMSHardwareService not available for {self.name} - OpenAMS requires openams_integration.py. "
+                f"AMSHardwareService not available for {self.name}. "
                 "Sensor updates will not work!"
             )
             return
@@ -3444,7 +3442,6 @@ class afcAMS(afcUnit):
                                         self.logger.debug("Cross-Extruder: Cleared FPS state for {} (was spool {})".format(fps_name, spool_index))
 
                                         try:
-                                            from .openams_integration import AMSRunoutCoordinator
                                             AMSRunoutCoordinator.notify_lane_tool_state(
                                                 self.printer,
                                                 self.oams_name,
