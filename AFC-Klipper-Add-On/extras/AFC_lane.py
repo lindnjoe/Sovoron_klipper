@@ -610,7 +610,7 @@ class AFCLane:
 
         # Checking if buffer was defined in extruder if not defined in unit/stepper
         elif (self.buffer_obj is None
-              and self.extruder_obj.tool_start == "buffer"
+              and self.extruder_obj.tool_start_is_buffer
               and len(self.extruder_obj.lanes) > 1):
             if self.extruder_obj.buffer_name is not None:
                 for prefix in ('AFC_buffer', 'AFC_FPS'):
@@ -1468,7 +1468,7 @@ class AFCLane:
 
         returns Status of toolhead pre sensor or the current buffer advance state
         """
-        if self.extruder_obj.tool_start == "buffer":
+        if self.extruder_obj.tool_start_is_buffer:
             return self.buffer_obj.advance_state
         else:
             return self.extruder_obj.tool_start_state
@@ -1480,7 +1480,7 @@ class AFCLane:
         :return AFCHomingPoints: Returns buffer endstop name if users tool_start is set to buffer
             else returns tool start endstop name
         """
-        if self.extruder_obj.tool_start == "buffer":
+        if self.extruder_obj.tool_start_is_buffer:
             return self.buffer_endstop_name
         else:
             return self.tool_endstop_name

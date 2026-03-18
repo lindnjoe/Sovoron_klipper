@@ -1371,7 +1371,7 @@ class afcACE(afcUnit):
             return False
 
         # Verify toolhead sensor triggered
-        if cur_extruder.tool_start == "buffer" and cur_lane.buffer_obj is not None:
+        if cur_extruder.tool_start_is_buffer and cur_lane.buffer_obj is not None:
             # Buffer/ramming mode: buffer's advance_state is the sensor.
             # Retract off the buffer sensor to confirm load and reset buffer.
             # ACE lanes have no lane stepper, so use move_e_pos (extruder motor)
@@ -1654,7 +1654,7 @@ class afcACE(afcUnit):
         # Step 1: Retract filament out of the nozzle/extruder gears FIRST.
         # This must complete before ACE unwind starts, otherwise the ACE
         # pulls against the extruder grip and the filament catches.
-        if cur_extruder.tool_start == "buffer" and cur_lane.buffer_obj is not None:
+        if cur_extruder.tool_start_is_buffer and cur_lane.buffer_obj is not None:
             # Buffer mode: retract until buffer decompresses using extruder motor
             num_tries = 0
             while not cur_lane.get_trailing() and afc.tool_max_unload_attempts > 0:
@@ -2582,7 +2582,7 @@ class afcACE(afcUnit):
 
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
-                        or extruder_obj.tool_start == "buffer"
+                        or extruder_obj.tool_start_is_buffer
                         or extruder_obj.tool_end_state
                     )
                     if tool_ready and extruder_obj.lane_loaded == cur_lane.name:
@@ -2591,7 +2591,7 @@ class afcACE(afcUnit):
                         if extruder_obj.tool_obj and extruder_obj.tc_unit_name:
                             on_shuttle = " and toolhead on shuttle" if extruder_obj.on_shuttle() else ""
                         msg += f'<span class=primary--text> in ToolHead{on_shuttle}</span>'
-                        if cur_lane.extruder_obj.tool_start == "buffer":
+                        if cur_lane.extruder_obj.tool_start_is_buffer:
                             msg += '<span class=warning--text> Ram sensor enabled, confirm tool is loaded</span>'
 
                         # Restore combined mode tracking regardless of shuttle

@@ -398,6 +398,24 @@ class AFCFPSBuffer:
             + (1.0 - self.smoothing) * read_value
         )
 
+        # Keep advance/trailing state flags current even when the
+        # correction timer is stopped (e.g. during unload).  The unload
+        # sequence checks these flags to know whether filament is still
+        # present — they must always reflect the live FPS reading.
+        half_db = self.deadband / 2.0
+        neutral_low = self.set_point - half_db
+        neutral_high = self.set_point + half_db
+        reading = self.smoothed_fps
+        if reading < neutral_low:
+            self.advance_state = True
+            self.trailing_state = False
+        elif reading > neutral_high:
+            self.advance_state = False
+            self.trailing_state = True
+        else:
+            self.advance_state = False
+            self.trailing_state = False
+
     # ------------------------------------------------------------------
     # Correction timer — proportional adjustment loop
     # ------------------------------------------------------------------
