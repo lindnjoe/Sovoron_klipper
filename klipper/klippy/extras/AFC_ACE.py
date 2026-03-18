@@ -1855,54 +1855,70 @@ class afcACE(afcUnit):
         self._wait_for_ace_ready()
 
         # Determine homing behaviour from AFC global config.  When
-        # home_to_tool and homing_enabled are both True we simulate
-        # BoxTurtle-style "home to tool" by giving the sensor approach
-        # phase a much larger search distance (tool_homing_distance)
-        # instead of the small max_feed_overshoot.  load_undershoot
-        # overrides sensor_approach_margin so the blind bulk feed stops
-        # further from the expected sensor, giving more room for the
-        # incremental search.
+        # home_to_tool and homing_enabled are both True we send one
+        # single continuous feed for the full distance + tool_homing_distance
+        # + 20mm safety margin and poll the sensor at 100ms.  No splitting
+        # into bulk + approach phases — just feed and watch.
         afc = self.afc
         homing_active = getattr(afc, 'homing_enabled', False) and getattr(afc, 'home_to_tool', False)
 
-        if homing_active:
-            approach_margin = getattr(afc, 'load_undershoot', self.sensor_approach_margin)
-            overshoot = getattr(afc, 'tool_homing_distance', self.max_feed_overshoot)
-            self.logger.info(
-                f"ACE feed: home_to_tool active — approach_margin={approach_margin:.0f}mm, "
-                f"search_distance={overshoot:.0f}mm (tool_homing_distance)"
-            )
-        else:
-            approach_margin = self.sensor_approach_margin
-            overshoot = self.max_feed_overshoot
-
-        # Phase 1: Bulk feed (skip the last approach_margin mm)
         feed_spd = self._quiet_speed(self.feed_speed)
-
         self.logger.debug(
             f"ACE feed: slot {slot_index}, "
             f"length={feed_length}mm @ {feed_spd}mm/min"
         )
-        bulk_distance = max(0, feed_length - approach_margin)
-        if bulk_distance > 0:
-            ace.feed_filament(slot_index, bulk_distance, feed_spd)
-            # Wait for ACE to physically complete the bulk feed movement
-            # (ACE ACKs the command before the motor finishes)
-            sensor_triggered_early = self._wait_for_feed_complete(
-                slot_index, bulk_distance, feed_spd, lane=lane
+
+        if homing_active and lane is not None:
+            # ── home_to_tool: single continuous feed ──────────────────
+            homing_dist = getattr(afc, 'tool_homing_distance', 200.0)
+            total_distance = feed_length + homing_dist + 20.0
+            self.logger.info(
+                f"ACE feed: home_to_tool active — single feed "
+                f"{total_distance:.0f}mm (feed={feed_length:.0f} + "
+                f"homing={homing_dist:.0f} + 20mm margin)"
             )
-        else:
-            sensor_triggered_early = False
 
-        # Phase 2: Sensor approach - feed in increments, checking sensor.
-        # When home_to_tool is active the search window is
-        # tool_homing_distance instead of max_feed_overshoot, giving the
-        # ACE the same long runway a BoxTurtle stepper would have when
-        # homing to the toolhead sensor.
-        total_fed = bulk_distance
-        sensor_triggered = sensor_triggered_early
+            ace.feed_filament(slot_index, total_distance, feed_spd)
+            sensor_hit = self._wait_for_feed_complete(
+                slot_index, total_distance, feed_spd, lane=lane,
+                poll_interval=0.1
+            )
 
-        if lane is not None:
+            sensor_triggered = sensor_hit or lane.get_toolhead_pre_sensor_state()
+            total_fed = total_distance
+
+            if sensor_triggered:
+                self.logger.info(
+                    f"ACE feed: toolhead sensor triggered during "
+                    f"home_to_tool feed"
+                )
+                # Re-enable feed assist in case stop_feed_filament
+                # disabled it on the ACE firmware side.
+                if self._get_feed_assist(slot_index, lane):
+                    try:
+                        ace.start_feed_assist(slot_index)
+                        self._feed_assist_active.add(slot_index)
+                    except Exception:
+                        pass
+
+        elif lane is not None:
+            # ── Normal (non-homing): bulk feed then sensor approach ───
+            approach_margin = self.sensor_approach_margin
+            overshoot = self.max_feed_overshoot
+
+            # Phase 1: Bulk feed (skip the last approach_margin mm)
+            bulk_distance = max(0, feed_length - approach_margin)
+            if bulk_distance > 0:
+                ace.feed_filament(slot_index, bulk_distance, feed_spd)
+                sensor_triggered_early = self._wait_for_feed_complete(
+                    slot_index, bulk_distance, feed_spd, lane=lane
+                )
+            else:
+                sensor_triggered_early = False
+
+            total_fed = bulk_distance
+            sensor_triggered = sensor_triggered_early
+
             if not sensor_triggered:
                 # Check if sensor triggered after bulk feed settled
                 self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
@@ -1913,10 +1929,8 @@ class afcACE(afcUnit):
                         f"at ~{total_fed:.0f}mm"
                     )
 
-            # Single continuous feed for the remaining distance while
-            # polling the toolhead sensor.  When the sensor triggers we
-            # immediately stop the ACE feed motor and re-enable feed_assist
-            # in case stop_feed_filament disabled it on the firmware side.
+            # Phase 2: Single continuous feed for the remaining distance
+            # while polling the toolhead sensor.
             max_total = feed_length + overshoot
             remaining = max_total - total_fed
             if not sensor_triggered and remaining > 0:
@@ -1940,15 +1954,15 @@ class afcACE(afcUnit):
                             self._feed_assist_active.add(slot_index)
                         except Exception:
                             pass
+
         else:
-            # No lane/sensor - just feed the remaining fixed distance
-            remaining = feed_length - bulk_distance
-            if remaining > 0:
-                ace.feed_filament(slot_index, remaining, feed_spd)
-                self._wait_for_feed_complete(
-                    slot_index, remaining, feed_spd
-                )
-                total_fed = feed_length
+            # No lane/sensor - just feed the fixed distance
+            ace.feed_filament(slot_index, feed_length, feed_spd)
+            self._wait_for_feed_complete(
+                slot_index, feed_length, feed_spd
+            )
+            total_fed = feed_length
+            sensor_triggered = False
 
         # Phase 3: Feed assist + extruder assist for the last stretch
         # Feed assist stays enabled after loading to maintain filament tension
