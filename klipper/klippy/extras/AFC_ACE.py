@@ -165,6 +165,15 @@ class afcACE(afcUnit):
         # the toolhead sensor.  fps_value 0-1, where 1 means filament is
         # fully compressed against extruder gears.
         self.fps_threshold = config.getfloat("fps_threshold", 0.9)
+        # Lower threshold used during active operations (loading/calibration).
+        # The latch prevents false clears, so we can trigger earlier to catch
+        # brief pressure spikes when filament engages the extruder gears.
+        self.fps_load_threshold = config.getfloat("fps_load_threshold", 0.65)
+        # Minimum jump between consecutive FPS readings to count as filament
+        # engagement during active operations.  Triggers even if the absolute
+        # value stays below fps_load_threshold.
+        self.fps_delta_threshold = config.getfloat("fps_delta_threshold", 0.15)
+        self._prev_fps_value = 0.0  # previous ADC reading for delta calc
         self._fps_obj = None       # resolved AFC_FPS buffer object
         self._fps_extruder = None  # the extruder object associated with FPS
         self._fps_runout_helper = None  # cached runout helper for virtual sensor
@@ -558,17 +567,28 @@ class afcACE(afcUnit):
         triggered = fps_value >= self.fps_threshold
 
         if self._operation_active:
-            # Latch mode: once triggered, stay triggered
-            if triggered and not self._fps_latched:
+            # Latch mode: use the lower load threshold OR a rapid
+            # rate-of-change to catch brief pressure spikes when filament
+            # engages extruder gears.  Once latched, it stays True until
+            # the operation clears it.
+            delta = fps_value - self._prev_fps_value
+            self._prev_fps_value = fps_value
+            load_triggered = fps_value >= self.fps_load_threshold
+            delta_triggered = (fps_value >= 0.5
+                               and delta >= self.fps_delta_threshold)
+            if (load_triggered or delta_triggered) and not self._fps_latched:
+                reason = "threshold" if load_triggered else f"delta={delta:.3f}"
                 self._fps_latched = True
                 extruder.tool_start_state = True
                 self._update_virtual_sensor(read_time, True)
                 self.logger.debug(
                     f"ACE FPS: tool_start_state LATCHED True "
-                    f"(fps_value={fps_value:.3f}, threshold={self.fps_threshold})"
+                    f"(fps_value={fps_value:.3f}, {reason})"
                 )
             # Don't clear tool_start_state while latched
             return
+
+        self._prev_fps_value = fps_value
 
         # Normal mode: track the sensor state directly.
         # When a lane is loaded to the toolhead, do NOT clear the sensor
@@ -1402,50 +1422,60 @@ class afcACE(afcUnit):
                 else:
                     smart_load_dist = 200.0 + 20.0
 
-                self.logger.info(
-                    f"ACE smart load: sensor not triggered, "
-                    f"feeding {smart_load_dist:.0f}mm continuous "
-                    f"(home_to_tool={'active' if homing_active else 'off'})"
-                )
-
-                # Ensure feed assist is running so ACE pushes filament
-                if (local_slot >= 0
-                        and self._get_feed_assist(local_slot, cur_lane)
-                        and local_slot not in self._feed_assist_active):
-                    try:
-                        self._wait_for_ace_ready()
-                        self._ace.start_feed_assist(local_slot)
-                        self._feed_assist_active.add(local_slot)
-                    except Exception:
-                        pass
-
-                self._wait_for_ace_ready()
+                smart_load_retries = 3
                 smart_spd = self._quiet_speed(self.feed_speed)
-                self._ace.feed_filament(local_slot, smart_load_dist, smart_spd)
-                sensor_hit = self._wait_for_feed_complete(
-                    local_slot, smart_load_dist, smart_spd,
-                    lane=cur_lane, poll_interval=0.1,
-                )
-                afc.reactor.pause(afc.reactor.monotonic() + 0.2)
+                triggered = False
 
-                if sensor_hit or cur_lane.get_toolhead_pre_sensor_state():
+                for attempt in range(1, smart_load_retries + 1):
                     self.logger.info(
-                        f"ACE smart load: sensor triggered during "
-                        f"continuous feed"
+                        f"ACE smart load: sensor not triggered, "
+                        f"feeding {smart_load_dist:.0f}mm continuous "
+                        f"(attempt {attempt}/{smart_load_retries}, "
+                        f"home_to_tool={'active' if homing_active else 'off'})"
                     )
-                    # Re-enable feed assist in case stop_feed_filament
-                    # disabled it on the ACE firmware side.
+
+                    # Ensure feed assist is running so ACE pushes filament
                     if (local_slot >= 0
-                            and self._get_feed_assist(local_slot, cur_lane)):
+                            and self._get_feed_assist(local_slot, cur_lane)
+                            and local_slot not in self._feed_assist_active):
                         try:
+                            self._wait_for_ace_ready()
                             self._ace.start_feed_assist(local_slot)
                             self._feed_assist_active.add(local_slot)
                         except Exception:
                             pass
-                else:
+
+                    self._wait_for_ace_ready()
+                    self._ace.feed_filament(local_slot, smart_load_dist, smart_spd)
+                    sensor_hit = self._wait_for_feed_complete(
+                        local_slot, smart_load_dist, smart_spd,
+                        lane=cur_lane, poll_interval=0.1,
+                    )
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.2)
+
+                    if sensor_hit or cur_lane.get_toolhead_pre_sensor_state():
+                        self.logger.info(
+                            f"ACE smart load: sensor triggered on "
+                            f"attempt {attempt}"
+                        )
+                        # Re-enable feed assist in case stop_feed_filament
+                        # disabled it on the ACE firmware side.
+                        if (local_slot >= 0
+                                and self._get_feed_assist(local_slot, cur_lane)):
+                            try:
+                                self._ace.start_feed_assist(local_slot)
+                                self._feed_assist_active.add(local_slot)
+                            except Exception:
+                                pass
+                        triggered = True
+                        break
+
+                if not triggered:
+                    total_searched = smart_load_retries * smart_load_dist
                     message = (
                         f"ACE load did not trigger toolhead sensor after "
-                        f"{smart_load_dist:.0f}mm of extra feeding. "
+                        f"{total_searched:.0f}mm of extra feeding "
+                        f"({smart_load_retries} attempts). "
                         f"CHECK FILAMENT PATH\n"
                         "To resolve, set lane loaded with "
                         f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
