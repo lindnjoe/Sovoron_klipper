@@ -132,6 +132,12 @@ class AFCFPSBuffer:
         self.trailing_state = False
         self.toolhead = None  # Set in _handle_ready
 
+        # Compatibility with hardware buffer interface — upstream code
+        # accesses buffer_obj.advance_pin / trailing_pin directly.
+        # FPS uses software endstops instead of GPIO pins.
+        self.advance_pin = None
+        self.trailing_pin = None
+
         self.debug = config.getboolean("debug", False)
 
         # ---- ADC / FPS sensor configuration ----
@@ -282,6 +288,32 @@ class AFCFPSBuffer:
 
     def __str__(self):
         return self.name
+
+    def register_lane_endstops(self, lane, query_endstops):
+        """Register FPS software endstops on a lane.
+
+        Called by AFCLane.__init__ when the buffer has no hardware advance_pin.
+        Registers both advance (high_point) and trailing (low_point) endstops.
+        """
+        from extras.AFC_lane import AFCHomingPoints
+
+        endstop = self.fps_endstop
+        endstop_name = f"{lane.name}_{AFCHomingPoints.BUFFER}"
+        try:
+            query_endstops.register_endstop(endstop, endstop_name)
+        except Exception:
+            pass
+        lane.endstops[AFCHomingPoints.BUFFER] = {
+            "endstop": endstop, "endstop_name": endstop_name}
+
+        trail_endstop = self.fps_trailing_endstop
+        trail_endstop_name = f"{lane.name}_{AFCHomingPoints.BUFFER_TRAIL}"
+        try:
+            query_endstops.register_endstop(trail_endstop, trail_endstop_name)
+        except Exception:
+            pass
+        lane.endstops[AFCHomingPoints.BUFFER_TRAIL] = {
+            "endstop": trail_endstop, "endstop_name": trail_endstop_name}
 
     # ------------------------------------------------------------------
     # Klipper ready

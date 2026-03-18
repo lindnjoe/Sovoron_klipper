@@ -376,9 +376,9 @@ class afcACE(afcUnit):
         # Resolve FPS sensor for this unit's extruder (if one exists)
         self._resolve_fps_sensor()
 
-        # If linked to an AFC_FPS buffer (not native fps), start polling timer
+        # If linked to an AFC_FPS buffer, start polling timer
         # so _fps_adc_callback gets called with current FPS values
-        if self._fps_obj is not None and hasattr(self._fps_obj, 'get_fps_value'):
+        if self._fps_obj is not None:
             self._fps_poll_timer = self.reactor.register_timer(
                 self._fps_poll_event, self.reactor.NOW
             )
@@ -473,7 +473,7 @@ class afcACE(afcUnit):
 
         # Check if pin_tool_start references an AFC_FPS buffer
         fps_obj = self.afc.buffers.get(tool_start, None)
-        if fps_obj is not None and hasattr(fps_obj, 'get_fps_value'):
+        if fps_obj is not None and fps_obj.get_fps_value() is not None:
             self._fps_obj = fps_obj
             self._fps_extruder = extruder_obj
 
@@ -616,10 +616,7 @@ class afcACE(afcUnit):
     def get_fps_value(self):
         """Return the current FPS pressure value, or None if no FPS linked."""
         if self._fps_obj is not None:
-            # Works for both AFC_FPS buffers (get_fps_value()) and native fps (fps_value)
-            if hasattr(self._fps_obj, 'get_fps_value'):
-                return self._fps_obj.get_fps_value()
-            return self._fps_obj.fps_value
+            return self._fps_obj.get_fps_value()
         return None
 
     # ---- Slot / Lane Mapping ----
