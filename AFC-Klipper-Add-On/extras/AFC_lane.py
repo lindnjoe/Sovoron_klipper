@@ -120,7 +120,6 @@ class AFCLane:
         # when lanes are unloaded
         self.tool_loaded        = False
         self.loaded_to_hub      = False
-
         self.spool_id           = None
         self.color              = None
         self.weight             = 0
@@ -449,31 +448,18 @@ class AFCLane:
 
     def _get_buffer_object(self):
         """
-        Helper method to lookup lane/stepper buffer object and assigns object to buffer_obj variable.
-        Checks both AFC_buffer and AFC_FPS config prefixes.
+        Helper method to lookup lane/stepper buffer object and assigns object to buffer_obj variable
 
         raises error if buffer is not found
         """
-        # Try AFC_buffer first (TurtleNeck style) — use load_object to force
-        # the config section to be parsed even if it hasn't been loaded yet.
-        try:
-            self.buffer_obj = self.printer.load_object(self._config, "AFC_buffer {}".format(self.buffer_name))
-            return
-        except Exception:
-            pass
-
-        # Try AFC_FPS (FPS-based buffer)
-        try:
-            self.buffer_obj = self.printer.load_object(self._config, "AFC_FPS {}".format(self.buffer_name))
-            return
-        except Exception:
-            pass
-
-        error_string = (
-            'Error: No config found for buffer: {buffer} in [{stepper}]. '
-            'Please make sure [AFC_buffer {buffer}] or [AFC_FPS {buffer}] '
-            'section exists in your config'
-        ).format(buffer=self.buffer_name, stepper=self.fullname)
+        for prefix in ("AFC_buffer", "AFC_FPS"):
+            try:
+                self.buffer_obj = self.printer.load_object(self._config, "{} {}".format(prefix, self.buffer_name))
+                return
+            except Exception:
+                pass
+        error_string = 'Error: No config found for buffer: {buffer} in [{stepper}]. Please make sure [AFC_buffer {buffer}] or [AFC_FPS {buffer}] section exists in your config'.format(
+            buffer=self.buffer_name, stepper=self.fullname )
         raise error(error_string)
 
     def _get_extruder_object(self):
@@ -605,15 +591,7 @@ class AFCLane:
               and self.extruder_obj.tool_start == "buffer"
               and len(self.extruder_obj.lanes) > 1):
             if self.extruder_obj.buffer_name is not None:
-                buf_name = self.extruder_obj.buffer_name
-                self.buffer_obj = (
-                    self.printer.lookup_object("AFC_buffer {}".format(buf_name), None)
-                    or self.printer.lookup_object("AFC_FPS {}".format(buf_name), None)
-                )
-                if self.buffer_obj is None:
-                    error_string = 'Error: No config found for buffer: {buffer} in [{extruder}]. Please make sure [AFC_buffer {buffer}] or [AFC_FPS {buffer}] section exists in your config'.format(
-                        buffer=buf_name, extruder=self.extruder_obj.fullname)
-                    raise error(error_string)
+                self.buffer_obj = self.printer.lookup_object("AFC_buffer {}".format(self.extruder_obj.buffer_name))
             else:
                 error_string = 'Error: Buffer was defined as tool_start in [AFC_extruder {extruder}] config, but buffer variable has not been configured. Please add buffer variable to either [AFC_extruder {extruder}], [AFC_stepper {name}] or [AFC_{unit_type} {unit_name}] section in your config file'.format(
                     extruder=self.extruder_obj.name, name=self.name, unit_type=self.unit_obj.type.replace("_", ""), unit_name=self.unit_obj.name )
@@ -1381,7 +1359,6 @@ class AFCLane:
         self.tool_loaded = False
         self.status = AFCLaneState.NONE
         self.loaded_to_hub = False
-
         self.td1_data = {}
         if not self.remember_spool:
             self.afc.spool.clear_values(self)
@@ -2001,7 +1978,6 @@ class AFCLane:
         self.tool_loaded = False
         self.status = AFCLaneState.NONE
         self.loaded_to_hub = False
-
         self.td1_data = {}
         if not self.remember_spool:
             self.afc.spool.clear_values(self)
@@ -2026,7 +2002,6 @@ class AFCLane:
             response["selector"] = bool(self._selector_state)
         response["tool_loaded"] = self.tool_loaded
         response["loaded_to_hub"] = self.loaded_to_hub
-
         response["material"]=self.material
         if save_to_file:
             response["density"]=self.filament_density
