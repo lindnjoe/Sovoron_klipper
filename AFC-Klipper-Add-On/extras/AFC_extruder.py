@@ -365,8 +365,9 @@ class AFCExtruder:
             self.tc_lane._load_state = self.tc_lane.prep_state = self.tool_start_state
 
             if self.tool_start == "buffer":
-                raise error(
-                    f"buffer is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
+                self.logger.warning(
+                    f"buffer is not valid config for pin_tool_start when using {self.name} as a standalone extruder. "
+                    f"Buffer-based tool_start sensing will be unavailable for this extruder."
                 )
 
 
