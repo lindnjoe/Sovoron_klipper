@@ -1612,13 +1612,14 @@ class afcACE(afcUnit):
             -quick_pull_dist, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False
         )
 
-        # Tighten the spool loop: command the ACE to rewind the same distance
-        # the extruder just retracted.  This takes up slack before the cut so
-        # the filament rewinds cleanly onto the spool.
+        # Tighten the spool loop: command the ACE to rewind more than the
+        # extruder retracted.  This takes up slack before the cut so the
+        # filament rewinds cleanly onto the spool.
+        pre_cut_tighten = 20  # mm — enough to remove bowden slack
         try:
             self._wait_for_ace_ready()
             self._ace.unwind_filament(
-                local_slot, quick_pull_dist,
+                local_slot, pre_cut_tighten,
                 self._quiet_speed(self.retract_speed),
             )
         except Exception as e:
