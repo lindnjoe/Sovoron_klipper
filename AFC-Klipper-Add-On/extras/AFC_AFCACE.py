@@ -235,14 +235,6 @@ class afcAFCACE(afcUnit):
         # the toolhead sensor.  fps_value 0-1, where 1 means filament is
         # fully compressed against extruder gears.
         self.fps_threshold = config.getfloat("fps_threshold", 0.9)
-        # Lower threshold used during active operations (loading/calibration).
-        # The latch prevents false clears, so we can trigger earlier to catch
-        # brief pressure spikes when filament engages the extruder gears.
-        self.fps_load_threshold = config.getfloat("fps_load_threshold", 0.65)
-        # Minimum jump between consecutive FPS readings to count as filament
-        # engagement during active operations.
-        self.fps_delta_threshold = config.getfloat("fps_delta_threshold", 0.15)
-        self._prev_fps_value = 0.0
         self._fps_obj = None       # resolved FPS object (fps.py)
         self._fps_extruder = None  # the extruder object associated with FPS
         self._fps_runout_helper = None  # cached runout helper for virtual sensor
@@ -510,28 +502,17 @@ class afcAFCACE(afcUnit):
         triggered = fps_value >= self.fps_threshold
 
         if self._operation_active:
-            # Latch mode: use the lower load threshold OR a rapid
-            # rate-of-change to catch brief pressure spikes when filament
-            # engages extruder gears.  Once latched, it stays True until
-            # the operation clears it.
-            delta = fps_value - self._prev_fps_value
-            self._prev_fps_value = fps_value
-            load_triggered = fps_value >= self.fps_load_threshold
-            delta_triggered = (fps_value >= 0.5
-                               and delta >= self.fps_delta_threshold)
-            if (load_triggered or delta_triggered) and not self._fps_latched:
-                reason = "threshold" if load_triggered else f"delta={delta:.3f}"
+            # Latch mode: once triggered, stay triggered
+            if triggered and not self._fps_latched:
                 self._fps_latched = True
                 extruder.tool_start_state = True
                 self._update_virtual_sensor(read_time, True)
                 self.logger.debug(
                     f"AFCACE FPS: tool_start_state LATCHED True "
-                    f"(fps_value={fps_value:.3f}, {reason})"
+                    f"(fps_value={fps_value:.3f}, threshold={self.fps_threshold})"
                 )
             # Don't clear tool_start_state while latched
             return
-
-        self._prev_fps_value = fps_value
 
         # Normal mode: track the sensor state directly.
         # When a lane is loaded to the toolhead, do NOT clear the sensor
