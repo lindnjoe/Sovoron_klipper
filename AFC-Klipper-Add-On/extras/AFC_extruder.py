@@ -913,4 +913,12 @@ class AFCExtruder:
         return self.response
 
 def load_config_prefix(config):
+    # Apply the FPS virtual pin patch before any extruder is constructed.
+    # AFC_extruder sorts alphabetically before AFC_FPS, so without this
+    # the patch would not be in place when pin_tool_start is parsed.
+    try:
+        from extras.AFC_FPS import patch_extruder_for_virtual_fps
+        patch_extruder_for_virtual_fps()
+    except Exception:
+        pass
     return AFCExtruder(config)
