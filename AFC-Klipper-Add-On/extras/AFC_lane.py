@@ -289,29 +289,12 @@ class AFCLane:
                                          hub_pin, AFCHomingPoints.HUB)
         if self.buffer_name:
             self._get_buffer_object()
-            advance_pin = getattr(self.buffer_obj, 'advance_pin', None)
-            if advance_pin:
+            if self.buffer_obj.advance_pin:
                 self._set_homing_endstop(query_endstops, ppins,
-                                         advance_pin, AFCHomingPoints.BUFFER)
-            elif hasattr(self.buffer_obj, 'fps_endstop'):
-                # FPS buffer: register advance software endstop (triggers at high_point)
-                endstop = self.buffer_obj.fps_endstop
-                endstop_name = f"{self.name}_{AFCHomingPoints.BUFFER}"
-                try:
-                    query_endstops.register_endstop(endstop, endstop_name)
-                except Exception:
-                    pass
-                self.endstops.update({AFCHomingPoints.BUFFER: {
-                    "endstop": endstop, "endstop_name": endstop_name}})
-                # FPS buffer: register trailing software endstop (triggers at low_point)
-                trail_endstop = self.buffer_obj.fps_trailing_endstop
-                trail_endstop_name = f"{self.name}_{AFCHomingPoints.BUFFER_TRAIL}"
-                try:
-                    query_endstops.register_endstop(trail_endstop, trail_endstop_name)
-                except Exception:
-                    pass
-                self.endstops.update({AFCHomingPoints.BUFFER_TRAIL: {
-                    "endstop": trail_endstop, "endstop_name": trail_endstop_name}})
+                                         self.buffer_obj.advance_pin, AFCHomingPoints.BUFFER)
+            else:
+                # FPS buffer: register software endstops
+                self.buffer_obj.register_lane_endstops(self, query_endstops)
 
         if (self.extruder_name
             and "extruder" not in self.name): # Protects against standalone lanes
@@ -612,21 +595,16 @@ class AFCLane:
         elif (self.buffer_obj is None
               and self.extruder_obj.tool_start_is_buffer
               and len(self.extruder_obj.lanes) > 1):
-            if self.extruder_obj.buffer_name is not None:
-                for prefix in ('AFC_buffer', 'AFC_FPS'):
-                    try:
-                        self.buffer_obj = self.printer.lookup_object("{} {}".format(prefix, self.extruder_obj.buffer_name))
-                        break
-                    except Exception:
-                        pass
-                if self.buffer_obj is None:
+            # Use explicit buffer config if set, otherwise derive from pin_tool_start
+            buf_name = self.extruder_obj.buffer_name or self.extruder_obj.tool_start
+            if buf_name is not None:
+                # AFC_FPS registers under AFC_buffer namespace, so single lookup works
+                try:
+                    self.buffer_obj = self.printer.lookup_object("AFC_buffer {}".format(buf_name))
+                except Exception:
                     error_string = 'Error: No config found for buffer: {buffer} in [AFC_extruder {extruder}]. Please make sure [AFC_buffer {buffer}] or [AFC_FPS {buffer}] section exists in your config'.format(
-                        buffer=self.extruder_obj.buffer_name, extruder=self.extruder_obj.name)
+                        buffer=buf_name, extruder=self.extruder_obj.name)
                     raise error(error_string)
-            else:
-                error_string = 'Error: Buffer was defined as tool_start in [AFC_extruder {extruder}] config, but buffer variable has not been configured. Please add buffer variable to either [AFC_extruder {extruder}], [AFC_stepper {name}] or [AFC_{unit_type} {unit_name}] section in your config file'.format(
-                    extruder=self.extruder_obj.name, name=self.name, unit_type=self.unit_obj.type.replace("_", ""), unit_name=self.unit_obj.name )
-                raise error(error_string)
 
         # Valid to not have a buffer defined, check to make sure object exists before adding lane to buffer
         if self.buffer_obj is not None and add_to_other_obj:

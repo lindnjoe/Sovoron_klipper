@@ -649,11 +649,16 @@ class AFCExtruderStepper(AFCLane):
                 buffer_obj = afc.buffers.get(buffer_name)
             except Exception:
                 pass
-        if buffer_obj is None or not hasattr(buffer_obj, 'fps_endstop'):
+        if buffer_obj is None or buffer_obj.advance_pin is not None:
+            return
+
+        # FPS buffer exposes register_lane_endstops for lane-level registration.
+        # For stepper-level, directly access the software endstop wrappers.
+        endstop = getattr(buffer_obj, 'fps_endstop', None)
+        if endstop is None:
             return
 
         # Register advance endstop (high_point)
-        endstop = buffer_obj.fps_endstop
         name = 'buffer_adv'
         try:
             endstop.add_stepper(self.extruder_stepper.stepper)
@@ -668,8 +673,8 @@ class AFCExtruderStepper(AFCLane):
         self._endstops['buffer_advance'] = (endstop, name)
 
         # Register trailing endstop (low_point)
-        if hasattr(buffer_obj, 'fps_trailing_endstop'):
-            trail_endstop = buffer_obj.fps_trailing_endstop
+        trail_endstop = getattr(buffer_obj, 'fps_trailing_endstop', None)
+        if trail_endstop is not None:
             trail_name = 'buffer_trailing'
             try:
                 trail_endstop.add_stepper(self.extruder_stepper.stepper)

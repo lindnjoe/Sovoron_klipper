@@ -721,7 +721,7 @@ class afcAMS(afcUnit):
         # However, AFC_FPS buffers ARE allowed — they provide the FPS ADC reading
         # and don't try to adjust stepper rotation distance (no stepper on OpenAMS).
         # If user configured an AFC_FPS buffer, keep it; otherwise force None.
-        if self.buffer_obj is not None and not hasattr(self.buffer_obj, 'get_fps_value'):
+        if self.buffer_obj is not None and self.buffer_obj.get_fps_value() is None:
             self.buffer_obj = None
 
         # Ensure LED attributes are set (inherited from AFC_unit but may not be set if AFC base is missing)
@@ -1279,7 +1279,7 @@ class afcAMS(afcUnit):
         # reading for proportional control).  Keep any buffer that exposes
         # get_fps_value(); remove the rest.
         for lane in self.lanes.values():
-            if lane.buffer_obj is not None and not hasattr(lane.buffer_obj, 'get_fps_value'):
+            if lane.buffer_obj is not None and lane.buffer_obj.get_fps_value() is None:
                 self.logger.warning(
                     f"Lane {lane.name} had non-FPS buffer '{lane.buffer_obj.name}' configured, "
                     f"but OpenAMS units only support FPS buffers. Removing buffer assignment."
@@ -3260,7 +3260,7 @@ class afcAMS(afcUnit):
         # AFC_FPS buffers are allowed (they provide ADC reading for proportional
         # control); only remove traditional TurtleNeck-style buffers.
         for lane in self.lanes.values():
-            if lane.buffer_obj is not None and not hasattr(lane.buffer_obj, 'get_fps_value'):
+            if lane.buffer_obj is not None and lane.buffer_obj.get_fps_value() is None:
                 buffer_name = getattr(lane.buffer_obj, 'name', 'unknown')
                 self.logger.warning(
                     f"Lane {lane.name} was assigned non-FPS buffer '{buffer_name}' during initialization, "

@@ -132,6 +132,12 @@ class AFCFPSBuffer:
         self.trailing_state = False
         self.toolhead = None  # Set in _handle_ready
 
+        # Compatibility with hardware buffer interface — upstream code
+        # accesses buffer_obj.advance_pin / trailing_pin directly.
+        # FPS uses software endstops instead of GPIO pins.
+        self.advance_pin = None
+        self.trailing_pin = None
+
         self.debug = config.getboolean("debug", False)
 
         # ---- ADC / FPS sensor configuration ----
@@ -282,6 +288,32 @@ class AFCFPSBuffer:
 
     def __str__(self):
         return self.name
+
+    def register_lane_endstops(self, lane, query_endstops):
+        """Register FPS software endstops on a lane.
+
+        Called by AFCLane.__init__ when the buffer has no hardware advance_pin.
+        Registers both advance (high_point) and trailing (low_point) endstops.
+        """
+        from extras.AFC_lane import AFCHomingPoints
+
+        endstop = self.fps_endstop
+        endstop_name = f"{lane.name}_{AFCHomingPoints.BUFFER}"
+        try:
+            query_endstops.register_endstop(endstop, endstop_name)
+        except Exception:
+            pass
+        lane.endstops[AFCHomingPoints.BUFFER] = {
+            "endstop": endstop, "endstop_name": endstop_name}
+
+        trail_endstop = self.fps_trailing_endstop
+        trail_endstop_name = f"{lane.name}_{AFCHomingPoints.BUFFER_TRAIL}"
+        try:
+            query_endstops.register_endstop(trail_endstop, trail_endstop_name)
+        except Exception:
+            pass
+        lane.endstops[AFCHomingPoints.BUFFER_TRAIL] = {
+            "endstop": trail_endstop, "endstop_name": trail_endstop_name}
 
     # ------------------------------------------------------------------
     # Klipper ready
@@ -489,12 +521,10 @@ class AFCFPSBuffer:
 
         self.set_multiplier(multiplier)
 
-        # When the FPS is actively correcting (not stuck), reset the fault
-        # detection baseline so it doesn't trigger a false positive.
-        # Only skip the reset when in Trailing state (not feeding) — that's
-        # the condition where a clog or runout would manifest.
-        if self.fault_detection_enabled() and self.last_state != TRAILING_STATE_NAME:
-            self.update_filament_error_pos()
+        # Fault baseline is only reset in the Neutral branch above.
+        # Both Advancing (clog / not feeding) and Trailing (runout /
+        # filament slack) are abnormal — let them accumulate extruder
+        # travel toward the fault threshold.
 
         if self.debug:
             self.logger.debug(
