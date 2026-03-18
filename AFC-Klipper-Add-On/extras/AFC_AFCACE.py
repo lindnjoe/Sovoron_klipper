@@ -517,7 +517,8 @@ class afcAFCACE(afcUnit):
             delta = fps_value - self._prev_fps_value
             self._prev_fps_value = fps_value
             load_triggered = fps_value >= self.fps_load_threshold
-            delta_triggered = delta >= self.fps_delta_threshold
+            delta_triggered = (fps_value >= 0.5
+                               and delta >= self.fps_delta_threshold)
             if (load_triggered or delta_triggered) and not self._fps_latched:
                 reason = "threshold" if load_triggered else f"delta={delta:.3f}"
                 self._fps_latched = True
