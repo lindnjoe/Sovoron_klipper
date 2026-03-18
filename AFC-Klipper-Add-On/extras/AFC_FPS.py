@@ -45,6 +45,33 @@ CHECK_RUNOUT_TIMEOUT = 0.5
 FPS_ENDSTOP_POLL_TIME = 0.01  # 10ms poll interval for software endstop
 
 
+def normalize_pin_value(raw):
+    """Clean a pin config value: strip whitespace, comments, and modifiers.
+
+    Returns the cleaned string, or None if the input is empty/non-string.
+    """
+    if not isinstance(raw, str):
+        return None
+    # Strip whitespace
+    val = raw.strip()
+    # Strip inline comments (# or ;)
+    for marker in ('#', ';'):
+        idx = val.find(marker)
+        if idx >= 0:
+            val = val[:idx].strip()
+    # Strip pin modifiers (! and ^)
+    val = val.lstrip('!^')
+    return val if val else None
+
+
+def is_fps_buffer_pin(pin):
+    """True if the pin value references an FPS buffer name (FPS_* prefix)."""
+    cleaned = normalize_pin_value(pin)
+    if cleaned is None:
+        return False
+    return cleaned.upper().startswith("FPS_")
+
+
 class FPSEndstopWrapper:
     """Software endstop that triggers based on FPS reading threshold.
 

@@ -250,56 +250,56 @@ class TestCorrectionEvent:
         buf._correction_event(100.0)
         assert buf.last_state == NEUTRAL_STATE_NAME
 
-    def test_trailing_above_deadband(self):
-        """Reading above neutral_high → trailing state, multiplier < 1."""
+    def test_advancing_above_deadband(self):
+        """Reading above neutral_high → advancing state (compressed), multiplier < 1."""
         buf = _make_fps_buffer(overrides={
             "enable": True,
             "current_lane": _make_mock_lane(),
-            "smoothed_fps": 0.9,  # At high_point → full trailing
+            "smoothed_fps": 0.9,  # At high_point → full advancing
         })
         buf._correction_event(100.0)
-        assert buf.last_state == TRAILING_STATE_NAME
-        assert buf.trailing_state is True
-        assert buf.advance_state is False
+        assert buf.last_state == ADVANCING_STATE_NAME
+        assert buf.advance_state is True
+        assert buf.trailing_state is False
         # At high_point, fraction=1.0, multiplier = 1.0 - 1.0*(1.0-0.9) = 0.9
         buf.current_lane.update_rotation_distance.assert_called_with(pytest.approx(0.9))
 
-    def test_trailing_partial(self):
-        """Reading between neutral_high and high_point → partial trailing."""
+    def test_advancing_partial(self):
+        """Reading between neutral_high and high_point → partial advancing."""
         buf = _make_fps_buffer(overrides={
             "enable": True,
             "current_lane": _make_mock_lane(),
             "smoothed_fps": 0.775,  # Midway between 0.65 and 0.9
         })
         buf._correction_event(100.0)
-        assert buf.last_state == TRAILING_STATE_NAME
+        assert buf.last_state == ADVANCING_STATE_NAME
         # range_size = 0.9 - 0.65 = 0.25, fraction = (0.775-0.65)/0.25 = 0.5
         # multiplier = 1.0 - 0.5*(1.0-0.9) = 0.95
         buf.current_lane.update_rotation_distance.assert_called_with(pytest.approx(0.95))
 
-    def test_advancing_below_deadband(self):
-        """Reading below neutral_low → advancing state, multiplier > 1."""
+    def test_trailing_below_deadband(self):
+        """Reading below neutral_low → trailing state (stretched), multiplier > 1."""
         buf = _make_fps_buffer(overrides={
             "enable": True,
             "current_lane": _make_mock_lane(),
-            "smoothed_fps": 0.1,  # At low_point → full advancing
+            "smoothed_fps": 0.1,  # At low_point → full trailing
         })
         buf._correction_event(100.0)
-        assert buf.last_state == ADVANCING_STATE_NAME
-        assert buf.advance_state is True
-        assert buf.trailing_state is False
+        assert buf.last_state == TRAILING_STATE_NAME
+        assert buf.trailing_state is True
+        assert buf.advance_state is False
         # At low_point, fraction=1.0, multiplier = 1.0 + 1.0*(1.1-1.0) = 1.1
         buf.current_lane.update_rotation_distance.assert_called_with(pytest.approx(1.1))
 
-    def test_advancing_partial(self):
-        """Reading between low_point and neutral_low → partial advancing."""
+    def test_trailing_partial(self):
+        """Reading between low_point and neutral_low → partial trailing."""
         buf = _make_fps_buffer(overrides={
             "enable": True,
             "current_lane": _make_mock_lane(),
             "smoothed_fps": 0.225,  # Midway between 0.35 and 0.1
         })
         buf._correction_event(100.0)
-        assert buf.last_state == ADVANCING_STATE_NAME
+        assert buf.last_state == TRAILING_STATE_NAME
         # range_size = 0.35 - 0.1 = 0.25, fraction = (0.35-0.225)/0.25 = 0.5
         # multiplier = 1.0 + 0.5*(1.1-1.0) = 1.05
         buf.current_lane.update_rotation_distance.assert_called_with(pytest.approx(1.05))
@@ -365,7 +365,7 @@ class TestLedStates:
         buf._correction_event(100.0)
         buf.afc.function.afc_led.assert_called_with('0,0.5,0.5,0', '0')
 
-    def test_correction_trailing_led(self):
+    def test_correction_advancing_led(self):
         buf = _make_fps_buffer(overrides={
             "enable": True,
             "current_lane": _make_mock_lane(),
@@ -374,9 +374,9 @@ class TestLedStates:
             "led_index": "0",
         })
         buf._correction_event(100.0)
-        buf.afc.function.afc_led.assert_called_with('0,1,0,0', '0')
+        buf.afc.function.afc_led.assert_called_with('0,0,1,0', '0')
 
-    def test_correction_advancing_led(self):
+    def test_correction_trailing_led(self):
         buf = _make_fps_buffer(overrides={
             "enable": True,
             "current_lane": _make_mock_lane(),
@@ -385,7 +385,7 @@ class TestLedStates:
             "led_index": "0",
         })
         buf._correction_event(100.0)
-        buf.afc.function.afc_led.assert_called_with('0,0,1,0', '0')
+        buf.afc.function.afc_led.assert_called_with('0,1,0,0', '0')
 
 
 # ── Enable / Disable Buffer ─────────────────────────────────────────────────
@@ -562,8 +562,8 @@ class TestEdgeCases:
             "deadband": 0.0,
         })
         buf._correction_event(100.0)
-        # 0.51 > 0.5 (set_point), so trailing
-        assert buf.last_state == TRAILING_STATE_NAME
+        # 0.51 > 0.5 (set_point), so advancing (buffer compressed)
+        assert buf.last_state == ADVANCING_STATE_NAME
 
     def test_zero_range_high(self):
         """If high_point == neutral_high, fraction defaults to 1.0."""

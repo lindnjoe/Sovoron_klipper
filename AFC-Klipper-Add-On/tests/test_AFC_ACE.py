@@ -84,6 +84,7 @@ def _make_ace(name="ACE_1", mode=MODE_COMBINED):
     unit._cached_hw_status = {}
     unit._current_loaded_slot = -1
     unit._prev_slot_states = {}
+    unit._prev_states_stale = False
     unit._operation_active = False
     unit._feed_assist_active = set()
     unit._feed_assist_refresh_counter = 0
