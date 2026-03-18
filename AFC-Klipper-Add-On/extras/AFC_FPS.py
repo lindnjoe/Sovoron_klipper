@@ -402,14 +402,18 @@ class AFCFPSBuffer:
         # correction timer is stopped (e.g. during unload).  The unload
         # sequence checks these flags to know whether filament is still
         # present — they must always reflect the live FPS reading.
+        #
+        # Semantics match turtleneck buffer switches:
+        #   advance_state  = buffer compressed (HIGH reading, filament loaded)
+        #   trailing_state = buffer stretched  (LOW reading, filament slack/retracted)
         half_db = self.deadband / 2.0
         neutral_low = self.set_point - half_db
         neutral_high = self.set_point + half_db
         reading = self.smoothed_fps
-        if reading < neutral_low:
+        if reading > neutral_high:
             self.advance_state = True
             self.trailing_state = False
-        elif reading > neutral_high:
+        elif reading < neutral_low:
             self.advance_state = False
             self.trailing_state = True
         else:
@@ -452,11 +456,11 @@ class AFCFPSBuffer:
             else:
                 fraction = 1.0
             multiplier = 1.0 - fraction * (1.0 - self.multiplier_low)
-            self.last_state = TRAILING_STATE_NAME
-            self.advance_state = False
-            self.trailing_state = True
+            self.last_state = ADVANCING_STATE_NAME
+            self.advance_state = True
+            self.trailing_state = False
             if self.led:
-                self.afc.function.afc_led(self.led_trailing, self.led_index)
+                self.afc.function.afc_led(self.led_advancing, self.led_index)
         else:
             # FPS reading is LOW (buffer stretched / not feeding fast enough)
             # Need to speed up feeding → multiplier > 1
@@ -467,11 +471,11 @@ class AFCFPSBuffer:
             else:
                 fraction = 1.0
             multiplier = 1.0 + fraction * (self.multiplier_high - 1.0)
-            self.last_state = ADVANCING_STATE_NAME
-            self.advance_state = True
-            self.trailing_state = False
+            self.last_state = TRAILING_STATE_NAME
+            self.advance_state = False
+            self.trailing_state = True
             if self.led:
-                self.afc.function.afc_led(self.led_advancing, self.led_index)
+                self.afc.function.afc_led(self.led_trailing, self.led_index)
 
         self.set_multiplier(multiplier)
 
