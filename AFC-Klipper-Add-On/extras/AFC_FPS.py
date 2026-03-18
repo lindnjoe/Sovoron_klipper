@@ -398,8 +398,8 @@ class AFCFPSBuffer:
             + (1.0 - self.smoothing) * read_value
         )
 
-        # Keep advance/trailing state flags current even when the
-        # correction timer is stopped (e.g. during unload).  The unload
+        # Keep advance/trailing state flags AND last_state current even when
+        # the correction timer is stopped (e.g. during unload).  The unload
         # sequence checks these flags to know whether filament is still
         # present — they must always reflect the live FPS reading.
         #
@@ -413,12 +413,15 @@ class AFCFPSBuffer:
         if reading > neutral_high:
             self.advance_state = True
             self.trailing_state = False
+            self.last_state = ADVANCING_STATE_NAME
         elif reading < neutral_low:
             self.advance_state = False
             self.trailing_state = True
+            self.last_state = TRAILING_STATE_NAME
         else:
             self.advance_state = False
             self.trailing_state = False
+            self.last_state = NEUTRAL_STATE_NAME
 
     # ------------------------------------------------------------------
     # Correction timer — proportional adjustment loop
@@ -426,6 +429,10 @@ class AFCFPSBuffer:
     def _correction_event(self, eventtime):
         """Periodically adjust rotation distance based on FPS reading."""
         if not self.enable or self.current_lane is None:
+            self.logger.debug(
+                "FPS {}: correction timer stopping (enable={}, lane={})".format(
+                    self.name, self.enable,
+                    self.current_lane.name if self.current_lane else None))
             return self.reactor.NEVER
 
         reading = self.smoothed_fps
