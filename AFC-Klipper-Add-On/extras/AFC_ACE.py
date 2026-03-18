@@ -204,6 +204,10 @@ class afcACE(afcUnit):
         # Set True during active operations (load, unload, calibration) to
         # prevent heartbeat/poll callbacks from modifying lane state
         self._operation_active = False
+        # Set True when _operation_active transitions to False so the
+        # first status callback re-syncs _prev_slot_states instead of
+        # acting on stale ready→not-ready transitions.
+        self._prev_states_stale = False
 
         # Set True while ACE dryer is running so slot status polling
         # skips runout detection (drying can cause transient slot changes)
@@ -926,6 +930,15 @@ class afcACE(afcUnit):
         if not slots or not isinstance(slots, list):
             return
 
+        # After an operation (load/unload/calibration) completes,
+        # _prev_slot_states is stale because callbacks were skipped while
+        # _operation_active was True.  Re-sync it to current slot reality
+        # so we don't misinterpret a stale ready→not-ready edge as
+        # filament removal (which would wipe the lane state).
+        resync_prev = self._prev_states_stale
+        if resync_prev:
+            self._prev_states_stale = False
+
         # Update cached hardware status and slot inventory
         self._cached_hw_status = result
         for i, slot_data in enumerate(slots):
@@ -1001,8 +1014,10 @@ class afcACE(afcUnit):
                         )
 
             # When a slot goes empty, handle runout for TOOLED lanes
-            # or transition LOADED lanes to unloaded.
-            if not slot_ready and not slot_transient:
+            # or transition LOADED lanes to unloaded.  Skip transition
+            # detection on the first callback after an operation ends
+            # (_prev_slot_states is stale and would cause false triggers).
+            if not slot_ready and not slot_transient and not resync_prev:
                 prev_ready_cb = self._prev_slot_states.get(lane.name)
                 if prev_ready_cb:
                     self._hub_load_suppressed.discard(lane.name)
@@ -1176,6 +1191,7 @@ class afcACE(afcUnit):
             return self._load_sequence_inner(cur_lane, cur_hub, cur_extruder)
         finally:
             self._operation_active = False
+            self._prev_states_stale = True
             self._fps_latched = False
 
     def _load_sequence_inner(self, cur_lane, cur_hub, cur_extruder):
@@ -1510,6 +1526,7 @@ class afcACE(afcUnit):
             return self._unload_sequence_inner(cur_lane, cur_hub, cur_extruder)
         finally:
             self._operation_active = False
+            self._prev_states_stale = True
             self._fps_latched = False
 
     def _unload_sequence_inner(self, cur_lane, cur_hub, cur_extruder):
@@ -2790,6 +2807,7 @@ class afcACE(afcUnit):
             return self._calibrate_bowden_inner(cur_lane, dis, tol)
         finally:
             self._operation_active = False
+            self._prev_states_stale = True
             self._fps_latched = False
 
     def _measure_bowden_distance(self, cur_lane):
@@ -2930,6 +2948,7 @@ class afcACE(afcUnit):
             return self._calibrate_hub_inner(cur_lane, hub_obj)
         finally:
             self._operation_active = False
+            self._prev_states_stale = True
             self._fps_latched = False
 
     def _calibrate_hub_inner(self, cur_lane, hub_obj):
@@ -3034,6 +3053,7 @@ class afcACE(afcUnit):
             return self._calibrate_lane_inner(cur_lane, tol)
         finally:
             self._operation_active = False
+            self._prev_states_stale = True
             self._fps_latched = False
 
     def _calibrate_lane_inner(self, cur_lane, tol):
@@ -3079,6 +3099,7 @@ class afcACE(afcUnit):
             return self._calibrate_td1_inner(cur_lane, dis, tol)
         finally:
             self._operation_active = False
+            self._prev_states_stale = True
             self._fps_latched = False
 
     def _calibrate_td1_inner(self, cur_lane, dis, tol):
@@ -3256,6 +3277,13 @@ class afcACE(afcUnit):
         if self._operation_active:
             return eventtime + self.poll_interval
 
+        # After an operation completes, _prev_slot_states is stale.
+        # Re-sync on the first poll so we don't false-trigger runout
+        # or lane clearing from a stale ready→not-ready edge.
+        resync_prev = self._prev_states_stale
+        if resync_prev:
+            self._prev_states_stale = False
+
         is_printing = False
         try:
             is_printing = self.afc.function.is_printing()
@@ -3368,7 +3396,9 @@ class afcACE(afcUnit):
             # Detect ready -> not-ready transition (filament runout)
             # Skip runout detection while dryer is running - drying can
             # cause transient slot state changes that aren't real runouts.
-            elif not self._drying_active and prev_ready and not slot_ready and not slot_transient:
+            # Also skip on first poll after an operation ends (stale prev).
+            elif (not self._drying_active and not resync_prev
+                    and prev_ready and not slot_ready and not slot_transient):
                 self._hub_load_suppressed.discard(lane.name)
                 if is_printing and lane.status == AFCLaneState.TOOLED:
                     self.logger.info(
