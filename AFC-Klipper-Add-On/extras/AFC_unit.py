@@ -860,6 +860,9 @@ class afcUnit:
         move the filament so that both advance and trail sensor in buffer are hit. If this is
         successful, then it's deemed that filament is actually loaded to the toolhead.
 
+        Works with both turtleneck buffers (hardware advance switch) and FPS buffers
+        (software endstop that triggers at high_point / 0.9).
+
         :param lane: Lane to check if filament is loaded to toolhead.
         :return: Returns true if check is successful.
         """
