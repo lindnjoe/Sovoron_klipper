@@ -433,7 +433,8 @@ class AFCExtruderStepper(AFCLane):
         self._qes = qes
 
         # Built-ins from AFCLane config
-        self._add_endstop('load', self.load, 'load')
+        if not self._reuse_lane_endstop('load', AFCHomingPoints.LOAD):
+            self._add_endstop('load', self.load, 'load')
         # Extra raw pins declared in config
         for raw_pin in list(self._extra_homing_pins):
             r = raw_pin.strip()
@@ -471,18 +472,47 @@ class AFCExtruderStepper(AFCLane):
         # Check to verify that hub is not a virtual sensor
         if (hub_pin
             and hub_pin.lower() != "virtual"):
-            self._add_endstop('hub', hub_pin, 'hub')
+            if not self._reuse_lane_endstop('hub', AFCHomingPoints.HUB):
+                self._add_endstop('hub', hub_pin, 'hub')
         if tool_start_pin == 'buffer':
-            self._add_endstop('tool_start', buffer_adv_pin, 'tool_start')
+            # When tool_start uses the buffer advance pin, reuse the endstop
+            # already created by AFCLane.__init__ to avoid duplicate pin
+            # registration failures.
+            if not self._reuse_lane_endstop('tool_start', AFCHomingPoints.BUFFER):
+                self._add_endstop('tool_start', buffer_adv_pin, 'tool_start')
         elif tool_start_pin and not str(tool_start_pin).strip().upper().startswith('FPS_'):
             self._add_endstop('tool_start', tool_start_pin, 'tool_start')
         self._add_endstop('tool_end', tool_end_pin, 'tool_end')
-        self._add_endstop('buffer_advance', buffer_adv_pin, 'buffer_adv')
-        self._add_endstop('buffer_trailing', buffer_trail_pin, 'buffer_trailing')
+        # Reuse lane-level endstops for buffer pins when already registered
+        if not self._reuse_lane_endstop('buffer_advance', AFCHomingPoints.BUFFER):
+            self._add_endstop('buffer_advance', buffer_adv_pin, 'buffer_adv')
+        if not self._reuse_lane_endstop('buffer_trailing', AFCHomingPoints.BUFFER_TRAIL):
+            self._add_endstop('buffer_trailing', buffer_trail_pin, 'buffer_trailing')
 
         # FPS buffer: if no hardware advance pin, register the software endstop
         if buffer_adv_pin is None and buffer_name:
             self._add_fps_endstop(buffer_name)
+
+    def _reuse_lane_endstop(self, stepper_key: str, lane_key: str) -> bool:
+        """
+        Try to reuse an endstop already registered by AFCLane.__init__() to
+        avoid duplicate pin registration failures.
+
+        :param stepper_key: Key to store in self._endstops (e.g. 'tool_start')
+        :param lane_key: Key in self.endstops from AFCLane (e.g. AFCHomingPoints.BUFFER)
+        :return: True if an existing endstop was reused, False otherwise
+        """
+        entry = self.endstops.get(lane_key)
+        if entry is None:
+            return False
+        mcu_es = entry['endstop']
+        es_name = entry['endstop_name']
+        try:
+            mcu_es.add_stepper(self.extruder_stepper.stepper)
+        except Exception:
+            pass
+        self._endstops[stepper_key] = (mcu_es, es_name)
+        return True
 
     def _inherit_from_unit(self, target_key: str) -> Optional[str]:
         """
