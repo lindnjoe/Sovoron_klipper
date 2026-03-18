@@ -120,6 +120,7 @@ class AFCLane:
         # when lanes are unloaded
         self.tool_loaded        = False
         self.loaded_to_hub      = False
+
         self.spool_id           = None
         self.color              = None
         self.weight             = 0
@@ -1359,6 +1360,7 @@ class AFCLane:
         self.tool_loaded = False
         self.status = AFCLaneState.NONE
         self.loaded_to_hub = False
+
         self.td1_data = {}
         if not self.remember_spool:
             self.afc.spool.clear_values(self)
@@ -1978,6 +1980,7 @@ class AFCLane:
         self.tool_loaded = False
         self.status = AFCLaneState.NONE
         self.loaded_to_hub = False
+
         self.td1_data = {}
         if not self.remember_spool:
             self.afc.spool.clear_values(self)
@@ -2002,6 +2005,7 @@ class AFCLane:
             response["selector"] = bool(self._selector_state)
         response["tool_loaded"] = self.tool_loaded
         response["loaded_to_hub"] = self.loaded_to_hub
+
         response["material"]=self.material
         if save_to_file:
             response["density"]=self.filament_density
