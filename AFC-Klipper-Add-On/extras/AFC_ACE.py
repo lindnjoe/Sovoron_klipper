@@ -1395,54 +1395,57 @@ class afcACE(afcUnit):
             # tool_homing_distance so the ACE searches the same range
             # a BoxTurtle stepper would during endstop homing.
             if not cur_lane.get_toolhead_pre_sensor_state():
-                smart_load_step = 40.0   # mm per retry
                 homing_active = (getattr(afc, 'homing_enabled', False)
                                  and getattr(afc, 'home_to_tool', False))
                 if homing_active:
-                    homing_dist = getattr(afc, 'tool_homing_distance', 200.0)
-                    smart_load_max = max(5, int(homing_dist / smart_load_step))
-                    self.logger.info(
-                        f"ACE smart load: home_to_tool active — "
-                        f"max retries={smart_load_max} "
-                        f"(tool_homing_distance={homing_dist:.0f}mm)"
-                    )
+                    smart_load_dist = getattr(afc, 'tool_homing_distance', 200.0) + 20.0
                 else:
-                    smart_load_max = 5
-                for attempt in range(1, smart_load_max + 1):
+                    smart_load_dist = 200.0 + 20.0
+
+                self.logger.info(
+                    f"ACE smart load: sensor not triggered, "
+                    f"feeding {smart_load_dist:.0f}mm continuous "
+                    f"(home_to_tool={'active' if homing_active else 'off'})"
+                )
+
+                # Ensure feed assist is running so ACE pushes filament
+                if (local_slot >= 0
+                        and self._get_feed_assist(local_slot, cur_lane)
+                        and local_slot not in self._feed_assist_active):
+                    try:
+                        self._wait_for_ace_ready()
+                        self._ace.start_feed_assist(local_slot)
+                        self._feed_assist_active.add(local_slot)
+                    except Exception:
+                        pass
+
+                self._wait_for_ace_ready()
+                smart_spd = self._quiet_speed(self.feed_speed)
+                self._ace.feed_filament(local_slot, smart_load_dist, smart_spd)
+                sensor_hit = self._wait_for_feed_complete(
+                    local_slot, smart_load_dist, smart_spd,
+                    lane=cur_lane, poll_interval=0.1,
+                )
+                afc.reactor.pause(afc.reactor.monotonic() + 0.2)
+
+                if sensor_hit or cur_lane.get_toolhead_pre_sensor_state():
                     self.logger.info(
-                        f"ACE smart load: sensor not triggered, "
-                        f"feeding {smart_load_step}mm (attempt {attempt}/{smart_load_max})"
+                        f"ACE smart load: sensor triggered during "
+                        f"continuous feed"
                     )
-                    # Ensure feed assist is running so ACE pushes filament
+                    # Re-enable feed assist in case stop_feed_filament
+                    # disabled it on the ACE firmware side.
                     if (local_slot >= 0
-                            and self._get_feed_assist(local_slot, cur_lane)
-                            and local_slot not in self._feed_assist_active):
+                            and self._get_feed_assist(local_slot, cur_lane)):
                         try:
-                            self._wait_for_ace_ready()
                             self._ace.start_feed_assist(local_slot)
                             self._feed_assist_active.add(local_slot)
                         except Exception:
                             pass
-                    self._wait_for_ace_ready()
-                    smart_spd = self._quiet_speed(self.feed_speed)
-                    self._ace.feed_filament(local_slot, smart_load_step, smart_spd)
-                    self._wait_for_feed_complete(
-                        local_slot, smart_load_step, smart_spd,
-                        lane=cur_lane, poll_interval=0.3,
-                    )
-                    afc.reactor.pause(afc.reactor.monotonic() + 0.2)
-                    if cur_lane.get_toolhead_pre_sensor_state():
-                        self.logger.info(
-                            f"ACE smart load: sensor triggered after "
-                            f"{attempt * smart_load_step:.0f}mm extra feed"
-                        )
-                        break
                 else:
-                    # All retries exhausted -error out
-                    total_searched = smart_load_max * smart_load_step
                     message = (
                         f"ACE load did not trigger toolhead sensor after "
-                        f"{total_searched:.0f}mm of extra feeding. "
+                        f"{smart_load_dist:.0f}mm of extra feeding. "
                         f"CHECK FILAMENT PATH\n"
                         "To resolve, set lane loaded with "
                         f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
@@ -1910,23 +1913,33 @@ class afcACE(afcUnit):
                         f"at ~{total_fed:.0f}mm"
                     )
 
-            # Incremental feed until sensor triggers or max distance reached
+            # Single continuous feed for the remaining distance while
+            # polling the toolhead sensor.  When the sensor triggers we
+            # immediately stop the ACE feed motor and re-enable feed_assist
+            # in case stop_feed_filament disabled it on the firmware side.
             max_total = feed_length + overshoot
-            while not sensor_triggered and total_fed < max_total:
-                step = min(self.sensor_step, max_total - total_fed)
-                ace.feed_filament(slot_index, step, feed_spd)
-                # Wait for this small step to physically complete
+            remaining = max_total - total_fed
+            if not sensor_triggered and remaining > 0:
+                ace.feed_filament(slot_index, remaining, feed_spd)
                 sensor_hit = self._wait_for_feed_complete(
-                    slot_index, step, feed_spd, lane=lane,
-                    poll_interval=0.3
+                    slot_index, remaining, feed_spd, lane=lane,
+                    poll_interval=0.1
                 )
-                total_fed += step
+                total_fed = max_total
 
                 if sensor_hit or lane.get_toolhead_pre_sensor_state():
                     sensor_triggered = True
                     self.logger.info(
-                        f"ACE feed: toolhead sensor triggered at {total_fed:.0f}mm"
+                        f"ACE feed: toolhead sensor triggered at ~{total_fed:.0f}mm"
                     )
+                    # Re-enable feed assist in case stop_feed_filament
+                    # disabled it on the ACE firmware side.
+                    if self._get_feed_assist(slot_index, lane):
+                        try:
+                            ace.start_feed_assist(slot_index)
+                            self._feed_assist_active.add(slot_index)
+                        except Exception:
+                            pass
         else:
             # No lane/sensor - just feed the remaining fixed distance
             remaining = feed_length - bulk_distance
