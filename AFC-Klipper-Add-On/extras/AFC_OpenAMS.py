@@ -129,18 +129,11 @@ class AMSEventBus:
 
 
 class LaneInfo:
-    def __init__(self, lane_name, unit_name, spool_index, extruder,
-                 fps_name=None, hub_name=None, led_index=None,
-                 custom_load_cmd=None, custom_unload_cmd=None):
+    def __init__(self, lane_name, unit_name, spool_index, extruder):
         self.lane_name = lane_name
         self.unit_name = unit_name
         self.spool_index = spool_index
         self.extruder = extruder
-        self.fps_name = fps_name
-        self.hub_name = hub_name
-        self.led_index = led_index
-        self.custom_load_cmd = custom_load_cmd
-        self.custom_unload_cmd = custom_unload_cmd
 
 
 class LaneRegistry:
@@ -167,9 +160,7 @@ class LaneRegistry:
                 cls._instances[key].logger = logger
             return cls._instances[key]
 
-    def register_lane(self, lane_name, unit_name, spool_index, extruder, *,
-                      fps_name=None, hub_name=None, led_index=None,
-                      custom_load_cmd=None, custom_unload_cmd=None):
+    def register_lane(self, lane_name, unit_name, spool_index, extruder):
         with self._lock:
             existing = self._by_lane_name.get(lane_name)
             if existing is not None:
@@ -178,8 +169,6 @@ class LaneRegistry:
             info = LaneInfo(
                 lane_name=lane_name, unit_name=unit_name,
                 spool_index=spool_index, extruder=extruder,
-                fps_name=fps_name, hub_name=hub_name, led_index=led_index,
-                custom_load_cmd=custom_load_cmd, custom_unload_cmd=custom_unload_cmd,
             )
             self._lanes.append(info)
             self._by_lane_name[lane_name] = info
@@ -188,7 +177,7 @@ class LaneRegistry:
             if extruder not in self._by_extruder:
                 self._by_extruder[extruder] = []
             self._by_extruder[extruder].append(info)
-            self.logger.info(f"Registered lane: {lane_name} - {unit_name}[{spool_index}] (extruder={extruder}, fps={fps_name})")
+            self.logger.info(f"Registered lane: {lane_name} - {unit_name}[{spool_index}] (extruder={extruder})")
             return info
 
     def _unregister_lane(self, info):
@@ -1290,11 +1279,6 @@ class afcAMS(afcUnit):
                             unit_name=unit_name,
                             spool_index=idx,
                             extruder=extruder_name,
-                            fps_name=None,
-                            hub_name=getattr(lane, "hub", None),
-                            led_index=getattr(lane, "led_index", None),
-                            custom_load_cmd=getattr(lane, "custom_load_cmd", None),
-                            custom_unload_cmd=getattr(lane, "custom_unload_cmd", None),
                         )
                     except Exception as e:
                         self.logger.error(f"Failed to register lane {lane_name} with registry: {e}")
