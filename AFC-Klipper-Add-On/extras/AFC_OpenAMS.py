@@ -898,7 +898,15 @@ class afcAMS(afcUnit):
         finally:
             afc._oams_suppress_tool_swap_timer = False
 
-        if not cur_lane.get_toolhead_pre_sensor_state():
+        # For FPS-based tool_start, use the latched tool_start_state instead
+        # of buffer_obj.advance_state.  FPS is pressure-based: it only reads
+        # high while the OAMS motor pushes.  After feeding stops the pressure
+        # drops and advance_state goes False even though filament IS present.
+        if cur_extruder.tool_start_is_buffer:
+            tool_detected = cur_extruder.tool_start_state
+        else:
+            tool_detected = cur_lane.get_toolhead_pre_sensor_state()
+        if not tool_detected:
             message = (
                 "OpenAMS load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n"
                 "||=====||====||==>--||\nTRG   LOAD   HUB   TOOL"
@@ -3656,10 +3664,11 @@ class afcAMS(afcUnit):
             return
 
         if hub_val != getattr(lane, "loaded_to_hub", False):
-            hub.switch_pin_callback(eventtime, hub_val)
-            # Update lane.loaded_to_hub to match hub sensor state
-            # This field is reported to Mainsail via lane.get_status()
-            # Without this, Mainsail shows stale hub status even when hardware sensor is correct
+            if hasattr(hub, "switch_pin_callback"):
+                hub.switch_pin_callback(eventtime, hub_val)
+            else:
+                # Lambda fallback hub — update .state directly
+                hub.state = hub_val
             lane.loaded_to_hub = hub_val
             fila = getattr(hub, "fila", None)
             if fila is not None:
@@ -3712,6 +3721,8 @@ class afcAMS(afcUnit):
                             try:
                                 if hasattr(hub_obj, "switch_pin_callback"):
                                     hub_obj.switch_pin_callback(eventtime, hw_hub)
+                                else:
+                                    hub_obj.state = hw_hub
                                 fila = getattr(hub_obj, "fila", None)
                                 if fila is not None and hasattr(fila, "runout_helper"):
                                     fila.runout_helper.note_filament_present(eventtime, hw_hub)
@@ -3896,6 +3907,8 @@ class afcAMS(afcUnit):
                     if hub_obj is not None:
                         if hasattr(hub_obj, "switch_pin_callback"):
                             hub_obj.switch_pin_callback(eventtime, hub_state)
+                        else:
+                            hub_obj.state = hub_state
                         fila = getattr(hub_obj, "fila", None)
                         if fila is not None and hasattr(fila, "runout_helper"):
                             fila.runout_helper.note_filament_present(eventtime, hub_state)
