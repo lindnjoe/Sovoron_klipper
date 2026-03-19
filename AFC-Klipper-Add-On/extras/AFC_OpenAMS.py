@@ -1353,15 +1353,37 @@ class afcAMS(afcUnit):
             except Exception as e:
                 self.logger.error(f"Failed to update OAMS current_spool for {getattr(lane, 'name', None)}: {e}")
 
-    def lane_tool_unloaded(self, lane):
-        """Handle lane unload — clear runout flags."""
-        super().lane_tool_unloaded(lane)
+        # Notify oams_manager so FPS state tracking stays in sync
+        if lane_name:
+            try:
+                oams_manager = self._get_oams_manager()
+                if oams_manager is not None:
+                    extruder_name = getattr(extruder_obj, "name", None) if extruder_obj is not None else None
+                    oams_manager.on_afc_lane_loaded(lane_name, extruder_name=extruder_name)
+            except Exception as e:
+                self.logger.error(f"Failed to notify OAMS manager of lane load for {lane_name}: {e}")
 
-        # PHASE 1 REFACTOR: Removed redundant lane.tool_loaded = False
-        # Parent's lane_tool_unloaded() already calls lane.set_tool_unloaded() which sets tool_loaded = False
+    def lane_tool_unloaded(self, lane):
+        """Handle lane unload — clear runout flags and notify OAMS manager."""
+        lane_name = getattr(lane, "name", None)
+        extruder_obj = getattr(lane, "extruder_obj", None)
+        super().lane_tool_unloaded(lane)
 
         # Clear runout flag if set
         lane._oams_runout_detected = False
+
+        # Notify oams_manager so FPS state tracking stays in sync
+        if lane_name:
+            try:
+                oams_manager = self._get_oams_manager()
+                if oams_manager is not None:
+                    extruder_name = getattr(extruder_obj, "name", None) if extruder_obj is not None else None
+                    oams_manager.on_afc_lane_unloaded(lane_name, extruder_name=extruder_name)
+                    # Clear current_spool so background sync doesn't re-write stale state
+                    if self.oams is not None:
+                        self.oams.current_spool = None
+            except Exception as e:
+                self.logger.error(f"Failed to notify OAMS manager of lane unload for {lane_name}: {e}")
 
 
     def _normalize_lane_alias(self, alias: Optional[str]) -> Optional[str]:

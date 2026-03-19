@@ -1685,8 +1685,8 @@ class OAMSManager:
                     continue
 
                 # Find which lane corresponds to current_spool (0-3 maps to ams_#:1-4)
-                if current_spool_idx is not None and hasattr(afc_unit, '_find_lane_by_spool'):
-                    lane_obj = afc_unit._find_lane_by_spool(current_spool_idx)
+                if current_spool_idx is not None and hasattr(afc_unit, '_lane_for_spool_index'):
+                    lane_obj = afc_unit._lane_for_spool_index(current_spool_idx)
                     if lane_obj:
                         lane_name = getattr(lane_obj, 'name', None)
                         extruder_obj = getattr(lane_obj, 'extruder_obj', None)
