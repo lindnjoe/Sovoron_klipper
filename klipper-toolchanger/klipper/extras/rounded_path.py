@@ -97,7 +97,7 @@ class RoundedPath:
         self.real_G0 = self.gcode_move.cmd_G1
         self.gcode.register_command("ROUNDED_G0", self.cmd_ROUNDED_G0)
         self.buffer = []
-        self.lastg0 = None
+        self.lastg0 = []
 
         if config.getboolean('replace_g0', False):
             self.gcode.register_command("G0", None)
@@ -241,10 +241,6 @@ class RoundedPath:
         self._g0p(p, p.vec)
 
     def _g0p(self, p: ControlPoint, vec: list):
-        # Ignore tiny residual moves that can be introduced by floating point
-        # interpolation when generating bezier arc segments.
-        if self.lastg0 is not None and _vdist(self.lastg0, vec) <= EPSILON:
-            return
         self.G0_params["X"]=vec[0]
         self.G0_params["Y"]=vec[1]
         self.G0_params["Z"]=vec[2]
@@ -252,7 +248,7 @@ class RoundedPath:
             self.G0_params['F'] = p.f
         else:
             self.G0_params.pop('F', None)
-        self.lastg0 = [vec[0], vec[1], vec[2]]
+        self.lastg0 = vec
         self.real_G0(self.G0_cmd)
 
 def load_config(config):
