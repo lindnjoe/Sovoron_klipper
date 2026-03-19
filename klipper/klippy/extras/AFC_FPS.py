@@ -130,7 +130,6 @@ class AFCFPSBuffer:
         self.current_lane: Optional[AFCLane | AFCExtruderStepper] = None
         self.advance_state = False
         self.trailing_state = False
-        self.toolhead = None  # Set in _handle_ready
 
         # Compatibility with hardware buffer interface — upstream code
         # accesses buffer_obj.advance_pin / trailing_pin directly.
@@ -320,8 +319,6 @@ class AFCFPSBuffer:
     # ------------------------------------------------------------------
     def _handle_ready(self):
         self.min_event_systime = self.reactor.monotonic() + 2.
-        self.toolhead = self.printer.lookup_object('toolhead')
-
         if self.error_sensitivity > 0:
             self.setup_fault_timer()
 
@@ -330,20 +327,6 @@ class AFCFPSBuffer:
             if led is None:
                 raise error(error_string)
 
-
-    @property
-    def extruder(self):
-        """Return the active toolhead extruder.
-
-        The native fps.py stored a direct extruder reference.  oams_manager
-        accesses ``fps.extruder.last_position`` in many places for runout
-        coasting and clog detection.  This property provides the same
-        interface without requiring an extruder config option — it simply
-        returns whatever extruder is currently active on the toolhead.
-        """
-        if self.toolhead is not None:
-            return self.toolhead.get_extruder()
-        return None
 
     def get_fps_value(self) -> float:
         """Get current FPS pressure value (0.0-1.0)."""

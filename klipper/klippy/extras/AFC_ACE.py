@@ -17,7 +17,7 @@ import traceback
 from configfile import error as config_error
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
@@ -3779,7 +3779,6 @@ class afcACE(afcUnit):
         if cur_extruder is not None and cur_extruder.lane_loaded == lane_name:
             cur_extruder.lane_loaded = None
 
-        self.afc.save_vars()
         self.afc.save_vars()
         gcmd.respond_info(f"ACE lane reset: {lane_name} retracted successfully")
 
