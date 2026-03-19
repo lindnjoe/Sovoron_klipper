@@ -1609,15 +1609,23 @@ class afcACE(afcUnit):
         cur_lane.enable_buffer(disable_fault=True)
 
         # Post-load FPS verification: after the buffer is enabled, confirm the
-        # FPS actually detects filament.  If the FPS is still in the trailing
+        # FPS actually detects filament.  If the FPS stays in the trailing
         # zone (low reading) the filament never reached the buffer — likely a
         # jam upstream.  This catches the case where tool_start_is_buffer is
         # False so the earlier buffer-compression check was skipped.
+        #
+        # Feed-assist was just re-enabled and needs time to push filament
+        # into the buffer, so poll over a longer window rather than failing
+        # on a single low reading.
         buf = cur_lane.buffer_obj
         if buf is not None and hasattr(buf, 'buffer_trailing_triggered'):
-            # Brief pause so the ADC smoothing can settle after enable.
-            afc.reactor.pause(afc.reactor.monotonic() + 0.5)
-            if buf.buffer_trailing_triggered:
+            settled = False
+            for _ in range(12):  # up to ~6s (12 × 0.5s)
+                afc.reactor.pause(afc.reactor.monotonic() + 0.5)
+                if not buf.buffer_trailing_triggered:
+                    settled = True
+                    break
+            if not settled:
                 message = (
                     f"FPS buffer '{buf.name}' still reads LOW after loading "
                     f"{cur_lane.name} — filament may be jammed or did not "
