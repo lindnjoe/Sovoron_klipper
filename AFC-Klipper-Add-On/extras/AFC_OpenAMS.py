@@ -11,10 +11,10 @@ import re
 import time
 import threading
 import traceback
-from textwrap import dedent
 from datetime import datetime
 from types import MethodType
 from enum import Enum
+from typing import Optional
 
 from configparser import Error as ConfigError
 

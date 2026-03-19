@@ -17,7 +17,7 @@ import traceback
 from configfile import error as config_error
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
 if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
