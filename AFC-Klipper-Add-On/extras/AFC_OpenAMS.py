@@ -1353,8 +1353,9 @@ class afcAMS(afcUnit):
             except Exception as e:
                 self.logger.error(f"Failed to update OAMS current_spool for {getattr(lane, 'name', None)}: {e}")
 
-        # Notify oams_manager so FPS state tracking stays in sync
-        if lane_name:
+        # Notify oams_manager so FPS state tracking stays in sync (once per lane)
+        if lane_name and getattr(self, '_last_oams_notified_load', None) != lane_name:
+            self._last_oams_notified_load = lane_name
             try:
                 oams_manager = self._get_oams_manager()
                 if oams_manager is not None:
@@ -1374,6 +1375,9 @@ class afcAMS(afcUnit):
 
         # Notify oams_manager so FPS state tracking stays in sync
         if lane_name:
+            # Reset load dedup so next load will notify
+            if getattr(self, '_last_oams_notified_load', None) == lane_name:
+                self._last_oams_notified_load = None
             try:
                 oams_manager = self._get_oams_manager()
                 if oams_manager is not None:

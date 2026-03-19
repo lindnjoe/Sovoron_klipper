@@ -319,6 +319,7 @@ class AFCFPSBuffer:
     # ------------------------------------------------------------------
     def _handle_ready(self):
         self.min_event_systime = self.reactor.monotonic() + 2.
+        self.toolhead = self.printer.lookup_object('toolhead')
         if self.error_sensitivity > 0:
             self.setup_fault_timer()
 
@@ -350,6 +351,20 @@ class AFCFPSBuffer:
         triggered — indicates the spool is not feeding fast enough or is stuck.
         """
         return self.smoothed_fps <= self.low_point
+
+    @property
+    def extruder(self):
+        """Return the active toolhead extruder.
+
+        oams_manager accesses fps.extruder.last_position for engagement
+        verification and clog detection. This property provides the
+        interface without requiring an extruder config option — it returns
+        whatever extruder is currently active on the toolhead.
+        """
+        toolhead = getattr(self, 'toolhead', None)
+        if toolhead is not None:
+            return toolhead.get_extruder()
+        return None
 
     # ------------------------------------------------------------------
     # ADC callback — runs at report_time intervals
