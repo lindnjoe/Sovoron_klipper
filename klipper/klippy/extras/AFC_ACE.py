@@ -1488,53 +1488,51 @@ class afcACE(afcUnit):
                 # grabbed the filament they pull it through the buffer,
                 # reducing pressure to neutral.  If FPS is still advanced
                 # (compressed) the filament is bunching up without engaging.
+                #
+                # Feed-assist must be stopped during the check — the ACE
+                # motor actively pushes filament into the buffer, keeping
+                # the FPS reading elevated even when the extruder IS
+                # pulling, causing false "not engaged" detections.
                 half_stn = cur_extruder.tool_stn / 2.0
                 max_engage_attempts = 3
                 engaged = False
 
-                # Settling window: after extruding, poll FPS over this
-                # period to watch it transition advanced → neutral.  This
-                # avoids false positives from the EMA lagging after a long
-                # ACE feed, and tolerates brief feed-assist bursts.
-                settle_timeout = 3.0   # seconds to wait for FPS to drop
-                settle_poll = 0.25     # poll interval
+                # Stop feed assist so the FPS reading reflects only
+                # extruder pull, not ACE push.
+                fa_was_active = local_slot in self._feed_assist_active
+                if fa_was_active and self._ace is not None:
+                    try:
+                        self._wait_for_ace_ready()
+                        self._ace.stop_feed_assist(local_slot)
+                        self._feed_assist_active.discard(local_slot)
+                    except Exception:
+                        pass
+                    # Let FPS settle after stopping feed assist
+                    afc.reactor.pause(afc.reactor.monotonic() + 1.0)
 
                 for attempt in range(1, max_engage_attempts + 1):
+                    buf = cur_lane.buffer_obj
+                    pre_fps = buf.smoothed_fps
                     self.logger.info(
                         f"ACE engagement check: extruding {half_stn:.1f}mm "
                         f"@ {cur_extruder.tool_load_speed}mm/s "
-                        f"(attempt {attempt}/{max_engage_attempts})"
+                        f"(attempt {attempt}/{max_engage_attempts}, "
+                        f"pre_fps={pre_fps:.3f})"
                     )
                     afc.move_e_pos(
                         half_stn, cur_extruder.tool_load_speed,
                         "engagement check"
                     )
+                    # No extra pause — the extrude itself takes ~2-3s
+                    # which is enough for the EMA to settle.
 
-                    # Poll FPS over settling window — if the extruder is
-                    # pulling filament the smoothed reading will drop from
-                    # advanced into neutral.  A single snapshot right after
-                    # the move is too early (EMA lag + ACE feed-assist
-                    # bursts keep the reading elevated).
-                    buf = cur_lane.buffer_obj
-                    settled = False
-                    settle_start = afc.reactor.monotonic()
-                    while (afc.reactor.monotonic() - settle_start
-                           < settle_timeout):
-                        afc.reactor.pause(
-                            afc.reactor.monotonic() + settle_poll
-                        )
-                        if not buf.advance_state:
-                            settled = True
-                            break
-
-                    if settled:
+                    if not buf.advance_state:
                         # Pressure dropped — extruder gears are pulling
                         # filament through the buffer, engagement confirmed.
                         self.logger.info(
                             f"ACE engagement check: FPS at "
-                            f"{buf.last_state} (fps={buf.smoothed_fps:.3f}), "
-                            f"filament engaged after "
-                            f"{afc.reactor.monotonic() - settle_start:.1f}s"
+                            f"{buf.last_state} (fps={buf.smoothed_fps:.3f}, "
+                            f"was {pre_fps:.3f}), filament engaged"
                         )
                         # Finish the remaining half
                         afc.move_e_pos(
@@ -1552,7 +1550,8 @@ class afcACE(afcUnit):
                         feed_spd = self._quiet_speed(self.feed_speed)
                         self.logger.warning(
                             f"ACE engagement check: FPS still advanced "
-                            f"(fps={buf.smoothed_fps:.3f}) "
+                            f"(fps={buf.smoothed_fps:.3f}, "
+                            f"was {pre_fps:.3f}) "
                             f"on attempt {attempt} — filament not engaged, "
                             f"ACE unwind {pullback_mm}mm then re-feed"
                         )
@@ -1574,14 +1573,17 @@ class afcACE(afcUnit):
                         self._wait_for_feed_complete(
                             local_slot, pullback_mm, feed_spd
                         )
-                        # 3. Re-enable feed assist in case unwind disabled it
-                        if self._get_feed_assist(local_slot, cur_lane):
-                            try:
-                                self._ace.start_feed_assist(local_slot)
-                                self._feed_assist_active.add(local_slot)
-                            except Exception:
-                                pass
                         afc.reactor.pause(afc.reactor.monotonic() + 0.3)
+
+                # Re-enable feed assist after engagement check completes
+                if (fa_was_active
+                        and self._get_feed_assist(local_slot, cur_lane)
+                        and self._ace is not None):
+                    try:
+                        self._ace.start_feed_assist(local_slot)
+                        self._feed_assist_active.add(local_slot)
+                    except Exception:
+                        pass
 
                 if not engaged:
                     message = (
