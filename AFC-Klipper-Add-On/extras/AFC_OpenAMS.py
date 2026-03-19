@@ -1896,6 +1896,19 @@ class afcAMS(afcUnit):
                         msg += '<span class=primary--text> (hub-detected: auto-set as in ToolHead)</span>'
 
                 if cur_lane.tool_loaded:
+                    # Filament is in the toolhead, so it's also through the hub
+                    cur_lane.loaded_to_hub = True
+                    hub_obj = getattr(cur_lane, "hub_obj", None)
+                    if hub_obj is not None:
+                        eventtime = self.reactor.monotonic()
+                        if hasattr(hub_obj, "switch_pin_callback"):
+                            hub_obj.switch_pin_callback(eventtime, True)
+                        else:
+                            hub_obj.state = True
+                        fila = getattr(hub_obj, "fila", None)
+                        if fila is not None and hasattr(fila, "runout_helper"):
+                            fila.runout_helper.note_filament_present(eventtime, True)
+
                     tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.tool_start_is_buffer or cur_lane.extruder_obj.tool_end_state)
                     if tool_ready and cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                         cur_lane.sync_to_extruder()
@@ -3338,27 +3351,31 @@ class afcAMS(afcUnit):
                 if sync_hub and hub_values is not None and spool_idx < len(hub_values):
                     hw_hub = bool(hub_values[spool_idx])
                     current = getattr(lane, "loaded_to_hub", False)
+                    # Always drive virtual hub sensor to match hardware.
+                    # At startup loaded_to_hub may already be restored from
+                    # saved state while hub._state is still False, so we
+                    # can't skip when hw_hub == current.
                     if hw_hub != current:
                         lane.loaded_to_hub = hw_hub
-                        hub_obj = getattr(lane, "hub_obj", None)
-                        if hub_obj is not None:
-                            try:
-                                if hasattr(hub_obj, "switch_pin_callback"):
-                                    hub_obj.switch_pin_callback(eventtime, hw_hub)
-                                else:
-                                    hub_obj.state = hw_hub
-                                fila = getattr(hub_obj, "fila", None)
-                                if fila is not None and hasattr(fila, "runout_helper"):
-                                    fila.runout_helper.note_filament_present(eventtime, hw_hub)
-                            except Exception as hub_e:
-                                self.logger.debug(
-                                    f"sync_openams_sensors: failed to update virtual hub sensor "
-                                    f"for {lane.name}: {hub_e}"
-                                )
                         self.logger.debug(
                             f"sync_openams_sensors: corrected loaded_to_hub "
                             f"{current}->{hw_hub} for {lane.name}"
                         )
+                    hub_obj = getattr(lane, "hub_obj", None)
+                    if hub_obj is not None:
+                        try:
+                            if hasattr(hub_obj, "switch_pin_callback"):
+                                hub_obj.switch_pin_callback(eventtime, hw_hub)
+                            else:
+                                hub_obj.state = hw_hub
+                            fila = getattr(hub_obj, "fila", None)
+                            if fila is not None and hasattr(fila, "runout_helper"):
+                                fila.runout_helper.note_filament_present(eventtime, hw_hub)
+                        except Exception as hub_e:
+                            self.logger.debug(
+                                f"sync_openams_sensors: failed to update virtual hub sensor "
+                                f"for {lane.name}: {hub_e}"
+                            )
 
                 # Sync F1S sensor -> load_state/prep_state (only when allowed)
                 if sync_f1s and f1s_values is not None and spool_idx < len(f1s_values):

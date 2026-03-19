@@ -2515,6 +2515,7 @@ class afcACE(afcUnit):
                                               getattr(self.afc, 'load_to_hub', False))
                     if load_to_hub:
                         cur_lane.loaded_to_hub = True
+                        self._set_hub_state(cur_lane, True)
 
                 if cur_lane.tool_loaded:
                     # Filament is in the toolhead, so it's also in the hub path
