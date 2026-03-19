@@ -480,6 +480,10 @@ class afcACE(afcUnit):
         if fps_obj is not None and fps_obj.get_fps_value() is not None:
             self._fps_obj = fps_obj
             self._fps_extruder = extruder_obj
+            # Expose the FPS as the unit's buffer so lanes inherit it
+            # during handle_unit_connect() and get_toolhead_pre_sensor_state()
+            # can access buffer_obj.advance_state.
+            self.buffer_obj = fps_obj
 
             self.logger.info(
                 "ACE {}: linked to AFC_FPS buffer '{}' "
@@ -1083,6 +1087,10 @@ class afcACE(afcUnit):
     # ---- AFC Unit Interface Implementation ----
 
     def handle_connect(self):
+        # Resolve the FPS buffer BEFORE super().handle_connect() sends the
+        # lane connect event.  This sets self.buffer_obj so that lanes
+        # inherit the FPS object via handle_unit_connect().
+        self._resolve_fps_sensor()
         super().handle_connect()
         self._register_gcode_commands()
         self._wrap_get_current_lane()
