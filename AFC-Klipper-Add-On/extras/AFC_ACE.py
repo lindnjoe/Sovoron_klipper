@@ -134,6 +134,11 @@ class afcACE(afcUnit):
         self.extruder_assist_length = config.getfloat("extruder_assist_length", 50.0)  # mm
         self.extruder_assist_speed = config.getfloat("extruder_assist_speed", 300.0)   # mm/min
 
+        # Engagement check: extrude half of tool_stn and verify the extruder
+        # is pulling filament via FPS drop.  Disabled by default — enable
+        # when debugging engagement issues.
+        self.engagement_check = config.getboolean("engagement_check", False)
+
         # Sensor-based feeding: feed in increments near the toolhead sensor
         # instead of blindly feeding a fixed distance. This enables calibration.
         self.sensor_approach_margin = config.getfloat("sensor_approach_margin", 30.0)  # mm before expected sensor to switch to incremental
@@ -1482,7 +1487,9 @@ class afcACE(afcUnit):
 
         # Push filament into the nozzle using tool_stn distance
         if cur_extruder.tool_stn:
-            if cur_extruder.tool_start_is_buffer and cur_lane.buffer_obj is not None:
+            if (self.engagement_check
+                    and cur_extruder.tool_start_is_buffer
+                    and cur_lane.buffer_obj is not None):
                 # Pre-engagement check: extrude half of tool_stn, then verify
                 # the extruder is actually pulling filament through the buffer.
                 #
