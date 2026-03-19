@@ -1484,31 +1484,25 @@ class afcACE(afcUnit):
         if cur_extruder.tool_stn:
             if cur_extruder.tool_start_is_buffer and cur_lane.buffer_obj is not None:
                 # Pre-engagement check: extrude half of tool_stn, then verify
-                # FPS pressure dropped to neutral.  If the extruder gears
-                # grabbed the filament they pull it through the buffer,
-                # reducing pressure to neutral.  If FPS is still advanced
-                # (compressed) the filament is bunching up without engaging.
+                # the extruder is actually pulling filament through the buffer.
                 #
-                # Feed-assist must be stopped during the check — the ACE
-                # motor actively pushes filament into the buffer, keeping
-                # the FPS reading elevated even when the extruder IS
-                # pulling, causing false "not engaged" detections.
+                # Feed-assist must stay running — stopping it relieves buffer
+                # pressure and the FPS drops to neutral regardless of whether
+                # the extruder grabbed the filament (false positive).
+                #
+                # With feed-assist on, use a *relative* FPS drop instead of
+                # an absolute threshold: record FPS before the extrude, check
+                # immediately after (no pause — any delay lets feed-assist
+                # re-fill the buffer).  If the extruder is pulling, FPS drops
+                # even slightly.  If filament bunched without engaging, FPS
+                # stays the same or rises.
                 half_stn = cur_extruder.tool_stn / 2.0
                 max_engage_attempts = 3
                 engaged = False
-
-                # Stop feed assist so the FPS reading reflects only
-                # extruder pull, not ACE push.
-                fa_was_active = local_slot in self._feed_assist_active
-                if fa_was_active and self._ace is not None:
-                    try:
-                        self._wait_for_ace_ready()
-                        self._ace.stop_feed_assist(local_slot)
-                        self._feed_assist_active.discard(local_slot)
-                    except Exception:
-                        pass
-                    # Let FPS settle after stopping feed assist
-                    afc.reactor.pause(afc.reactor.monotonic() + 1.0)
+                # Minimum FPS drop to confirm engagement.  Any noticeable
+                # drop means the extruder is pulling filament through the
+                # buffer faster than feed-assist pushes it in.
+                min_engage_drop = 0.02
 
                 for attempt in range(1, max_engage_attempts + 1):
                     buf = cur_lane.buffer_obj
@@ -1523,16 +1517,20 @@ class afcACE(afcUnit):
                         half_stn, cur_extruder.tool_load_speed,
                         "engagement check"
                     )
-                    # No extra pause — the extrude itself takes ~2-3s
-                    # which is enough for the EMA to settle.
+                    # Check immediately — no pause.  The extrude took ~2-3s
+                    # which is enough for the EMA to reflect the pull.
+                    # Any delay lets feed-assist re-fill the buffer.
+                    post_fps = buf.smoothed_fps
+                    fps_drop = pre_fps - post_fps
 
-                    if not buf.advance_state:
-                        # Pressure dropped — extruder gears are pulling
-                        # filament through the buffer, engagement confirmed.
+                    if not buf.advance_state or fps_drop >= min_engage_drop:
+                        # Either FPS dropped to neutral, or we saw a
+                        # meaningful relative drop — extruder is pulling
+                        # filament through the buffer.
                         self.logger.info(
-                            f"ACE engagement check: FPS at "
-                            f"{buf.last_state} (fps={buf.smoothed_fps:.3f}, "
-                            f"was {pre_fps:.3f}), filament engaged"
+                            f"ACE engagement check: FPS "
+                            f"{pre_fps:.3f} → {post_fps:.3f} "
+                            f"(drop={fps_drop:.3f}), filament engaged"
                         )
                         # Finish the remaining half
                         afc.move_e_pos(
@@ -1549,9 +1547,9 @@ class afcACE(afcUnit):
                         retract_spd = self._quiet_speed(self.retract_speed)
                         feed_spd = self._quiet_speed(self.feed_speed)
                         self.logger.warning(
-                            f"ACE engagement check: FPS still advanced "
-                            f"(fps={buf.smoothed_fps:.3f}, "
-                            f"was {pre_fps:.3f}) "
+                            f"ACE engagement check: FPS "
+                            f"{pre_fps:.3f} → {post_fps:.3f} "
+                            f"(drop={fps_drop:.3f}, need {min_engage_drop}) "
                             f"on attempt {attempt} — filament not engaged, "
                             f"ACE unwind {pullback_mm}mm then re-feed"
                         )
@@ -1573,17 +1571,14 @@ class afcACE(afcUnit):
                         self._wait_for_feed_complete(
                             local_slot, pullback_mm, feed_spd
                         )
+                        # 3. Re-enable feed assist in case unwind disabled it
+                        if self._get_feed_assist(local_slot, cur_lane):
+                            try:
+                                self._ace.start_feed_assist(local_slot)
+                                self._feed_assist_active.add(local_slot)
+                            except Exception:
+                                pass
                         afc.reactor.pause(afc.reactor.monotonic() + 0.3)
-
-                # Re-enable feed assist after engagement check completes
-                if (fa_was_active
-                        and self._get_feed_assist(local_slot, cur_lane)
-                        and self._ace is not None):
-                    try:
-                        self._ace.start_feed_assist(local_slot)
-                        self._feed_assist_active.add(local_slot)
-                    except Exception:
-                        pass
 
                 if not engaged:
                     message = (
