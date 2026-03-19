@@ -117,37 +117,7 @@
             "td1_data": {}
         }
     },
-    "Tools": {
-        "extruder3": {
-            "name": "extruder3",
-            "unit": "Tools",
-            "hub": "direct",
-            "extruder": "extruder3",
-            "buffer": null,
-            "buffer_status": null,
-            "lane": 0,
-            "map": "T16",
-            "load": false,
-            "prep": false,
-            "tool_loaded": false,
-            "loaded_to_hub": false,
-            "material": null,
-            "density": 1.24,
-            "diameter": 1.75,
-            "empty_spool_weight": 190,
-            "remember_spool": false,
-            "spool_id": null,
-            "color": null,
-            "weight": 0,
-            "extruder_temp": null,
-            "runout_lane": null,
-            "filament_status": "Not Ready",
-            "filament_status_led": "#ff0000",
-            "status": "None",
-            "dist_hub": 60,
-            "td1_data": {}
-        }
-    },
+    "Tools": {},
     "AMS_1": {
         "lane4": {
             "name": "lane4",
@@ -174,7 +144,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Loaded",
+            "status": "Tool Unloading",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -479,9 +449,9 @@
             "name": "lane3",
             "unit": "Turtle_1",
             "hub": "direct_load",
-            "extruder": "extruder5",
-            "buffer": "FPS_buffer2",
-            "buffer_status": "Neutral",
+            "extruder": "extruder3",
+            "buffer": "TN3",
+            "buffer_status": "Advancing",
             "lane": 4,
             "map": "T3",
             "load": false,
@@ -503,13 +473,13 @@
             "status": "None",
             "dist_hub": 1914.3327500000003,
             "td1_data": {},
-            "endstops": "load,tool_start,buffer_advance,buffer_trailing,lane3_prep,lane3_load,lane3_buffer,lane3_buffer_trailing"
+            "endstops": "load,tool_start,buffer_advance,buffer_trailing,lane3_prep,lane3_load,lane3_buffer"
         }
     },
     "system": {
-        "current_load": "lane9",
+        "current_load": "lane4",
         "num_units": 5,
-        "num_lanes": 17,
+        "num_lanes": 16,
         "num_extruders": 6,
         "extruders": {
             "extruder5": {
