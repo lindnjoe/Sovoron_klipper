@@ -1521,17 +1521,44 @@ class afcACE(afcUnit):
                         engaged = True
                         break
                     else:
-                        # Still advanced — filament bunching up, not grabbed
+                        # Still advanced — filament bunching up, not grabbed.
+                        # Use ACE serial commands to retract then re-feed;
+                        # the extruder motor cannot pull back against the
+                        # ACE feeder on its own.
+                        pullback_mm = 50.0
+                        retract_spd = self._quiet_speed(self.retract_speed)
+                        feed_spd = self._quiet_speed(self.feed_speed)
                         self.logger.warning(
                             f"ACE engagement check: FPS still advanced "
                             f"(fps={buf.smoothed_fps:.3f}) "
                             f"on attempt {attempt} — filament not engaged, "
-                            f"pulling back 50mm"
+                            f"ACE unwind {pullback_mm}mm then re-feed"
                         )
-                        afc.move_e_pos(
-                            -50.0, cur_extruder.tool_load_speed,
-                            "engagement retry pullback"
+                        # 1. Unwind to pull filament back
+                        self._wait_for_ace_ready()
+                        self._ace.unwind_filament(
+                            local_slot, pullback_mm, retract_spd
                         )
+                        self._wait_for_feed_complete(
+                            local_slot, pullback_mm, retract_spd
+                        )
+                        afc.reactor.pause(afc.reactor.monotonic() + 0.3)
+                        # 2. Re-feed the same distance to bring filament
+                        #    back to the toolhead for the next attempt
+                        self._wait_for_ace_ready()
+                        self._ace.feed_filament(
+                            local_slot, pullback_mm, feed_spd
+                        )
+                        self._wait_for_feed_complete(
+                            local_slot, pullback_mm, feed_spd
+                        )
+                        # 3. Re-enable feed assist in case unwind disabled it
+                        if self._get_feed_assist(local_slot, cur_lane):
+                            try:
+                                self._ace.start_feed_assist(local_slot)
+                                self._feed_assist_active.add(local_slot)
+                            except Exception:
+                                pass
                         afc.reactor.pause(afc.reactor.monotonic() + 0.3)
 
                 if not engaged:
