@@ -1484,8 +1484,10 @@ class afcACE(afcUnit):
         if cur_extruder.tool_stn:
             if cur_extruder.tool_start_is_buffer and cur_lane.buffer_obj is not None:
                 # Pre-engagement check: extrude half of tool_stn, then verify
-                # the FPS buffer is still advanced (compressed).  If it dropped
-                # to neutral the filament slipped past the extruder gears.
+                # FPS pressure dropped to neutral.  If the extruder gears
+                # grabbed the filament they pull it through the buffer,
+                # reducing pressure to neutral.  If FPS is still advanced
+                # (compressed) the filament is bunching up without engaging.
                 half_stn = cur_extruder.tool_stn / 2.0
                 max_engage_attempts = 3
                 engaged = False
@@ -1504,10 +1506,13 @@ class afcACE(afcUnit):
                     afc.reactor.pause(afc.reactor.monotonic() + 0.5)
 
                     buf = cur_lane.buffer_obj
-                    if buf.advance_state:
+                    if not buf.advance_state:
+                        # Pressure dropped — extruder gears are pulling
+                        # filament through the buffer, engagement confirmed.
                         self.logger.info(
-                            f"ACE engagement check: FPS still advanced "
-                            f"(fps={buf.smoothed_fps:.3f}), filament engaged"
+                            f"ACE engagement check: FPS at "
+                            f"{buf.last_state} (fps={buf.smoothed_fps:.3f}), "
+                            f"filament engaged"
                         )
                         # Finish the remaining half
                         afc.move_e_pos(
@@ -1516,9 +1521,10 @@ class afcACE(afcUnit):
                         engaged = True
                         break
                     else:
+                        # Still advanced — filament bunching up, not grabbed
                         self.logger.warning(
-                            f"ACE engagement check: FPS dropped to "
-                            f"{buf.last_state} (fps={buf.smoothed_fps:.3f}) "
+                            f"ACE engagement check: FPS still advanced "
+                            f"(fps={buf.smoothed_fps:.3f}) "
                             f"on attempt {attempt} — filament not engaged, "
                             f"pulling back 50mm"
                         )
