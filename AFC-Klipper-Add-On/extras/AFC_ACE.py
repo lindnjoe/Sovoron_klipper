@@ -1492,6 +1492,13 @@ class afcACE(afcUnit):
                 max_engage_attempts = 3
                 engaged = False
 
+                # Settling window: after extruding, poll FPS over this
+                # period to watch it transition advanced → neutral.  This
+                # avoids false positives from the EMA lagging after a long
+                # ACE feed, and tolerates brief feed-assist bursts.
+                settle_timeout = 3.0   # seconds to wait for FPS to drop
+                settle_poll = 0.25     # poll interval
+
                 for attempt in range(1, max_engage_attempts + 1):
                     self.logger.info(
                         f"ACE engagement check: extruding {half_stn:.1f}mm "
@@ -1502,17 +1509,32 @@ class afcACE(afcUnit):
                         half_stn, cur_extruder.tool_load_speed,
                         "engagement check"
                     )
-                    # Let ADC smoothing settle
-                    afc.reactor.pause(afc.reactor.monotonic() + 0.5)
 
+                    # Poll FPS over settling window — if the extruder is
+                    # pulling filament the smoothed reading will drop from
+                    # advanced into neutral.  A single snapshot right after
+                    # the move is too early (EMA lag + ACE feed-assist
+                    # bursts keep the reading elevated).
                     buf = cur_lane.buffer_obj
-                    if not buf.advance_state:
+                    settled = False
+                    settle_start = afc.reactor.monotonic()
+                    while (afc.reactor.monotonic() - settle_start
+                           < settle_timeout):
+                        afc.reactor.pause(
+                            afc.reactor.monotonic() + settle_poll
+                        )
+                        if not buf.advance_state:
+                            settled = True
+                            break
+
+                    if settled:
                         # Pressure dropped — extruder gears are pulling
                         # filament through the buffer, engagement confirmed.
                         self.logger.info(
                             f"ACE engagement check: FPS at "
                             f"{buf.last_state} (fps={buf.smoothed_fps:.3f}), "
-                            f"filament engaged"
+                            f"filament engaged after "
+                            f"{afc.reactor.monotonic() - settle_start:.1f}s"
                         )
                         # Finish the remaining half
                         afc.move_e_pos(
