@@ -1587,14 +1587,6 @@ class afcACE(afcUnit):
                                 pass
                         afc.reactor.pause(afc.reactor.monotonic() + 0.3)
 
-                # ACE feed was left running during the engagement check —
-                # stop it now regardless of outcome.
-                try:
-                    self._wait_for_ace_ready()
-                    self._ace.stop_feed_filament(local_slot)
-                except Exception:
-                    pass
-
                 if not engaged:
                     message = (
                         f"ACE load: filament failed to engage extruder "
