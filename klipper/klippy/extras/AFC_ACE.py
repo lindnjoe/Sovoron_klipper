@@ -134,6 +134,11 @@ class afcACE(afcUnit):
         self.extruder_assist_length = config.getfloat("extruder_assist_length", 50.0)  # mm
         self.extruder_assist_speed = config.getfloat("extruder_assist_speed", 300.0)   # mm/min
 
+        # Engagement check: extrude half of tool_stn and verify the extruder
+        # is pulling filament via FPS drop.  Disabled by default — enable
+        # when debugging engagement issues.
+        self.engagement_check = config.getboolean("engagement_check", False)
+
         # Sensor-based feeding: feed in increments near the toolhead sensor
         # instead of blindly feeding a fixed distance. This enables calibration.
         self.sensor_approach_margin = config.getfloat("sensor_approach_margin", 30.0)  # mm before expected sensor to switch to incremental
@@ -1482,7 +1487,9 @@ class afcACE(afcUnit):
 
         # Push filament into the nozzle using tool_stn distance
         if cur_extruder.tool_stn:
-            if cur_extruder.tool_start_is_buffer and cur_lane.buffer_obj is not None:
+            if (self.engagement_check
+                    and cur_extruder.tool_start_is_buffer
+                    and cur_lane.buffer_obj is not None):
                 # Pre-engagement check: extrude half of tool_stn, then verify
                 # the extruder is actually pulling filament through the buffer.
                 #
@@ -2003,7 +2010,8 @@ class afcACE(afcUnit):
             ace.feed_filament(slot_index, total_distance, feed_spd)
             sensor_hit = self._wait_for_feed_complete(
                 slot_index, total_distance, feed_spd, lane=lane,
-                poll_interval=0.1
+                poll_interval=0.1,
+                stop_on_sensor=not self.engagement_check,
             )
 
             sensor_triggered = sensor_hit or lane.get_toolhead_pre_sensor_state()
@@ -2033,7 +2041,8 @@ class afcACE(afcUnit):
             if bulk_distance > 0:
                 ace.feed_filament(slot_index, bulk_distance, feed_spd)
                 sensor_triggered_early = self._wait_for_feed_complete(
-                    slot_index, bulk_distance, feed_spd, lane=lane
+                    slot_index, bulk_distance, feed_spd, lane=lane,
+                    stop_on_sensor=not self.engagement_check,
                 )
             else:
                 sensor_triggered_early = False
@@ -2059,7 +2068,8 @@ class afcACE(afcUnit):
                 ace.feed_filament(slot_index, remaining, feed_spd)
                 sensor_hit = self._wait_for_feed_complete(
                     slot_index, remaining, feed_spd, lane=lane,
-                    poll_interval=0.1
+                    poll_interval=0.1,
+                    stop_on_sensor=not self.engagement_check,
                 )
                 total_fed = max_total
 
@@ -2111,7 +2121,8 @@ class afcACE(afcUnit):
         return total_fed, sensor_triggered
 
     def _wait_for_feed_complete(self, slot_index, length_mm, speed_mm_min,
-                                 lane=None, poll_interval=0.5):
+                                 lane=None, poll_interval=0.5,
+                                 stop_on_sensor=True):
         """Wait for the ACE hardware to finish a feed/unwind movement.
 
         The ACE acknowledges feed_filament/unwind_filament commands immediately
@@ -2150,22 +2161,31 @@ class afcACE(afcUnit):
                 self.logger.debug(
                     f"ACE wait: toolhead sensor triggered for slot {slot_index}"
                 )
-                # Stop the ACE feed -the motor is still running for the
-                # full requested distance but we don't need any more filament.
-                # Without this, the ACE stays "busy/feeding" for minutes,
-                # blocking feed_assist and causing RFID reads to return empty.
-                try:
-                    ace.stop_feed_filament(slot_index)
+                if stop_on_sensor:
+                    # Stop the ACE feed — the motor is still running for
+                    # the full requested distance but we don't need any
+                    # more filament.  Without this, the ACE stays
+                    # "busy/feeding" for minutes, blocking feed_assist
+                    # and causing RFID reads to return empty.
+                    try:
+                        ace.stop_feed_filament(slot_index)
+                        self.logger.debug(
+                            f"ACE wait: stopped feed for slot {slot_index} "
+                            "(sensor triggered early)"
+                        )
+                        # Brief pause for ACE to transition out of
+                        # "feeding" state
+                        self.afc.reactor.pause(
+                            self.afc.reactor.monotonic() + 0.5
+                        )
+                    except Exception:
+                        pass
+                else:
                     self.logger.debug(
-                        f"ACE wait: stopped feed for slot {slot_index} "
-                        "(sensor triggered early)"
+                        f"ACE wait: sensor triggered for slot "
+                        f"{slot_index}, ACE feed continues "
+                        f"(engagement check active)"
                     )
-                    # Brief pause for ACE to transition out of "feeding" state
-                    self.afc.reactor.pause(
-                        self.afc.reactor.monotonic() + 0.5
-                    )
-                except Exception:
-                    pass
                 return True
 
             # Poll ACE status to check if movement is done
