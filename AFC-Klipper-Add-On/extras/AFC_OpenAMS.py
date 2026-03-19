@@ -898,24 +898,22 @@ class afcAMS(afcUnit):
         finally:
             afc._oams_suppress_tool_swap_timer = False
 
-        # For FPS-based tool_start, use the latched tool_start_state instead
-        # of buffer_obj.advance_state.  FPS is pressure-based: it only reads
-        # high while the OAMS motor pushes.  After feeding stops the pressure
-        # drops and advance_state goes False even though filament IS present.
-        if cur_extruder.tool_start_is_buffer:
-            tool_detected = cur_extruder.tool_start_state
-        else:
-            tool_detected = cur_lane.get_toolhead_pre_sensor_state()
-        if not tool_detected:
-            message = (
-                "OpenAMS load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n"
-                "||=====||====||==>--||\nTRG   LOAD   HUB   TOOL"
-            )
-            message += "\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.".format(cur_lane.name)
-            if afc.function.in_print():
-                message += "\nOnce filament is fully loaded click resume to continue printing"
-            afc.error.handle_lane_failure(cur_lane, message)
-            return False
+        # OpenAMS reads FPS directly from hardware and has its own
+        # engagement verification, clog and stuck spool detection inside
+        # oams_manager.  AFC's buffer logic (advance_state / trailing_state)
+        # does not apply.  If tool_start is FPS-based, trust the manager
+        # result.  Only check a physical GPIO sensor here.
+        if not cur_extruder.tool_start_is_buffer:
+            if not cur_lane.get_toolhead_pre_sensor_state():
+                message = (
+                    "OpenAMS load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n"
+                    "||=====||====||==>--||\nTRG   LOAD   HUB   TOOL"
+                )
+                message += "\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.".format(cur_lane.name)
+                if afc.function.in_print():
+                    message += "\nOnce filament is fully loaded click resume to continue printing"
+                afc.error.handle_lane_failure(cur_lane, message)
+                return False
 
         cur_lane.set_tool_loaded()
         afc.save_vars()
