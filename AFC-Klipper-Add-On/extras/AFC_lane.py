@@ -1445,8 +1445,6 @@ class AFCLane:
         returns Status of toolhead pre sensor or the current buffer advance state
         """
         if self.extruder_obj.tool_start_is_buffer:
-            if self.buffer_obj is None:
-                return False
             return self.buffer_obj.advance_state
         else:
             return self.extruder_obj.tool_start_state
