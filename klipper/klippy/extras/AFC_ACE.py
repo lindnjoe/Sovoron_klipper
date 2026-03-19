@@ -177,7 +177,6 @@ class afcACE(afcUnit):
         self._prev_fps_value = 0.0  # previous ADC reading for delta calc
         self._fps_obj = None       # resolved AFC_FPS buffer object
         self._fps_extruder = None  # the extruder object associated with FPS
-        self._fps_runout_helper = None  # cached runout helper for virtual sensor
         # Latch: during active operations (calibration/feed), once the FPS
         # crosses the threshold we latch tool_start_state=True so that
         # pulsed ACE feeding doesn't clear it between motor pulses.
@@ -386,7 +385,7 @@ class afcACE(afcUnit):
         # Hydrate the virtual tool sensor for lanes that were tool-loaded
         # before restart.  OpenAMS's _hydrate_from_saved_state skips non-
         # OpenAMS lanes, so ACE must set the sensor itself.
-        self._hydrate_virtual_tool_sensor(eventtime)
+        self._hydrate_tool_start_state(eventtime)
 
         # Start runout detection polling
         self._start_slot_status_monitor()
@@ -477,10 +476,6 @@ class afcACE(afcUnit):
             self._fps_obj = fps_obj
             self._fps_extruder = extruder_obj
 
-            fila = getattr(extruder_obj, "fila_tool_start", None)
-            helper = getattr(fila, "runout_helper", None) if fila else None
-            self._fps_runout_helper = helper
-
             self.logger.info(
                 "ACE {}: linked to AFC_FPS buffer '{}' "
                 "(extruder={}, threshold={})".format(
@@ -509,11 +504,11 @@ class afcACE(afcUnit):
         self._fps_adc_callback(eventtime, fps_value)
         return eventtime + 0.1
 
-    def _hydrate_virtual_tool_sensor(self, eventtime):
-        """Set the virtual tool sensor if an ACE lane was loaded at shutdown.
+    def _hydrate_tool_start_state(self, eventtime):
+        """Set tool_start_state if an ACE lane was loaded at shutdown.
 
         At startup the FPS pressure is zero (ACE motor off), so the ADC
-        callback would never set the sensor.  Check saved state and set
+        callback would never set the state.  Check saved state and set
         it explicitly so the extruder knows filament is present.
         """
         extruder = self._fps_extruder
@@ -528,22 +523,19 @@ class afcACE(afcUnit):
             if getattr(extruder, "lane_loaded", None) != lane_name:
                 continue
             extruder.tool_start_state = True
-            self._update_virtual_sensor(eventtime, True)
             self.logger.info(
-                f"ACE {self.name}: hydrated virtual tool sensor "
+                f"ACE {self.name}: hydrated tool_start_state "
                 f"for {lane_name} (tool_loaded at startup)"
             )
             return
 
     def _fps_adc_callback(self, read_time, fps_value):
-        """ADC callback from the FPS sensor -update the virtual tool sensor.
+        """ADC callback from the FPS sensor — update tool_start_state.
 
         Called every ~100 ms with the current pressure reading (0.0-1.0).
         When the value crosses the threshold, updates the extruder's
         tool_start_state so that ``lane.get_toolhead_pre_sensor_state()``
-        reflects filament presence at the extruder gears.  Also updates
-        the virtual filament sensor (fila_tool_start) so Klipper's
-        filament sensor system tracks the state and can trigger runout.
+        reflects filament presence at the extruder gears.
 
         During active operations (calibration/feeding), the state is
         latched: once triggered it stays True until the operation clears
@@ -571,7 +563,6 @@ class afcACE(afcUnit):
                 reason = "threshold" if load_triggered else f"delta={delta:.3f}"
                 self._fps_latched = True
                 extruder.tool_start_state = True
-                self._update_virtual_sensor(read_time, True)
                 self.logger.debug(
                     f"ACE FPS: tool_start_state LATCHED True "
                     f"(fps_value={fps_value:.3f}, {reason})"
@@ -592,26 +583,10 @@ class afcACE(afcUnit):
 
         if extruder.tool_start_state != triggered:
             extruder.tool_start_state = triggered
-            self._update_virtual_sensor(read_time, triggered)
             self.logger.debug(
                 f"ACE FPS: tool_start_state -> {triggered} "
                 f"(fps_value={fps_value:.3f}, threshold={self.fps_threshold})"
             )
-
-    def _update_virtual_sensor(self, eventtime, filament_present):
-        """Push filament state into the virtual filament sensor.
-
-        Updates the runout helper on the extruder's fila_tool_start so
-        that Klipper's filament sensor system (QUERY_FILAMENT_SENSOR,
-        SET_FILAMENT_SENSOR, runout detection) reflects the FPS state.
-        """
-        helper = self._fps_runout_helper
-        if helper is None:
-            return
-        try:
-            helper.note_filament_present(eventtime, filament_present)
-        except TypeError:
-            helper.note_filament_present(filament_present)
 
     def get_fps_value(self):
         """Return the current FPS pressure value, or None if no FPS linked."""
@@ -851,17 +826,9 @@ class afcACE(afcUnit):
         # Filament is in the hub path to the toolhead -- set virtual hub sensor
         self._set_hub_state(lane, True)
 
-        # Hydrate virtual sensor so extruder knows filament is present
+        # Mark extruder as having filament present
         extruder = lane.extruder_obj
         extruder.tool_start_state = True
-        fila = getattr(extruder, "fila_tool_start", None)
-        helper = getattr(fila, "runout_helper", None) if fila else None
-        if helper is not None:
-            eventtime = self.afc.reactor.monotonic()
-            try:
-                helper.note_filament_present(eventtime, True)
-            except TypeError:
-                helper.note_filament_present(True)
 
         self.lane_tool_loaded(lane)
 
@@ -1170,10 +1137,9 @@ class afcACE(afcUnit):
             return
         eventtime = self.afc.reactor.monotonic()
         extruder.tool_start_state = True
-        self._update_virtual_sensor(eventtime, True)
 
     def lane_tool_unloaded(self, lane):
-        """Clear the virtual tool sensor when an ACE lane unloads.
+        """Clear tool_start_state when an ACE lane unloads.
 
         Mirrors lane_tool_loaded: explicitly clears the sensor so the extruder
         knows the toolhead is empty.
@@ -1184,7 +1150,6 @@ class afcACE(afcUnit):
             return
         eventtime = self.afc.reactor.monotonic()
         extruder.tool_start_state = False
-        self._update_virtual_sensor(eventtime, False)
 
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
         """Load filament from ACE slot into the toolhead.
@@ -2556,23 +2521,13 @@ class afcACE(afcUnit):
                     cur_lane.loaded_to_hub = True
                     # Set virtual hub sensor -- filament is actively through hub
                     self._set_hub_state(cur_lane, True)
-                    # For ACE with AMS virtual pin, the FPS reads zero
-                    # at startup (motor off) so tool_start_state is False.
-                    # If saved state confirms this lane is loaded, set the
-                    # virtual sensor directly (like OpenAMS does for its
-                    # lanes) so the toolhead-pre-sensor check passes the
-                    # same way a physical switch would on BoxTurtle.
+                    # For ACE with FPS, the FPS reads zero at startup
+                    # (motor off) so tool_start_state is False.  If saved
+                    # state confirms this lane is loaded, set it directly
+                    # so the toolhead-pre-sensor check passes.
                     extruder_obj = cur_lane.extruder_obj
                     if extruder_obj.lane_loaded == cur_lane.name:
                         extruder_obj.tool_start_state = True
-                        fila = getattr(extruder_obj, "fila_tool_start", None)
-                        helper = getattr(fila, "runout_helper", None) if fila else None
-                        if helper is not None:
-                            eventtime = self.afc.reactor.monotonic()
-                            try:
-                                helper.note_filament_present(eventtime, True)
-                            except TypeError:
-                                helper.note_filament_present(True)
 
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
@@ -2934,9 +2889,6 @@ class afcACE(afcUnit):
             extruder = self._fps_extruder
             if extruder is not None:
                 extruder.tool_start_state = False
-                self._update_virtual_sensor(
-                    self.afc.reactor.monotonic(), False
-                )
             # Allow sensor polling to catch up and hub to physically clear
             self.afc.reactor.pause(
                 self.afc.reactor.monotonic() + 3.0
