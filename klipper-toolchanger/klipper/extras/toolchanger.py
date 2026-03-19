@@ -20,9 +20,17 @@ ON_AXIS_NOT_HOMED_ABORT = 0
 ON_AXIS_NOT_HOMED_HOME = 1
 XYZ_TO_INDEX = {'x': 0, 'X': 0, 'y': 1, 'Y': 1, 'z': 2, 'Z': 2}
 INDEX_TO_XYZ = 'XYZ'
-DETECT_UNAVAILABLE = "unavailable"
-DETECT_ABSENT = "absent"
-DETECT_PRESENT = "mounted"
+DETECT_UNAVAILABLE = -1
+DETECT_ABSENT = 0
+DETECT_PRESENT = 1
+
+
+def detect_state_name(state):
+    if state == DETECT_PRESENT:
+        return "mounted"
+    if state == DETECT_ABSENT:
+        return "absent"
+    return "unavailable"
 
 _FUTURE = 9999999999999999.
 
@@ -187,6 +195,11 @@ class Toolchanger:
                                     self.cmd_SAVE_TOOL_PARAMETER)
         self.gcode.register_command("VERIFY_TOOL_DETECTED",
                                     self.cmd_VERIFY_TOOL_DETECTED)
+        self.gcode.register_command("ADJUST_Z_AFTER_TOOL_NOZZLE_HOME",
+                                    self.cmd_ADJUST_Z_AFTER_TOOL_NOZZLE_HOME)
+        self.gcode.register_command("ADJUST_TOOL_Z_OFFSET",
+                                    self.cmd_ADJUST_TOOL_Z_OFFSET,
+                                    desc=self.cmd_ADJUST_TOOL_Z_OFFSET_help)
         self.fan_switcher = None
         self.tool_probe_endstop = None
         self.validate_tool_timer = None
@@ -210,10 +223,16 @@ class Toolchanger:
         self.gcode_transform.next_transform = self.gcode_move.set_move_transform(self.gcode_transform, force=True)
 
     def _handle_command_error(self):
-        self.status = STATUS_UNINITALIZED
-        self.tool_missing_helper.deactivate()
-        self.active_tool = None
-        self.gcode_transform.tool = None
+        # Only uninitialize when a tool change or init was in progress.
+        # Errors during STATUS_READY (e.g. AFC lane failures, ACE commands)
+        # leave the toolchanger ready and the mounted tool unchanged so
+        # Z/XY offsets remain valid and VERIFY_TOOL_DETECTED still works.
+        was_mid_change = self.status in (STATUS_CHANGING, STATUS_INITIALIZING)
+        if was_mid_change:
+            self.status = STATUS_UNINITALIZED
+            self.tool_missing_helper.deactivate()
+            self.active_tool = None
+            self.gcode_transform.tool = None
 
     def _handle_shutdown(self):
         self.status = STATUS_UNINITALIZED
@@ -222,6 +241,7 @@ class Toolchanger:
         self.gcode_transform.tool = None
 
     def get_status(self, eventtime):
+        active_tool_offset = self.active_tool.get_offset() if self.active_tool else [0.0, 0.0, 0.0]
         return {**self.params,
                 'name': self.name,
                 'status': self.status,
@@ -232,6 +252,9 @@ class Toolchanger:
                 'tool_numbers': self.tool_numbers,
                 'tool_names': self.tool_names,
                 'has_detection': self.has_detection,
+                'active_tool_gcode_x_offset': active_tool_offset[0],
+                'active_tool_gcode_y_offset': active_tool_offset[1],
+                'active_tool_gcode_z_offset': active_tool_offset[2],
                 }
 
     def assign_tool(self, tool, number, prev_number, replace=False):
@@ -375,11 +398,15 @@ class Toolchanger:
             self.status = STATUS_INITIALIZING
             self.run_gcode('initialize_gcode', self.initialize_gcode, extra_context)
 
-        if select_tool or self.has_detection:
-            self._configure_toolhead_for_tool(select_tool)
-            if select_tool:
-                self.run_gcode('after_change_gcode', select_tool.after_change_gcode, extra_context)
-                self.gcode_transform.tool = select_tool
+        inferred_tool = select_tool
+        if inferred_tool is None and self.has_detection:
+            inferred_tool = self.require_detected_tool(lambda _msg: None)
+
+        if inferred_tool or self.has_detection:
+            self._configure_toolhead_for_tool(inferred_tool)
+            if inferred_tool:
+                self.run_gcode('after_change_gcode', inferred_tool.after_change_gcode, extra_context)
+                self.gcode_transform.tool = inferred_tool
             if self.require_tool_present and self.active_tool is None:
                 raise self.gcode.error(
                     '%s failed to initialize, require_tool_present set and no tool present after initialization' % (
@@ -428,6 +455,7 @@ class Toolchanger:
             self.run_gcode('before_change_gcode', before_change_gcode, extra_context)
             self._set_toolchange_transform()
 
+            self.tool_missing_helper.deactivate()
             if self.active_tool:
                 self.run_gcode('tool.dropoff_gcode',
                                self.active_tool.dropoff_gcode, extra_context)
@@ -438,12 +466,12 @@ class Toolchanger:
                                tool.pickup_gcode, extra_context)
                 if self.has_detection and self.verify_tool_pickup:
                     self.validate_detected_tool(tool, respond_info=gcmd.respond_info, raise_error=gcmd.error)
+                self.tool_missing_helper.activate()
                 self.run_gcode('after_change_gcode',
                                tool.after_change_gcode, extra_context)
 
             self._restore_state_and_transform(tool)
             self.status = STATUS_READY
-            self.tool_missing_helper.activate()
             if tool:
                 gcmd.respond_info(
                     'Selected tool %s (%s)' % (str(tool.tool_number), tool.name))
@@ -694,6 +722,82 @@ class Toolchanger:
             raise gcmd.error('Tool does not have parameter %s' % (name))
         tool.save_parameter(name)
 
+    def cmd_ADJUST_Z_AFTER_TOOL_NOZZLE_HOME(self, gcmd):
+        tool = self.active_tool
+        if not tool:
+            raise gcmd.error("ADJUST_Z_AFTER_TOOL_NOZZLE_HOME - no active tool")
+        self._adjust_z_position_for_tool(tool)
+
+    cmd_ADJUST_TOOL_Z_OFFSET_help = (
+        "Atomically adjust a tool's gcode_z_offset: update in-memory, apply to the "
+        "gcode transform, and save to printer.cfg. "
+        "Usage: ADJUST_TOOL_Z_OFFSET [TOOL=<name>|T=<n>] <ADJUST=<delta>|Z=<value>>"
+    )
+    def cmd_ADJUST_TOOL_Z_OFFSET(self, gcmd):
+        """Adjust a tool's gcode_z_offset in three atomic steps:
+          1. Update the in-memory value via set_parameter() so _apply_param sets
+             tool.gcode_z_offset and the ToolGcodeTransform picks it up immediately.
+          2. Reset the gcode reported position so subsequent moves reference the new offset.
+          3. Persist to printer.cfg via save_parameter() / configfile.set().
+
+        Parameters:
+          TOOL=<name>    Tool section name (e.g. 'tool t0').  Defaults to active tool.
+          T=<n>          Tool number.  Defaults to active tool.
+          ADJUST=<delta> Add delta (mm) to the current gcode_z_offset.
+          Z=<value>      Set gcode_z_offset to this absolute value (mm).
+        Exactly one of ADJUST or Z must be supplied.
+        """
+        # Resolve target tool (name, number, or active)
+        tool_name = gcmd.get("TOOL", None)
+        tool_nr   = gcmd.get_int("T", None)
+        if tool_name:
+            tool = self.printer.lookup_object(tool_name)
+        elif tool_nr is not None:
+            tool = self.lookup_tool(tool_nr)
+            if not tool:
+                raise gcmd.error("ADJUST_TOOL_Z_OFFSET: T%d not found" % (tool_nr,))
+        else:
+            tool = self.active_tool
+            if not tool:
+                raise gcmd.error(
+                    "ADJUST_TOOL_Z_OFFSET: no TOOL specified and no active tool")
+
+        adjust = gcmd.get_float("ADJUST", None)
+        z      = gcmd.get_float("Z", None)
+        if adjust is None and z is None:
+            raise gcmd.error(
+                "ADJUST_TOOL_Z_OFFSET: specify ADJUST=<delta_mm> or Z=<value_mm>")
+        if adjust is not None and z is not None:
+            raise gcmd.error(
+                "ADJUST_TOOL_Z_OFFSET: specify either ADJUST or Z, not both")
+
+        current = tool.gcode_z_offset
+        new_z   = current + adjust if adjust is not None else z
+
+        # Step 1 – wait for move queue, then update in-memory offset
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.wait_moves()
+        tool.set_parameter('gcode_z_offset', new_z)
+
+        # Step 2 – sync gcode reported position to the new offset
+        self.gcode_move.reset_last_position()
+
+        # Step 3 – persist to printer.cfg
+        tool.save_parameter('gcode_z_offset')
+
+        gcmd.respond_info(
+            "Tool {} gcode_z_offset: {:.6f} -> {:.6f}".format(tool.name, current, new_z)
+        )
+
+    def _adjust_z_position_for_tool(self, tool):
+        z_offset = tool.gcode_z_offset
+        if z_offset != 0.0:
+            logging.info(f"Toolchanger: Adjusting Z position after homing move by {z_offset}")
+            toolhead = self.printer.lookup_object('toolhead')
+            pos = list(toolhead.get_position())
+            pos[2] += z_offset
+            toolhead.set_position(pos)
+
     def ensure_homed(self, gcmd):
         if not self.uses_axis:
             return
@@ -756,7 +860,7 @@ class Toolchanger:
 
     def _ensure_toolchanger_ready(self, gcmd):
         if self.status not in [STATUS_READY, STATUS_CHANGING]:
-            raise gcmd.error("VERIFY_TOOL_DETECTED: toolchanger not ready: status = %s", (self.status,))
+            raise gcmd.error("VERIFY_TOOL_DETECTED: toolchanger not ready: status = %s" % (self.status,))
 
 class FanSwitcher:
     def __init__(self, toolchanger, config):

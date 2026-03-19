@@ -63,6 +63,9 @@ class HDC1080:
                 
         self.is_calibrated  = False
         self.init_sent = False
+        self._consecutive_errors = 0
+        self._max_consecutive_errors = 5  # Back off after this many failures
+        self._last_good_temp = 0.0
 
     def handle_connect(self):
         self._init_device()
@@ -119,10 +122,11 @@ class HDC1080:
             data = bytearray(read['response'])
             temp = (data[0] * 256) + data[1]
             cTemp = (temp / 65536.0) * 165.0 - 40
-            return cTemp
-        except:
-            return 0.0
-        
+            return cTemp, True
+        except Exception as e:
+            logging.debug("hdc1080 %s: temp read failed: %s", self.name, e)
+            return 0.0, False
+
     def _read_humi(self):
         try:
             self.i2c.i2c_write([HUMI_REG])
@@ -131,32 +135,55 @@ class HDC1080:
             data = bytearray(read['response'])
             humidity = (data[0] * 256) + data[1]
             percentHumidity = (humidity / 65536.0) * 100.0
-            return percentHumidity
-        except:
-            return 0.0
+            return percentHumidity, True
+        except Exception as e:
+            logging.debug("hdc1080 %s: humidity read failed: %s", self.name, e)
+            return 0.0, False
 
     def _make_measurements(self):
         if not self.init_sent:
             logging.info("hdc1080: init not sent")
             return False
-        
-        self.temp = self._read_temp() + self.temp_offset
-        self.reactor.pause(self.reactor.monotonic() + .015)
-        self.humidity = self._read_humi() + self.humidity_offset
-        
-        #logging.info("hdc1080: temp: %s, humi: %s", self.temp, self.humidity)
 
-        return True
+        temp_val, temp_ok = self._read_temp()
+        self.reactor.pause(self.reactor.monotonic() + .015)
+        humi_val, humi_ok = self._read_humi()
+
+        if temp_ok:
+            self.temp = temp_val + self.temp_offset
+            self._last_good_temp = self.temp
+            self._consecutive_errors = 0
+        else:
+            self._consecutive_errors += 1
+            # Use last known good temp to avoid false shutdown triggers
+            self.temp = self._last_good_temp
+
+        if humi_ok:
+            self.humidity = humi_val + self.humidity_offset
+        # On humidity error, keep previous value (non-critical)
+
+        return temp_ok or humi_ok
 
     def _sample_hdc1080(self, eventtime):
-        if not self._make_measurements():
-            self.temp = self.humidity = .0
-            return self.reactor.NEVER
+        success = self._make_measurements()
 
-        if self.temp < self.min_temp or self.temp > self.max_temp:
-            self.printer.invoke_shutdown(
-                "HDC1080 temperature %0.1f outside range of %0.1f:%.01f"
-                % (self.temp, self.min_temp, self.max_temp))
+        if not success:
+            self._consecutive_errors += 1
+            if self._consecutive_errors >= self._max_consecutive_errors:
+                logging.warning(
+                    "hdc1080 %s: %d consecutive I2C errors, backing off",
+                    self.name, self._consecutive_errors)
+                # Back off to reduce reactor load during I2C issues
+                return eventtime + self.report_time * 3
+            # Retry sooner on transient errors
+            return eventtime + self.report_time
+
+        # Only check temp limits with a valid reading (not stale data)
+        if self._consecutive_errors == 0:
+            if self.temp < self.min_temp or self.temp > self.max_temp:
+                self.printer.invoke_shutdown(
+                    "HDC1080 temperature %0.1f outside range of %0.1f:%.01f"
+                    % (self.temp, self.min_temp, self.max_temp))
 
         measured_time = self.reactor.monotonic()
         print_time = self.i2c.get_mcu().estimated_print_time(measured_time)
