@@ -1673,49 +1673,24 @@ class afcACE(afcUnit):
         # Step 1: Retract filament out of the nozzle/extruder gears FIRST.
         # This must complete before ACE unwind starts, otherwise the ACE
         # pulls against the extruder grip and the filament catches.
-        if cur_extruder.tool_start_is_buffer and cur_lane.buffer_obj is not None:
-            # Buffer mode: retract until buffer decompresses using extruder motor
-            num_tries = 0
-            while not cur_lane.get_trailing() and afc.tool_max_unload_attempts > 0:
-                num_tries += 1
-                afc.move_e_pos(
-                    cur_lane.short_move_dis * -1,
-                    cur_extruder.tool_unload_speed,
-                    "Buffer retract", wait_tool=True
-                )
-                afc.reactor.pause(afc.reactor.monotonic() + 0.1)
-                if num_tries > afc.tool_max_unload_attempts:
-                    message = (
-                        f"Buffer did not decompress after {afc.tool_max_unload_attempts} "
-                        f"retract moves during unload.\n"
-                        "Please check filament is free from toolhead extruder."
-                    )
-                    afc.error.handle_lane_failure(cur_lane, message)
-                    return False
-            # Retract tool_stn_unload distance to clear extruder gears
-            if cur_extruder.tool_stn_unload > 0:
-                self.logger.info(
-                    f"ACE unload: buffer retract {cur_extruder.tool_stn_unload}mm "
-                    f"@ {cur_extruder.tool_unload_speed}mm/s"
-                )
-                afc.move_e_pos(
-                    cur_extruder.tool_stn_unload * -1,
-                    cur_extruder.tool_unload_speed, "Buffer Move",
-                    wait_tool=True
-                )
-        else:
-            # Standard mode: retract with extruder motor to clear nozzle/gears
-            retract_distance = cur_extruder.tool_stn_unload
-            if retract_distance > 0:
-                self.logger.info(
-                    f"ACE unload: extruder retract {retract_distance}mm "
-                    f"@ {cur_extruder.tool_unload_speed}mm/s to clear nozzle/gears"
-                )
-                afc.move_e_pos(
-                    retract_distance * -1,
-                    cur_extruder.tool_unload_speed,
-                    "ACE nozzle retract", wait_tool=True
-                )
+        #
+        # ACE uses pressure-based FPS for tool_start — there is no physical
+        # buffer to "decompress".  The turtleneck-style retract-until-
+        # trailing loop doesn't work here because the FPS only reads high
+        # while the ACE motor pushes; during unload the motor is off, so
+        # trailing_state won't change in response to extruder retracts.
+        # Just retract tool_stn_unload directly.
+        retract_distance = cur_extruder.tool_stn_unload
+        if retract_distance > 0:
+            self.logger.info(
+                f"ACE unload: extruder retract {retract_distance}mm "
+                f"@ {cur_extruder.tool_unload_speed}mm/s to clear nozzle/gears"
+            )
+            afc.move_e_pos(
+                retract_distance * -1,
+                cur_extruder.tool_unload_speed,
+                "ACE nozzle retract", wait_tool=True
+            )
 
         # Move past the sensor-after-extruder if configured
         if cur_extruder.tool_sensor_after_extruder > 0:
