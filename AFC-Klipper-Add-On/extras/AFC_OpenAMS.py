@@ -1921,7 +1921,7 @@ class afcAMS(afcUnit):
 
                         msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
                         if cur_lane.extruder_obj.tool_start_is_buffer:
-                            msg += '<span class=warning--text> Ram sensor enabled, confirm tool is loaded</span>'
+                            msg += '<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>'
                         if self.afc.function.get_current_lane() == cur_lane.name:
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             cur_lane.unit_obj.lane_tool_loaded(cur_lane)

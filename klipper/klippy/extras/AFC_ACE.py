@@ -2542,7 +2542,7 @@ class afcACE(afcUnit):
                             on_shuttle = " and toolhead on shuttle" if extruder_obj.on_shuttle() else ""
                         msg += f'<span class=primary--text> in ToolHead{on_shuttle}</span>'
                         if cur_lane.extruder_obj.tool_start_is_buffer:
-                            msg += '<span class=warning--text> Ram sensor enabled, confirm tool is loaded</span>'
+                            msg += '<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>'
 
                         # Restore combined mode tracking regardless of shuttle
                         # state so ACE knows which slot is loaded for the next
