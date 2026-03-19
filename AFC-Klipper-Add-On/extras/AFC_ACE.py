@@ -1511,47 +1511,45 @@ class afcACE(afcUnit):
                 # buffer faster than feed-assist pushes it in.
                 min_engage_drop = 0.02
 
+                # Number of FPS samples and interval used to average out
+                # ACE feed-assist pulse noise before/after the extrude.
+                fps_sample_count = 5
+                fps_sample_interval = 0.1  # seconds between samples
+
                 for attempt in range(1, max_engage_attempts + 1):
                     buf = cur_lane.buffer_obj
 
-                    # Pause feed-assist for the measurement window so the
-                    # ACE feed pulses don't mask the FPS drop from the
-                    # extruder actually pulling filament.
-                    fa_was_active = local_slot in self._feed_assist_active
-                    if fa_was_active:
-                        try:
-                            self._ace.stop_feed_assist(local_slot)
-                            self._feed_assist_active.discard(local_slot)
-                        except Exception:
-                            pass
-                        # Let FPS settle to a neutral baseline after
-                        # feed-assist stops pushing filament.
-                        afc.reactor.pause(afc.reactor.monotonic() + 0.5)
+                    # Average FPS over several samples to smooth out ACE
+                    # feed-assist pulse noise that can mask the real signal.
+                    pre_samples = []
+                    for _ in range(fps_sample_count):
+                        pre_samples.append(buf.smoothed_fps)
+                        afc.reactor.pause(
+                            afc.reactor.monotonic() + fps_sample_interval
+                        )
+                    pre_fps = sum(pre_samples) / len(pre_samples)
 
-                    pre_fps = buf.smoothed_fps
                     self.logger.info(
                         f"ACE engagement check: extruding {half_stn:.1f}mm "
                         f"@ {cur_extruder.tool_load_speed}mm/s "
                         f"(attempt {attempt}/{max_engage_attempts}, "
                         f"pre_fps={pre_fps:.3f}, "
-                        f"feed-assist paused={fa_was_active})"
+                        f"samples={[f'{s:.3f}' for s in pre_samples]})"
                     )
                     afc.move_e_pos(
                         half_stn, cur_extruder.tool_load_speed,
                         "engagement check"
                     )
-                    # Check immediately — no pause.  The extrude took ~2-3s
-                    # which is enough for the EMA to reflect the pull.
-                    post_fps = buf.smoothed_fps
+                    # Average post-extrude FPS the same way to cancel out
+                    # pulse noise on the measurement side too.
+                    post_samples = []
+                    for _ in range(fps_sample_count):
+                        post_samples.append(buf.smoothed_fps)
+                        afc.reactor.pause(
+                            afc.reactor.monotonic() + fps_sample_interval
+                        )
+                    post_fps = sum(post_samples) / len(post_samples)
                     fps_drop = pre_fps - post_fps
-
-                    # Re-enable feed-assist now that measurement is done.
-                    if fa_was_active:
-                        try:
-                            self._ace.start_feed_assist(local_slot)
-                            self._feed_assist_active.add(local_slot)
-                        except Exception:
-                            pass
 
                     if not buf.advance_state or fps_drop >= min_engage_drop:
                         # Either FPS dropped to neutral, or we saw a
@@ -1581,7 +1579,8 @@ class afcACE(afcUnit):
                             f"{pre_fps:.3f} → {post_fps:.3f} "
                             f"(drop={fps_drop:.3f}, need {min_engage_drop}) "
                             f"on attempt {attempt} — filament not engaged, "
-                            f"ACE unwind {pullback_mm}mm then re-feed"
+                            f"ACE unwind {pullback_mm}mm then re-feed, "
+                            f"post_samples={[f'{s:.3f}' for s in post_samples]}"
                         )
                         # 1. Unwind to pull filament back
                         self._wait_for_ace_ready()
