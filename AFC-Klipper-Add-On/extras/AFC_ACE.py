@@ -1513,12 +1513,28 @@ class afcACE(afcUnit):
 
                 for attempt in range(1, max_engage_attempts + 1):
                     buf = cur_lane.buffer_obj
+
+                    # Pause feed-assist for the measurement window so the
+                    # ACE feed pulses don't mask the FPS drop from the
+                    # extruder actually pulling filament.
+                    fa_was_active = local_slot in self._feed_assist_active
+                    if fa_was_active:
+                        try:
+                            self._ace.stop_feed_assist(local_slot)
+                            self._feed_assist_active.discard(local_slot)
+                        except Exception:
+                            pass
+                        # Let FPS settle to a neutral baseline after
+                        # feed-assist stops pushing filament.
+                        afc.reactor.pause(afc.reactor.monotonic() + 0.5)
+
                     pre_fps = buf.smoothed_fps
                     self.logger.info(
                         f"ACE engagement check: extruding {half_stn:.1f}mm "
                         f"@ {cur_extruder.tool_load_speed}mm/s "
                         f"(attempt {attempt}/{max_engage_attempts}, "
-                        f"pre_fps={pre_fps:.3f})"
+                        f"pre_fps={pre_fps:.3f}, "
+                        f"feed-assist paused={fa_was_active})"
                     )
                     afc.move_e_pos(
                         half_stn, cur_extruder.tool_load_speed,
@@ -1526,9 +1542,16 @@ class afcACE(afcUnit):
                     )
                     # Check immediately — no pause.  The extrude took ~2-3s
                     # which is enough for the EMA to reflect the pull.
-                    # Any delay lets feed-assist re-fill the buffer.
                     post_fps = buf.smoothed_fps
                     fps_drop = pre_fps - post_fps
+
+                    # Re-enable feed-assist now that measurement is done.
+                    if fa_was_active:
+                        try:
+                            self._ace.start_feed_assist(local_slot)
+                            self._feed_assist_active.add(local_slot)
+                        except Exception:
+                            pass
 
                     if not buf.advance_state or fps_drop >= min_engage_drop:
                         # Either FPS dropped to neutral, or we saw a
