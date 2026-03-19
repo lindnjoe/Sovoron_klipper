@@ -1482,13 +1482,71 @@ class afcACE(afcUnit):
 
         # Push filament into the nozzle using tool_stn distance
         if cur_extruder.tool_stn:
-            self.logger.info(
-                f"ACE load: advancing {cur_extruder.tool_stn}mm into nozzle "
-                f"@ {cur_extruder.tool_load_speed}mm/s"
-            )
-            afc.move_e_pos(
-                cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn"
-            )
+            if cur_extruder.tool_start_is_buffer and cur_lane.buffer_obj is not None:
+                # Pre-engagement check: extrude half of tool_stn, then verify
+                # the FPS buffer is still advanced (compressed).  If it dropped
+                # to neutral the filament slipped past the extruder gears.
+                half_stn = cur_extruder.tool_stn / 2.0
+                max_engage_attempts = 3
+                engaged = False
+
+                for attempt in range(1, max_engage_attempts + 1):
+                    self.logger.info(
+                        f"ACE engagement check: extruding {half_stn:.1f}mm "
+                        f"@ {cur_extruder.tool_load_speed}mm/s "
+                        f"(attempt {attempt}/{max_engage_attempts})"
+                    )
+                    afc.move_e_pos(
+                        half_stn, cur_extruder.tool_load_speed,
+                        "engagement check"
+                    )
+                    # Let ADC smoothing settle
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.5)
+
+                    buf = cur_lane.buffer_obj
+                    if buf.advance_state:
+                        self.logger.info(
+                            f"ACE engagement check: FPS still advanced "
+                            f"(fps={buf.smoothed_fps:.3f}), filament engaged"
+                        )
+                        # Finish the remaining half
+                        afc.move_e_pos(
+                            half_stn, cur_extruder.tool_load_speed, "tool stn"
+                        )
+                        engaged = True
+                        break
+                    else:
+                        self.logger.warning(
+                            f"ACE engagement check: FPS dropped to "
+                            f"{buf.last_state} (fps={buf.smoothed_fps:.3f}) "
+                            f"on attempt {attempt} — filament not engaged, "
+                            f"pulling back 50mm"
+                        )
+                        afc.move_e_pos(
+                            -50.0, cur_extruder.tool_load_speed,
+                            "engagement retry pullback"
+                        )
+                        afc.reactor.pause(afc.reactor.monotonic() + 0.3)
+
+                if not engaged:
+                    message = (
+                        f"ACE load: filament failed to engage extruder "
+                        f"after {max_engage_attempts} attempts for "
+                        f"{cur_lane.name}.\n"
+                        f"To resolve, set lane loaded with "
+                        f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                    )
+                    afc.error.handle_lane_failure(cur_lane, message)
+                    return False
+            else:
+                self.logger.info(
+                    f"ACE load: advancing {cur_extruder.tool_stn}mm into nozzle "
+                    f"@ {cur_extruder.tool_load_speed}mm/s"
+                )
+                afc.move_e_pos(
+                    cur_extruder.tool_stn, cur_extruder.tool_load_speed,
+                    "tool stn"
+                )
 
         cur_lane.set_tool_loaded()
         cur_lane.enable_buffer(disable_fault=True)
