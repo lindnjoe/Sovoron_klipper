@@ -1370,10 +1370,24 @@ class afcACE(afcUnit):
         # Verify toolhead sensor triggered
         if cur_extruder.tool_start_is_buffer and cur_lane.buffer_obj is not None:
             # Buffer/ramming mode: buffer's advance_state is the sensor.
-            # Retract off the buffer sensor to confirm load and reset buffer.
-            # ACE lanes have no lane stepper, so use move_e_pos (extruder motor)
-            # instead of move_advanced for the retract moves.
+            # First verify the buffer IS compressed (filament reached it).
+            # Then retract off the buffer sensor to confirm load and reset
+            # buffer.  ACE lanes have no lane stepper, so use move_e_pos
+            # (extruder motor) instead of move_advanced for the retract moves.
             try:
+                if not cur_lane.get_toolhead_pre_sensor_state():
+                    # FPS never went high — filament did not reach the
+                    # buffer.  This typically means a jam upstream.
+                    message = (
+                        f"FPS buffer '{cur_lane.buffer_obj.name}' did not "
+                        f"detect filament after feed for {cur_lane.name}. "
+                        f"Filament may be jammed or did not reach the buffer.\n"
+                        f"To resolve, set lane loaded with "
+                        f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                    )
+                    afc.error.handle_lane_failure(cur_lane, message)
+                    return False
+
                 load_checks = 0
                 while cur_lane.get_toolhead_pre_sensor_state():
                     afc.move_e_pos(
@@ -1525,6 +1539,26 @@ class afcACE(afcUnit):
 
         cur_lane.set_tool_loaded()
         cur_lane.enable_buffer(disable_fault=True)
+
+        # Post-load FPS verification: after the buffer is enabled, confirm the
+        # FPS actually detects filament.  If the FPS is still in the trailing
+        # zone (low reading) the filament never reached the buffer — likely a
+        # jam upstream.  This catches the case where tool_start_is_buffer is
+        # False so the earlier buffer-compression check was skipped.
+        buf = cur_lane.buffer_obj
+        if buf is not None and hasattr(buf, 'buffer_trailing_triggered'):
+            # Brief pause so the ADC smoothing can settle after enable.
+            afc.reactor.pause(afc.reactor.monotonic() + 0.5)
+            if buf.buffer_trailing_triggered:
+                message = (
+                    f"FPS buffer '{buf.name}' still reads LOW after loading "
+                    f"{cur_lane.name} — filament may be jammed or did not "
+                    f"reach the buffer.\n"
+                    f"To resolve, set lane loaded with "
+                    f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                )
+                afc.error.handle_lane_failure(cur_lane, message)
+                return False
 
         # Ensure feed assist is running while filament is loaded.
         # _feed_slot starts it during phase 3, but if the sensor triggered
