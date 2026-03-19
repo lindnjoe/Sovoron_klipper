@@ -898,16 +898,22 @@ class afcAMS(afcUnit):
         finally:
             afc._oams_suppress_tool_swap_timer = False
 
-        if not cur_lane.get_toolhead_pre_sensor_state():
-            message = (
-                "OpenAMS load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n"
-                "||=====||====||==>--||\nTRG   LOAD   HUB   TOOL"
-            )
-            message += "\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.".format(cur_lane.name)
-            if afc.function.in_print():
-                message += "\nOnce filament is fully loaded click resume to continue printing"
-            afc.error.handle_lane_failure(cur_lane, message)
-            return False
+        # OpenAMS reads FPS directly from hardware and has its own
+        # engagement verification, clog and stuck spool detection inside
+        # oams_manager.  AFC's buffer logic (advance_state / trailing_state)
+        # does not apply.  If tool_start is FPS-based, trust the manager
+        # result.  Only check a physical GPIO sensor here.
+        if not cur_extruder.tool_start_is_buffer:
+            if not cur_lane.get_toolhead_pre_sensor_state():
+                message = (
+                    "OpenAMS load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n"
+                    "||=====||====||==>--||\nTRG   LOAD   HUB   TOOL"
+                )
+                message += "\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.".format(cur_lane.name)
+                if afc.function.in_print():
+                    message += "\nOnce filament is fully loaded click resume to continue printing"
+                afc.error.handle_lane_failure(cur_lane, message)
+                return False
 
         cur_lane.set_tool_loaded()
         afc.save_vars()
@@ -3656,10 +3662,11 @@ class afcAMS(afcUnit):
             return
 
         if hub_val != getattr(lane, "loaded_to_hub", False):
-            hub.switch_pin_callback(eventtime, hub_val)
-            # Update lane.loaded_to_hub to match hub sensor state
-            # This field is reported to Mainsail via lane.get_status()
-            # Without this, Mainsail shows stale hub status even when hardware sensor is correct
+            if hasattr(hub, "switch_pin_callback"):
+                hub.switch_pin_callback(eventtime, hub_val)
+            else:
+                # Lambda fallback hub — update .state directly
+                hub.state = hub_val
             lane.loaded_to_hub = hub_val
             fila = getattr(hub, "fila", None)
             if fila is not None:
@@ -3712,6 +3719,8 @@ class afcAMS(afcUnit):
                             try:
                                 if hasattr(hub_obj, "switch_pin_callback"):
                                     hub_obj.switch_pin_callback(eventtime, hw_hub)
+                                else:
+                                    hub_obj.state = hw_hub
                                 fila = getattr(hub_obj, "fila", None)
                                 if fila is not None and hasattr(fila, "runout_helper"):
                                     fila.runout_helper.note_filament_present(eventtime, hw_hub)
@@ -3896,6 +3905,8 @@ class afcAMS(afcUnit):
                     if hub_obj is not None:
                         if hasattr(hub_obj, "switch_pin_callback"):
                             hub_obj.switch_pin_callback(eventtime, hub_state)
+                        else:
+                            hub_obj.state = hub_state
                         fila = getattr(hub_obj, "fila", None)
                         if fila is not None and hasattr(fila, "runout_helper"):
                             fila.runout_helper.note_filament_present(eventtime, hub_state)
