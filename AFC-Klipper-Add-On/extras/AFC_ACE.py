@@ -1521,16 +1521,23 @@ class afcACE(afcUnit):
                         engaged = True
                         break
                     else:
-                        # Still advanced — filament bunching up, not grabbed
+                        # Still advanced — filament bunching up, not grabbed.
+                        # Use ACE serial command to retract; the extruder
+                        # motor alone cannot pull back against the feeder.
+                        pullback_mm = 50.0
+                        retract_spd = self._quiet_speed(self.retract_speed)
                         self.logger.warning(
                             f"ACE engagement check: FPS still advanced "
                             f"(fps={buf.smoothed_fps:.3f}) "
                             f"on attempt {attempt} — filament not engaged, "
-                            f"pulling back 50mm"
+                            f"ACE unwind {pullback_mm}mm"
                         )
-                        afc.move_e_pos(
-                            -50.0, cur_extruder.tool_load_speed,
-                            "engagement retry pullback"
+                        self._wait_for_ace_ready()
+                        self._ace.unwind_filament(
+                            local_slot, pullback_mm, retract_spd
+                        )
+                        self._wait_for_feed_complete(
+                            local_slot, pullback_mm, retract_spd
                         )
                         afc.reactor.pause(afc.reactor.monotonic() + 0.3)
 
