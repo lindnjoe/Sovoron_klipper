@@ -1369,48 +1369,36 @@ class afcACE(afcUnit):
 
         # Verify toolhead sensor triggered
         if cur_extruder.tool_start_is_buffer and cur_lane.buffer_obj is not None:
-            # Buffer/ramming mode: buffer's advance_state is the sensor.
-            # First verify the buffer IS compressed (filament reached it).
-            # Then retract off the buffer sensor to confirm load and reset
-            # buffer.  ACE lanes have no lane stepper, so use move_e_pos
-            # (extruder motor) instead of move_advanced for the retract moves.
-            try:
-                if not cur_lane.get_toolhead_pre_sensor_state():
-                    # FPS never went high — filament did not reach the
-                    # buffer.  This typically means a jam upstream.
-                    message = (
-                        f"FPS buffer '{cur_lane.buffer_obj.name}' did not "
-                        f"detect filament after feed for {cur_lane.name}. "
-                        f"Filament may be jammed or did not reach the buffer.\n"
-                        f"To resolve, set lane loaded with "
-                        f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                    )
-                    afc.error.handle_lane_failure(cur_lane, message)
-                    return False
-
-                load_checks = 0
-                while cur_lane.get_toolhead_pre_sensor_state():
-                    afc.move_e_pos(
-                        cur_lane.short_move_dis * -1,
-                        cur_extruder.tool_unload_speed,
-                        "Buffer decompress", wait_tool=True
-                    )
-                    load_checks += 1
-                    afc.reactor.pause(afc.reactor.monotonic() + 0.1)
-                    if load_checks > afc.tool_max_load_checks:
-                        message = (
-                            f"Buffer did not decompress after {afc.tool_max_load_checks} "
-                            f"retract moves. Check filament path and buffer.\n"
-                            f"To resolve, set lane loaded with "
-                            f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                        )
-                        afc.error.handle_lane_failure(cur_lane, message)
-                        return False
-            except Exception as e:
-                message = f"ACE buffer load check failed for {cur_lane.name}: {e}"
-                self.logger.error(f"{message}\n{traceback.format_exc()}")
+            # FPS buffer verification for ACE.
+            #
+            # The FPS is pressure-based: it only reads high while the ACE
+            # motor is actively pushing filament.  Once feeding stops the
+            # pressure drops and buffer_obj.advance_state goes False even
+            # though filament IS present.
+            #
+            # The ACE's _fps_adc_callback handles this with a latch:
+            # tool_start_state is set True when the FPS crosses the load
+            # threshold during the feed operation and stays True until the
+            # latch is explicitly cleared.  So we check the latched
+            # tool_start_state here, NOT advance_state.
+            #
+            # There is no physical buffer to "decompress" with FPS — the
+            # retract-until-sensor-clears loop used for turtleneck buffers
+            # does not apply.
+            if not cur_extruder.tool_start_state:
+                message = (
+                    f"FPS buffer '{cur_lane.buffer_obj.name}' did not "
+                    f"detect filament after feed for {cur_lane.name}. "
+                    f"Filament may be jammed or did not reach the buffer.\n"
+                    f"To resolve, set lane loaded with "
+                    f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
+                )
                 afc.error.handle_lane_failure(cur_lane, message)
                 return False
+            self.logger.info(
+                f"ACE FPS verification passed for {cur_lane.name} "
+                f"(tool_start_state latched True)"
+            )
         elif cur_extruder.tool_start:
             # Standard toolhead sensor verification with retry.
             # When home_to_tool is active, scale retries using
