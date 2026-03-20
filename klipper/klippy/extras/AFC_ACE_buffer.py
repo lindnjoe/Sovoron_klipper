@@ -12,11 +12,11 @@
 # and satisfies the buffer interface so AFC's lane/load logic works without
 # an external FPS or TurtleNeck sensor.
 #
-# feed_assist_count semantics:
+# feed_assist_count semantics (higher = more pressure against extruder):
 #   0       -> no filament pressure / empty / stuck
-#   1-5     -> trailing zone (buffer stretched, spool not feeding fast enough)
-#   6       -> neutral (balanced)
-#   7-11    -> advancing zone (buffer compressed, filament pressing extruder)
+#   1-3     -> trailing zone (filament present, light pressure)
+#   4-6     -> neutral / at toolhead (default tool_start_threshold = 4)
+#   7-11    -> advancing zone (buffer compressed, significant pressure)
 #   12      -> fully compressed against extruder gears
 #
 # Config example:
