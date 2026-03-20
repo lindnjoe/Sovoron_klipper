@@ -281,6 +281,8 @@ class AFCExtruder:
                 self.logger.info("Setting up as buffer")
             elif str(self.tool_start).strip().upper().startswith("FPS_"):
                 self.logger.info(f"Setting up FPS buffer as tool_start: {self.tool_start}")
+            elif str(self.tool_start).strip().upper().startswith("ACE_BUFFER"):
+                self.logger.info(f"Setting up ACE buffer as tool_start: {self.tool_start}")
             else:
                 buttons.register_buttons([self.tool_start], self.tool_start_callback)
                 self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
