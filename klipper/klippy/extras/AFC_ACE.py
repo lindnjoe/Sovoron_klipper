@@ -107,7 +107,7 @@ class afcACE(afcUnit):
 
         # Hub distance: slot-to-hub/combiner distance.  Used for two-phase
         # loading (prep_post_load feeds to hub, load_sequence feeds hub-to-toolhead).
-        # Default 200mm is a safe starting point; calibrate with ACE_CALIBRATE_HUB.
+        # Default 200mm is a safe starting point; calibrate via AFC_CALIBRATION menu.
         self.dist_hub = config.getfloat("dist_hub", 200.0)             # mm
 
         # load_to_hub: unit-level override.  Inherits from AFC global if not set.
@@ -4079,11 +4079,6 @@ class afcACE(afcUnit):
             desc="Refresh RFID/spool inventory from ACE hardware",
         )
         self.gcode.register_mux_command(
-            "ACE_CALIBRATE", "UNIT", self.name,
-            self.cmd_ACE_CALIBRATE,
-            desc="Calibrate ACE per-lane bowden length by feeding until toolhead sensor triggers",
-        )
-        self.gcode.register_mux_command(
             "ACE_CALIBRATE_HUB", "UNIT", self.name,
             self.cmd_ACE_CALIBRATE_HUB,
             desc="Calibrate ACE dist_hub by feeding until hub sensor triggers",
@@ -4323,40 +4318,6 @@ class afcACE(afcUnit):
 
         self.afc.save_vars()
         gcmd.respond_info(f"ACE lane reset: {lane_name} retracted successfully")
-
-    def cmd_ACE_CALIBRATE(self, gcmd):
-        """Calibrate per-lane bowden length by feeding until toolhead sensor triggers.
-
-        Feeds filament from the specified lane's ACE slot in small increments,
-        checking the toolhead sensor between each step. Saves the measured
-        feed_length and retract_length to the lane's config section.
-
-        Usage: ACE_CALIBRATE UNIT=<name> LANE=<lane_name>
-        """
-        if self._ace is None or not self._ace.connected:
-            gcmd.respond_info(f"ACE {self.name}: not connected")
-            return
-
-        lane_name = gcmd.get("LANE", default=None)
-        if lane_name is None:
-            gcmd.respond_info("ACE_CALIBRATE requires LANE=<lane_name>")
-            return
-
-        cur_lane = self.lanes.get(lane_name)
-        if cur_lane is None:
-            # Try looking up from AFC global lanes
-            cur_lane = self.afc.lanes.get(lane_name)
-        if cur_lane is None:
-            gcmd.respond_info(f"Lane '{lane_name}' not found")
-            return
-
-        gcmd.respond_info(
-            f"ACE {self.name}: starting lane calibration for {lane_name}...\n"
-            f"Feeding in {self.calibration_step}mm steps"
-        )
-
-        success, msg, distance = self.calibrate_lane(cur_lane, 0)
-        gcmd.respond_info(msg)
 
     def cmd_ACE_CALIBRATE_HUB(self, gcmd):
         """Calibrate dist_hub by feeding until hub sensor triggers.
