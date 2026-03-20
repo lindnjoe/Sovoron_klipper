@@ -1399,15 +1399,34 @@ class afcACE(afcUnit):
         # Verify toolhead sensor triggered
         if self._ace_buffer_obj is not None:
             # ACE internal buffer verification.
-            # feed_assist_count is updated from get_status during
-            # _wait_for_feed_complete.  Check if the count indicates
-            # filament reached the extruder.
-            if not self._ace_buffer_obj.tool_start_triggered:
+            #
+            # After feed completes the ACE needs time to build pressure
+            # and update feed_assist_count.  Poll status for up to ~6s
+            # waiting for the count to cross tool_start_threshold.
+            ace_buf = self._ace_buffer_obj
+            detected = ace_buf.tool_start_triggered
+            if not detected and self._ace is not None:
+                for _ in range(12):  # up to ~6s (12 × 0.5s)
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.5)
+                    try:
+                        hw = self._ace.get_status(timeout=2.0)
+                        if isinstance(hw, dict):
+                            self._update_ace_buffer_count(hw)
+                    except Exception:
+                        pass
+                    if ace_buf.tool_start_triggered:
+                        detected = True
+                        break
+                    self.logger.debug(
+                        f"ACE buffer wait: feed_assist_count="
+                        f"{ace_buf.feed_assist_count}, waiting..."
+                    )
+            if not detected:
                 message = (
-                    f"ACE buffer '{self._ace_buffer_obj.name}' did not "
+                    f"ACE buffer '{ace_buf.name}' did not "
                     f"detect filament at toolhead after feed for "
                     f"{cur_lane.name} (feed_assist_count="
-                    f"{self._ace_buffer_obj.feed_assist_count}).\n"
+                    f"{ace_buf.feed_assist_count}).\n"
                     f"To resolve, set lane loaded with "
                     f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
                 )
@@ -1415,8 +1434,7 @@ class afcACE(afcUnit):
                 return False
             self.logger.info(
                 f"ACE buffer verification passed for {cur_lane.name} "
-                f"(feed_assist_count="
-                f"{self._ace_buffer_obj.feed_assist_count})"
+                f"(feed_assist_count={ace_buf.feed_assist_count})"
             )
         elif cur_extruder.tool_start_is_buffer and cur_lane.buffer_obj is not None:
             # FPS buffer verification for ACE.
