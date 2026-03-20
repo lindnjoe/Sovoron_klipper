@@ -2376,7 +2376,8 @@ class OAMSManager:
 
             oams_name = getattr(unit_obj, "oams_name", None)
             if not oams_name:
-                self.logger.warning(f"Unit {base_unit_name} has no oams_name")
+                # Non-OpenAMS units (ACE, BoxTurtle, etc.) don't have
+                # oams_name — skip silently, they're not our concern.
                 continue
 
             # Find OAMS object - check both short and prefixed names
@@ -3460,10 +3461,9 @@ class OAMSManager:
 
                 continue
 
-            # Check unit has OAMS name
+            # Check unit has OAMS name (skip non-OpenAMS units silently)
             oams_name = getattr(unit_obj, "oams_name", None)
             if not oams_name:
-                issues.append(f"AFC unit {base_unit_name} has no oams_name defined")
 
                 continue
 
@@ -4260,8 +4260,8 @@ class OAMSManager:
 
         oams_name = getattr(unit_obj, "oams_name", None)
         if not oams_name:
-            self.logger.error(f"Unit {base_unit_name} has no oams_name")
-            self._pause_printer_message(f"Unit {base_unit_name} has no OAMS", active_oams)
+            # Non-OpenAMS unit — not managed by oams_manager
+            self.logger.debug(f"Unit {base_unit_name} has no oams_name, skipping")
             if monitor:
                 monitor.paused()
             return
@@ -5276,7 +5276,7 @@ class OAMSManager:
 
         oams_name = getattr(unit_obj, "oams_name", None)
         if not oams_name:
-            return False, f"Unit {base_unit_name} has no oams_name defined"
+            return False, f"Unit {base_unit_name} is not an OpenAMS unit"
 
         # Find the OAMS object
         # OAMS objects are stored with full name like "oams oams1", not just "oams1"
