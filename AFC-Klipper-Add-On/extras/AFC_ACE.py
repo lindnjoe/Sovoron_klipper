@@ -1547,8 +1547,31 @@ class afcACE(afcUnit):
                 fps_sample_count = 5
                 fps_sample_interval = 0.1  # seconds between samples
 
+                # Wait for FPS to settle after load before taking baseline.
+                # Right after feed completes the FPS is saturated from feed
+                # assist pressure; polling until it stabilises avoids a
+                # false-negative on the first engagement attempt.
+                buf = cur_lane.buffer_obj
+                settle_timeout = 5.0  # seconds
+                settle_interval = 0.25
+                settle_threshold = 0.03  # max change between reads
+                settle_start = afc.reactor.monotonic()
+                prev_fps = buf.smoothed_fps
+                while (afc.reactor.monotonic() - settle_start) < settle_timeout:
+                    afc.reactor.pause(
+                        afc.reactor.monotonic() + settle_interval
+                    )
+                    cur_fps = buf.smoothed_fps
+                    if abs(cur_fps - prev_fps) <= settle_threshold:
+                        break
+                    prev_fps = cur_fps
+                self.logger.debug(
+                    f"ACE engagement check: FPS settled to "
+                    f"{buf.smoothed_fps:.3f} after "
+                    f"{afc.reactor.monotonic() - settle_start:.1f}s"
+                )
+
                 for attempt in range(1, max_engage_attempts + 1):
-                    buf = cur_lane.buffer_obj
 
                     # Average FPS over several samples to smooth out ACE
                     # feed-assist pulse noise that can mask the real signal.
