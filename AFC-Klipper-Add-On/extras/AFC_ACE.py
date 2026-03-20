@@ -1422,6 +1422,43 @@ class afcACE(afcUnit):
                         f"{ace_buf.feed_assist_count}, waiting..."
                     )
             if not detected:
+                # Before erroring, check if count is still rising — filament
+                # may have engaged but the ACE is still building pressure.
+                prev_count = ace_buf.feed_assist_count
+                if prev_count > 0 and self._ace is not None:
+                    self.logger.info(
+                        f"ACE buffer count {prev_count} below threshold "
+                        f"{ace_buf.tool_start_threshold}, checking if "
+                        f"still rising for {cur_lane.name}..."
+                    )
+                    for _ in range(10):  # up to ~5s more (10 × 0.5s)
+                        afc.reactor.pause(
+                            afc.reactor.monotonic() + 0.5
+                        )
+                        try:
+                            hw = self._ace.get_status(timeout=2.0)
+                            if isinstance(hw, dict):
+                                self._update_ace_buffer_count(hw)
+                        except Exception:
+                            pass
+                        new_count = ace_buf.feed_assist_count
+                        if ace_buf.tool_start_triggered:
+                            detected = True
+                            break
+                        if new_count > prev_count:
+                            self.logger.debug(
+                                f"ACE buffer rising: {prev_count} -> "
+                                f"{new_count}, continuing to wait..."
+                            )
+                            prev_count = new_count
+                        else:
+                            # Count stalled or dropped — stop waiting
+                            self.logger.debug(
+                                f"ACE buffer stalled at {new_count}, "
+                                f"giving up"
+                            )
+                            break
+            if not detected:
                 message = (
                     f"ACE buffer '{ace_buf.name}' did not "
                     f"detect filament at toolhead after feed for "
