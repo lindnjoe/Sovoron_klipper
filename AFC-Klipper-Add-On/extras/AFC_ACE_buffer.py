@@ -13,10 +13,9 @@
 # an external FPS or TurtleNeck sensor.
 #
 # feed_assist_count semantics (higher = more pressure against extruder):
-#   0       -> no filament at extruder / empty / stuck
-#   1       -> filament is at the extruder (minimal pressure)
-#   2-5     -> trailing zone (light pressure, spool feeding slowly)
-#   6       -> neutral (balanced)
+#   0       -> no filament pressure / empty / stuck
+#   1-3     -> trailing zone (filament present, light pressure)
+#   4-6     -> neutral / at toolhead (default tool_start_threshold = 4)
 #   7-11    -> advancing zone (buffer compressed, significant pressure)
 #   12      -> fully compressed against extruder gears
 #
@@ -70,10 +69,10 @@ class AFCACEBuffer:
         self.trailing_threshold = config.getint(
             'trailing_threshold', 2, minval=0, maxval=11
         )
-        # Count at or above which we consider filament is at the toolhead.
-        # Any non-zero count means filament is at the extruder — default 1.
+        # Count at or above which we consider filament is at the toolhead
+        # (replaces tool_start sensor)
         self.tool_start_threshold = config.getint(
-            'tool_start_threshold', 1, minval=1, maxval=12
+            'tool_start_threshold', 4, minval=1, maxval=12
         )
 
         # Current raw count from ACE hardware
