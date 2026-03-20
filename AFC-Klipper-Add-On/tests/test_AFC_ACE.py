@@ -77,6 +77,15 @@ def _make_ace(name="ACE_1", mode=MODE_COMBINED):
     unit._fps_extruder = None
     unit._fps_runout_helper = None
     unit._fps_latched = False
+    unit._ace_buffer_obj = None
+    unit._stuck_spool_trigger_time = {}
+    unit._stuck_spool_load_time = {}
+    unit._stuck_spool_active = set()
+    unit._STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
+    unit._STUCK_SPOOL_PRESSURE_CLEAR = 0.12
+    unit._STUCK_SPOOL_DWELL = 2.0
+    unit._STUCK_SPOOL_LOAD_GRACE = 8.0
+    unit.stuck_spool_auto_recovery = False
     unit.poll_interval = 1.0
     unit.baud_rate = 115200
     unit._ace = None

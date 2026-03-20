@@ -344,14 +344,16 @@ class AFCExtruder:
 
     @property
     def tool_start_is_buffer(self):
-        """True when pin_tool_start uses a buffer (TN or FPS) instead of a GPIO sensor.
+        """True when pin_tool_start uses a buffer (TN, FPS, or ACE) instead of a GPIO sensor.
 
-        Matches 'buffer' or 'FPS_<name>'.
+        Matches 'buffer', 'FPS_<name>', or 'ACE_buffer<name>'.
         """
         if self.tool_start is None:
             return False
         ts = str(self.tool_start).strip()
-        return ts == "buffer" or ts.upper().startswith("FPS_")
+        return (ts == "buffer"
+                or ts.upper().startswith("FPS_")
+                or ts.upper().startswith("ACE_BUFFER"))
 
     def check_lanes(self):
         # Checks to see if there are multiple lanes per toolhead, remove self created lane if

@@ -456,13 +456,13 @@ class AFCLane:
 
         raises error if buffer is not found
         """
-        for prefix in ("AFC_buffer", "AFC_FPS"):
+        for prefix in ("AFC_buffer", "AFC_FPS", "AFC_ACE_buffer"):
             try:
                 self.buffer_obj = self.printer.load_object(self._config, "{} {}".format(prefix, self.buffer_name))
                 return
             except Exception:
                 pass
-        error_string = 'Error: No config found for buffer: {buffer} in [{stepper}]. Please make sure [AFC_buffer {buffer}] or [AFC_FPS {buffer}] section exists in your config'.format(
+        error_string = 'Error: No config found for buffer: {buffer} in [{stepper}]. Please make sure [AFC_buffer {buffer}], [AFC_FPS {buffer}], or [AFC_ACE_buffer {buffer}] section exists in your config'.format(
             buffer=self.buffer_name, stepper=self.fullname )
         raise error(error_string)
 
