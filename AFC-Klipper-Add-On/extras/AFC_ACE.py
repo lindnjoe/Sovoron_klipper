@@ -1521,153 +1521,50 @@ class afcACE(afcUnit):
             if (self.engagement_check
                     and cur_extruder.tool_start_is_buffer
                     and cur_lane.buffer_obj is not None):
-                # Pre-engagement check: extrude half of tool_stn, then verify
-                # the extruder is actually pulling filament through the buffer.
-                #
-                # Feed-assist must stay running — stopping it relieves buffer
-                # pressure and the FPS drops to neutral regardless of whether
-                # the extruder grabbed the filament (false positive).
-                #
-                # With feed-assist on, use a *relative* FPS drop instead of
-                # an absolute threshold: record FPS before the extrude, check
-                # immediately after (no pause — any delay lets feed-assist
-                # re-fill the buffer).  If the extruder is pulling, FPS drops
-                # even slightly.  If filament bunched without engaging, FPS
-                # stays the same or rises.
-                half_stn = cur_extruder.tool_stn / 2.0
-                max_engage_attempts = 3
-                engaged = False
-                # Minimum FPS drop to confirm engagement.  Any noticeable
-                # drop means the extruder is pulling filament through the
-                # buffer faster than feed-assist pushes it in.
-                min_engage_drop = 0.02
-
-                # Number of FPS samples and interval used to average out
-                # ACE feed-assist pulse noise before/after the extrude.
-                fps_sample_count = 5
-                fps_sample_interval = 0.1  # seconds between samples
-
-                # Wait for FPS to settle after load before taking baseline.
-                # Right after feed completes the FPS is saturated from feed
-                # assist pressure; polling until it stabilises avoids a
-                # false-negative on the first engagement attempt.
                 buf = cur_lane.buffer_obj
-                settle_timeout = 5.0  # seconds
-                settle_interval = 0.25
-                settle_threshold = 0.03  # max change between reads
-                settle_start = afc.reactor.monotonic()
+
+                # Wait for FPS to be above 0.5 and rising — feed-assist
+                # is pushing filament into the buffer and it's ready.
+                wait_timeout = 5.0
+                wait_start = afc.reactor.monotonic()
                 prev_fps = buf.smoothed_fps
-                while (afc.reactor.monotonic() - settle_start) < settle_timeout:
-                    afc.reactor.pause(
-                        afc.reactor.monotonic() + settle_interval
-                    )
+                ready = False
+                while (afc.reactor.monotonic() - wait_start) < wait_timeout:
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.25)
                     cur_fps = buf.smoothed_fps
-                    if abs(cur_fps - prev_fps) <= settle_threshold:
+                    if cur_fps > 0.5 and cur_fps >= prev_fps:
+                        ready = True
                         break
                     prev_fps = cur_fps
-                self.logger.debug(
-                    f"ACE engagement check: FPS settled to "
-                    f"{buf.smoothed_fps:.3f} after "
-                    f"{afc.reactor.monotonic() - settle_start:.1f}s"
+
+                if not ready:
+                    self.logger.warning(
+                        f"ACE engagement: FPS never reached ready state "
+                        f"(last={buf.smoothed_fps:.3f}), proceeding anyway"
+                    )
+
+                self.logger.info(
+                    f"ACE engagement: FPS ready at {buf.smoothed_fps:.3f}, "
+                    f"extruding full tool_stn {cur_extruder.tool_stn:.1f}mm"
                 )
 
-                for attempt in range(1, max_engage_attempts + 1):
+                # Extrude full tool_stn — if extruder grabs the filament
+                # the FPS will drop as it pulls through the buffer.
+                afc.move_e_pos(
+                    cur_extruder.tool_stn, cur_extruder.tool_load_speed,
+                    "tool stn"
+                )
 
-                    # Average FPS over several samples to smooth out ACE
-                    # feed-assist pulse noise that can mask the real signal.
-                    pre_samples = []
-                    for _ in range(fps_sample_count):
-                        pre_samples.append(buf.smoothed_fps)
-                        afc.reactor.pause(
-                            afc.reactor.monotonic() + fps_sample_interval
-                        )
-                    pre_fps = sum(pre_samples) / len(pre_samples)
-
+                # Check: FPS below 0.6 means extruder is pulling filament
+                post_fps = buf.smoothed_fps
+                if post_fps < 0.6:
                     self.logger.info(
-                        f"ACE engagement check: extruding {half_stn:.1f}mm "
-                        f"@ {cur_extruder.tool_load_speed}mm/s "
-                        f"(attempt {attempt}/{max_engage_attempts}, "
-                        f"pre_fps={pre_fps:.3f}, "
-                        f"samples={[f'{s:.3f}' for s in pre_samples]})"
+                        f"ACE engagement: confirmed, post_fps={post_fps:.3f}"
                     )
-                    afc.move_e_pos(
-                        half_stn, cur_extruder.tool_load_speed,
-                        "engagement check"
-                    )
-                    # Average post-extrude FPS the same way to cancel out
-                    # pulse noise on the measurement side too.
-                    post_samples = []
-                    for _ in range(fps_sample_count):
-                        post_samples.append(buf.smoothed_fps)
-                        afc.reactor.pause(
-                            afc.reactor.monotonic() + fps_sample_interval
-                        )
-                    post_fps = sum(post_samples) / len(post_samples)
-                    fps_drop = pre_fps - post_fps
-
-                    if not buf.advance_state or fps_drop >= min_engage_drop:
-                        # Either FPS dropped to neutral, or we saw a
-                        # meaningful relative drop — extruder is pulling
-                        # filament through the buffer.
-                        self.logger.info(
-                            f"ACE engagement check: FPS "
-                            f"{pre_fps:.3f} → {post_fps:.3f} "
-                            f"(drop={fps_drop:.3f}), filament engaged"
-                        )
-                        # Finish the remaining half
-                        afc.move_e_pos(
-                            half_stn, cur_extruder.tool_load_speed, "tool stn"
-                        )
-                        engaged = True
-                        break
-                    else:
-                        # Still advanced — filament bunching up, not grabbed.
-                        # Use ACE serial commands to retract then re-feed;
-                        # the extruder motor cannot pull back against the
-                        # ACE feeder on its own.
-                        pullback_mm = 50.0
-                        retract_spd = self._quiet_speed(self.retract_speed)
-                        feed_spd = self._quiet_speed(self.feed_speed)
-                        self.logger.warning(
-                            f"ACE engagement check: FPS "
-                            f"{pre_fps:.3f} → {post_fps:.3f} "
-                            f"(drop={fps_drop:.3f}, need {min_engage_drop}) "
-                            f"on attempt {attempt} — filament not engaged, "
-                            f"ACE unwind {pullback_mm}mm then re-feed, "
-                            f"post_samples={[f'{s:.3f}' for s in post_samples]}"
-                        )
-                        # 1. Unwind to pull filament back
-                        self._wait_for_ace_ready()
-                        self._ace.unwind_filament(
-                            local_slot, pullback_mm, retract_spd
-                        )
-                        self._wait_for_feed_complete(
-                            local_slot, pullback_mm, retract_spd
-                        )
-                        afc.reactor.pause(afc.reactor.monotonic() + 0.3)
-                        # 2. Re-feed the same distance to bring filament
-                        #    back to the toolhead for the next attempt
-                        self._wait_for_ace_ready()
-                        self._ace.feed_filament(
-                            local_slot, pullback_mm, feed_spd
-                        )
-                        self._wait_for_feed_complete(
-                            local_slot, pullback_mm, feed_spd
-                        )
-                        # 3. Re-enable feed assist in case unwind disabled it
-                        if self._get_feed_assist(local_slot, cur_lane):
-                            try:
-                                self._ace.start_feed_assist(local_slot)
-                                self._feed_assist_active.add(local_slot)
-                            except Exception:
-                                pass
-                        afc.reactor.pause(afc.reactor.monotonic() + 0.3)
-
-                if not engaged:
+                else:
                     message = (
                         f"ACE load: filament failed to engage extruder "
-                        f"after {max_engage_attempts} attempts for "
-                        f"{cur_lane.name}.\n"
+                        f"for {cur_lane.name} (post_fps={post_fps:.3f}).\n"
                         f"To resolve, set lane loaded with "
                         f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
                     )
