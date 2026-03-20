@@ -1548,23 +1548,65 @@ class afcACE(afcUnit):
                     f"extruding full tool_stn {cur_extruder.tool_stn:.1f}mm"
                 )
 
-                # Extrude full tool_stn — if extruder grabs the filament
-                # the FPS will drop as it pulls through the buffer.
-                afc.move_e_pos(
-                    cur_extruder.tool_stn, cur_extruder.tool_load_speed,
-                    "tool stn"
-                )
+                max_engage_attempts = 3
+                engaged = False
 
-                # Check: FPS below 0.6 means extruder is pulling filament
-                post_fps = buf.smoothed_fps
-                if post_fps < 0.6:
+                for attempt in range(1, max_engage_attempts + 1):
                     self.logger.info(
-                        f"ACE engagement: confirmed, post_fps={post_fps:.3f}"
+                        f"ACE engagement: attempt {attempt}/{max_engage_attempts}, "
+                        f"extruding {cur_extruder.tool_stn:.1f}mm "
+                        f"(pre_fps={buf.smoothed_fps:.3f})"
                     )
-                else:
+
+                    # Extrude full tool_stn — if extruder grabs the filament
+                    # the FPS will drop as it pulls through the buffer.
+                    afc.move_e_pos(
+                        cur_extruder.tool_stn, cur_extruder.tool_load_speed,
+                        "tool stn"
+                    )
+
+                    # FPS below 0.6 means extruder is pulling filament
+                    post_fps = buf.smoothed_fps
+                    if post_fps < 0.6:
+                        self.logger.info(
+                            f"ACE engagement: confirmed, "
+                            f"post_fps={post_fps:.3f}"
+                        )
+                        engaged = True
+                        break
+
+                    # Not engaged — back off 20mm, re-feed 25mm, retry
+                    self.logger.warning(
+                        f"ACE engagement: post_fps={post_fps:.3f} >= 0.6 "
+                        f"on attempt {attempt}, backing off 20mm "
+                        f"and re-feeding 25mm"
+                    )
+                    retract_spd = self._quiet_speed(self.retract_speed)
+                    feed_spd = self._quiet_speed(self.feed_speed)
+
+                    self._wait_for_ace_ready()
+                    self._ace.unwind_filament(local_slot, 20.0, retract_spd)
+                    self._wait_for_feed_complete(local_slot, 20.0, retract_spd)
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.3)
+
+                    self._wait_for_ace_ready()
+                    self._ace.feed_filament(local_slot, 25.0, feed_spd)
+                    self._wait_for_feed_complete(local_slot, 25.0, feed_spd)
+
+                    # Re-enable feed assist in case unwind disabled it
+                    if self._get_feed_assist(local_slot, cur_lane):
+                        try:
+                            self._ace.start_feed_assist(local_slot)
+                            self._feed_assist_active.add(local_slot)
+                        except Exception:
+                            pass
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.3)
+
+                if not engaged:
                     message = (
                         f"ACE load: filament failed to engage extruder "
-                        f"for {cur_lane.name} (post_fps={post_fps:.3f}).\n"
+                        f"after {max_engage_attempts} attempts for "
+                        f"{cur_lane.name} (last post_fps={post_fps:.3f}).\n"
                         f"To resolve, set lane loaded with "
                         f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
                     )
