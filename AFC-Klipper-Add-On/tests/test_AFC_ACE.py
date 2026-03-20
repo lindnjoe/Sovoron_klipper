@@ -77,7 +77,6 @@ def _make_ace(name="ACE_1", mode=MODE_COMBINED):
     unit._fps_extruder = None
     unit._fps_runout_helper = None
     unit._fps_latched = False
-    unit._ace_buffer_obj = None
     unit._stuck_spool_trigger_time = {}
     unit._stuck_spool_load_time = {}
     unit._stuck_spool_active = set()

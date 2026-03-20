@@ -210,10 +210,6 @@ class afcACE(afcUnit):
         # Prevents re-triggering while recovery is in progress
         self._stuck_spool_active: set = set()
 
-        # Reference to AFCACEBuffer if configured (vs FPS or no buffer).
-        # Resolved in handle_connect after buffer_obj is assigned.
-        self._ace_buffer_obj = None
-
         # Sensor polling interval for status/runout monitoring
         self.poll_interval = config.getfloat("poll_interval", 1.0)
 
@@ -642,17 +638,6 @@ class afcACE(afcUnit):
             return index - 1  # Config is 1-based, ACE is 0-based
         return -1
 
-    def _update_ace_buffer_count(self, hw_status):
-        """Push feed_assist_count from ACE hardware status to the ACE buffer.
-
-        No-op if the unit isn't using an ACE buffer.
-        """
-        if self._ace_buffer_obj is None:
-            return
-        count = hw_status.get("feed_assist_count")
-        if count is not None:
-            self._ace_buffer_obj.update_count(int(count))
-
     def _disable_extruder_buffers(self, cur_extruder, cur_lane):
         """Disable any active buffers on the shared extruder from other units.
 
@@ -966,9 +951,6 @@ class afcACE(afcUnit):
             if i < self.SLOTS_PER_UNIT and isinstance(slot_data, dict):
                 self._slot_inventory[i]["status"] = slot_data.get("status", "")
 
-        # Feed ACE buffer with feed_assist_count from hardware status
-        self._update_ace_buffer_count(result)
-
         # Sync slot states and ensure lane consistency
         for lane in self.lanes.values():
             local_slot = self._get_local_slot_for_lane(lane)
@@ -1132,16 +1114,6 @@ class afcACE(afcUnit):
         # inherit the FPS object via handle_unit_connect().
         self._resolve_fps_sensor()
         super().handle_connect()
-
-        # Check if the unit's buffer is an ACE internal buffer.
-        # Import here to avoid circular imports at module level.
-        from extras.AFC_ACE_buffer import AFCACEBuffer
-        if isinstance(self.buffer_obj, AFCACEBuffer):
-            self._ace_buffer_obj = self.buffer_obj
-            self.logger.info(
-                f"ACE {self.name}: using internal ACE buffer "
-                f"'{self._ace_buffer_obj.name}'"
-            )
 
         self._register_gcode_commands()
         self._wrap_get_current_lane()
@@ -1397,83 +1369,7 @@ class afcACE(afcUnit):
             return False
 
         # Verify toolhead sensor triggered
-        if self._ace_buffer_obj is not None:
-            # ACE internal buffer verification.
-            #
-            # After feed completes the ACE needs time to build pressure
-            # and update feed_assist_count.  Poll status for up to ~6s
-            # waiting for the count to cross tool_start_threshold.
-            ace_buf = self._ace_buffer_obj
-            detected = ace_buf.tool_start_triggered
-            if not detected and self._ace is not None:
-                for _ in range(20):  # up to ~10s (20 × 0.5s)
-                    afc.reactor.pause(afc.reactor.monotonic() + 0.5)
-                    try:
-                        hw = self._ace.get_status(timeout=2.0)
-                        if isinstance(hw, dict):
-                            self._update_ace_buffer_count(hw)
-                    except Exception:
-                        pass
-                    if ace_buf.tool_start_triggered:
-                        detected = True
-                        break
-                    self.logger.debug(
-                        f"ACE buffer wait: feed_assist_count="
-                        f"{ace_buf.feed_assist_count}, waiting..."
-                    )
-            if not detected:
-                # Before erroring, check if count is still rising — filament
-                # may have engaged but the ACE is still building pressure.
-                prev_count = ace_buf.feed_assist_count
-                if prev_count > 0 and self._ace is not None:
-                    self.logger.info(
-                        f"ACE buffer count {prev_count} below threshold "
-                        f"{ace_buf.tool_start_threshold}, checking if "
-                        f"still rising for {cur_lane.name}..."
-                    )
-                    for _ in range(10):  # up to ~5s more (10 × 0.5s)
-                        afc.reactor.pause(
-                            afc.reactor.monotonic() + 0.5
-                        )
-                        try:
-                            hw = self._ace.get_status(timeout=2.0)
-                            if isinstance(hw, dict):
-                                self._update_ace_buffer_count(hw)
-                        except Exception:
-                            pass
-                        new_count = ace_buf.feed_assist_count
-                        if ace_buf.tool_start_triggered:
-                            detected = True
-                            break
-                        if new_count > prev_count:
-                            self.logger.debug(
-                                f"ACE buffer rising: {prev_count} -> "
-                                f"{new_count}, continuing to wait..."
-                            )
-                            prev_count = new_count
-                        else:
-                            # Count stalled or dropped — stop waiting
-                            self.logger.debug(
-                                f"ACE buffer stalled at {new_count}, "
-                                f"giving up"
-                            )
-                            break
-            if not detected:
-                message = (
-                    f"ACE buffer '{ace_buf.name}' did not "
-                    f"detect filament at toolhead after feed for "
-                    f"{cur_lane.name} (feed_assist_count="
-                    f"{ace_buf.feed_assist_count}).\n"
-                    f"To resolve, set lane loaded with "
-                    f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                )
-                afc.error.handle_lane_failure(cur_lane, message)
-                return False
-            self.logger.info(
-                f"ACE buffer verification passed for {cur_lane.name} "
-                f"(feed_assist_count={ace_buf.feed_assist_count})"
-            )
-        elif cur_extruder.tool_start_is_buffer and cur_lane.buffer_obj is not None:
+        if cur_extruder.tool_start_is_buffer and cur_lane.buffer_obj is not None:
             # FPS buffer verification for ACE.
             #
             # The FPS is pressure-based: it only reads high while the ACE
@@ -1624,8 +1520,7 @@ class afcACE(afcUnit):
         if cur_extruder.tool_stn:
             if (self.engagement_check
                     and cur_extruder.tool_start_is_buffer
-                    and cur_lane.buffer_obj is not None
-                    and self._ace_buffer_obj is None):
+                    and cur_lane.buffer_obj is not None):
                 # Pre-engagement check: extrude half of tool_stn, then verify
                 # the extruder is actually pulling filament through the buffer.
                 #
@@ -1780,17 +1675,11 @@ class afcACE(afcUnit):
         # jam upstream.  This catches the case where tool_start_is_buffer is
         # False so the earlier buffer-compression check was skipped.
         #
-        # Skip for ACE internal buffer — ACE hardware manages its own buffer
-        # and feed_assist_count updates asynchronously; this trailing check
-        # does not apply.
-        #
         # Feed-assist was just re-enabled and needs time to push filament
         # into the buffer, so poll over a longer window rather than failing
         # on a single low reading.
         buf = cur_lane.buffer_obj
-        if (buf is not None
-                and self._ace_buffer_obj is None
-                and hasattr(buf, 'buffer_trailing_triggered')):
+        if buf is not None and hasattr(buf, 'buffer_trailing_triggered'):
             settled = False
             for _ in range(12):  # up to ~6s (12 × 0.5s)
                 afc.reactor.pause(afc.reactor.monotonic() + 0.5)
@@ -2362,8 +2251,6 @@ class afcACE(afcUnit):
             try:
                 hw_status = ace.get_status(timeout=2.0)
                 if isinstance(hw_status, dict):
-                    # Keep ACE buffer state fresh during feed
-                    self._update_ace_buffer_count(hw_status)
                     slots = hw_status.get("slots", [])
                     if slot_index < len(slots):
                         slot_data = slots[slot_index]
@@ -3580,34 +3467,24 @@ class afcACE(afcUnit):
     # ---- Stuck Spool Detection ----
 
     def _check_stuck_spool(self, eventtime):
-        """Check for stuck spools on TOOLED lanes during printing.
-
-        Supports two detection modes:
-          - **ACE buffer**: feed_assist_count == 0 means the ACE is pulsing
-            but can't push filament.  If it stays at 0 for _STUCK_SPOOL_DWELL
-            seconds → stuck spool.  Clears when count rises above 0.
-          - **FPS buffer**: FPS pressure drops below threshold with
-            dual-threshold hysteresis (same as before).
+        """Check FPS pressure on TOOLED lanes to detect stuck spools.
 
         Called from _poll_slot_status every poll cycle during printing.
+        Uses dual-threshold hysteresis to prevent flapping:
+          - Trigger when FPS pressure drops below _STUCK_SPOOL_PRESSURE_THRESHOLD
+          - Clear when pressure rises above _STUCK_SPOOL_PRESSURE_CLEAR
+
+        The trigger must persist for _STUCK_SPOOL_DWELL seconds before acting.
         A grace period after load (_STUCK_SPOOL_LOAD_GRACE) prevents false
         positives while the buffer is settling.
         """
-        # Determine which sensor to use and read its value
-        use_ace_buffer = self._ace_buffer_obj is not None
-        if use_ace_buffer:
-            count = self._ace_buffer_obj.feed_assist_count
-            is_stuck = (count == 0)
-            is_clear = (count > 0)
-        else:
-            fps_obj = self._fps_obj
-            if fps_obj is None:
-                return
-            fps_value = fps_obj.get_fps_value()
-            if fps_value is None:
-                return
-            is_stuck = (fps_value <= self._STUCK_SPOOL_PRESSURE_THRESHOLD)
-            is_clear = (fps_value >= self._STUCK_SPOOL_PRESSURE_CLEAR)
+        fps_obj = self._fps_obj
+        if fps_obj is None:
+            return
+
+        fps_value = fps_obj.get_fps_value()
+        if fps_value is None:
+            return
 
         for lane in self.lanes.values():
             if lane.status != AFCLaneState.TOOLED:
@@ -3622,30 +3499,22 @@ class afcACE(afcUnit):
 
             trigger_time = self._stuck_spool_trigger_time.get(lane.name)
 
-            if is_stuck:
-                # Sensor reads stuck — start or continue the dwell timer
+            if fps_value <= self._STUCK_SPOOL_PRESSURE_THRESHOLD:
+                # Pressure is low — start or continue the dwell timer
                 if trigger_time is None:
                     self._stuck_spool_trigger_time[lane.name] = eventtime
                 elif eventtime - trigger_time >= self._STUCK_SPOOL_DWELL:
                     # Dwell exceeded — stuck spool confirmed
                     self._stuck_spool_active.add(lane.name)
-                    if use_ace_buffer:
-                        detail = (
-                            f"feed_assist_count=0 for "
-                            f"{eventtime - trigger_time:.1f}s"
-                        )
-                    else:
-                        detail = (
-                            f"FPS pressure {fps_value:.3f} below "
-                            f"{self._STUCK_SPOOL_PRESSURE_THRESHOLD} for "
-                            f"{eventtime - trigger_time:.1f}s"
-                        )
                     self.logger.info(
-                        f"ACE stuck spool detected on {lane.name}: {detail}"
+                        f"ACE stuck spool detected on {lane.name}: "
+                        f"FPS pressure {fps_value:.3f} below threshold "
+                        f"{self._STUCK_SPOOL_PRESSURE_THRESHOLD} for "
+                        f"{eventtime - trigger_time:.1f}s"
                     )
                     self._trigger_stuck_spool(lane)
-            elif is_clear:
-                # Sensor recovered — clear the dwell timer
+            elif fps_value >= self._STUCK_SPOOL_PRESSURE_CLEAR:
+                # Pressure recovered above hysteresis threshold — clear
                 if trigger_time is not None:
                     self._stuck_spool_trigger_time.pop(lane.name, None)
 
@@ -3835,9 +3704,8 @@ class afcACE(afcUnit):
         except Exception:
             pass
 
-        # Stuck spool detection: monitor FPS/ACE buffer while printing
-        if is_printing and (self._fps_obj is not None
-                            or self._ace_buffer_obj is not None):
+        # Stuck spool detection: monitor FPS pressure while printing
+        if is_printing and self._fps_obj is not None:
             try:
                 self._check_stuck_spool(eventtime)
             except Exception as e:
@@ -3855,8 +3723,6 @@ class afcACE(afcUnit):
                         status = slot_data.get("status", "")
                         # Update inventory cache with status from get_status
                         self._slot_inventory[i]["status"] = status
-                # Feed ACE buffer with feed_assist_count from hardware status
-                self._update_ace_buffer_count(hw_status)
         except Exception:
             pass
 
