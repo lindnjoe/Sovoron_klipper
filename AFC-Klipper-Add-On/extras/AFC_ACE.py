@@ -1406,7 +1406,7 @@ class afcACE(afcUnit):
             ace_buf = self._ace_buffer_obj
             detected = ace_buf.tool_start_triggered
             if not detected and self._ace is not None:
-                for _ in range(12):  # up to ~6s (12 × 0.5s)
+                for _ in range(20):  # up to ~10s (20 × 0.5s)
                     afc.reactor.pause(afc.reactor.monotonic() + 0.5)
                     try:
                         hw = self._ace.get_status(timeout=2.0)
