@@ -1386,6 +1386,21 @@ class afcACE(afcUnit):
             # There is no physical buffer to "decompress" with FPS — the
             # retract-until-sensor-clears loop used for turtleneck buffers
             # does not apply.
+            # The FPS latch may take a moment after the feed motor
+            # stops — poll for up to 10 seconds before giving up.
+            if not cur_extruder.tool_start_state:
+                latch_timeout = 10.0
+                latch_start = afc.reactor.monotonic()
+                while (afc.reactor.monotonic() - latch_start) < latch_timeout:
+                    afc.reactor.pause(afc.reactor.monotonic() + 0.5)
+                    if cur_extruder.tool_start_state:
+                        elapsed = afc.reactor.monotonic() - latch_start
+                        self.logger.info(
+                            f"ACE FPS latch arrived after "
+                            f"{elapsed:.1f}s wait for {cur_lane.name}"
+                        )
+                        break
+
             if not cur_extruder.tool_start_state:
                 message = (
                     f"FPS buffer '{cur_lane.buffer_obj.name}' did not "
