@@ -188,6 +188,28 @@ class afcACE(afcUnit):
         self._fps_latched = False
         self._fps_poll_timer = None  # timer for polling AFC_FPS buffers
 
+        # Stuck spool detection: monitors FPS pressure during printing.
+        # When enabled, a stuck spool triggers automatic unload + reload + resume.
+        # Uses the same config name as OpenAMS for consistency.
+        self.stuck_spool_auto_recovery = config.getboolean(
+            "stuck_spool_auto_recovery", False
+        )
+        # Pressure below which stuck detection starts (0-1 scale)
+        self._STUCK_SPOOL_PRESSURE_THRESHOLD = 0.08
+        # Hysteresis upper threshold to clear detection
+        self._STUCK_SPOOL_PRESSURE_CLEAR = 0.12
+        # Seconds pressure must stay below threshold before triggering
+        self._STUCK_SPOOL_DWELL = 2.0
+        # Grace period after a successful load before detection activates
+        self._STUCK_SPOOL_LOAD_GRACE = 8.0
+        # Per-lane stuck spool state:
+        #   None = not triggered, float = monotonic time when first detected
+        self._stuck_spool_trigger_time: Dict[str, Optional[float]] = {}
+        # Timestamp of last successful load completion (per lane)
+        self._stuck_spool_load_time: Dict[str, float] = {}
+        # Prevents re-triggering while recovery is in progress
+        self._stuck_spool_active: set = set()
+
         # Sensor polling interval for status/runout monitoring
         self.poll_interval = config.getfloat("poll_interval", 1.0)
 
@@ -1639,6 +1661,12 @@ class afcACE(afcUnit):
 
         cur_lane.set_tool_loaded()
         cur_lane.enable_buffer(disable_fault=True)
+
+        # Record load time for stuck spool grace period
+        self._stuck_spool_load_time[cur_lane.name] = self.afc.reactor.monotonic()
+        # Clear any stale stuck state from a previous cycle
+        self._stuck_spool_trigger_time.pop(cur_lane.name, None)
+        self._stuck_spool_active.discard(cur_lane.name)
 
         # Post-load FPS verification: after the buffer is enabled, confirm the
         # FPS actually detects filament.  If the FPS stays in the trailing
@@ -3435,6 +3463,205 @@ class afcACE(afcUnit):
             )
         self.afc.error.AFC_error(msg)
 
+    # ---- Stuck Spool Detection ----
+
+    def _check_stuck_spool(self, eventtime):
+        """Check FPS pressure on TOOLED lanes to detect stuck spools.
+
+        Called from _poll_slot_status every poll cycle during printing.
+        Uses dual-threshold hysteresis to prevent flapping:
+          - Trigger when FPS pressure drops below _STUCK_SPOOL_PRESSURE_THRESHOLD
+          - Clear when pressure rises above _STUCK_SPOOL_PRESSURE_CLEAR
+
+        The trigger must persist for _STUCK_SPOOL_DWELL seconds before acting.
+        A grace period after load (_STUCK_SPOOL_LOAD_GRACE) prevents false
+        positives while the buffer is settling.
+        """
+        fps_obj = self._fps_obj
+        if fps_obj is None:
+            return
+
+        fps_value = fps_obj.get_fps_value()
+        if fps_value is None:
+            return
+
+        for lane in self.lanes.values():
+            if lane.status != AFCLaneState.TOOLED:
+                continue
+            if lane.name in self._stuck_spool_active:
+                continue
+
+            # Load grace period: skip detection shortly after a load
+            load_time = self._stuck_spool_load_time.get(lane.name, 0.0)
+            if eventtime - load_time < self._STUCK_SPOOL_LOAD_GRACE:
+                continue
+
+            trigger_time = self._stuck_spool_trigger_time.get(lane.name)
+
+            if fps_value <= self._STUCK_SPOOL_PRESSURE_THRESHOLD:
+                # Pressure is low — start or continue the dwell timer
+                if trigger_time is None:
+                    self._stuck_spool_trigger_time[lane.name] = eventtime
+                elif eventtime - trigger_time >= self._STUCK_SPOOL_DWELL:
+                    # Dwell exceeded — stuck spool confirmed
+                    self._stuck_spool_active.add(lane.name)
+                    self.logger.info(
+                        f"ACE stuck spool detected on {lane.name}: "
+                        f"FPS pressure {fps_value:.3f} below threshold "
+                        f"{self._STUCK_SPOOL_PRESSURE_THRESHOLD} for "
+                        f"{eventtime - trigger_time:.1f}s"
+                    )
+                    self._trigger_stuck_spool(lane)
+            elif fps_value >= self._STUCK_SPOOL_PRESSURE_CLEAR:
+                # Pressure recovered above hysteresis threshold — clear
+                if trigger_time is not None:
+                    self._stuck_spool_trigger_time.pop(lane.name, None)
+
+    def _trigger_stuck_spool(self, lane):
+        """Handle a confirmed stuck spool on the given lane.
+
+        If stuck_spool_auto_recovery is enabled, schedules unload + reload.
+        Otherwise pauses the print for user intervention.
+        """
+        lane_name = lane.name
+        if self.stuck_spool_auto_recovery:
+            self.logger.info(
+                f"ACE stuck spool auto-recovery: scheduling "
+                f"unload+reload for {lane_name}"
+            )
+            try:
+                self.gcode.run_script_from_command(
+                    f"_AFC_ACE_STUCK_RECOVERY LANE={lane_name} "
+                    f"UNIT={self.name}"
+                )
+            except Exception as e:
+                self.logger.error(
+                    f"Failed to schedule stuck spool recovery for "
+                    f"{lane_name}: {e}"
+                )
+                self._stuck_spool_pause_fallback(lane)
+        else:
+            self._stuck_spool_pause_fallback(lane)
+
+    def _stuck_spool_pause_fallback(self, lane):
+        """Pause the print when auto-recovery is disabled or fails."""
+        msg = (
+            f"Stuck spool detected on {lane.name}: FPS pressure dropped "
+            f"below threshold during printing.\n"
+            f"Please check the spool for tangles, then resume the print."
+        )
+        self.logger.error(msg)
+        try:
+            self.afc.error.AFC_error(msg, pause=True)
+        except Exception:
+            try:
+                self.gcode.run_script_from_command("PAUSE")
+            except Exception:
+                pass
+
+    def _cmd_stuck_spool_recovery(self, gcmd):
+        """Internal gcode: unload + reload + resume for a stuck spool.
+
+        Runs in the gcode thread so blocking operations are safe.
+        """
+        lane_name = gcmd.get('LANE', None)
+        lane = self.afc.lanes.get(lane_name) if lane_name else None
+        if lane is None:
+            self.logger.error(
+                f"Stuck spool recovery: lane '{lane_name}' not found"
+            )
+            self._stuck_spool_active.discard(lane_name or "")
+            return
+
+        self.logger.info(
+            f"ACE stuck spool auto-recovery starting for {lane_name}"
+        )
+
+        # Save toolhead position for AFC_RESUME
+        self.afc.save_pos()
+
+        # Pause the print queue
+        pause_resume = self.printer.lookup_object("pause_resume", None)
+        if pause_resume is not None and not self.afc.function.is_paused():
+            pause_resume.send_pause_command()
+
+        # Z-hop to clear the part
+        try:
+            pos = self.afc.gcode_move.last_position
+            self.afc.move_z_pos(
+                pos[2] + self.afc.z_hop, "stuck_spool_recovery_zhop"
+            )
+        except Exception as e:
+            self.logger.warning(f"Stuck spool recovery: Z-hop failed: {e}")
+
+        try:
+            self.logger.info(
+                f"Stuck spool recovery: unloading {lane_name}"
+            )
+            unload_ok = self.afc.TOOL_UNLOAD(lane, set_start_time=True)
+            if not unload_ok:
+                raise RuntimeError(
+                    f"TOOL_UNLOAD returned False for {lane_name}"
+                )
+
+            # Wait for hub sensor to settle after unload
+            hub = getattr(lane, 'hub_obj', None)
+            if hub is not None and hub.state:
+                reactor = self.printer.get_reactor()
+                waited = 0.0
+                while hub.state and waited < 5.0:
+                    reactor.pause(reactor.monotonic() + 0.1)
+                    waited += 0.1
+                if hub.state:
+                    self.logger.warning(
+                        f"Stuck spool recovery: hub sensor still active "
+                        f"{waited:.1f}s after unload of {lane_name}"
+                    )
+
+            self.logger.info(
+                f"Stuck spool recovery: reloading {lane_name}"
+            )
+            load_ok = self.afc.TOOL_LOAD(lane, set_start_time=True)
+            if not load_ok:
+                raise RuntimeError(
+                    f"TOOL_LOAD returned False for {lane_name}"
+                )
+
+        except Exception as e:
+            self.logger.error(
+                f"Stuck spool auto-recovery FAILED for {lane_name}: {e}"
+            )
+            msg = (
+                f"Stuck spool auto-recovery failed for {lane_name}: {e}\n"
+                f"Please manually correct the issue, then run:\n"
+                f"  SET_LANE_LOADED LANE={lane_name}\n"
+                f"followed by AFC_RESUME"
+            )
+            self.afc.error.AFC_error(msg, pause=True)
+            return
+        finally:
+            self._stuck_spool_active.discard(lane_name)
+            self._stuck_spool_trigger_time.pop(lane_name, None)
+
+        # Recovery succeeded — resume print
+        self.logger.info(
+            f"Stuck spool auto-recovery SUCCEEDED for {lane_name}, "
+            f"resuming print"
+        )
+        try:
+            self.afc.error.reset_failure()
+            if not self.afc.function.is_paused():
+                pause_resume_obj = self.printer.lookup_object(
+                    "pause_resume", None
+                )
+                if pause_resume_obj is not None:
+                    pause_resume_obj.is_paused = True
+            self.gcode.run_script_from_command("AFC_RESUME")
+        except Exception as e:
+            self.logger.error(
+                f"Stuck spool recovery: AFC_RESUME failed: {e}"
+            )
+
     def _start_slot_status_monitor(self):
         """Start periodic polling for slot status changes (runout detection)."""
         self._prev_slot_states = {}
@@ -3475,6 +3702,13 @@ class afcACE(afcUnit):
             is_printing = self.afc.function.is_printing()
         except Exception:
             pass
+
+        # Stuck spool detection: monitor FPS pressure while printing
+        if is_printing and self._fps_obj is not None:
+            try:
+                self._check_stuck_spool(eventtime)
+            except Exception as e:
+                self.logger.debug(f"Stuck spool check error: {e}")
 
         # Single get_status call - refreshes cached hw status AND slot states
         try:
@@ -3728,6 +3962,11 @@ class afcACE(afcUnit):
             "ACE_LANE_RESET", "UNIT", self.name,
             self.cmd_ACE_LANE_RESET,
             desc="Retract ACE lane filament back into the unit",
+        )
+        self.gcode.register_mux_command(
+            "_AFC_ACE_STUCK_RECOVERY", "UNIT", self.name,
+            self._cmd_stuck_spool_recovery,
+            desc="Internal: auto-recover from stuck spool",
         )
 
     def cmd_ACE_STATUS(self, gcmd):
