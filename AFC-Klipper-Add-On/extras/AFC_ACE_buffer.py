@@ -12,12 +12,13 @@
 # and satisfies the buffer interface so AFC's lane/load logic works without
 # an external FPS or TurtleNeck sensor.
 #
-# feed_assist_count semantics (higher = more pressure against extruder):
-#   0       -> no filament pressure / empty / stuck
-#   1-3     -> trailing zone (filament present, light pressure)
-#   4-6     -> neutral / at toolhead (default tool_start_threshold = 4)
-#   7-11    -> advancing zone (buffer compressed, significant pressure)
-#   12      -> fully compressed against extruder gears
+# feed_assist_count semantics:
+#   The count represents how many times the feed assist motor has fired
+#   since the last load command.  A count of 3 (default tool_start_threshold)
+#   indicates filament has reached the extruder.  After detection, any
+#   non-zero count is treated as normal — the ACE hardware manages its own
+#   buffer correction via feed assist, so this driver does not attempt to
+#   classify advancing/trailing states.
 #
 # Config example:
 #   [AFC_ACE_buffer ACE_buffer1]
@@ -62,17 +63,11 @@ class AFCACEBuffer:
         self.advance_pin = None
         self.trailing_pin = None
 
-        # Thresholds for mapping feed_assist_count (0-12) to buffer state
-        self.advance_threshold = config.getint(
-            'advance_threshold', 7, minval=1, maxval=12
-        )
-        self.trailing_threshold = config.getint(
-            'trailing_threshold', 2, minval=0, maxval=11
-        )
-        # Count at or above which we consider filament is at the toolhead
-        # (replaces tool_start sensor)
+        # Count at or above which we consider filament is at the extruder.
+        # feed_assist_count represents motor firings after load; 3 firings
+        # means filament has reached the extruder.
         self.tool_start_threshold = config.getint(
-            'tool_start_threshold', 4, minval=1, maxval=12
+            'tool_start_threshold', 3, minval=1, maxval=12
         )
 
         # Current raw count from ACE hardware
@@ -104,23 +99,18 @@ class AFCACEBuffer:
         """Update the buffer state from ACE's feed_assist_count.
 
         Called by the ACE unit each time it polls hardware status.
+        Any non-zero count is treated as neutral/ok — the ACE hardware
+        manages its own buffer correction via feed assist.
 
-        :param count: feed_assist_count value (0-12)
+        :param count: feed_assist_count (motor firings since load)
         """
         self._feed_assist_count = count
-
-        if count >= self.advance_threshold:
-            self.advance_state = True
-            self.trailing_state = False
-            self.last_state = ADVANCING_STATE_NAME
-        elif count <= self.trailing_threshold:
-            self.advance_state = False
-            self.trailing_state = True
-            self.last_state = TRAILING_STATE_NAME
-        else:
-            self.advance_state = False
-            self.trailing_state = False
-            self.last_state = NEUTRAL_STATE_NAME
+        # ACE handles its own buffer correction; we only track the raw
+        # count for tool_start detection and stuck-spool (count == 0).
+        # No advancing/trailing classification — always neutral.
+        self.advance_state = False
+        self.trailing_state = False
+        self.last_state = NEUTRAL_STATE_NAME
 
     @property
     def feed_assist_count(self):
@@ -134,8 +124,8 @@ class AFCACEBuffer:
 
     @property
     def buffer_trailing_triggered(self):
-        """True when buffer is in trailing state (spool not feeding)."""
-        return self.trailing_state
+        """Always False — ACE handles buffer correction internally."""
+        return False
 
     def get_fps_value(self):
         """Return normalized pressure value (0.0-1.0) from feed_assist_count.
