@@ -361,18 +361,31 @@ class AfcToolchanger(afcUnit):
 
             self._configure_toolhead_for_tool(tool)
             if tool is not None:
-                # Safety: verify the target tool is actually in its dock
-                # before attempting pickup.  If the detection pin reads
-                # PRESENT the tool is already on the shuttle (or still
-                # detected as such) and driving to the dock would collide.
-                if self.has_detection and tool.detect_state == DETECT_PRESENT:
-                    self.status = STATUS_ERROR
-                    self.error_message = (
-                        'Cannot pick up %s: detection pin shows tool is '
-                        'already on shuttle, not in dock' % tool.name)
-                    raise gcmd.error(
-                        '%s: %s' % (self.config.get_name(),
-                                    self.error_message))
+                # Safety: verify shuttle is empty before pickup.  After
+                # dropoff no detection pin should read PRESENT.  If one
+                # does, a tool is still physically on the shuttle and
+                # picking up another would cause a collision.
+                if self.has_detection:
+                    on_shuttle = self._require_detected_tool()
+                    if on_shuttle is not None and on_shuttle != tool:
+                        self.status = STATUS_ERROR
+                        self.error_message = (
+                            'Cannot pick up %s: %s is still detected '
+                            'on shuttle after dropoff' % (
+                                tool.name, on_shuttle.name))
+                        raise gcmd.error(
+                            '%s: %s' % (self.config.get_name(),
+                                        self.error_message))
+                    # Also verify target tool is in its dock, not already
+                    # on shuttle.
+                    if tool.detect_state == DETECT_PRESENT:
+                        self.status = STATUS_ERROR
+                        self.error_message = (
+                            'Cannot pick up %s: detection pin shows tool '
+                            'is already on shuttle, not in dock' % tool.name)
+                        raise gcmd.error(
+                            '%s: %s' % (self.config.get_name(),
+                                        self.error_message))
                 self._run_gcode('tool.pickup_gcode',
                                tool.pickup_gcode, extra_context)
                 if self.has_detection and self.verify_tool_pickup:
