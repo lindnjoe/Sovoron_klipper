@@ -96,6 +96,9 @@ class AfcToolchanger(afcUnit):
         # Gcode offset transform
         self.gcode_transform = ToolGcodeTransform()
 
+        # tool_probe_endstop integration (for optotap/probe-based tool detection)
+        self.tool_probe_endstop = None
+
         # Fan switcher (created on demand)
         self.fan_switcher = None
 
@@ -133,9 +136,11 @@ class AfcToolchanger(afcUnit):
                                          self.cmd_AFC_SET_TOOLHEAD_LED_options)
 
     def _handle_tc_connect(self):
-        """Install the gcode offset transform on connect."""
+        """Install the gcode offset transform on connect and find tool_probe_endstop."""
         self.gcode_transform.next_transform = self.gcode_move.set_move_transform(
             self.gcode_transform, force=True)
+        self.tool_probe_endstop = self.printer.lookup_object(
+            'tool_probe_endstop', None)
 
     def require_fan_switcher(self):
         """Create fan switcher on demand when a tool has a fan configured."""
@@ -431,10 +436,14 @@ class AfcToolchanger(afcUnit):
         return result
 
     def _configure_toolhead_for_tool(self, tool):
-        """Deactivate old tool, activate new tool's extruder/fan/stepper."""
+        """Deactivate old tool, activate new tool's extruder/fan/stepper/probe."""
         if self.active_tool:
             self.active_tool.deactivate_tool()
         self.active_tool = tool
+        # Switch active tool probe for optotap/tool_probe setups
+        if self.tool_probe_endstop:
+            probe = tool.tool_probe if tool else None
+            self.tool_probe_endstop.set_active_probe(probe)
         if self.active_tool:
             self.active_tool.activate_tool()
 

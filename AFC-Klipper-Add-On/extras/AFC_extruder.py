@@ -282,6 +282,10 @@ class AFCExtruder:
             self.detect_state = 1  # assume present at startup
         self.resonance_chip: Optional[str] = config.get('resonance_chip', None)
 
+        # Tool probe reference (for optotap/tool_probe setups)
+        # Resolved at connect time from [tool_probe T<n>] sections
+        self.tool_probe = None
+
         # Gcode templates for toolchanger pickup/dropoff
         self._gcode_macro = self.printer.load_object(config, 'gcode_macro')
         self.pickup_gcode = self._gcode_macro.load_template(
@@ -457,6 +461,11 @@ class AFCExtruder:
         if self.extruder_stepper_name:
             self.extruder_stepper = self.printer.lookup_object(
                 self.extruder_stepper_name, None)
+
+        # Resolve tool_probe for optotap/tool_probe setups
+        if self.tool_number >= 0:
+            self.tool_probe = self.printer.lookup_object(
+                'tool_probe T%d' % self.tool_number, None)
 
         try:
             # Looking up led object if user supplied variable
