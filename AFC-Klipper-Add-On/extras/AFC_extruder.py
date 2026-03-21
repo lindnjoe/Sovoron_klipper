@@ -279,7 +279,10 @@ class AFCExtruder:
         self.detect_state: int = -1  # -1=unavailable, 0=absent, 1=present
         if self.detect_pin_name:
             buttons.register_buttons([self.detect_pin_name], self._handle_detect)
-            self.detect_state = 1  # assume present at startup
+            # Leave detect_state as -1 (unavailable) until the first callback
+            # fires with a real reading.  Defaulting to 1 (PRESENT) caused the
+            # toolchanger to think ALL tools were on the shuttle before pins
+            # were actually sampled, leading to false tool activation.
         self.resonance_chip: Optional[str] = config.get('resonance_chip', None)
 
         # Tool probe reference (for optotap/tool_probe setups)

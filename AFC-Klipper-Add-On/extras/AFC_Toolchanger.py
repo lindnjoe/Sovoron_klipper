@@ -281,6 +281,17 @@ class AfcToolchanger(afcUnit):
         if inferred is None and self.has_detection:
             inferred = self._require_detected_tool()
 
+        # Safety: never trust an inferred tool unless its detection pin
+        # positively confirms it is on the shuttle.  This prevents
+        # activating a tool from stale state or unsampled pins.
+        if inferred and self.has_detection:
+            if inferred.detect_state != DETECT_PRESENT:
+                self.logger.info(
+                    "Rejecting inferred tool %s during init: "
+                    "detection pin is %d (not PRESENT)"
+                    % (inferred.name, inferred.detect_state))
+                inferred = None
+
         if self.require_tool_present and inferred is None and self.has_detection:
             if should_run_init:
                 self.status = STATUS_ERROR
@@ -361,6 +372,31 @@ class AfcToolchanger(afcUnit):
 
             self._configure_toolhead_for_tool(tool)
             if tool is not None:
+                # Safety: verify shuttle is empty before pickup.  After
+                # dropoff no detection pin should read PRESENT.  If one
+                # does, a tool is still physically on the shuttle and
+                # picking up another would cause a collision.
+                if self.has_detection:
+                    on_shuttle = self._require_detected_tool()
+                    if on_shuttle is not None and on_shuttle != tool:
+                        self.status = STATUS_ERROR
+                        self.error_message = (
+                            'Cannot pick up %s: %s is still detected '
+                            'on shuttle after dropoff' % (
+                                tool.name, on_shuttle.name))
+                        raise gcmd.error(
+                            '%s: %s' % (self.config.get_name(),
+                                        self.error_message))
+                    # Also verify target tool is in its dock, not already
+                    # on shuttle.
+                    if tool.detect_state == DETECT_PRESENT:
+                        self.status = STATUS_ERROR
+                        self.error_message = (
+                            'Cannot pick up %s: detection pin shows tool '
+                            'is already on shuttle, not in dock' % tool.name)
+                        raise gcmd.error(
+                            '%s: %s' % (self.config.get_name(),
+                                        self.error_message))
                 self._run_gcode('tool.pickup_gcode',
                                tool.pickup_gcode, extra_context)
                 if self.has_detection and self.verify_tool_pickup:
@@ -558,11 +594,20 @@ class AfcToolchanger(afcUnit):
                 self.uses_axis, homed))
 
     def _require_detected_tool(self):
-        """Find which tool is detected via detection pins."""
+        """Find which tool is detected via detection pins.
+
+        Returns the tool only when exactly one detection pin reads PRESENT.
+        Returns None if zero or multiple tools appear detected (the latter
+        typically happens when pins have not been sampled yet at startup).
+        """
         detected = None
+        detected_count = 0
         for tool in self.tools.values():
             if tool.detect_state == DETECT_PRESENT:
                 detected = tool
+                detected_count += 1
+        if detected_count != 1:
+            return None
         return detected
 
     def _validate_detected_tool(self, expected, respond_info, raise_error):
