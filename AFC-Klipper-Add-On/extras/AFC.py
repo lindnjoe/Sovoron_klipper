@@ -1549,7 +1549,7 @@ class afc:
             # Check if ramming is enabled, if it is, go through ram load sequence.
             # Lane will load until Advance sensor is True
             # After the tool_stn distance the lane will retract off the sensor to confirm load and reset buffer
-            if cur_extruder.tool_start_is_buffer:
+            if cur_extruder.tool_start == "buffer":
                 cur_lane.unsync_to_extruder()
                 load_checks = 0
                 while cur_lane.get_toolhead_pre_sensor_state():
@@ -1792,7 +1792,7 @@ class afc:
 
             # Attempt to unload the filament from the extruder, retrying if needed.
             num_tries = 0
-            if cur_extruder.tool_start_is_buffer:
+            if cur_extruder.tool_start == "buffer":
                 # if ramming is enabled, AFC will retract to collapse buffer before unloading
                 cur_lane.unsync_to_extruder()
                 while not cur_lane.get_trailing() and self.tool_max_unload_attempts > 0:
@@ -2123,10 +2123,7 @@ class afc:
                 if not self.testing:
                     self.afc_stats.reset_toolchange_wo_error()
         else:
-            # Calling handle activate extruder just to make sure lanes are synced as tool
-            # could have been changed with KTC SELECT_TOOL and lane might not be synced
-            # properly
-            # Take call out once transitioned away from KTC
+            # Ensure lanes are synced after tool swap
             self.function._handle_activate_extruder(0)
             self.logger.info("{} already loaded".format(cur_lane.name))
             if not self.error_state and self.current_toolchange == -1:
@@ -2247,7 +2244,7 @@ class afc:
         Supports T (tool), S (temp), and D (deadband).
         """
 
-        # TODO: this currently does not work correctly when lanes are remapped and KTC calls M109
+        # Note: M109 is now handled natively, no longer routed through KTC
         toolnum  = gcmd.get_int('T', None, minval=0)
         temp     = gcmd.get_float('S', 0.0)
         deadband = gcmd.get_float('D', None)

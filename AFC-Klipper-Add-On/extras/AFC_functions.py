@@ -55,7 +55,7 @@ class afcFunction:
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.printer.register_event_handler("afc_stepper:register_macros",self.register_lane_macros)
         self.printer.register_event_handler("afc_hub:register_macros",self.register_hub_macros)
-        # TODO: Use or remove once fully moved away from KTC
+        # Activate extruder callback (reserved for future multi-extruder timer use)
         # self.reactor = self.printer.get_reactor()
         # self.activate_extruder_cb = self.reactor.register_timer( self._handle_activate_extruder )
         self.printer.register_event_handler("afc:moonraker_connect", self.handle_moonraker_connect)
@@ -459,42 +459,17 @@ class afcFunction:
                 led_indexes += range(low, high+1)
         return led_indexes
 
-    def _parse_led_groups(self, idx):
-        """
-        Parse an LED index string into groups of (led_name, index_string).
-
-        Supports both single-LED format (``AFC_Indicator:1-4,9,10``) and
-        multi-LED format (``RGB1:1-4,RGB2:4-6,RGB3:5``).
-
-        When a comma-separated segment contains a colon it starts a new LED
-        group; otherwise it is appended to the current group's indexes.
-
-        :param idx: raw led_index config string
-        :return: list of (led_name, index_string) tuples
-        """
-        groups = []
-        for part in idx.split(","):
-            if ":" in part:
-                led_name, index_str = part.split(":", 1)
-                groups.append((led_name.strip(), index_str.strip()))
-            else:
-                # Continuation of the previous group's indexes
-                if groups:
-                    prev_name, prev_idx = groups[-1]
-                    groups[-1] = (prev_name, prev_idx + "," + part.strip())
-        return groups
-
     def afc_led (self, status, idx=None):
         if idx is None:
             return
 
-        for led_name, index_str in self._parse_led_groups(idx):
-            error_string, led = self.verify_led_object(led_name + ":")
-            if led is not None:
-                range_index = self._get_led_indexes(index_str)
-                led.led_change(range_index, status)
-            else:
-                self.logger.info( error_string )
+        error_string, led = self.verify_led_object(idx)
+        if led is not None:
+            led_indexes = idx.split(":")[1]
+            range_index = self._get_led_indexes(led_indexes)
+            led.led_change(range_index, status)
+        else:
+            self.logger.info( error_string )
 
     def get_filament_status(self, cur_lane):
         if cur_lane.prep_state:
@@ -517,8 +492,8 @@ class afcFunction:
 
     def _handle_activate_extruder(self, eventtime):
         """
-        Supposed to be a callback function from timer, currently this is not called from timer event.
-        TODO: Update this functionality before pushing to main/dev or once fully moved away from KTC
+        Syncs AFC lane state when the active extruder changes.
+        Disables non-active lanes and enables the current one.
         """
 
         cur_lane_loaded = self.get_current_lane_obj()
@@ -563,8 +538,6 @@ class afcFunction:
         cur_lane_loaded.sync_to_extruder()
         cur_lane_loaded.unit_obj.select_lane( cur_lane_loaded )
         self.logger.debug("Activate extruder done")
-        # TODO: Remove or add back once fully moved away from KTC
-        # return self.reactor.NEVER
 
     def unset_lane_loaded(self):
         """

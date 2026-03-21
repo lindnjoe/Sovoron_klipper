@@ -110,15 +110,6 @@ class AFCTrigger:
         """
         return self.name
 
-
-    def get_fps_value(self):
-        """Get current FPS pressure value. Always None for hardware buffers.
-
-        Provides interface compatibility with AFC_FPS so callers don't need
-        to check buffer type before calling.
-        """
-        return None
-
     def _handle_ready(self):
         """
         Handle Klipper ready event, initialize toolhead and setup fault detection if enabled.
