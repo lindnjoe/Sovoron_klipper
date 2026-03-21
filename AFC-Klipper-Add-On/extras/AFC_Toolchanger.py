@@ -532,9 +532,7 @@ class AfcToolchanger(afcUnit):
     cmd_AFC_UNSELECT_TOOL_help = "Unselects and docks current tool on shuttle"
     def cmd_AFC_UNSELECT_TOOL(self, gcmd: GCodeCommand):
         """
-        Unselects current tool loaded in shuttle by calling klipper-toolchanger UNSELECT_TOOL
-
-        TODO: Update text once moved away from KTC
+        Unselects current tool using native AFC toolchanger engine.
 
         Usage
         -----
@@ -553,7 +551,8 @@ class AfcToolchanger(afcUnit):
             self.logger.info(f"Running custom unselect: {current_extruder.custom_unselect}")
             self.afc.gcode.run_script_from_command(f"{current_extruder.custom_unselect}")
         else:
-            self.afc.gcode.run_script_from_command("UNSELECT_TOOL")
+            # Use native UNSELECT_TOOL
+            self.cmd_UNSELECT_TOOL(gcmd)
 
         lane_obj = self.afc.function.get_current_lane_obj()
         if lane_obj:
@@ -572,14 +571,11 @@ class AfcToolchanger(afcUnit):
         """
         Perform a tool swap operation for the specified lane.
 
-        This function handles switching the active extruder/toolhead to the one associated with the given lane.
-        It saves the current toolhead position, updates internal state, and issues a SELECT_TOOL command
-        to switch to the correct extruder. This is primarily used in multi-extruder/toolchanger setups.
+        Uses the native AFC toolchanger engine to handle the physical tool
+        swap (save state, run dropoff/pickup gcode, apply offsets).
 
         :param lane: The lane object whose extruder/toolhead should be activated.
         :param set_start_time: Set true to set a starting time for afcDeltaTime.
-
-        :return: None
         """
         if set_start_time:
             self.afc.afcDeltaTime.set_start_time()
@@ -590,32 +586,36 @@ class AfcToolchanger(afcUnit):
         # Save the current position before switching tools and subtract offsets
         for i in range(0, 3):
             self.afc.last_gcode_position[i] -= self.afc.gcode_move.base_position[i]
-        # Perform a tool swap by selecting the appropriate extruder based on the lane's extruder object.
+
         self.afc.afcDeltaTime.log_with_time("Performing tool swap")
-        name = lane.extruder_obj.name
-        tool_index = 0 if name == "extruder" else int(name.replace("extruder", ""))
 
         if lane.extruder_obj.custom_tool_swap:
             self.logger.info(f"Running custom select: {lane.extruder_obj.custom_tool_swap}")
             self.afc.gcode.run_script_from_command(f"{lane.extruder_obj.custom_tool_swap}")
         else:
-            self.afc.gcode.run_script_from_command('SELECT_TOOL T={}'.format(tool_index))
+            # Use native toolchanger engine: SELECT_TOOL handles dropoff/pickup/offsets
+            tool_index = lane.extruder_obj.tool_number
+            if tool_index < 0:
+                name = lane.extruder_obj.name
+                tool_index = 0 if name == "extruder" else int(name.replace("extruder", ""))
+            self.afc.gcode.run_script_from_command(
+                'SELECT_TOOL T={}'.format(tool_index))
 
-        # Switching toolhead extruders, this is mainly for setups with multiple extruders
+        # Activate the correct klipper extruder for this toolhead
         lane.activate_toolhead_extruder()
-        # Need to call again since KTC activate callback happens before switching to new extruder
-        # TODO: Take double call out once transitioned away from KTC
+        # Sync AFC lane state (enable buffer, stepper, etc.)
         self.afc.function._handle_activate_extruder(0)
 
         self.afc.toolhead.wait_moves()
         self.afc.afcDeltaTime.log_with_time("Tool swap done", debug=False)
         if self.afc.afc_stats.average_tool_swap_time:
-            self.afc.afc_stats.average_tool_swap_time.average_time(self.afc.afcDeltaTime.delta_time)
+            self.afc.afc_stats.average_tool_swap_time.average_time(
+                self.afc.afcDeltaTime.delta_time)
         self.afc.current_state = State.IDLE
         # Update the base position and homing position after the tool swap.
         self.afc.base_position   = list(self.afc.gcode_move.base_position)
         self.afc.homing_position = list(self.afc.gcode_move.homing_position)
-        # Update the last_gcode_position to reflect the new base position after the tool swap.
+        # Update the last_gcode_position to reflect the new base position.
         for i in range(0, 3):
             self.afc.last_gcode_position[i] += self.afc.gcode_move.base_position[i]
 
@@ -663,6 +663,96 @@ class AfcToolchanger(afcUnit):
 
         if not success:
             raise gcmd.error(error_string)
+
+class ToolGcodeTransform:
+    """Applies per-tool XYZ gcode offsets during moves."""
+    def __init__(self):
+        self.next_transform = None
+        self.tool = None  # AFCExtruder or None
+
+    def move(self, newpos, speed):
+        if not self.tool:
+            return self.next_transform.move(newpos, speed)
+        offset = self.tool.get_offset()
+        transformed = [
+            newpos[0] + offset[0],
+            newpos[1] + offset[1],
+            newpos[2] + offset[2],
+        ] + newpos[3:]
+        return self.next_transform.move(transformed, speed)
+
+    def get_position(self):
+        base_pos = self.next_transform.get_position()
+        if not self.tool:
+            return base_pos
+        offset = self.tool.get_offset()
+        return [
+            base_pos[0] - offset[0],
+            base_pos[1] - offset[1],
+            base_pos[2] - offset[2],
+        ] + base_pos[3:]
+
+
+class FanSwitcher:
+    """Manages fan switching between tools during tool changes."""
+    def __init__(self, toolchanger):
+        self.toolchanger = toolchanger
+        self.printer = toolchanger.printer
+        self.gcode = toolchanger.gcode
+        self.active_fan = None
+        self.pending_speed = None
+        self.transfer_fan_speed = toolchanger.transfer_fan_speed
+        # Register M106/M107 for multi-tool fan control
+        self.gcode.register_command("M106", self.cmd_M106)
+        self.gcode.register_command("M107", self.cmd_M107)
+
+    def activate_fan(self, fan):
+        """Switch active fan to the given fan_generic object."""
+        if self.active_fan == fan or not self.transfer_fan_speed:
+            return
+        speed_to_set = self.pending_speed
+        if self.active_fan:
+            speed_to_set = self.active_fan.get_status(0)['speed']
+            self.gcode.run_script_from_command(
+                "SET_FAN_SPEED FAN='%s' SPEED=%s" % (
+                    self.active_fan.fan_name, 0.0))
+        self.active_fan = fan
+        if speed_to_set is not None:
+            if self.active_fan:
+                self.pending_speed = None
+                self.gcode.run_script_from_command(
+                    "SET_FAN_SPEED FAN='%s' SPEED=%s" % (
+                        self.active_fan.fan_name, speed_to_set))
+            else:
+                self.pending_speed = speed_to_set
+
+    def cmd_M106(self, gcmd):
+        speed = gcmd.get_float('S', 255., minval=0.) / 255.
+        tool_nr = gcmd.get_int('P', None)
+        tool = None
+        if tool_nr is not None:
+            tool = self.toolchanger.lookup_tool(tool_nr)
+        if tool is None:
+            tool = self.toolchanger.active_tool
+        self._set_speed(speed, tool)
+
+    def cmd_M107(self, gcmd):
+        tool_nr = gcmd.get_int('P', None)
+        tool = None
+        if tool_nr is not None:
+            tool = self.toolchanger.lookup_tool(tool_nr)
+        if tool is None:
+            tool = self.toolchanger.active_tool
+        self._set_speed(0.0, tool)
+
+    def _set_speed(self, speed, tool):
+        if tool and tool.fan:
+            self.gcode.run_script_from_command(
+                "SET_FAN_SPEED FAN='%s' SPEED=%s" % (
+                    tool.fan.fan_name, speed))
+        else:
+            self.pending_speed = speed
+
 
 def load_config_prefix(config: ConfigWrapper):
     return AfcToolchanger(config)
