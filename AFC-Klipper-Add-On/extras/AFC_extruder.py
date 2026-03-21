@@ -280,6 +280,7 @@ class AFCExtruder:
         if self.detect_pin_name:
             buttons.register_buttons([self.detect_pin_name], self._handle_detect)
             self.detect_state = 1  # assume present at startup
+        self.resonance_chip: Optional[str] = config.get('resonance_chip', None)
 
         # Gcode templates for toolchanger pickup/dropoff
         self._gcode_macro = self.printer.load_object(config, 'gcode_macro')
@@ -847,6 +848,7 @@ class AFCExtruder:
             'gcode_x_offset': self.gcode_x_offset,
             'gcode_y_offset': self.gcode_y_offset,
             'gcode_z_offset': self.gcode_z_offset,
+            'resonance_chip': self.resonance_chip,
         }
 
     def activate_tool(self):
@@ -866,6 +868,10 @@ class AFCExtruder:
                     self.extruder_stepper_name, hotend_extruder))
         if self.fan and self.tc_unit_obj:
             self.tc_unit_obj.fan_switcher.activate_fan(self.fan)
+        if self.resonance_chip:
+            resonance_tester = self.printer.lookup_object('resonance_tester', None)
+            if resonance_tester:
+                resonance_tester.accel_chip_names = [["xy", self.resonance_chip]]
 
     def deactivate_tool(self):
         """Deactivate this tool's extruder stepper. Called during tool dropoff."""
