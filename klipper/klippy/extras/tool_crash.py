@@ -64,6 +64,8 @@ class ToolCrash:
         self._watchdog_error_threshold=config.getint('watchdog_threshold',2);
         self._home_timestamp=0.0
         self._home_timeblock=config.getfloat('home_timeblock',1.0, above=0.)
+        self._enable_grace=config.getfloat('enable_grace', 2.0, minval=0.)
+        self._enable_timestamp=0.0
         self._state = STATE_IDLE
         self._watchdog_timer = None
 
@@ -142,6 +144,11 @@ class ToolCrash:
             return
         elif self._state == STATE_PROBING:
             return
+        # Grace period after enable — give detection pins time to settle
+        if self._enable_grace > 0:
+            elapsed = self.reactor.monotonic() - self._enable_timestamp
+            if elapsed < self._enable_grace:
+                return
         # compare active tool to tap sensor state
         active_tool = self.toolchanger.active_tool
         err_msg = ""
@@ -172,6 +179,11 @@ class ToolCrash:
         # check for toolchange state - ignore it
         if self.toolchanger.status in (STATUS_CHANGING, STATUS_INITIALIZING):
             return
+        # Grace period after enable — ignore edges while pins settle
+        if self._enable_grace > 0:
+            elapsed = self.reactor.monotonic() - self._enable_timestamp
+            if elapsed < self._enable_grace:
+                return
         # check for proximity to state we are ignoring (probe/homing)
         home_event_delta = self.toolhead.mcu.estimated_print_time(eventtime) - self._home_timestamp
         if self._state == STATE_PROBING or (home_event_delta < self._home_timeblock):
@@ -204,6 +216,8 @@ class ToolCrash:
     cmd_START_TOOL_CRASH_DETECTION_help = """
     Enable tool crash detection. Optional T=<num>|TOOL=<name> to set the expected tool"""
     def cmd_START_TOOL_CRASH_DETECTION(self, gcmd):
+        self._watchdog_error_count = 0
+        self._enable_timestamp = self.reactor.monotonic()
         self.enabled = True
         self._ensure_watchdog()
         gcmd.respond_info(f'tool_crash: enabled')
