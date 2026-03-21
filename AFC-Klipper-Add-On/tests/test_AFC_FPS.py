@@ -7,7 +7,6 @@ Covers:
   - enable_buffer / disable_buffer: LED state, timer control
   - Config validation: low_point < set_point < high_point, deadband bounds
   - Fault detection: sensitivity, timer lifecycle
-  - normalize_pin_value / is_fps_buffer_pin: helper functions
   - get_status: correct keys and content
   - G-code commands: SET_FPS_SET_POINT, QUERY_BUFFER
 """
@@ -19,8 +18,6 @@ import pytest
 
 from extras.AFC_FPS import (
     AFCFPSBuffer,
-    normalize_pin_value,
-    is_fps_buffer_pin,
     TRAILING_STATE_NAME,
     ADVANCING_STATE_NAME,
     NEUTRAL_STATE_NAME,
@@ -122,50 +119,8 @@ def _make_mock_lane(name="lane1", has_stepper=True):
     return lane
 
 
-# ── normalize_pin_value / is_fps_buffer_pin ──────────────────────────────────
 
-class TestNormalizePinValue:
-    def test_simple_pin(self):
-        assert normalize_pin_value("FPS_buffer1") == "FPS_buffer1"
-
-    def test_strips_whitespace(self):
-        assert normalize_pin_value("  FPS_buffer1  ") == "FPS_buffer1"
-
-    def test_strips_comment(self):
-        assert normalize_pin_value("FPS_buffer1 # comment") == "FPS_buffer1"
-        assert normalize_pin_value("FPS_buffer1 ; comment") == "FPS_buffer1"
-
-    def test_strips_modifiers(self):
-        assert normalize_pin_value("!^FPS_buffer1") == "FPS_buffer1"
-
-    def test_returns_none_for_empty(self):
-        assert normalize_pin_value("") is None
-        assert normalize_pin_value("   ") is None
-        assert normalize_pin_value(None) is None
-
-    def test_returns_none_for_non_string(self):
-        assert normalize_pin_value(42) is None
-        assert normalize_pin_value([]) is None
-
-    def test_comment_only(self):
-        assert normalize_pin_value("# just a comment") is None
-
-
-class TestIsFpsBufferPin:
-    def test_fps_prefix(self):
-        assert is_fps_buffer_pin("FPS_buffer1") is True
-        assert is_fps_buffer_pin("fps_buffer2") is True
-
-    def test_non_fps(self):
-        assert is_fps_buffer_pin("PA2") is False
-        assert is_fps_buffer_pin("some_pin") is False
-
-    def test_empty(self):
-        assert is_fps_buffer_pin("") is False
-        assert is_fps_buffer_pin(None) is False
-
-    def test_with_modifiers(self):
-        assert is_fps_buffer_pin("!FPS_buffer1") is True
+# NOTE: normalize_pin_value and is_fps_buffer_pin were removed from AFC_FPS.py
 
 
 # ── ADC Callback ─────────────────────────────────────────────────────────────
