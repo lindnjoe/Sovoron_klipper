@@ -62,6 +62,7 @@ class AfcToolchanger(afcUnit):
 
         # Toolchanger config options
         self.uses_axis: str = config.get('uses_axis', 'xyz').lower()
+        self.require_tool_present: bool = config.getboolean('require_tool_present', True)
         self.verify_tool_pickup: bool = config.getboolean('verify_tool_pickup', True)
         self.transfer_fan_speed: bool = config.getboolean('transfer_fan_speed', True)
 
@@ -272,7 +273,14 @@ class AfcToolchanger(afcUnit):
         if inferred is None and self.has_detection:
             inferred = self._require_detected_tool()
 
-        if inferred or self.has_detection:
+        if self.require_tool_present and inferred is None and self.has_detection:
+            if should_run_init:
+                self.status = STATUS_ERROR
+                self.error_message = 'No tool detected on shuttle during initialization'
+                raise self.gcode.error(
+                    '%s: %s' % (self.config.get_name(), self.error_message))
+
+        if inferred or not self.require_tool_present or self.has_detection:
             self._configure_toolhead_for_tool(inferred)
             if inferred:
                 self._run_gcode('after_change_gcode',
