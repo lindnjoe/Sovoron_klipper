@@ -2589,6 +2589,7 @@ class afcACE(afcUnit):
                         cur_lane.get_toolhead_pre_sensor_state()
                         or extruder_obj.tool_start == "buffer"
                         or extruder_obj.tool_end_state
+                        or extruder_obj.on_shuttle()
                     )
                     if tool_ready and extruder_obj.lane_loaded == cur_lane.name:
                         cur_lane.sync_to_extruder()

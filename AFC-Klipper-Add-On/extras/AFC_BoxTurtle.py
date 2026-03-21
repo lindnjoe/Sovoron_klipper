@@ -114,7 +114,8 @@ class afcBoxTurtle(afcUnit):
                         ramming_loaded = self._buffer_toolhead_load_check(cur_lane)
                     if (cur_lane.get_toolhead_pre_sensor_state() == True
                         or ramming_loaded
-                        or cur_lane.extruder_obj.tool_end_state):
+                        or cur_lane.extruder_obj.tool_end_state
+                        or cur_lane.extruder_obj.on_shuttle()):
                         if cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                             cur_lane.sync_to_extruder()
                             on_shuttle = ""
