@@ -841,7 +841,7 @@ class AFCExtruder:
 
     def _handle_detect(self, eventtime, is_triggered):
         """Callback for tool detection pin (e.g., optotap)."""
-        self.detect_state = 0 if is_triggered else 1
+        self.detect_state = 1 if is_triggered else 0
         if self.tc_unit_obj:
             self.tc_unit_obj.note_detect_change(self, eventtime)
 
