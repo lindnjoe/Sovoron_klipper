@@ -281,6 +281,17 @@ class AfcToolchanger(afcUnit):
         if inferred is None and self.has_detection:
             inferred = self._require_detected_tool()
 
+        # Safety: never trust an inferred tool unless its detection pin
+        # positively confirms it is on the shuttle.  This prevents
+        # activating a tool from stale state or unsampled pins.
+        if inferred and self.has_detection:
+            if inferred.detect_state != DETECT_PRESENT:
+                self.logger.info(
+                    "Rejecting inferred tool %s during init: "
+                    "detection pin is %d (not PRESENT)"
+                    % (inferred.name, inferred.detect_state))
+                inferred = None
+
         if self.require_tool_present and inferred is None and self.has_detection:
             if should_run_init:
                 self.status = STATUS_ERROR
