@@ -362,6 +362,136 @@ class AfcToolchanger(afcUnit):
         cur_lane.set_afc_prep_done()
         return True
 
+    # --- Private helper methods for tool change ---
+
+    def _save_state(self, restore_axis, tool):
+        """Save gcode state before tool change. Offsets are zeroed during change."""
+        gcode_status = self.gcode_move.get_status()
+        self.gcode.run_script_from_command("SAVE_GCODE_STATE NAME=_toolchange_state")
+        self.last_change_pickup_tool = tool
+        self.last_change_gcode_position = list(gcode_status['gcode_position'])
+        self.last_change_gcode_offset = gcode_status['homing_origin']
+        self.last_change_restore_axis = restore_axis
+
+    def _set_toolchange_transform(self):
+        """Zero out gcode offsets during tool change so moves use toolhead coords."""
+        self.gcode_transform.tool = None
+        self.gcode_move.reset_last_position()
+        self.gcode.run_script_from_command("SET_GCODE_OFFSET X=0.0 Y=0.0 Z=0.0")
+
+    def _restore_state_and_transform(self, tool):
+        """Restore gcode state and apply new tool's offset transform."""
+        self.gcode_transform.tool = tool
+        self.gcode_move.reset_last_position()
+        self.gcode.run_script_from_command(
+            "RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0")
+        self.last_change_gcode_offset = None
+        if self.last_change_restore_axis:
+            self._restore_axis(
+                self.last_change_gcode_position, self.last_change_restore_axis)
+            self.gcode.run_script_from_command(
+                "RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0")
+
+    def _restore_axis(self, position, axis):
+        """Move to saved position on specified axes after tool change."""
+        pos = self._position_with_tool_offset(position, None)
+        self.gcode.run_script_from_command("G90")
+        self.gcode_move.cmd_G1(
+            self.gcode.create_gcode_command(
+                "G0", "G0", self._position_to_xyz(pos, axis)))
+
+    def _position_to_xyz(self, position, axis):
+        """Convert position list to dict with X/Y/Z keys for given axes."""
+        result = {}
+        for i in axis:
+            index = XYZ_TO_INDEX[i]
+            result[INDEX_TO_XYZ[index]] = position[index]
+        return result
+
+    def _position_with_tool_offset(self, position, tool):
+        """Compute gcode position accounting for saved offset and tool offset."""
+        result = []
+        for i in range(3):
+            v = position[i]
+            if self.last_change_gcode_offset is not None:
+                v += self.last_change_gcode_offset[i]
+            if tool:
+                offset = tool.get_offset()
+                v += offset[i]
+            result.append(v)
+        result.extend(position[3:])
+        return result
+
+    def _configure_toolhead_for_tool(self, tool):
+        """Deactivate old tool, activate new tool's extruder/fan/stepper."""
+        if self.active_tool:
+            self.active_tool.deactivate_tool()
+        self.active_tool = tool
+        if self.active_tool:
+            self.active_tool.activate_tool()
+
+    def _run_gcode(self, name, template, extra_context):
+        """Run a gcode template with tool/toolchanger context."""
+        curtime = self.printer.get_reactor().monotonic()
+        context = {
+            **template.create_template_context(),
+            'tool': self.active_tool.get_tool_status(curtime) if self.active_tool else {},
+            'toolchanger': self.get_status(curtime),
+            **extra_context,
+        }
+        template.run_gcode_from_command(context)
+
+    def _ensure_homed(self, gcmd):
+        """Check that required axes are homed before tool change."""
+        if not self.uses_axis:
+            return
+        toolhead = self.printer.lookup_object('toolhead')
+        curtime = self.printer.get_reactor().monotonic()
+        homed = toolhead.get_kinematics().get_status(curtime)['homed_axes']
+        needs_homing = any(a not in homed for a in self.uses_axis)
+        if not needs_homing:
+            return
+        toolhead.wait_moves()
+        curtime = self.printer.get_reactor().monotonic()
+        homed = toolhead.get_kinematics().get_status(curtime)['homed_axes']
+        axis_to_home = [a for a in self.uses_axis if a not in homed]
+        if not axis_to_home:
+            return
+        raise gcmd.error(
+            "Cannot perform toolchange, axis not homed. Required: %s, homed: %s" % (
+                self.uses_axis, homed))
+
+    def _require_detected_tool(self):
+        """Find which tool is detected via detection pins."""
+        detected = None
+        for tool in self.tools.values():
+            if tool.detect_state == DETECT_PRESENT:
+                detected = tool
+        return detected
+
+    def _validate_detected_tool(self, expected, respond_info, raise_error):
+        """Verify the expected tool is actually detected."""
+        actual = self._require_detected_tool()
+        if actual != expected:
+            expected_name = expected.name if expected else "None"
+            actual_name = actual.name if actual else "None"
+            message = "Expected tool %s but detected %s" % (expected_name, actual_name)
+            if raise_error:
+                raise raise_error(message)
+
+    def _gcmd_tool(self, gcmd, default=None):
+        """Resolve tool from TOOL= or T= gcode parameters."""
+        tool_name = gcmd.get('TOOL', None)
+        tool_number = gcmd.get_int('T', None)
+        if tool_name:
+            return self.afc.tools.get(tool_name)
+        if tool_number is not None:
+            tool = self.lookup_tool(tool_number)
+            if not tool:
+                raise gcmd.error('Tool #%d is not assigned' % tool_number)
+            return tool
+        return default
+
     def _increase_unselect(self):
         """
         Helper function to lookup current selected extruder and increase tool unselected count
