@@ -42,6 +42,69 @@ TRAILING_STATE_NAME = "Trailing"
 ADVANCING_STATE_NAME = "Advancing"
 NEUTRAL_STATE_NAME = "Neutral"
 CHECK_RUNOUT_TIMEOUT = 0.5
+FPS_ENDSTOP_POLL_TIME = 0.01  # 10ms poll interval for software endstop
+
+
+class FPSEndstopWrapper:
+    """Software endstop that triggers based on FPS reading threshold.
+
+    Implements the MCU endstop interface so klipper's homing/drip_move system
+    can use the FPS analog reading as a buffer endstop — just like a turtleneck
+    switch, but triggered at a configurable threshold.
+
+    For advance endstop: triggers when smoothed_fps >= high_point (buffer compressed)
+    For trailing endstop: triggers when smoothed_fps <= low_point (buffer stretched)
+    """
+
+    def __init__(self, fps_buffer, trigger_func):
+        self._fps_buffer = fps_buffer
+        self._reactor = fps_buffer.reactor
+        self._trigger_func = trigger_func
+        self._steppers = []
+        self._trigger_time = 0.
+        self._completion = None
+        self._poll_timer = None
+
+    def get_mcu(self):
+        return self._fps_buffer.adc.get_mcu()
+
+    def add_stepper(self, stepper):
+        self._steppers.append(stepper)
+
+    def get_steppers(self):
+        return list(self._steppers)
+
+    def home_start(self, print_time, sample_time, sample_count, rest_time,
+                   triggered=True):
+        self._trigger_time = 0.
+        self._completion = self._reactor.completion()
+        # Check if already triggered before starting poll timer
+        if self._trigger_func() == triggered:
+            mcu = self.get_mcu()
+            self._trigger_time = mcu.estimated_print_time(
+                self._reactor.monotonic())
+            self._completion.complete(True)
+        else:
+            self._poll_timer = self._reactor.register_timer(
+                self._poll_fps, self._reactor.NOW)
+        return self._completion
+
+    def _poll_fps(self, eventtime):
+        if self._trigger_func():
+            mcu = self.get_mcu()
+            self._trigger_time = mcu.estimated_print_time(eventtime)
+            self._completion.complete(True)
+            return self._reactor.NEVER
+        return eventtime + FPS_ENDSTOP_POLL_TIME
+
+    def home_wait(self, home_end_time):
+        if self._poll_timer is not None:
+            self._reactor.unregister_timer(self._poll_timer)
+            self._poll_timer = None
+        return self._trigger_time
+
+    def query_endstop(self, print_time):
+        return 1 if self._trigger_func() else 0
 
 
 class AFCFPSBuffer:
@@ -201,6 +264,14 @@ class AFCFPSBuffer:
             self.cmd_SET_FPS_SET_POINT, desc=self.cmd_SET_FPS_SET_POINT_help
         )
 
+        # Software endstop wrappers — provide the MCU endstop interface so
+        # klipper's homing system can use FPS thresholds like turtleneck switches.
+        # Advance endstop: triggers at high_point (buffer compressed, filament loaded)
+        # Trailing endstop: triggers at low_point (buffer stretched, spool stuck)
+        self.fps_endstop = FPSEndstopWrapper(self, lambda: self.buffer_triggered)
+        self.fps_trailing_endstop = FPSEndstopWrapper(
+            self, lambda: self.buffer_trailing_triggered)
+
         # Register with AFC buffer registry
         self.afc.buffers[self.name] = self
 
@@ -283,6 +354,25 @@ class AFCFPSBuffer:
     def get_fps_value(self) -> float:
         """Get current FPS pressure value (0.0-1.0)."""
         return self.fps_value
+
+    @property
+    def buffer_triggered(self) -> bool:
+        """True when FPS reading indicates the buffer is compressed (at high_point).
+
+        This is the FPS equivalent of the turtleneck advance switch being
+        triggered — used by tool_loaded_check to verify filament is loaded
+        into the toolhead without requiring a hardware endstop.
+        """
+        return self.smoothed_fps >= self.high_point
+
+    @property
+    def buffer_trailing_triggered(self) -> bool:
+        """True when FPS reading indicates the buffer is stretched (at low_point).
+
+        This is the FPS equivalent of the turtleneck trailing switch being
+        triggered — indicates the spool is not feeding fast enough or is stuck.
+        """
+        return self.smoothed_fps <= self.low_point
 
     # ------------------------------------------------------------------
     # ADC callback — runs at report_time intervals
