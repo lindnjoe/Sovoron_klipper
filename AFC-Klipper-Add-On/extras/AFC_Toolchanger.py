@@ -34,6 +34,9 @@ except: raise error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.form
 try: from extras.AFC import State
 except: raise error(ERROR_STR.format(import_lib="AFC", trace=traceback.format_exc()))
 
+try: from extras.AFC_lane import AFCLaneState
+except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
+
 # Toolchanger status constants
 STATUS_UNINITIALIZED = 'uninitialized'
 STATUS_INITIALIZING = 'initializing'
@@ -380,15 +383,76 @@ class AfcToolchanger(afcUnit):
                 raise
 
     def system_Test(self, cur_lane: AFCLane, delay: float, assignTcmd: str, enable_movement: bool):
-        if assignTcmd: self.afc.function.TcmdAssign(cur_lane)
-        # Now that a T command is assigned, send lane data to moonraker
-        cur_lane.send_lane_data()
         msg = ""
-        if( cur_lane.prep_state and cur_lane.load_state ):
-            msg = "<span class=success--text>LOADED</span> <span class=primary--text>in ToolHead</span>"
-        self.logger.raw( '{lane_name} tool cmd: {tcmd:3} {msg}'.format(lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))
+        succeeded = True
+
+        if not cur_lane.prep_state:
+            if not cur_lane.load_state:
+                self.lane_not_ready(cur_lane)
+                msg += 'EMPTY READY FOR SPOOL'
+            else:
+                self.lane_fault(cur_lane)
+                cur_lane.do_enable(False)
+                msg = '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
+                succeeded = False
+        else:
+            self.lane_loaded(cur_lane)
+            msg += "<span class=success--text>LOCKED</span>"
+            if not cur_lane.load_state:
+                msg += "<span class=error--text> NOT LOADED</span>"
+                self.lane_not_ready(cur_lane)
+                succeeded = False
+            else:
+                cur_lane.status = AFCLaneState.LOADED
+                msg += "<span class=success--text> AND LOADED</span>"
+                self.lane_illuminate_spool(cur_lane)
+
+                if (cur_lane.tool_loaded
+                    and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
+                    # Toolchangers can be direct-fed (no buffer/sensors),
+                    # so also trust on_shuttle() detection pin as validation
+                    tool_ready = (
+                        cur_lane.get_toolhead_pre_sensor_state()
+                        or cur_lane.extruder_obj.tool_start == "buffer"
+                        or cur_lane.extruder_obj.tool_end_state
+                        or cur_lane.extruder_obj.on_shuttle()
+                    )
+                    if tool_ready:
+                        cur_lane.sync_to_extruder()
+                        on_shuttle = ""
+                        if (cur_lane.extruder_obj.tool_obj
+                            and cur_lane.extruder_obj.tc_unit_name):
+                            on_shuttle = (
+                                " and toolhead on shuttle"
+                                if cur_lane.extruder_obj.on_shuttle()
+                                else ""
+                            )
+                        msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
+
+                        if (cur_lane.extruder_obj.tool_start == "buffer"
+                            and (not self.afc.homing_enabled
+                                 or not self.enable_buffer_tool_check)):
+                            msg += "<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>"
+
+                        if self.afc.current == cur_lane.name:
+                            self.afc.spool.set_active_spool(cur_lane.spool_id)
+                            self.lane_tool_loaded(cur_lane)
+                            cur_lane.status = AFCLaneState.TOOLED
+                        else:
+                            self.lane_tool_loaded_idle(cur_lane)
+
+                        cur_lane.enable_buffer()
+                    else:
+                        lane_check = self.afc.error.fix('toolhead', cur_lane)
+
+        if assignTcmd:
+            self.afc.function.TcmdAssign(cur_lane)
+        cur_lane.send_lane_data()
+        cur_lane.do_enable(False)
+        self.logger.raw('{lane_name} tool cmd: {tcmd:3} {msg}'.format(
+            lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))
         cur_lane.set_afc_prep_done()
-        return True
+        return succeeded
 
     # --- Private helper methods for tool change ---
 
