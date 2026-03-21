@@ -241,9 +241,29 @@ def _make_afc_extruder(name="extruder"):
     # Toolchanger stuff
     ext.tool_obj = None
     ext.tc_unit_name = None
+    ext.tc_unit_obj = None
+    ext.tc_lane = MagicMock()
     ext.tool = None
     ext.toolhead_leds = None
     ext.mutex = MagicMock()
+
+    # Native toolchanger fields
+    ext.fan_name = None
+    ext.fan = None
+    ext.extruder_stepper_name = None
+    ext.extruder_stepper = None
+    ext.tool_number = -1
+    ext.tool_probe = None
+    ext.gcode_x_offset = 0.0
+    ext.gcode_y_offset = 0.0
+    ext.gcode_z_offset = 0.0
+    ext.t_command_restore_axis = 'XYZ'
+    ext.detect_pin_name = None
+    ext.detect_state = -1
+    ext.resonance_chip = None
+    ext.custom_tool_swap = None
+    ext.custom_unselect = None
+    ext.map = None
     return ext
 
 
