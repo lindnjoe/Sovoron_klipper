@@ -323,6 +323,21 @@ class AfcToolchanger(afcUnit):
             self.status = STATUS_CHANGING
             self._save_state(restore_axis, tool)
 
+            # Validate active_tool against detection pins before dropoff.
+            # If detection says no tool is on shuttle, clear active_tool to
+            # prevent slamming into a docked tool during a phantom dropoff.
+            if self.active_tool and self.has_detection:
+                if self.active_tool.detect_state == DETECT_ABSENT:
+                    self.logger.info(
+                        "active_tool is %s but detection pin shows ABSENT, "
+                        "clearing active_tool to skip dropoff"
+                        % self.active_tool.name)
+                    gcmd.respond_info(
+                        "Warning: %s was marked active but is not detected "
+                        "on shuttle, skipping dropoff" % self.active_tool.name)
+                    self.active_tool.deactivate_tool()
+                    self.active_tool = None
+
             start_position = self._position_with_tool_offset(
                 self.last_change_gcode_position, tool)
             extra_context = {
