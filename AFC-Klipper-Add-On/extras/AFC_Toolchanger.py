@@ -162,9 +162,11 @@ class AfcToolchanger(afcUnit):
         position = bisect.bisect_left(self.tool_numbers, number)
         self.tool_numbers.insert(position, number)
         self.tool_names.insert(position, extruder.name)
-        # Update detection state
+        # Update detection state — check if any tool has a detection pin
+        # configured, not whether it has been sampled yet (detect_state
+        # starts at -1/UNAVAILABLE until the first callback fires).
         self.has_detection = any(
-            t.detect_state != DETECT_UNAVAILABLE for t in self.tools.values())
+            t.detect_pin_name is not None for t in self.tools.values())
         # Register T<n> gcode command
         self._register_t_command(extruder, number)
 
@@ -279,6 +281,16 @@ class AfcToolchanger(afcUnit):
 
         inferred = select_tool
         if inferred is None and self.has_detection:
+            # Detection pins may not have been sampled yet at startup.
+            # Klipper's buttons module queries every 2ms and only fires
+            # callbacks on state changes from 0.  A tool on the shuttle
+            # (pin=1) will trigger a callback, but it may not have
+            # arrived yet.  Wait briefly to let pin states settle.
+            if any(t.detect_pin_name and t.detect_state == DETECT_UNAVAILABLE
+                   for t in self.tools.values()):
+                reactor = self.printer.get_reactor()
+                pause_end = reactor.monotonic() + 0.5
+                reactor.pause(pause_end)
             inferred = self._require_detected_tool()
 
         # Safety: never trust an inferred tool unless its detection pin
