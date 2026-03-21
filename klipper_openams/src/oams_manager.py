@@ -1068,15 +1068,12 @@ class OAMSManager:
         nozzle rests on the dock pad while filament is loaded and purged.
         This keeps the shuttle at the dock and avoids wasted gantry moves.
         """
-        try:
-            tc = self.printer.lookup_object('toolchanger')
-        except Exception:
-            self.logger.warning("OAMS dock purge: toolchanger not found, skipping dropoff")
-            return
-        tool = tc.active_tool
-        if not tool:
+        cur_extruder = self.afc.function.get_current_extruder_obj()
+        tc = cur_extruder.tc_unit_obj if cur_extruder else None
+        if not tc or not tc.active_tool:
             self.logger.warning("OAMS dock purge: no active tool, skipping dropoff")
             return
+        tool = tc.active_tool
 
         gcode = self._gcode_obj
         if gcode is None:
@@ -1094,7 +1091,7 @@ class OAMSManager:
             'restore_position': tc._position_to_xyz(start_pos, 'XYZ'),
         }
 
-        tc.run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
+        tc._run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
         self.logger.info("OAMS dock purge: tool dropped off at dock")
 
     def _dock_purge_pickup(self):
@@ -1103,22 +1100,18 @@ class OAMSManager:
         Runs the toolchanger's pickup gcode (nozzle wipes on pad during pickup)
         and exits docking mode to restore normal operation.
         """
-        try:
-            tc = self.printer.lookup_object('toolchanger')
-        except Exception:
-            self.logger.warning("OAMS dock purge: toolchanger not found, skipping pickup")
-            return
-        tool = tc.active_tool
-        if not tool or not hasattr(self, '_dock_purge_context') or self._dock_purge_context is None:
+        cur_extruder = self.afc.function.get_current_extruder_obj()
+        tc = cur_extruder.tc_unit_obj if cur_extruder else None
+        if not tc or not tc.active_tool or not hasattr(self, '_dock_purge_context') or self._dock_purge_context is None:
             self.logger.warning("OAMS dock purge: no context for pickup, skipping")
             return
+        tool = tc.active_tool
 
+        tc._run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
         gcode = self._gcode_obj
         if gcode is None:
             gcode = self.printer.lookup_object("gcode")
             self._gcode_obj = gcode
-
-        tc.run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
         gcode.run_script_from_command("EXIT_DOCKING_MODE")
         self._dock_purge_context = None
         self.logger.info("OAMS dock purge: tool picked up from dock")
