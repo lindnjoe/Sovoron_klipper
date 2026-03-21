@@ -4958,6 +4958,11 @@ class OAMSManager:
                     f"Unload failed during stuck spool recovery for {lane_name}: {unload_msg}. "
                     f"Hardware is still loaded - aborting recovery."
                 )
+                # Clear stale action_status so the OAMS is not permanently stuck "busy"
+                if getattr(oam, 'action_status', None) is not None:
+                    self.logger.debug(f"Clearing stale OAMS action_status after failed recovery unload for {lane_name}")
+                    oam.action_status = None
+                    oam.action_status_code = None
                 return False
             # Clear error LED after successful unload
             if fps_state.stuck_spool.active and fps_state.current_spool_idx is not None:
@@ -5077,10 +5082,18 @@ class OAMSManager:
                     self.logger.error(f"Skipping stuck spool recovery commands for {fps_name} because OAMS MCU is not ready")
 
                 fps_state.engagement_retry_active = False
+                # Clean up stale OAMS state so hardware is not stuck "busy"
+                if oam is not None and getattr(oam, 'action_status', None) is not None:
+                    oam.action_status = None
+                    oam.action_status_code = None
                 return False, error_msg
 
             # Not max retries yet - perform recovery sequence
             if not self._perform_stuck_spool_recovery(fps_name, fps_state, oam, lane_name, stuck_attempt):
+                # Clean up stale OAMS state after failed recovery
+                if oam is not None and getattr(oam, 'action_status', None) is not None:
+                    oam.action_status = None
+                    oam.action_status_code = None
                 return False, f"Failed to recover from stuck spool on {lane_name}"
 
         return False, f"Failed to load {lane_name} after {self.stuck_spool_max_attempts} stuck spool attempts"
@@ -5551,6 +5564,21 @@ class OAMSManager:
         fps_state.engagement_retry_active = False
 
         if not load_success:
+            # Clean up fps_state on failure to prevent stale LOADING state
+            # that would block subsequent load attempts or confuse the monitor
+            if fps_state.state == FPSLoadState.LOADING:
+                fps_state.state = FPSLoadState.UNLOADED
+            fps_state.clear_encoder_samples()
+            fps_state.reset_stuck_spool_state()
+            # Reset OAMS action_status if it got stuck (e.g., from a cancelled
+            # load that never received its response callback)
+            if oam is not None and getattr(oam, 'action_status', None) is not None:
+                self.logger.debug(
+                    f"Clearing stale OAMS action_status ({oam.action_status}) "
+                    f"after failed load for {lane_name}"
+                )
+                oam.action_status = None
+                oam.action_status_code = None
             return False, last_error or f"Failed to load lane {lane_name}"
 
         old_lane = fps_state.current_lane
@@ -7176,6 +7204,14 @@ class OAMSManager:
             return
 
         if fps_state.stuck_spool.active:
+            return
+
+        # Skip if OAMS hardware is not actually loading (e.g., auto-unloading between
+        # retries in load_spool_with_retry).  fps_state may still be LOADING but the
+        # hardware has moved on to an unload — checking load speed here would falsely
+        # detect a stuck spool because encoder/pressure are zero during unload.
+        oams_action = getattr(oams, 'action_status', None) if oams else None
+        if oams_action is not None and oams_action != OAMSStatus.LOADING:
             return
 
         # Skip check if we don't have a valid since timestamp
