@@ -659,12 +659,15 @@ class afcACE(afcUnit):
 
         Enters docking mode and runs the toolchanger's dropoff gcode so the
         nozzle rests on the dock pad while filament is loaded and purged.
+        Uses the native AFC toolchanger engine.
         """
-        tc = self.printer.lookup_object('toolchanger')
-        tool = tc.active_tool
-        if not tool:
+        # Find the AFC_Toolchanger unit for the current extruder
+        cur_extruder = self.afc.function.get_current_extruder_obj()
+        tc = cur_extruder.tc_unit_obj if cur_extruder else None
+        if not tc or not tc.active_tool:
             self.logger.warning("ACE dock purge: no active tool, skipping dropoff")
             return
+        tool = tc.active_tool
 
         self.afc.gcode.run_script_from_command("ENTER_DOCKING_MODE")
 
@@ -677,21 +680,23 @@ class afcACE(afcUnit):
             'restore_position': tc._position_to_xyz(start_pos, 'XYZ'),
         }
 
-        tc.run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
+        tc._run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
 
     def _dock_purge_pickup(self):
         """Pick up tool from dock after purging.
 
         Runs the toolchanger's pickup gcode (nozzle wipes on pad during pickup)
         and exits docking mode to restore normal operation.
+        Uses the native AFC toolchanger engine.
         """
-        tc = self.printer.lookup_object('toolchanger')
-        tool = tc.active_tool
-        if not tool or not hasattr(self, '_dock_purge_context'):
+        cur_extruder = self.afc.function.get_current_extruder_obj()
+        tc = cur_extruder.tc_unit_obj if cur_extruder else None
+        if not tc or not tc.active_tool or not hasattr(self, '_dock_purge_context'):
             self.logger.warning("ACE dock purge: no context for pickup, skipping")
             return
+        tool = tc.active_tool
 
-        tc.run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
+        tc._run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
         self.afc.gcode.run_script_from_command("EXIT_DOCKING_MODE")
         self._dock_purge_context = None
 
