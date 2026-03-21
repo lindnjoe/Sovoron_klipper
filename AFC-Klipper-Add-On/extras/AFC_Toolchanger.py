@@ -409,10 +409,13 @@ class AfcToolchanger(afcUnit):
 
                 if (cur_lane.tool_loaded
                     and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
+                    # Toolchangers can be direct-fed (no buffer/sensors),
+                    # so also trust on_shuttle() detection pin as validation
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
                         or cur_lane.extruder_obj.tool_start == "buffer"
                         or cur_lane.extruder_obj.tool_end_state
+                        or cur_lane.extruder_obj.on_shuttle()
                     )
                     if tool_ready:
                         cur_lane.sync_to_extruder()
