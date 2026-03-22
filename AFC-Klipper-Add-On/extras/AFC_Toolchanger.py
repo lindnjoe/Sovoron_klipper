@@ -474,8 +474,8 @@ class AfcToolchanger(afcUnit):
                     if tool_ready:
                         cur_lane.sync_to_extruder()
                         on_shuttle = ""
-                        if (cur_lane.extruder_obj.tool_obj
-                            and cur_lane.extruder_obj.tc_unit_name):
+                        if (cur_lane.extruder_obj.tc_unit_obj
+                            or cur_lane.extruder_obj.tool_obj):
                             on_shuttle = (
                                 " and toolhead on shuttle"
                                 if cur_lane.extruder_obj.on_shuttle()
