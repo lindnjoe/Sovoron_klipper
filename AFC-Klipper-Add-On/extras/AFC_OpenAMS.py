@@ -3663,13 +3663,11 @@ class afcAMS(afcUnit):
             return
 
         if hub_val != getattr(lane, "loaded_to_hub", False):
+            hub.switch_pin_callback(eventtime, hub_val)
             # Update lane.loaded_to_hub to match hub sensor state
             # This field is reported to Mainsail via lane.get_status()
+            # Without this, Mainsail shows stale hub status even when hardware sensor is correct
             lane.loaded_to_hub = hub_val
-
-        # Set virtual hub state directly from hardware hub sensor
-        if hub._state != hub_val:
-            hub.switch_pin_callback(eventtime, hub_val)
             fila = getattr(hub, "fila", None)
             if fila is not None:
                 fila.runout_helper.note_filament_present(eventtime, hub_val)
@@ -3716,6 +3714,19 @@ class afcAMS(afcUnit):
                     current = getattr(lane, "loaded_to_hub", False)
                     if hw_hub != current:
                         lane.loaded_to_hub = hw_hub
+                        hub_obj = getattr(lane, "hub_obj", None)
+                        if hub_obj is not None:
+                            try:
+                                if hasattr(hub_obj, "switch_pin_callback"):
+                                    hub_obj.switch_pin_callback(eventtime, hw_hub)
+                                fila = getattr(hub_obj, "fila", None)
+                                if fila is not None and hasattr(fila, "runout_helper"):
+                                    fila.runout_helper.note_filament_present(eventtime, hw_hub)
+                            except Exception as hub_e:
+                                self.logger.debug(
+                                    f"sync_openams_sensors: failed to update virtual hub sensor "
+                                    f"for {lane.name}: {hub_e}"
+                                )
                         self.logger.debug(
                             f"sync_openams_sensors: corrected loaded_to_hub "
                             f"{current}->{hw_hub} for {lane.name}"
@@ -3739,31 +3750,6 @@ class afcAMS(afcUnit):
                                 lane.prep_callback(eventtime, hw_f1s)
             except Exception as e:
                 self.logger.debug(f"sync_openams_sensors: error syncing {getattr(lane, 'name', '?')}: {e}")
-
-        # Reconcile virtual hub state from hardware hub sensors.
-        # Each OpenAMS lane has its own hub sensor (hub_hes_value) and its
-        # own virtual hub object.  Set hub._state directly from the hardware
-        # sensor so Mainsail displays the correct hub status.
-        if sync_hub and hub_values is not None:
-            for lane in self.lanes.values():
-                hub_obj = getattr(lane, "hub_obj", None)
-                if hub_obj is None:
-                    continue
-                try:
-                    spool_idx = self._get_openams_spool_index(lane)
-                    if spool_idx is None or spool_idx < 0 or spool_idx >= len(hub_values):
-                        continue
-                    hw_hub = bool(hub_values[spool_idx])
-                    if hasattr(hub_obj, "switch_pin_callback"):
-                        hub_obj.switch_pin_callback(eventtime, hw_hub)
-                    fila = getattr(hub_obj, "fila", None)
-                    if fila is not None and hasattr(fila, "runout_helper"):
-                        fila.runout_helper.note_filament_present(eventtime, hw_hub)
-                except Exception as hub_e:
-                    self.logger.debug(
-                        f"sync_openams_sensors: failed to reconcile virtual hub "
-                        f"for {getattr(hub_obj, 'name', '?')}: {hub_e}"
-                    )
 
     def _should_block_sensor_update_for_runout(self, lane, lane_val):
         """Check if sensor update should be blocked due to active runout.
