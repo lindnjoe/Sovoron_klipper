@@ -292,6 +292,9 @@ class AFCExtruder:
 
         # Gcode templates for toolchanger pickup/dropoff
         self._gcode_macro = self.printer.load_object(config, 'gcode_macro')
+        # Track whether tool has its own gcode (vs inheriting from toolchanger)
+        self._has_pickup_gcode = config.get('pickup_gcode', None) is not None
+        self._has_dropoff_gcode = config.get('dropoff_gcode', None) is not None
         self.pickup_gcode = self._gcode_macro.load_template(
             config, 'pickup_gcode', config.get('pickup_gcode', ''))
         self.dropoff_gcode = self._gcode_macro.load_template(
@@ -303,7 +306,8 @@ class AFCExtruder:
 
         # Params dict for gcode template context (mirrors KTC params_ prefix)
         self.params = {}
-        for option in config.get_prefix_options('params_'):
+        self._tool_params_keys = set(config.get_prefix_options('params_'))
+        for option in self._tool_params_keys:
             try:
                 import ast
                 self.params[option] = ast.literal_eval(config.get(option))
@@ -447,6 +451,16 @@ class AFCExtruder:
                 # Register this extruder as a tool with the native toolchanger
                 if self.tool_number >= 0:
                     self.tc_unit_obj.register_tool(self, self.tool_number)
+                # Inherit toolchanger defaults: params, pickup/dropoff gcode
+                tc = self.tc_unit_obj
+                if hasattr(tc, 'default_params'):
+                    for key, val in tc.default_params.items():
+                        if key not in self._tool_params_keys:
+                            self.params[key] = val
+                if not self._has_pickup_gcode and hasattr(tc, 'default_pickup_gcode'):
+                    self.pickup_gcode = tc.default_pickup_gcode
+                if not self._has_dropoff_gcode and hasattr(tc, 'default_dropoff_gcode'):
+                    self.dropoff_gcode = tc.default_dropoff_gcode
 
         except:
             raise error(

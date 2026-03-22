@@ -74,6 +74,21 @@ class AfcToolchanger(afcUnit):
             config, 'before_change_gcode', config.get('before_change_gcode', ''))
         self.default_after_change_gcode = self.gcode_macro.load_template(
             config, 'after_change_gcode', config.get('after_change_gcode', ''))
+        self.default_pickup_gcode = self.gcode_macro.load_template(
+            config, 'pickup_gcode', config.get('pickup_gcode', ''))
+        self.default_dropoff_gcode = self.gcode_macro.load_template(
+            config, 'dropoff_gcode', config.get('dropoff_gcode', ''))
+
+        # Default params (inherited by tools that don't specify their own)
+        self.default_params = {}
+        for option in config.get_prefix_options('params_'):
+            try:
+                import ast
+                self.default_params[option] = ast.literal_eval(config.get(option))
+            except ValueError:
+                raise config.error(
+                    "Option '%s' in section '%s' is not a valid literal" % (
+                        option, config.get_name()))
         self.initialize_gcode = self.gcode_macro.load_template(
             config, 'initialize_gcode', config.get('initialize_gcode', ''))
         self.error_gcode = None
