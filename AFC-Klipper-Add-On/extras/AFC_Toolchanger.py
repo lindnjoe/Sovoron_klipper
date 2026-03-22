@@ -431,8 +431,27 @@ class AfcToolchanger(afcUnit):
                 gcmd.respond_info('Tool unselected')
 
         except gcmd.error:
+            # Restore gcode state/transform so the toolhead isn't left with
+            # zeroed offsets in an undefined position.
+            try:
+                self._restore_state_and_transform(self.active_tool)
+            except Exception:
+                pass  # best-effort
+            # Run error_gcode if configured so the user's macro can move
+            # the toolhead to a safe position (e.g. safe Y, clear docks).
+            if self.error_gcode:
+                try:
+                    error_context = {
+                        'status': self.status,
+                        'error_message': self.error_message,
+                    }
+                    self._run_gcode('error_gcode', self.error_gcode,
+                                    error_context)
+                except Exception:
+                    pass  # best-effort
             if self.status == STATUS_ERROR:
-                pass  # Error handling already ran
+                self.logger.error(
+                    "select_tool failed: %s" % self.error_message)
             else:
                 raise
 
@@ -757,11 +776,22 @@ class AfcToolchanger(afcUnit):
             if tool_index < 0:
                 name = lane.extruder_obj.name
                 tool_index = 0 if name == "extruder" else int(name.replace("extruder", ""))
+
+            # Log current vs target tool so mixups are visible in the log
+            current_tool_name = (self.active_tool.name
+                                 if self.active_tool else "None")
+            current_tool_num = (self.active_tool.tool_number
+                                if self.active_tool else -1)
+            self.logger.info(
+                "tool_swap: dropping off T%s (%s), picking up T%d (%s)"
+                % (current_tool_num, current_tool_name,
+                   tool_index, lane.extruder_obj.name))
+
             self.afc.gcode.run_script_from_command(
                 'SELECT_TOOL T={}'.format(tool_index))
 
-        # select_tool() silently swallows detection errors (status=ERROR)
-        # without re-raising.  Catch that here so we fail fast instead of
+        # select_tool() may swallow detection errors (status=ERROR) in its
+        # except block.  Catch that here so we fail fast instead of
         # discovering it much later (e.g. during dock purge).
         if self.status == STATUS_ERROR:
             raise Exception(
