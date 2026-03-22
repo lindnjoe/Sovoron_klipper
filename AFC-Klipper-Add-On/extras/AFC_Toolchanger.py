@@ -355,21 +355,6 @@ class AfcToolchanger(afcUnit):
             self.status = STATUS_CHANGING
             self._save_state(restore_axis, tool)
 
-            # Validate active_tool against detection pins before dropoff.
-            # If detection says no tool is on shuttle, clear active_tool to
-            # prevent slamming into a docked tool during a phantom dropoff.
-            if self.active_tool and self.has_detection:
-                if self.active_tool.detect_state == DETECT_ABSENT:
-                    self.logger.info(
-                        "active_tool is %s but detection pin shows ABSENT, "
-                        "clearing active_tool to skip dropoff"
-                        % self.active_tool.name)
-                    gcmd.respond_info(
-                        "Warning: %s was marked active but is not detected "
-                        "on shuttle, skipping dropoff" % self.active_tool.name)
-                    self.active_tool.deactivate_tool()
-                    self.active_tool = None
-
             start_position = self._position_with_tool_offset(
                 self.last_change_gcode_position, tool)
             extra_context = {
@@ -390,31 +375,6 @@ class AfcToolchanger(afcUnit):
 
             self._configure_toolhead_for_tool(tool)
             if tool is not None:
-                # Safety: verify shuttle is empty before pickup.  After
-                # dropoff no detection pin should read PRESENT.  If one
-                # does, a tool is still physically on the shuttle and
-                # picking up another would cause a collision.
-                if self.has_detection:
-                    on_shuttle = self._require_detected_tool()
-                    if on_shuttle is not None and on_shuttle != tool:
-                        self.status = STATUS_ERROR
-                        self.error_message = (
-                            'Cannot pick up %s: %s is still detected '
-                            'on shuttle after dropoff' % (
-                                tool.name, on_shuttle.name))
-                        raise gcmd.error(
-                            '%s: %s' % (self.config.get_name(),
-                                        self.error_message))
-                    # Also verify target tool is in its dock, not already
-                    # on shuttle.
-                    if tool.detect_state == DETECT_PRESENT:
-                        self.status = STATUS_ERROR
-                        self.error_message = (
-                            'Cannot pick up %s: detection pin shows tool '
-                            'is already on shuttle, not in dock' % tool.name)
-                        raise gcmd.error(
-                            '%s: %s' % (self.config.get_name(),
-                                        self.error_message))
                 self._run_gcode('tool.pickup_gcode',
                                tool.pickup_gcode, extra_context)
                 if self.has_detection and self.verify_tool_pickup:
@@ -431,27 +391,8 @@ class AfcToolchanger(afcUnit):
                 gcmd.respond_info('Tool unselected')
 
         except gcmd.error:
-            # Restore gcode state/transform so the toolhead isn't left with
-            # zeroed offsets in an undefined position.
-            try:
-                self._restore_state_and_transform(self.active_tool)
-            except Exception:
-                pass  # best-effort
-            # Run error_gcode if configured so the user's macro can move
-            # the toolhead to a safe position (e.g. safe Y, clear docks).
-            if self.error_gcode:
-                try:
-                    error_context = {
-                        'status': self.status,
-                        'error_message': self.error_message,
-                    }
-                    self._run_gcode('error_gcode', self.error_gcode,
-                                    error_context)
-                except Exception:
-                    pass  # best-effort
             if self.status == STATUS_ERROR:
-                self.logger.error(
-                    "select_tool failed: %s" % self.error_message)
+                pass  # process_error already handled recovery
             else:
                 raise
 
@@ -654,8 +595,43 @@ class AfcToolchanger(afcUnit):
             expected_name = expected.name if expected else "None"
             actual_name = actual.name if actual else "None"
             message = "Expected tool %s but detected %s" % (expected_name, actual_name)
-            if raise_error:
-                raise raise_error(message)
+            self.process_error(raise_error, message)
+
+    def process_error(self, raise_error, message):
+        """Handle toolchanger errors with proper state recovery.
+
+        Matches the KTC error handling pattern:
+        1. Set ERROR status
+        2. Restore gcode state so offsets aren't zeroed
+        3. Run error_gcode (e.g. M112, safe Y move) with position context
+        4. Raise the error
+        """
+        self.status = STATUS_ERROR
+        self.error_message = message
+        is_inside_toolchange = self.status == STATUS_ERROR  # was STATUS_CHANGING
+
+        if self.error_gcode:
+            extra_context = {}
+            if self.last_change_gcode_position is not None:
+                start_position = self._position_with_tool_offset(
+                    self.last_change_gcode_position,
+                    self.last_change_pickup_tool)
+                extra_context = {
+                    'start_position': self._position_to_xyz(
+                        start_position, 'xyz'),
+                    'restore_position': self._position_to_xyz(
+                        start_position,
+                        self.last_change_restore_axis or 'XYZ'),
+                    'pickup_tool': self.last_change_pickup_tool,
+                }
+                # Restore gcode state without moving so error_gcode
+                # can run PAUSE and capture the correct resume position.
+                self.gcode.run_script_from_command(
+                    "RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0")
+            self._run_gcode('error_gcode', self.error_gcode, extra_context)
+
+        if raise_error:
+            raise raise_error(message)
 
     def _gcmd_tool(self, gcmd, default=None):
         """Resolve tool from TOOL= or T= gcode parameters."""
@@ -789,16 +765,6 @@ class AfcToolchanger(afcUnit):
 
             self.afc.gcode.run_script_from_command(
                 'SELECT_TOOL T={}'.format(tool_index))
-
-        # select_tool() may swallow detection errors (status=ERROR) in its
-        # except block.  Catch that here so we fail fast instead of
-        # discovering it much later (e.g. during dock purge).
-        if self.status == STATUS_ERROR:
-            self.afc.error.AFC_error(
-                'Tool swap failed: %s' % self.error_message,
-                pause=self.afc.function.in_print())
-            self.afc.current_state = State.IDLE
-            return
 
         # Activate the correct klipper extruder for this toolhead
         lane.activate_toolhead_extruder()
