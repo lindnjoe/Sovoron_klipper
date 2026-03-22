@@ -815,9 +815,6 @@ class AfcToolchanger(afcUnit):
         self.afc.current_state = State.TOOL_SWAP
         self._increase_unselect()
         self.afc.function.log_toolhead_pos("Before toolswap: ")
-        # Save the current position before switching tools and subtract offsets
-        for i in range(0, 3):
-            self.afc.last_gcode_position[i] -= self.afc.gcode_move.base_position[i]
 
         self.afc.afcDeltaTime.log_with_time("Performing tool swap")
 
@@ -855,12 +852,13 @@ class AfcToolchanger(afcUnit):
             self.afc.afc_stats.average_tool_swap_time.average_time(
                 self.afc.afcDeltaTime.delta_time)
         self.afc.current_state = State.IDLE
-        # Update the base position and homing position after the tool swap.
-        self.afc.base_position   = list(self.afc.gcode_move.base_position)
-        self.afc.homing_position = list(self.afc.gcode_move.homing_position)
-        # Update the last_gcode_position to reflect the new base position.
-        for i in range(0, 3):
-            self.afc.last_gcode_position[i] += self.afc.gcode_move.base_position[i]
+        # Re-capture AFC's position state from gcode_move after the swap.
+        # SELECT_TOOL already restored the gcode state and applied the new
+        # tool's offset transform, so these values are now correct for the
+        # new tool's coordinate system.
+        self.afc.base_position    = list(self.afc.gcode_move.base_position)
+        self.afc.homing_position  = list(self.afc.gcode_move.homing_position)
+        self.afc.last_gcode_position = list(self.afc.gcode_move.last_position)
 
         self.afc.function.log_toolhead_pos("After toolswap: ")
         lane.extruder_obj.estats.tool_selected.increase_count()
