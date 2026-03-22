@@ -279,10 +279,13 @@ class AFCExtruder:
         self.detect_state: int = -1  # -1=unavailable, 0=absent, 1=present
         if self.detect_pin_name:
             buttons.register_buttons([self.detect_pin_name], self._handle_detect)
-            # Leave detect_state as -1 (unavailable) until the first callback
-            # fires with a real reading.  Defaulting to 1 (PRESENT) caused the
-            # toolchanger to think ALL tools were on the shuttle before pins
-            # were actually sampled, leading to false tool activation.
+            # Default to PRESENT (1) matching KTC behaviour.  Klipper's
+            # buttons module only fires callbacks on state *changes* from
+            # last_button=0.  A tool on the shuttle has its pin LOW (no
+            # change from 0), so its callback never fires — keeping the
+            # default PRESENT is correct.  Docked tools have pins HIGH,
+            # so their callbacks fire immediately and set ABSENT (0).
+            self.detect_state = 1
         self.resonance_chip: Optional[str] = config.get('resonance_chip', None)
 
         # Tool probe reference (for optotap/tool_probe setups)
