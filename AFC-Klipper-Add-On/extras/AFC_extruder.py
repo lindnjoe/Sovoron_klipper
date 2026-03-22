@@ -1049,6 +1049,11 @@ class AFCExtruder:
         self.response['tool_end_status'] = bool(self.tool_end_state)
         self.response['lanes'] = [lane.name for lane in self.lanes.values()]
         self.response['on_shuttle'] = self.on_shuttle()
+        # Expose params and tool identity for gcode macros (e.g. DOCK_TUNER)
+        self.response.update(self.params)
+        self.response['name'] = self.name
+        self.response['tool_number'] = self.tool_number
+        self.response['extruder'] = self.name
         return self.response
 
 def load_config_prefix(config):
