@@ -136,6 +136,12 @@ class AfcToolchanger(afcUnit):
         self.gcode.register_command("EXIT_DOCKING_MODE",
                                     self.cmd_EXIT_DOCKING_MODE,
                                     desc="Exit docking mode")
+        self.gcode.register_command("SET_TOOL_PARAMETER",
+                                    self.cmd_SET_TOOL_PARAMETER,
+                                    desc="Set a tool parameter at runtime")
+        self.gcode.register_command("SAVE_TOOL_PARAMETER",
+                                    self.cmd_SAVE_TOOL_PARAMETER,
+                                    desc="Save a tool parameter to config")
 
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_tc_connect)
@@ -278,6 +284,42 @@ class AfcToolchanger(afcUnit):
                 "Cannot exit docking mode, status is %s" % self.status)
         self._restore_state_and_transform(self.active_tool)
         self.status = STATUS_READY
+
+    def _resolve_tool_from_gcmd(self, gcmd):
+        """Look up a tool by T=<number> from a gcode command."""
+        tn = gcmd.get_int('T', None)
+        if tn is None:
+            raise gcmd.error("SET_TOOL_PARAMETER/SAVE_TOOL_PARAMETER requires T=<tool_number>")
+        tool = self.tools.get(tn)
+        if tool is None:
+            raise gcmd.error("Tool T%d not found" % tn)
+        return tool
+
+    def cmd_SET_TOOL_PARAMETER(self, gcmd):
+        """Set a tool parameter at runtime.
+        Usage: SET_TOOL_PARAMETER T=<num> PARAMETER=<name> VALUE=<value>
+        """
+        tool = self._resolve_tool_from_gcmd(gcmd)
+        param = gcmd.get('PARAMETER')
+        raw_value = gcmd.get('VALUE')
+        import ast
+        try:
+            value = ast.literal_eval(raw_value)
+        except (ValueError, SyntaxError):
+            value = raw_value
+        tool.params[param] = value
+
+    def cmd_SAVE_TOOL_PARAMETER(self, gcmd):
+        """Save a tool parameter to config file.
+        Usage: SAVE_TOOL_PARAMETER T=<num> PARAMETER=<name>
+        """
+        tool = self._resolve_tool_from_gcmd(gcmd)
+        param = gcmd.get('PARAMETER')
+        if param not in tool.params:
+            raise gcmd.error("Parameter '%s' not found on tool T%d" % (
+                param, tool.tool_number))
+        self.functions.ConfigRewrite(
+            tool.fullname, param, tool.params[param], '')
 
     # --- Core tool change engine ---
 
