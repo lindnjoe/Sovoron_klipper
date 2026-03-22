@@ -457,7 +457,7 @@ class AfcToolchanger(afcUnit):
 
                         cur_lane.enable_buffer()
                     else:
-                        lane_check = self.afc.error.fix('toolhead', cur_lane)
+                        self.afc.error.fix('toolhead', cur_lane)
 
         if assignTcmd:
             self.afc.function.TcmdAssign(cur_lane)
@@ -606,9 +606,9 @@ class AfcToolchanger(afcUnit):
         3. Run error_gcode (e.g. M112, safe Y move) with position context
         4. Raise the error
         """
+        is_inside_toolchange = self.status == STATUS_CHANGING
         self.status = STATUS_ERROR
         self.error_message = message
-        is_inside_toolchange = self.status == STATUS_ERROR  # was STATUS_CHANGING
 
         if self.error_gcode:
             extra_context = {}
