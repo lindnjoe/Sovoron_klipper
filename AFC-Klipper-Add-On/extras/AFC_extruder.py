@@ -840,8 +840,10 @@ class AFCExtruder:
     # --- Native toolchanger tool methods (replaces KTC Tool class) ---
 
     def _handle_detect(self, eventtime, is_triggered):
-        """Callback for tool detection pin (e.g., optotap)."""
-        self.detect_state = 1 if is_triggered else 0
+        """Callback for tool detection pin (e.g., optotap).
+        Matches KTC logic: triggered means tool is in its dock (ABSENT
+        from shuttle), not triggered means tool is on the shuttle (PRESENT)."""
+        self.detect_state = 0 if is_triggered else 1
         if self.tc_unit_obj:
             self.tc_unit_obj.note_detect_change(self, eventtime)
 
@@ -908,7 +910,7 @@ class AFCExtruder:
         # Use native detect_state if available
         if self.detect_pin_name is not None:
             if self.tc_unit_obj:
-                return (self.tc_unit_obj.is_tool_present(self) or
+                return (self.detect_state == 1 or
                         self.tc_unit_obj.active_tool == self)
             return self.detect_state == 1
 

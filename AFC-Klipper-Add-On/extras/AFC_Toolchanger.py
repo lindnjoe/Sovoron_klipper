@@ -68,7 +68,6 @@ class AfcToolchanger(afcUnit):
         self.require_tool_present: bool = config.getboolean('require_tool_present', True)
         self.verify_tool_pickup: bool = config.getboolean('verify_tool_pickup', True)
         self.transfer_fan_speed: bool = config.getboolean('transfer_fan_speed', True)
-        self.detect_active_low: bool = config.getboolean('detect_active_low', False)
 
         # Default gcode templates (can be overridden per-tool in AFC_extruder)
         self.default_before_change_gcode = self.gcode_macro.load_template(
@@ -189,29 +188,12 @@ class AfcToolchanger(afcUnit):
     def get_selected_tool(self):
         return self.active_tool
 
-    def is_tool_present(self, tool):
-        """Check if a tool's detect pin indicates it is on the shuttle.
-        With detect_active_low=True, pin=0 means present (active-low sensors
-        like optotap that pull low when triggered by the shuttle).
-        With detect_active_low=False (default), pin=1 means present."""
-        if tool.detect_state == DETECT_UNAVAILABLE:
-            return False
-        if self.detect_active_low:
-            return tool.detect_state == DETECT_ABSENT
-        return tool.detect_state == DETECT_PRESENT
-
-    def is_tool_absent(self, tool):
-        """Check if a tool's detect pin indicates it is NOT on the shuttle."""
-        if tool.detect_state == DETECT_UNAVAILABLE:
-            return False
-        return not self.is_tool_present(tool)
-
     def note_detect_change(self, extruder, eventtime):
         """Called by AFC_extruder when a detection pin changes state."""
         detected = None
         detected_names = []
         for tool in self.tools.values():
-            if self.is_tool_present(tool):
+            if tool.detect_state == DETECT_PRESENT:
                 detected = tool
                 detected_names.append(tool.name)
         if len(detected_names) > 1:
@@ -322,12 +304,9 @@ class AfcToolchanger(afcUnit):
                         % ', '.join(still_unsampled))
             # Log all detection pin states for debugging
             pin_states = ', '.join(
-                '%s=%d(%s)' % (t.name, t.detect_state,
-                               'present' if self.is_tool_present(t) else 'absent')
+                '%s=%d' % (t.name, t.detect_state)
                 for t in self.tools.values() if t.detect_pin_name)
-            self.logger.info(
-                "Detection pin states (active_low=%s): %s"
-                % (self.detect_active_low, pin_states))
+            self.logger.info("Detection pin states: %s" % pin_states)
             inferred = self._require_detected_tool()
             self.logger.info(
                 "Inferred tool from detection: %s"
@@ -337,10 +316,10 @@ class AfcToolchanger(afcUnit):
         # positively confirms it is on the shuttle.  This prevents
         # activating a tool from stale state or unsampled pins.
         if inferred and self.has_detection:
-            if not self.is_tool_present(inferred):
+            if inferred.detect_state != DETECT_PRESENT:
                 self.logger.info(
                     "Rejecting inferred tool %s during init: "
-                    "detection pin is %d (not present on shuttle)"
+                    "detection pin is %d (not PRESENT)"
                     % (inferred.name, inferred.detect_state))
                 inferred = None
 
@@ -393,9 +372,9 @@ class AfcToolchanger(afcUnit):
             # If detection says no tool is on shuttle, clear active_tool to
             # prevent slamming into a docked tool during a phantom dropoff.
             if self.active_tool and self.has_detection:
-                if self.is_tool_absent(self.active_tool):
+                if self.active_tool.detect_state == DETECT_ABSENT:
                     self.logger.info(
-                        "active_tool is %s but detection pin shows not present, "
+                        "active_tool is %s but detection pin shows ABSENT, "
                         "clearing active_tool to skip dropoff"
                         % self.active_tool.name)
                     gcmd.respond_info(
@@ -441,7 +420,7 @@ class AfcToolchanger(afcUnit):
                                         self.error_message))
                     # Also verify target tool is in its dock, not already
                     # on shuttle.
-                    if self.is_tool_present(tool):
+                    if tool.detect_state == DETECT_PRESENT:
                         self.status = STATUS_ERROR
                         self.error_message = (
                             'Cannot pick up %s: detection pin shows tool '
@@ -655,7 +634,7 @@ class AfcToolchanger(afcUnit):
         detected = None
         detected_count = 0
         for tool in self.tools.values():
-            if self.is_tool_present(tool):
+            if tool.detect_state == DETECT_PRESENT:
                 detected = tool
                 detected_count += 1
         if detected_count != 1:
