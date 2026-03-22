@@ -655,6 +655,14 @@ class afcACE(afcUnit):
             return
         tool = tc.active_tool
 
+        # If the toolchanger is in error (e.g. detection failure during a
+        # prior tool swap), re-initialize before attempting docking mode.
+        if tc.status == 'error':
+            self.logger.warning(
+                "ACE dock purge: toolchanger in error state (%s), "
+                "re-initializing" % tc.error_message)
+            tc.initialize(tc.active_tool)
+
         self.afc.gcode.run_script_from_command("ENTER_DOCKING_MODE")
 
         gcode_pos = list(tc.gcode_move.get_status()['gcode_position'])

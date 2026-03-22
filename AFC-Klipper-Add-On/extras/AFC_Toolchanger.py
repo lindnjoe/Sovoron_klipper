@@ -760,6 +760,13 @@ class AfcToolchanger(afcUnit):
             self.afc.gcode.run_script_from_command(
                 'SELECT_TOOL T={}'.format(tool_index))
 
+        # select_tool() silently swallows detection errors (status=ERROR)
+        # without re-raising.  Catch that here so we fail fast instead of
+        # discovering it much later (e.g. during dock purge).
+        if self.status == STATUS_ERROR:
+            raise Exception(
+                'Tool swap failed: %s' % self.error_message)
+
         # Activate the correct klipper extruder for this toolhead
         lane.activate_toolhead_extruder()
         # Sync AFC lane state (enable buffer, stepper, etc.)
