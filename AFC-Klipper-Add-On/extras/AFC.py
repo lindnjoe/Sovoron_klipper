@@ -1012,9 +1012,11 @@ class afc:
         self.gcode_move.move_with_transform(newpos, self._get_resume_speed() )
         self.function.log_toolhead_pos("Resume prev xy: ")
 
-        # Update GCODE STATE variables
-        self.gcode_move.base_position       = list(self.base_position)
-        self.gcode_move.homing_position     = list(self.homing_position)
+        # Restore modal gcode state (speed, coord mode, extrude factor).
+        # Do NOT overwrite base_position or homing_position here — after a
+        # tool swap the toolchanger engine (SELECT_TOOL) has already set them
+        # correctly for the new tool's offset transform.  Overwriting with
+        # pre-swap values would corrupt the coordinate system.
 
         # Restore absolute coords
         self.gcode_move.absolute_coord      = self.absolute_coord
@@ -1653,10 +1655,9 @@ class afc:
         self.function.check_absolute_mode("TOOL_UNLOAD")
 
         # Perform Z-hop to avoid collisions during unloading.
-        pos = self.gcode_move.last_position
-        pos[2] += self.z_hop
+        z_target = self.gcode_move.last_position[2] + self.z_hop
         # toolhead wait is needed here as it will cause TTC for some if wait does not occur
-        self.move_z_pos(pos[2], "Tool_Unload quick pull", wait_moves=True)
+        self.move_z_pos(z_target, "Tool_Unload quick pull", wait_moves=True)
 
         # Check if the current extruder is loaded with the lane to be unloaded.
         next_lookup_lane_name = cur_lane.name
