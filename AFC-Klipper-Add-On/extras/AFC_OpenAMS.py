@@ -2240,7 +2240,7 @@ class afcAMS(afcUnit):
                         cur_lane.sync_to_extruder()
                         on_shuttle = ""
                         try:
-                            if cur_lane.extruder_obj.tc_unit_obj or cur_lane.extruder_obj.tool_obj:
+                            if cur_lane.extruder_obj.tc_unit_obj:
                                 on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
                         except Exception:
                             pass
@@ -3311,7 +3311,6 @@ class afcAMS(afcUnit):
         # Hook into AFC's LANE_UNLOAD for cross-extruder runouts
         self._wrap_afc_lane_unload()
         self._wrap_afc_unset_lane_loaded()
-        self._patch_tool_swap_timing()
 
         # Register auto-recovery callback for stuck spool detected during printing
         self._register_stuck_spool_recovery()
@@ -3476,31 +3475,6 @@ class afcAMS(afcUnit):
 
         afc_function.unset_lane_loaded = unset_lane_loaded_wrapper
         self.logger.debug("Wrapped AFC.function.unset_lane_loaded for OpenAMS state sync")
-
-    def _patch_tool_swap_timing(self) -> None:
-        """Patch AfcToolchanger.tool_swap to suppress timing during OpenAMS loads."""
-        if not hasattr(self, "afc") or self.afc is None:
-            return
-
-        afc = self.afc
-
-        if not getattr(afc, "_oams_tool_swap_timing_patched", False):
-            try:
-                from extras.AFC_Toolchanger import AfcToolchanger
-            except Exception:
-                AfcToolchanger = None
-
-            if AfcToolchanger is not None:
-                original_tool_swap = AfcToolchanger.tool_swap
-
-                def tool_swap_wrapper(toolchanger_self, lane, set_start_time=True):
-                    suppress = getattr(toolchanger_self.afc, "_oams_suppress_tool_swap_timer", False)
-                    if suppress:
-                        return original_tool_swap(toolchanger_self, lane, set_start_time=False)
-                    return original_tool_swap(toolchanger_self, lane, set_start_time=set_start_time)
-
-                AfcToolchanger.tool_swap = tool_swap_wrapper
-                afc._oams_tool_swap_timing_patched = True
 
     def _sync_lane_virtual_f1s_sensors(self, lane, eventtime, state) -> None:
         """Mirror F1S state into lane virtual prep/load filament-switch helpers."""

@@ -2543,7 +2543,7 @@ class afcACE(afcUnit):
                     if tool_ready and extruder_obj.lane_loaded == cur_lane.name:
                         cur_lane.sync_to_extruder()
                         on_shuttle = ""
-                        if extruder_obj.tc_unit_obj or extruder_obj.tool_obj:
+                        if extruder_obj.tc_unit_obj:
                             on_shuttle = " and toolhead on shuttle" if extruder_obj.on_shuttle() else ""
                         msg += f'<span class=primary--text> in ToolHead{on_shuttle}</span>'
                         if cur_lane.extruder_obj.is_buffer:
