@@ -839,7 +839,7 @@ class afcUnit:
         # when load_then_home is enabled
         load_and_home = lane.load_then_home_var and distance > lane.load_undershoot
         if (load_and_home
-            and lane.extruder_obj.tool_start == "buffer"):
+            and lane.extruder_obj.is_buffer):
             load_length = distance - lane.load_undershoot
             home, dist, warn = lane.move_to(load_length, speed_mode, assist_active=assist_active,
                                             endstop=endstop, use_homing=False)
