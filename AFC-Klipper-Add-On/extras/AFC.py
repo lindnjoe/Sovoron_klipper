@@ -2094,14 +2094,30 @@ class afc:
                     self.logger.raw("//      Change {} out of {}".format(self.current_toolchange, self.number_of_toolchanges))
 
                 # If a current lane is loaded, unload it first.
+                # For toolchangers: also check if the target extruder has a
+                # lane loaded even when the shuttle is empty (current is None).
+                lane_to_unload = None
                 if self.current is not None:
                     if self.current not in self.lanes:
                         self.error.AFC_error('{} Unknown'.format(self.current))
                         return
-                    if not self.TOOL_UNLOAD(self.lanes[self.current], set_start_time=False):
+                    lane_to_unload = self.lanes[self.current]
+                elif cur_lane.extruder_obj.lane_loaded is not None:
+                    # Shuttle is empty but target extruder has a lane loaded
+                    # (e.g. after restart with docked tool). Need to pick up
+                    # that extruder and unload the lane before loading new one.
+                    loaded_name = cur_lane.extruder_obj.lane_loaded
+                    if loaded_name != cur_lane.name and loaded_name in self.lanes:
+                        lane_to_unload = self.lanes[loaded_name]
+                        self.logger.info(
+                            "Target extruder %s has %s loaded, unloading first"
+                            % (cur_lane.extruder_obj.name, loaded_name))
+
+                if lane_to_unload is not None:
+                    if not self.TOOL_UNLOAD(lane_to_unload, set_start_time=False):
                         # Abort if the unloading process fails.
                         msg = (' UNLOAD ERROR NOT CLEARED')
-                        self.error.fix(msg, self.lanes[self.current])  #send to error handling
+                        self.error.fix(msg, lane_to_unload)  #send to error handling
                         return
 
             if infinite_runout:
