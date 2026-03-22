@@ -142,6 +142,9 @@ class AfcToolchanger(afcUnit):
         self.gcode.register_command("SAVE_TOOL_PARAMETER",
                                     self.cmd_SAVE_TOOL_PARAMETER,
                                     desc="Save a tool parameter to config")
+        self.gcode.register_command("ADJUST_Z_AFTER_TOOL_NOZZLE_HOME",
+                                    self.cmd_ADJUST_Z_AFTER_TOOL_NOZZLE_HOME,
+                                    desc="Adjust Z position by active tool's Z offset after homing")
 
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_tc_connect)
@@ -320,6 +323,22 @@ class AfcToolchanger(afcUnit):
                 param, tool.tool_number))
         self.functions.ConfigRewrite(
             tool.fullname, param, tool.params[param], '')
+
+    def cmd_ADJUST_Z_AFTER_TOOL_NOZZLE_HOME(self, gcmd):
+        """Adjust Z position by the active tool's gcode_z_offset after nozzle homing.
+        Usage: ADJUST_Z_AFTER_TOOL_NOZZLE_HOME
+        """
+        tool = self.active_tool
+        if not tool:
+            raise gcmd.error("ADJUST_Z_AFTER_TOOL_NOZZLE_HOME - no active tool")
+        z_offset = tool.gcode_z_offset
+        if z_offset != 0.0:
+            self.logger.info(
+                "Adjusting Z position after homing by %.4f" % z_offset)
+            toolhead = self.printer.lookup_object('toolhead')
+            pos = list(toolhead.get_position())
+            pos[2] += z_offset
+            toolhead.set_position(pos)
 
     # --- Core tool change engine ---
 
