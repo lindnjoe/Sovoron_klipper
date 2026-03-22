@@ -619,6 +619,13 @@ class AFCLane:
                     extruder=self.extruder_obj.name, name=self.name, unit_type=self.unit_obj.type.replace("_", ""), unit_name=self.unit_obj.name )
                 raise error(error_string)
 
+        # FPS buffer: tool_start references the FPS buffer name directly (e.g. "FPS_buffer1")
+        elif (self.buffer_obj is None
+              and self.extruder_obj.is_buffer
+              and self.extruder_obj.tool_start != "buffer"):
+            fps_name = self.extruder_obj.tool_start
+            self.buffer_obj = self.printer.lookup_object("AFC_buffer {}".format(fps_name), None)
+
         # Valid to not have a buffer defined, check to make sure object exists before adding lane to buffer
         if self.buffer_obj is not None and add_to_other_obj:
             self.buffer_obj.lanes[self.name] = self
@@ -1459,7 +1466,7 @@ class AFCLane:
 
         returns Status of toolhead pre sensor or the current buffer advance state
         """
-        if self.extruder_obj.is_buffer:
+        if self.extruder_obj.is_buffer and self.buffer_obj is not None:
             return self.buffer_obj.advance_state
         else:
             return self.extruder_obj.tool_start_state
