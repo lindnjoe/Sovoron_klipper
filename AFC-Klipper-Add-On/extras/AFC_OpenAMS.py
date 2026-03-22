@@ -3667,17 +3667,12 @@ class afcAMS(afcUnit):
             # This field is reported to Mainsail via lane.get_status()
             lane.loaded_to_hub = hub_val
 
-        # Virtual hubs are shared across multiple lanes — set hub._state
-        # to True if ANY lane on this hub has filament at the hub position.
-        any_hub_active = any(
-            getattr(l, "loaded_to_hub", False)
-            for l in hub.lanes.values()
-        )
-        if hub._state != any_hub_active:
-            hub.switch_pin_callback(eventtime, any_hub_active)
+        # Set virtual hub state directly from hardware hub sensor
+        if hub._state != hub_val:
+            hub.switch_pin_callback(eventtime, hub_val)
             fila = getattr(hub, "fila", None)
             if fila is not None:
-                fila.runout_helper.note_filament_present(eventtime, any_hub_active)
+                fila.runout_helper.note_filament_present(eventtime, hub_val)
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -3745,31 +3740,29 @@ class afcAMS(afcUnit):
             except Exception as e:
                 self.logger.debug(f"sync_openams_sensors: error syncing {getattr(lane, 'name', '?')}: {e}")
 
-        # Reconcile virtual hub state after all per-lane updates.
-        # Multiple lanes share one virtual hub — set hub._state to True if
-        # ANY lane on this hub has its hardware hub sensor active, so Mainsail
-        # displays the correct hub status.
+        # Reconcile virtual hub state from hardware hub sensors.
+        # Each OpenAMS lane has its own hub sensor (hub_hes_value) and its
+        # own virtual hub object.  Set hub._state directly from the hardware
+        # sensor so Mainsail displays the correct hub status.
         if sync_hub and hub_values is not None:
-            hubs_synced = set()
             for lane in self.lanes.values():
                 hub_obj = getattr(lane, "hub_obj", None)
-                if hub_obj is None or id(hub_obj) in hubs_synced:
+                if hub_obj is None:
                     continue
-                hubs_synced.add(id(hub_obj))
-                any_hub_active = any(
-                    getattr(l, "loaded_to_hub", False)
-                    for l in hub_obj.lanes.values()
-                )
                 try:
+                    spool_idx = self._get_openams_spool_index(lane)
+                    if spool_idx is None or spool_idx < 0 or spool_idx >= len(hub_values):
+                        continue
+                    hw_hub = bool(hub_values[spool_idx])
                     if hasattr(hub_obj, "switch_pin_callback"):
-                        hub_obj.switch_pin_callback(eventtime, any_hub_active)
+                        hub_obj.switch_pin_callback(eventtime, hw_hub)
                     fila = getattr(hub_obj, "fila", None)
                     if fila is not None and hasattr(fila, "runout_helper"):
-                        fila.runout_helper.note_filament_present(eventtime, any_hub_active)
+                        fila.runout_helper.note_filament_present(eventtime, hw_hub)
                 except Exception as hub_e:
                     self.logger.debug(
                         f"sync_openams_sensors: failed to reconcile virtual hub "
-                        f"for {hub_obj.name}: {hub_e}"
+                        f"for {getattr(hub_obj, 'name', '?')}: {hub_e}"
                     )
 
     def _should_block_sensor_update_for_runout(self, lane, lane_val):
