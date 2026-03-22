@@ -2557,7 +2557,11 @@ class afcACE(afcUnit):
                             if local_slot >= 0:
                                 self._current_loaded_slot = local_slot
 
-                        if self.afc.function.get_current_lane() == cur_lane.name:
+                        # Use persisted lane_loaded to determine current
+                        # lane rather than get_current_lane() which depends
+                        # on klipper's active extruder — unreliable during
+                        # prep before the toolchanger initializes.
+                        if extruder_obj.lane_loaded == cur_lane.name:
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             cur_lane.unit_obj.lane_tool_loaded(cur_lane)
                             cur_lane.status = AFCLaneState.TOOLED
@@ -2584,6 +2588,8 @@ class afcACE(afcUnit):
                                     )
                         else:
                             cur_lane.unit_obj.lane_tool_loaded_idle(cur_lane)
+
+                        cur_lane.enable_buffer()
                     elif tool_ready:
                         msg += (
                             '<span class=error--text> error in ToolHead. '
