@@ -298,44 +298,7 @@ class AFCFPSBuffer:
             if led is None:
                 raise error(error_string)
 
-        # Set up virtual filament sensors for any extruders that reference
-        # this FPS buffer as their pin_tool_start.
-        self._setup_virtual_tool_sensors()
 
-    def _setup_virtual_tool_sensors(self):
-        """Create virtual filament sensors for extruders using this FPS buffer.
-
-        When an AFC_extruder has pin_tool_start pointing to this FPS buffer
-        (e.g. "FPS_buffer1"), the extruder skips GPIO registration during init.
-        This method creates the virtual sensor and assigns it to the extruder
-        so fila_tool_start / runout detection work correctly.
-        """
-        for ext_name, ext_obj in getattr(self.afc, 'extruders', {}).items():
-            pin = getattr(ext_obj, 'tool_start', None)
-            if not pin or not isinstance(pin, str):
-                continue
-            cleaned = pin.strip()
-            if cleaned != self.name:
-                continue
-            # Already set up (e.g. by a prior load)
-            if getattr(ext_obj, '_fps_virtual_tool_name', None) == cleaned:
-                continue
-
-            enable_runout = getattr(ext_obj, 'enable_runout', False)
-            runout_cb = getattr(ext_obj, 'handle_start_runout', None)
-
-            virtual = VirtualFilamentSensor(
-                self.printer, cleaned,
-                show_in_gui=False,
-                runout_cb=runout_cb,
-                enable_runout=enable_runout,
-            )
-            ext_obj._fps_virtual_tool_name = cleaned
-            ext_obj.fila_tool_start = virtual
-            ext_obj.tool_start_state = bool(virtual.runout_helper.filament_present)
-            self.logger.info(
-                f"Created virtual tool sensor for {ext_name} -> {self.name}"
-            )
 
     @property
     def extruder(self):

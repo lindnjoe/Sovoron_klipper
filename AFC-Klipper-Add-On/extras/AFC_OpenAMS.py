@@ -1341,7 +1341,12 @@ class afcAMS(afcUnit):
         self.logo_error += '  ' + self.name + '</span>\n'
 
     def _ensure_virtual_tool_sensor(self) -> bool:
-        """Resolve the virtual tool-start sensor created by AFC_FPS."""
+        """Create or resolve a hidden virtual tool-start sensor for OpenAMS state tracking.
+
+        OpenAMS uses FPS buffers for BLDC motor control (maintaining FPS at ~0.5),
+        not as a traditional filament sensor. This internal sensor is hidden from
+        the GUI and only used by OpenAMS to track tool state.
+        """
         if self._virtual_tool_sensor is not None:
             return True
 
@@ -1353,16 +1358,25 @@ class afcAMS(afcUnit):
         if not tool_pin or not str(tool_pin).strip().upper().startswith("FPS_"):
             return False
 
-        # AFC_FPS._handle_ready creates the virtual sensor and assigns it
-        # to fila_tool_start.  Just look it up.
+        # Look for an existing sensor first
         sensor = getattr(extruder, "fila_tool_start", None)
         if sensor is None:
             sensor = self.printer.lookup_object(
                 f"filament_switch_sensor {tool_pin.strip()}", None
             )
 
+        # Create our own hidden virtual sensor if none exists
         if sensor is None:
-            return False
+            try:
+                from extras.AFC_FPS import VirtualFilamentSensor
+                sensor = VirtualFilamentSensor(
+                    self.printer, f"_oams_{self.name}_tool",
+                    show_in_gui=False,
+                    runout_cb=None,
+                    enable_runout=False,
+                )
+            except Exception:
+                return False
 
         helper = getattr(sensor, "runout_helper", None)
         if helper is None:
@@ -1372,42 +1386,7 @@ class afcAMS(afcUnit):
         helper.sensor_enabled = False
 
         self._virtual_tool_sensor = sensor
-
-        # Cache the sensor helper
         self._cached_sensor_helper = helper
-
-        alias_token = None
-        try:
-            alias_token = f"{extruder.name}_tool_start"
-        except Exception:
-            alias_token = None
-
-        if alias_token:
-            alias_object = f"filament_switch_sensor {alias_token}"
-            objects = getattr(self.printer, "objects", None)
-            if isinstance(objects, dict):
-                previous = objects.get(alias_object)
-                if previous is None or previous is sensor:
-                    objects[alias_object] = sensor
-
-            # Use cached gcode object
-            gcode = self._cached_gcode
-            if gcode is None:
-                try:
-                    gcode = self.printer.lookup_object("gcode")
-                    self._cached_gcode = gcode
-                except Exception:
-                    gcode = None
-
-            if gcode is not None:
-                for command, handler, desc in (
-                    ("QUERY_FILAMENT_SENSOR", sensor.cmd_QUERY_FILAMENT_SENSOR, sensor.QUERY_HELP),
-                    ("SET_FILAMENT_SENSOR", sensor.cmd_SET_FILAMENT_SENSOR, sensor.SET_HELP),
-                ):
-                    try:
-                        gcode.register_mux_command(command, "SENSOR", alias_token, handler, desc=desc)
-                    except Exception:
-                        pass
 
         return True
 
@@ -2269,6 +2248,12 @@ class afcAMS(afcUnit):
                         msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
                         if cur_lane.extruder_obj.is_buffer:
                             msg += '<span class=warning--text> Ram sensor enabled, confirm tool is loaded</span>'
+                        # Filament is in the toolhead so it has passed through the hub
+                        if not cur_lane.loaded_to_hub:
+                            cur_lane.loaded_to_hub = True
+                        hub_obj = getattr(cur_lane, "hub_obj", None)
+                        if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
+                            hub_obj.switch_pin_callback(self.reactor.monotonic(), True)
                         if self.afc.function.get_current_lane() == cur_lane.name:
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             cur_lane.unit_obj.lane_tool_loaded(cur_lane)
