@@ -142,6 +142,12 @@ class AfcToolchanger(afcUnit):
         self.gcode.register_command("SAVE_TOOL_PARAMETER",
                                     self.cmd_SAVE_TOOL_PARAMETER,
                                     desc="Save a tool parameter to config")
+        self.gcode.register_command("ADJUST_Z_AFTER_TOOL_NOZZLE_HOME",
+                                    self.cmd_ADJUST_Z_AFTER_TOOL_NOZZLE_HOME,
+                                    desc="Adjust Z position by active tool's Z offset after homing")
+        self.gcode.register_command("VERIFY_TOOL_DETECTED",
+                                    self.cmd_VERIFY_TOOL_DETECTED,
+                                    desc="Verify the expected tool is detected on shuttle")
 
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_tc_connect)
@@ -320,6 +326,46 @@ class AfcToolchanger(afcUnit):
                 param, tool.tool_number))
         self.functions.ConfigRewrite(
             tool.fullname, param, tool.params[param], '')
+
+    def cmd_ADJUST_Z_AFTER_TOOL_NOZZLE_HOME(self, gcmd):
+        """Adjust Z position by the active tool's gcode_z_offset after nozzle homing.
+        Usage: ADJUST_Z_AFTER_TOOL_NOZZLE_HOME
+        """
+        tool = self.active_tool
+        if not tool:
+            raise gcmd.error("ADJUST_Z_AFTER_TOOL_NOZZLE_HOME - no active tool")
+        z_offset = tool.gcode_z_offset
+        if z_offset != 0.0:
+            self.logger.info(
+                "Adjusting Z position after homing by %.4f" % z_offset)
+            toolhead = self.printer.lookup_object('toolhead')
+            pos = list(toolhead.get_position())
+            pos[2] += z_offset
+            toolhead.set_position(pos)
+
+    def cmd_VERIFY_TOOL_DETECTED(self, gcmd):
+        """Verify the expected tool is detected on the shuttle.
+        Usage: VERIFY_TOOL_DETECTED [T=<num>]
+        """
+        if self.status not in (STATUS_READY, STATUS_CHANGING):
+            raise gcmd.error(
+                "Toolchanger not ready, status is %s" % self.status)
+        tn = gcmd.get_int('T', None)
+        if tn is not None:
+            expected = self.tools.get(tn)
+            if expected is None:
+                raise gcmd.error("Tool T%d not found" % tn)
+        else:
+            expected = self.active_tool
+        if not self.has_detection:
+            return
+        toolhead = self.printer.lookup_object('toolhead')
+        toolhead.wait_moves()
+        reactor = self.printer.get_reactor()
+        reactor.pause(reactor.monotonic() + 0.2)
+        self._validate_detected_tool(
+            expected, respond_info=gcmd.respond_info,
+            raise_error=gcmd.error)
 
     # --- Core tool change engine ---
 
