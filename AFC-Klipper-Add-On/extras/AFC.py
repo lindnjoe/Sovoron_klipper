@@ -1285,6 +1285,10 @@ class afc:
         if self.function.get_current_extruder() != cur_lane.extruder_obj.name:
             cur_lane.tool_swap()
 
+            # If tool swap set error state, abort load immediately.
+            if self.error_state:
+                return False
+
         if cur_lane.name != self.current:
             # Lookup extruder and hub objects associated with the lane.
             cur_hub = cur_lane.hub_obj
@@ -1675,6 +1679,10 @@ class afc:
         # If the next extruder is specified and it is not the current extruder, perform a tool swap.
         if next_extruder is not None and self.function.get_current_extruder() != next_extruder:
             next_lane.tool_swap()
+
+            # If tool swap set error state, abort unload immediately.
+            if self.error_state:
+                return False
 
             # Lookup the current extruder and lane objects based on the next lane to load.
             # This is necessary to ensure the correct extruder and lane are used for unloading.

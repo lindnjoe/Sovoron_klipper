@@ -794,8 +794,11 @@ class AfcToolchanger(afcUnit):
         # except block.  Catch that here so we fail fast instead of
         # discovering it much later (e.g. during dock purge).
         if self.status == STATUS_ERROR:
-            raise Exception(
-                'Tool swap failed: %s' % self.error_message)
+            self.afc.error.AFC_error(
+                'Tool swap failed: %s' % self.error_message,
+                pause=self.afc.function.in_print())
+            self.afc.current_state = State.IDLE
+            return
 
         # Activate the correct klipper extruder for this toolhead
         lane.activate_toolhead_extruder()
