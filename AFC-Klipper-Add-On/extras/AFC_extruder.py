@@ -258,8 +258,6 @@ class AFCExtruder:
         self.tc_unit_name: Optional[str] = config.get("toolchanger_unit", None)
         self.tc_unit_obj: Optional[AfcToolchanger|None] = None
         self.tc_lane: Optional[AFCLane|None]            = None
-        self.tool: Optional[str]        = config.get('tool', None)
-        self.tool_obj                   = None
         self.map: Optional[str]         = config.get('map', None)
         self.no_lanes                   = False
         self.custom_tool_swap: Optional[str] = config.get("custom_tool_swap", None)
@@ -439,12 +437,6 @@ class AFCExtruder:
             self.toolhead_extruder = self.printer.lookup_object(self.name)
         except:
             raise error("[{}] not found in config file".format(self.name))
-
-        try:
-            if self.tool:
-                self.tool_obj = self.printer.lookup_object(self.tool)
-        except:
-            raise error(f'[{self.tool}] not found in config file for {self.fullname}')
 
         try:
             if self.tc_unit_name:
@@ -912,9 +904,8 @@ class AFCExtruder:
         :return bool: True if toolheads optotap sensor is triggered. Always returns True for single
                       toolhead printers.
         """
-        # Return true if both are not set as this would be for single toolhead
-        # setups
-        if self.tc_unit_name is None and self.tool_obj is None:
+        # Return true if no toolchanger is configured (single toolhead setup)
+        if self.tc_unit_name is None:
             return True
 
         # Use native detect_state if available
@@ -924,19 +915,8 @@ class AFCExtruder:
                         self.tc_unit_obj.active_tool == self)
             return self.detect_state == 1
 
-        # Return true if toolchanger unit is defined but no detection pin
-        # (custom swap/unselect macros)
-        if self.tc_unit_name and self.tool_obj is None:
-            return True
-
-        # Legacy KTC fallback
-        if self.tool_obj is not None and hasattr(self.tool_obj, "detect_state"):
-            return (
-                self.tool_obj.detect_state == 1 or
-                self.tool_obj.main_toolchanger.get_selected_tool() == self.tool_obj
-            )
-        else:
-            return False
+        # Toolchanger configured but no detection pin (custom swap/unselect macros)
+        return True
 
     cmd_UPDATE_TOOLHEAD_SENSORS_help = "Gives ability to update tool_stn, tool_stn_unload, tool_sensor_after_extruder values without restarting klipper"
     cmd_UPDATE_TOOLHEAD_SENSORS_options = {
