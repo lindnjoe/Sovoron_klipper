@@ -1013,6 +1013,13 @@ class afcAMS(afcUnit):
             except Exception:
                 hub_loaded = False
             cur_lane.loaded_to_hub = hub_loaded
+            # Clear the virtual hub sensor so Mainsail/status reflects
+            # that the hub is no longer occupied after unload.
+            hub_obj = getattr(cur_lane, "hub_obj", None)
+            if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
+                hub_obj.switch_pin_callback(
+                    self.reactor.monotonic(), hub_loaded
+                )
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.LOADED
             self.lane_tool_unloaded(cur_lane)
@@ -2249,7 +2256,7 @@ class afcAMS(afcUnit):
                         msg += '<span class=primary--text> (hub-detected: auto-set as in ToolHead)</span>'
 
                 if cur_lane.tool_loaded:
-                    tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.tool_start == "buffer" or cur_lane.extruder_obj.tool_end_state or cur_lane.extruder_obj.on_shuttle())
+                    tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.is_buffer or cur_lane.extruder_obj.tool_end_state or cur_lane.extruder_obj.on_shuttle())
                     if tool_ready and cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                         cur_lane.sync_to_extruder()
                         on_shuttle = ""
@@ -2260,7 +2267,7 @@ class afcAMS(afcUnit):
                             pass
 
                         msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
-                        if cur_lane.extruder_obj.tool_start == "buffer":
+                        if cur_lane.extruder_obj.is_buffer:
                             msg += '<span class=warning--text> Ram sensor enabled, confirm tool is loaded</span>'
                         if self.afc.function.get_current_lane() == cur_lane.name:
                             self.afc.spool.set_active_spool(cur_lane.spool_id)

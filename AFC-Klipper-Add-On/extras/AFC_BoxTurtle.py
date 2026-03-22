@@ -110,7 +110,7 @@ class afcBoxTurtle(afcUnit):
                 if (cur_lane.tool_loaded
                     and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
                     ramming_loaded = False
-                    if cur_lane.extruder_obj.tool_start == "buffer":
+                    if cur_lane.extruder_obj.is_buffer:
                         ramming_loaded = self._buffer_toolhead_load_check(cur_lane)
                     if (cur_lane.get_toolhead_pre_sensor_state() == True
                         or ramming_loaded
@@ -124,7 +124,7 @@ class afcBoxTurtle(afcUnit):
                                 on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
                             msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
 
-                            if (cur_lane.extruder_obj.tool_start == "buffer"
+                            if (cur_lane.extruder_obj.is_buffer
                                 and (not self.afc.homing_enabled
                                      or not cur_lane.unit_obj.enable_buffer_tool_check)):
                                 msg += "<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>"
@@ -273,7 +273,7 @@ class afcBoxTurtle(afcUnit):
 
             bowden_dist = round(bow_pos, 2)
             if not self.afc.homing_enabled:
-                if cur_extruder.tool_start == 'buffer':
+                if cur_extruder.is_buffer:
                     bowden_dist = round(bow_pos - (cur_lane.short_move_dis * 2), 2)
                 else:
                     bowden_dist = round(bow_pos - cur_lane.short_move_dis, 2)

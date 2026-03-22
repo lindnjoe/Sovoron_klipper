@@ -413,11 +413,20 @@ class AFCExtruder:
             #  set to current tool start state
             self.tc_lane._load_state = self.tc_lane.prep_state = self.tool_start_state
 
-            if self.tool_start == "buffer":
+            if self.is_buffer:
                 raise error(
                     f"buffer is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
                 )
 
+
+    @property
+    def is_buffer(self):
+        """True when pin_tool_start uses a buffer for ramming (turtleneck or FPS)."""
+        if self.tool_start is None:
+            return False
+        if self.tool_start == "buffer":
+            return True
+        return str(self.tool_start).strip().upper().startswith("FPS_")
 
     def handle_connect(self):
         """
