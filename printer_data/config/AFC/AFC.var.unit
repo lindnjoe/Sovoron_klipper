@@ -470,14 +470,14 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 2195.8452031250004,
             "td1_data": {},
             "endstops": "load,tool_start,buffer_advance,buffer_trailing,lane3_prep,lane3_load,lane3_buffer"
         }
     },
     "system": {
-        "current_load": "lane3",
+        "current_load": null,
         "num_units": 5,
         "num_lanes": 16,
         "num_extruders": 6,

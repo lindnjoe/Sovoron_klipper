@@ -281,28 +281,15 @@ class AfcToolchanger(afcUnit):
 
         inferred = select_tool
         if inferred is None and self.has_detection:
-            # Detection pins may not have been sampled yet at startup.
-            # Klipper's buttons module queries every 2ms and only fires
-            # callbacks on state changes from 0.  A tool on the shuttle
-            # (pin=1) will trigger a callback, but it may not have
-            # arrived yet.  Wait briefly to let pin states settle.
-            unsampled = [t.name for t in self.tools.values()
-                         if t.detect_pin_name and t.detect_state == DETECT_UNAVAILABLE]
-            if unsampled:
-                self.logger.info(
-                    "Detection pins not yet sampled for: %s, waiting 0.5s"
-                    % ', '.join(unsampled))
-                reactor = self.printer.get_reactor()
-                pause_end = reactor.monotonic() + 0.5
-                reactor.pause(pause_end)
-                # Log states after pause
-                still_unsampled = [t.name for t in self.tools.values()
-                                   if t.detect_pin_name and t.detect_state == DETECT_UNAVAILABLE]
-                if still_unsampled:
-                    self.logger.info(
-                        "Still unsampled after pause: %s"
-                        % ', '.join(still_unsampled))
-            # Log all detection pin states for debugging
+            # Brief pause to let button callbacks settle.  Docked tools
+            # have pins HIGH which triggers a callback (setting ABSENT).
+            # The shuttle tool's pin stays LOW — no callback fires, so it
+            # keeps the default PRESENT.  The pause ensures docked-tool
+            # callbacks have arrived before we check.
+            reactor = self.printer.get_reactor()
+            pause_end = reactor.monotonic() + 0.5
+            reactor.pause(pause_end)
+            # Log detection pin states for debugging
             pin_states = ', '.join(
                 '%s=%d' % (t.name, t.detect_state)
                 for t in self.tools.values() if t.detect_pin_name)
