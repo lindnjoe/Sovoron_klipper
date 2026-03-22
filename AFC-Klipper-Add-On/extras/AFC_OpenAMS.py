@@ -2247,7 +2247,7 @@ class afcAMS(afcUnit):
 
                         msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
                         if cur_lane.extruder_obj.is_buffer:
-                            msg += '<span class=warning--text> Ram sensor enabled, confirm tool is loaded</span>'
+                            msg += '<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>'
                         # Filament is in the toolhead so it has passed through the hub
                         if not cur_lane.loaded_to_hub:
                             cur_lane.loaded_to_hub = True
