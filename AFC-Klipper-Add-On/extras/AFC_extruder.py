@@ -908,7 +908,7 @@ class AFCExtruder:
         # Use native detect_state if available
         if self.detect_pin_name is not None:
             if self.tc_unit_obj:
-                return (self.detect_state == 1 or
+                return (self.tc_unit_obj.is_tool_present(self) or
                         self.tc_unit_obj.active_tool == self)
             return self.detect_state == 1
 
