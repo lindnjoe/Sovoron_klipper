@@ -1089,7 +1089,7 @@ class afc:
                                  assist_active=AssistActive.DYNAMIC,
                                  use_homing=self.homing_enabled)
                 num_tries += 1
-                if num_tries >= 20:
+                if num_tries >= 30:
                     self.error.handle_lane_failure(cur_lane,
                         f"Load sensor not triggered after {num_tries} attempts during HUB_LOAD", pause=False)
                     return
@@ -1106,7 +1106,7 @@ class afc:
             cur_lane.unit_obj.move_to_hub(cur_lane, cur_hub.move_dis, MoveDirection.POS,
                                           self.homing_enabled)
             num_tries += 1
-            if num_tries >= 20:
+            if num_tries >= 30:
                 self.error.handle_lane_failure(cur_lane,
                     f"Hub sensor not triggered after {num_tries} attempts during HUB_LOAD", pause=False)
                 return
