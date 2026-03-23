@@ -963,7 +963,6 @@ class afcAMS(afcUnit):
                 afc.function.log_toolhead_pos()
 
             if afc.form_tip_cmd == "AFC":
-                afc.tip = self.printer.lookup_object('AFC_form_tip')
                 afc.tip.tip_form()
                 afc.afcDeltaTime.log_with_time("TOOL_UNLOAD: After afc form tip")
                 afc.function.log_toolhead_pos()
