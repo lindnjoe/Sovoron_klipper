@@ -1595,7 +1595,6 @@ class afcACE(afcUnit):
                 )
 
             if afc.form_tip_cmd == "AFC":
-                afc.tip = self.printer.lookup_object("AFC_form_tip")
                 afc.tip.tip_form()
             else:
                 afc.gcode.run_script_from_command(afc.form_tip_cmd)

@@ -119,6 +119,7 @@ class afc:
         self.change_tool_pos = None
         self.in_toolchange = False
         self.tool_start = None
+        self._oams_suppress_tool_swap_timer = False
 
         # Save/resume pos variables
         self.base_position = [0.0, 0.0, 0.0, 0.0]
@@ -387,6 +388,7 @@ class afc:
         self.toolhead   = self.printer.lookup_object('toolhead')
         self.idle       = self.printer.lookup_object('idle_timeout')
         self.gcode_move = self.printer.lookup_object('gcode_move')
+        self.tip        = self.printer.lookup_object('AFC_form_tip')
 
         # Looking up to see if manual_home has probe_pos, this is to make AFC work with klipper
         # starting with new homing update git hash(57c2e0c960f8e25f56a66ba3a1e90e124f207001)
@@ -409,7 +411,6 @@ class afc:
         # Register G-Code commands for macros we don't want to show up in mainsail/fluidd
         self.gcode.register_command('TOOL_UNLOAD',          self.cmd_TOOL_UNLOAD,           desc=self.cmd_TOOL_UNLOAD_help)
         self.gcode.register_command('CHANGE_TOOL',          self.cmd_CHANGE_TOOL,           desc=self.cmd_CHANGE_TOOL_help)
-        self.gcode.register_command('SET_AFC_TOOLCHANGES',  self.cmd_SET_AFC_TOOLCHANGES,   desc=self.cmd_SET_AFC_TOOLCHANGES_help)
         self.gcode.register_command('AFC_CLEAR_MESSAGE',    self.cmd_AFC_CLEAR_MESSAGE,     desc=self.cmd_AFC_CLEAR_MESSAGE_help)
         self.gcode.register_command('_AFC_TEST_MESSAGES',   self.cmd__AFC_TEST_MESSAGES,    desc=self.cmd__AFC_TEST_MESSAGES_help)
         self.gcode.register_command('AFC_M104',             self._cmd_AFC_M104,             desc=self._cmd_AFC_M104_help)
@@ -814,41 +815,6 @@ class afc:
         ```
         """
         self.function.unset_lane_loaded()
-
-    cmd_SET_AFC_TOOLCHANGES_help = "Sets number of toolchanges for AFC to keep track of"
-    def cmd_SET_AFC_TOOLCHANGES(self, gcmd):
-        """
-        This macro can be used to set the total number of tool changes from the slicer. AFC will keep track of tool changes and print out
-        the current tool change number when a T(n) command is called from G-code.
-
-        The following call can be added to the slicer by adding the following lines to the Change filament G-code section in your slicer.
-
-        You may already have `T[next_extruder]`, just make sure the tool change call is after your T(n) call:
-
-        `T[next_extruder] { if toolchange_count == 1 }SET_AFC_TOOLCHANGES TOOLCHANGES=[total_toolchanges]{endif }`
-
-        The following can also be added to your `PRINT_END` section in your slicer to set the number of tool changes back to zero:
-
-        `SET_AFC_TOOLCHANGES TOOLCHANGES=0`
-
-        Usage
-        -----
-        `SET_AFC_TOOLCHANGES TOOLCHANGES=<number>`
-
-        Example
-        -------
-        ```
-        SET_AFC_TOOLCHANGES TOOLCHANGES=100
-        ```
-
-        """
-        number_of_toolchanges  = gcmd.get_int("TOOLCHANGES")
-        if number_of_toolchanges > 0:
-            warning_text  = "Please remove SET_AFC_TOOLCHANGES from your slicers 'Change Filament G-Code' section as SET_AFC_TOOLCHANGES "
-            warning_text += "is now deprecated and number of toolchanges will be fetched from files metadata in moonraker when a print starts.\n"
-            warning_text += "Verify that moonrakers version is at least v0.9.3-64 to utilize this feature."
-            self.logger.info(f"<span class=warning--text>{warning_text}</span>")
-            self.message_queue.append((warning_text, "warning"))
 
     cmd_LANE_MOVE_help = "Lane Manual Movements"
     cmd_LANE_MOVE_options = {"LANE": {"type": "string", "default": "lane1"}, "DISTANCE": {"type": "int", "default": 20}}
@@ -1791,7 +1757,6 @@ class afc:
                     self.function.log_toolhead_pos()
 
                 if self.form_tip_cmd == "AFC":
-                    self.tip = self.printer.lookup_object('AFC_form_tip')
                     self.tip.tip_form()
                     self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After afc form tip")
                     self.function.log_toolhead_pos()

@@ -770,7 +770,7 @@ class AfcToolchanger(afcUnit):
         tool = self.afc.tools.get(tool_key)
 
         if tool:
-            if hasattr(tool, 'tc_lane') and tool.tc_lane is not None:
+            if tool.tc_lane is not None:
                 self.tool_swap(tool.tc_lane)
             else:
                 self.logger.error(f"Tool '{tool_key}' does not have a valid 'tc_lane' attribute.")
@@ -826,7 +826,7 @@ class AfcToolchanger(afcUnit):
         :param set_start_time: Set true to set a starting time for afcDeltaTime.
         """
         # OpenAMS suppresses timing during its own load sequence
-        if getattr(self.afc, '_oams_suppress_tool_swap_timer', False):
+        if self.afc._oams_suppress_tool_swap_timer:
             set_start_time = False
         if set_start_time:
             self.afc.afcDeltaTime.set_start_time()
