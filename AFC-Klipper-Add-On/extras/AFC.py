@@ -2253,13 +2253,6 @@ class afc:
 
         web_request.send( {"status:" : {"AFC": str}})
 
-    def _get_extruder_by_tool_number(self, toolnum):
-        """Look up the AFC_extruder whose tool_number matches the given T index."""
-        for ext in self.tools.values():
-            if ext.tool_number == toolnum:
-                return ext
-        return None
-
     _cmd_AFC_M104_help = "Set extruder temperature"
     def _cmd_AFC_M104(self, gcmd):
         """
@@ -2289,14 +2282,7 @@ class afc:
             map = "T{}".format(toolnum)
             lane = self.function.get_lane_by_map(map)
             if lane is not None:
-                # Resolve extruder by tool number, not lane config.
-                # When a lane is remapped (e.g. lane2 mapped to T1), we
-                # must heat the extruder for the target tool (T1 → extruder1),
-                # not the lane's original config extruder (lane2 → extruder2).
-                extruder = self._get_extruder_by_tool_number(toolnum)
-                if extruder is None:
-                    # Fallback to lane's configured extruder for non-toolchanger setups
-                    extruder = lane.extruder_obj
+                extruder = lane.extruder_obj
 
                 # Checking if slicer is trying to set temperature(ooze prevention) for another lane
                 #   thats connected to the currently loaded extruder. Bypass this check if current
@@ -2351,15 +2337,7 @@ class afc:
         """
         # Check if the current extruder is loaded with the lane to be unloaded.
         if self.next_lane_load is not None:
-            next_lane = self.lanes[self.next_lane_load]
-            # Resolve extruder by the lane's mapped tool number so remapped
-            # lanes heat the correct physical extruder.
-            next_extruder = None
-            if next_lane.map and next_lane.map.startswith('T'):
-                toolnum = int(next_lane.map[1:])
-                next_extruder = self._get_extruder_by_tool_number(toolnum)
-            if next_extruder is None:
-                next_extruder = next_lane.extruder_obj
+            next_extruder = self.lanes[self.next_lane_load].extruder_obj
         else:
             # Add correct error state if next lane load is None
             self.error.AFC_error("Next lane load is None, cannot proceed with tool change", pause=self.function.in_print())
