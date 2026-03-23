@@ -838,21 +838,36 @@ class AfcToolchanger(afcUnit):
 
         self.afc.afcDeltaTime.log_with_time("Performing tool swap")
 
-        if lane.extruder_obj.custom_tool_swap:
-            self.logger.info(f"Running custom select: {lane.extruder_obj.custom_tool_swap}")
-            self.afc.gcode.run_script_from_command(f"{lane.extruder_obj.custom_tool_swap}")
+        # Derive the physical tool index from the lane's current map
+        # (e.g. "T1" → 1).  When a lane is remapped, its map differs from
+        # its config extruder, so we must use the map to pick up the right
+        # physical tool and apply the correct offsets.
+        if lane.map and lane.map.startswith('T'):
+            tool_index = int(lane.map[1:])
         else:
-            # Use native toolchanger engine: SELECT_TOOL handles dropoff/pickup/offsets
             tool_index = lane.extruder_obj.tool_number
             if tool_index < 0:
                 name = lane.extruder_obj.name
                 tool_index = 0 if name == "extruder" else int(name.replace("extruder", ""))
 
+        # Resolve the AFC_extruder for the target tool so custom_tool_swap
+        # and extruder activation use the mapped tool, not the lane's config.
+        target_extruder = self.afc._get_extruder_by_tool_number(tool_index)
+        if target_extruder is None:
+            target_extruder = lane.extruder_obj
+
+        if target_extruder.custom_tool_swap:
+            self.logger.info(f"Running custom select: {target_extruder.custom_tool_swap}")
+            self.afc.gcode.run_script_from_command(f"{target_extruder.custom_tool_swap}")
+        else:
+            # Use native toolchanger engine: SELECT_TOOL handles dropoff/pickup/offsets
             self.afc.gcode.run_script_from_command(
                 'SELECT_TOOL T={}'.format(tool_index))
 
-        # Activate the correct klipper extruder for this toolhead
-        lane.activate_toolhead_extruder()
+        # SELECT_TOOL already activated the correct klipper extruder via
+        # activate_tool(), so we do NOT call lane.activate_toolhead_extruder()
+        # here — that would re-activate the lane's config extruder which may
+        # differ from the mapped tool when the lane is remapped.
         # Sync AFC lane state (enable buffer, stepper, etc.)
         self.afc.function._handle_activate_extruder(0)
 
