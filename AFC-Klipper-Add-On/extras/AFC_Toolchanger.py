@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import bisect
-import logging
 import traceback
 from configparser import Error as error
 
@@ -182,7 +181,7 @@ class AfcToolchanger(afcUnit):
     def register_tool(self, extruder, number):
         """Register an AFC_extruder as a tool with the given number."""
         if number in self.tools:
-            logging.warning("Toolchanger: replacing tool T%d" % number)
+            self.logger.warning("Toolchanger: replacing tool T%d" % number)
             self.tool_numbers.remove(number)
             self.tool_names.remove(self.tools[number].name)
         self.tools[number] = extruder
