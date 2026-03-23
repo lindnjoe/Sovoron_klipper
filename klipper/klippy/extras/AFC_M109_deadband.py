@@ -116,24 +116,24 @@ class AFC_M109_Deadband:
                 # We need to handle the M109 logic ourselves with the deadband
                 # This replicates AFC's _cmd_AFC_M109 logic but with our deadband
 
-                # Determine which extruder to use.
+                # Determine which extruder to use via AFC lane mapping
+                # so that remapped lanes resolve to the correct extruder.
+                extruder = None
                 if toolnum is not None:
-                    extruder_name = "extruder" if toolnum == 0 else "extruder%d" % toolnum
-                    extruder = self.printer.lookup_object(extruder_name, None)
+                    map_str = "T{}".format(toolnum)
+                    lane = self.afc.function.get_lane_by_map(map_str)
+                    if lane is not None:
+                        extruder = lane.extruder_obj
                     if extruder is None:
-                        map_str = "T{}".format(toolnum)
-                        lane = self.afc.function.get_lane_by_map(map_str)
-                        if lane is not None:
-                            extruder = lane.extruder_obj
-                        if extruder is None:
-                            self.afc.logger.error("extruder not configured for T{}".format(toolnum))
-                            return
+                        self.afc.logger.error("extruder not configured for T{}".format(toolnum))
+                        return
+                    extruder_name = extruder.name
                 else:
                     next_lane_name = getattr(afc_self, "next_lane_load", None)
                     next_lane = afc_self.lanes.get(next_lane_name) if next_lane_name else None
                     if next_lane is not None:
                         extruder = next_lane.extruder_obj
-                        extruder_name = extruder.get_name()
+                        extruder_name = extruder.name
                     else:
                         toolhead = self.printer.lookup_object('toolhead')
                         extruder = toolhead.get_extruder()
@@ -159,25 +159,27 @@ class AFC_M109_Deadband:
 
     def _get_deadband_for_tool(self, toolnum):
         """
-        Get the deadband value from AFC extruder configuration
+        Get the deadband value from AFC extruder configuration.
+        Uses AFC lane mapping so remapped lanes resolve to the correct extruder.
         """
-        # Determine which extruder to look up
+        afc_extruder = None
         if toolnum is not None:
-            extruder_name = "extruder" if toolnum == 0 else "extruder%d" % toolnum
+            map_str = "T{}".format(toolnum)
+            lane = self.afc.function.get_lane_by_map(map_str)
+            if lane is not None:
+                afc_extruder = lane.extruder_obj
         else:
             # Get current extruder
             toolhead = self.printer.lookup_object('toolhead')
             extruder_name = toolhead.get_extruder().get_name()
+            try:
+                afc_extruder = self.printer.lookup_object(
+                    "AFC_extruder %s" % extruder_name)
+            except:
+                pass
 
-        # Look up AFC extruder object
-        afc_extruder_name = "AFC_extruder %s" % extruder_name
-        try:
-            afc_extruder = self.printer.lookup_object(afc_extruder_name)
-            # Get deadband attribute
-            if hasattr(afc_extruder, 'deadband'):
-                return afc_extruder.deadband
-        except:
-            pass
+        if afc_extruder is not None and hasattr(afc_extruder, 'deadband'):
+            return afc_extruder.deadband
 
         return None
 
