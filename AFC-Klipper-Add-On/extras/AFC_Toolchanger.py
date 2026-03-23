@@ -145,6 +145,9 @@ class AfcToolchanger(afcUnit):
         self.gcode.register_command("ADJUST_Z_AFTER_TOOL_NOZZLE_HOME",
                                     self.cmd_ADJUST_Z_AFTER_TOOL_NOZZLE_HOME,
                                     desc="Adjust Z position by active tool's Z offset after homing")
+        self.gcode.register_command("VERIFY_TOOL_DETECTED",
+                                    self.cmd_VERIFY_TOOL_DETECTED,
+                                    desc="Verify expected tool is detected on shuttle")
 
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_tc_connect)
@@ -485,18 +488,22 @@ class AfcToolchanger(afcUnit):
             self._configure_toolhead_for_tool(tool)
             if tool is not None:
                 self._debug_log("picking up %s" % tool.name)  # TOOLCHANGE_DEBUG
+                # Log dock coordinates for debugging  # TOOLCHANGE_DEBUG
+                tool_status = tool.get_tool_status()  # TOOLCHANGE_DEBUG
+                self._debug_log(  # TOOLCHANGE_DEBUG
+                    "pickup dock: X=%.3f Y=%.3f Z=%.3f safe_y=%s close_y=%s"  # TOOLCHANGE_DEBUG
+                    % (tool_status.get('params_park_x', 0),  # TOOLCHANGE_DEBUG
+                       tool_status.get('params_park_y', 0),  # TOOLCHANGE_DEBUG
+                       tool_status.get('params_park_z', 0),  # TOOLCHANGE_DEBUG
+                       tool_status.get('params_safe_y', '?'),  # TOOLCHANGE_DEBUG
+                       tool_status.get('params_close_y', '?')))  # TOOLCHANGE_DEBUG
                 self._run_gcode('tool.pickup_gcode',
                                tool.pickup_gcode, extra_context)
-                self._debug_log_state("after pickup_gcode (pre-wait)")  # TOOLCHANGE_DEBUG
-                self._debug_log_detect("after pickup_gcode (pre-wait)")  # TOOLCHANGE_DEBUG
-                if self.has_detection and self.verify_tool_pickup:
-                    # Wait for all queued pickup moves to physically complete
-                    # so the detection pin has time to change state and the
-                    # async reactor callback can update detect_state.
-                    toolhead = self.printer.lookup_object('toolhead')
-                    toolhead.wait_moves()
-                    self._debug_log_detect("after wait_moves (post-wait)")  # TOOLCHANGE_DEBUG
-                    self._validate_detected_tool(tool, gcmd.respond_info, gcmd.error)
+                self._debug_log_state("after pickup_gcode")  # TOOLCHANGE_DEBUG
+                self._debug_log_detect("after pickup_gcode")  # TOOLCHANGE_DEBUG
+                # Detection is now verified inline by VERIFY_TOOL_DETECTED
+                # in the pickup_gcode template (at the 'verify' path step,
+                # while still at the dock — before restore moves).
                 self._run_gcode('after_change_gcode',
                                tool.after_change_gcode, extra_context)
 
@@ -714,6 +721,31 @@ class AfcToolchanger(afcUnit):
             actual_name = actual.name if actual else "None"
             message = "Expected tool %s but detected %s" % (expected_name, actual_name)
             self.process_error(raise_error, message)
+
+    def cmd_VERIFY_TOOL_DETECTED(self, gcmd):
+        """Inline gcode command to verify tool detection at the dock.
+
+        Called from within pickup_gcode at the 'verify' point in the path,
+        BEFORE restore moves.  This matches viesturz/klipper-toolchanger
+        behaviour: if pickup fails, error fires while still at the dock.
+        """
+        if not self.has_detection:
+            return
+        # During a tool change, verify the tool being picked up
+        expected = (self.last_change_pickup_tool
+                    if self.status == STATUS_CHANGING
+                    else self.active_tool)
+        if expected is None:
+            return
+        toolhead = self.printer.lookup_object('toolhead')
+        reactor = self.printer.get_reactor()
+        # Wait for queued moves to physically complete
+        toolhead.wait_moves()
+        # Brief pause to let detection pin edge callbacks settle
+        reactor.pause(reactor.monotonic() + 0.2)
+        self._debug_log_detect("VERIFY_TOOL_DETECTED")  # TOOLCHANGE_DEBUG
+        self._validate_detected_tool(
+            expected, gcmd.respond_info, gcmd.error)
 
     def process_error(self, raise_error, message):
         """Handle toolchanger errors with proper state recovery.
