@@ -47,9 +47,6 @@ except: raise error(ERROR_STR.format(import_lib="AFC", trace=traceback.format_ex
 try: from extras.AFC_stats import AFCStats_var
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
 
-try: from extras.AFC_stats import AFCStats_var
-except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
-
 LARGE_TIME_OFFSET = 99999.9
 
 class AFCExtruderStats:

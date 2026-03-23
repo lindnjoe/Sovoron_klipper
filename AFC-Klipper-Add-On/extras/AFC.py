@@ -220,7 +220,6 @@ class afc:
         self.rev_long_moves_speed_factor 	= config.getfloat("rev_long_moves_speed_factor", 1.)     # scalar speed factor when reversing filamentalist
 
         self.z_hop                  = config.getfloat("z_hop", 0)                   # Height to move up before and after a tool change completes
-        self.xy_resume              = config.getboolean("xy_resume", False)         # Need description or remove as this is currently an unused variable
         self.resume_speed           = config.getfloat("resume_speed", self.speed)   # Speed mm/s of resume move. Set to 0 to use gcode speed
         self.error_timeout          = config.getfloat("error_timeout", 36000)      # Timeout in seconds to pause before erroring out when AFC is in error state
         self.resume_z_speed         = config.getfloat("resume_z_speed", self.speed) # Speed mm/s of resume move in Z. Set to 0 to use gcode speed
