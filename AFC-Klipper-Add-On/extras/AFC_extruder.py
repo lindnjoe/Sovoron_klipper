@@ -872,6 +872,7 @@ class AFCExtruder:
         return {
             **self.params,
             'name': self.name,
+            'extruder': self.name,
             'tool_number': self.tool_number,
             'detect_state': self.detect_state,
             'active': (self.tc_unit_obj.active_tool == self) if self.tc_unit_obj else False,
