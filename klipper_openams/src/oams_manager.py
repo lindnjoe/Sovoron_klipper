@@ -5139,16 +5139,20 @@ class OAMSManager:
             except Exception as e:
                 self.logger.error(f"Failed to retract extruder after engagement failure for {lane_name}: {e}")
 
-            # Cancel any lingering load on hardware   firmware treats spool as loaded
+            # Cancel any lingering load on hardware — firmware treats spool as loaded.
+            # Only send cancel if a load operation is still in progress;
+            # sending cancel to an already-completed load produces a late
+            # response that races with the subsequent unload command.
             try:
-                oam.load_spool_cancel()
-                # Wait for firmware CANCEL response
-                deadline = self.reactor.monotonic() + 5.0
-                while oam.action_status is not None:
-                    if self.reactor.monotonic() > deadline:
-                        oam.action_status = None
-                        break
-                    self.reactor.pause(self.reactor.monotonic() + 0.2)
+                if oam.action_status is not None:
+                    oam.load_spool_cancel()
+                    # Wait for firmware CANCEL response
+                    deadline = self.reactor.monotonic() + 5.0
+                    while oam.action_status is not None:
+                        if self.reactor.monotonic() > deadline:
+                            oam.action_status = None
+                            break
+                        self.reactor.pause(self.reactor.monotonic() + 0.2)
                 # Firmware considers spool loaded after cancel
                 spool_idx = fps_state.current_spool_idx
                 if spool_idx is not None:
