@@ -137,9 +137,7 @@
           ],
           "filament_sensors": [
             "filament_switch_sensor virtual_bypass",
-            "filament_switch_sensor quiet_mode",
-            "filament_switch_sensor extruder4_tool_start",
-            "filament_switch_sensor extruder5_tool_start"
+            "filament_switch_sensor quiet_mode"
           ],
           "heaters": [
             "heater_bed",
@@ -170,7 +168,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-15T18:27:54Z"
+          "timestamp": "2026-03-23T04:45:55Z"
         },
         "optional": []
       },

@@ -750,8 +750,17 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             return False, "Spool unloading stopped by klipper monitor"
         elif self.action_status_code == OAMSOpCode.ERROR_BUSY:
             return False, "OAMS is busy"
+        elif self.action_status_code == OAMSOpCode.NO_SPOOL_IN_BAY:
+            # Firmware thinks spool is already unloaded — treat as success
+            self.current_spool = None
+            return True, "Spool already unloaded (NO_SPOOL_IN_BAY)"
+        elif self.action_status_code == OAMSOpCode.CANCEL:
+            return False, "Unload was cancelled (stale cancel response interfered)"
         else:
-            return False, "Unknown error from OAMS"
+            return False, (
+                "Unknown error from OAMS (status_code=%s)"
+                % self.action_status_code
+            )
 
     cmd_OAMS_UNLOAD_SPOOL_help = "Unload a spool of filament"
     def cmd_OAMS_UNLOAD_SPOOL(self, gcmd):
