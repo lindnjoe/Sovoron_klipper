@@ -925,40 +925,6 @@ class AFCLane:
         """
         self._afc_prep_done = True
 
-    def _resolve_lane_target(self, target):
-        """Resolve lane names, aliases (T#), or map values to concrete lane keys."""
-        if target is None:
-            return None
-        lookup = str(target).strip()
-        if not lookup:
-            return None
-        lookup_lower = lookup.lower()
-        lanes = self.afc.lanes
-
-        # Direct name match
-        for key in lanes:
-            if str(key).lower() == lookup_lower:
-                return key
-
-        # Match against lane.map (e.g., T0, t0)
-        for key, lane_obj in lanes.items():
-            lane_map = getattr(lane_obj, "map", None)
-            if isinstance(lane_map, str) and lane_map.strip().lower() == lookup_lower:
-                return key
-
-        # Match T# aliases to lane indices
-        if lookup_lower.startswith("t") and lookup_lower[1:].isdigit():
-            try:
-                idx = int(lookup_lower[1:])
-                for key, lane_obj in lanes.items():
-                    lane_idx = getattr(lane_obj, "lane", None)
-                    if lane_idx is not None and int(lane_idx) == idx:
-                        return key
-            except Exception:
-                pass
-
-        return None
-
     def _perform_infinite_runout(self):
         """
         Common function for infinite spool runout
@@ -972,7 +938,35 @@ class AFCLane:
         lanes = self.afc.lanes
 
         # Normalize runout target - resolve aliases, T# maps, case mismatches
-        runout_target = self._resolve_lane_target(self.runout_lane)
+        runout_target = None
+        raw = self.runout_lane
+        if raw is not None:
+            lookup = str(raw).strip().lower()
+            if lookup:
+                # Direct name match
+                for key in lanes:
+                    if str(key).lower() == lookup:
+                        runout_target = key
+                        break
+                # Match against lane.map (e.g., T0, t0)
+                if runout_target is None:
+                    for key, lane_obj in lanes.items():
+                        lane_map = getattr(lane_obj, "map", None)
+                        if isinstance(lane_map, str) and lane_map.strip().lower() == lookup:
+                            runout_target = key
+                            break
+                # Match T# aliases to lane indices
+                if runout_target is None and lookup.startswith("t") and lookup[1:].isdigit():
+                    try:
+                        idx = int(lookup[1:])
+                        for key, lane_obj in lanes.items():
+                            lane_idx = getattr(lane_obj, "lane", None)
+                            if lane_idx is not None and int(lane_idx) == idx:
+                                runout_target = key
+                                break
+                    except Exception:
+                        pass
+
         if not runout_target or runout_target not in lanes:
             self.afc.error.AFC_error(
                 "Runout lane '{}' unavailable for {} (known lanes: {})".format(
