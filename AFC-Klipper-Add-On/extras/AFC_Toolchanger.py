@@ -412,6 +412,30 @@ class AfcToolchanger(afcUnit):
                     '%s failed to initialize: %s' % (
                         self.config.get_name(), self.error_message))
 
+    def _debug_log(self, msg):  # TOOLCHANGE_DEBUG
+        """Temporary debug logging — grep TOOLCHANGE_DEBUG to remove."""  # TOOLCHANGE_DEBUG
+        self.logger.info("TC_DEBUG: %s" % msg)  # TOOLCHANGE_DEBUG
+
+    def _debug_log_state(self, label):  # TOOLCHANGE_DEBUG
+        """Log gcode_move state for debugging tool changes."""  # TOOLCHANGE_DEBUG
+        gm = self.gcode_move  # TOOLCHANGE_DEBUG
+        th = self.printer.lookup_object('toolhead')  # TOOLCHANGE_DEBUG
+        th_pos = th.get_position()  # TOOLCHANGE_DEBUG
+        self._debug_log(  # TOOLCHANGE_DEBUG
+            "%s: toolhead_pos=%s last_pos=%s base_pos=%s homing_pos=%s "  # TOOLCHANGE_DEBUG
+            "speed=%.1f speed_factor=%.3f"  # TOOLCHANGE_DEBUG
+            % (label,  # TOOLCHANGE_DEBUG
+               ["%.3f" % v for v in th_pos[:3]],  # TOOLCHANGE_DEBUG
+               ["%.3f" % v for v in gm.last_position[:3]],  # TOOLCHANGE_DEBUG
+               ["%.3f" % v for v in gm.base_position[:3]],  # TOOLCHANGE_DEBUG
+               ["%.3f" % v for v in gm.homing_position[:3]],  # TOOLCHANGE_DEBUG
+               gm.speed, gm.speed_factor))  # TOOLCHANGE_DEBUG
+
+    def _debug_log_detect(self, label):  # TOOLCHANGE_DEBUG
+        """Log detection pin states."""  # TOOLCHANGE_DEBUG
+        states = {t.name: t.detect_state for t in self.tools.values()}  # TOOLCHANGE_DEBUG
+        self._debug_log("%s: detect_states=%s" % (label, states))  # TOOLCHANGE_DEBUG
+
     def select_tool(self, gcmd, tool, restore_axis):
         """Core tool change: dropoff current, pickup new, manage offsets."""
         if self.status == STATUS_UNINITIALIZED:
@@ -429,10 +453,15 @@ class AfcToolchanger(afcUnit):
         try:
             self._ensure_homed(gcmd)
             self.status = STATUS_CHANGING
+            self._debug_log_state("select_tool entry")  # TOOLCHANGE_DEBUG
+            self._debug_log_detect("select_tool entry")  # TOOLCHANGE_DEBUG
             self._save_state(restore_axis, tool)
+            self._debug_log_state("after _save_state")  # TOOLCHANGE_DEBUG
 
             start_position = self._position_with_tool_offset(
                 self.last_change_gcode_position, tool)
+            self._debug_log("start_position=%s restore_axis=%s"  # TOOLCHANGE_DEBUG
+                            % (start_position, restore_axis))  # TOOLCHANGE_DEBUG
             extra_context = {
                 'dropoff_tool': self.active_tool.name if self.active_tool else None,
                 'pickup_tool': tool.name if tool else None,
@@ -444,21 +473,35 @@ class AfcToolchanger(afcUnit):
                            if self.active_tool else self.default_before_change_gcode)
             self._run_gcode('before_change_gcode', before_gcode, extra_context)
             self._set_toolchange_transform()
+            self._debug_log_state("after _set_toolchange_transform")  # TOOLCHANGE_DEBUG
 
             if self.active_tool:
+                self._debug_log("dropping off %s" % self.active_tool.name)  # TOOLCHANGE_DEBUG
                 self._run_gcode('tool.dropoff_gcode',
                                self.active_tool.dropoff_gcode, extra_context)
+                self._debug_log_state("after dropoff_gcode")  # TOOLCHANGE_DEBUG
+                self._debug_log_detect("after dropoff_gcode")  # TOOLCHANGE_DEBUG
 
             self._configure_toolhead_for_tool(tool)
             if tool is not None:
+                self._debug_log("picking up %s" % tool.name)  # TOOLCHANGE_DEBUG
                 self._run_gcode('tool.pickup_gcode',
                                tool.pickup_gcode, extra_context)
+                self._debug_log_state("after pickup_gcode (pre-wait)")  # TOOLCHANGE_DEBUG
+                self._debug_log_detect("after pickup_gcode (pre-wait)")  # TOOLCHANGE_DEBUG
                 if self.has_detection and self.verify_tool_pickup:
+                    # Wait for all queued pickup moves to physically complete
+                    # so the detection pin has time to change state and the
+                    # async reactor callback can update detect_state.
+                    toolhead = self.printer.lookup_object('toolhead')
+                    toolhead.wait_moves()
+                    self._debug_log_detect("after wait_moves (post-wait)")  # TOOLCHANGE_DEBUG
                     self._validate_detected_tool(tool, gcmd.respond_info, gcmd.error)
                 self._run_gcode('after_change_gcode',
                                tool.after_change_gcode, extra_context)
 
             self._restore_state_and_transform(tool)
+            self._debug_log_state("after _restore_state_and_transform")  # TOOLCHANGE_DEBUG
             self.status = STATUS_READY
             if tool:
                 gcmd.respond_info('Selected tool %s (%s)' % (
@@ -815,6 +858,13 @@ class AfcToolchanger(afcUnit):
         self.afc.current_state = State.TOOL_SWAP
         self._increase_unselect()
         self.afc.function.log_toolhead_pos("Before toolswap: ")
+        self._debug_log_state("tool_swap entry")  # TOOLCHANGE_DEBUG
+        self._debug_log(  # TOOLCHANGE_DEBUG
+            "tool_swap: AFC saved state: base_pos=%s homing_pos=%s "  # TOOLCHANGE_DEBUG
+            "last_gcode_pos=%s last_toolhead_pos=%s"  # TOOLCHANGE_DEBUG
+            % (self.afc.base_position, self.afc.homing_position,  # TOOLCHANGE_DEBUG
+               self.afc.last_gcode_position,  # TOOLCHANGE_DEBUG
+               self.afc.last_toolhead_position))  # TOOLCHANGE_DEBUG
 
         self.afc.afcDeltaTime.log_with_time("Performing tool swap")
 
@@ -860,6 +910,12 @@ class AfcToolchanger(afcUnit):
         self.afc.homing_position  = list(self.afc.gcode_move.homing_position)
         self.afc.last_gcode_position = list(self.afc.gcode_move.last_position)
 
+        self._debug_log_state("tool_swap exit")  # TOOLCHANGE_DEBUG
+        self._debug_log(  # TOOLCHANGE_DEBUG
+            "tool_swap: AFC re-captured state: base_pos=%s homing_pos=%s "  # TOOLCHANGE_DEBUG
+            "last_gcode_pos=%s"  # TOOLCHANGE_DEBUG
+            % (self.afc.base_position, self.afc.homing_position,  # TOOLCHANGE_DEBUG
+               self.afc.last_gcode_position))  # TOOLCHANGE_DEBUG
         self.afc.function.log_toolhead_pos("After toolswap: ")
         lane.extruder_obj.estats.tool_selected.increase_count()
 
