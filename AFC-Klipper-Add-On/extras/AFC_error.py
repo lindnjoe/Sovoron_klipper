@@ -148,7 +148,7 @@ class afcError:
         self.afc.function.log_toolhead_pos()
 
     def set_error_state(self, state=False):
-        self.logger.warning("AFC debug: setting error state {}".format(state))
+        self.logger.debug("setting error state {}".format(state))
         # Only save position on first error state call
         if state and not self.afc.error_state:
             self.afc.save_pos()
