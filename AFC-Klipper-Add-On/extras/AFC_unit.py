@@ -640,6 +640,11 @@ class afcUnit:
         """Override in subclass for custom lane unload. Return non-None to skip default lane unload."""
         return None
 
+    def on_lane_unset_loaded(self, lane, extruder_name):
+        """Called after a lane is manually unset from the toolhead via unset_lane_loaded.
+        Override in subclass for custom post-unset behavior."""
+        pass
+
     def prep_capture_td1(self, cur_lane):
         """Override in subclass for custom TD-1 prep capture. Return non-None to skip default behavior."""
         return None

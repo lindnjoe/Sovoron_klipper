@@ -548,12 +548,14 @@ class afcFunction:
         """
         cur_lane_loaded = self.get_current_lane_obj()
         if cur_lane_loaded is not None:
+            extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None)
             cur_lane_loaded.unsync_to_extruder()
             cur_lane_loaded.set_tool_unloaded()
             cur_lane_loaded.unit_obj.return_to_home()
             self.afc.function.handle_activate_extruder()
             self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
             self.afc.save_vars()
+            cur_lane_loaded.unit_obj.on_lane_unset_loaded(cur_lane_loaded, extruder_name)
 
     def select_loaded_lane(self):
         """
