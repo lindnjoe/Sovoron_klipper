@@ -851,10 +851,8 @@ class AfcToolchanger(afcUnit):
             self.afc.gcode.run_script_from_command(
                 'SELECT_TOOL T={}'.format(tool_index))
 
-        # Activate the correct klipper extruder for this toolhead
-        lane.activate_toolhead_extruder()
-        # Sync AFC lane state (enable buffer, stepper, etc.)
-        self.afc.function._handle_activate_extruder(0)
+        # Activate klipper extruder and sync AFC lane state (buffer, stepper, etc.)
+        self.afc.function._handle_activate_extruder(0, lane=lane)
 
         self.afc.toolhead.wait_moves()
         self.afc.afcDeltaTime.log_with_time("Tool swap done", debug=False)

@@ -490,11 +490,14 @@ class afcFunction:
         # self.reactor.update_timer( self.activate_extruder_cb, self.reactor.monotonic() + 5 )
         self._handle_activate_extruder(0)
 
-    def _handle_activate_extruder(self, eventtime):
+    def _handle_activate_extruder(self, eventtime, lane=None):
         """
         Syncs AFC lane state when the active extruder changes.
-        Disables non-active lanes and enables the current one.
+        Optionally activates the klipper extruder for the given lane first,
+        then disables non-active lanes and enables the current one.
         """
+        if lane is not None:
+            lane.activate_toolhead_extruder()
 
         cur_lane_loaded = self.get_current_lane_obj()
         self.logger.debug("Activating extruder lane: {}".format(cur_lane_loaded.name if cur_lane_loaded else "None"))
