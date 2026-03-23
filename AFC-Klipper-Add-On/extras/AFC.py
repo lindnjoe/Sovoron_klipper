@@ -1082,12 +1082,17 @@ class afc:
         if not cur_lane.prep_state: return
         cur_lane.status = AFCLaneState.HUB_LOADING
         if not cur_lane.load_state:
+            num_tries = 0
             while not cur_lane.load_state:
-                # TODO: add timout routine here
                 cur_lane.move_to(cur_hub.move_dis, SpeedMode.SHORT,
                                  endstop=cur_lane.load_es,
                                  assist_active=AssistActive.DYNAMIC,
                                  use_homing=self.homing_enabled)
+                num_tries += 1
+                if num_tries >= 20:
+                    self.error.handle_lane_failure(cur_lane,
+                        f"Load sensor not triggered after {num_tries} attempts during HUB_LOAD", pause=False)
+                    return
 
         if not cur_lane.loaded_to_hub:
             dist_to_hub = cur_lane.dist_hub
@@ -1096,10 +1101,15 @@ class afc:
             cur_lane.unit_obj.move_to_hub(cur_lane, dist_to_hub, MoveDirection.POS,
                                           self.homing_enabled)
 
+        num_tries = 0
         while not cur_hub.state:
-            # TODO: add timout routine here
             cur_lane.unit_obj.move_to_hub(cur_lane, cur_hub.move_dis, MoveDirection.POS,
                                           self.homing_enabled)
+            num_tries += 1
+            if num_tries >= 20:
+                self.error.handle_lane_failure(cur_lane,
+                    f"Hub sensor not triggered after {num_tries} attempts during HUB_LOAD", pause=False)
+                return
 
         cur_lane.move_to(cur_hub.hub_clear_move_dis*MoveDirection.NEG, SpeedMode.HUB,
                          assist_active=AssistActive.YES, use_homing=False)
@@ -1335,7 +1345,7 @@ class afc:
 
                     if self.post_load_macro is not None:
                         self.gcode.run_script_from_command(self.post_load_macro)
-                        # TODO: Add afcDeltaTime log
+                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After post_load_macro")
                 finally:
                     self._restore_toolhead_temp(temp_state)
 
@@ -1960,7 +1970,7 @@ class afc:
 
             if self.post_unload_macro is not None:
                 self.gcode.run_script_from_command(self.post_unload_macro)
-                # TODO: Add afcDeltaTime log
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After post_unload_macro")
 
             cur_lane.do_enable(False)
             cur_lane.unit_obj.return_to_home()
