@@ -150,6 +150,7 @@ class afc:
 
         self.disable_weight_check   = config.getboolean("disable_weight_check", False) # Set to True to disable weight check when loading filament into lane/toolhead
         self.disable_ooze_check     = config.getboolean("disable_ooze_check", False) # Disable ooze check for lanes being on the same extruder in M104/M109 commands
+        self.deadband_auto          = config.getboolean("deadband_auto", True)       # Automatically use extruder's configured deadband for M109 when D is not specified
         #LED SETTINGS
         # All variables use: (R,G,B,W) 0 = off, 1 = full brightness.
         self.ind_lights = None
@@ -2313,11 +2314,15 @@ class afc:
         else:
             extruder = self.toolhead.get_extruder()
 
+        # Auto-fill deadband from extruder config when D is not specified
+        if deadband is None and self.deadband_auto and hasattr(extruder, 'deadband'):
+            deadband = extruder.deadband
+
         pheaters = self.printer.lookup_object('heaters')
         heater = extruder.get_heater()
         pheaters.set_temperature(heater, temp, False)  # Always set temp, don't wait yet
 
-        # If deadband is specified, wait for temp within tolerance
+        # If deadband is specified (or auto-filled), wait for temp within tolerance
         if wait and deadband is not None and temp > 0:
             self._wait_for_temp_within_tolerance(heater, temp, deadband)
             return
