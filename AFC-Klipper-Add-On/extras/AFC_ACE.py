@@ -1335,6 +1335,16 @@ class afcACE(afcUnit):
             # sensor so downstream checks see it as occupied.
             self._set_hub_state(cur_lane, True)
 
+            # Snapshot feed_assist_count before feeding so we can verify
+            # the assist motor engaged during the extruder load.
+            pre_assist_count = None
+            try:
+                self._wait_for_ace_ready()
+                pre_status = self._ace.get_status()
+                pre_assist_count = pre_status.get("feed_assist_count")
+            except Exception:
+                pass
+
             self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
 
             if self.mode == MODE_COMBINED:
@@ -1491,6 +1501,30 @@ class afcACE(afcUnit):
             afc.move_e_pos(
                 cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn"
             )
+
+        # Verify feed assist count increased — confirms the ACE assist
+        # motor pushed filament during the load, meaning the extruder
+        # gears actually engaged and pulled filament.
+        if pre_assist_count is not None:
+            try:
+                self._wait_for_ace_ready()
+                post_status = self._ace.get_status()
+                post_assist_count = post_status.get("feed_assist_count")
+                if post_assist_count is not None:
+                    delta = post_assist_count - pre_assist_count
+                    if delta > 0:
+                        self.logger.info(
+                            f"ACE load: feed assist engaged {delta} time(s) "
+                            f"during load (count {pre_assist_count} -> {post_assist_count})"
+                        )
+                    else:
+                        self.logger.warning(
+                            f"ACE load: feed_assist_count did not increase "
+                            f"during load ({pre_assist_count} -> {post_assist_count}). "
+                            f"Filament may not be engaged with extruder gears."
+                        )
+            except Exception as e:
+                self.logger.debug(f"ACE load: could not verify feed_assist_count: {e}")
 
         cur_lane.set_tool_loaded()
         cur_lane.enable_buffer(disable_fault=True)
