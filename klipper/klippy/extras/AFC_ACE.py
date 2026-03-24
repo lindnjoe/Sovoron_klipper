@@ -2176,10 +2176,6 @@ class afcACE(afcUnit):
                 "Use TOOL_UNLOAD to unload from toolhead first."
             )
             self.logger.info(message)
-            try:
-                self.gcode.respond_info(message)
-            except Exception:
-                pass
             return
 
         if self._ace is None or not self._ace.connected:
@@ -2195,12 +2191,7 @@ class afcACE(afcUnit):
         slot_info = self._slot_inventory[local_slot] if local_slot < len(self._slot_inventory) else {}
         slot_ready = slot_info.get("status", "") == "ready"
         if not lane.loaded_to_hub and not slot_ready:
-            message = f"ACE lane {lane_name} is not loaded to hub and slot is not ready, nothing to eject."
-            self.logger.info(message)
-            try:
-                self.gcode.respond_info(message)
-            except Exception:
-                pass
+            self.logger.info(f"ACE lane {lane_name} is not loaded to hub and slot is not ready, nothing to eject.")
             return
 
         if not lane.loaded_to_hub:
@@ -2224,13 +2215,7 @@ class afcACE(afcUnit):
             self._set_hub_state(lane, False)
             self._hub_load_suppressed.add(lane_name)
             self.afc.save_vars()
-            self.logger.info(f"ACE eject_lane: {lane_name} retracted to spool")
-            try:
-                self.gcode.respond_info(
-                    f"ACE lane {lane_name} retracted from hub to spool"
-                )
-            except Exception:
-                pass
+            self.logger.info(f"ACE lane {lane_name} retracted from hub to spool")
         except Exception as e:
             self.logger.error(f"ACE eject_lane failed for {lane_name}: {e}")
 
@@ -3341,14 +3326,14 @@ class afcACE(afcUnit):
         Usage: ACE_STATUS UNIT=<name>
         """
         if self._ace is None or not self._ace.connected:
-            gcmd.respond_info(f"ACE {self.name}: not connected")
+            self.logger.info(f"ACE {self.name}: not connected")
             return
 
         try:
             status = self._ace.get_status()
-            gcmd.respond_info(f"ACE {self.name} status: {status}")
+            self.logger.info(f"ACE {self.name} status: {status}")
         except Exception as e:
-            gcmd.respond_info(f"ACE {self.name} status query failed: {e}")
+            self.logger.info(f"ACE {self.name} status query failed: {e}")
 
     def cmd_ACE_DRY(self, gcmd):
         """Start ACE filament dryer.
@@ -3356,7 +3341,7 @@ class afcACE(afcUnit):
         Usage: ACE_DRY UNIT=<name> TEMP=<celsius> DURATION=<minutes> [FAN=<rpm>]
         """
         if self._ace is None or not self._ace.connected:
-            gcmd.respond_info(f"ACE {self.name}: not connected")
+            self.logger.info(f"ACE {self.name}: not connected")
             return
 
         temp = gcmd.get_int("TEMP", 50)
@@ -3366,12 +3351,12 @@ class afcACE(afcUnit):
         try:
             self._ace.start_drying(temp, fan, duration)
             self._drying_active = True
-            gcmd.respond_info(
+            self.logger.info(
                 f"ACE {self.name}: drying started "
                 f"({temp}C, {duration}min, fan={fan}rpm)"
             )
         except Exception as e:
-            gcmd.respond_info(f"ACE {self.name}: drying failed: {e}")
+            self.logger.info(f"ACE {self.name}: drying failed: {e}")
 
     def cmd_ACE_DRY_STOP(self, gcmd):
         """Stop ACE filament dryer.
@@ -3379,16 +3364,16 @@ class afcACE(afcUnit):
         Usage: ACE_DRY_STOP UNIT=<name>
         """
         if self._ace is None or not self._ace.connected:
-            gcmd.respond_info(f"ACE {self.name}: not connected")
+            self.logger.info(f"ACE {self.name}: not connected")
             return
 
         try:
             self._ace.stop_drying()
             self._drying_active = False
-            gcmd.respond_info(f"ACE {self.name}: drying stopped")
+            self.logger.info(f"ACE {self.name}: drying stopped")
         except Exception as e:
             self._drying_active = False
-            gcmd.respond_info(f"ACE {self.name}: stop drying failed: {e}")
+            self.logger.info(f"ACE {self.name}: stop drying failed: {e}")
 
     def cmd_ACE_FEED_ASSIST(self, gcmd):
         """Enable or disable feed assist, globally or per-slot.
@@ -3415,14 +3400,14 @@ class afcACE(afcUnit):
                     lines.append(f"  Slot {s + 1}: {eff_str} (override)")
                 else:
                     lines.append(f"  Slot {s + 1}: {eff_str} (default)")
-            gcmd.respond_info("\n".join(lines))
+            self.logger.info("\n".join(lines))
             return
 
         # Per-slot override
         if slot_num is not None:
             slot_index = slot_num - 1  # Config is 1-based
             if slot_index < 0 or slot_index >= self.SLOTS_PER_UNIT:
-                gcmd.respond_info(
+                self.logger.info(
                     f"ACE {self.name}: invalid slot {slot_num} (must be 1-{self.SLOTS_PER_UNIT})"
                 )
                 return
@@ -3432,14 +3417,14 @@ class afcACE(afcUnit):
                 self._slot_feed_assist.pop(slot_index, None)
                 effective = self._get_feed_assist_for_slot(slot_index)
                 state = "enabled" if effective else "disabled"
-                gcmd.respond_info(
+                self.logger.info(
                     f"ACE {self.name}: slot {slot_num} feed assist reset to default ({state})"
                 )
             else:
                 enable = bool(int(enable_str))
                 self._slot_feed_assist[slot_index] = enable
                 state = "enabled" if enable else "disabled"
-                gcmd.respond_info(
+                self.logger.info(
                     f"ACE {self.name}: slot {slot_num} feed assist {state}"
                 )
             return
@@ -3448,7 +3433,7 @@ class afcACE(afcUnit):
         enable = bool(int(enable_str))
         self._default_feed_assist = enable
         state = "enabled" if enable else "disabled"
-        gcmd.respond_info(f"ACE {self.name}: feed assist default {state}")
+        self.logger.info(f"ACE {self.name}: feed assist default {state}")
 
     def cmd_ACE_SYNC_INVENTORY(self, gcmd):
         """Refresh RFID/spool inventory from ACE hardware and sync to lanes.
@@ -3456,7 +3441,7 @@ class afcACE(afcUnit):
         Usage: ACE_SYNC_INVENTORY UNIT=<name>
         """
         if self._ace is None or not self._ace.connected:
-            gcmd.respond_info(f"ACE {self.name}: not connected")
+            self.logger.info(f"ACE {self.name}: not connected")
             return
 
         try:
@@ -3477,9 +3462,9 @@ class afcACE(afcUnit):
                 lines.append(
                     f"  Slot {slot + 1}: {status} | {material} | {hex_color}"
                 )
-            gcmd.respond_info("\n".join(lines))
+            self.logger.info("\n".join(lines))
         except Exception as e:
-            gcmd.respond_info(
+            self.logger.info(
                 f"ACE {self.name}: inventory sync failed: {e}"
             )
 
@@ -3494,25 +3479,25 @@ class afcACE(afcUnit):
         """
         lane_name = gcmd.get("LANE", None)
         if lane_name is None or lane_name not in self.afc.lanes:
-            gcmd.respond_info(f"ACE_LANE_RESET: invalid lane '{lane_name}'")
+            self.logger.info(f"ACE_LANE_RESET: invalid lane '{lane_name}'")
             return
 
         cur_lane = self.afc.lanes[lane_name]
         if cur_lane.unit_obj is not self:
-            gcmd.respond_info(
+            self.logger.info(
                 f"ACE_LANE_RESET: {lane_name} does not belong to {self.name}"
             )
             return
 
         local_slot = self._get_local_slot_for_lane(cur_lane)
         if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
-            gcmd.respond_info(
+            self.logger.info(
                 f"ACE_LANE_RESET: {lane_name} has no valid slot mapping"
             )
             return
 
         if self._ace is None or not self._ace.connected:
-            gcmd.respond_info(
+            self.logger.info(
                 f"ACE_LANE_RESET: ACE {self.name} not connected"
             )
             return
@@ -3534,7 +3519,7 @@ class afcACE(afcUnit):
             self._retract_slot(local_slot, lane=cur_lane)
         except Exception as e:
             self.logger.error(f"ACE lane reset failed for {lane_name}: {e}")
-            gcmd.respond_info(f"ACE_LANE_RESET: retract failed for {lane_name}: {e}")
+            self.logger.info(f"ACE_LANE_RESET: retract failed for {lane_name}: {e}")
             return
 
         # Update lane state
@@ -3554,7 +3539,7 @@ class afcACE(afcUnit):
 
         self.afc.save_vars()
         self.afc.save_vars()
-        gcmd.respond_info(f"ACE lane reset: {lane_name} retracted successfully")
+        self.logger.info(f"ACE lane reset: {lane_name} retracted successfully")
 
     def cmd_ACE_CALIBRATE(self, gcmd):
         """Calibrate per-lane bowden length by feeding until toolhead sensor triggers.
@@ -3566,12 +3551,12 @@ class afcACE(afcUnit):
         Usage: ACE_CALIBRATE UNIT=<name> LANE=<lane_name>
         """
         if self._ace is None or not self._ace.connected:
-            gcmd.respond_info(f"ACE {self.name}: not connected")
+            self.logger.info(f"ACE {self.name}: not connected")
             return
 
         lane_name = gcmd.get("LANE", default=None)
         if lane_name is None:
-            gcmd.respond_info("ACE_CALIBRATE requires LANE=<lane_name>")
+            self.logger.info("ACE_CALIBRATE requires LANE=<lane_name>")
             return
 
         cur_lane = self.lanes.get(lane_name)
@@ -3579,16 +3564,16 @@ class afcACE(afcUnit):
             # Try looking up from AFC global lanes
             cur_lane = self.afc.lanes.get(lane_name)
         if cur_lane is None:
-            gcmd.respond_info(f"Lane '{lane_name}' not found")
+            self.logger.info(f"Lane '{lane_name}' not found")
             return
 
-        gcmd.respond_info(
+        self.logger.info(
             f"ACE {self.name}: starting lane calibration for {lane_name}...\n"
             f"Feeding in {self.calibration_step}mm steps"
         )
 
         success, msg, distance = self.calibrate_lane(cur_lane, 0)
-        gcmd.respond_info(msg)
+        self.logger.info(msg)
 
     def cmd_ACE_CALIBRATE_HUB(self, gcmd):
         """Calibrate dist_hub by feeding until hub sensor triggers.
@@ -3600,28 +3585,28 @@ class afcACE(afcUnit):
         Usage: ACE_CALIBRATE_HUB UNIT=<name> LANE=<lane_name>
         """
         if self._ace is None or not self._ace.connected:
-            gcmd.respond_info(f"ACE {self.name}: not connected")
+            self.logger.info(f"ACE {self.name}: not connected")
             return
 
         lane_name = gcmd.get("LANE", default=None)
         if lane_name is None:
-            gcmd.respond_info("ACE_CALIBRATE_HUB requires LANE=<lane_name>")
+            self.logger.info("ACE_CALIBRATE_HUB requires LANE=<lane_name>")
             return
 
         cur_lane = self.lanes.get(lane_name)
         if cur_lane is None:
             cur_lane = self.afc.lanes.get(lane_name)
         if cur_lane is None:
-            gcmd.respond_info(f"Lane '{lane_name}' not found")
+            self.logger.info(f"Lane '{lane_name}' not found")
             return
 
-        gcmd.respond_info(
+        self.logger.info(
             f"ACE {self.name}: starting hub calibration for {lane_name}...\n"
             f"Feeding in {self.calibration_step}mm steps"
         )
 
         success, msg, distance = self.calibrate_hub(cur_lane, 0)
-        gcmd.respond_info(msg)
+        self.logger.info(msg)
 
     # ---- Utilities ----
 
