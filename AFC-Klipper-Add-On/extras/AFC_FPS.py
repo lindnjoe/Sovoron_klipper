@@ -361,16 +361,25 @@ class AFCFPSBuffer:
             + (1.0 - self.smoothing) * read_value
         )
 
-        # Keep last_state current even when correction loop isn't running,
-        # so Mainsail never shows "Unknown" after initial ADC readings.
+        # Keep last_state and advance/trailing booleans current even when
+        # the correction loop isn't running (buffer disabled during
+        # loading / calibration).  Without this, get_toolhead_pre_sensor_state()
+        # returns stale False and ACE load / calibration can't detect
+        # filament arrival at the toolhead.
         if not self.enable:
             half_db = self.deadband / 2.0
             if self.smoothed_fps > self.set_point + half_db:
                 self.last_state = ADVANCING_STATE_NAME
+                self.advance_state = True
+                self.trailing_state = False
             elif self.smoothed_fps < self.set_point - half_db:
                 self.last_state = TRAILING_STATE_NAME
+                self.advance_state = False
+                self.trailing_state = True
             else:
                 self.last_state = NEUTRAL_STATE_NAME
+                self.advance_state = False
+                self.trailing_state = False
 
     # ------------------------------------------------------------------
     # Correction timer — proportional adjustment loop
