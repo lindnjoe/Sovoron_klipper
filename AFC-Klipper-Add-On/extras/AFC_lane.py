@@ -928,28 +928,82 @@ class AFCLane:
     def _perform_infinite_runout(self):
         """
         Common function for infinite spool runout
+            - Normalizes runout lane target (resolves aliases, T# maps, case mismatches)
+            - Ensures afc.current is correct before proceeding
             - Unloads current lane and loads the next lane as specified by runout variable.
             - Swaps mapping between current lane and runout lane so correct lane is loaded with T(n) macro
             - Once changeover is successful print is automatically resumed
         """
+        lane_name = self.name
+        lanes = self.afc.lanes
+
+        # Normalize runout target - resolve aliases, T# maps, case mismatches
+        runout_target = None
+        raw = self.runout_lane
+        if raw is not None:
+            lookup = str(raw).strip().lower()
+            if lookup:
+                # Direct name match
+                for key in lanes:
+                    if str(key).lower() == lookup:
+                        runout_target = key
+                        break
+                # Match against lane.map (e.g., T0, t0)
+                if runout_target is None:
+                    for key, lane_obj in lanes.items():
+                        lane_map = getattr(lane_obj, "map", None)
+                        if isinstance(lane_map, str) and lane_map.strip().lower() == lookup:
+                            runout_target = key
+                            break
+                # Match T# aliases to lane indices
+                if runout_target is None and lookup.startswith("t") and lookup[1:].isdigit():
+                    try:
+                        idx = int(lookup[1:])
+                        for key, lane_obj in lanes.items():
+                            lane_idx = getattr(lane_obj, "lane", None)
+                            if lane_idx is not None and int(lane_idx) == idx:
+                                runout_target = key
+                                break
+                    except Exception:
+                        pass
+
+        if not runout_target or runout_target not in lanes:
+            self.afc.error.AFC_error(
+                "Runout lane '{}' unavailable for {} (known lanes: {})".format(
+                    self.runout_lane, lane_name, ', '.join(lanes)))
+            return
+
+        if self.runout_lane != runout_target:
+            self.logger.info("Normalized runout lane '{}' -> '{}'".format(self.runout_lane, runout_target))
+            self.runout_lane = runout_target
+
+        # Ensure afc.current points to this lane
+        current = self.afc.current
+        if current not in lanes and hasattr(current, "name"):
+            current = getattr(current, "name", current)
+        if current != lane_name:
+            self.logger.debug("Setting AFC current lane to {} before infinite runout".format(lane_name))
+            self.afc.current = lane_name
+
         self.status = AFCLaneState.NONE
         self.unit_obj.lane_not_ready(self)
         self.logger.info("Infinite Spool triggered for {}".format(self.name))
-        empty_lane = self.afc.lanes.get(self.afc.current)
-        change_lane = self.afc.lanes.get(self.runout_lane)
+        empty_lane = lanes.get(self.afc.current)
+        change_lane = lanes.get(self.runout_lane)
+
+        # Verifying lanes are valid before continuing
+        if not change_lane:
+            self.afc.error.AFC_error("Error when looking up runout lane:{} for lane:{}".format(self.runout_lane, self.name))
+            return
+        if not empty_lane:
+            self.afc.error.AFC_error("Error when looking up current lane:{}".format(self.afc.current))
+            return
+
         change_lane.status = AFCLaneState.INFINITE_RUNOUT
         # Pause printer with manual command
         self.afc.error.pause_resume.send_pause_command()
         # Saving position after printer is paused
         self.afc.save_pos()
-
-        # Verifying lanes are valid before continuing
-        if not change_lane:
-            self.afc.error.AFC_error(f"Error when looking up runout lane:{self.runout_lane} for lane:{self.name}")
-            return
-        if not empty_lane:
-            self.afc.error.AFC_error(f"Error when looking up current lane:{self.afc.current}")
-            return
 
         # Position will be restored after lane is unloaded so that nozzle does not sit
         # on print while lane is unloading
