@@ -2306,60 +2306,8 @@ class OAMSManager:
                 self._last_logged_detected_lane.pop(extruder_name, None)
                 continue  # This lane is on a different FPS
 
-            # Get the lane object
-            lane = afc.lanes.get(loaded_lane_name)
-            if lane is None:
-                self.logger.warning(f"Lane {loaded_lane_name} not found in afc.lanes")
-                continue
-
-            # Get the OAMS and bay index for this lane
-            unit_str = getattr(lane, "unit", None)
-            if not unit_str:
-                self.logger.warning(f"Lane {loaded_lane_name} has no unit")
-                continue
-
-            # Parse unit and slot
-            if isinstance(unit_str, str) and ':' in unit_str:
-                base_unit_name, slot_str = unit_str.split(':', 1)
-                try:
-                    slot_number = int(slot_str)
-                except ValueError:
-                    self.logger.warning(f"Invalid slot number in unit {unit_str}")
-                    continue
-            else:
-                base_unit_name = str(unit_str)
-                slot_number = getattr(lane, "index", None)
-                if slot_number is None:
-                    self.logger.warning(f"No index found for lane {loaded_lane_name}")
-                    continue
-
-            # Convert to bay index
-            bay_index = slot_number - 1
-            if bay_index < 0:
-                self.logger.warning(f"Invalid bay index {bay_index} (slot {slot_number})")
-                continue
-
-            # Get OAMS name from AFC unit
-            unit_obj = getattr(lane, "unit_obj", None)
-            if unit_obj is None:
-                units = getattr(afc, "units", {})
-                unit_obj = units.get(base_unit_name)
-            if unit_obj is None:
-                self.logger.warning(f"Unit {base_unit_name} not found")
-                continue
-
-            oams_name = getattr(unit_obj, "oams_name", None)
-            if not oams_name:
-                self.logger.warning(f"Unit {base_unit_name} has no oams_name")
-                continue
-
-            # Find OAMS object - check both short and prefixed names
-            oam = self.oams.get(oams_name)
+            oam, bay_index, lane = self._resolve_lane_oams(loaded_lane_name, afc=afc)
             if oam is None:
-                oam = self.oams.get(f"oams {oams_name}")
-
-            if oam is None:
-                self.logger.warning(f"OAMS {oams_name} not found")
                 continue
 
             # Found loaded lane! Return lane name (e.g., "lane8") not map (e.g., "T4")
@@ -2393,31 +2341,9 @@ class OAMSManager:
                     lane = None
 
             if lane is not None:
-                unit_str = getattr(lane, "unit", None)
-                if isinstance(unit_str, str) and ':' in unit_str:
-                    base_unit_name, slot_str = unit_str.split(':', 1)
-                    try:
-                        bay_index = int(slot_str) - 1
-                    except ValueError:
-                        bay_index = None
-                else:
-                    base_unit_name = str(unit_str) if unit_str is not None else None
-                    try:
-                        bay_index = int(getattr(lane, "index", 0)) - 1
-                    except Exception as e:
-                        bay_index = None
+                oam, bay_index, _ = self._resolve_lane_oams(lane, afc=afc)
 
-                oam = None
-                if base_unit_name:
-                    unit_obj = getattr(lane, "unit_obj", None)
-                    if unit_obj is None:
-                        units = getattr(afc, "units", {})
-                        unit_obj = units.get(base_unit_name)
-                    oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
-                    if oams_name:
-                        oam = self.oams.get(oams_name) or self.oams.get(f"oams {oams_name}")
-
-                if oam is not None and bay_index is not None and bay_index >= 0:
+                if oam is not None and bay_index is not None:
                     self.logger.info(
                         f"Using fps_state fallback: {fps_state.current_lane} treated as loaded on {fps_name} (bay {bay_index} on {getattr(oam, 'name', 'unknown')})"
                     )
@@ -2443,43 +2369,11 @@ class OAMSManager:
                     continue
 
                 # Found a lane with tool_loaded = True on this FPS!
-                # Get OAMS and bay index for this lane
-                unit_str = getattr(lane_obj, "unit", None)
-                if not unit_str:
-                    continue
-
-                # Parse unit and slot
-                if isinstance(unit_str, str) and ':' in unit_str:
-                    base_unit_name, slot_str = unit_str.split(':', 1)
-                    try:
-                        bay_index = int(slot_str) - 1
-                    except ValueError:
-                        continue
-                else:
-                    base_unit_name = str(unit_str)
-                    slot_number = getattr(lane_obj, "index", None)
-                    if slot_number is None:
-                        continue
-                    bay_index = slot_number - 1
-
-                if bay_index < 0:
-                    continue
-
-                # Get OAMS object
-                unit_obj = getattr(lane_obj, "unit_obj", None)
-                if unit_obj is None:
-                    units = getattr(afc, "units", {})
-                    unit_obj = units.get(base_unit_name)
-
-                oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
-                if not oams_name:
-                    continue
-
-                oam = self.oams.get(oams_name) or self.oams.get(f"oams {oams_name}")
+                oam, bay_index, _ = self._resolve_lane_oams(lane_obj, afc=afc)
                 if oam is None:
                     continue
 
-                # Found it! This lane has tool_loaded = True even though shuttle is empty
+                oams_name = getattr(oam, "name", "unknown")
                 self.logger.info(
                     f"Detected stale filament: {lane_name} has tool_loaded=True on {fps_name} "
                     f"(bay {bay_index} on {oams_name}) but shuttle is empty - needs auto-unload"
@@ -3011,59 +2905,31 @@ class OAMSManager:
                 if fps_state is None:
                     continue
 
-                lane_obj = getattr(afc, "lanes", {}).get(lane_name) if afc else None
-                lane_unit = getattr(lane_obj, "unit", None) if lane_obj is not None else None
-                lane_data = self._get_lane_snapshot(lane_name, unit_name=lane_unit)
+                oams_obj, spool_idx, lane_obj = self._resolve_lane_oams(lane_name, afc=afc)
 
-                spool_idx = None
-                if lane_obj is not None:
-                    unit_str = getattr(lane_obj, "unit", None)
-                    if isinstance(unit_str, str) and ":" in unit_str:
-                        _, slot_str = unit_str.split(":", 1)
-                        try:
-                            spool_idx = int(slot_str) - 1
-                        except ValueError:
-                            spool_idx = None
-                    elif hasattr(lane_obj, "index"):
-                        try:
-                            spool_idx = int(getattr(lane_obj, "index")) - 1
-                        except Exception as e:
-                            spool_idx = None
+                # Fallback to snapshot data if live lane resolution failed
+                if oams_obj is None or spool_idx is None:
+                    lane_obj_tmp = getattr(afc, "lanes", {}).get(lane_name) if afc else None
+                    lane_unit = getattr(lane_obj_tmp, "unit", None) if lane_obj_tmp is not None else None
+                    lane_data = self._get_lane_snapshot(lane_name, unit_name=lane_unit)
+                    if isinstance(lane_data, dict):
+                        if spool_idx is None:
+                            try:
+                                spool_idx = int(lane_data.get("lane", 0)) - 1
+                            except Exception:
+                                spool_idx = None
+                        if oams_obj is None:
+                            oams_name = lane_data.get("unit")
+                            if oams_name:
+                                oams_obj = self.oams.get(oams_name) or self.oams.get(f"oams {oams_name}")
 
-                if spool_idx is None and isinstance(lane_data, dict):
-                    try:
-                        spool_idx = int(lane_data.get("lane", 0)) - 1
-                    except Exception as e:
-                        spool_idx = None
-
-                if spool_idx is None or spool_idx < 0:
-                    self.logger.debug(f"Skipping AFC.var.unit lane {lane_name} due to missing spool index")
-                    continue
-
-                # Resolve the OAMS object backing this lane
-                oams_obj = None
-                oams_name = None
-                if lane_obj is not None:
-                    unit_obj = getattr(lane_obj, "unit_obj", None)
-                    if unit_obj is None and afc is not None:
-                        unit_obj = getattr(afc, "units", {}).get(getattr(lane_obj, "unit", None))
-                    oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
-
-                if not oams_name and isinstance(lane_data, dict):
-                    oams_name = lane_data.get("unit")
-
-
-                if oams_name:
-                    oams_obj = self.oams.get(oams_name) or self.oams.get(f"oams {oams_name}")
-
-
-                if oams_obj is None:
+                if oams_obj is None or spool_idx is None or spool_idx < 0:
                     self.logger.debug(f"Could not resolve OAMS for lane {lane_name} from AFC.var.unit")
                     continue
 
                 # Update FPS state tracking
                 fps_state.current_lane = lane_name
-                fps_state.current_oams = getattr(oams_obj, "name", oams_name)
+                fps_state.current_oams = getattr(oams_obj, "name", None)
                 fps_state.current_spool_idx = spool_idx
                 fps_state.state = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
@@ -6323,49 +6189,17 @@ class OAMSManager:
 
     def _find_fps_for_oams_bay(self, oams_name: str, bay_idx: int):
         """Find the FPS name that corresponds to a specific OAMS bay."""
-        # Query AFC to find which lane uses this OAMS bay
         afc = self._get_afc()
         if afc is None or not hasattr(afc, 'lanes'):
             return None
 
-        # Look through AFC lanes to find one that matches this OAMS and bay
         for lane_name, lane in afc.lanes.items():
-            # Get lane's unit and slot
-            unit_str = getattr(lane, "unit", None)
-            if not unit_str:
+            oam, lane_bay, _ = self._resolve_lane_oams(lane, afc=afc)
+            if oam is None or lane_bay != bay_idx:
                 continue
-
-            # Parse unit name and slot
-            if isinstance(unit_str, str) and ':' in unit_str:
-                base_unit_name, slot_str = unit_str.split(':', 1)
-                try:
-                    slot_number = int(slot_str)
-                except ValueError:
-                    continue
-            else:
-                base_unit_name = str(unit_str)
-                slot_number = getattr(lane, "index", None)
-                if slot_number is None:
-                    continue
-
-            # Convert slot to bay index
-            lane_bay_idx = slot_number - 1
-            if lane_bay_idx != bay_idx:
-                continue
-
-            # Check if this lane's unit uses this OAMS
-            unit_obj = getattr(lane, "unit_obj", None)
-            if unit_obj is None:
-                units = getattr(afc, "units", {})
-                unit_obj = units.get(base_unit_name)
-            if unit_obj is None:
-                continue
-
-            lane_oams_name = getattr(unit_obj, "oams_name", None)
+            lane_oams_name = getattr(oam, "name", None)
             if lane_oams_name != oams_name and f"oams {lane_oams_name}" != oams_name:
                 continue
-
-            # Found matching lane - return its FPS
             return self.get_fps_for_afc_lane(lane_name)
 
         return None
