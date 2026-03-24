@@ -695,6 +695,7 @@ class afcACE(afcUnit):
         self._dock_purge_context = {
             'dropoff_tool': tool.name,
             'pickup_tool': tool.name,
+            'dock_purge': True,
             'start_position': tc._position_to_xyz(start_pos, 'xyz'),
             'restore_position': tc._position_to_xyz(start_pos, 'XYZ'),
         }
