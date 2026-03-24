@@ -2914,6 +2914,21 @@ class afcACE(afcUnit):
             )
             return False, msg, distance
 
+        # If filament was already staged at the hub, the measurement only
+        # covers hub→toolhead.  Add dist_hub back so the returned distance
+        # represents the full slot→toolhead path.  This prevents the loading
+        # code (which subtracts dist_hub when loaded_to_hub is True) from
+        # double-subtracting.
+        if cur_lane.loaded_to_hub:
+            dist_hub = self._get_dist_hub(cur_lane)
+            if dist_hub > 0:
+                self.logger.info(
+                    f"ACE calibrate: filament was pre-loaded to hub, "
+                    f"adding dist_hub={dist_hub:.0f}mm to measured "
+                    f"{distance:.1f}mm"
+                )
+                distance += dist_hub
+
         return True, "", distance
 
     def _calibrate_bowden_inner(self, cur_lane, dis, tol):
