@@ -201,7 +201,6 @@ class AFCLane:
         self.td1_device_id: str    = config.get("td1_device_id", None)
         self.td1_bowden_length  = config.getfloat("td1_bowden_length", None)
         self.calibrated_lane: bool = config.getboolean("calibrated_lane", False)
-        self.ptfe_length: float    = config.getfloat("ptfe_length", None)  # Calibrated PTFE tube length for this lane (set by PTFE calibration commands)
 
         self.post_prep_macro: str  = config.get("post_prep_macro", None)  # Macro to call after loading filament during prep callback
 

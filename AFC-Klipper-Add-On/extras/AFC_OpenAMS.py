@@ -773,7 +773,7 @@ class afcAMS(afcUnit):
 
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES, desc="calibrate the OpenAMS HUB HES value for a specific lane")
         self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_HUB_HES_ALL", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_HUB_HES_ALL, desc="calibrate the OpenAMS HUB HES value for every loaded lane")
-        self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_PTFE", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_PTFE, desc="calibrate the OpenAMS PTFE length for a specific lane")
+        self.gcode.register_mux_command("AFC_OAMS_CALIBRATE_PTFE", "UNIT", self.name, self.cmd_AFC_OAMS_CALIBRATE_PTFE, desc="Calibrate PTFE length for this OpenAMS unit (any lane can be used — distance to hub is identical for all bays)")
         self.gcode.register_mux_command("UNIT_PTFE_CALIBRATION", "UNIT", self.name, self.cmd_UNIT_PTFE_CALIBRATION, desc="show OpenAMS PTFE calibration menu")
 
     def _is_openams_unit(self):
@@ -4867,7 +4867,12 @@ class afcAMS(afcUnit):
             self.logger.info("Skipped HUB HES calibration for lanes lacking OpenAMS mapping: {}.".format(skipped_lanes))
 
     def cmd_AFC_OAMS_CALIBRATE_PTFE(self, gcmd):
-        """Run the OpenAMS PTFE calibration for a specific lane."""
+        """Run the OpenAMS PTFE calibration for this unit.
+
+        Any lane/spool on the unit can be used — the PTFE distance from
+        each bay to the hub is identical.  The result is saved to the
+        [oams ...] section so the firmware reads it on next startup.
+        """
         spool_index = gcmd.get_int("SPOOL", None)
         if spool_index is None:
             self.logger.info("SPOOL parameter is required for OpenAMS PTFE calibration.")
@@ -4987,20 +4992,27 @@ class afcAMS(afcUnit):
             self.logger.info("Unable to format PTFE calibration value for config storage.")
             return False
 
-        if lane is None:
-            self.logger.info("No lane provided for PTFE calibration, cannot save ptfe_length.")
+        # All lanes on the same OAMS unit share an identical PTFE path to
+        # the hub, so calibration from any lane applies to the whole unit.
+        # Save to the [oams ...] section where the firmware reads it.
+        if self.oams is None:
+            self.logger.info("OAMS object not available, cannot save ptfe_length.")
             return False
 
-        section = lane.fullname
-        cal_msg = f"\n{lane.name} ptfe_length: {formatted_value}"
+        section = self.oams.name
+        cal_msg = f"\n{section} ptfe_length: {formatted_value}"
         try:
             self.function.ConfigRewrite(section, "ptfe_length", formatted_value, cal_msg)
         except Exception as e:
-            self.logger.error(f"Failed to persist ptfe_length for {lane.name}: {e}")
+            self.logger.error(f"Failed to persist ptfe_length for {section}: {e}")
             self.logger.info("Failed to update ptfe_length in your cfg; please update it manually.")
             return False
 
-        self.logger.info(f"PTFE calibration complete for {lane_label}: ptfe_length {formatted_value} has been automatically saved to your config.")
+        self.logger.info(
+            f"PTFE calibration complete for {lane_label}: ptfe_length {formatted_value} "
+            f"saved to [{section}]. Any lane on this unit can be used to calibrate — "
+            f"the PTFE distance to the hub is identical for all bays."
+        )
         return True
 
     def _run_command_with_capture(self, command):
