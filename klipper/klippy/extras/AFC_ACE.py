@@ -1357,11 +1357,21 @@ class afcACE(afcUnit):
         # advance_state reflects real-time pressure, not a physical switch
         # that needs to be cleared by retracting.
         if cur_extruder.tool_start:
+            # If the FPS already latched during the feed, the filament is
+            # confirmed present — skip the smart-load retry loop.  The FPS
+            # is pressure-based: once the ACE stops feeding, pressure drops
+            # and advance_state / get_toolhead_pre_sensor_state() goes False
+            # even though filament is still there.  Trusting the latch
+            # avoids unnecessary 220mm retry feeds.
+            if self._fps_latched:
+                self.logger.info(
+                    "ACE smart load: skipping — FPS already latched during feed"
+                )
             # Standard toolhead sensor verification with retry.
             # When home_to_tool is active, scale retries using
             # tool_homing_distance so the ACE searches the same range
             # a BoxTurtle stepper would during endstop homing.
-            if not cur_lane.get_toolhead_pre_sensor_state():
+            elif not cur_lane.get_toolhead_pre_sensor_state():
                 homing_active = (getattr(afc, 'homing_enabled', False)
                                  and getattr(afc, 'home_to_tool', False))
                 if homing_active:
