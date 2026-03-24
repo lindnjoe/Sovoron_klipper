@@ -1335,16 +1335,6 @@ class afcACE(afcUnit):
             # sensor so downstream checks see it as occupied.
             self._set_hub_state(cur_lane, True)
 
-            # Snapshot feed_assist_count before feeding so we can verify
-            # the assist motor engaged during the extruder load.
-            pre_assist_count = None
-            try:
-                self._wait_for_ace_ready()
-                pre_status = self._ace.get_status()
-                pre_assist_count = pre_status.get("feed_assist_count")
-            except Exception:
-                pass
-
             self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
 
             if self.mode == MODE_COMBINED:
@@ -1473,6 +1463,17 @@ class afcACE(afcUnit):
         cur_lane.status = AFCLaneState.TOOL_LOADED
         self.afc.save_vars()
         cur_lane.sync_to_extruder()
+
+        # Snapshot feed_assist_count now that the extruder is synced and
+        # about to pull filament.  The assist motor should engage once the
+        # extruder gears start pulling, so we compare after tool_stn.
+        pre_assist_count = None
+        try:
+            self._wait_for_ace_ready()
+            pre_status = self._ace.get_status()
+            pre_assist_count = pre_status.get("feed_assist_count")
+        except Exception:
+            pass
 
         # If tool_end sensor exists, feed until it triggers
         if cur_extruder.tool_end:
