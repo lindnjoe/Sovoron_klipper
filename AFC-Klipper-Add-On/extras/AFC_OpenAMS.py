@@ -4985,7 +4985,7 @@ class afcAMS(afcUnit):
             self.logger.info("OAMS object not available, cannot save ptfe_length.")
             return False
 
-        section = self.oams.name
+        section = self.oams.config_name
         cal_msg = f"\n{section} ptfe_length: {formatted_value}"
         try:
             self.function.ConfigRewrite(section, "ptfe_length", formatted_value, cal_msg)
