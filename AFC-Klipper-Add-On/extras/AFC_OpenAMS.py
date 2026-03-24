@@ -300,21 +300,8 @@ class AMSHardwareService:
 
     def _monotonic(self):
         if self._reactor is None:
-            reactor = getattr(self.printer, "get_reactor", None)
-            if callable(reactor):
-                try:
-                    self._reactor = reactor()
-                except Exception:
-                    pass
-            if self._reactor is None:
-                try:
-                    self._reactor = self.printer.get_reactor()
-                except Exception:
-                    return 0.0
-        try:
-            return self._reactor.monotonic()
-        except Exception:
-            return 0.0
+            self._reactor = self.printer.get_reactor()
+        return self._reactor.monotonic()
 
     def start_polling(self):
         if self._polling_timer is not None:
@@ -700,10 +687,6 @@ EVENT_POLICY: Dict[str, Dict[str, bool]] = {
 }
 
 
-# Alias for callers that reference the function by underscore-prefixed name.
-_normalize_extruder_name = normalize_extruder_name
-
-
 class afcAMS(afcUnit):
     """AFC unit subclass that synchronises state with OpenAMS"""
 
@@ -722,14 +705,7 @@ class afcAMS(afcUnit):
         if self.buffer_obj is not None and not hasattr(self.buffer_obj, 'get_fps_value'):
             self.buffer_obj = None
 
-        # Ensure LED attributes are set (inherited from AFC_unit but may not be set if AFC base is missing)
-        # These are needed by AFC_lane.py handle_unit_connect (lines 391-393)
-        if not hasattr(self, 'led_tool_loaded'):
-            self.led_tool_loaded = config.get('led_tool_loaded', '0,0,1,0')
-        if not hasattr(self, 'led_tool_loaded_idle'):
-            self.led_tool_loaded_idle = config.get('led_tool_loaded_idle', '0.4,0.4,0,0')
-        if not hasattr(self, 'led_tool_unloaded'):
-            self.led_tool_unloaded = config.get('led_tool_unloaded', '1,0,0,0')
+        # LED attributes are inherited from afcUnit.__init__ via super().__init__.
 
         self.oams_name = config.get("oams", "oams1")
 
@@ -738,7 +714,6 @@ class afcAMS(afcUnit):
         # Defaults to False (pause-only) so the behaviour is opt-in.
         self.stuck_spool_auto_recovery = config.getboolean("stuck_spool_auto_recovery", False)
 
-        self.reactor = self.printer.get_reactor()
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
 
         # Lane registry integration
@@ -773,7 +748,6 @@ class afcAMS(afcUnit):
         # Keep _last_hub_hes_values for HES calibration (not an AFC responsibility)
         self._last_hub_hes_values: Optional[List[float]] = None
 
-        # Cache frequently accessed objects
         self._cached_sensor_helper = None
         self._cached_gcode = None
         self._cached_extruder_objects: Dict[str, Any] = {}
@@ -1063,14 +1037,6 @@ class afcAMS(afcUnit):
             "Use TOOL_UNLOAD if you need to unload from the toolhead."
         )
         self.logger.info(message)
-
-        try:
-            gcode = self.gcode or self.printer.lookup_object("gcode")
-            if gcode:
-                gcode.respond_info(message)
-        except Exception as e:
-            self.logger.debug(f"Failed to send LANE_UNLOAD info response for {lane_name}: {e}")
-
         return True
 
     def on_lane_unset_loaded(self, lane, extruder_name):
@@ -1103,13 +1069,6 @@ class afcAMS(afcUnit):
             "Use TOOL_UNLOAD if you need to unload from the toolhead."
         )
         self.logger.info(message)
-
-        try:
-            gcode = self.gcode or self.printer.lookup_object("gcode")
-            if gcode:
-                gcode.respond_info(message)
-        except Exception as e:
-            self.logger.debug(f"Failed to send eject info response for {lane_name}: {e}")
 
     def prep_load(self, lane):
         """No-op for OpenAMS: hardware drives filament to the load sensor directly."""
@@ -1169,13 +1128,13 @@ class afcAMS(afcUnit):
     def cmd_UNIT_PTFE_CALIBRATION(self, gcmd):
         """Show PTFE calibration menu with buttons for each loaded lane."""
         if not self._is_openams_unit():
-            gcmd.respond_info("PTFE calibration is only available for OpenAMS units.")
+            self.logger.info("PTFE calibration is only available for OpenAMS units.")
             return
 
         # Check if any lane on THIS UNIT is loaded to toolhead
         for lane in self.lanes.values():
             if getattr(lane, "tool_loaded", False):
-                gcmd.respond_info(f"Cannot run OpenAMS calibration while {lane.name} is loaded to the toolhead. Please unload the tool and try again.")
+                self.logger.info(f"Cannot run OpenAMS calibration while {lane.name} is loaded to the toolhead. Please unload the tool and try again.")
                 return
 
         prompt = AFCprompt(gcmd, self.logger)
@@ -1227,7 +1186,7 @@ class afcAMS(afcUnit):
         # Check if any lane on THIS UNIT is loaded to toolhead
         for lane in self.lanes.values():
             if getattr(lane, "tool_loaded", False):
-                gcmd.respond_info(f"Cannot run OpenAMS calibration while {lane.name} is loaded to the toolhead. Please unload the tool and try again.")
+                self.logger.info(f"Cannot run OpenAMS calibration while {lane.name} is loaded to the toolhead. Please unload the tool and try again.")
                 return
 
         prompt = AFCprompt(gcmd, self.logger)
@@ -1446,8 +1405,8 @@ class afcAMS(afcUnit):
         if lane_extruder == extruder_name:
             return True
 
-        normalized_lane = _normalize_extruder_name(lane_extruder)
-        normalized_unit = _normalize_extruder_name(extruder_name)
+        normalized_lane = normalize_extruder_name(lane_extruder)
+        normalized_unit = normalize_extruder_name(extruder_name)
 
         if normalized_lane and normalized_unit and normalized_lane == normalized_unit:
             return True
@@ -1859,33 +1818,14 @@ class afcAMS(afcUnit):
         return canonical
 
     def _get_extruder_object(self, extruder_name: Optional[str]):
-        # Cache extruder object lookups
         if not extruder_name:
             return None
-
-        # Check cache first
         cached = self._cached_extruder_objects.get(extruder_name)
         if cached is not None:
             return cached
-
-        key = f"AFC_extruder {extruder_name}"
-        lookup = getattr(self.printer, "lookup_object", None)
-        extruder = None
-        if callable(lookup):
-            try:
-                extruder = lookup(key, None)
-            except Exception:
-                extruder = None
-
-        if extruder is None:
-            objects = getattr(self.printer, "objects", None)
-            if isinstance(objects, dict):
-                extruder = objects.get(key)
-
-        # Cache result (even if None to avoid repeated lookups)
+        extruder = self.printer.lookup_object(f"AFC_extruder {extruder_name}", None)
         if extruder is not None:
             self._cached_extruder_objects[extruder_name] = extruder
-
         return extruder
 
     def _current_lane_for_extruder(self, extruder_name: Optional[str]) -> Optional[str]:
@@ -1894,48 +1834,25 @@ class afcAMS(afcUnit):
         return self._canonical_lane_name(lane_name)
 
     def _get_lane_object(self, lane_name: Optional[str]):
-        # Cache lane object lookups
         canonical = self._canonical_lane_name(lane_name)
         if canonical is None:
             return None
-
         # Check local lanes dict first
         lane = self.lanes.get(canonical)
         if lane is not None:
             return lane
-
-        # Check cache
         cached = self._cached_lane_objects.get(canonical)
         if cached is not None:
             return cached
-
-        key = f"AFC_lane {canonical}"
-        lookup = getattr(self.printer, "lookup_object", None)
-        if callable(lookup):
-            try:
-                lane = lookup(key, None)
-            except Exception:
-                lane = None
-        else:
-            lane = None
-
-        if lane is None:
-            objects = getattr(self.printer, "objects", None)
-            if isinstance(objects, dict):
-                lane = objects.get(key)
-
-        # Cache result if found
+        lane = self.printer.lookup_object(f"AFC_lane {canonical}", None)
         if lane is not None:
             self._cached_lane_objects[canonical] = lane
-
         return lane
 
     def _saved_unit_file_path(self) -> Optional[str]:
-        afc = getattr(self, "afc", None)
-        base_path = getattr(afc, "VarFile", None)
+        base_path = getattr(self.afc, "VarFile", None)
         if not base_path:
             return None
-
         return os.path.expanduser(str(base_path) + ".unit")
 
     def _load_saved_unit_snapshot(self) -> Optional[Dict[str, Any]]:
@@ -2428,7 +2345,7 @@ class afcAMS(afcUnit):
         from extras.oams import OAMSStatus
 
         target_clicks = gcmd.get_int("CLICKS", 500)
-        gcmd.respond_info(f"Step 1: Loading {lane_name} (spool {spool_index})...")
+        self.logger.info(f"Step 1: Loading {lane_name} (spool {spool_index})...")
 
         # --- LOAD ---
         self.oams.action_status = OAMSStatus.LOADING
@@ -2454,22 +2371,22 @@ class afcAMS(afcUnit):
             final_clicks = abs(int(self.oams.encoder_clicks) - encoder_start)
         except Exception:
             final_clicks = 0
-        gcmd.respond_info(f"Step 2: Cancelling load at {final_clicks} clicks...")
+        self.logger.info(f"Step 2: Cancelling load at {final_clicks} clicks...")
 
         # --- CANCEL (marks spool as loaded so unload works) ---
         try:
             self._cancel_and_mark_loaded(spool_index, lane_name)
         except Exception as e:
-            gcmd.respond_info(f"  cancel error: {e}")
+            self.logger.info(f"  cancel error: {e}")
 
-        gcmd.respond_info("Step 3: Unloading...")
+        self.logger.info("Step 3: Unloading...")
 
         # --- UNLOAD ---
         try:
             success, msg = self.oams.unload_spool()
-            gcmd.respond_info(f"  unload result: success={success} msg={msg}")
+            self.logger.info(f"  unload result: success={success} msg={msg}")
         except Exception as e:
-            gcmd.respond_info(f"  unload exception: {e}")
+            self.logger.info(f"  unload exception: {e}")
 
         try:
             self.oams.clear_errors()
@@ -2477,14 +2394,14 @@ class afcAMS(afcUnit):
             pass
         self._clear_lane_state_after_td1(cur_lane)
 
-        gcmd.respond_info("Step 4: Reloading...")
+        self.logger.info("Step 4: Reloading...")
 
         # --- RELOAD ---
         try:
             code, msg = self.oams.load_spool(spool_index)
-            gcmd.respond_info(f"  reload result: code={code} msg={msg}")
+            self.logger.info(f"  reload result: code={code} msg={msg}")
         except Exception as e:
-            gcmd.respond_info(f"  reload exception: {e}")
+            self.logger.info(f"  reload exception: {e}")
 
         try:
             self.oams.clear_errors()
@@ -2492,7 +2409,7 @@ class afcAMS(afcUnit):
             pass
         self._clear_lane_state_after_td1(cur_lane)
 
-        gcmd.respond_info(f"Test complete for {lane_name}")
+        self.logger.info(f"Test complete for {lane_name}")
 
     def _clear_lane_state_after_td1(self, cur_lane):
         """Clear AFC-level lane loaded state that background detection may have set
@@ -4080,10 +3997,10 @@ class afcAMS(afcUnit):
         target_lane, handoff_trace = self._resolve_lane_reference_with_trace(runout_lane_name) if runout_lane_name else (None, [])
         same_extruder_handoff = False
 
-        source_extruder = _normalize_extruder_name(self._get_snapshot_lane_extruder(lane.name))
+        source_extruder = normalize_extruder_name(self._get_snapshot_lane_extruder(lane.name))
         target_extruder = None
         if target_lane:
-            target_extruder = _normalize_extruder_name(self._get_snapshot_lane_extruder(target_lane.name))
+            target_extruder = normalize_extruder_name(self._get_snapshot_lane_extruder(target_lane.name))
 
         if not source_extruder or (target_lane and not target_extruder):
             self.logger.error(
@@ -4091,14 +4008,13 @@ class afcAMS(afcUnit):
                 f"(source={source_extruder}, target={target_extruder}); pausing for user intervention"
             )
             try:
-                gcode = self.printer.lookup_object('gcode')
-                gcode.run_script_from_command("PAUSE")
-                gcode.respond_info(
-                    f"Runout classification failed for {lane.name}: AFC.var.unit missing extruder data. "
-                    "Please check AFC.var.unit and lane mappings."
-                )
+                self.gcode.run_script_from_command("PAUSE")
             except Exception as e:
                 self.logger.error(f"Failed to issue PAUSE after runout classification failure: {e}")
+            self.logger.info(
+                f"Runout classification failed for {lane.name}: AFC.var.unit missing extruder data. "
+                "Please check AFC.var.unit and lane mappings."
+            )
             return
 
         self.logger.debug(
@@ -4895,19 +4811,19 @@ class afcAMS(afcUnit):
         """Run the OpenAMS HUB HES calibration for a specific lane."""
         spool_index = gcmd.get_int("SPOOL", None)
         if spool_index is None:
-            gcmd.respond_info("SPOOL parameter is required for OpenAMS HUB HES calibration.")
+            self.logger.info("SPOOL parameter is required for OpenAMS HUB HES calibration.")
             return
 
         lane = self._find_lane_by_spool(spool_index)
         if lane is None:
-            gcmd.respond_info(f"Could not find lane for spool index {spool_index}.")
+            self.logger.info(f"Could not find lane for spool index {spool_index}.")
             return
 
         # Check if this lane's extruder has something loaded to toolhead
         extruder_name = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
         loaded_lane = self._check_toolhead_loaded(extruder_name)
         if loaded_lane:
-            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead on this extruder. Please unload the tool and try again.")
+            self.logger.info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead on this extruder. Please unload the tool and try again.")
             return
 
         lane_name = getattr(lane, "name", None)
@@ -4918,7 +4834,7 @@ class afcAMS(afcUnit):
         # Check if any lane on THIS UNIT has something loaded to toolhead
         for lane in self.lanes.values():
             if getattr(lane, "tool_loaded", False):
-                gcmd.respond_info(f"Cannot run OpenAMS calibration while {lane.name} is loaded to the toolhead. Please unload the tool and try again.")
+                self.logger.info(f"Cannot run OpenAMS calibration while {lane.name} is loaded to the toolhead. Please unload the tool and try again.")
                 return
 
         prompt = AFCprompt(gcmd, self.logger)
@@ -4936,7 +4852,7 @@ class afcAMS(afcUnit):
             calibrations.append((lane, spool_index))
 
         if not calibrations:
-            gcmd.respond_info("No loaded OpenAMS lanes were found to calibrate HUB HES values.")
+            self.logger.info("No loaded OpenAMS lanes were found to calibrate HUB HES values.")
             return
 
         successful = 0
@@ -4944,29 +4860,29 @@ class afcAMS(afcUnit):
             if self._calibrate_hub_hes_spool(spool_index, gcmd, lane_name=getattr(lane, "name", None)):
                 successful += 1
 
-        gcmd.respond_info(f"Completed HUB HES calibration for {successful} OpenAMS lane(s).")
+        self.logger.info(f"Completed HUB HES calibration for {successful} OpenAMS lane(s).")
 
         if skipped:
             skipped_lanes = ", ".join(skipped)
-            gcmd.respond_info("Skipped HUB HES calibration for lanes lacking OpenAMS mapping: {}.".format(skipped_lanes))
+            self.logger.info("Skipped HUB HES calibration for lanes lacking OpenAMS mapping: {}.".format(skipped_lanes))
 
     def cmd_AFC_OAMS_CALIBRATE_PTFE(self, gcmd):
         """Run the OpenAMS PTFE calibration for a specific lane."""
         spool_index = gcmd.get_int("SPOOL", None)
         if spool_index is None:
-            gcmd.respond_info("SPOOL parameter is required for OpenAMS PTFE calibration.")
+            self.logger.info("SPOOL parameter is required for OpenAMS PTFE calibration.")
             return
 
         lane = self._find_lane_by_spool(spool_index)
         if lane is None:
-            gcmd.respond_info(f"Could not find lane for spool index {spool_index}.")
+            self.logger.info(f"Could not find lane for spool index {spool_index}.")
             return
 
         # Check if this lane's extruder has something loaded to toolhead
         extruder_name = getattr(lane.extruder_obj, "name", None) if hasattr(lane, "extruder_obj") else None
         loaded_lane = self._check_toolhead_loaded(extruder_name)
         if loaded_lane:
-            gcmd.respond_info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead on this extruder. Please unload the tool and try again.")
+            self.logger.info(f"Cannot run OpenAMS calibration while {loaded_lane} is loaded to the toolhead on this extruder. Please unload the tool and try again.")
             return
 
         lane_name = getattr(lane, "name", None)
@@ -4975,23 +4891,23 @@ class afcAMS(afcUnit):
     def _calibrate_hub_hes_spool(self, spool_index, gcmd, lane_name=None):
         oams_index = self._get_openams_index()
         if oams_index is None:
-            gcmd.respond_info("Unable to determine OpenAMS index for HUB HES calibration.")
+            self.logger.info("Unable to determine OpenAMS index for HUB HES calibration.")
             return False
 
         command = f"OAMS_CALIBRATE_HUB_HES OAMS={oams_index} SPOOL={spool_index}"
         lane_label = lane_name or f"spool {spool_index}"
-        gcmd.respond_info(f"Running HUB HES calibration for {lane_label} with '{command}'.")
+        self.logger.info(f"Running HUB HES calibration for {lane_label} with '{command}'.")
 
         try:
             messages = self._run_command_with_capture(command)
         except Exception as e:
             self.logger.error(f"Failed to execute OpenAMS HUB HES calibration for spool {spool_index}: {e}")
-            gcmd.respond_info(f"Failed to execute HUB HES calibration for {lane_label}. See logs.")
+            self.logger.info(f"Failed to execute HUB HES calibration for {lane_label}. See logs.")
             return False
 
         hub_values = self._parse_hub_hes_messages(messages)
         if not hub_values:
-            gcmd.respond_info(f"Completed {command} but no HUB HES value was reported. Check OpenAMS status logs.")
+            self.logger.info(f"Completed {command} but no HUB HES value was reported. Check OpenAMS status logs.")
             return False
 
         config_values = self._read_config_sequence("hub_hes_on")
@@ -4999,7 +4915,7 @@ class afcAMS(afcUnit):
             config_values = self._last_hub_hes_values or []
 
         if not config_values:
-            gcmd.respond_info("Could not find hub_hes_on in your cfg; update the value manually.")
+            self.logger.info("Could not find hub_hes_on in your cfg; update the value manually.")
             return False
 
         values = list(config_values)
@@ -5007,22 +4923,22 @@ class afcAMS(afcUnit):
         updated_indices = []
         for index, parsed_value in sorted(hub_values.items()):
             if index >= max_length:
-                gcmd.respond_info("HUB HES calibration reported index {} but your cfg only defines {} value(s); update the remaining entries manually.".format(index, max_length))
+                self.logger.info("HUB HES calibration reported index {} but your cfg only defines {} value(s); update the remaining entries manually.".format(index, max_length))
                 continue
             values[index] = parsed_value
             updated_indices.append(index)
 
         if not updated_indices:
-            gcmd.respond_info("Completed {} but no HUB HES value was stored; check your cfg.".format(command))
+            self.logger.info("Completed {} but no HUB HES value was stored; check your cfg.".format(command))
             return False
 
         formatted = self._format_sequence(values)
         if not formatted:
-            gcmd.respond_info("Unable to format HUB HES calibration values.")
+            self.logger.info("Unable to format HUB HES calibration values.")
             return False
 
         if not self._write_config_value("hub_hes_on", formatted):
-            gcmd.respond_info("Failed to update hub_hes_on in your cfg; please update it manually.")
+            self.logger.info("Failed to update hub_hes_on in your cfg; please update it manually.")
             return False
 
         self._last_hub_hes_values = values
@@ -5032,26 +4948,26 @@ class afcAMS(afcUnit):
                 index_text = f"index {updated_indices[0]}"
             else:
                 index_text = "indices " + ", ".join(str(i) for i in updated_indices)
-            gcmd.respond_info(f"Stored OpenAMS hub_hes_on {formatted} in your cfg (updated {index_text}).")
+            self.logger.info(f"Stored OpenAMS hub_hes_on {formatted} in your cfg (updated {index_text}).")
         else:
-            gcmd.respond_info(f"Stored OpenAMS hub_hes_on {formatted} in your cfg.")
+            self.logger.info(f"Stored OpenAMS hub_hes_on {formatted} in your cfg.")
         return True
 
     def _calibrate_ptfe_spool(self, spool_index, gcmd, lane_name=None):
         oams_index = self._get_openams_index()
         if oams_index is None:
-            gcmd.respond_info("Unable to determine OpenAMS index for PTFE calibration.")
+            self.logger.info("Unable to determine OpenAMS index for PTFE calibration.")
             return False
 
         command = f"OAMS_CALIBRATE_PTFE_LENGTH OAMS={oams_index} SPOOL={spool_index}"
         lane_label = lane_name or f"spool {spool_index}"
-        gcmd.respond_info(f"Running PTFE calibration for {lane_label} with '{command}'.")
+        self.logger.info(f"Running PTFE calibration for {lane_label} with '{command}'.")
 
         try:
             messages = self._run_command_with_capture(command)
         except Exception as e:
             self.logger.error(f"Failed to execute OpenAMS PTFE calibration for spool {spool_index}: {e}")
-            gcmd.respond_info(f"Failed to execute PTFE calibration for {lane_label}. See logs.")
+            self.logger.info(f"Failed to execute PTFE calibration for {lane_label}. See logs.")
             return False
 
         captured = self._parse_ptfe_messages(messages)
@@ -5063,19 +4979,19 @@ class afcAMS(afcUnit):
                 value = captured[0]
 
         if value is None:
-            gcmd.respond_info(f"Completed {command} but no PTFE length was reported. Check OpenAMS status logs.")
+            self.logger.info(f"Completed {command} but no PTFE length was reported. Check OpenAMS status logs.")
             return False
 
         formatted_value = self._format_numeric(value)
         if formatted_value is None:
-            gcmd.respond_info("Unable to format PTFE calibration value for config storage.")
+            self.logger.info("Unable to format PTFE calibration value for config storage.")
             return False
 
         if not self._write_config_value("ptfe_length", formatted_value):
-            gcmd.respond_info("Failed to update ptfe_length in your cfg; please update it manually.")
+            self.logger.info("Failed to update ptfe_length in your cfg; please update it manually.")
             return False
 
-        gcmd.respond_info(f"PTFE calibration complete for {lane_label}: ptfe_length {formatted_value} has been automatically saved to your config.")
+        self.logger.info(f"PTFE calibration complete for {lane_label}: ptfe_length {formatted_value} has been automatically saved to your config.")
         return True
 
     def _run_command_with_capture(self, command):
@@ -5222,21 +5138,14 @@ class afcAMS(afcUnit):
 
     def _write_config_value(self, key, value):
         section = self._config_section_name()
-        afc_function = getattr(self.afc, "function", None)
-        if not section or afc_function is None:
+        if not section:
             return False
-
-        rewrite = getattr(afc_function, "ConfigRewrite", None)
-        if not callable(rewrite):
-            return False
-
         msg = f"\n{self.name} {key}: Saved {value}"
         try:
-            rewrite(section, key, value, msg)
+            self.function.ConfigRewrite(section, key, value, msg)
         except Exception as e:
             self.logger.error(f"Failed to persist {key} for OpenAMS unit {self.name}: {e}")
             return False
-
         return True
 
     def _check_toolhead_loaded(self, extruder_name=None):

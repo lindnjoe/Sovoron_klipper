@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import ast
 import bisect
 import traceback
 from configparser import Error as error
@@ -82,7 +83,6 @@ class AfcToolchanger(afcUnit):
         self.default_params = {}
         for option in config.get_prefix_options('params_'):
             try:
-                import ast
                 self.default_params[option] = ast.literal_eval(config.get(option))
             except ValueError:
                 raise config.error(
@@ -209,22 +209,14 @@ class AfcToolchanger(afcUnit):
             self.gcode.register_command(name, func, desc='Select tool %d' % number)
 
     def lookup_tool(self, number):
-        return self.tools.get(number, None)
+        return self.tools.get(number)
 
     def get_selected_tool(self):
         return self.active_tool
 
     def note_detect_change(self, extruder, eventtime):
         """Called by AFC_extruder when a detection pin changes state."""
-        detected = None
-        detected_names = []
-        for tool in self.tools.values():
-            if tool.detect_state == DETECT_PRESENT:
-                detected = tool
-                detected_names.append(tool.name)
-        if len(detected_names) > 1:
-            detected = None
-        self.detected_tool = detected
+        self.detected_tool = self._require_detected_tool()
 
     def get_status(self, eventtime=None):
         """Return status for webhooks / gcode template context."""
@@ -307,7 +299,6 @@ class AfcToolchanger(afcUnit):
         tool = self._resolve_tool_from_gcmd(gcmd)
         param = gcmd.get('PARAMETER')
         raw_value = gcmd.get('VALUE')
-        import ast
         try:
             value = ast.literal_eval(raw_value)
         except (ValueError, SyntaxError):
@@ -397,7 +388,7 @@ class AfcToolchanger(afcUnit):
         if should_run_init:
             if self.status == STATUS_INITIALIZING:
                 self.status = STATUS_READY
-                self.gcode.respond_info(
+                self.logger.info(
                     '%s initialized, active %s' % (
                         self.config.get_name(),
                         self.active_tool.name if self.active_tool else None))
@@ -416,7 +407,7 @@ class AfcToolchanger(afcUnit):
                     self.status, self.error_message))
 
         if self.active_tool == tool:
-            gcmd.respond_info(
+            self.logger.info(
                 'Tool %s already selected' % (tool.name if tool else None))
             return
 
@@ -456,10 +447,10 @@ class AfcToolchanger(afcUnit):
             self._restore_state_and_transform(tool)
             self.status = STATUS_READY
             if tool:
-                gcmd.respond_info('Selected tool %s (%s)' % (
+                self.logger.info('Selected tool %s (%s)' % (
                     str(tool.tool_number), tool.name))
             else:
-                gcmd.respond_info('Tool unselected')
+                self.logger.info('Tool unselected')
 
         except gcmd.error:
             if self.status == STATUS_ERROR:
@@ -658,7 +649,7 @@ class AfcToolchanger(afcUnit):
             return None
         return detected
 
-    def _validate_detected_tool(self, expected, respond_info, raise_error):
+    def _validate_detected_tool(self, expected, raise_error):
         """Verify the expected tool is actually detected."""
         actual = self._require_detected_tool()
         if actual != expected:
@@ -688,8 +679,7 @@ class AfcToolchanger(afcUnit):
         toolhead.wait_moves()
         # Brief pause to let detection pin edge callbacks settle
         reactor.pause(reactor.monotonic() + 0.2)
-        self._validate_detected_tool(
-            expected, gcmd.respond_info, gcmd.error)
+        self._validate_detected_tool(expected, gcmd.error)
 
     def process_error(self, raise_error, message):
         """Handle toolchanger errors with proper state recovery.
@@ -754,7 +744,7 @@ class AfcToolchanger(afcUnit):
     }
     def cmd_AFC_SELECT_TOOL(self, gcmd: GCodeCommand):
         """
-        Select's tool based off passed in extruder name
+        Selects tool based on passed in extruder name
 
         Usage
         -----
@@ -974,24 +964,20 @@ class FanSwitcher:
             else:
                 self.pending_speed = speed_to_set
 
+    def _resolve_tool(self, gcmd):
+        tool_nr = gcmd.get_int('P', None)
+        if tool_nr is not None:
+            tool = self.toolchanger.lookup_tool(tool_nr)
+            if tool is not None:
+                return tool
+        return self.toolchanger.active_tool
+
     def cmd_M106(self, gcmd):
         speed = gcmd.get_float('S', 255., minval=0.) / 255.
-        tool_nr = gcmd.get_int('P', None)
-        tool = None
-        if tool_nr is not None:
-            tool = self.toolchanger.lookup_tool(tool_nr)
-        if tool is None:
-            tool = self.toolchanger.active_tool
-        self._set_speed(speed, tool)
+        self._set_speed(speed, self._resolve_tool(gcmd))
 
     def cmd_M107(self, gcmd):
-        tool_nr = gcmd.get_int('P', None)
-        tool = None
-        if tool_nr is not None:
-            tool = self.toolchanger.lookup_tool(tool_nr)
-        if tool is None:
-            tool = self.toolchanger.active_tool
-        self._set_speed(0.0, tool)
+        self._set_speed(0.0, self._resolve_tool(gcmd))
 
     def _set_speed(self, speed, tool):
         if tool and tool.fan:

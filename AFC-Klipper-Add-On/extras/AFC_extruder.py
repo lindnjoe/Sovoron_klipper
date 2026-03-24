@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
+import ast
 import traceback
 import chelper
 from extras.force_move import calc_move_time
@@ -306,7 +307,6 @@ class AFCExtruder:
         self._tool_params_keys = set(config.get_prefix_options('params_'))
         for option in self._tool_params_keys:
             try:
-                import ast
                 self.params[option] = ast.literal_eval(config.get(option))
             except ValueError:
                 raise error(
