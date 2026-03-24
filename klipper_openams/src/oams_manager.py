@@ -14,7 +14,6 @@ from extras.AFC_OpenAMS import (
     AMSRunoutCoordinator,
     AMSHardwareService,
     normalize_extruder_name as _normalize_extruder_name,
-    normalize_oams_name as _normalize_oams_name_token
 )
 from extras.oams import OAMSStatus, OAMSOpCode
 
@@ -139,15 +138,7 @@ def _resolve_oams_entry(oams_map, oams_name, oams_obj=None):
         if obj_name in oams_map:
             return obj_name, oams_map.get(obj_name)
 
-    canonical = _normalize_oams_name_token(oams_name)
-    prefixed = f"oams {canonical}"
-    if prefixed in oams_map:
-        return prefixed, oams_map.get(prefixed)
-
-    if canonical in oams_map:
-        return canonical, oams_map.get(canonical)
-
-    return canonical, None
+    return oams_name, None
 
 
 class OAMSRunoutState:
@@ -311,10 +302,7 @@ class OAMSRunoutMonitor:
         
                     lane_name = None
                     spool_empty = None
-                    # Get OAMS name - strip "oams " prefix if present for hardware service lookup
-                    # fps_state.current_oams is "oams oams1" but hardware service expects "oams1"
-                    oams_full_name = getattr(fps_state, "current_oams", None) or self.fps_name
-                    unit_name = _normalize_oams_name_token(oams_full_name)
+                    unit_name = getattr(fps_state, "current_oams", None) or self.fps_name
 
                     if self.hardware_service is not None:
                         try:
@@ -425,8 +413,7 @@ class OAMSRunoutMonitor:
                     if oams_obj is None:
                         return eventtime + MONITOR_ENCODER_PERIOD
 
-                    # Get unit name for cached lookup
-                    coast_unit_name = _normalize_oams_name_token(fps_state.current_oams or self.fps_name)
+                    coast_unit_name = fps_state.current_oams or self.fps_name
 
                     # Use cached sensor data from AMSHardwareService when available
                     try:
@@ -767,10 +754,6 @@ class OAMSRunoutMonitor:
     def _get_oams_object(self, oams_name: Optional[str]):
         _, oams_obj = _resolve_oams_entry(self.oams, oams_name)
         return oams_obj
-
-    def _normalize_oams_name(self, oams_name: Optional[str], oams_obj: Optional[Any] = None):
-        resolved_name, _ = _resolve_oams_entry(self.oams, oams_name, oams_obj)
-        return resolved_name
 
     # _get_lane_extruder_name is defined later (near _get_oams_object)
 
@@ -1260,18 +1243,15 @@ class OAMSManager:
         if AMSHardwareService is None:
             return None
 
-        # Normalize oams_name - strip "oams " prefix if present
-        normalized_name = _normalize_oams_name_token(oams_name)
-
         # Check cache first
-        if normalized_name in self._hardware_service_cache:
-            return self._hardware_service_cache[normalized_name]
+        if oams_name in self._hardware_service_cache:
+            return self._hardware_service_cache[oams_name]
 
         try:
-            service = AMSHardwareService.for_printer(self.printer, normalized_name, self.logger)
+            service = AMSHardwareService.for_printer(self.printer, oams_name, self.logger)
 
             # Ensure controller is attached if we have the OAMS object
-            oams_obj = self.oams.get(f"oams {normalized_name}") or self.oams.get(normalized_name)
+            oams_obj = self.oams.get(oams_name)
             if oams_obj is not None and service.resolve_controller() is None:
                 service.attach_controller(oams_obj)
 
@@ -1279,14 +1259,14 @@ class OAMSManager:
             if hasattr(service, 'start_polling') and not getattr(service, '_polling_enabled', False):
                 try:
                     service.start_polling()
-                    self.logger.debug(f"Started hardware service polling for {normalized_name}")
+                    self.logger.debug(f"Started hardware service polling for {oams_name}")
                 except Exception as poll_err:
-                    self.logger.debug(f"Failed to start polling for {normalized_name}: {poll_err}")
+                    self.logger.debug(f"Failed to start polling for {oams_name}: {poll_err}")
 
-            self._hardware_service_cache[normalized_name] = service
+            self._hardware_service_cache[oams_name] = service
             return service
         except Exception as e:
-            self.logger.debug(f"Failed to get hardware service for {normalized_name}: {e}")
+            self.logger.debug(f"Failed to get hardware service for {oams_name}: {e}")
             return None
 
     def _get_cached_sensor_data(self, oams_name, oams_obj):
@@ -1895,7 +1875,7 @@ class OAMSManager:
 
     def _initialize_oams(self):
         for name, oam in self.printer.lookup_objects(module="oams"):
-            self.oams[name] = oam
+            self.oams[oam.name] = oam
 
     def _resolve_oams_name(
         self,
@@ -3184,7 +3164,7 @@ class OAMSManager:
 
         # If OAMS parameter provided, use it directly
         if oams_param:
-            fps_state.current_oams = self._normalize_oams_name(oams_param)
+            fps_state.current_oams = oams_param
         elif not fps_state.current_oams:
             gcmd.respond_info(f"No OAMS associated with {fps_name}")
 
@@ -3418,10 +3398,6 @@ class OAMSManager:
     def _get_oams_object(self, oams_name: Optional[str]):
         _, oams_obj = _resolve_oams_entry(self.oams, oams_name)
         return oams_obj
-
-    def _normalize_oams_name(self, oams_name: Optional[str], oams_obj: Optional[Any] = None):
-        resolved_name, _ = _resolve_oams_entry(self.oams, oams_name, oams_obj)
-        return resolved_name
 
     def _resolve_lane_oams(self, lane_or_name, afc=None):
         """Resolve an AFC lane to its OAMS object and bay index.
@@ -4980,9 +4956,7 @@ class OAMSManager:
             return False, f"Could not resolve OAMS for lane {lane_name}"
 
         # Find the FPS buffer for this OAMS by checking AFC unit buffer names
-        # oam.name is the full klipper section name (e.g. "oams oams2"),
-        # while unit_obj.oams_name is the short form (e.g. "oams2").
-        oams_name = _normalize_oams_name_token(oam.name)
+        oams_name = oam.name
         fps_name = None
         afc = self._get_afc()
         if afc is not None:
@@ -5822,7 +5796,6 @@ class OAMSManager:
             return
 
         direction = direction if direction in (0, 1) else 1
-        oams_name = self._normalize_oams_name(oams_name, oams)
         self._set_follower_if_changed(oams_name, oams, enable, direction, context, force=force)
         fps_state.following = bool(enable)
         fps_state.direction = direction if enable else 0
@@ -6037,7 +6010,6 @@ class OAMSManager:
             direction: 0 for reverse, 1 for forward
             context: Description for logging (optional)
         """
-        oams_name = self._normalize_oams_name(oams_name, oams)
         state = self._get_follower_state(oams_name)
         desired_state = (enable, direction)
         self._log_follower_request(oams_name, desired_state, context, force=force)

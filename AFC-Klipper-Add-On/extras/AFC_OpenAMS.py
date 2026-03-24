@@ -65,16 +65,6 @@ def normalize_extruder_name(name):
     return normalized.lower() or None
 
 
-def normalize_oams_name(name, *, default="default"):
-    if not name:
-        return default
-    normalized = str(name).strip()
-    if not normalized:
-        return default
-    if normalized.lower().startswith("oams "):
-        normalized = normalized[5:].strip()
-    return normalized or default
-
 
 class AMSEventBus:
     _instance = None
@@ -261,11 +251,11 @@ class AMSHardwareService:
 
     @classmethod
     def for_printer(cls, printer, name="default", logger=None):
-        key = (id(printer), AMSRunoutCoordinator._canonical_oams_name(name))
+        key = (id(printer), name)
         try:
             service = cls._instances[key]
         except KeyError:
-            service = cls(printer, AMSRunoutCoordinator._canonical_oams_name(name), logger)
+            service = cls(printer, name, logger)
             cls._instances[key] = service
         else:
             if logger is not None:
@@ -553,13 +543,9 @@ class AMSRunoutCoordinator:
     _monitors = {}
     _lock = threading.RLock()
 
-    @staticmethod
-    def _canonical_oams_name(name):
-        return normalize_oams_name(name)
-
     @classmethod
     def _key(cls, printer, name):
-        return (id(printer), cls._canonical_oams_name(name))
+        return (id(printer), name)
 
     @classmethod
     def register_afc_unit(cls, unit):

@@ -122,8 +122,9 @@ class OAMS:
         self._register_mcu_response(self._oams_cmd_current_status, "oams_cmd_current_status")
         self.mcu.register_config_callback(self._build_config)
 
-        self.name = config.get_name()
-        self.register_commands(self.name.split()[-1])
+        self.config_name = config.get_name()   # full Klipper section name, e.g. "oams oams1"
+        self.name = self.config_name.split()[-1]  # short name, e.g. "oams1"
+        self.register_commands(self.name)
 
         # Retry configuration
         self.load_retry_max  = config.getint("load_retry_max", 3, minval=1, maxval=5)
@@ -658,7 +659,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
             self.hub_hes_on[spool_idx] = value
             values = ",".join(map(str, self.hub_hes_on))
-            configfile.set(self.name, "hub_hes_on", "%s" % (values,))
+            configfile.set(self.config_name, "hub_hes_on", "%s" % (values,))
             gcmd.respond_info("HES calibration complete: hub_hes_on index %d has been automatically saved to your config" % (spool_idx,))
         else:
             gcmd.error("Calibration of HES %d failed" % spool_idx)
@@ -680,7 +681,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 gcmd.error("Failed to access configfile object")
                 return
 
-            configfile.set(self.name, "ptfe_length", "%d" % (self.action_status_value,))
+            configfile.set(self.config_name, "ptfe_length", "%d" % (self.action_status_value,))
             gcmd.respond_info("PTFE calibration complete: ptfe_length %d has been automatically saved to your config" % self.action_status_value)
 
         else:
