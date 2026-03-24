@@ -1505,8 +1505,14 @@ class afcACE(afcUnit):
                     cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn"
                 )
 
-            # Extruder engaged — switch to feed_assist for ongoing tension.
-            # start_feed_assist transitions the ACE out of the feed state.
+            # Extruder engaged — stop the original feed and switch to
+            # feed_assist for ongoing filament tension during printing.
+            try:
+                self._ace.stop_feed_filament(local_slot)
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+            except Exception:
+                pass
+
             if local_slot >= 0 and self._get_feed_assist(local_slot, cur_lane):
                 try:
                     self._ace.start_feed_assist(local_slot)
