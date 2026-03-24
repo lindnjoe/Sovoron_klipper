@@ -1351,37 +1351,12 @@ class afcACE(afcUnit):
             afc.error.handle_lane_failure(cur_lane, message)
             return False
 
-        # Verify toolhead sensor triggered
-        if cur_extruder.is_buffer and cur_lane.buffer_obj is not None:
-            # Buffer/ramming mode: buffer's advance_state is the sensor.
-            # Retract off the buffer sensor to confirm load and reset buffer.
-            # ACE lanes have no lane stepper, so use move_e_pos (extruder motor)
-            # instead of move_advanced for the retract moves.
-            try:
-                load_checks = 0
-                while cur_lane.get_toolhead_pre_sensor_state():
-                    afc.move_e_pos(
-                        cur_lane.short_move_dis * -1,
-                        cur_extruder.tool_unload_speed,
-                        "Buffer decompress", wait_tool=True
-                    )
-                    load_checks += 1
-                    afc.reactor.pause(afc.reactor.monotonic() + 0.1)
-                    if load_checks > afc.tool_max_load_checks:
-                        message = (
-                            f"Buffer did not decompress after {afc.tool_max_load_checks} "
-                            f"retract moves. Check filament path and buffer.\n"
-                            f"To resolve, set lane loaded with "
-                            f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                        )
-                        afc.error.handle_lane_failure(cur_lane, message)
-                        return False
-            except Exception as e:
-                message = f"ACE buffer load check failed for {cur_lane.name}: {e}"
-                self.logger.error(f"{message}\n{traceback.format_exc()}")
-                afc.error.handle_lane_failure(cur_lane, message)
-                return False
-        elif cur_extruder.tool_start:
+        # Verify toolhead sensor triggered.
+        # ACE lanes with FPS buffers skip the traditional buffer decompress
+        # check — the FPS manages filament tension itself and its
+        # advance_state reflects real-time pressure, not a physical switch
+        # that needs to be cleared by retracting.
+        if cur_extruder.tool_start:
             # Standard toolhead sensor verification with retry.
             # When home_to_tool is active, scale retries using
             # tool_homing_distance so the ACE searches the same range
