@@ -1335,7 +1335,7 @@ class afcACE(afcUnit):
             # sensor so downstream checks see it as occupied.
             self._set_hub_state(cur_lane, True)
 
-            _, _, early_engage = self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
+            self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
 
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = local_slot
@@ -1459,73 +1459,6 @@ class afcACE(afcUnit):
                     afc.error.handle_lane_failure(cur_lane, message)
                     return False
 
-        # ── Early extruder engagement (FPS buffer + home_to_tool) ────
-        # When the FPS latched during the home_to_tool feed, sync the
-        # extruder and start feed_assist immediately, then advance
-        # tool_stn.  Skips the normal feed_assist_count verification.
-        if early_engage:
-            # The ACE feed_filament command is still running — the motor
-            # keeps pushing filament to maintain pressure through the
-            # extruder engagement.  We sync the extruder and advance
-            # tool_stn while the ACE pushes, then stop the feed and
-            # switch to feed_assist for ongoing tension.
-            self.logger.info(
-                "ACE load: FPS early engage — starting extruder "
-                "while ACE continues feeding"
-            )
-            cur_lane.status = AFCLaneState.TOOL_LOADED
-            self.afc.save_vars()
-            cur_lane.sync_to_extruder()
-
-            # If tool_end sensor exists, feed until it triggers
-            if cur_extruder.tool_end:
-                tool_attempts = 0
-                while not cur_extruder.tool_end_state:
-                    tool_attempts += 1
-                    afc.move_e_pos(
-                        cur_lane.short_move_dis, cur_extruder.tool_load_speed,
-                        "Tool end", wait_tool=True
-                    )
-                    if tool_attempts > 20:
-                        message = (
-                            "ACE load: filament failed to trigger post-extruder sensor.\n"
-                            "To resolve, set lane loaded with "
-                            f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                        )
-                        afc.error.handle_lane_failure(cur_lane, message)
-                        return False
-
-            # Advance into nozzle — extruder pulls, ACE feed still pushing
-            if cur_extruder.tool_stn:
-                self.logger.info(
-                    f"ACE load: early engage — advancing {cur_extruder.tool_stn}mm "
-                    f"into nozzle @ {cur_extruder.tool_load_speed}mm/s"
-                )
-                afc.move_e_pos(
-                    cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn"
-                )
-
-            # Extruder engaged — switch to feed_assist for ongoing tension.
-            # start_feed_assist transitions the ACE out of the feed state.
-            if local_slot >= 0 and self._get_feed_assist(local_slot, cur_lane):
-                try:
-                    self._ace.start_feed_assist(local_slot)
-                    self._feed_assist_active.add(local_slot)
-                    self.logger.info(
-                        f"ACE load: early engage — feed assist started "
-                        f"for slot {local_slot}"
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"ACE load: early engage — start_feed_assist failed: {e}"
-                    )
-
-            cur_lane.set_tool_loaded()
-            cur_lane.enable_buffer(disable_fault=True)
-            self.afc.save_vars()
-            return True
-
-        # ── Normal engagement path ───────────────────────────────────
         # Sync to extruder and load filament into the nozzle using tool_stn
         cur_lane.status = AFCLaneState.TOOL_LOADED
         self.afc.save_vars()
@@ -1997,11 +1930,6 @@ class afcACE(afcUnit):
 
         :param feed_distance: Override the total feed distance. When filament
             is already at the hub, pass only the hub-to-toolhead distance.
-
-        Returns (total_fed, sensor_triggered, early_engage).  *early_engage*
-        is True when the FPS buffer latched during a home_to_tool feed,
-        signalling the caller to sync the extruder and start feed_assist
-        immediately, then advance tool_stn — skipping Phase 3 here.
         """
         ace = self._ace
         feed_length = feed_distance if feed_distance is not None else self._get_feed_length(lane)
@@ -2023,11 +1951,6 @@ class afcACE(afcUnit):
             f"length={feed_length}mm @ {feed_spd}mm/min"
         )
 
-        # early_engage: when True the caller should sync the extruder,
-        # start feed_assist, and run tool_stn immediately — skipping
-        # Phase 3 and the normal engagement path.
-        early_engage = False
-
         if homing_active and lane is not None:
             # ── home_to_tool: single continuous feed ──────────────────
             homing_dist = getattr(afc, 'tool_homing_distance', 200.0)
@@ -2038,12 +1961,10 @@ class afcACE(afcUnit):
                 f"homing={homing_dist:.0f} + 20mm margin)"
             )
 
-            fps_active = self._fps_obj is not None
             ace.feed_filament(slot_index, total_distance, feed_spd)
             sensor_hit = self._wait_for_feed_complete(
                 slot_index, total_distance, feed_spd, lane=lane,
-                poll_interval=0.1,
-                stop_on_trigger=not fps_active,
+                poll_interval=0.1
             )
 
             sensor_triggered = sensor_hit or lane.get_toolhead_pre_sensor_state()
@@ -2054,23 +1975,14 @@ class afcACE(afcUnit):
                     f"ACE feed: toolhead sensor triggered during "
                     f"home_to_tool feed"
                 )
-                # When using an FPS buffer, signal early extruder engagement
-                # so the caller starts the extruder immediately without
-                # sending any ACE commands first.  Feed assist will be
-                # started after the extruder has engaged.
-                if self._fps_obj is not None:
-                    early_engage = True
-                    self.logger.info(
-                        "ACE feed: FPS buffer — early extruder engagement"
-                    )
-                else:
-                    # Non-FPS sensor: re-enable feed assist now as before.
-                    if self._get_feed_assist(slot_index, lane):
-                        try:
-                            ace.start_feed_assist(slot_index)
-                            self._feed_assist_active.add(slot_index)
-                        except Exception:
-                            pass
+                # Re-enable feed assist in case stop_feed_filament
+                # disabled it on the ACE firmware side.
+                if self._get_feed_assist(slot_index, lane):
+                    try:
+                        ace.start_feed_assist(slot_index)
+                        self._feed_assist_active.add(slot_index)
+                    except Exception:
+                        pass
 
         elif lane is not None:
             # ── Normal (non-homing): bulk feed then sensor approach ───
@@ -2135,12 +2047,10 @@ class afcACE(afcUnit):
             total_fed = feed_length
             sensor_triggered = False
 
-        # Phase 3: Feed assist + extruder assist for the last stretch.
+        # Phase 3: Feed assist + extruder assist for the last stretch
         # Feed assist stays enabled after loading to maintain filament tension
         # during printing. It is stopped in _unload_sequence_inner before retraction.
-        # Skip when early_engage is set — the caller will engage the extruder
-        # first and start feed assist afterwards.
-        if not early_engage and self._get_feed_assist(slot_index, lane):
+        if self._get_feed_assist(slot_index, lane):
             try:
                 self._wait_for_ace_ready()
                 ace.start_feed_assist(slot_index)
@@ -2159,11 +2069,10 @@ class afcACE(afcUnit):
                     f"G1 E{self.extruder_assist_length} F{ext_spd}"
                 )
 
-        return total_fed, sensor_triggered, early_engage
+        return total_fed, sensor_triggered
 
     def _wait_for_feed_complete(self, slot_index, length_mm, speed_mm_min,
-                                 lane=None, poll_interval=0.5,
-                                 stop_on_trigger=True):
+                                 lane=None, poll_interval=0.5):
         """Wait for the ACE hardware to finish a feed/unwind movement.
 
         The ACE acknowledges feed_filament/unwind_filament commands immediately
@@ -2173,11 +2082,6 @@ class afcACE(afcUnit):
 
         If a lane with a toolhead sensor is provided, also checks the sensor
         each poll iteration and returns early if triggered.
-
-        :param stop_on_trigger: When True (default), call stop_feed_filament
-            when the sensor triggers.  Set to False to let the ACE keep
-            feeding so filament pressure is maintained through extruder
-            engagement.
 
         Returns True if the sensor triggered during the wait, False otherwise.
         """
@@ -2207,29 +2111,22 @@ class afcACE(afcUnit):
                 self.logger.debug(
                     f"ACE wait: toolhead sensor triggered for slot {slot_index}"
                 )
-                if stop_on_trigger:
-                    # Stop the ACE feed — the motor is still running for
-                    # the full requested distance but we don't need any
-                    # more filament.  Without this the ACE stays
-                    # "busy/feeding" for minutes, blocking feed_assist
-                    # and causing RFID reads to return empty.
-                    try:
-                        ace.stop_feed_filament(slot_index)
-                        self.logger.debug(
-                            f"ACE wait: stopped feed for slot {slot_index} "
-                            "(sensor triggered early)"
-                        )
-                        # Brief pause for ACE to transition out of "feeding"
-                        self.afc.reactor.pause(
-                            self.afc.reactor.monotonic() + 0.5
-                        )
-                    except Exception:
-                        pass
-                else:
+                # Stop the ACE feed -the motor is still running for the
+                # full requested distance but we don't need any more filament.
+                # Without this, the ACE stays "busy/feeding" for minutes,
+                # blocking feed_assist and causing RFID reads to return empty.
+                try:
+                    ace.stop_feed_filament(slot_index)
                     self.logger.debug(
-                        f"ACE wait: sensor triggered, ACE feed continues "
-                        f"(stop_on_trigger=False)"
+                        f"ACE wait: stopped feed for slot {slot_index} "
+                        "(sensor triggered early)"
                     )
+                    # Brief pause for ACE to transition out of "feeding" state
+                    self.afc.reactor.pause(
+                        self.afc.reactor.monotonic() + 0.5
+                    )
+                except Exception:
+                    pass
                 return True
 
             # Poll ACE status to check if movement is done
