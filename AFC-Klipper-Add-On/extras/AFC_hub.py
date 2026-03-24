@@ -174,6 +174,16 @@ class afc_hub:
         # Retract lane by `hub_cut_clear`.
         cur_lane.move(-self.cut_clear, cur_lane.short_moves_speed, cur_lane.short_moves_accel, self.assisted_retract)
 
+    def _is_openams_hub(self):
+        """Return True if this hub belongs to an OpenAMS unit."""
+        for lane in self.lanes.values():
+            unit_obj = getattr(lane, "unit_obj", None)
+            if unit_obj is not None:
+                if getattr(unit_obj, "type", None) == "OpenAMS":
+                    return True
+            break
+        return False
+
     def get_status(self, eventtime=None):
         self.response = {}
         self.response['state'] = bool(self.state)
@@ -186,7 +196,8 @@ class afc_hub:
         self.response['cut_servo_clip_angle'] = self.cut_servo_clip_angle
         self.response['cut_servo_prep_angle'] = self.cut_servo_prep_angle
         self.response['lanes'] = [lane.name for lane in self.lanes.values()]
-        self.response['afc_bowden_length'] = self.afc_bowden_length
+        if not self._is_openams_hub():
+            self.response['afc_bowden_length'] = self.afc_bowden_length
 
         return self.response
 

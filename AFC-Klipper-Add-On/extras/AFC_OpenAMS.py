@@ -4886,7 +4886,7 @@ class afcAMS(afcUnit):
             return
 
         lane_name = getattr(lane, "name", None)
-        self._calibrate_ptfe_spool(spool_index, gcmd, lane_name=lane_name)
+        self._calibrate_ptfe_spool(spool_index, gcmd, lane=lane, lane_name=lane_name)
 
     def _calibrate_hub_hes_spool(self, spool_index, gcmd, lane_name=None):
         oams_index = self._get_openams_index()
@@ -4953,7 +4953,7 @@ class afcAMS(afcUnit):
             self.logger.info(f"Stored OpenAMS hub_hes_on {formatted} in your cfg.")
         return True
 
-    def _calibrate_ptfe_spool(self, spool_index, gcmd, lane_name=None):
+    def _calibrate_ptfe_spool(self, spool_index, gcmd, lane=None, lane_name=None):
         oams_index = self._get_openams_index()
         if oams_index is None:
             self.logger.info("Unable to determine OpenAMS index for PTFE calibration.")
@@ -4987,7 +4987,16 @@ class afcAMS(afcUnit):
             self.logger.info("Unable to format PTFE calibration value for config storage.")
             return False
 
-        if not self._write_config_value("ptfe_length", formatted_value):
+        if lane is None:
+            self.logger.info("No lane provided for PTFE calibration, cannot save ptfe_length.")
+            return False
+
+        section = lane.fullname
+        cal_msg = f"\n{lane.name} ptfe_length: {formatted_value}"
+        try:
+            self.function.ConfigRewrite(section, "ptfe_length", formatted_value, cal_msg)
+        except Exception as e:
+            self.logger.error(f"Failed to persist ptfe_length for {lane.name}: {e}")
             self.logger.info("Failed to update ptfe_length in your cfg; please update it manually.")
             return False
 
