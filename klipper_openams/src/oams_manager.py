@@ -772,26 +772,7 @@ class OAMSRunoutMonitor:
         resolved_name, _ = _resolve_oams_entry(self.oams, oams_name, oams_obj)
         return resolved_name
 
-    def _get_lane_extruder_name(self, lane):
-        if lane is None:
-            return None
-        extruder_obj = getattr(lane, "extruder_obj", None)
-        extruder_name = getattr(lane, "extruder_name", None)
-        lane_name = getattr(lane, "name", None)
-        name = None
-        if extruder_obj is not None:
-            name = getattr(extruder_obj, "name", None)
-        if not name and extruder_name:
-            name = extruder_name
-        if not name and lane_name:
-            try:
-                unit_name = getattr(lane, "unit", None)
-                lane_data = self._get_lane_snapshot(lane_name, unit_name=unit_name)
-                if isinstance(lane_data, dict):
-                    name = lane_data.get("extruder")
-            except Exception as e:
-                self.logger.debug(f"OAMS: Failed to read AFC.var.unit extruder for {lane_name}")
-        return _normalize_extruder_name(name)
+    # _get_lane_extruder_name is defined later (near _get_oams_object)
 
     def _resolve_oams_for_lane(self, lane_name: Optional[str]):
         if not lane_name:
@@ -2325,60 +2306,8 @@ class OAMSManager:
                 self._last_logged_detected_lane.pop(extruder_name, None)
                 continue  # This lane is on a different FPS
 
-            # Get the lane object
-            lane = afc.lanes.get(loaded_lane_name)
-            if lane is None:
-                self.logger.warning(f"Lane {loaded_lane_name} not found in afc.lanes")
-                continue
-
-            # Get the OAMS and bay index for this lane
-            unit_str = getattr(lane, "unit", None)
-            if not unit_str:
-                self.logger.warning(f"Lane {loaded_lane_name} has no unit")
-                continue
-
-            # Parse unit and slot
-            if isinstance(unit_str, str) and ':' in unit_str:
-                base_unit_name, slot_str = unit_str.split(':', 1)
-                try:
-                    slot_number = int(slot_str)
-                except ValueError:
-                    self.logger.warning(f"Invalid slot number in unit {unit_str}")
-                    continue
-            else:
-                base_unit_name = str(unit_str)
-                slot_number = getattr(lane, "index", None)
-                if slot_number is None:
-                    self.logger.warning(f"No index found for lane {loaded_lane_name}")
-                    continue
-
-            # Convert to bay index
-            bay_index = slot_number - 1
-            if bay_index < 0:
-                self.logger.warning(f"Invalid bay index {bay_index} (slot {slot_number})")
-                continue
-
-            # Get OAMS name from AFC unit
-            unit_obj = getattr(lane, "unit_obj", None)
-            if unit_obj is None:
-                units = getattr(afc, "units", {})
-                unit_obj = units.get(base_unit_name)
-            if unit_obj is None:
-                self.logger.warning(f"Unit {base_unit_name} not found")
-                continue
-
-            oams_name = getattr(unit_obj, "oams_name", None)
-            if not oams_name:
-                self.logger.warning(f"Unit {base_unit_name} has no oams_name")
-                continue
-
-            # Find OAMS object - check both short and prefixed names
-            oam = self.oams.get(oams_name)
+            oam, bay_index, lane = self._resolve_lane_oams(loaded_lane_name, afc=afc)
             if oam is None:
-                oam = self.oams.get(f"oams {oams_name}")
-
-            if oam is None:
-                self.logger.warning(f"OAMS {oams_name} not found")
                 continue
 
             # Found loaded lane! Return lane name (e.g., "lane8") not map (e.g., "T4")
@@ -2412,31 +2341,9 @@ class OAMSManager:
                     lane = None
 
             if lane is not None:
-                unit_str = getattr(lane, "unit", None)
-                if isinstance(unit_str, str) and ':' in unit_str:
-                    base_unit_name, slot_str = unit_str.split(':', 1)
-                    try:
-                        bay_index = int(slot_str) - 1
-                    except ValueError:
-                        bay_index = None
-                else:
-                    base_unit_name = str(unit_str) if unit_str is not None else None
-                    try:
-                        bay_index = int(getattr(lane, "index", 0)) - 1
-                    except Exception as e:
-                        bay_index = None
+                oam, bay_index, _ = self._resolve_lane_oams(lane, afc=afc)
 
-                oam = None
-                if base_unit_name:
-                    unit_obj = getattr(lane, "unit_obj", None)
-                    if unit_obj is None:
-                        units = getattr(afc, "units", {})
-                        unit_obj = units.get(base_unit_name)
-                    oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
-                    if oams_name:
-                        oam = self.oams.get(oams_name) or self.oams.get(f"oams {oams_name}")
-
-                if oam is not None and bay_index is not None and bay_index >= 0:
+                if oam is not None and bay_index is not None:
                     self.logger.info(
                         f"Using fps_state fallback: {fps_state.current_lane} treated as loaded on {fps_name} (bay {bay_index} on {getattr(oam, 'name', 'unknown')})"
                     )
@@ -2462,43 +2369,11 @@ class OAMSManager:
                     continue
 
                 # Found a lane with tool_loaded = True on this FPS!
-                # Get OAMS and bay index for this lane
-                unit_str = getattr(lane_obj, "unit", None)
-                if not unit_str:
-                    continue
-
-                # Parse unit and slot
-                if isinstance(unit_str, str) and ':' in unit_str:
-                    base_unit_name, slot_str = unit_str.split(':', 1)
-                    try:
-                        bay_index = int(slot_str) - 1
-                    except ValueError:
-                        continue
-                else:
-                    base_unit_name = str(unit_str)
-                    slot_number = getattr(lane_obj, "index", None)
-                    if slot_number is None:
-                        continue
-                    bay_index = slot_number - 1
-
-                if bay_index < 0:
-                    continue
-
-                # Get OAMS object
-                unit_obj = getattr(lane_obj, "unit_obj", None)
-                if unit_obj is None:
-                    units = getattr(afc, "units", {})
-                    unit_obj = units.get(base_unit_name)
-
-                oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
-                if not oams_name:
-                    continue
-
-                oam = self.oams.get(oams_name) or self.oams.get(f"oams {oams_name}")
+                oam, bay_index, _ = self._resolve_lane_oams(lane_obj, afc=afc)
                 if oam is None:
                     continue
 
-                # Found it! This lane has tool_loaded = True even though shuttle is empty
+                oams_name = getattr(oam, "name", "unknown")
                 self.logger.info(
                     f"Detected stale filament: {lane_name} has tool_loaded=True on {fps_name} "
                     f"(bay {bay_index} on {oams_name}) but shuttle is empty - needs auto-unload"
@@ -3030,59 +2905,31 @@ class OAMSManager:
                 if fps_state is None:
                     continue
 
-                lane_obj = getattr(afc, "lanes", {}).get(lane_name) if afc else None
-                lane_unit = getattr(lane_obj, "unit", None) if lane_obj is not None else None
-                lane_data = self._get_lane_snapshot(lane_name, unit_name=lane_unit)
+                oams_obj, spool_idx, lane_obj = self._resolve_lane_oams(lane_name, afc=afc)
 
-                spool_idx = None
-                if lane_obj is not None:
-                    unit_str = getattr(lane_obj, "unit", None)
-                    if isinstance(unit_str, str) and ":" in unit_str:
-                        _, slot_str = unit_str.split(":", 1)
-                        try:
-                            spool_idx = int(slot_str) - 1
-                        except ValueError:
-                            spool_idx = None
-                    elif hasattr(lane_obj, "index"):
-                        try:
-                            spool_idx = int(getattr(lane_obj, "index")) - 1
-                        except Exception as e:
-                            spool_idx = None
+                # Fallback to snapshot data if live lane resolution failed
+                if oams_obj is None or spool_idx is None:
+                    lane_obj_tmp = getattr(afc, "lanes", {}).get(lane_name) if afc else None
+                    lane_unit = getattr(lane_obj_tmp, "unit", None) if lane_obj_tmp is not None else None
+                    lane_data = self._get_lane_snapshot(lane_name, unit_name=lane_unit)
+                    if isinstance(lane_data, dict):
+                        if spool_idx is None:
+                            try:
+                                spool_idx = int(lane_data.get("lane", 0)) - 1
+                            except Exception:
+                                spool_idx = None
+                        if oams_obj is None:
+                            oams_name = lane_data.get("unit")
+                            if oams_name:
+                                oams_obj = self.oams.get(oams_name) or self.oams.get(f"oams {oams_name}")
 
-                if spool_idx is None and isinstance(lane_data, dict):
-                    try:
-                        spool_idx = int(lane_data.get("lane", 0)) - 1
-                    except Exception as e:
-                        spool_idx = None
-
-                if spool_idx is None or spool_idx < 0:
-                    self.logger.debug(f"Skipping AFC.var.unit lane {lane_name} due to missing spool index")
-                    continue
-
-                # Resolve the OAMS object backing this lane
-                oams_obj = None
-                oams_name = None
-                if lane_obj is not None:
-                    unit_obj = getattr(lane_obj, "unit_obj", None)
-                    if unit_obj is None and afc is not None:
-                        unit_obj = getattr(afc, "units", {}).get(getattr(lane_obj, "unit", None))
-                    oams_name = getattr(unit_obj, "oams_name", None) if unit_obj is not None else None
-
-                if not oams_name and isinstance(lane_data, dict):
-                    oams_name = lane_data.get("unit")
-
-
-                if oams_name:
-                    oams_obj = self.oams.get(oams_name) or self.oams.get(f"oams {oams_name}")
-
-
-                if oams_obj is None:
+                if oams_obj is None or spool_idx is None or spool_idx < 0:
                     self.logger.debug(f"Could not resolve OAMS for lane {lane_name} from AFC.var.unit")
                     continue
 
                 # Update FPS state tracking
                 fps_state.current_lane = lane_name
-                fps_state.current_oams = getattr(oams_obj, "name", oams_name)
+                fps_state.current_oams = getattr(oams_obj, "name", None)
                 fps_state.current_spool_idx = spool_idx
                 fps_state.state = FPSLoadState.LOADED
                 fps_state.since = self.reactor.monotonic()
@@ -3576,6 +3423,91 @@ class OAMSManager:
         resolved_name, _ = _resolve_oams_entry(self.oams, oams_name, oams_obj)
         return resolved_name
 
+    def _resolve_lane_oams(self, lane_or_name, afc=None):
+        """Resolve an AFC lane to its OAMS object and bay index.
+
+        Accepts either a lane object or a lane name string.  Uses the lane's
+        ``unit_obj.oams_name`` to find the OAMS device and converts the
+        1-based slot number to a 0-based bay index.
+
+        :param lane_or_name: AFC lane object or lane name string
+        :param afc: Optional AFC reference (avoids re-lookup)
+        :return: (oams_obj, bay_index, lane_obj) or (None, None, None) on failure
+        """
+        if afc is None:
+            afc = self._get_afc()
+        if afc is None:
+            return None, None, None
+
+        # Accept either a lane object or a lane name
+        if isinstance(lane_or_name, str):
+            lane = afc.lanes.get(lane_or_name)
+            if lane is None:
+                return None, None, None
+        else:
+            lane = lane_or_name
+
+        # Get slot number from unit string (e.g. "AMS_1:2" → slot 2)
+        unit_str = getattr(lane, "unit", None)
+        if unit_str is None:
+            return None, None, None
+
+        if isinstance(unit_str, str) and ':' in unit_str:
+            _, slot_str = unit_str.split(':', 1)
+            try:
+                slot_number = int(slot_str)
+            except ValueError:
+                return None, None, None
+        else:
+            slot_number = getattr(lane, "index", None)
+
+        if slot_number is None:
+            return None, None, None
+
+        bay_index = slot_number - 1
+        if bay_index < 0:
+            return None, None, None
+
+        # Resolve OAMS object via unit_obj
+        unit_obj = getattr(lane, "unit_obj", None)
+        if unit_obj is None:
+            unit_obj = getattr(afc, "units", {}).get(
+                unit_str.split(':')[0] if ':' in str(unit_str) else str(unit_str))
+        if unit_obj is None:
+            return None, None, None
+
+        oams_name = getattr(unit_obj, "oams_name", None)
+        if not oams_name:
+            return None, None, None
+
+        oams_obj = self._get_oams_object(oams_name)
+        if oams_obj is None:
+            return None, None, None
+
+        return oams_obj, bay_index, lane
+
+    def _oams_extrude(self, length, speed, state_name="oams_move", reset_pos=False):
+        """Run a relative extrusion or retraction via gcode.
+
+        Wraps the common M83 / G92 E0 / G1 E<length> / M400 pattern inside
+        SAVE/RESTORE_GCODE_STATE so the caller doesn't need boilerplate.
+
+        :param length: mm to extrude (positive) or retract (negative)
+        :param speed: feed rate in mm/min
+        :param state_name: gcode state save name (for nesting)
+        :param reset_pos: if True, issue G92 E0 before the move
+        """
+        gcode = self.printer.lookup_object('gcode')
+        gcode.run_script_from_command(f"SAVE_GCODE_STATE NAME={state_name}")
+        try:
+            gcode.run_script_from_command("M83")
+            if reset_pos:
+                gcode.run_script_from_command("G92 E0")
+            gcode.run_script_from_command(f"G1 E{length:.2f} F{speed:.0f}")
+            gcode.run_script_from_command("M400")
+        finally:
+            gcode.run_script_from_command(f"RESTORE_GCODE_STATE NAME={state_name}")
+
     def _get_afc(self):
         # Cache AFC object lookup with validation
         if self.afc is not None:
@@ -3803,24 +3735,15 @@ class OAMSManager:
                     self.logger.warning(f"Could not read encoder before engagement for {lane_name}")
                     encoder_before = None
 
-                # Get gcode object for running extrusion command
-                gcode = self.printer.lookup_object('gcode')
-                gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_engagement")
-                try:
-                    # Run the engagement extrusion using gcode command
-                    # M83: relative extrusion, G92 E0: reset position, G1: extrude
-                    prime_length = 5.0
-                    remaining_length = max(0.0, engagement_length - prime_length)
-                    gcode.run_script_from_command("M83")  # Relative extrusion mode
-                    gcode.run_script_from_command("G92 E0")  # Reset extruder position
-                    gcode.run_script_from_command(f"G1 E{prime_length:.2f} F{engagement_speed:.0f}")  # Prime to help engagement
-                    gcode.run_script_from_command("M400")  # Wait for moves to complete
-                    self.reactor.pause(self.reactor.monotonic() + 0.2)
-                    if remaining_length > 0.0:
-                        gcode.run_script_from_command(f"G1 E{remaining_length:.2f} F{engagement_speed:.0f}")  # Extrude to nozzle tip
-                        gcode.run_script_from_command("M400")  # Wait for moves to complete
-                finally:
-                    gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_engagement")
+                # Two-phase engagement: short prime then remaining length
+                prime_length = 5.0
+                remaining_length = max(0.0, engagement_length - prime_length)
+                self._oams_extrude(prime_length, engagement_speed,
+                                   state_name="oams_engagement", reset_pos=True)
+                self.reactor.pause(self.reactor.monotonic() + 0.2)
+                if remaining_length > 0.0:
+                    self._oams_extrude(remaining_length, engagement_speed,
+                                       state_name="oams_engagement_2")
 
                 # Small pause to let encoder reading settle
                 self.reactor.pause(self.reactor.monotonic() + 0.2)
@@ -3865,11 +3788,7 @@ class OAMSManager:
                                     f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
                                     f"at {post_speed:.0f}mm/min"
                                 )
-                                gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_post_load")
-                                gcode.run_script_from_command("M83")  # Relative extrusion mode
-                                gcode.run_script_from_command(f"G1 E{post_length:.2f} F{post_speed:.0f}")
-                                gcode.run_script_from_command("M400")
-                                gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_post_load")
+                                self._oams_extrude(post_length, post_speed, state_name="oams_post_load")
                             return True
                         else:
                             # Encoder didn't move enough - re-check after a short delay
@@ -3928,11 +3847,7 @@ class OAMSManager:
                                     f"Completing load for {lane_name}: extruding {post_length:.1f}mm "
                                     f"at {post_speed:.0f}mm/min"
                                 )
-                                gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_post_load")
-                                gcode.run_script_from_command("M83")  # Relative extrusion mode
-                                gcode.run_script_from_command(f"G1 E{post_length:.2f} F{post_speed:.0f}")
-                                gcode.run_script_from_command("M400")
-                                gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_post_load")
+                                self._oams_extrude(post_length, post_speed, state_name="oams_post_load")
                             return True
                         else:
                             fps_state.engaged_with_extruder = False
@@ -4066,12 +3981,14 @@ class OAMSManager:
     def _start_async_reload(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
                            target_lane_map: str, source_lane_name: Optional[str],
                            active_oams: str, monitor):
-        """Start non-blocking reload using OAMS hardware with async completion polling.
+        """Start non-blocking reload for same-FPS runout.
 
-        This avoids blocking wait loops that don't work from timer context.
-        Instead, we start the operation and poll for completion with a timer.
+        By the time this is called the old filament has already coasted through
+        and cleared the PTFE path (the runout monitor tracked extruder position
+        during coasting).  No unload command is needed — the follower stays
+        forward throughout so the new spool's filament is pushed to meet at
+        the extruder gears and gets pulled in seamlessly.
         """
-        # Get OAMS object for unload
         if fps_name not in self.fpss:
             self.logger.error(f"FPS {fps_name} not found for async reload")
             self._pause_printer_message(f"FPS {fps_name} not found", active_oams)
@@ -4087,185 +4004,37 @@ class OAMSManager:
                 monitor.paused()
             return
 
-        oams_unload = self._get_oams_object(fps_state_obj.current_oams)
-        if oams_unload is None:
-            self.logger.error(f"OAMS {fps_state_obj.current_oams} not found for unload")
+        oams_obj = self._get_oams_object(fps_state_obj.current_oams)
+        if oams_obj is None:
+            self.logger.error(f"OAMS {fps_state_obj.current_oams} not found for reload")
             self._pause_printer_message(f"OAMS {fps_state_obj.current_oams} not found", active_oams)
             if monitor:
                 monitor.paused()
             return
 
-        # Start unload operation (non-blocking - just sends MCU command)
-        self.logger.info(f"Starting async unload for same-FPS reload on {fps_name}")
+        # Old filament has already cleared the PTFE during coasting.
+        # Mark the old spool as unloaded and go straight to loading the
+        # new spool.  Follower stays forward — no reverse, no unload command.
+        self.logger.info(
+            f"Same-FPS reload on {fps_name}: old filament cleared, "
+            f"loading {target_lane} (follower stays forward)")
 
-        # Enable follower in reverse direction BEFORE starting unload
-        # The follower motor must be set to pull filament back to the spool
-        # before the BLDC motor starts rewinding (following user's requirement:
-        # "we have to first tell the follower what direction to be going in")
-        try:
-            self._set_follower_state(
-                fps_name,
-                fps_state_obj,
-                oams_unload,
-                1,
-                0,
-                "async unload",
-                force=True,
-            )
-            self.logger.debug(f"Set follower reverse before async unload on {fps_name}")
-        except Exception as e:
-            self.logger.warning(f"Failed to set follower reverse before async unload on {fps_name}")
+        fps_state_obj.state = FPSLoadState.UNLOADED
+        fps_state_obj.since = self.reactor.monotonic()
+        oams_obj.current_spool = None
 
-        if OAMSStatus is None:
-            self.logger.error("CRITICAL: OAMSStatus not available (oams.py import failed)")
-
-            self._pause_printer_message("OAMS module error", active_oams)
-            if monitor:
-                monitor.paused()
-            return
-
-        oams_unload.action_status = OAMSStatus.UNLOADING
-        oams_unload.oams_unload_spool_cmd.send()
-        unload_start_time = self.reactor.monotonic()
-
-        # Create polling timer to check unload completion
-        def _check_unload_complete(eventtime):
-            # Check if unload completed
-            if oams_unload.action_status is None:
-                # Unload finished - check result
-                if OAMSOpCode is None:
-                    self.logger.error("CRITICAL: OAMSOpCode not available (oams.py import failed)")
-
-                    self._pause_printer_message("OAMS module error", active_oams)
-                    if monitor:
-                        monitor.paused()
-                    return self.reactor.NEVER
-
-                if oams_unload.action_status_code == OAMSOpCode.SUCCESS:
-                    self.logger.info(f"Async unload completed successfully, starting load for {target_lane}")
-                    # Update FPS state
-                    fps_state_obj.state = FPSLoadState.UNLOADED
-                    fps_state_obj.following = False
-                    fps_state_obj.direction = 0
-                    fps_state_obj.since = self.reactor.monotonic()
-                    oams_unload.current_spool = None
-
-                    # Now start load operation
-                    self._start_async_load(fps_name, fps_state, target_lane, target_lane_map,
-                                         source_lane_name, active_oams, monitor)
-                else:
-                    self.logger.error(f"Async unload failed with code {oams_unload.action_status_code}")
-                    self._pause_printer_message(f"Failed to unload on {fps_name}", active_oams)
-                    if monitor:
-                        monitor.paused()
-                return self.reactor.NEVER  # Stop polling
-
-            # Check timeout (30 seconds)
-            if eventtime - unload_start_time > 30.0:
-                self.logger.error("Async unload timed out after 30s")
-
-                oams_unload.action_status = None
-                self._pause_printer_message(f"Unload timeout on {fps_name}", active_oams)
-                if monitor:
-                    monitor.paused()
-                return self.reactor.NEVER  # Stop polling
-
-            # Not done yet - keep polling every 100ms
-            return eventtime + 0.1
-
-        # Start polling timer
-        self.reactor.register_timer(_check_unload_complete, self.reactor.NOW)
+        # Go straight to load — follower is already forward from coasting
+        self._start_async_load(fps_name, fps_state, target_lane, target_lane_map,
+                             source_lane_name, active_oams, monitor)
 
     def _start_async_load(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
                          target_lane_map: str, source_lane_name: Optional[str],
                          active_oams: str, monitor):
         """Start non-blocking load operation with async completion polling."""
-        # Get target lane info to determine OAMS and bay
-        afc = self._get_afc()
-        if afc is None:
-            self.logger.error("AFC not available for async load")
-
-            self._pause_printer_message("AFC not available", active_oams)
-            if monitor:
-                monitor.paused()
-            return
-
-        lane = afc.lanes.get(target_lane)
-        if lane is None:
-            self.logger.error(f"Lane {target_lane} not found for async load")
-            self._pause_printer_message(f"Lane {target_lane} not found", active_oams)
-            if monitor:
-                monitor.paused()
-            return
-
-        # Get unit and slot to find OAMS and bay index
-        unit_str = getattr(lane, "unit", None)
-        if not unit_str:
-            self.logger.error(f"Lane {target_lane} has no unit")
-            self._pause_printer_message(f"Lane {target_lane} has no unit", active_oams)
-            if monitor:
-                monitor.paused()
-            return
-
-        # Parse slot number
-        slot_number = None
-        if isinstance(unit_str, str) and ':' in unit_str:
-            base_unit_name, slot_str = unit_str.split(':', 1)
-            try:
-                slot_number = int(slot_str)
-            except ValueError:
-                self.logger.error(f"Invalid slot in unit {unit_str}")
-                self._pause_printer_message(f"Invalid slot in {unit_str}", active_oams)
-                if monitor:
-                    monitor.paused()
-                return
-        else:
-            base_unit_name = str(unit_str)
-            slot_number = getattr(lane, "index", None)
-
-        if slot_number is None:
-            self.logger.error(f"Could not determine slot for lane {target_lane}")
-            self._pause_printer_message(f"No slot for {target_lane}", active_oams)
-            if monitor:
-                monitor.paused()
-            return
-
-        bay_index = slot_number - 1
-        if bay_index < 0:
-            self.logger.error(f"Invalid slot {slot_number}")
-            self._pause_printer_message(f"Invalid slot {slot_number}", active_oams)
-            if monitor:
-                monitor.paused()
-            return
-
-        # Get OAMS object
-        unit_obj = getattr(lane, "unit_obj", None)
-        if unit_obj is None:
-            units = getattr(afc, "units", {})
-            unit_obj = units.get(base_unit_name)
-
-        if unit_obj is None:
-            self.logger.error(f"Unit {base_unit_name} not found")
-            self._pause_printer_message(f"Unit {base_unit_name} not found", active_oams)
-            if monitor:
-                monitor.paused()
-            return
-
-        oams_name = getattr(unit_obj, "oams_name", None)
-        if not oams_name:
-            self.logger.error(f"Unit {base_unit_name} has no oams_name")
-            self._pause_printer_message(f"Unit {base_unit_name} has no OAMS", active_oams)
-            if monitor:
-                monitor.paused()
-            return
-
-        oam_load = self.oams.get(oams_name)
+        oam_load, bay_index, lane = self._resolve_lane_oams(target_lane)
         if oam_load is None:
-            oam_load = self.oams.get(f"oams {oams_name}")
-
-        if oam_load is None:
-            self.logger.error(f"OAMS {oams_name} not found for load")
-            self._pause_printer_message(f"OAMS {oams_name} not found", active_oams)
+            self.logger.error(f"Could not resolve OAMS for lane {target_lane}")
+            self._pause_printer_message(f"Cannot resolve {target_lane}", active_oams)
             if monitor:
                 monitor.paused()
             return
@@ -4674,18 +4443,8 @@ class OAMSManager:
                         "unload retry recovery",
                         force=True,
                     )
-                    gcode = self._gcode_obj
-                    if gcode is None:
-                        gcode = self.printer.lookup_object("gcode")
-                        self._gcode_obj = gcode
-                    gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_unload_retry")
-                    try:
-                        gcode.run_script_from_command("M83")  # Relative extrusion mode
-                        gcode.run_script_from_command("G92 E0")  # Reset extruder position
-                        gcode.run_script_from_command(f"G1 E-5.00 F{retract_feed:.0f}")
-                        gcode.run_script_from_command("M400")
-                    finally:
-                        gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_unload_retry")
+                    self._oams_extrude(-5.0, retract_feed,
+                                       state_name="oams_unload_retry", reset_pos=True)
                     self.reactor.pause(self.reactor.monotonic() + 1.0)
                     # Check again after second yield
                     if fps_state.state != FPSLoadState.UNLOADING:
@@ -4909,15 +4668,8 @@ class OAMSManager:
         try:
             engagement_length, engagement_speed = self._get_engagement_params(lane_name)
             if engagement_length is not None and engagement_speed is not None:
-                gcode = self.printer.lookup_object('gcode')
-                gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_stuck_retract")
-                try:
-                    gcode.run_script_from_command("M83")  # Relative extrusion mode
-                    gcode.run_script_from_command(f"G1 E-{engagement_length:.2f} F{engagement_speed:.0f}")
-                    gcode.run_script_from_command("M400")  # Wait for moves to complete
-                    gcode.run_script_from_command(f"G1 E-10.00 F{engagement_speed:.0f}")  # Overlap retract
-                finally:
-                    gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_stuck_retract")
+                self._oams_extrude(-(engagement_length + 10.0), engagement_speed,
+                                   state_name="oams_stuck_retract")
         except Exception as e:
             self.logger.error(f"Failed to retract extruder after stuck spool detection for {lane_name}: {e}")
 
@@ -5125,15 +4877,8 @@ class OAMSManager:
                 engagement_length, engagement_speed = self._get_engagement_params(lane_name)
                 if engagement_length is not None and engagement_speed is not None:
                     self.logger.info(f"Retracting extruder {engagement_length:.1f}mm to reverse engagement extrusion for {lane_name}")
-                    gcode = self.printer.lookup_object('gcode')
-                    gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_engagement_fail")
-                    try:
-                        gcode.run_script_from_command("M83")  # Relative extrusion mode
-                        gcode.run_script_from_command(f"G1 E-{engagement_length:.2f} F{engagement_speed:.0f}")
-                        gcode.run_script_from_command("M400")  # Wait for moves to complete
-                        gcode.run_script_from_command(f"G1 E-10.00 F{engagement_speed:.0f}")  # Overlap retract
-                    finally:
-                        gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_engagement_fail")
+                    self._oams_extrude(-(engagement_length + 10.0), engagement_speed,
+                                       state_name="oams_engagement_fail")
                 else:
                     self.logger.warning(f"Could not get engagement params for {lane_name}, skipping extruder retraction")
             except Exception as e:
@@ -5230,75 +4975,12 @@ class OAMSManager:
         - lane.unit (e.g., "AMS_1:1") to get bay number
         - AFC_OpenAMS unit config to get OAMS name
         """
-        afc = self._get_afc()
-        if afc is None:
-            return False, "AFC not available"
-
-        lane = afc.lanes.get(lane_name)
-        if lane is None:
-            return False, f"Lane {lane_name} does not exist"
-
-        # Get the unit string and slot/index
-        # AFC stores "unit: AMS_1:1" as unit="AMS_1" and index stored separately
-        unit_str = getattr(lane, "unit", None)
-        if not unit_str:
-            return False, f"Lane {lane_name} has no unit defined"
-
-        # Try to get slot number from different possible attributes
-        slot_number = None
-
-        # Method 1: If unit_str contains ':', parse it directly (e.g., "AMS_1:1")
-
-        if isinstance(unit_str, str) and ':' in unit_str:
-            base_unit_name, slot_str = unit_str.split(':', 1)
-            try:
-                slot_number = int(slot_str)
-            except ValueError:
-                return False, f"Invalid slot number in unit {unit_str}"
-        else:
-            # Method 2: unit_str is just the unit name (e.g., "AMS_1"), get slot from lane.index
-            base_unit_name = str(unit_str)
-            slot_number = getattr(lane, "index", None)
-
-            if slot_number is None:
-                # Method 3: Try to get it from the lane's name if it follows a pattern
-                # This is a fallback - lane names might not always have indices
-                return False, f"Lane {lane_name} unit '{unit_str}' doesn't specify slot number"
-
-        if slot_number is None:
-            return False, f"Could not determine slot number for lane {lane_name}"
-
-        # Convert slot number to 0-indexed bay number
-        bay_index = slot_number - 1
-        if bay_index < 0:
-            return False, f"Invalid slot number {slot_number} (must be >= 1)"
-
-        # Look up the AFC unit object to get OAMS name
-        unit_obj = getattr(lane, "unit_obj", None)
-        if unit_obj is None:
-            units = getattr(afc, "units", {})
-            unit_obj = units.get(base_unit_name)
-
-        if unit_obj is None:
-            return False, f"AFC unit {base_unit_name} not found"
-
-        # Get the OAMS name from the unit (e.g., "oams1")
-
-        oams_name = getattr(unit_obj, "oams_name", None)
-        if not oams_name:
-            return False, f"Unit {base_unit_name} has no oams_name defined"
-
-        # Find the OAMS object
-        # OAMS objects are stored with full name like "oams oams1", not just "oams1"
-        oam = self.oams.get(oams_name)
+        oam, bay_index, lane = self._resolve_lane_oams(lane_name)
         if oam is None:
-            # Try with "oams " prefix
-            oam = self.oams.get(f"oams {oams_name}")
-
-        if oam is None:
-            return False, f"OAMS {oams_name} not found"
+            return False, f"Could not resolve OAMS for lane {lane_name}"
 
         # Find the FPS buffer for this OAMS by checking AFC unit buffer names
+        oams_name = oam.name
         fps_name = None
         afc = self._get_afc()
         if afc is not None:
@@ -5685,18 +5367,8 @@ class OAMSManager:
                     f"@ {purge_feed:.0f}mm/min in dock, then picking up"
                 )
                 try:
-                    gcode = self._gcode_obj
-                    if gcode is None:
-                        gcode = self.printer.lookup_object("gcode")
-                        self._gcode_obj = gcode
-                    gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_post_purge")
-                    try:
-                        gcode.run_script_from_command("M83")  # Relative extrusion mode
-                        gcode.run_script_from_command("G92 E0")  # Reset extruder position
-                        gcode.run_script_from_command(f"G1 E{purge_length:.2f} F{purge_feed:.0f}")
-                        gcode.run_script_from_command("M400")
-                    finally:
-                        gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_post_purge")
+                    self._oams_extrude(purge_length, purge_feed,
+                                       state_name="oams_post_purge", reset_pos=True)
                 except Exception as e:
                     self.logger.warning(f"Failed to run post-load purge for {lane_name}")
             # Pick tool back up from dock and restore position
@@ -5769,24 +5441,12 @@ class OAMSManager:
                 self.logger.warning(f"Unable to set follower reverse before extra retract on {fps_name}")
 
             try:
-                gcode = self._gcode_obj
-                if gcode is None:
-                    gcode = self.printer.lookup_object("gcode")
-                    self._gcode_obj = gcode
-                gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_extra_retract")
-                try:
-                    gcode.run_script_from_command("M83")
-                    gcode.run_script_from_command("G92 E0")
-
-                    if unload_length is not None:
-                        unload_feed = unload_speed if unload_speed is not None else extra_retract_feed_rate
-                        gcode.run_script_from_command(f"G1 E-{unload_length:.2f} F{unload_feed:.0f}")
-                        gcode.run_script_from_command("M400")
-
-                    gcode.run_script_from_command("M400")
-                    gcode.run_script_from_command(f"G1 E{extra_retract:.2f} F{extra_retract_feed_rate:.0f}")
-                finally:
-                    gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_extra_retract")
+                if unload_length is not None:
+                    unload_feed = unload_speed if unload_speed is not None else extra_retract_feed_rate
+                    self._oams_extrude(-unload_length, unload_feed,
+                                       state_name="oams_extra_retract", reset_pos=True)
+                self._oams_extrude(-abs(extra_retract), extra_retract_feed_rate,
+                                   state_name="oams_extra_retract_2")
             except Exception as e:
                 self.logger.warning(f"Skipping extra retract before unload on {fps_name}: unable to queue gcode")
         else:
@@ -6529,49 +6189,17 @@ class OAMSManager:
 
     def _find_fps_for_oams_bay(self, oams_name: str, bay_idx: int):
         """Find the FPS name that corresponds to a specific OAMS bay."""
-        # Query AFC to find which lane uses this OAMS bay
         afc = self._get_afc()
         if afc is None or not hasattr(afc, 'lanes'):
             return None
 
-        # Look through AFC lanes to find one that matches this OAMS and bay
         for lane_name, lane in afc.lanes.items():
-            # Get lane's unit and slot
-            unit_str = getattr(lane, "unit", None)
-            if not unit_str:
+            oam, lane_bay, _ = self._resolve_lane_oams(lane, afc=afc)
+            if oam is None or lane_bay != bay_idx:
                 continue
-
-            # Parse unit name and slot
-            if isinstance(unit_str, str) and ':' in unit_str:
-                base_unit_name, slot_str = unit_str.split(':', 1)
-                try:
-                    slot_number = int(slot_str)
-                except ValueError:
-                    continue
-            else:
-                base_unit_name = str(unit_str)
-                slot_number = getattr(lane, "index", None)
-                if slot_number is None:
-                    continue
-
-            # Convert slot to bay index
-            lane_bay_idx = slot_number - 1
-            if lane_bay_idx != bay_idx:
-                continue
-
-            # Check if this lane's unit uses this OAMS
-            unit_obj = getattr(lane, "unit_obj", None)
-            if unit_obj is None:
-                units = getattr(afc, "units", {})
-                unit_obj = units.get(base_unit_name)
-            if unit_obj is None:
-                continue
-
-            lane_oams_name = getattr(unit_obj, "oams_name", None)
+            lane_oams_name = getattr(oam, "name", None)
             if lane_oams_name != oams_name and f"oams {lane_oams_name}" != oams_name:
                 continue
-
-            # Found matching lane - return its FPS
             return self.get_fps_for_afc_lane(lane_name)
 
         return None
@@ -6732,14 +6360,7 @@ class OAMSManager:
 
             # Step 1: Retract extruder to relieve pressure
             self.logger.debug(f"{fps_name}: Retracting extruder")
-            gcode.run_script_from_command("SAVE_GCODE_STATE NAME=oams_blocked_retry")
-            try:
-                gcode.run_script_from_command("G91")  # Relative positioning
-                gcode.run_script_from_command("M83")  # Relative extrusion mode
-                gcode.run_script_from_command("G1 E-10 F300")
-                gcode.run_script_from_command("M400")  # Wait for moves to finish
-            finally:
-                gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=oams_blocked_retry")
+            self._oams_extrude(-10.0, 300, state_name="oams_blocked_retry")
             self.reactor.pause(self.reactor.monotonic() + 0.5)
 
             # Step 2: Ensure follower is reverse for unload
