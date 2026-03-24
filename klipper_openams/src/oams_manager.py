@@ -755,10 +755,6 @@ class OAMSRunoutMonitor:
         _, oams_obj = _resolve_oams_entry(self.oams, oams_name)
         return oams_obj
 
-    def _normalize_oams_name(self, oams_name: Optional[str], oams_obj: Optional[Any] = None):
-        resolved_name, _ = _resolve_oams_entry(self.oams, oams_name, oams_obj)
-        return resolved_name
-
     # _get_lane_extruder_name is defined later (near _get_oams_object)
 
     def _resolve_oams_for_lane(self, lane_name: Optional[str]):
@@ -3168,7 +3164,7 @@ class OAMSManager:
 
         # If OAMS parameter provided, use it directly
         if oams_param:
-            fps_state.current_oams = self._normalize_oams_name(oams_param)
+            fps_state.current_oams = oams_param
         elif not fps_state.current_oams:
             gcmd.respond_info(f"No OAMS associated with {fps_name}")
 
@@ -3402,10 +3398,6 @@ class OAMSManager:
     def _get_oams_object(self, oams_name: Optional[str]):
         _, oams_obj = _resolve_oams_entry(self.oams, oams_name)
         return oams_obj
-
-    def _normalize_oams_name(self, oams_name: Optional[str], oams_obj: Optional[Any] = None):
-        resolved_name, _ = _resolve_oams_entry(self.oams, oams_name, oams_obj)
-        return resolved_name
 
     def _resolve_lane_oams(self, lane_or_name, afc=None):
         """Resolve an AFC lane to its OAMS object and bay index.
@@ -5804,7 +5796,6 @@ class OAMSManager:
             return
 
         direction = direction if direction in (0, 1) else 1
-        oams_name = self._normalize_oams_name(oams_name, oams)
         self._set_follower_if_changed(oams_name, oams, enable, direction, context, force=force)
         fps_state.following = bool(enable)
         fps_state.direction = direction if enable else 0
@@ -6019,7 +6010,6 @@ class OAMSManager:
             direction: 0 for reverse, 1 for forward
             context: Description for logging (optional)
         """
-        oams_name = self._normalize_oams_name(oams_name, oams)
         state = self._get_follower_state(oams_name)
         desired_state = (enable, direction)
         self._log_follower_request(oams_name, desired_state, context, force=force)
