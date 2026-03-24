@@ -19,6 +19,7 @@ class ToolProbeEndstop:
         self.active_probe = None
         self.active_tool_number = -1
         self.gcode_macro = self.printer.load_object(config, 'gcode_macro')
+        self.logger = None  # resolved at connect from AFC
         self.crash_detection_active = False
         self.crash_lasttime = 0.
         self.mcu_probe = EndstopRouter(self.printer)
@@ -71,6 +72,8 @@ class ToolProbeEndstop:
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
+        afc = self.printer.lookup_object('AFC', None)
+        self.logger = afc.logger if afc is not None else None
         self._detect_active_tool()
 
     def add_probe(self, config, tool_probe):
@@ -134,16 +137,22 @@ class ToolProbeEndstop:
             raise gcmd.error("SET_ACTIVE_TOOL_PROBE no tool probe for tool %d" % (probe_nr))
         self.set_active_probe(self.tool_number_to_probe[probe_nr])
 
+    def _respond(self, gcmd, msg):
+        if self.logger:
+            self.logger.info(msg)
+        else:
+            gcmd.respond_info(msg)
+
     cmd_DETECT_ACTIVE_TOOL_PROBE_help = "Detect which tool is active by identifying a probe that is NOT triggered"
     def cmd_DETECT_ACTIVE_TOOL_PROBE(self, gcmd):
         active_tools = self._query_open_tools()
         if len(active_tools) == 1 :
             active = active_tools[0]
-            gcmd.respond_info("Found active tool probe: %s" % (active.name))
+            self._respond(gcmd, "Found active tool probe: %s" % (active.name))
             self.set_active_probe(active)
         else:
             self.set_active_probe(None)
-            gcmd.respond_info(self._describe_tool_detection_issue(active_tools))
+            self._respond(gcmd, self._describe_tool_detection_issue(active_tools))
 
     cmd_START_TOOL_PROBE_CRASH_DETECTION_help = "Start detecting tool crashes"
     def cmd_START_TOOL_PROBE_CRASH_DETECTION(self, gcmd):
