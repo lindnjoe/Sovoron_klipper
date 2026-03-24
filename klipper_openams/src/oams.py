@@ -242,6 +242,7 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             'calibrate_hub_hes': "oams_cmd_calibrate_hub_hes spool=%c",
             'pid': "oams_cmd_pid kp=%u ki=%u kd=%u target=%u",
             'set_led_error': "oams_set_led_error idx=%c value=%c",
+            'set_ptfe_length': "config_oams_ptfe length=%u",
         }
         
         try:
@@ -685,6 +686,17 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
 
         else:
             gcmd.error("Calibration of PTFE length failed")
+
+    def set_ptfe_length(self, length):
+        """Update the firmware PTFE length at runtime so the next load uses it."""
+        length = int(length)
+        if hasattr(self, 'oams_set_ptfe_length_cmd'):
+            self.oams_set_ptfe_length_cmd.send([length])
+            self.filament_path_length = length
+        else:
+            self.logger.warning(
+                "set_ptfe_length command not available — firmware may need update"
+            )
 
     def load_spool(self, spool_idx):
         self.action_status = OAMSStatus.LOADING

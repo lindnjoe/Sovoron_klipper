@@ -5435,18 +5435,18 @@ class OAMSManager:
             return False, f"Bay {bay_index} on {oams_name} is not ready (no spool detected)"
 
         # Apply per-lane ptfe_length override if the AFC lane defines one.
-        # The OAMS firmware uses filament_path_length for feed distance;
-        # updating it here before load_spool ensures the correct value is
-        # used for this lane (e.g. lane8 with a longer PTFE run).
+        # The OAMS firmware reads filament_path_length at load time;
+        # sending the updated value before load_spool ensures the firmware
+        # uses the correct feed distance for this lane.
         lane_ptfe = getattr(lane, "ptfe_length", None)
         if lane_ptfe is not None and lane_ptfe > 0:
             orig_path_length = getattr(oam, "filament_path_length", None)
             if orig_path_length != lane_ptfe:
                 self.logger.info(
-                    f"Overriding {oams_name} filament_path_length "
+                    f"Overriding {oams_name} ptfe_length "
                     f"{orig_path_length} -> {lane_ptfe} for {lane_name}"
                 )
-                oam.filament_path_length = lane_ptfe
+                oam.set_ptfe_length(lane_ptfe)
 
         # Load the filament
         self.logger.debug(f"Loading lane {lane_name}: {oams_name} bay {bay_index} via {fps_name}")
