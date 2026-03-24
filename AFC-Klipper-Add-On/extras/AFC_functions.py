@@ -385,6 +385,16 @@ class afcFunction:
             current_extruder = self.get_current_extruder()
             if current_extruder is not None:
                 return self.afc.tools[current_extruder].lane_loaded
+            # Fallback: ask the lane's unit_obj when on_shuttle() is False
+            # (e.g. ACE after power cycle with shuttle parked)
+            extruder_name = self.afc.toolhead.get_extruder().name
+            tool_obj = self.afc.tools.get(extruder_name)
+            if tool_obj is not None and tool_obj.lane_loaded is not None:
+                lane_obj = self.afc.lanes.get(tool_obj.lane_loaded)
+                if lane_obj is not None and getattr(lane_obj, 'unit_obj', None) is not None:
+                    result = lane_obj.unit_obj.get_current_lane_fallback(tool_obj)
+                    if result is not None:
+                        return result
         return None
 
     def get_current_lane_obj(self):

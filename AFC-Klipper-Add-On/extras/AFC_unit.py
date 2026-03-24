@@ -657,6 +657,11 @@ class afcUnit:
         """Override in subclass for custom lane reset command. Return None to use default."""
         return None
 
+    def get_current_lane_fallback(self, tool_obj):
+        """Override in subclass to provide a fallback lane name when on_shuttle() is False.
+        Return lane name string to use, or None to skip."""
+        return None
+
     def get_calibrated_lanes(self) -> Optional[list[str]]:
         """
         Helper method to return lanes in a unit that have already been calibrated and require
