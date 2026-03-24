@@ -230,6 +230,7 @@ class AFCExtruder:
         self.enable_runout              = config.getboolean("enable_tool_runout",       self.afc.enable_tool_runout)
         self.debounce_delay             = config.getfloat("debounce_delay",             self.afc.debounce_delay)
         self.deadband                   = config.getfloat("deadband", 2)                                                # Deadband for extruder heater, default is 2 degrees Celsius
+        self.toolchange_temp_drop       = config.getfloat("toolchange_temp_drop", self.afc.toolchange_temp_drop)        # Degrees to drop old extruder temp after successful toolchange
 
         self.toolhead_leds              = config.get('led_name', None)
         self.toolhead_status_index      = config.get('status_led_idx', None)
