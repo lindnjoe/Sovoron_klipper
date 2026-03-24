@@ -4980,7 +4980,9 @@ class OAMSManager:
             return False, f"Could not resolve OAMS for lane {lane_name}"
 
         # Find the FPS buffer for this OAMS by checking AFC unit buffer names
-        oams_name = oam.name
+        # oam.name is the full klipper section name (e.g. "oams oams2"),
+        # while unit_obj.oams_name is the short form (e.g. "oams2").
+        oams_name = _normalize_oams_name_token(oam.name)
         fps_name = None
         afc = self._get_afc()
         if afc is not None:
