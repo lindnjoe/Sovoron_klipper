@@ -4066,12 +4066,14 @@ class OAMSManager:
     def _start_async_reload(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
                            target_lane_map: str, source_lane_name: Optional[str],
                            active_oams: str, monitor):
-        """Start non-blocking reload using OAMS hardware with async completion polling.
+        """Start non-blocking reload for same-FPS runout.
 
-        This avoids blocking wait loops that don't work from timer context.
-        Instead, we start the operation and poll for completion with a timer.
+        By the time this is called the old filament has already coasted through
+        and cleared the PTFE path (the runout monitor tracked extruder position
+        during coasting).  No unload command is needed — the follower stays
+        forward throughout so the new spool's filament is pushed to meet at
+        the extruder gears and gets pulled in seamlessly.
         """
-        # Get OAMS object for unload
         if fps_name not in self.fpss:
             self.logger.error(f"FPS {fps_name} not found for async reload")
             self._pause_printer_message(f"FPS {fps_name} not found", active_oams)
@@ -4087,94 +4089,28 @@ class OAMSManager:
                 monitor.paused()
             return
 
-        oams_unload = self._get_oams_object(fps_state_obj.current_oams)
-        if oams_unload is None:
-            self.logger.error(f"OAMS {fps_state_obj.current_oams} not found for unload")
+        oams_obj = self._get_oams_object(fps_state_obj.current_oams)
+        if oams_obj is None:
+            self.logger.error(f"OAMS {fps_state_obj.current_oams} not found for reload")
             self._pause_printer_message(f"OAMS {fps_state_obj.current_oams} not found", active_oams)
             if monitor:
                 monitor.paused()
             return
 
-        # Start unload operation (non-blocking - just sends MCU command)
-        self.logger.info(f"Starting async unload for same-FPS reload on {fps_name}")
+        # Old filament has already cleared the PTFE during coasting.
+        # Mark the old spool as unloaded and go straight to loading the
+        # new spool.  Follower stays forward — no reverse, no unload command.
+        self.logger.info(
+            f"Same-FPS reload on {fps_name}: old filament cleared, "
+            f"loading {target_lane} (follower stays forward)")
 
-        # Enable follower in reverse direction BEFORE starting unload
-        # The follower motor must be set to pull filament back to the spool
-        # before the BLDC motor starts rewinding (following user's requirement:
-        # "we have to first tell the follower what direction to be going in")
-        try:
-            self._set_follower_state(
-                fps_name,
-                fps_state_obj,
-                oams_unload,
-                1,
-                0,
-                "async unload",
-                force=True,
-            )
-            self.logger.debug(f"Set follower reverse before async unload on {fps_name}")
-        except Exception as e:
-            self.logger.warning(f"Failed to set follower reverse before async unload on {fps_name}")
+        fps_state_obj.state = FPSLoadState.UNLOADED
+        fps_state_obj.since = self.reactor.monotonic()
+        oams_obj.current_spool = None
 
-        if OAMSStatus is None:
-            self.logger.error("CRITICAL: OAMSStatus not available (oams.py import failed)")
-
-            self._pause_printer_message("OAMS module error", active_oams)
-            if monitor:
-                monitor.paused()
-            return
-
-        oams_unload.action_status = OAMSStatus.UNLOADING
-        oams_unload.oams_unload_spool_cmd.send()
-        unload_start_time = self.reactor.monotonic()
-
-        # Create polling timer to check unload completion
-        def _check_unload_complete(eventtime):
-            # Check if unload completed
-            if oams_unload.action_status is None:
-                # Unload finished - check result
-                if OAMSOpCode is None:
-                    self.logger.error("CRITICAL: OAMSOpCode not available (oams.py import failed)")
-
-                    self._pause_printer_message("OAMS module error", active_oams)
-                    if monitor:
-                        monitor.paused()
-                    return self.reactor.NEVER
-
-                if oams_unload.action_status_code == OAMSOpCode.SUCCESS:
-                    self.logger.info(f"Async unload completed successfully, starting load for {target_lane}")
-                    # Update FPS state
-                    fps_state_obj.state = FPSLoadState.UNLOADED
-                    fps_state_obj.following = False
-                    fps_state_obj.direction = 0
-                    fps_state_obj.since = self.reactor.monotonic()
-                    oams_unload.current_spool = None
-
-                    # Now start load operation
-                    self._start_async_load(fps_name, fps_state, target_lane, target_lane_map,
-                                         source_lane_name, active_oams, monitor)
-                else:
-                    self.logger.error(f"Async unload failed with code {oams_unload.action_status_code}")
-                    self._pause_printer_message(f"Failed to unload on {fps_name}", active_oams)
-                    if monitor:
-                        monitor.paused()
-                return self.reactor.NEVER  # Stop polling
-
-            # Check timeout (30 seconds)
-            if eventtime - unload_start_time > 30.0:
-                self.logger.error("Async unload timed out after 30s")
-
-                oams_unload.action_status = None
-                self._pause_printer_message(f"Unload timeout on {fps_name}", active_oams)
-                if monitor:
-                    monitor.paused()
-                return self.reactor.NEVER  # Stop polling
-
-            # Not done yet - keep polling every 100ms
-            return eventtime + 0.1
-
-        # Start polling timer
-        self.reactor.register_timer(_check_unload_complete, self.reactor.NOW)
+        # Go straight to load — follower is already forward from coasting
+        self._start_async_load(fps_name, fps_state, target_lane, target_lane_map,
+                             source_lane_name, active_oams, monitor)
 
     def _start_async_load(self, fps_name: str, fps_state: 'FPSState', target_lane: str,
                          target_lane_map: str, source_lane_name: Optional[str],
