@@ -5445,7 +5445,7 @@ class OAMSManager:
                     unload_feed = unload_speed if unload_speed is not None else extra_retract_feed_rate
                     self._oams_extrude(-unload_length, unload_feed,
                                        state_name="oams_extra_retract", reset_pos=True)
-                self._oams_extrude(extra_retract, extra_retract_feed_rate,
+                self._oams_extrude(-abs(extra_retract), extra_retract_feed_rate,
                                    state_name="oams_extra_retract_2")
             except Exception as e:
                 self.logger.warning(f"Skipping extra retract before unload on {fps_name}: unable to queue gcode")
