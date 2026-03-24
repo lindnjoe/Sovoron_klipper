@@ -901,7 +901,7 @@ class VirtualFilamentSensor:
             msg = f"Filament Sensor {self.name}: filament detected"
         else:
             msg = f"Filament Sensor {self.name}: filament not detected"
-        gcmd.respond_info(msg)
+        self.logger.info(msg)
 
     def cmd_SET_FILAMENT_SENSOR(self, gcmd):
         self.runout_helper.sensor_enabled = bool(gcmd.get_int("ENABLE", 1))

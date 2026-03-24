@@ -1547,10 +1547,8 @@ class AFCLane:
 
     def activate_toolhead_extruder(self):
         if self.afc.toolhead.get_extruder() is self.extruder_obj.toolhead_extruder:
-            # self.afc.gcode.respond_info("Extruder already active") #TODO remove before pushing to dev/main
             return
         else:
-            # self.afc.gcode.respond_info("Activating extruder")
             # Code below is pulled exactly from klippy/kinematics/extruder.py file without the prints
             self.afc.toolhead.flush_step_generation()
             self.afc.toolhead.set_extruder( self.extruder_obj.toolhead_extruder, 0.)

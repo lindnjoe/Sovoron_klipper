@@ -1548,7 +1548,7 @@ class afcFunction:
         custom_reset_command = cur_lane.unit_obj.get_lane_reset_command(cur_lane, long_dis)
         if custom_reset_command is not None:
             prompt.p_end()
-            self.afc.gcode.respond_info(
+            self.logger.info(
                 f"{lane} uses custom lane reset command: {custom_reset_command}"
             )
             self.afc.gcode.run_script_from_command(custom_reset_command)
@@ -1567,7 +1567,7 @@ class afcFunction:
             self.afc.error.AFC_error("Toolhead is loaded with '{}', unload or check sensor before resetting lane".format(tool_load.name), pause=False)
 
         prompt.p_end()
-        self.afc.gcode.respond_info('Resetting {} to hub'.format(lane))
+        self.logger.info('Resetting {} to hub'.format(lane))
         pos = 0
         fail_state_msg = "'{}' failed to reset to hub, {} switch became false during reset"
 
@@ -1596,7 +1596,7 @@ class afcFunction:
         cur_lane.loaded_to_hub = True
         cur_lane.do_enable(False)
 
-        self.afc.gcode.respond_info('{} reset to hub, take necessary action'.format(lane))
+        self.logger.info('{} reset to hub, take necessary action'.format(lane))
 
     cmd_AFC_GET_TD_ONE_DATA_help = "Display's prompt to easily get TD-1 data for lanes"
     def cmd_AFC_GET_TD_ONE_DATA(self, gcmd):
