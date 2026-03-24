@@ -967,16 +967,6 @@ class afc:
         self.function.log_toolhead_pos("Resume initial pos: ")
 
         self.current_state = State.RESTORING_POS
-        # TOOLCHANGE_DEBUG: log current vs saved gcode_move state
-        self.logger.info(  # TOOLCHANGE_DEBUG
-            "TC_DEBUG restore_pos: current base_pos=%s homing_pos=%s "  # TOOLCHANGE_DEBUG
-            "last_pos=%s | saved base_pos=%s homing_pos=%s last_gcode_pos=%s"  # TOOLCHANGE_DEBUG
-            % (list(self.gcode_move.base_position[:3]),  # TOOLCHANGE_DEBUG
-               list(self.gcode_move.homing_position[:3]),  # TOOLCHANGE_DEBUG
-               list(self.gcode_move.last_position[:3]),  # TOOLCHANGE_DEBUG
-               self.base_position[:3],  # TOOLCHANGE_DEBUG
-               self.homing_position[:3],  # TOOLCHANGE_DEBUG
-               self.last_gcode_position[:3]))  # TOOLCHANGE_DEBUG
         newpos = self.gcode_move.last_position
 
         # Move toolhead to previous z location with z-hop added
