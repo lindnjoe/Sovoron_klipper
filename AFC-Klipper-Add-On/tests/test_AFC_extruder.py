@@ -263,6 +263,7 @@ def _make_afc_extruder(name="extruder"):
     ext.resonance_chip = None
     ext.custom_tool_swap = None
     ext.custom_unselect = None
+    ext.params = {}
     ext.map = None
     return ext
 

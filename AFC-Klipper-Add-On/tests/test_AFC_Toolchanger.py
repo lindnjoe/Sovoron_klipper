@@ -79,6 +79,7 @@ def _make_tool(name="extruder", tool_number=0, detect_state=DETECT_UNAVAILABLE):
     tool.name = name
     tool.tool_number = tool_number
     tool.detect_state = detect_state
+    tool.detect_pin_name = None if detect_state == DETECT_UNAVAILABLE else "detect_pin"
     tool.t_command_restore_axis = "XYZ"
     tool.fan = None
     tool.tool_probe = None

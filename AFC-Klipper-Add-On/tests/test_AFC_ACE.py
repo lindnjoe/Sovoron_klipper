@@ -73,10 +73,15 @@ def _make_ace(name="ACE_1", mode=MODE_COMBINED):
     unit.dock_purge_speed = 5.0
     unit.crash_detection_mode = "disabled"
     unit.fps_threshold = 0.9
+    unit.fps_load_threshold = 0.65
+    unit.fps_delta_threshold = 0.15
+    unit.fps_confirm_count = 3
+    unit._prev_fps_value = 0.0
     unit._fps_obj = None
     unit._fps_extruder = None
     unit._fps_runout_helper = None
     unit._fps_latched = False
+    unit._fps_consecutive_hits = 0
     unit.poll_interval = 1.0
     unit.baud_rate = 115200
     unit._ace = None
