@@ -1524,24 +1524,37 @@ class afcACE(afcUnit):
                         self.logger.warning(
                             f"ACE load: feed_assist_count did not increase "
                             f"during load ({pre_assist_count} -> {post_assist_count}). "
-                            f"Retracting 20mm and retrying to engage extruder gears."
+                            f"Retracting tool_stn + 20mm and retrying to engage extruder gears."
                         )
                         retry_dist = 20.0
                         retry_spd = self._quiet_speed(self.retract_speed)
-                        # Retract 20mm via ACE to pull filament back
+                        feed_spd = self._quiet_speed(self.feed_speed)
+                        # 1. Retract extruder by tool_stn to pull filament
+                        #    back out of the nozzle area
+                        if cur_extruder.tool_stn:
+                            self.logger.info(
+                                f"ACE load retry: retracting extruder "
+                                f"{cur_extruder.tool_stn}mm "
+                                f"@ {cur_extruder.tool_load_speed}mm/s"
+                            )
+                            afc.move_e_pos(
+                                -cur_extruder.tool_stn,
+                                cur_extruder.tool_load_speed,
+                                "tool stn retract",
+                            )
+                        # 2. ACE unwinds 20mm to pull filament back further
                         self._wait_for_ace_ready()
                         self._ace.unwind_filament(local_slot, retry_dist, retry_spd)
                         self._wait_for_feed_complete(
                             local_slot, retry_dist, retry_spd
                         )
-                        # Re-feed 20mm via ACE to push filament back in
-                        feed_spd = self._quiet_speed(self.feed_speed)
+                        # 3. ACE re-feeds 20mm to push filament back in
                         self._wait_for_ace_ready()
                         self._ace.feed_filament(local_slot, retry_dist, feed_spd)
                         self._wait_for_feed_complete(
                             local_slot, retry_dist, feed_spd
                         )
-                        # Re-advance tool_stn to push into nozzle
+                        # 4. Re-advance extruder by tool_stn into nozzle
                         if cur_extruder.tool_stn:
                             self.logger.info(
                                 f"ACE load retry: advancing {cur_extruder.tool_stn}mm "
