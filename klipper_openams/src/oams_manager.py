@@ -2317,7 +2317,7 @@ class OAMSManager:
             if last_logged != loaded_lane_name:
                 self._last_logged_detected_lane[extruder_name] = loaded_lane_name
                 self.logger.debug(
-                    f"Detected {loaded_lane_name} loaded to {extruder_name} (bay {bay_index} on {oams_name})"
+                    f"Detected {loaded_lane_name} loaded to {extruder_name} (bay {bay_index} on {oam.name})"
                 )
 
             return loaded_lane_name, oam, bay_index
@@ -4056,7 +4056,7 @@ class OAMSManager:
         # No need to track persistent counter - each engagement attempt gets fresh stuck retries
 
         # Start load operation (non-blocking - just sends MCU command)
-        self.logger.info(f"Starting async load for lane {target_lane} (bay {bay_index}) on {oams_name}")
+        self.logger.info(f"Starting async load for lane {target_lane} (bay {bay_index}) on {oam_load.name}")
         if OAMSStatus is None:
             self.logger.error("CRITICAL: OAMSStatus not available (oams.py import failed)")
 
@@ -4796,7 +4796,7 @@ class OAMSManager:
                 success, message = oam.load_spool_with_retry(bay_index)
             except Exception as e:
                 success = False
-                message = f"Failed to load bay {bay_index} on {oams_name}"
+                message = f"Failed to load bay {bay_index} on {oam_load.name}"
                 self.logger.error(message)
                 fps_state.state = FPSLoadState.UNLOADED
                 self._pause_on_critical_failure(message, oams_name)
