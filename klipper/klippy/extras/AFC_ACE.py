@@ -3538,7 +3538,6 @@ class afcACE(afcUnit):
             cur_extruder.lane_loaded = None
 
         self.afc.save_vars()
-        self.afc.save_vars()
         self.logger.info(f"ACE lane reset: {lane_name} retracted successfully")
 
     def cmd_ACE_CALIBRATE(self, gcmd):
