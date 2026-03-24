@@ -640,11 +640,6 @@ class afcUnit:
         """Override in subclass for custom lane unload. Return non-None to skip default lane unload."""
         return None
 
-    def on_lane_unset_loaded(self, lane, extruder_name):
-        """Called after a lane is manually unset from the toolhead via unset_lane_loaded.
-        Override in subclass for custom post-unset behavior."""
-        pass
-
     def prep_capture_td1(self, cur_lane):
         """Override in subclass for custom TD-1 prep capture. Return non-None to skip default behavior."""
         return None
@@ -655,11 +650,6 @@ class afcUnit:
 
     def get_lane_reset_command(self, lane, dis):
         """Override in subclass for custom lane reset command. Return None to use default."""
-        return None
-
-    def get_current_lane_fallback(self, tool_obj):
-        """Override in subclass to provide a fallback lane name when on_shuttle() is False.
-        Return lane name string to use, or None to skip."""
         return None
 
     def get_calibrated_lanes(self) -> Optional[list[str]]:

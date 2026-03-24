@@ -366,9 +366,9 @@ class AFCFPSBuffer:
         if not self.enable:
             half_db = self.deadband / 2.0
             if self.smoothed_fps > self.set_point + half_db:
-                self.last_state = ADVANCING_STATE_NAME
-            elif self.smoothed_fps < self.set_point - half_db:
                 self.last_state = TRAILING_STATE_NAME
+            elif self.smoothed_fps < self.set_point - half_db:
+                self.last_state = ADVANCING_STATE_NAME
             else:
                 self.last_state = NEUTRAL_STATE_NAME
 
@@ -399,7 +399,7 @@ class AFCFPSBuffer:
             return eventtime + self.update_interval
 
         if reading > neutral_high:
-            # FPS reading is HIGH (buffer compressed / filament at toolhead)
+            # FPS reading is HIGH (buffer compressed / pushing too much)
             # Need to slow down feeding → multiplier < 1
             # Scale from 1.0 at neutral_high to multiplier_low at high_point
             range_size = self.high_point - neutral_high
@@ -408,11 +408,11 @@ class AFCFPSBuffer:
             else:
                 fraction = 1.0
             multiplier = 1.0 - fraction * (1.0 - self.multiplier_low)
-            self.last_state = ADVANCING_STATE_NAME
-            self.advance_state = True
-            self.trailing_state = False
+            self.last_state = TRAILING_STATE_NAME
+            self.advance_state = False
+            self.trailing_state = True
             if self.led:
-                self.afc.function.afc_led(self.led_advancing, self.led_index)
+                self.afc.function.afc_led(self.led_trailing, self.led_index)
         else:
             # FPS reading is LOW (buffer stretched / not feeding fast enough)
             # Need to speed up feeding → multiplier > 1
@@ -423,11 +423,11 @@ class AFCFPSBuffer:
             else:
                 fraction = 1.0
             multiplier = 1.0 + fraction * (self.multiplier_high - 1.0)
-            self.last_state = TRAILING_STATE_NAME
-            self.advance_state = False
-            self.trailing_state = True
+            self.last_state = ADVANCING_STATE_NAME
+            self.advance_state = True
+            self.trailing_state = False
             if self.led:
-                self.afc.function.afc_led(self.led_trailing, self.led_index)
+                self.afc.function.afc_led(self.led_advancing, self.led_index)
 
         self.set_multiplier(multiplier)
 
@@ -593,9 +593,9 @@ class AFCFPSBuffer:
         if eventtime < self.min_event_systime or not self.enable or self.afc.function.is_paused():
             return
         if pause:
-            if self.last_state == ADVANCING_STATE_NAME:
-                msg += '\nCLOG DETECTED'
             if self.last_state == TRAILING_STATE_NAME:
+                msg += '\nCLOG DETECTED'
+            if self.last_state == ADVANCING_STATE_NAME:
                 msg += '\nAFC NOT FEEDING'
             self.afc.error.AFC_error(msg, True)
 
@@ -655,8 +655,8 @@ class AFCFPSBuffer:
         Usage: ``QUERY_BUFFER BUFFER=<buffer_name>``
         """
         state_mapping = {
-            ADVANCING_STATE_NAME: ' (buffer compressed - filament loaded)',
-            TRAILING_STATE_NAME: ' (buffer stretched - not feeding enough)',
+            TRAILING_STATE_NAME: ' (buffer is compressing - feeding too much)',
+            ADVANCING_STATE_NAME: ' (buffer is stretching - not feeding enough)',
             NEUTRAL_STATE_NAME: ' (buffer is centered)',
         }
 
