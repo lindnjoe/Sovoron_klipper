@@ -168,7 +168,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-24T14:38:03Z"
+          "timestamp": "2026-03-24T18:21:43Z"
         },
         "optional": []
       },
@@ -253,7 +253,7 @@
             "rowspan": 1
           },
           {
-            "col": 2,
+            "col": 5,
             "colspan": 1,
             "enabled": false,
             "id": "firmware_restart",
