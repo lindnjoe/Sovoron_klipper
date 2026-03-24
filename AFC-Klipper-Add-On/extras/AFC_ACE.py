@@ -2204,10 +2204,6 @@ class afcACE(afcUnit):
                         f"ACE wait: stopped feed for slot {slot_index} "
                         "(sensor triggered early)"
                     )
-                    # Brief pause for ACE to transition out of "feeding" state
-                    self.afc.reactor.pause(
-                        self.afc.reactor.monotonic() + 0.5
-                    )
                 except Exception:
                     pass
                 return True
