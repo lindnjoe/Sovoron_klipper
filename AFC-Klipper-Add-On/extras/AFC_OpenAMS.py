@@ -1255,6 +1255,18 @@ class afcAMS(afcUnit):
 
         self._ensure_virtual_tool_sensor()
 
+        # OpenAMS units cannot load to the hub so set bowden lengths to
+        # the true internal default of 60 mm for any hub that still has
+        # the generic 900 mm default.
+        for lane in self.lanes.values():
+            hub = getattr(lane, "hub_obj", None)
+            if hub is not None and hub.afc_bowden_length == 900:
+                hub.afc_bowden_length = 60
+                hub.config_bowden_length = 60
+                hub.afc_unload_bowden_length = 60
+                hub.config_unload_bowden_length = 60
+                break
+
         # Register internal gcode command for stuck spool auto-recovery.
         # Multiple afcAMS units share the same printer gcode namespace so ignore
         # the AlreadyRegistered error if another unit registered it first.

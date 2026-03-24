@@ -103,16 +103,6 @@ class afc_hub:
 
         self.printer.send_event("afc_hub:register_macros", self)
 
-        # OpenAMS units cannot load to the hub so the hub bowden length is
-        # not meaningful.  Default all bowden values to 60 mm (the true
-        # internal default) so users don't need to configure them.
-        if self._is_openams_hub():
-            self.afc_bowden_length = 60
-            self.afc_unload_bowden_length = 60
-            self.config_bowden_length = 60
-            self.config_unload_bowden_length = 60
-            self.td1_bowden_length = 10
-
         if self.switch_pin.lower() == "virtual":
             msg = "The following lanes need load sensors for virtual hub sensor to work correctly:"
             report_error = False
@@ -184,16 +174,6 @@ class afc_hub:
         # Retract lane by `hub_cut_clear`.
         cur_lane.move(-self.cut_clear, cur_lane.short_moves_speed, cur_lane.short_moves_accel, self.assisted_retract)
 
-    def _is_openams_hub(self):
-        """Return True if this hub belongs to an OpenAMS unit."""
-        for lane in self.lanes.values():
-            unit_obj = getattr(lane, "unit_obj", None)
-            if unit_obj is not None:
-                if getattr(unit_obj, "type", None) == "OpenAMS":
-                    return True
-            break
-        return False
-
     def get_status(self, eventtime=None):
         self.response = {}
         self.response['state'] = bool(self.state)
@@ -206,8 +186,7 @@ class afc_hub:
         self.response['cut_servo_clip_angle'] = self.cut_servo_clip_angle
         self.response['cut_servo_prep_angle'] = self.cut_servo_prep_angle
         self.response['lanes'] = [lane.name for lane in self.lanes.values()]
-        if not self._is_openams_hub():
-            self.response['afc_bowden_length'] = self.afc_bowden_length
+        self.response['afc_bowden_length'] = self.afc_bowden_length
 
         return self.response
 
