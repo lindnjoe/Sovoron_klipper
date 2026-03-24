@@ -1666,12 +1666,11 @@ class afc:
 
             self.logger.debug(f"Current extruder: {cur_extruder}, current lane:{cur_lane}")
 
-        # Default to true
+        # Only skip toolhead unload when the next lane is on a different extruder
+        # (or is already the loaded lane on this extruder).
         unload_toolhead = True
         if self.next_lane_load is not None:
-            if self.next_lane_load in cur_extruder.lanes and self.next_lane_load != cur_extruder.lane_loaded:
-                unload_toolhead = True
-            else:
+            if not (self.next_lane_load in cur_extruder.lanes and self.next_lane_load != cur_extruder.lane_loaded):
                 unload_toolhead = False
 
         self.logger.debug(f"Next lane load:{self.next_lane_load}, lanes:{cur_extruder.lanes}, current lane:{cur_lane}, unload_toolhead:{unload_toolhead}")
@@ -2031,10 +2030,7 @@ class afc:
         self.logger.debug("CHANGE_TOOL: cmd-{}".format(command_line))
 
         # Remove everything after ; since it could contain strings like CHANGE in a comment and should be ignored
-        command = re.sub( ';.*', '', command_line)
-        command = command.split(' ')[0].upper()
-        tmp = gcmd.get_commandline()
-        cmd = tmp.upper()
+        command = re.sub( ';.*', '', command_line).split(' ')[0].upper()
         Tcmd = ''
         if 'CHANGE' in command:
             lane = gcmd.get('LANE', None)
@@ -2047,7 +2043,7 @@ class afc:
             Tcmd = command
 
         if Tcmd == '':
-            self.error.AFC_error("I did not understand the change -- " + cmd, pause=self.function.in_print())
+            self.error.AFC_error("I did not understand the change -- " + command_line, pause=self.function.in_print())
             return
 
         self.CHANGE_TOOL(self.lanes[self.tool_cmds[Tcmd]], purge_length, new_extruder_temp=new_extruder_temp)
@@ -2373,8 +2369,8 @@ class afc:
         pheaters.set_temperature(next_heater, set_temp, False)
         self.logger.info("Heating next extruder: {} to {}".format(next_extruder.name, set_temp))
 
-        # If the next extruder is specified and it is not the current extruder, heat the next extruder.
-        if wait and (next_extruder is not None and self.function.get_current_extruder() != next_extruder.name):
+        # If this is not the current extruder, wait for it to reach temperature.
+        if wait and self.function.get_current_extruder() != next_extruder.name:
             deadband = next_extruder.deadband
             self._wait_for_temp_within_tolerance(next_heater, set_temp, deadband)
 

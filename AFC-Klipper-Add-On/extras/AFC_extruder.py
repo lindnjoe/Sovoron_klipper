@@ -882,19 +882,18 @@ class AFCExtruder:
 
     def activate_tool(self):
         """Activate this tool's extruder, stepper, and fan. Called during tool pickup."""
-        toolhead = self.printer.lookup_object('toolhead')
-        gcode = self.printer.lookup_object('gcode')
-        hotend_extruder = toolhead.get_extruder().name
-        if self.name != hotend_extruder:
-            gcode.run_script_from_command(
+        toolhead = self.afc.toolhead
+        if self.name != toolhead.get_extruder().name:
+            self.gcode.run_script_from_command(
                 "ACTIVATE_EXTRUDER EXTRUDER='%s'" % (self.name,))
         if self.extruder_stepper:
-            hotend_extruder = toolhead.get_extruder().name
-            gcode.run_script_from_command(
+            # Re-read after potential ACTIVATE_EXTRUDER above
+            active_extruder = toolhead.get_extruder().name
+            self.gcode.run_script_from_command(
                 "SYNC_EXTRUDER_MOTION EXTRUDER='%s' MOTION_QUEUE=" % (self.extruder_stepper_name,))
-            gcode.run_script_from_command(
+            self.gcode.run_script_from_command(
                 "SYNC_EXTRUDER_MOTION EXTRUDER='%s' MOTION_QUEUE='%s'" % (
-                    self.extruder_stepper_name, hotend_extruder))
+                    self.extruder_stepper_name, active_extruder))
         if self.fan and self.tc_unit_obj:
             self.tc_unit_obj.fan_switcher.activate_fan(self.fan)
         if self.resonance_chip:
@@ -905,8 +904,7 @@ class AFCExtruder:
     def deactivate_tool(self):
         """Deactivate this tool's extruder stepper. Called during tool dropoff."""
         if self.extruder_stepper:
-            gcode = self.printer.lookup_object('gcode')
-            gcode.run_script_from_command(
+            self.gcode.run_script_from_command(
                 "SYNC_EXTRUDER_MOTION EXTRUDER='%s' MOTION_QUEUE=" % (self.extruder_stepper_name,))
 
     def on_shuttle(self):
