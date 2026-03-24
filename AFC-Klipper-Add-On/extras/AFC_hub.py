@@ -103,6 +103,16 @@ class afc_hub:
 
         self.printer.send_event("afc_hub:register_macros", self)
 
+        # OpenAMS units cannot load to the hub so the hub bowden length is
+        # not meaningful.  Default all bowden values to 60 mm (the true
+        # internal default) so users don't need to configure them.
+        if self._is_openams_hub():
+            self.afc_bowden_length = 60
+            self.afc_unload_bowden_length = 60
+            self.config_bowden_length = 60
+            self.config_unload_bowden_length = 60
+            self.td1_bowden_length = 10
+
         if self.switch_pin.lower() == "virtual":
             msg = "The following lanes need load sensors for virtual hub sensor to work correctly:"
             report_error = False
