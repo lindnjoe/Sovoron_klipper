@@ -2254,34 +2254,46 @@ class afc:
         curr_extruder = self.function.get_current_extruder_obj()
 
         if toolnum is not None:
-            map = "T{}".format(toolnum)
-            lane = self.function.get_lane_by_map(map)
-            if lane is not None:
-                extruder = lane.extruder_obj
+            # First try to find the AFC extruder by its tool_number.
+            # This is the correct mapping for toolchanger setups where
+            # tool_number (extruder index) differs from the lane's T-map
+            # (e.g. extruder5 has tool_number=5 but its lanes map to T12-T15).
+            extruder = None
+            for tool_obj in self.tools.values():
+                if getattr(tool_obj, 'tool_number', -1) == toolnum:
+                    extruder = tool_obj
+                    break
 
-                # Checking if slicer is trying to set temperature(ooze prevention) for another lane
-                #   thats connected to the currently loaded extruder. Bypass this check if current
-                #   extruder does not have a lane loaded, so that M109 can set temperature in a
-                #   start macro for the initial tool, prior to loading filament.
-                if (not self.disable_ooze_check
-                    and curr_extruder
-                    and curr_extruder.lane_loaded is not None):
-                    for curr_extr_lane in curr_extruder.lanes:
-                        lane_obj = self.lanes.get(curr_extr_lane, None)
-                        if lane_obj:
-                            if (lane_obj.name == curr_extruder.lane_loaded
-                                and map == lane_obj.map):
-                                break
-                            elif (lane_obj.map == map):
-                                self.logger.raw(
-                                    ("<span class=warning--text>WARNING: "
-                                    f"Not setting temperature for {map} since another lane is loaded for {curr_extruder.name}</span>")
-                                )
-                                return
-                self.logger.debug("Setting temperature for {} to {}".format(lane.extruder_obj, temp))
-                if extruder is None:
-                    self.logger.error("extruder not configured for T{}".format(toolnum))
-                    return
+            # Fall back to lane map lookup for single-toolhead setups
+            # where T<n> maps directly to a lane.
+            if extruder is None:
+                map = "T{}".format(toolnum)
+                lane = self.function.get_lane_by_map(map)
+                if lane is not None:
+                    extruder = lane.extruder_obj
+
+                    # Checking if slicer is trying to set temperature(ooze prevention) for another lane
+                    #   thats connected to the currently loaded extruder. Bypass this check if current
+                    #   extruder does not have a lane loaded, so that M109 can set temperature in a
+                    #   start macro for the initial tool, prior to loading filament.
+                    if (not self.disable_ooze_check
+                        and curr_extruder
+                        and curr_extruder.lane_loaded is not None):
+                        for curr_extr_lane in curr_extruder.lanes:
+                            lane_obj = self.lanes.get(curr_extr_lane, None)
+                            if lane_obj:
+                                if (lane_obj.name == curr_extruder.lane_loaded
+                                    and map == lane_obj.map):
+                                    break
+                                elif (lane_obj.map == map):
+                                    self.logger.raw(
+                                        ("<span class=warning--text>WARNING: "
+                                        f"Not setting temperature for {map} since another lane is loaded for {curr_extruder.name}</span>")
+                                    )
+                                    return
+
+            if extruder is not None:
+                self.logger.debug("Setting temperature for {} to {}".format(extruder, temp))
             else:
                 self.logger.error("extruder not configured for T{}".format(toolnum))
                 return
