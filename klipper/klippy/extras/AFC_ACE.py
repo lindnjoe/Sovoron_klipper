@@ -165,6 +165,13 @@ class afcACE(afcUnit):
         # value is used as the toolhead sensor.  fps_value 0-1, where 1 means
         # filament is fully compressed against extruder gears.
         self.fps_threshold = config.getfloat("fps_threshold", 0.9)
+        # Number of consecutive ADC readings above fps_threshold required
+        # before the sensor is considered triggered during calibration/feeding.
+        # ACE pulsed feeding can cause brief spikes above threshold as filament
+        # grazes the sensor on the rising edge — requiring multiple consecutive
+        # readings filters these out.  At ~100ms per ADC callback, 3 readings
+        # adds ~200ms of confirmation delay.
+        self.fps_confirm_count = config.getint("fps_confirm_count", 3, minval=1)
         self._fps_obj = None       # resolved FPS object (fps.py)
         self._fps_extruder = None  # the extruder object associated with FPS
         self._fps_runout_helper = None  # cached runout helper for virtual sensor
@@ -172,6 +179,7 @@ class afcACE(afcUnit):
         # crosses the threshold we latch tool_start_state=True so that
         # pulsed ACE feeding doesn't clear it between motor pulses.
         self._fps_latched = False
+        self._fps_consecutive_hits = 0  # consecutive readings above threshold
 
         # Sensor polling interval for status/runout monitoring
         self.poll_interval = config.getfloat("poll_interval", 1.0)
@@ -573,16 +581,33 @@ class afcACE(afcUnit):
         triggered = fps_value >= self.fps_threshold
 
         if self._operation_active:
-            # Latch mode: once triggered, stay triggered
-            if triggered and not self._fps_latched:
-                self._fps_latched = True
-                extruder.tool_start_state = True
-                self._update_virtual_sensor(read_time, True)
-                self.logger.debug(
-                    f"ACE FPS: tool_start_state LATCHED True "
-                    f"(fps_value={fps_value:.3f}, threshold={self.fps_threshold})"
-                )
-            # Don't clear tool_start_state while latched
+            if self._fps_latched:
+                # Already confirmed — stay latched, don't clear.
+                return
+            if triggered:
+                self._fps_consecutive_hits += 1
+                if self._fps_consecutive_hits >= self.fps_confirm_count:
+                    self._fps_latched = True
+                    extruder.tool_start_state = True
+                    self._update_virtual_sensor(read_time, True)
+                    self.logger.debug(
+                        f"ACE FPS: tool_start_state LATCHED True "
+                        f"(fps_value={fps_value:.3f}, threshold={self.fps_threshold}, "
+                        f"confirmed after {self._fps_consecutive_hits} consecutive reads)"
+                    )
+                else:
+                    self.logger.debug(
+                        f"ACE FPS: above threshold ({fps_value:.3f}), "
+                        f"confirming {self._fps_consecutive_hits}/{self.fps_confirm_count}"
+                    )
+            else:
+                # Reading dropped below threshold — reset the counter.
+                if self._fps_consecutive_hits > 0:
+                    self.logger.debug(
+                        f"ACE FPS: dropped below threshold ({fps_value:.3f}), "
+                        f"resetting confirm counter from {self._fps_consecutive_hits}"
+                    )
+                self._fps_consecutive_hits = 0
             return
 
         # Normal mode: track the sensor state directly.
@@ -1163,11 +1188,13 @@ class afcACE(afcUnit):
         afc = self.afc
         self._operation_active = True
         self._fps_latched = False
+        self._fps_consecutive_hits = 0
         try:
             return self._load_sequence_inner(cur_lane, cur_hub, cur_extruder)
         finally:
             self._operation_active = False
             self._fps_latched = False
+            self._fps_consecutive_hits = 0
 
     def _load_sequence_inner(self, cur_lane, cur_hub, cur_extruder):
         afc = self.afc
@@ -1479,11 +1506,13 @@ class afcACE(afcUnit):
         afc = self.afc
         self._operation_active = True
         self._fps_latched = False
+        self._fps_consecutive_hits = 0
         try:
             return self._unload_sequence_inner(cur_lane, cur_hub, cur_extruder)
         finally:
             self._operation_active = False
             self._fps_latched = False
+            self._fps_consecutive_hits = 0
 
     def _unload_sequence_inner(self, cur_lane, cur_hub, cur_extruder):
         afc = self.afc
@@ -2624,11 +2653,13 @@ class afcACE(afcUnit):
         """Calibrate bowden length by feeding until toolhead sensor triggers."""
         self._operation_active = True
         self._fps_latched = False
+        self._fps_consecutive_hits = 0
         try:
             return self._calibrate_bowden_inner(cur_lane, dis, tol)
         finally:
             self._operation_active = False
             self._fps_latched = False
+            self._fps_consecutive_hits = 0
 
     def _measure_bowden_distance(self, cur_lane):
         """Feed filament until toolhead sensor triggers and retract.
@@ -2686,6 +2717,7 @@ class afcACE(afcUnit):
             # at least one cycle (~100ms) with no filament present so the
             # sensor state reflects reality.
             self._fps_latched = False
+            self._fps_consecutive_hits = 0
             extruder = self._fps_extruder
             if extruder is not None:
                 extruder.tool_start_state = False
@@ -2764,11 +2796,13 @@ class afcACE(afcUnit):
 
         self._operation_active = True
         self._fps_latched = False
+        self._fps_consecutive_hits = 0
         try:
             return self._calibrate_hub_inner(cur_lane, hub_obj)
         finally:
             self._operation_active = False
             self._fps_latched = False
+            self._fps_consecutive_hits = 0
 
     def _calibrate_hub_inner(self, cur_lane, hub_obj):
         """Feed until hub sensor triggers and save dist_hub."""
@@ -2868,11 +2902,13 @@ class afcACE(afcUnit):
         """
         self._operation_active = True
         self._fps_latched = False
+        self._fps_consecutive_hits = 0
         try:
             return self._calibrate_lane_inner(cur_lane, tol)
         finally:
             self._operation_active = False
             self._fps_latched = False
+            self._fps_consecutive_hits = 0
 
     def _calibrate_lane_inner(self, cur_lane, tol):
         success, msg, distance = self._measure_bowden_distance(cur_lane)
@@ -2913,11 +2949,13 @@ class afcACE(afcUnit):
         """Calibrate TD-1 bowden length by feeding until TD-1 device detects filament."""
         self._operation_active = True
         self._fps_latched = False
+        self._fps_consecutive_hits = 0
         try:
             return self._calibrate_td1_inner(cur_lane, dis, tol)
         finally:
             self._operation_active = False
             self._fps_latched = False
+            self._fps_consecutive_hits = 0
 
     def _calibrate_td1_inner(self, cur_lane, dis, tol):
         if self._ace is None or not self._ace.connected:
