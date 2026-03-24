@@ -1506,6 +1506,8 @@ class afcACE(afcUnit):
         # Verify feed assist count increased — confirms the ACE assist
         # motor pushed filament during the load, meaning the extruder
         # gears actually engaged and pulled filament.
+        # If the count did not increase, retract 20mm via ACE and retry
+        # once to re-seat the filament against the extruder gears.
         if pre_assist_count is not None:
             try:
                 self._wait_for_ace_ready()
@@ -1522,8 +1524,64 @@ class afcACE(afcUnit):
                         self.logger.warning(
                             f"ACE load: feed_assist_count did not increase "
                             f"during load ({pre_assist_count} -> {post_assist_count}). "
-                            f"Filament may not be engaged with extruder gears."
+                            f"Retracting tool_stn + 20mm and retrying to engage extruder gears."
                         )
+                        retry_dist = 20.0
+                        retry_spd = self._quiet_speed(self.retract_speed)
+                        feed_spd = self._quiet_speed(self.feed_speed)
+                        # 1. Retract extruder by tool_stn to pull filament
+                        #    back out of the nozzle area
+                        if cur_extruder.tool_stn:
+                            self.logger.info(
+                                f"ACE load retry: retracting extruder "
+                                f"{cur_extruder.tool_stn}mm "
+                                f"@ {cur_extruder.tool_load_speed}mm/s"
+                            )
+                            afc.move_e_pos(
+                                -cur_extruder.tool_stn,
+                                cur_extruder.tool_load_speed,
+                                "tool stn retract",
+                            )
+                        # 2. ACE unwinds 20mm to pull filament back further
+                        self._wait_for_ace_ready()
+                        self._ace.unwind_filament(local_slot, retry_dist, retry_spd)
+                        self._wait_for_feed_complete(
+                            local_slot, retry_dist, retry_spd
+                        )
+                        # 3. ACE re-feeds 20mm to push filament back in
+                        self._wait_for_ace_ready()
+                        self._ace.feed_filament(local_slot, retry_dist, feed_spd)
+                        self._wait_for_feed_complete(
+                            local_slot, retry_dist, feed_spd
+                        )
+                        # 4. Re-advance extruder by tool_stn into nozzle
+                        if cur_extruder.tool_stn:
+                            self.logger.info(
+                                f"ACE load retry: advancing {cur_extruder.tool_stn}mm "
+                                f"into nozzle @ {cur_extruder.tool_load_speed}mm/s"
+                            )
+                            afc.move_e_pos(
+                                cur_extruder.tool_stn,
+                                cur_extruder.tool_load_speed,
+                                "tool stn retry",
+                            )
+                        # Re-check feed_assist_count after retry
+                        self._wait_for_ace_ready()
+                        retry_status = self._ace.get_status()
+                        retry_count = retry_status.get("feed_assist_count")
+                        if retry_count is not None:
+                            retry_delta = retry_count - post_assist_count
+                            if retry_delta > 0:
+                                self.logger.info(
+                                    f"ACE load retry: feed assist engaged {retry_delta} "
+                                    f"time(s) after retry — extruder gears engaged."
+                                )
+                            else:
+                                self.logger.warning(
+                                    f"ACE load: feed_assist_count still did not increase "
+                                    f"after retry ({post_assist_count} -> {retry_count}). "
+                                    f"Filament may not be engaged with extruder gears."
+                                )
             except Exception as e:
                 self.logger.debug(f"ACE load: could not verify feed_assist_count: {e}")
 
