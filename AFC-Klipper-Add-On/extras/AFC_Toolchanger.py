@@ -649,7 +649,7 @@ class AfcToolchanger(afcUnit):
             return None
         return detected
 
-    def _validate_detected_tool(self, expected, respond_info, raise_error):
+    def _validate_detected_tool(self, expected, raise_error):
         """Verify the expected tool is actually detected."""
         actual = self._require_detected_tool()
         if actual != expected:
@@ -679,8 +679,7 @@ class AfcToolchanger(afcUnit):
         toolhead.wait_moves()
         # Brief pause to let detection pin edge callbacks settle
         reactor.pause(reactor.monotonic() + 0.2)
-        self._validate_detected_tool(
-            expected, gcmd.respond_info, gcmd.error)
+        self._validate_detected_tool(expected, gcmd.error)
 
     def process_error(self, raise_error, message):
         """Handle toolchanger errors with proper state recovery.
