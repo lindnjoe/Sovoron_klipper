@@ -298,8 +298,6 @@ class AFCFPSBuffer:
             if led is None:
                 raise error(error_string)
 
-
-
     @property
     def extruder(self):
         """Return the active toolhead extruder.
