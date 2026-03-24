@@ -453,9 +453,15 @@ class AFCFPSBuffer:
     # Buffer enable / disable  (interface expected by AFCLane)
     # ------------------------------------------------------------------
     def enable_buffer(self, lane):
-        """Enable the FPS buffer for the given lane and start correction loop."""
+        """Enable the FPS buffer for the given lane.
+
+        For stepper-based units (BoxTurtle, etc.) this starts the proportional
+        correction timer that adjusts rotation distance.  For non-stepper units
+        (OpenAMS) the correction loop is skipped — the FPS is used purely as an
+        ADC sensor and the oams_manager handles follower control directly.
+        """
         self.current_lane = lane
-        self.enable = True
+        has_stepper = getattr(lane, 'extruder_stepper', None) is not None
 
         if self.led:
             self.afc.function.afc_led(self.led_neutral, self.led_index)
@@ -463,18 +469,16 @@ class AFCFPSBuffer:
         # Reset smoothed value to current reading
         self.smoothed_fps = self.fps_value
 
-        # Start the proportional correction timer
-        self.reactor.update_timer(self.correction_timer, self.reactor.NOW)
+        if has_stepper:
+            self.enable = True
+            # Start the proportional correction timer
+            self.reactor.update_timer(self.correction_timer, self.reactor.NOW)
 
-        # Start fault detection if configured — but only for stepper-based
-        # units.  OpenAMS (and similar non-stepper units) have their own
-        # clog/runout detection in oams_manager; running AFC's extruder-
-        # position-based fault timer on those lanes just causes errors.
-        if (self.fault_detection_enabled()
-                and getattr(lane, 'extruder_stepper', None) is not None):
-            self.start_fault_detection(0, 1.0)
+            # Start fault detection if configured
+            if self.fault_detection_enabled():
+                self.start_fault_detection(0, 1.0)
 
-        self.logger.debug(f"{self.name} FPS buffer enabled for {self.current_lane.name}")
+        self.logger.debug(f"{self.name} FPS buffer enabled for {self.current_lane.name} (correction={'active' if has_stepper else 'off/adc-only'})")
 
     def disable_buffer(self):
         """Disable the FPS buffer, reset multiplier, stop timers."""
