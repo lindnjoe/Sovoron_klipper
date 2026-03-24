@@ -1628,40 +1628,32 @@ class afcACE(afcUnit):
                 afc.gcode.run_script_from_command(afc.form_tip_cmd)
 
         # ACE lanes have no lane stepper, so all retract moves use move_e_pos
-        # (extruder motor). The extruder must retract first to clear the
-        # nozzle/gears before the ACE hardware retracts the bowden length.
+        # (extruder motor).  We split the extruder retract in two phases and
+        # overlap the ACE unwind with the second half so both motors pull
+        # together, keeping constant spool tension during unload.
         local_slot = self._get_local_slot_for_lane(cur_lane)
 
-        # Step 1: Retract filament out of the nozzle/extruder gears FIRST.
-        # This must complete before ACE unwind starts, otherwise the ACE
-        # pulls against the extruder grip and the filament catches.
-        # ACE handles its own retraction — skip buffer decompression checks
-        # and just retract tool_stn_unload to clear the extruder gears.
+        # Step 1: Retract filament halfway out of the nozzle/extruder gears.
+        # We split the retract so the ACE can start unwinding mid-retract,
+        # keeping spool tension while the extruder clears the filament.
         retract_distance = cur_extruder.tool_stn_unload
-        if retract_distance > 0:
+        half_retract = retract_distance / 2.0
+        remainder_retract = retract_distance - half_retract + 10  # +10mm margin
+
+        if half_retract > 0:
             self.logger.info(
-                f"ACE unload: extruder retract {retract_distance}mm "
-                f"@ {cur_extruder.tool_unload_speed}mm/s to clear nozzle/gears"
+                f"ACE unload: extruder retract phase 1 — {half_retract:.0f}mm "
+                f"@ {cur_extruder.tool_unload_speed}mm/s"
             )
             afc.move_e_pos(
-                retract_distance * -1,
+                half_retract * -1,
                 cur_extruder.tool_unload_speed,
-                "ACE nozzle retract", wait_tool=True
+                "ACE nozzle retract phase 1", wait_tool=True
             )
 
-        # Move past the sensor-after-extruder if configured
-        if cur_extruder.tool_sensor_after_extruder > 0:
-            afc.move_e_pos(
-                cur_extruder.tool_sensor_after_extruder * -1,
-                cur_extruder.tool_unload_speed, "After extruder"
-            )
-
-        # Step 2: Unsync from extruder now that filament is clear of the gears
-        cur_lane.unsync_to_extruder()
-
-        # Step 3: ACE hardware retracts the bowden length back toward the hub.
-        # Now that the extruder is clear, the ACE can pull freely without
-        # fighting the extruder grip.
+        # Step 2: Start ACE unwind NOW so it retracts concurrently with the
+        # remaining extruder retract.  This keeps the spool tight instead of
+        # letting slack build up while waiting for the extruder to finish.
         full_retract = self._get_retract_length(cur_lane)
         dist_hub = self._get_dist_hub(cur_lane)
         has_real_hub_pin = cur_hub.switch_pin.lower() != "virtual"
@@ -1688,12 +1680,28 @@ class afcACE(afcUnit):
             afc.error.handle_lane_failure(cur_lane, message)
             return False
 
-        # Small extruder retract while ACE unwinds to ensure filament tip
-        # is fully clear of the extruder/hotend path
-        afc.move_e_pos(
-            -10, cur_extruder.tool_unload_speed,
-            "ACE unwind assist retract", wait_tool=True
-        )
+        # Step 3: Retract the remaining stn_unload + 10mm while ACE unwinds.
+        # Both motors pull together, keeping constant tension on the filament.
+        if remainder_retract > 0:
+            self.logger.info(
+                f"ACE unload: extruder retract phase 2 — {remainder_retract:.0f}mm "
+                f"@ {cur_extruder.tool_unload_speed}mm/s (concurrent with ACE unwind)"
+            )
+            afc.move_e_pos(
+                remainder_retract * -1,
+                cur_extruder.tool_unload_speed,
+                "ACE nozzle retract phase 2", wait_tool=True
+            )
+
+        # Move past the sensor-after-extruder if configured
+        if cur_extruder.tool_sensor_after_extruder > 0:
+            afc.move_e_pos(
+                cur_extruder.tool_sensor_after_extruder * -1,
+                cur_extruder.tool_unload_speed, "After extruder"
+            )
+
+        # Unsync from extruder now that filament is clear of the gears
+        cur_lane.unsync_to_extruder()
 
         try:
             self.logger.info(
