@@ -2263,17 +2263,34 @@ class afc:
     def _cmd_AFC_M109(self, gcmd, wait=True):
         """
         This function sets the temperature of the specified extruder and waits for it to reach the target temperature.
-        Supports T (tool), S (temp), and D (deadband).
+        Supports T (tool), S (temp), D (deadband), and EXTRUDER (direct name).
+
+        EXTRUDER= targets a physical extruder by name (e.g. EXTRUDER=extruder5),
+        bypassing the T lane-map lookup. Use this in toolchanger macros where
+        T<n> would be ambiguous between lane map and physical tool number.
         """
 
         # Note: M109 is now handled natively, no longer routed through KTC
+        extruder_name = gcmd.get('EXTRUDER', None)
         toolnum  = gcmd.get_int('T', None, minval=0)
         temp     = gcmd.get_float('S', 0.0)
         deadband = gcmd.get_float('D', None)
 
         curr_extruder = self.function.get_current_extruder_obj()
 
-        if toolnum is not None:
+        if extruder_name is not None:
+            # Direct extruder name lookup — bypasses lane map and tool_number.
+            # Used by toolchanger macros where T<n> is ambiguous.
+            extruder = self.tools.get(extruder_name)
+            if extruder is not None:
+                self.logger.debug(
+                    "M109 EXTRUDER=%s: direct lookup -> %s"
+                    % (extruder_name, extruder.name))
+            else:
+                self.logger.error(
+                    "M109 EXTRUDER=%s: not found in AFC tools" % extruder_name)
+                return
+        elif toolnum is not None:
             # First try lane map lookup — this matches how T commands resolve
             # tool changes (T5 -> lane5 -> extruder4), so M109 T5 heats the
             # same extruder that a T5 tool change would use.

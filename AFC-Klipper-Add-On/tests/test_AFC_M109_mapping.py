@@ -83,15 +83,78 @@ def _make_lane(name, map_name, extruder_obj):
     return lane
 
 
-def _make_gcmd(toolnum=None, temp=250.0, deadband=None):
-    """Build a mock gcode command with T/S/D params."""
+def _make_gcmd(toolnum=None, temp=250.0, deadband=None, extruder_name=None):
+    """Build a mock gcode command with T/S/D/EXTRUDER params."""
     gcmd = MagicMock()
+    gcmd.get = MagicMock(side_effect=lambda key, default=None, **kw:
+                         extruder_name if key == 'EXTRUDER' else default)
     gcmd.get_int = MagicMock(side_effect=lambda key, default=None, **kw:
                              toolnum if key == 'T' else default)
     gcmd.get_float = MagicMock(side_effect=lambda key, default=0.0, **kw:
                                temp if key == 'S' else
                                (deadband if key == 'D' else default))
     return gcmd
+
+
+# ── EXTRUDER= direct lookup ─────────────────────────────────────────────────
+
+class TestM109ExtruderParam:
+    """EXTRUDER= parameter bypasses lane map and targets physical extruder."""
+
+    def test_extruder_param_bypasses_lane_map(self):
+        """M109 EXTRUDER=extruder5 heats extruder5 even though T5 would map to extruder4."""
+        obj = _make_afc_for_m109()
+
+        ext4, heater4 = _make_extruder("extruder4", tool_number=4)
+        ext5, heater5 = _make_extruder("extruder5", tool_number=5)
+        lane5 = _make_lane("lane5", "T5", ext4)
+        obj.lanes = {"lane5": lane5}
+        obj.tools = {"extruder4": ext4, "extruder5": ext5}
+        obj.function.get_lane_by_map = MagicMock(return_value=lane5)
+
+        pheaters = MagicMock()
+        obj.printer.lookup_object = MagicMock(return_value=pheaters)
+
+        gcmd = _make_gcmd(temp=220.0, extruder_name="extruder5")
+        obj._cmd_AFC_M109(gcmd, wait=False)
+
+        # Must heat extruder5, NOT extruder4 (which T5 lane map would give)
+        _assert_heater_was_set(pheaters, heater5, 220.0)
+
+    def test_extruder_param_unknown_name(self):
+        """M109 EXTRUDER=nonexistent should log error and not heat."""
+        obj = _make_afc_for_m109()
+        obj.tools = {}
+
+        pheaters = MagicMock()
+        obj.printer.lookup_object = MagicMock(return_value=pheaters)
+
+        gcmd = _make_gcmd(temp=200.0, extruder_name="nonexistent")
+        obj._cmd_AFC_M109(gcmd, wait=False)
+
+        pheaters.set_temperature.assert_not_called()
+        errors = [m for level, m in obj.logger.messages if level == "error"]
+        assert any("nonexistent" in e for e in errors)
+
+    def test_extruder_param_takes_priority_over_t(self):
+        """When both EXTRUDER= and T= are provided, EXTRUDER= wins."""
+        obj = _make_afc_for_m109()
+
+        ext4, heater4 = _make_extruder("extruder4", tool_number=4)
+        ext5, heater5 = _make_extruder("extruder5", tool_number=5)
+        lane5 = _make_lane("lane5", "T5", ext4)
+        obj.lanes = {"lane5": lane5}
+        obj.tools = {"extruder4": ext4, "extruder5": ext5}
+        obj.function.get_lane_by_map = MagicMock(return_value=lane5)
+
+        pheaters = MagicMock()
+        obj.printer.lookup_object = MagicMock(return_value=pheaters)
+
+        # Both EXTRUDER=extruder5 and T=5 — EXTRUDER should win
+        gcmd = _make_gcmd(toolnum=5, temp=230.0, extruder_name="extruder5")
+        obj._cmd_AFC_M109(gcmd, wait=False)
+
+        _assert_heater_was_set(pheaters, heater5, 230.0)
 
 
 # ── Lane map priority ───────────────────────────────────────────────────────
