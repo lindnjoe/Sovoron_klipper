@@ -136,6 +136,62 @@ class TestM109ExtruderParam:
         errors = [m for level, m in obj.logger.messages if level == "error"]
         assert any("nonexistent" in e for e in errors)
 
+    def test_extruder_param_strips_equals_prefix(self):
+        """Klipper M-code parsing adds '=' prefix — should be stripped."""
+        obj = _make_afc_for_m109()
+        ext5, heater5 = _make_extruder("extruder5", tool_number=5)
+        obj.tools = {"extruder5": ext5}
+
+        pheaters = MagicMock()
+        obj.printer.lookup_object = MagicMock(return_value=pheaters)
+
+        gcmd = _make_gcmd(temp=220.0, extruder_name="=extruder5")
+        obj._cmd_AFC_M109(gcmd, wait=False)
+
+        _assert_heater_was_set(pheaters, heater5, 220.0)
+
+    def test_extruder_param_number_converts_to_name(self):
+        """EXTRUDER=5 should resolve to extruder5."""
+        obj = _make_afc_for_m109()
+        ext5, heater5 = _make_extruder("extruder5", tool_number=5)
+        obj.tools = {"extruder5": ext5}
+
+        pheaters = MagicMock()
+        obj.printer.lookup_object = MagicMock(return_value=pheaters)
+
+        gcmd = _make_gcmd(temp=220.0, extruder_name="5")
+        obj._cmd_AFC_M109(gcmd, wait=False)
+
+        _assert_heater_was_set(pheaters, heater5, 220.0)
+
+    def test_extruder_param_zero_converts_to_extruder(self):
+        """EXTRUDER=0 should resolve to 'extruder' (base extruder)."""
+        obj = _make_afc_for_m109()
+        ext0, heater0 = _make_extruder("extruder", tool_number=0)
+        obj.tools = {"extruder": ext0}
+
+        pheaters = MagicMock()
+        obj.printer.lookup_object = MagicMock(return_value=pheaters)
+
+        gcmd = _make_gcmd(temp=200.0, extruder_name="0")
+        obj._cmd_AFC_M109(gcmd, wait=False)
+
+        _assert_heater_was_set(pheaters, heater0, 200.0)
+
+    def test_extruder_param_equals_plus_number(self):
+        """EXTRUDER==5 (klipper M-code double-equals) should resolve to extruder5."""
+        obj = _make_afc_for_m109()
+        ext5, heater5 = _make_extruder("extruder5", tool_number=5)
+        obj.tools = {"extruder5": ext5}
+
+        pheaters = MagicMock()
+        obj.printer.lookup_object = MagicMock(return_value=pheaters)
+
+        gcmd = _make_gcmd(temp=220.0, extruder_name="=5")
+        obj._cmd_AFC_M109(gcmd, wait=False)
+
+        _assert_heater_was_set(pheaters, heater5, 220.0)
+
     def test_extruder_param_takes_priority_over_t(self):
         """When both EXTRUDER= and T= are provided, EXTRUDER= wins."""
         obj = _make_afc_for_m109()
