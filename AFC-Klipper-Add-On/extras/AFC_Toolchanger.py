@@ -344,58 +344,65 @@ class AfcToolchanger(afcUnit):
             'dropoff_tool': None,
             'pickup_tool': select_tool.name if select_tool else None,
         }
-        if should_run_init:
-            self.status = STATUS_INITIALIZING
-            self._run_gcode('initialize_gcode', self.initialize_gcode, extra_context)
-
-        inferred = select_tool
-        if inferred is None and self.has_detection:
-            # Brief pause to let button callbacks settle.  Docked tools
-            # have pins HIGH which triggers a callback (setting ABSENT).
-            # The shuttle tool's pin stays LOW — no callback fires, so it
-            # keeps the default PRESENT.  The pause ensures docked-tool
-            # callbacks have arrived before we check.
-            reactor = self.printer.get_reactor()
-            pause_end = reactor.monotonic() + 0.5
-            reactor.pause(pause_end)
-            inferred = self._require_detected_tool()
-
-        # Safety: never trust an inferred tool unless its detection pin
-        # positively confirms it is on the shuttle.  This prevents
-        # activating a tool from stale state or unsampled pins.
-        if inferred and self.has_detection:
-            if inferred.detect_state != DETECT_PRESENT:
-                self.logger.info(
-                    "Rejecting inferred tool %s during init: "
-                    "detection pin is %d (not PRESENT)"
-                    % (inferred.name, inferred.detect_state))
-                inferred = None
-
-        if self.require_tool_present and inferred is None and self.has_detection:
+        try:
             if should_run_init:
+                self.status = STATUS_INITIALIZING
+                self._run_gcode('initialize_gcode', self.initialize_gcode, extra_context)
+
+            inferred = select_tool
+            if inferred is None and self.has_detection:
+                # Brief pause to let button callbacks settle.  Docked tools
+                # have pins HIGH which triggers a callback (setting ABSENT).
+                # The shuttle tool's pin stays LOW — no callback fires, so it
+                # keeps the default PRESENT.  The pause ensures docked-tool
+                # callbacks have arrived before we check.
+                reactor = self.printer.get_reactor()
+                pause_end = reactor.monotonic() + 0.5
+                reactor.pause(pause_end)
+                inferred = self._require_detected_tool()
+
+            # Safety: never trust an inferred tool unless its detection pin
+            # positively confirms it is on the shuttle.  This prevents
+            # activating a tool from stale state or unsampled pins.
+            if inferred and self.has_detection:
+                if inferred.detect_state != DETECT_PRESENT:
+                    self.logger.info(
+                        "Rejecting inferred tool %s during init: "
+                        "detection pin is %d (not PRESENT)"
+                        % (inferred.name, inferred.detect_state))
+                    inferred = None
+
+            if self.require_tool_present and inferred is None and self.has_detection:
+                if should_run_init:
+                    self.status = STATUS_ERROR
+                    self.error_message = 'No tool detected on shuttle during initialization'
+                    raise self.gcode.error(
+                        '%s: %s' % (self.config.get_name(), self.error_message))
+
+            if inferred or not self.require_tool_present or self.has_detection:
+                self._configure_toolhead_for_tool(inferred)
+                if inferred:
+                    self._run_gcode('after_change_gcode',
+                                   inferred.after_change_gcode, extra_context)
+                    self.gcode_transform.tool = inferred
+
+            if should_run_init:
+                if self.status == STATUS_INITIALIZING:
+                    self.status = STATUS_READY
+                    self.logger.info(
+                        '%s initialized, active %s' % (
+                            self.config.get_name(),
+                            self.active_tool.name if self.active_tool else None))
+                else:
+                    raise self.gcode.error(
+                        '%s failed to initialize: %s' % (
+                            self.config.get_name(), self.error_message))
+        except Exception:
+            # Ensure status doesn't stay stuck at INITIALIZING on unexpected errors
+            if should_run_init and self.status == STATUS_INITIALIZING:
                 self.status = STATUS_ERROR
-                self.error_message = 'No tool detected on shuttle during initialization'
-                raise self.gcode.error(
-                    '%s: %s' % (self.config.get_name(), self.error_message))
-
-        if inferred or not self.require_tool_present or self.has_detection:
-            self._configure_toolhead_for_tool(inferred)
-            if inferred:
-                self._run_gcode('after_change_gcode',
-                               inferred.after_change_gcode, extra_context)
-                self.gcode_transform.tool = inferred
-
-        if should_run_init:
-            if self.status == STATUS_INITIALIZING:
-                self.status = STATUS_READY
-                self.logger.info(
-                    '%s initialized, active %s' % (
-                        self.config.get_name(),
-                        self.active_tool.name if self.active_tool else None))
-            else:
-                raise self.gcode.error(
-                    '%s failed to initialize: %s' % (
-                        self.config.get_name(), self.error_message))
+                self.error_message = 'Exception during initialization'
+            raise
 
     def select_tool(self, gcmd, tool, restore_axis):
         """Core tool change: dropoff current, pickup new, manage offsets."""
@@ -452,11 +459,15 @@ class AfcToolchanger(afcUnit):
             else:
                 self.logger.info('Tool unselected')
 
-        except gcmd.error:
+        except Exception:
             if self.status == STATUS_ERROR:
                 pass  # process_error already handled recovery
-            else:
-                raise
+            elif self.status == STATUS_CHANGING:
+                # Unexpected exception — force status back so the
+                # toolchanger doesn't get permanently stuck.
+                self.status = STATUS_ERROR
+                self.error_message = 'Unexpected error during tool change'
+            raise
 
     def system_Test(self, cur_lane: AFCLane, delay: float, assignTcmd: str, enable_movement: bool):
         msg = ""
@@ -596,7 +607,7 @@ class AfcToolchanger(afcUnit):
         self.active_tool = tool
         # Switch active tool probe for optotap/tool_probe setups
         if self.tool_probe_endstop:
-            probe = tool.tool_probe if tool else None
+            probe = getattr(tool, 'tool_probe', None) if tool else None
             self.tool_probe_endstop.set_active_probe(probe)
         if self.active_tool:
             self.active_tool.activate_tool()
@@ -695,24 +706,28 @@ class AfcToolchanger(afcUnit):
         self.error_message = message
 
         if self.error_gcode:
-            extra_context = {}
-            if self.last_change_gcode_position is not None:
-                start_position = self._position_with_tool_offset(
-                    self.last_change_gcode_position,
-                    self.last_change_pickup_tool)
-                extra_context = {
-                    'start_position': self._position_to_xyz(
-                        start_position, 'xyz'),
-                    'restore_position': self._position_to_xyz(
-                        start_position,
-                        self.last_change_restore_axis or 'XYZ'),
-                    'pickup_tool': self.last_change_pickup_tool,
-                }
-                # Restore gcode state without moving so error_gcode
-                # can run PAUSE and capture the correct resume position.
-                self.gcode.run_script_from_command(
-                    "RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0")
-            self._run_gcode('error_gcode', self.error_gcode, extra_context)
+            try:
+                extra_context = {}
+                if self.last_change_gcode_position is not None:
+                    start_position = self._position_with_tool_offset(
+                        self.last_change_gcode_position,
+                        self.last_change_pickup_tool)
+                    extra_context = {
+                        'start_position': self._position_to_xyz(
+                            start_position, 'xyz'),
+                        'restore_position': self._position_to_xyz(
+                            start_position,
+                            self.last_change_restore_axis or 'XYZ'),
+                        'pickup_tool': self.last_change_pickup_tool,
+                    }
+                    # Restore gcode state without moving so error_gcode
+                    # can run PAUSE and capture the correct resume position.
+                    self.gcode.run_script_from_command(
+                        "RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0")
+                self._run_gcode('error_gcode', self.error_gcode, extra_context)
+            except Exception as e:
+                self.logger.error(
+                    "error_gcode failed (original error: %s): %s" % (message, e))
 
         if raise_error:
             raise raise_error(message)
@@ -825,40 +840,42 @@ class AfcToolchanger(afcUnit):
         self._increase_unselect()
         self.afc.function.log_toolhead_pos("Before toolswap: ")
 
-        self.afc.afcDeltaTime.log_with_time("Performing tool swap")
+        try:
+            self.afc.afcDeltaTime.log_with_time("Performing tool swap")
 
-        if lane.extruder_obj.custom_tool_swap:
-            self.logger.info(f"Running custom select: {lane.extruder_obj.custom_tool_swap}")
-            self.afc.gcode.run_script_from_command(f"{lane.extruder_obj.custom_tool_swap}")
-        else:
-            # Use native toolchanger engine: SELECT_TOOL handles dropoff/pickup/offsets
-            tool_index = lane.extruder_obj.tool_number
-            if tool_index < 0:
-                name = lane.extruder_obj.name
-                tool_index = 0 if name == "extruder" else int(name.replace("extruder", ""))
+            if lane.extruder_obj.custom_tool_swap:
+                self.logger.info(f"Running custom select: {lane.extruder_obj.custom_tool_swap}")
+                self.afc.gcode.run_script_from_command(f"{lane.extruder_obj.custom_tool_swap}")
+            else:
+                # Use native toolchanger engine: SELECT_TOOL handles dropoff/pickup/offsets
+                tool_index = lane.extruder_obj.tool_number
+                if tool_index < 0:
+                    name = lane.extruder_obj.name
+                    tool_index = 0 if name == "extruder" else int(name.replace("extruder", ""))
 
-            self.afc.gcode.run_script_from_command(
-                'SELECT_TOOL T={}'.format(tool_index))
+                self.afc.gcode.run_script_from_command(
+                    'SELECT_TOOL T={}'.format(tool_index))
 
-        # Activate klipper extruder and sync AFC lane state (buffer, stepper, etc.)
-        self.afc.function._handle_activate_extruder(0, lane=lane)
+            # Activate klipper extruder and sync AFC lane state (buffer, stepper, etc.)
+            self.afc.function._handle_activate_extruder(0, lane=lane)
 
-        self.afc.toolhead.wait_moves()
-        self.afc.afcDeltaTime.log_with_time("Tool swap done", debug=False)
-        if self.afc.afc_stats.average_tool_swap_time:
-            self.afc.afc_stats.average_tool_swap_time.average_time(
-                self.afc.afcDeltaTime.delta_time)
-        self.afc.current_state = State.IDLE
-        # Re-capture AFC's position state from gcode_move after the swap.
-        # SELECT_TOOL already restored the gcode state and applied the new
-        # tool's offset transform, so these values are now correct for the
-        # new tool's coordinate system.
-        self.afc.base_position    = list(self.afc.gcode_move.base_position)
-        self.afc.homing_position  = list(self.afc.gcode_move.homing_position)
-        self.afc.last_gcode_position = list(self.afc.gcode_move.last_position)
+            self.afc.toolhead.wait_moves()
+            self.afc.afcDeltaTime.log_with_time("Tool swap done", debug=False)
+            if self.afc.afc_stats.average_tool_swap_time:
+                self.afc.afc_stats.average_tool_swap_time.average_time(
+                    self.afc.afcDeltaTime.delta_time)
+            # Re-capture AFC's position state from gcode_move after the swap.
+            # SELECT_TOOL already restored the gcode state and applied the new
+            # tool's offset transform, so these values are now correct for the
+            # new tool's coordinate system.
+            self.afc.base_position    = list(self.afc.gcode_move.base_position)
+            self.afc.homing_position  = list(self.afc.gcode_move.homing_position)
+            self.afc.last_gcode_position = list(self.afc.gcode_move.last_position)
 
-        self.afc.function.log_toolhead_pos("After toolswap: ")
-        lane.extruder_obj.estats.tool_selected.increase_count()
+            self.afc.function.log_toolhead_pos("After toolswap: ")
+            lane.extruder_obj.estats.tool_selected.increase_count()
+        finally:
+            self.afc.current_state = State.IDLE
 
     cmd_AFC_SET_TOOLHEAD_LED_help = "Turns on leds for toolhead specified by mapping, does not affect status led if status_led_idx variable is provided"
     cmd_AFC_SET_TOOLHEAD_LED_options = {
@@ -950,7 +967,8 @@ class FanSwitcher:
             return
         speed_to_set = self.pending_speed
         if self.active_fan:
-            speed_to_set = self.active_fan.get_status(0)['speed']
+            curtime = self.printer.get_reactor().monotonic()
+            speed_to_set = self.active_fan.get_status(curtime)['speed']
             self.gcode.run_script_from_command(
                 "SET_FAN_SPEED FAN='%s' SPEED=%s" % (
                     self.active_fan.fan_name, 0.0))
