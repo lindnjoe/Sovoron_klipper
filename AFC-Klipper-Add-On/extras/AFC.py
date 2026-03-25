@@ -2282,6 +2282,9 @@ class afc:
             lane = self.function.get_lane_by_map(map)
             if lane is not None:
                 extruder = lane.extruder_obj
+                self.logger.debug(
+                    "M109 T%d: lane map %s -> %s -> %s"
+                    % (toolnum, map, lane.name, extruder.name))
 
                 # Checking if slicer is trying to set temperature(ooze prevention) for another lane
                 #   thats connected to the currently loaded extruder. Bypass this check if current
@@ -2309,6 +2312,9 @@ class afc:
                 for tool_obj in self.tools.values():
                     if getattr(tool_obj, 'tool_number', -1) == toolnum:
                         extruder = tool_obj
+                        self.logger.debug(
+                            "M109 T%d: tool_number fallback -> %s"
+                            % (toolnum, extruder.name))
                         break
 
             if extruder is not None:
@@ -2318,6 +2324,9 @@ class afc:
                 return
         else:
             extruder = self.toolhead.get_extruder()
+            self.logger.debug(
+                "M109 (no T param): using current extruder %s"
+                % getattr(extruder, 'name', extruder))
 
         # Auto-fill deadband from extruder config when D is not specified
         if deadband is None and self.deadband_auto and hasattr(extruder, 'deadband'):
