@@ -334,3 +334,14 @@ class TestBufferToolheadLoadCheck:
         call_args = lane.move.call_args[0]
         assert result is True
         assert call_args[0] == (SIDE_EFFECT_DIST * MoveDirection.NEG)
+
+
+# ── abort_load ───────────────────────────────────────────────────────────────
+
+class TestAbortLoad:
+    def test_base_abort_load_is_noop(self):
+        """Base unit abort_load() should be a no-op (not raise)."""
+        unit = _make_unit()
+        lane = MagicMock()
+        # Should not raise
+        unit.abort_load(lane)

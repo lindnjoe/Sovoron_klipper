@@ -1056,6 +1056,28 @@ class afcAMS(afcUnit):
         )
         self.logger.info(message)
 
+    def abort_load(self, cur_lane):
+        """Cancel an in-progress OpenAMS load operation.
+
+        Sends load_spool_cancel() to stop the hardware motor, waits for
+        the firmware ACK, and syncs Klipper-side state so that a subsequent
+        unload_spool() can proceed correctly.
+        """
+        try:
+            spool_index = self._get_openams_spool_index(cur_lane)
+            if spool_index is not None:
+                self.logger.info(
+                    "Aborting OpenAMS load for %s (spool %d)"
+                    % (cur_lane.name, spool_index))
+                self._cancel_and_mark_loaded(spool_index, cur_lane.name)
+            else:
+                self.logger.warning(
+                    "abort_load: could not resolve spool index for %s"
+                    % cur_lane.name)
+        except Exception as e:
+            self.logger.error(
+                "abort_load failed for %s: %s" % (cur_lane.name, e))
+
     def prep_load(self, lane):
         """No-op for OpenAMS: hardware drives filament to the load sensor directly."""
 

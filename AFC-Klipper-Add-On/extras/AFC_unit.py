@@ -628,6 +628,15 @@ class afcUnit:
     def calibration_lane_message(self) -> str:
         return ""
 
+    def abort_load(self, cur_lane):
+        """Cancel any in-progress load operation on the hardware.
+
+        Called by error handlers before cleanup so that unit-specific hardware
+        (e.g. OpenAMS motors) is stopped before AFC proceeds with error recovery.
+        Override in subclass for hardware-specific cancellation.
+        """
+        pass
+
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
         """Override in subclass for custom load logic. Return non-None to skip default AFC load."""
         return None

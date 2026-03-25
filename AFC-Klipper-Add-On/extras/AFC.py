@@ -1413,6 +1413,7 @@ class afc:
                 # Check for error and return, if error state is set then AFC tried pausing
                 # during the homing
                 if warn == AFCMoveWarning.ERROR:
+                    cur_lane.unit_obj.abort_load(cur_lane)
                     self.error.AFC_error("Homing error occurred when trying to move to"\
                                          f" hub sensor for {cur_lane.name}", pause=False)
                     return False
@@ -1431,6 +1432,7 @@ class afc:
                 # Check for error and return, if error state is set then AFC tried pausing
                 # during the homing
                 if warn == AFCMoveWarning.ERROR:
+                    cur_lane.unit_obj.abort_load(cur_lane)
                     self.error.AFC_error("Homing error occurred when trying to short move to"\
                                          f" hub sensor for {cur_lane.name}", pause=False)
                     return False
@@ -1454,6 +1456,7 @@ class afc:
                 # Check for error and return, if error state is set then AFC tried pausing
                 # during the homing
                 if warn == AFCMoveWarning.ERROR:
+                    cur_lane.unit_obj.abort_load(cur_lane)
                     self.error.AFC_error("Homing error occurred when trying to move to"\
                                          f" toolhead for {cur_lane.name}", pause=False)
                     return False
@@ -1480,6 +1483,7 @@ class afc:
                     # Check for error and return, if error state is set then AFC tried pausing
                     # during the homing
                     if warn == AFCMoveWarning.ERROR:
+                        cur_lane.unit_obj.abort_load(cur_lane)
                         self.error.AFC_error("Homing error occurred when trying to slow move to"\
                                              f" toolhead for {cur_lane.name}", pause=False)
                         return False

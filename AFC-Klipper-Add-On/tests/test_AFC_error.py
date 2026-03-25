@@ -308,6 +308,37 @@ class TestHandleLaneFailure:
         assert "lane2" in called_msg
         assert "overheated" in called_msg
 
+    def test_calls_abort_load_before_disable(self):
+        """abort_load() should be called before stepper disable."""
+        from extras.AFC_lane import AFCLaneState
+        err, afc = _make_afc_error()
+        err.AFC_error = MagicMock()
+        cur_lane = MagicMock()
+        cur_lane.name = "lane1"
+        cur_lane.led_index = "1"
+        call_order = []
+        cur_lane.unit_obj.abort_load = MagicMock(
+            side_effect=lambda l: call_order.append("abort_load"))
+        cur_lane.do_enable = MagicMock(
+            side_effect=lambda v: call_order.append("do_enable"))
+        err.handle_lane_failure(cur_lane, "stuck", pause=False)
+        assert call_order == ["abort_load", "do_enable"]
+
+    def test_abort_load_exception_does_not_block_failure(self):
+        """If abort_load() raises, handle_lane_failure should still complete."""
+        from extras.AFC_lane import AFCLaneState
+        err, afc = _make_afc_error()
+        err.AFC_error = MagicMock()
+        cur_lane = MagicMock()
+        cur_lane.name = "lane1"
+        cur_lane.led_index = "1"
+        cur_lane.unit_obj.abort_load = MagicMock(
+            side_effect=RuntimeError("hardware not responding"))
+        err.handle_lane_failure(cur_lane, "jammed", pause=False)
+        # Should still complete — stepper disabled and status set
+        cur_lane.do_enable.assert_called_once_with(False)
+        assert cur_lane.status == AFCLaneState.ERROR
+
 
 # ── AFC_error (the method) ────────────────────────────────────────────────────
 
