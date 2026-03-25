@@ -2279,6 +2279,13 @@ class afc:
         curr_extruder = self.function.get_current_extruder_obj()
 
         if extruder_name is not None:
+            # Klipper single-letter commands (M109) parse parameter values
+            # with a leading '=' for backwards compatibility.
+            extruder_name = extruder_name.lstrip('=')
+            # If just a number was passed (e.g. EXTRUDER=5), prepend 'extruder'
+            if extruder_name.isdigit():
+                extruder_name = ("extruder" if extruder_name == "0"
+                                 else "extruder" + extruder_name)
             # Direct extruder name lookup — bypasses lane map and tool_number.
             # Used by toolchanger macros where T<n> is ambiguous.
             extruder = self.tools.get(extruder_name)
