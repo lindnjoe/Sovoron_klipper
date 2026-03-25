@@ -47,6 +47,9 @@
     "selected_strips": null
   },
   "log_path": "/tmp/helixscreen.log",
+  "motion": {
+    "jog_mode": 1
+  },
   "plugin_install_declined": true,
   "printer": {
     "leds": {
@@ -168,7 +171,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-25T15:07:49Z"
+          "timestamp": "2026-03-25T20:19:25Z"
         },
         "optional": []
       },
