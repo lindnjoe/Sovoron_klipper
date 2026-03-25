@@ -2313,6 +2313,31 @@ class afcACE(afcUnit):
             slot_index, retract_length, retract_spd
         )
 
+    # ---- Abort / Cleanup ----
+
+    def abort_load(self, cur_lane):
+        """Cancel any in-progress ACE feed operation and stop feed assist.
+
+        Sends stop commands to the ACE serial driver so that motors don't
+        remain active after a load failure.  Without this the ACE stays
+        'busy/feeding' and blocks subsequent operations.
+        """
+        ace = self._ace
+        if ace is None or not ace.connected:
+            return
+        slot = self._get_local_slot_for_lane(cur_lane)
+        if slot < 0:
+            return
+        try:
+            self.logger.info(
+                "Aborting ACE load for %s (slot %d)" % (cur_lane.name, slot))
+            ace.stop_feed_filament(slot)
+            ace.stop_feed_assist(slot)
+            self._feed_assist_active.discard(slot)
+        except Exception as e:
+            self.logger.error(
+                "abort_load failed for %s: %s" % (cur_lane.name, e))
+
     # ---- No-Op / Unsupported Operations ----
 
     def prep_load(self, lane):
