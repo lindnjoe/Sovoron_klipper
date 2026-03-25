@@ -325,7 +325,14 @@ class MockReactor:
         pass
 
 
+class MockGcodeError(Exception):
+    """Gcode error type used by MockGcode.error()."""
+    pass
+
+
 class MockGcode:
+    error = MockGcodeError
+
     def __init__(self):
         self.output_callbacks = []
         self._commands = {}
@@ -343,6 +350,11 @@ class MockGcode:
 
     def respond_raw(self, msg):
         pass
+
+    def create_gcode_command(self, command, commandline, params):
+        gcmd = MagicMock()
+        gcmd.get_commandline.return_value = commandline
+        return gcmd
 
 
 class MockLogger:
