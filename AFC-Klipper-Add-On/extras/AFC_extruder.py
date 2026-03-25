@@ -919,8 +919,11 @@ class AFCExtruder:
         if self.tc_unit_name is None:
             return True
 
-        # Use native detect_state if available — trust the hardware pin only
+        # Use native detect_state if available
         if self.detect_pin_name is not None:
+            if self.tc_unit_obj:
+                return (self.detect_state == 1 or
+                        self.tc_unit_obj.active_tool == self)
             return self.detect_state == 1
 
         # Toolchanger configured but no detection pin (custom swap/unselect macros)
