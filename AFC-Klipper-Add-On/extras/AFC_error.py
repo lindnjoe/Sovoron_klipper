@@ -290,6 +290,12 @@ class afcError:
 
     handle_lane_failure_help = "Get load errors, stop stepper and respond error"
     def handle_lane_failure(self, cur_lane, message, pause=True):
+        # Abort any in-progress hardware operation (e.g. OpenAMS motor)
+        # before disabling the stepper so the unit can clean up properly.
+        try:
+            cur_lane.unit_obj.abort_load(cur_lane)
+        except Exception:
+            pass
         # Disable the stepper for this lane
         cur_lane.do_enable(False)
         cur_lane.status = AFCLaneState.ERROR
