@@ -355,6 +355,137 @@ class AFC_moonraker:
             self.logger.info(f"SpoolID: {id} not found")
         return resp
 
+    def _spoolman_proxy(self, method, path, body=None, query=None, print_error=True):
+        """Send a request through Moonraker's Spoolman proxy.
+
+        :param method: HTTP method (GET, POST, PATCH, DELETE)
+        :param path: Spoolman API path (e.g. /v1/spool)
+        :param body: Optional dict for request body (POST/PATCH)
+        :param query: Optional query string (e.g. "material=PLA&limit=10")
+        :param print_error: Whether to log errors to console
+        :return: Response dict or None on error
+        """
+        payload = {
+            "request_method": method,
+            "path": path,
+        }
+        if body is not None:
+            payload["body"] = body
+        if query is not None:
+            payload["query"] = query
+        spool_url = urljoin(self.host, 'server/spoolman/proxy')
+        req = Request(
+            spool_url,
+            json.dumps(payload).encode('utf-8'),
+            headers={"Content-Type": "application/json"},
+        )
+        return self._get_results(req, print_error=print_error)
+
+    def search_filaments(self, vendor_name=None, material=None, article_number=None):
+        """Search Spoolman for filaments matching the given criteria.
+
+        :param vendor_name: Vendor name to filter by
+        :param material: Material type to filter by (e.g. PLA)
+        :param article_number: Article/SKU number to filter by
+        :return: List of filament dicts, or empty list on error
+        """
+        params = []
+        if vendor_name:
+            params.append(f"vendor.name={quote(vendor_name)}")
+        if material:
+            params.append(f"material={quote(material)}")
+        if article_number:
+            params.append(f"article_number={quote(article_number)}")
+        query = "&".join(params) if params else ""
+        result = self._spoolman_proxy("GET", "/v1/filament", query=query, print_error=False)
+        if isinstance(result, list):
+            return result
+        return []
+
+    def create_vendor(self, name):
+        """Create a vendor in Spoolman.
+
+        :param name: Vendor name
+        :return: Vendor dict with 'id' field, or None on error
+        """
+        body = {"name": name}
+        return self._spoolman_proxy("POST", "/v1/vendor", body=body)
+
+    def search_vendors(self, name):
+        """Search Spoolman for vendors by name.
+
+        :param name: Vendor name to search for
+        :return: List of vendor dicts, or empty list on error
+        """
+        query = f"name={quote(name)}"
+        result = self._spoolman_proxy("GET", "/v1/vendor", query=query, print_error=False)
+        if isinstance(result, list):
+            return result
+        return []
+
+    def get_or_create_vendor(self, name):
+        """Find an existing vendor by name or create a new one.
+
+        :param name: Vendor name
+        :return: Vendor dict with 'id' field, or None on error
+        """
+        vendors = self.search_vendors(name)
+        for v in vendors:
+            if v.get("name", "").lower() == name.lower():
+                return v
+        return self.create_vendor(name)
+
+    def create_filament(self, name=None, vendor_id=None, material=None,
+                        density=1.24, diameter=1.75, color_hex=None,
+                        settings_extruder_temp=None, settings_bed_temp=None,
+                        weight=None, spool_weight=None, article_number=None):
+        """Create a filament in Spoolman.
+
+        :return: Filament dict with 'id' field, or None on error
+        """
+        body = {
+            "density": density,
+            "diameter": diameter,
+        }
+        if name:
+            body["name"] = name
+        if vendor_id:
+            body["vendor_id"] = vendor_id
+        if material:
+            body["material"] = material
+        if color_hex:
+            body["color_hex"] = color_hex
+        if settings_extruder_temp is not None:
+            body["settings_extruder_temp"] = settings_extruder_temp
+        if settings_bed_temp is not None:
+            body["settings_bed_temp"] = settings_bed_temp
+        if weight is not None:
+            body["weight"] = weight
+        if spool_weight is not None:
+            body["spool_weight"] = spool_weight
+        if article_number:
+            body["article_number"] = article_number
+        return self._spoolman_proxy("POST", "/v1/filament", body=body)
+
+    def create_spool(self, filament_id, remaining_weight=None, initial_weight=None,
+                     spool_weight=None):
+        """Create a spool in Spoolman.
+
+        :param filament_id: ID of the filament this spool uses
+        :param remaining_weight: Remaining filament weight in grams
+        :param initial_weight: Initial filament weight in grams
+        :param spool_weight: Empty spool weight in grams
+        :return: Spool dict with 'id' field, or None on error
+        """
+        body = {"filament_id": filament_id}
+        if remaining_weight is not None:
+            body["remaining_weight"] = remaining_weight
+        if initial_weight is not None:
+            body["initial_weight"] = initial_weight
+        if spool_weight is not None:
+            body["spool_weight"] = spool_weight
+        return self._spoolman_proxy("POST", "/v1/spool", body=body)
+
     def check_for_td1(self):
         """
         Checks moonrakers server/config endpoint to see if user has `[td1]` and `[lane_data]`

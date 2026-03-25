@@ -731,10 +731,7 @@ class afcACE(afcUnit):
             try:
                 info = self._ace.get_filament_info(slot)
                 if isinstance(info, dict):
-                    # Update material/color from RFID data, preserve status
-                    # (status comes from get_status, not get_filament_info)
-                    self._slot_inventory[slot]["material"] = info.get("material", info.get("type", ""))
-                    self._slot_inventory[slot]["color"] = info.get("color", [0, 0, 0])
+                    self._store_slot_rfid(slot, info)
             except Exception as e:
                 self.logger.debug(
                     f"ACE {self.name}: slot {slot} inventory query failed: {e}"
@@ -746,6 +743,21 @@ class afcACE(afcUnit):
             self._slot_inventory[slot]["material"] = ""
             self._slot_inventory[slot]["color"] = [0, 0, 0]
 
+    def _store_slot_rfid(self, slot, info):
+        """Store all RFID fields from a get_filament_info response into the slot cache."""
+        inv = self._slot_inventory[slot]
+        inv["material"] = info.get("material", info.get("type", ""))
+        inv["color"] = info.get("color", [0, 0, 0])
+        inv["sku"] = info.get("sku", "")
+        inv["brand"] = info.get("brand", "")
+        inv["diameter"] = info.get("diameter", 1.75)
+        inv["total_weight"] = info.get("total", 0)
+        inv["current_weight"] = info.get("current", 0)
+        ext_temp = info.get("extruder_temp", {})
+        bed_temp = info.get("hotbed_temp", {})
+        inv["extruder_temp_max"] = ext_temp.get("max") if isinstance(ext_temp, dict) else None
+        inv["bed_temp_max"] = bed_temp.get("max") if isinstance(bed_temp, dict) else None
+
     def _refresh_slot_inventory(self, slot):
         """Fetch fresh RFID data for a single slot from ACE hardware."""
         if self._ace is None or not self._ace.connected:
@@ -755,8 +767,7 @@ class afcACE(afcUnit):
         try:
             info = self._ace.get_filament_info(slot)
             if isinstance(info, dict):
-                self._slot_inventory[slot]["material"] = info.get("material", info.get("type", ""))
-                self._slot_inventory[slot]["color"] = info.get("color", [0, 0, 0])
+                self._store_slot_rfid(slot, info)
         except Exception as e:
             self.logger.debug(
                 f"ACE {self.name}: slot {slot} RFID refresh failed: {e}"
@@ -781,6 +792,10 @@ class afcACE(afcUnit):
                 # values (from Spoolman, manual set, or previous RFID read).
                 # Never overwrite existing assignments.
                 self._apply_slot_filament_defaults(lane, slot_info)
+
+                # On startup, sync RFID to Spoolman for lanes without a spool_id
+                if slot_loaded:
+                    self._sync_rfid_to_spoolman(lane, slot_info)
 
     def _apply_slot_filament_defaults(self, lane, slot_info):
         """Apply filament material/color to a lane if not already set.
@@ -821,6 +836,101 @@ class afcACE(afcUnit):
                 lane.color = default_color
         if not getattr(lane, "weight", 0):
             lane.weight = 1000
+
+    def _sync_rfid_to_spoolman(self, lane, slot_info):
+        """Sync ACE RFID tag data to Spoolman: find or create filament + spool.
+
+        Uses the RFID SKU as article_number to match existing filaments.
+        If no match is found, creates a new vendor (if needed), filament,
+        and spool in Spoolman, then assigns the spool_id to the lane.
+
+        Only runs when Spoolman is configured and the lane has no spool_id.
+        """
+        if self.afc.spoolman is None or self.afc.moonraker is None:
+            return
+        # Skip if lane already has a spool assigned
+        if getattr(lane, "spool_id", None) not in (None, "", 0):
+            return
+        sku = slot_info.get("sku", "")
+        if not sku:
+            return
+
+        moonraker = self.afc.moonraker
+        brand = slot_info.get("brand", "")
+        material = slot_info.get("material", "")
+        color_rgb = slot_info.get("color", [0, 0, 0])
+        color_hex = self._ace_color_to_hex(color_rgb).lstrip("#") if color_rgb != [0, 0, 0] else None
+        diameter = slot_info.get("diameter", 1.75)
+        total_weight = slot_info.get("total_weight", 0)
+        ext_temp = slot_info.get("extruder_temp_max")
+        bed_temp = slot_info.get("bed_temp_max")
+
+        try:
+            # Search for existing filament by SKU (article_number)
+            filaments = moonraker.search_filaments(article_number=sku)
+            filament = None
+            for f in filaments:
+                if f.get("article_number", "") == sku:
+                    filament = f
+                    break
+
+            if filament is None:
+                # Resolve or create vendor
+                vendor_id = None
+                if brand:
+                    vendor = moonraker.get_or_create_vendor(brand)
+                    if vendor:
+                        vendor_id = vendor.get("id")
+
+                # Create new filament
+                filament_name = f"{material} {sku}" if material else sku
+                filament = moonraker.create_filament(
+                    name=filament_name,
+                    vendor_id=vendor_id,
+                    material=material or None,
+                    density=1.24,
+                    diameter=diameter,
+                    color_hex=color_hex,
+                    settings_extruder_temp=ext_temp,
+                    settings_bed_temp=bed_temp,
+                    weight=total_weight if total_weight > 0 else None,
+                    article_number=sku,
+                )
+                if filament is None:
+                    self.logger.error(
+                        f"Failed to create filament in Spoolman for SKU {sku}")
+                    return
+                self.logger.info(
+                    f"Created Spoolman filament #{filament['id']}: "
+                    f"{filament_name} ({material})")
+
+            filament_id = filament.get("id")
+            if filament_id is None:
+                return
+
+            # Create a new spool for this filament
+            spool = moonraker.create_spool(
+                filament_id=filament_id,
+                initial_weight=total_weight if total_weight > 0 else None,
+                remaining_weight=total_weight if total_weight > 0 else None,
+            )
+            if spool is None:
+                self.logger.error(
+                    f"Failed to create spool in Spoolman for filament #{filament_id}")
+                return
+
+            spool_id = spool.get("id")
+            self.logger.info(
+                f"Created Spoolman spool #{spool_id} for {lane.name} "
+                f"(SKU: {sku}, filament #{filament_id})")
+
+            # Assign spool_id to lane through AFC's normal flow
+            self.afc.spool.set_spoolID(lane, spool_id)
+            lane.send_lane_data()
+
+        except Exception as e:
+            self.logger.error(
+                f"RFID-to-Spoolman sync failed for {lane.name}: {e}")
 
     def _restore_tool_loaded_state(self, lane):
         """Restore a lane to TOOLED state after klipper restart.
@@ -997,6 +1107,8 @@ class afcACE(afcUnit):
                     self._refresh_slot_inventory(local_slot)
                     slot_info = self._slot_inventory[local_slot]
                     self._apply_slot_filament_defaults(lane, slot_info)
+                    # Auto-create/assign Spoolman spool from RFID data
+                    self._sync_rfid_to_spoolman(lane, slot_info)
                     self.lane_illuminate_spool(lane)
                     # New filament clears any previous suppression
                     self._hub_load_suppressed.discard(lane.name)
@@ -3619,6 +3731,8 @@ class afcACE(afcUnit):
                     self._refresh_slot_inventory(local_slot)
                     slot_info = self._slot_inventory[local_slot]
                     self._apply_slot_filament_defaults(lane, slot_info)
+                    # Auto-create/assign Spoolman spool from RFID data
+                    self._sync_rfid_to_spoolman(lane, slot_info)
                     self.lane_illuminate_spool(lane)
                     # New filament clears any previous suppression
                     self._hub_load_suppressed.discard(lane.name)
