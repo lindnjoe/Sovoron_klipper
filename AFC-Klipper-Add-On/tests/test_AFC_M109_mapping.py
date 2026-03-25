@@ -121,8 +121,8 @@ class TestM109ExtruderParam:
         # Must heat extruder5, NOT extruder4 (which T5 lane map would give)
         _assert_heater_was_set(pheaters, heater5, 220.0)
 
-    def test_extruder_param_unknown_name(self):
-        """M109 EXTRUDER=nonexistent should log error and not heat."""
+    def test_extruder_param_unknown_name_falls_through(self):
+        """M109 EXTRUDER=nonexistent should warn and fall through to T param or current extruder."""
         obj = _make_afc_for_m109()
         obj.tools = {}
 
@@ -132,9 +132,11 @@ class TestM109ExtruderParam:
         gcmd = _make_gcmd(temp=200.0, extruder_name="nonexistent")
         obj._cmd_AFC_M109(gcmd, wait=False)
 
-        pheaters.set_temperature.assert_not_called()
-        errors = [m for level, m in obj.logger.messages if level == "error"]
-        assert any("nonexistent" in e for e in errors)
+        # Should warn (not error) and fall through to current extruder
+        warnings = [m for level, m in obj.logger.messages if level == "warning"]
+        assert any("nonexistent" in w for w in warnings)
+        # Should still heat something (the current extruder via fallthrough)
+        assert pheaters.set_temperature.call_count > 0
 
     def test_extruder_param_strips_equals_prefix(self):
         """Klipper M-code parsing adds '=' prefix — should be stripped."""

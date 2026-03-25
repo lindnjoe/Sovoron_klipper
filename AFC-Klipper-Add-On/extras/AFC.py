@@ -2282,22 +2282,29 @@ class afc:
             # Klipper single-letter commands (M109) parse parameter values
             # with a leading '=' for backwards compatibility.
             extruder_name = extruder_name.lstrip('=')
-            # If just a number was passed (e.g. EXTRUDER=5), prepend 'extruder'
-            if extruder_name.isdigit():
-                extruder_name = ("extruder" if extruder_name == "0"
-                                 else "extruder" + extruder_name)
-            # Direct extruder name lookup — bypasses lane map and tool_number.
-            # Used by toolchanger macros where T<n> is ambiguous.
-            extruder = self.tools.get(extruder_name)
-            if extruder is not None:
-                self.logger.debug(
-                    "M109 EXTRUDER=%s: direct lookup -> %s"
-                    % (extruder_name, extruder.name))
+            # If empty after stripping (parsing artifact), ignore EXTRUDER
+            # and fall through to T param or current extruder.
+            if not extruder_name:
+                extruder_name = None
             else:
-                self.logger.error(
-                    "M109 EXTRUDER=%s: not found in AFC tools" % extruder_name)
-                return
-        elif toolnum is not None:
+                # If just a number was passed (e.g. EXTRUDER=5), prepend 'extruder'
+                if extruder_name.isdigit():
+                    extruder_name = ("extruder" if extruder_name == "0"
+                                     else "extruder" + extruder_name)
+                # Direct extruder name lookup — bypasses lane map and tool_number.
+                # Used by toolchanger macros where T<n> is ambiguous.
+                extruder = self.tools.get(extruder_name)
+                if extruder is not None:
+                    self.logger.debug(
+                        "M109 EXTRUDER=%s: direct lookup -> %s"
+                        % (extruder_name, extruder.name))
+                else:
+                    self.logger.warning(
+                        "M109 EXTRUDER=%s: not found in AFC tools, falling through to T param"
+                        % extruder_name)
+                    extruder_name = None  # Fall through
+
+        if extruder_name is None and toolnum is not None:
             # First try lane map lookup — this matches how T commands resolve
             # tool changes (T5 -> lane5 -> extruder4), so M109 T5 heats the
             # same extruder that a T5 tool change would use.
@@ -2346,7 +2353,7 @@ class afc:
             else:
                 self.logger.error("extruder not configured for T{}".format(toolnum))
                 return
-        else:
+        elif extruder_name is None:
             extruder = self.toolhead.get_extruder()
             self.logger.debug(
                 "M109 (no T param): using current extruder %s"
