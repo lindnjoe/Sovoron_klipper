@@ -127,6 +127,7 @@ class afcACE(afcUnit):
         self._lane_retract_length: Dict[str, float] = {}
         self._lane_dist_hub: Dict[str, float] = {}
         self._lane_feed_assist: Dict[str, bool] = {}
+        self._lane_auto_spoolman_create: Dict[str, bool] = {}
         self._parse_lane_overrides(config)
 
         # Extruder assist length: how far to advance with extruder motor
@@ -145,6 +146,11 @@ class afcACE(afcUnit):
         self.dock_purge = config.getboolean("dock_purge", False)                       # Set to True to enable dock purge during load
         self.dock_purge_length = config.getfloat("dock_purge_length", 50.0)            # mm of filament to extrude while docked for purging
         self.dock_purge_speed = config.getfloat("dock_purge_speed", 5.0)               # mm/s extrude speed during dock purge
+
+        # Auto Spoolman: when True, automatically create filaments and spools
+        # in Spoolman from RFID data. When False, RFID data still matches to
+        # existing filaments/spools but won't create new ones.
+        self.auto_spoolman_create = config.getboolean("auto_spoolman_create", False)
 
 
         # FPS (Filament Pressure Sensor) integration: when the extruder uses
@@ -266,6 +272,9 @@ class afcACE(afcUnit):
                 self._lane_dist_hub[lane_name] = dist_hub
             if feed_assist is not None:
                 self._lane_feed_assist[lane_name] = feed_assist
+            auto_spoolman = lane_cfg.getboolean("auto_spoolman_create", None)
+            if auto_spoolman is not None:
+                self._lane_auto_spoolman_create[lane_name] = auto_spoolman
 
     def _handle_ready(self):
         """Schedule deferred init - reactor pause is disabled during klippy:ready."""
@@ -837,15 +846,26 @@ class afcACE(afcUnit):
         if not getattr(lane, "weight", 0):
             lane.weight = 1000
 
-    def _sync_rfid_to_spoolman(self, lane, slot_info):
-        """Sync ACE RFID tag data to Spoolman: find or create filament + spool.
+    def _get_auto_spoolman_create(self, lane):
+        """Check if auto Spoolman creation is enabled for a lane.
 
-        Uses the RFID SKU as article_number to match existing filaments.
-        If no match is found, creates a new vendor (if needed), filament,
-        and spool in Spoolman, then assigns the spool_id to the lane.
-
-        Only runs when Spoolman is configured and the lane has no spool_id.
+        Lane-level override takes priority, then unit-level default.
         """
+        lane_name = getattr(lane, "name", None)
+        if lane_name and lane_name in self._lane_auto_spoolman_create:
+            return self._lane_auto_spoolman_create[lane_name]
+        return self.auto_spoolman_create
+
+    def _sync_rfid_to_spoolman(self, lane, slot_info):
+        """Sync ACE RFID tag data to Spoolman: match existing or create new filament + spool.
+
+        Always searches for existing filaments (by SKU) and spools to match.
+        Only creates new filaments/spools when auto_spoolman_create is enabled
+        (unit-level or lane-level override).
+
+        Silently skips if Spoolman is not configured.
+        """
+        # Skip silently if Spoolman is not configured — no error for users without it
         if self.afc.spoolman is None or self.afc.moonraker is None:
             return
         # Skip if lane already has a spool assigned
@@ -856,14 +876,18 @@ class afcACE(afcUnit):
             return
 
         moonraker = self.afc.moonraker
+        allow_create = self._get_auto_spoolman_create(lane)
         brand = slot_info.get("brand", "")
         material = slot_info.get("material", "")
         color_rgb = slot_info.get("color", [0, 0, 0])
         color_hex = self._ace_color_to_hex(color_rgb).lstrip("#") if color_rgb != [0, 0, 0] else None
         diameter = slot_info.get("diameter", 1.75)
-        total_weight = slot_info.get("total_weight", 0)
+        # RFID 'total' is the empty spool weight (tare), not filament weight
+        spool_weight = slot_info.get("total_weight", 0)
         ext_temp = slot_info.get("extruder_temp_max")
         bed_temp = slot_info.get("bed_temp_max")
+        # Default filament weight for new spools
+        default_filament_weight = 1000
 
         try:
             # Search for existing filament by SKU (article_number)
@@ -875,6 +899,12 @@ class afcACE(afcUnit):
                     break
 
             if filament is None:
+                if not allow_create:
+                    self.logger.debug(
+                        f"No Spoolman filament for SKU {sku} and "
+                        f"auto_spoolman_create is disabled for {lane.name}")
+                    return
+
                 # Resolve or create vendor
                 vendor_id = None
                 if brand:
@@ -893,7 +923,8 @@ class afcACE(afcUnit):
                     color_hex=color_hex,
                     settings_extruder_temp=ext_temp,
                     settings_bed_temp=bed_temp,
-                    weight=total_weight if total_weight > 0 else None,
+                    weight=default_filament_weight,
+                    spool_weight=spool_weight if spool_weight > 0 else None,
                     article_number=sku,
                 )
                 if filament is None:
@@ -929,10 +960,17 @@ class afcACE(afcUnit):
 
             # Create a new spool only if no existing one was found
             if spool is None:
+                if not allow_create:
+                    self.logger.debug(
+                        f"No existing Spoolman spool for filament #{filament_id} and "
+                        f"auto_spoolman_create is disabled for {lane.name}")
+                    return
+
                 spool = moonraker.create_spool(
                     filament_id=filament_id,
-                    initial_weight=total_weight if total_weight > 0 else None,
-                    remaining_weight=total_weight if total_weight > 0 else None,
+                    initial_weight=default_filament_weight,
+                    remaining_weight=default_filament_weight,
+                    spool_weight=spool_weight if spool_weight > 0 else None,
                 )
                 if spool is None:
                     self.logger.error(
