@@ -861,9 +861,12 @@ class afcACE(afcUnit):
         color_rgb = slot_info.get("color", [0, 0, 0])
         color_hex = self._ace_color_to_hex(color_rgb).lstrip("#") if color_rgb != [0, 0, 0] else None
         diameter = slot_info.get("diameter", 1.75)
-        total_weight = slot_info.get("total_weight", 0)
+        # RFID 'total' is the empty spool weight (tare), not filament weight
+        spool_weight = slot_info.get("total_weight", 0)
         ext_temp = slot_info.get("extruder_temp_max")
         bed_temp = slot_info.get("bed_temp_max")
+        # Default filament weight for new spools
+        default_filament_weight = 1000
 
         try:
             # Search for existing filament by SKU (article_number)
@@ -893,7 +896,8 @@ class afcACE(afcUnit):
                     color_hex=color_hex,
                     settings_extruder_temp=ext_temp,
                     settings_bed_temp=bed_temp,
-                    weight=total_weight if total_weight > 0 else None,
+                    weight=default_filament_weight,
+                    spool_weight=spool_weight if spool_weight > 0 else None,
                     article_number=sku,
                 )
                 if filament is None:
@@ -931,8 +935,9 @@ class afcACE(afcUnit):
             if spool is None:
                 spool = moonraker.create_spool(
                     filament_id=filament_id,
-                    initial_weight=total_weight if total_weight > 0 else None,
-                    remaining_weight=total_weight if total_weight > 0 else None,
+                    initial_weight=default_filament_weight,
+                    remaining_weight=default_filament_weight,
+                    spool_weight=spool_weight if spool_weight > 0 else None,
                 )
                 if spool is None:
                     self.logger.error(
