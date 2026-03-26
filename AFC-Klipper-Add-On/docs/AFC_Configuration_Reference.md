@@ -634,6 +634,8 @@ feed_length: 2400
 
 ### Example: OpenAMS
 
+Each OpenAMS lane has its own hub sensor (Hall Effect Sensor per bay on the OAMS hardware), so each lane needs its own `[AFC_hub]` with a unique pin.
+
 ```ini
 [AFC]
 long_moves_speed: 100
@@ -643,8 +645,21 @@ z_hop: 0.5
 [AFC_OpenAMS oams_unit1]
 oams: oams1
 
-[AFC_hub hub1]
-switch_pin: virtual
+# Each lane gets its own hub — OAMS has per-bay Hall Effect sensors
+[AFC_hub hub_oams1_bay1]
+switch_pin: oams1:HES_0
+afc_bowden_length: 3077
+
+[AFC_hub hub_oams1_bay2]
+switch_pin: oams1:HES_1
+afc_bowden_length: 3077
+
+[AFC_hub hub_oams1_bay3]
+switch_pin: oams1:HES_2
+afc_bowden_length: 3077
+
+[AFC_hub hub_oams1_bay4]
+switch_pin: oams1:HES_3
 afc_bowden_length: 3077
 
 [AFC_FPS FPS_buffer1]
@@ -659,25 +674,25 @@ tool_number: 4
 
 [AFC_lane lane4]
 unit: oams_unit1:1
-hub: hub1
+hub: hub_oams1_bay1
 extruder: extruder4
 map: T4
 
 [AFC_lane lane5]
 unit: oams_unit1:2
-hub: hub1
+hub: hub_oams1_bay2
 extruder: extruder4
 map: T5
 
 [AFC_lane lane6]
 unit: oams_unit1:3
-hub: hub1
+hub: hub_oams1_bay3
 extruder: extruder4
 map: T6
 
 [AFC_lane lane7]
 unit: oams_unit1:4
-hub: hub1
+hub: hub_oams1_bay4
 extruder: extruder4
 map: T7
 ```
