@@ -3,7 +3,7 @@
   "appearance": {
     "toolhead_style": 3
   },
-  "beta_features": true,
+  "beta_features": false,
   "brightness": 80,
   "completion_alert": true,
   "config_version": 8,
@@ -171,7 +171,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-25T20:19:25Z"
+          "timestamp": "2026-03-26T13:39:25Z"
         },
         "optional": []
       },
@@ -208,7 +208,7 @@
       "panel_widgets": {
         "home": {
           "main_page_index": 0,
-          "next_page_id": 1,
+          "next_page_id": 3,
           "pages": [
             {
               "id": "main",
@@ -240,7 +240,7 @@
                 {
                   "col": 2,
                   "colspan": 1,
-                  "enabled": true,
+                  "enabled": false,
                   "id": "shutdown",
                   "row": 2,
                   "rowspan": 1
@@ -262,7 +262,7 @@
                   "rowspan": 1
                 },
                 {
-                  "col": 5,
+                  "col": 2,
                   "colspan": 1,
                   "enabled": false,
                   "id": "firmware_restart",
@@ -411,11 +411,11 @@
                   "rowspan": 2
                 },
                 {
-                  "col": -1,
+                  "col": 2,
                   "colspan": 1,
-                  "enabled": true,
+                  "enabled": false,
                   "id": "clog_detection",
-                  "row": -1,
+                  "row": 2,
                   "rowspan": 1
                 },
                 {
@@ -483,22 +483,6 @@
                   "rowspan": 1
                 },
                 {
-                  "col": 2,
-                  "colspan": 1,
-                  "enabled": true,
-                  "id": "power_device:1",
-                  "row": 2,
-                  "rowspan": 1
-                },
-                {
-                  "col": 2,
-                  "colspan": 1,
-                  "enabled": true,
-                  "id": "power_device:2",
-                  "row": 2,
-                  "rowspan": 1
-                },
-                {
                   "col": -1,
                   "colspan": 1,
                   "enabled": false,
@@ -513,6 +497,19 @@
                   "id": "nozzle_temps",
                   "row": -1,
                   "rowspan": 2
+                }
+              ]
+            },
+            {
+              "id": "page_2",
+              "widgets": [
+                {
+                  "col": 0,
+                  "colspan": 1,
+                  "enabled": true,
+                  "id": "shutdown",
+                  "row": 0,
+                  "rowspan": 1
                 }
               ]
             }
@@ -549,7 +546,7 @@
   "ui": {
     "cached_grid": {
       "home": {
-        "rows": 4
+        "rows": 1
       }
     }
   },

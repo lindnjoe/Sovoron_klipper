@@ -908,21 +908,41 @@ class afcACE(afcUnit):
             if filament_id is None:
                 return
 
-            # Create a new spool for this filament
-            spool = moonraker.create_spool(
-                filament_id=filament_id,
-                initial_weight=total_weight if total_weight > 0 else None,
-                remaining_weight=total_weight if total_weight > 0 else None,
-            )
+            # Search for an existing spool using this filament before creating a new one.
+            # Pick the spool with the most remaining weight (most likely a fresh/partial spool
+            # that was previously assigned by this same RFID flow).
+            spool = None
+            existing_spools = moonraker.search_spools(filament_id=filament_id)
+            if existing_spools:
+                # Prefer spools with remaining weight, sorted descending
+                best = None
+                for s in existing_spools:
+                    remaining = s.get("remaining_weight") or 0
+                    if best is None or remaining > (best.get("remaining_weight") or 0):
+                        best = s
+                if best is not None:
+                    spool = best
+                    self.logger.info(
+                        f"Found existing Spoolman spool #{spool['id']} for {lane.name} "
+                        f"(SKU: {sku}, filament #{filament_id}, "
+                        f"remaining: {spool.get('remaining_weight', '?')}g)")
+
+            # Create a new spool only if no existing one was found
             if spool is None:
-                self.logger.error(
-                    f"Failed to create spool in Spoolman for filament #{filament_id}")
-                return
+                spool = moonraker.create_spool(
+                    filament_id=filament_id,
+                    initial_weight=total_weight if total_weight > 0 else None,
+                    remaining_weight=total_weight if total_weight > 0 else None,
+                )
+                if spool is None:
+                    self.logger.error(
+                        f"Failed to create spool in Spoolman for filament #{filament_id}")
+                    return
+                self.logger.info(
+                    f"Created Spoolman spool #{spool['id']} for {lane.name} "
+                    f"(SKU: {sku}, filament #{filament_id})")
 
             spool_id = spool.get("id")
-            self.logger.info(
-                f"Created Spoolman spool #{spool_id} for {lane.name} "
-                f"(SKU: {sku}, filament #{filament_id})")
 
             # Assign spool_id to lane through AFC's normal flow
             self.afc.spool.set_spoolID(lane, spool_id)
