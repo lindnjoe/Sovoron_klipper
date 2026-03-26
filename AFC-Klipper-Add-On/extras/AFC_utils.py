@@ -486,6 +486,21 @@ class AFC_moonraker:
             body["spool_weight"] = spool_weight
         return self._spoolman_proxy("POST", "/v1/spool", body=body)
 
+    def search_spools(self, filament_id=None):
+        """Search Spoolman for spools, optionally filtered by filament_id.
+
+        :param filament_id: Filter to spools using this filament
+        :return: List of spool dicts, or empty list on error
+        """
+        params = []
+        if filament_id is not None:
+            params.append(f"filament.id={filament_id}")
+        query = "&".join(params) if params else ""
+        result = self._spoolman_proxy("GET", "/v1/spool", query=query, print_error=False)
+        if isinstance(result, list):
+            return result
+        return []
+
     def check_for_td1(self):
         """
         Checks moonrakers server/config endpoint to see if user has `[td1]` and `[lane_data]`
