@@ -4895,6 +4895,11 @@ class OAMSManager:
 
         fps_state = self.current_state.fps_state[fps_name]
 
+        # NOTE: AFC_OpenAMS.load_sequence() handles pre-load auto-unload of
+        # conflicting lanes. This sensor-based detection is a safety net for
+        # cases where AFC state and hardware sensors disagree (e.g., after
+        # power cycle with stale state). Should be removed once AFC state
+        # ownership is fully consolidated (Phase 2b/3).
         # Synchronize with actual loaded lane before deciding how to handle the request
         detected_lane, detected_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
 

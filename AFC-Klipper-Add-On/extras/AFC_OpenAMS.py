@@ -959,6 +959,22 @@ class afcAMS(afcUnit):
             afc.afcDeltaTime.major_delta_time = now
             afc.afcDeltaTime.last_time = now
 
+        # Pre-load check: if a DIFFERENT lane is loaded on this extruder,
+        # auto-unload it first. AFC owns this decision, not oams_manager.
+        existing_lane = cur_extruder.lane_loaded
+        if existing_lane and existing_lane != cur_lane.name:
+            self.logger.info(
+                f"Auto-unloading {existing_lane} before loading {cur_lane.name} "
+                f"(AFC pre-load cleanup)")
+            try:
+                afc.gcode.run_script_from_command(f"TOOL_UNLOAD LANE={existing_lane}")
+                afc.toolhead.wait_moves()
+            except Exception as e:
+                afc.error.handle_lane_failure(
+                    cur_lane,
+                    f"Failed to auto-unload {existing_lane} before loading {cur_lane.name}: {e}")
+                return False
+
         # Dock purge phase 1: drop off tool before feeding filament
         dock_dropped_off = False
         if self._is_dock_purge_enabled():
