@@ -812,7 +812,10 @@ class AFCExtruder:
             or self.check_transmit_status_fn is None):
             return
 
-        color = tuple(map(float, color.split(',')))
+        if isinstance(color, str):
+            color = tuple(map(float, color.split(',')))
+        elif isinstance(color, (list, tuple)):
+            color = tuple(map(float, color))
         for idx in self.toolhead_status_index:
             self.set_status_color_fn(idx, color)
 
