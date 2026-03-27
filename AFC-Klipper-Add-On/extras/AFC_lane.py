@@ -124,6 +124,7 @@ class AFCLane:
         self.spool_id           = None
         self.color              = None
         self.weight             = 0
+        self.auto_switch_triggered = False
         self._material          = None
         self.extruder_temp      = None
         self.bed_temp           = None
@@ -167,6 +168,7 @@ class AFCLane:
         self.led_tool_unloaded    = config.get('led_tool_unloaded', None)               # LED color to set when lanes extruder is unloaded
         self.led_spool_index      = config.get('led_spool_index', None)                 # LED index to illuminate under spool
         self.led_spool_illum      = config.get('led_spool_illuminate', None)            # LED color to illuminate under spool
+        self.led_use_filament_color = config.getboolean('led_use_filament_color', None) # Per-lane override for filament color LEDs
 
         self.long_moves_speed: float   = config.getfloat("long_moves_speed", None)             # Speed in mm/s to move filament when doing long moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
         self.long_moves_accel: float   = config.getfloat("long_moves_accel", None)             # Acceleration in mm/s squared when doing long moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
@@ -548,6 +550,9 @@ class AFCLane:
         # Inherit remember_spool from unit unless explicitly set in lane config
         if self.remember_spool is None:
             self.remember_spool = bool(self.unit_obj.remember_spool)
+        # Inherit led_use_filament_color from unit unless explicitly set in lane config
+        if self.led_use_filament_color is None:
+            self.led_use_filament_color = bool(self.unit_obj.led_use_filament_color)
 
         # Register all lanes if their type is not HTLF or only register lanes that are HTLF and have AFC_lane
         # in the name so that HTLF stepper names do not get added since they are not a lane for this unit type
@@ -1026,6 +1031,24 @@ class AFCLane:
             # Set LED to not ready
             self.unit_obj.lane_not_ready(self)
 
+    def _handle_auto_spool_switch(self):
+        """Handle automatic spool switch triggered by weight threshold.
+
+        Called via reactor.register_callback from update_weight_callback.
+        """
+        if self.afc.error_state or not self.afc.function.is_printing():
+            return
+        if self.runout_lane is not None:
+            runout_lane = self.afc.lanes.get(self.runout_lane)
+            if runout_lane is not None:
+                self.logger.info(
+                    "Auto spool switch: switching from {} to {}".format(
+                        self.name, runout_lane.name))
+                self.afc.CHANGE_TOOL(runout_lane)
+                return
+        # No runout lane configured — pause instead
+        self._perform_pause_runout()
+
     def _perform_pause_runout(self):
         """
         Common function to pause print when runout occurs, fully unloads and ejects spool if specified by user
@@ -1041,8 +1064,12 @@ class AFCLane:
                 self.afc.LANE_UNLOAD(self)
         # Pause print
         self.status = AFCLaneState.NONE
-        msg = "Runout triggered for lane {} and runout lane is not setup to switch to another lane".format(self.name)
-        msg += "\nPlease manually load next spool into toolhead and then hit resume to continue"
+        if self.auto_switch_triggered:
+            runout_method = "Minimum weight threshold reached"
+        else:
+            runout_method = "Runout triggered"
+        msg = "{} for lane {} and runout lane is not setup to switch to another lane.".format(runout_method, self.name)
+        msg += "\nPlease manually load next spool into toolhead and then hit resume to continue."
         self.unit_obj.lane_not_ready(self)
         self.afc.error.AFC_error(msg)
 
@@ -1393,7 +1420,9 @@ class AFCLane:
         :param eventtime: Current eventtime for timer callback
         :return int: Next time to call timer callback. Current time + UPDATE_WEIGHT_DELAY
         """
-        extruder_pos = self.afc.function.get_extruder_pos( eventtime, self.past_extruder_position )
+        extruder_pos = self.afc.function.get_extruder_pos(
+            eventtime, self.past_extruder_position,
+            extruder=getattr(self.extruder_obj, 'toolhead_extruder', None))
         delta_length = extruder_pos - self.past_extruder_position
 
         if -1 == self.past_extruder_position:
@@ -1404,7 +1433,21 @@ class AFCLane:
             self.update_remaining_weight(delta_length)
             self.past_extruder_position = extruder_pos
 
-            # self.logger.debug(f"{self.name} Weight Timer Callback: New weight {self.weight}")
+            # Check if weight-based auto spool switch should trigger
+            if (self.afc.auto_spool_switch
+                and not self.auto_switch_triggered
+                and self.weight > 0
+                and self.weight <= self.afc.auto_spool_switch_threshold
+                and self.name == self.afc.current
+                and self.afc.function.is_printing()
+                and not self.afc.error_state):
+                self.auto_switch_triggered = True
+                self.logger.info(
+                    "Auto spool switch: {} weight ({:.1f}g) at or below "
+                    "threshold ({:.1f}g), triggering switch".format(
+                        self.name, self.weight, self.afc.auto_spool_switch_threshold))
+                self.reactor.register_callback(
+                    lambda et: self._handle_auto_spool_switch())
 
             # Save vars every 2 minutes
             if self.save_counter > 120/self.UPDATE_WEIGHT_DELAY:
@@ -2097,6 +2140,7 @@ class AFCLane:
         response["color"]=self.color
         response["weight"]=self.weight
         response["extruder_temp"] = self.extruder_temp
+        response["bed_temp"] = self.bed_temp
         response["runout_lane"]=self.runout_lane
         filament_stat=self.afc.function.get_filament_status(self).split(':')
         response['filament_status'] = filament_stat[0]

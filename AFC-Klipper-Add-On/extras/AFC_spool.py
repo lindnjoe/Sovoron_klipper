@@ -47,6 +47,7 @@ class AFCSpool:
         self.gcode.register_mux_command('SET_SPOOL_ID',         "LANE", lane_obj.name, self.cmd_SET_SPOOL_ID,           desc=self.cmd_SET_SPOOL_ID_help)
         self.gcode.register_mux_command('SET_RUNOUT',           "LANE", lane_obj.name, self.cmd_SET_RUNOUT,             desc=self.cmd_SET_RUNOUT_help)
         self.gcode.register_mux_command('SET_MAP',              "LANE", lane_obj.name, self.cmd_SET_MAP,                desc=self.cmd_SET_MAP_help)
+        self.gcode.register_mux_command('AFC_SET_SPOOL_TEMP',   "LANE", lane_obj.name, self.cmd_AFC_SET_SPOOL_TEMP,     desc=self.cmd_AFC_SET_SPOOL_TEMP_help)
 
     cmd_SET_MAP_help = "Changes T(n) mapping for a lane"
     def cmd_SET_MAP(self, gcmd):
@@ -95,6 +96,31 @@ class AFCSpool:
         self.afc.tool_cmds[map_switch] = lane_switch
         sw_lane.map = map_switch
         sw_lane.send_lane_data()
+        self.afc.save_vars()
+
+    cmd_AFC_SET_SPOOL_TEMP_help = "Set spool temperatures for a lane"
+    def cmd_AFC_SET_SPOOL_TEMP(self, gcmd):
+        """
+        Set the bed and extruder temperatures for a specified lane's spool.
+
+        Usage
+        -----
+        `AFC_SET_SPOOL_TEMP LANE=<lane> BED_TEMP=<temp> EXTRUDER_TEMP=<temp>`
+
+        Example
+        -----
+        ```
+        AFC_SET_SPOOL_TEMP LANE=lane1 BED_TEMP=60 EXTRUDER_TEMP=210
+        ```
+        """
+        lane = gcmd.get('LANE', None)
+        if lane is None or lane not in self.afc.lanes:
+            self.logger.info('{} Unknown'.format(lane))
+            return
+        cur_lane = self.afc.lanes[lane]
+        cur_lane.bed_temp = gcmd.get_int('BED_TEMP', cur_lane.bed_temp, minval=0)
+        cur_lane.extruder_temp = gcmd.get_int('EXTRUDER_TEMP', cur_lane.extruder_temp, minval=0)
+        cur_lane.send_lane_data()
         self.afc.save_vars()
 
     cmd_SET_COLOR_help = "Set filaments color for a lane"
@@ -301,6 +327,7 @@ class AFCSpool:
         cur_lane.material = ''
         cur_lane.color = ''
         cur_lane.weight = 0
+        cur_lane.auto_switch_triggered = False
         cur_lane.extruder_temp = None
         cur_lane.bed_temp = None
         cur_lane.clear_lane_data()
@@ -311,6 +338,7 @@ class AFCSpool:
                 try:
                     result = self.afc.moonraker.get_spool(SpoolID)
                     cur_lane.spool_id = SpoolID
+                    cur_lane.auto_switch_triggered = False
 
                     cur_lane.material           = self._get_filament_values(result['filament'], 'material')
                     if not self.afc.ignore_spoolman_material_temps:
