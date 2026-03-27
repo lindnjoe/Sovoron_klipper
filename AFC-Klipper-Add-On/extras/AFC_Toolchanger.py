@@ -150,7 +150,11 @@ class AfcToolchanger(afcUnit):
         self.gcode.register_command("AFC_RETRY_TOOL_PICKUP",
                                     self.cmd_AFC_RETRY_TOOL_PICKUP,
                                     desc="Retry tool detection after manual fix")
+        self.gcode.register_command("AFC_CANCEL_TOOL_PICKUP",
+                                    self.cmd_AFC_CANCEL_TOOL_PICKUP,
+                                    desc="Cancel tool pickup and trigger error handler")
         self._pickup_retry_requested = False
+        self._pickup_cancel_requested = False
 
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_tc_connect)
@@ -678,12 +682,14 @@ class AfcToolchanger(afcUnit):
 
         Called from within pickup_gcode at the 'verify' point in the path,
         BEFORE restore moves. If detection fails, holds position at the dock
-        and prompts the user to fix the tool manually. Re-checks detection
-        after user intervention. If the user fixes it, the pickup path
-        continues normally (remaining path points lift away from dock safely).
+        indefinitely and prompts the user to fix the tool manually. Re-checks
+        detection when the user runs AFC_RETRY_TOOL_PICKUP. If the user fixes
+        it, the pickup path continues normally (remaining path points lift
+        away from dock safely).
 
-        Falls through to process_error() only if the user cannot fix it
-        (timeout or repeated failures).
+        The shuttle does NOT move during recovery — it stays exactly at the
+        dock where the user can reach it. Use AFC_CANCEL_TOOL_PICKUP to
+        give up and trigger the error handler.
         """
         if not self.has_detection:
             return
@@ -705,29 +711,32 @@ class AfcToolchanger(afcUnit):
             return  # Detection passed — continue pickup path normally
 
         # Detection failed — shuttle is at the dock, tool not properly seated.
-        # Hold position and give the user a chance to fix it.
-        max_retries = 3
-        retry_wait = 10.0  # seconds between re-checks
+        # Hold position indefinitely until user fixes it or cancels.
+        expected_name = expected.name if expected else "None"
+        self._pickup_retry_requested = False
+        self._pickup_cancel_requested = False
 
-        for attempt in range(max_retries):
-            expected_name = expected.name if expected else "None"
+        while not self._pickup_cancel_requested:
             actual_name = actual.name if actual else "None"
             self.logger.raw(
                 "<span class=error--text>"
                 f"Tool pickup failed: expected {expected_name}, detected {actual_name}. "
-                f"Shuttle is at the dock — manually seat the tool, then wait for re-check "
-                f"(attempt {attempt + 1}/{max_retries}, re-checking in {retry_wait:.0f}s). "
-                f"Use AFC_RETRY_TOOL_PICKUP to re-check immediately."
+                f"Shuttle is at the dock — DO NOT move the gantry. "
+                f"Manually seat the tool, then run AFC_RETRY_TOOL_PICKUP. "
+                f"To give up, run AFC_CANCEL_TOOL_PICKUP."
                 "</span>"
             )
 
-            # Wait for user to fix — check for manual retry command or timeout
+            # Wait until user sends retry or cancel
             self._pickup_retry_requested = False
-            deadline = reactor.monotonic() + retry_wait
-            while reactor.monotonic() < deadline and not self._pickup_retry_requested:
+            while (not self._pickup_retry_requested
+                   and not self._pickup_cancel_requested):
                 reactor.pause(reactor.monotonic() + 0.5)
 
-            # Re-check detection
+            if self._pickup_cancel_requested:
+                break
+
+            # User requested retry — re-check detection
             toolhead.wait_moves()
             reactor.pause(reactor.monotonic() + 0.2)
             actual = self._require_detected_tool()
@@ -736,9 +745,35 @@ class AfcToolchanger(afcUnit):
                     f"Tool {expected_name} detected after manual fix — continuing pickup")
                 return  # Success — pickup path continues with remaining moves
 
-        # All retries exhausted — fall through to error handler
-        expected_name = expected.name if expected else "None"
+        # User cancelled — fall through to error handler
+        actual = self._require_detected_tool()
         actual_name = actual.name if actual else "None"
+        message = (
+            "Tool pickup cancelled by user: expected %s but detected %s. "
+            "Shuttle is at the dock." % (expected_name, actual_name))
+        self.process_error(gcmd.error, message)
+
+    def cmd_AFC_RETRY_TOOL_PICKUP(self, gcmd):
+        """Trigger immediate re-check of tool detection after manual fix.
+
+        Use when you've manually seated the tool on the shuttle and want
+        to continue the pickup path.
+
+        Usage: AFC_RETRY_TOOL_PICKUP
+        """
+        self._pickup_retry_requested = True
+        self.logger.info("Manual retry requested — re-checking tool detection")
+
+    def cmd_AFC_CANCEL_TOOL_PICKUP(self, gcmd):
+        """Cancel the tool pickup retry loop and trigger error handling.
+
+        Use when you cannot fix the tool and want to stop the pickup attempt.
+        The shuttle will remain at the dock — no movement will occur.
+
+        Usage: AFC_CANCEL_TOOL_PICKUP
+        """
+        self._pickup_cancel_requested = True
+        self.logger.info("Tool pickup cancelled by user")
         message = (
             "Tool pickup failed after %d attempts: expected %s but detected %s. "
             "Shuttle is at the dock." % (max_retries, expected_name, actual_name))
