@@ -36,6 +36,9 @@ if TYPE_CHECKING:
 try: from extras.AFC_utils import ERROR_STR
 except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
 
+try: from extras.AFC_Toolchanger import DETECT_PRESENT
+except: DETECT_PRESENT = 1  # fallback if toolchanger not loaded
+
 try: from extras.AFC_utils import add_filament_switch
 except: raise error(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
 
@@ -922,9 +925,9 @@ class AFCExtruder:
         # Use native detect_state if available
         if self.detect_pin_name is not None:
             if self.tc_unit_obj:
-                return (self.detect_state == 1 or
+                return (self.detect_state == DETECT_PRESENT or
                         self.tc_unit_obj.active_tool == self)
-            return self.detect_state == 1
+            return self.detect_state == DETECT_PRESENT
 
         # Toolchanger configured but no detection pin (custom swap/unselect macros)
         return True

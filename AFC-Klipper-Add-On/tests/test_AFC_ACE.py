@@ -124,6 +124,7 @@ def _make_lane(name="lane1", prep_state=False, load_state=False,
     lane.led_spool_illum = "1,1,1,0"
     lane.led_index = "1"
     lane.led_spool_index = "2"
+    lane.led_use_filament_color = False
     return lane
 
 

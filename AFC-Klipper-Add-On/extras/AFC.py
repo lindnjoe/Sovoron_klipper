@@ -171,6 +171,7 @@ class afc:
         self.led_trailing           = config.get('led_buffer_trailing','0,1,0,0')      # LED color to set when buffer is trailing
         self.led_buffer_disabled    = config.get('led_buffer_disable', '0,0,0,0.25')   # LED color to set when buffer is disabled
         self.led_spool_illum        = config.get('led_spool_illuminate', "1,1,1,1")    # LED color to illuminate under spool
+        self.led_use_filament_color = config.getboolean('led_use_filament_color', False) # When True, uses filament color for lane LEDs instead of configured colors
 
         # TOOL Cutting Settings
         self.tool                   = ''
@@ -1215,7 +1216,9 @@ class afc:
             return
 
         cur_lane = self.lanes[lane]
-        if cur_lane.extruder_obj.lane_loaded:
+        # Only block if a DIFFERENT lane is loaded on this extruder
+        if (cur_lane.extruder_obj.lane_loaded
+            and cur_lane.extruder_obj.lane_loaded != cur_lane.name):
             self.error.AFC_error("Cannot load {}, {} currently loaded".format(lane, cur_lane.extruder_obj.lane_loaded), pause=self.function.in_print())
             return
 

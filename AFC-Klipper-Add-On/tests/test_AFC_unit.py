@@ -67,6 +67,7 @@ def _make_lane(name="lane1", hub="hub1", extruder="ext1", buffer_name="buf1"):
     lane.led_tool_loaded = "0,1,0,0"
     lane.led_tool_unloaded = "0,1,0,0"
     lane.led_index = "1"
+    lane.led_use_filament_color = False
     lane.led_spool_illum = "1,1,1,0"
     lane._load_state = True
     lane.short_moves_speed = 50
