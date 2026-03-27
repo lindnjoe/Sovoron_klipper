@@ -864,7 +864,7 @@ class afc:
         if abs(distance) >= 200: speed_mode = SpeedMode.LONG
 
         cur_lane.set_load_current() # Making current is set correctly when doing lane moves
-        cur_lane.move_advanced(distance, speed_mode, assist_active = AssistActive.YES)
+        cur_lane.unit_obj.lane_move(cur_lane, distance, speed_mode)
         cur_lane.do_enable(False)
         self.current_state = State.IDLE
         cur_lane.unit_obj.return_to_home()
