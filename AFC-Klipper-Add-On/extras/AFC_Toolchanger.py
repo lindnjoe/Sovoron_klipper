@@ -68,6 +68,7 @@ class AfcToolchanger(afcUnit):
         self.require_tool_present: bool = config.getboolean('require_tool_present', True)
         self.verify_tool_pickup: bool = config.getboolean('verify_tool_pickup', True)
         self.transfer_fan_speed: bool = config.getboolean('transfer_fan_speed', True)
+        self.pickup_retry_timeout: float = config.getfloat('pickup_retry_timeout', 1800.0, minval=30.)  # seconds (default 30 minutes)
 
         # Default gcode templates (can be overridden per-tool in AFC_extruder)
         self.default_before_change_gcode = self.gcode_macro.load_template(
@@ -711,29 +712,40 @@ class AfcToolchanger(afcUnit):
             return  # Detection passed — continue pickup path normally
 
         # Detection failed — shuttle is at the dock, tool not properly seated.
-        # Hold position indefinitely until user fixes it or cancels.
+        # Hold position until user fixes it, cancels, or timeout expires.
         expected_name = expected.name if expected else "None"
         self._pickup_retry_requested = False
         self._pickup_cancel_requested = False
+        timeout_deadline = reactor.monotonic() + self.pickup_retry_timeout
 
         while not self._pickup_cancel_requested:
+            remaining = max(0, timeout_deadline - reactor.monotonic())
+            remaining_min = remaining / 60.0
             actual_name = actual.name if actual else "None"
             self.logger.raw(
                 "<span class=error--text>"
                 f"Tool pickup failed: expected {expected_name}, detected {actual_name}. "
                 f"Shuttle is at the dock — DO NOT move the gantry. "
                 f"Manually seat the tool, then run AFC_RETRY_TOOL_PICKUP. "
-                f"To give up, run AFC_CANCEL_TOOL_PICKUP."
+                f"To give up, run AFC_CANCEL_TOOL_PICKUP. "
+                f"Timeout in {remaining_min:.0f} min."
                 "</span>"
             )
 
-            # Wait until user sends retry or cancel
+            # Wait until user sends retry, cancel, or timeout expires
             self._pickup_retry_requested = False
             while (not self._pickup_retry_requested
-                   and not self._pickup_cancel_requested):
+                   and not self._pickup_cancel_requested
+                   and reactor.monotonic() < timeout_deadline):
                 reactor.pause(reactor.monotonic() + 0.5)
 
             if self._pickup_cancel_requested:
+                break
+
+            if reactor.monotonic() >= timeout_deadline:
+                self.logger.error(
+                    f"Tool pickup timeout after {self.pickup_retry_timeout:.0f}s "
+                    f"— giving up on {expected_name}")
                 break
 
             # User requested retry — re-check detection
@@ -745,12 +757,29 @@ class AfcToolchanger(afcUnit):
                     f"Tool {expected_name} detected after manual fix — continuing pickup")
                 return  # Success — pickup path continues with remaining moves
 
-        # User cancelled — fall through to error handler
+        # Cancelled or timed out — safe shutdown to prevent damage.
+        # Turn off all heaters and disable XY steppers so nothing can move
+        # the shuttle accidentally. Z stays locked to prevent dropping.
+        try:
+            self.gcode.run_script_from_command("TURN_OFF_HEATERS")
+            self.logger.info("All heaters turned off for safety")
+        except Exception:
+            pass
+        try:
+            # Disable XY motors so user can manually move if needed,
+            # but keep Z enabled to prevent the gantry from dropping.
+            self.gcode.run_script_from_command("SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0")
+            self.gcode.run_script_from_command("SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0")
+            self.logger.info("XY steppers disabled — shuttle can be moved manually if needed")
+        except Exception:
+            pass
+
         actual = self._require_detected_tool()
         actual_name = actual.name if actual else "None"
         message = (
-            "Tool pickup cancelled by user: expected %s but detected %s. "
-            "Shuttle is at the dock." % (expected_name, actual_name))
+            "Tool pickup failed: expected %s but detected %s. "
+            "Heaters OFF, XY unlocked. Shuttle is at the dock. "
+            "Restart klipper to recover." % (expected_name, actual_name))
         self.process_error(gcmd.error, message)
 
     def cmd_AFC_RETRY_TOOL_PICKUP(self, gcmd):
