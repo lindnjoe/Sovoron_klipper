@@ -786,24 +786,6 @@ class afcAMS(afcUnit):
             self._cached_oams_manager = None
         return self._cached_oams_manager
 
-    def _manager_load_for_lane(self, lane_name: str):
-        manager = self._get_oams_manager()
-        if manager is None:
-            return False, "OpenAMS manager not available"
-        return manager.load_filament_for_lane(lane_name)
-
-    def _manager_unload_with_prep_for_fps(self, fps_name: str):
-        manager = self._get_oams_manager()
-        if manager is None:
-            return False, "OpenAMS manager not available"
-        return manager.unload_filament_with_prep_for_fps(fps_name)
-
-    def _manager_clear_fps_state_for_lane(self, lane_name: str, *, eventtime: float):
-        manager = self._get_oams_manager()
-        if manager is None:
-            return False, None, None
-        return manager.clear_fps_state_for_lane(lane_name, eventtime=eventtime)
-
     # ---- Dock purge (AFC-owned, same pattern as ACE) ----
 
     def _dock_purge_dropoff(self):
@@ -1022,7 +1004,7 @@ class afcAMS(afcUnit):
                 afc.error.handle_lane_failure(cur_lane, "OpenAMS load failed: oams_manager not available")
                 return False
 
-            success, message = self._manager_load_for_lane(cur_lane.name)
+            success, message = oams_manager.load_filament_for_lane(cur_lane.name)
             if not success:
                 message = message or f"OpenAMS load failed for {cur_lane.name}"
                 afc.error.handle_lane_failure(cur_lane, message)
@@ -1147,7 +1129,7 @@ class afcAMS(afcUnit):
                     cur_lane.name, fps_name
                 )
             )
-            success, message = self._manager_unload_with_prep_for_fps(fps_name)
+            success, message = oams_manager.unload_filament_with_prep_for_fps(fps_name)
             if not success:
                 message = message or "OpenAMS unload failed for {}".format(cur_lane.name)
                 afc.error.handle_lane_failure(cur_lane, message)
@@ -1198,8 +1180,10 @@ class afcAMS(afcUnit):
         # Handle cross-extruder runout FPS state cleanup
         if getattr(cur_lane, '_oams_cross_extruder_runout', False):
             try:
-                cleared, fps_name, spool_index = self._manager_clear_fps_state_for_lane(
-                    lane_name, eventtime=self.reactor.monotonic())
+                mgr = self._get_oams_manager()
+                cleared, fps_name, spool_index = (
+                    mgr.clear_fps_state_for_lane(lane_name, eventtime=self.reactor.monotonic())
+                    if mgr is not None else (False, None, None))
                 if cleared and fps_name:
                     self.logger.debug(f"Cross-Extruder: Cleared FPS state for {fps_name} (was spool {spool_index})")
                     try:
