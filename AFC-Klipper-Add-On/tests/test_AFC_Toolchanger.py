@@ -547,14 +547,14 @@ class TestToolSwap:
         # State must NOT be stuck at TOOL_SWAP
         assert tc.afc.current_state == State.IDLE
 
-    def test_tool_swap_survives_activate_extruder_error(self):
-        """AFC sync failure in select_tool should not crash tool_swap."""
+    def test_tool_swap_resets_state_on_activate_error(self):
+        """State must be IDLE even if _handle_activate_extruder throws."""
         tc = self._make_swap_ready_tc()
         lane = _make_lane_for_swap()
         tc.afc.function._handle_activate_extruder = MagicMock(
             side_effect=RuntimeError("stepper sync failed"))
-        # Should NOT raise — select_tool catches AFC sync errors
-        tc.tool_swap(lane)
+        with pytest.raises(RuntimeError):
+            tc.tool_swap(lane)
         assert tc.afc.current_state == State.IDLE
 
     def test_tool_swap_custom_tool_swap(self):

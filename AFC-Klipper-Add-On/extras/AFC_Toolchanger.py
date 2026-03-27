@@ -459,15 +459,6 @@ class AfcToolchanger(afcUnit):
             else:
                 self.logger.info('Tool unselected')
 
-            # Notify AFC to sync lane state (buffers, steppers, LEDs, spoolman)
-            # for the newly active extruder. This ensures AFC is always in sync
-            # regardless of whether select_tool was called from tool_swap() or
-            # directly via SELECT_TOOL gcode.
-            try:
-                self.afc.function._handle_activate_extruder(0)
-            except Exception:
-                pass  # Don't let AFC sync failure block tool change completion
-
         except Exception:
             if self.status == STATUS_ERROR:
                 pass  # process_error already handled recovery
@@ -866,8 +857,12 @@ class AfcToolchanger(afcUnit):
 
                 self.afc.gcode.run_script_from_command(
                     'SELECT_TOOL T={}'.format(tool_index))
-            # select_tool() already called activate_tool() (switches klipper extruder)
-            # and _handle_activate_extruder() (syncs AFC lane state).
+
+            # Sync AFC lane state AFTER tool swap completes and position is restored.
+            # Must happen here (not inside select_tool) because _handle_activate_extruder
+            # can trigger buffer/stepper/LED changes that interfere with the gcode position
+            # restore sequence inside select_tool.
+            self.afc.function._handle_activate_extruder(0, lane=lane)
 
             self.afc.toolhead.wait_moves()
             self.afc.afcDeltaTime.log_with_time("Tool swap done", debug=False)
