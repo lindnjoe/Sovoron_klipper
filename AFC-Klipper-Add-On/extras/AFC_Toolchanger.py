@@ -692,7 +692,7 @@ class AfcToolchanger(afcUnit):
         dock where the user can reach it. Use AFC_CANCEL_TOOL_PICKUP to
         give up and trigger the error handler.
         """
-        if not self.has_detection:
+        if not self.has_detection or not self.verify_tool_pickup:
             return
         # During a tool change, verify the tool being picked up
         expected = (self.last_change_pickup_tool
