@@ -65,8 +65,8 @@ class afcACE(afcUnit):
         hub: ace_hub1
         extruder: extruder
         mode: combined          # or "direct" for multi-extruder
-        feed_speed: 800         # mm/min
-        retract_speed: 800      # mm/min
+        feed_speed: 60          # mm/s (ACE firmware native unit)
+        retract_speed: 50       # mm/s (ACE firmware native unit)
         feed_length: 500        # mm - distance from ACE to toolhead
         retract_length: 500     # mm - distance to retract back to ACE
 
@@ -98,9 +98,9 @@ class afcACE(afcUnit):
             )
         self.mode = mode
 
-        # Feed/retract parameters
-        self.feed_speed = config.getfloat("feed_speed", 800.0)          # mm/min
-        self.retract_speed = config.getfloat("retract_speed", 800.0)    # mm/min
+        # Feed/retract parameters — speeds are in mm/s (matches ACE firmware expectation)
+        self.feed_speed = config.getfloat("feed_speed", 60.0)             # mm/s — ACE firmware expects mm/s
+        self.retract_speed = config.getfloat("retract_speed", 50.0)       # mm/s — ACE firmware expects mm/s
         self.feed_length = config.getfloat("feed_length", 500.0)        # mm
         self.retract_length = config.getfloat("retract_length", 500.0)  # mm
         self.unload_preretract = config.getfloat("unload_preretract", 50.0) # mm - ACE rewind before cut to tighten spool
@@ -2185,7 +2185,7 @@ class afcACE(afcUnit):
         feed_spd = self._quiet_speed(self.feed_speed)
         self.logger.debug(
             f"ACE feed: slot {slot_index}, "
-            f"length={feed_length}mm @ {feed_spd}mm/min"
+            f"length={feed_length}mm @ {feed_spd}mm/s"
         )
 
         # early_engage: when True the caller should sync the extruder,
@@ -2324,7 +2324,7 @@ class afcACE(afcUnit):
 
         return total_fed, sensor_triggered, early_engage
 
-    def _wait_for_feed_complete(self, slot_index, length_mm, speed_mm_min,
+    def _wait_for_feed_complete(self, slot_index, length_mm, speed_mm_s,
                                  lane=None, poll_interval=0.5):
         """Wait for the ACE hardware to finish a feed/unwind movement.
 
@@ -2336,14 +2336,15 @@ class afcACE(afcUnit):
         If a lane with a toolhead sensor is provided, also checks the sensor
         each poll iteration and returns early if triggered.
 
+        :param speed_mm_s: Speed in mm/s (ACE firmware native unit)
         Returns True if the sensor triggered during the wait, False otherwise.
         """
         ace = self._ace
         if ace is None or not ace.connected:
             return False
 
-        # Calculate max wait: movement time + generous buffer
-        max_wait = (length_mm / max(speed_mm_min, 1)) * 60 + 5.0
+        # Calculate max wait: movement time (mm / mm_s = seconds) + generous buffer
+        max_wait = (length_mm / max(speed_mm_s, 1)) + 5.0
         deadline = self.afc.reactor.monotonic() + max_wait
         sensor_triggered = False
 
@@ -2475,7 +2476,7 @@ class afcACE(afcUnit):
         self.logger.debug(
             f"ACE retract: slot {slot_index}, "
             f"length={retract_length}mm (to_hub={to_hub}) "
-            f"@ {retract_spd}mm/min"
+            f"@ {retract_spd}mm/s"
         )
         ace.unwind_filament(slot_index, retract_length, retract_spd)
         # Wait for ACE to physically complete the retraction
@@ -3234,7 +3235,7 @@ class afcACE(afcUnit):
         retract_dist = distance + 5 if triggered else distance
         self.logger.info(
             f"ACE calibrate: retracting {retract_dist:.0f}mm "
-            f"@ {self.retract_speed}mm/min"
+            f"@ {self.retract_speed}mm/s"
         )
         try:
             self._wait_for_ace_ready()
@@ -3572,7 +3573,7 @@ class afcACE(afcUnit):
         retract_dist = bow_pos + 50
         self.logger.info(
             f"ACE calibrate_td1: retracting {retract_dist:.0f}mm "
-            f"@ {self.retract_speed}mm/min"
+            f"@ {self.retract_speed}mm/s"
         )
         try:
             self._wait_for_ace_ready()

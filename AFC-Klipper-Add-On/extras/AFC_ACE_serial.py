@@ -642,16 +642,21 @@ class ACEConnection:
             timeout=timeout,
         )
 
-    def feed_filament(self, slot_index, length_mm, speed_mm_min):
-        """Feed filament forward from the specified slot."""
+    def feed_filament(self, slot_index, length_mm, speed_mm_s):
+        """Feed filament forward from the specified slot.
+
+        :param slot_index: Slot index (0-based)
+        :param length_mm: Distance to feed in mm
+        :param speed_mm_s: Feed speed in mm/s (ACE firmware native unit)
+        """
         return self.send_command(
             "feed_filament",
             params={
                 "index": slot_index,
                 "length": length_mm,
-                "speed": speed_mm_min,
+                "speed": speed_mm_s,
             },
-            timeout=max(REQUEST_TIMEOUT, (length_mm / speed_mm_min) * 60 + 10),
+            timeout=max(REQUEST_TIMEOUT, (length_mm / max(speed_mm_s, 1)) + 10),
         )
 
     def stop_feed_filament(self, slot_index):
@@ -660,17 +665,23 @@ class ACEConnection:
             "stop_feed_filament", params={"index": slot_index}
         )
 
-    def unwind_filament(self, slot_index, length_mm, speed_mm_min, mode="normal"):
-        """Retract/unwind filament back into the specified slot."""
+    def unwind_filament(self, slot_index, length_mm, speed_mm_s, mode="normal"):
+        """Retract/unwind filament back into the specified slot.
+
+        :param slot_index: Slot index (0-based)
+        :param length_mm: Distance to retract in mm
+        :param speed_mm_s: Retract speed in mm/s (ACE firmware native unit)
+        :param mode: Unwind mode ("normal" or other firmware-supported modes)
+        """
         return self.send_command(
             "unwind_filament",
             params={
                 "index": slot_index,
                 "length": length_mm,
-                "speed": speed_mm_min,
+                "speed": speed_mm_s,
                 "mode": mode,
             },
-            timeout=max(REQUEST_TIMEOUT, (length_mm / speed_mm_min) * 60 + 10),
+            timeout=max(REQUEST_TIMEOUT, (length_mm / max(speed_mm_s, 1)) + 10),
         )
 
     def stop_unwind_filament(self, slot_index):
