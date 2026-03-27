@@ -3,10 +3,10 @@
   "appearance": {
     "toolhead_style": 3
   },
-  "beta_features": false,
+  "beta_features": true,
   "brightness": 80,
   "completion_alert": true,
-  "config_version": 8,
+  "config_version": 9,
   "dark_mode": true,
   "display": {
     "bed_mesh_render_mode": 0,
@@ -84,6 +84,7 @@
         "hotend": "heater_fan T0_hotend_fan",
         "part": "fan_generic T0_partfan"
       },
+      "filament": {},
       "filament_sensors": {
         "master_enabled": true,
         "sensors": [
@@ -171,7 +172,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-26T14:24:49Z"
+          "timestamp": "2026-03-27T00:58:39Z"
         },
         "optional": []
       },
@@ -483,11 +484,11 @@
                   "rowspan": 1
                 },
                 {
-                  "col": -1,
+                  "col": 2,
                   "colspan": 1,
-                  "enabled": false,
+                  "enabled": true,
                   "id": "tool_switcher",
-                  "row": -1,
+                  "row": 2,
                   "rowspan": 1
                 },
                 {
@@ -497,6 +498,14 @@
                   "id": "nozzle_temps",
                   "row": -1,
                   "rowspan": 2
+                },
+                {
+                  "col": -1,
+                  "colspan": 1,
+                  "enabled": false,
+                  "id": "active_spool",
+                  "row": -1,
+                  "rowspan": 1
                 }
               ]
             },
