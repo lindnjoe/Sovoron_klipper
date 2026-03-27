@@ -427,7 +427,7 @@ class afcFunction:
         """
         Helper function to lookup AFC_led object.
 
-        :params led_name: name of AFC_led object to lookup
+        :params led_name: name of AFC_led object to lookup (e.g. "AFC_Indicator:1-4" or "AFC_Indicator")
 
         :return (string, object): error_string if AFC_led object is not found, led object if found
         """
@@ -437,10 +437,10 @@ class afcFunction:
         try:
             led = self.printer.lookup_object(afc_object)
         except:
-            error_string = "Error: Cannot find [{}] in config, make sure led_index in config is correct for AFC_stepper {}".format(afc_object, led_name.split(':')[-1])
+            error_string = "Error: Cannot find [{}] in config, make sure led_index in config is correct".format(afc_object)
         return error_string, led
 
-    def _get_led_indexes(self, index_values):
+    def _get_led_indexes(self, index_values: str) -> list[str]:
         """
         Helper function for creating a list for index values that have dashes and commas
         so the led's can be set correctly.
@@ -459,12 +459,13 @@ class afcFunction:
                 led_indexes += range(low, high+1)
         return led_indexes
 
-    def _parse_led_groups(self, idx):
+    def parse_led_groups(self, idx: str) -> list[str, str]:
         """
         Parse an LED index string into groups of (led_name, index_string).
 
         Supports both single-LED format (``AFC_Indicator:1-4,9,10``) and
-        multi-LED format (``RGB1:1-4,RGB2:4-6,RGB3:5``).
+        multi-LED format (``RGB1:1-4,RGB2:4-6,RGB3:5``) naming needs to be
+        AFC_led config name.
 
         When a comma-separated segment contains a colon it starts a new LED
         group; otherwise it is appended to the current group's indexes.
@@ -478,23 +479,28 @@ class afcFunction:
                 led_name, index_str = part.split(":", 1)
                 groups.append((led_name.strip(), index_str.strip()))
             else:
-                # Continuation of the previous group's indexes
                 if groups:
+                    # Continuation of the previous group's indexes
                     prev_name, prev_idx = groups[-1]
                     groups[-1] = (prev_name, prev_idx + "," + part.strip())
+                else:
+                    self.logger.info(
+                        "Warning: led_index segment '{}' has no LED name "
+                        "and no prior group to attach to, skipping".format(part.strip())
+                    )
         return groups
 
-    def afc_led (self, status, idx=None):
+    def afc_led (self, status: list[str]|str, idx=None):
         if idx is None:
             return
 
-        for led_name, index_str in self._parse_led_groups(idx):
-            error_string, led = self.verify_led_object(led_name + ":")
+        for led_name, index_str in self.parse_led_groups(idx):
+            error_string, led = self.verify_led_object(led_name)
             if led is not None:
                 range_index = self._get_led_indexes(index_str)
                 led.led_change(range_index, status)
             else:
-                self.logger.info( error_string )
+                self.logger.error( error_string )
 
     def get_filament_status(self, cur_lane):
         if cur_lane.prep_state:
@@ -549,12 +555,7 @@ class afcFunction:
 
         # Switch spoolman ID
         self.afc.spool.set_active_spool(cur_lane_loaded.spool_id)
-        # Set lanes tool loaded led
-        # TODO: Add check to see if users want to change status led to spool color if set
-        # if cur_lane_loaded.color is not None and cur_lane_loaded.color:
-        #     led_color = self.HexToLedString(cur_lane_loaded.color.replace("#", ""))
-        #     self.afc_led( led_color, cur_lane_loaded.led_index )
-        # else:
+        # Set lanes tool loaded led (uses filament color when available via _get_lane_color)
         cur_lane_loaded.unit_obj.lane_tool_loaded( cur_lane_loaded )
         # Enable stepper
         cur_lane_loaded.do_enable(True)
@@ -623,19 +624,21 @@ class afcFunction:
             self.logger.debug("Printer extruder not in absolute mode, setting to absolute mode")
             self.afc.gcode_move.absolute_extrude = True
 
-    def get_extruder_pos(self, eventtime=None, past_extruder_position=None):
+    def get_extruder_pos(self, eventtime=None, past_extruder_position=None, extruder=None):
         """
         This function find the last position of the filament and only returns a value if it greater than
         the previous passed in position.
 
         :param eventtime: Current eventtime to calculate the position from, if time is not passed in uses current eventtime
         :param past_extruder_position: Previous extruder position to compare current position against.
+        :param extruder: Extruder object to get position from, if None uses current toolhead extruder
         :return float: Returns current extruder position if its greater than previous position, else returns previous position
         """
         if eventtime is None:
             eventtime = self.afc.reactor.monotonic()
         print_time = self.mcu.estimated_print_time(eventtime)
-        extruder = self.afc.toolhead.get_extruder()
+        if extruder is None:
+            extruder = self.afc.toolhead.get_extruder()
         last_extruder_position = extruder.find_past_position(print_time)
 
         if past_extruder_position is None or last_extruder_position > past_extruder_position:

@@ -47,6 +47,35 @@ class AFCSpool:
         self.gcode.register_mux_command('SET_SPOOL_ID',         "LANE", lane_obj.name, self.cmd_SET_SPOOL_ID,           desc=self.cmd_SET_SPOOL_ID_help)
         self.gcode.register_mux_command('SET_RUNOUT',           "LANE", lane_obj.name, self.cmd_SET_RUNOUT,             desc=self.cmd_SET_RUNOUT_help)
         self.gcode.register_mux_command('SET_MAP',              "LANE", lane_obj.name, self.cmd_SET_MAP,                desc=self.cmd_SET_MAP_help)
+        self.gcode.register_mux_command('AFC_SET_SPOOL_TEMP',   "LANE", lane_obj.name, self.cmd_AFC_SET_SPOOL_TEMP,     desc=self.cmd_AFC_SET_SPOOL_TEMP_help)
+
+    cmd_AFC_SET_SPOOL_TEMP_help = "Set spool temperatures for a lane"
+    def cmd_AFC_SET_SPOOL_TEMP(self, gcmd):
+        """
+        This function handles setting the bed and extruder temperatures for a specified lane's spool.
+
+        Usage
+        -----
+        `AFC_SET_SPOOL_TEMP LANE=<lane> BED_TEMP=<temp> EXTRUDER_TEMP=<temp>`
+
+        Example
+        -----
+        ```
+        AFC_SET_SPOOL_TEMP LANE=lane1 BED_TEMP=60 EXTRUDER_TEMP=210
+        ```
+        """
+        lane = gcmd.get('LANE', None)
+        if lane is None:
+            self.logger.info("No LANE parameter provided, please specify a valid LANE parameter.")
+            return
+        cur_lane = self.afc.lanes.get(lane)
+        if cur_lane is None:
+            self.logger.info('{} Unknown'.format(lane))
+            return
+        cur_lane.bed_temp = gcmd.get_int('BED_TEMP', cur_lane.bed_temp, minval=0)
+        cur_lane.extruder_temp = gcmd.get_int('EXTRUDER_TEMP', cur_lane.extruder_temp, minval=0)
+        cur_lane.send_lane_data()
+        self.afc.save_vars()
 
     cmd_SET_MAP_help = "Changes T(n) mapping for a lane"
     def cmd_SET_MAP(self, gcmd):
@@ -126,6 +155,10 @@ class AFCSpool:
         cur_lane.color = '#{}'.format(color.replace('#',''))
         cur_lane.send_lane_data()
         self.afc.save_vars()
+        # Refresh LED only if filament is loaded — empty lanes keep their state color
+        if cur_lane.load_state and cur_lane.unit in self.afc.units:
+            unit = cur_lane.unit_obj
+            self.afc.function.afc_led(unit._get_lane_color(cur_lane, cur_lane.led_ready), cur_lane.led_index)
 
     cmd_SET_WEIGHT_help = "Sets filaments weight for a lane"
     def cmd_SET_WEIGHT(self, gcmd):
@@ -283,8 +316,13 @@ class AFCSpool:
         """
         Helper function for setting lane spool values
         """
-        # set defaults if there's no spool id, or the spoolman lookup fails
-        if not cur_lane.remember_spool:
+        # Always reset debounce on spool change
+        cur_lane.auto_switch_triggered = False
+        # Only apply defaults (material type, 1000g weight) when no spool data has been
+        # assigned to this lane. If SET_SPOOL_ID or SET_COLOR was called before loading
+        # (e.g. from an NFC tag scan), the spool_id and/or color will already be set with
+        # real values — don't overwrite them with defaults during the load sequence.
+        if not cur_lane.remember_spool and cur_lane.spool_id is None and not cur_lane.color:
             cur_lane.material = self.afc.default_material_type
             cur_lane.weight = 1000 # Defaulting weight to 1000 upon load
 
@@ -303,6 +341,7 @@ class AFCSpool:
         cur_lane.weight = 0
         cur_lane.extruder_temp = None
         cur_lane.bed_temp = None
+        cur_lane.auto_switch_triggered = False
         cur_lane.clear_lane_data()
 
     def set_spoolID(self, cur_lane, SpoolID, save_vars=True):
@@ -343,6 +382,10 @@ class AFCSpool:
                         cur_lane.color = '#{}'.format(self._get_filament_values(result['filament'], 'color_hex'))
 
                     cur_lane.send_lane_data()
+                    # Refresh LED only if filament is loaded — empty lanes keep their state color
+                    if cur_lane.load_state and cur_lane.unit in self.afc.units:
+                        unit = cur_lane.unit_obj
+                        self.afc.function.afc_led(unit._get_lane_color(cur_lane, cur_lane.led_ready), cur_lane.led_index)
 
                 except Exception as e:
                     self.afc.error.AFC_error("Error when trying to get Spoolman data for ID:{}, Error: {}".format(SpoolID, e), False)
