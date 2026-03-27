@@ -3525,121 +3525,44 @@ class OAMSManager:
         return self.afc
 
     def _get_reload_params(self, lane_name: str):
-        """Get reload length and speed from AFC extruder config.
-
-        Returns:
-            (reload_length, reload_speed) tuple, or (None, None) if not available
-        """
+        """Get reload length and speed — delegates to AFC_OpenAMS."""
         try:
-            afc = self._get_afc()
-            if afc is None:
-                return None, None
-
-            lane = afc.lanes.get(lane_name)
-            if lane is None:
-                return None, None
-
-            # Get extruder name from lane
-            extruder_name = getattr(lane, 'extruder_name', None)
-            if not extruder_name:
-                return None, None
-
-            # Look up AFC_extruder object
-            afc_extruder_name = f'AFC_extruder {extruder_name}'
-            afc_extruder = self.printer.lookup_object(afc_extruder_name, None)
-            if afc_extruder is None:
-                return None, None
-
-            # Get reload parameters from AFC_extruder
-            # RELOAD_LENGTH = (tool_stn / 2) + tool_sensor_after_extruder + retract_length + hotend_meltzone_compensation
-            tool_stn = getattr(afc_extruder, 'tool_stn', 0.0)
-            tool_sensor_after = getattr(afc_extruder, 'tool_sensor_after_extruder', 0.0)
-            tool_load_speed = getattr(afc_extruder, 'tool_load_speed', 25.0)
-
-            # Get additional components from macro variables
-            try:
-                macro_vars = self.printer.lookup_object('gcode_macro _oams_macro_variables', None)
-                hotend_compensation = getattr(macro_vars, 'hotend_meltzone_compensation', 0.0) if macro_vars else 0.0
-
-                cut_tip_vars = self.printer.lookup_object('gcode_macro _AFC_CUT_TIP_VARS', None)
-                retract_length = getattr(cut_tip_vars, 'retract_length', 0.0) if cut_tip_vars else 0.0
-            except Exception as e:
-                hotend_compensation = 0.0
-                retract_length = 0.0
-
-            # Calculate post-engagement reload length (remaining move after engagement check)
-            reload_length = (tool_stn / 2.0) + tool_sensor_after + retract_length + hotend_compensation
-            reload_speed = tool_load_speed * 60.0  # Convert to mm/min
-
-            return reload_length, reload_speed
-
+            unit = self._get_afc_unit_for_lane(lane_name)
+            if unit is not None and hasattr(unit, 'get_reload_params'):
+                return unit.get_reload_params(lane_name)
         except Exception as e:
             self.logger.error(f"Failed to get reload params for {lane_name}: {e}")
-            return None, None
+        return None, None
 
     def _get_engagement_params(self, lane_name: str):
-        """Get engagement extrusion length and speed from AFC extruder config."""
+        """Get engagement extrusion length and speed — delegates to AFC_OpenAMS."""
         try:
-            afc = self._get_afc()
-            if afc is None:
-                return None, None
-
-            lane = afc.lanes.get(lane_name)
-            if lane is None:
-                return None, None
-
-            # Get extruder name from lane
-            extruder_name = getattr(lane, 'extruder_name', None)
-            if not extruder_name:
-                return None, None
-
-            # Look up AFC_extruder object
-            afc_extruder_name = f'AFC_extruder {extruder_name}'
-            afc_extruder = self.printer.lookup_object(afc_extruder_name, None)
-            if afc_extruder is None:
-                return None, None
-
-            tool_stn = getattr(afc_extruder, 'tool_stn', None)
-            engagement_length = (tool_stn / 2.0) if tool_stn is not None else None
-            engagement_speed = getattr(afc_extruder, 'tool_load_speed', None)
-            engagement_speed = engagement_speed * 60.0 if engagement_speed is not None else None
-
-            return engagement_length, engagement_speed
+            unit = self._get_afc_unit_for_lane(lane_name)
+            if unit is not None and hasattr(unit, 'get_engagement_params'):
+                return unit.get_engagement_params(lane_name)
         except Exception as e:
             self.logger.error(f"Failed to get engagement params for {lane_name}: {e}")
-            return None, None
+        return None, None
 
     def _get_unload_params(self, lane_name: str):
-        """Get unload retract length and speed from AFC extruder config."""
+        """Get unload retract length and speed — delegates to AFC_OpenAMS."""
         try:
-            afc = self._get_afc()
-            if afc is None:
-                return None, None
-
-            lane = afc.lanes.get(lane_name)
-            if lane is None:
-                return None, None
-
-            extruder_name = getattr(lane, 'extruder_name', None)
-            if not extruder_name:
-                return None, None
-
-            afc_extruder_name = f'AFC_extruder {extruder_name}'
-            afc_extruder = self.printer.lookup_object(afc_extruder_name, None)
-            if afc_extruder is None:
-                return None, None
-
-            unload_length = getattr(afc_extruder, 'tool_stn_unload', None)
-            if unload_length is None or unload_length <= 0:
-                unload_length = getattr(afc_extruder, 'tool_stn', None)
-
-            unload_speed = getattr(afc_extruder, 'tool_unload_speed', None)
-            unload_speed = unload_speed * 60.0 if unload_speed is not None else None
-
-            return unload_length, unload_speed
+            unit = self._get_afc_unit_for_lane(lane_name)
+            if unit is not None and hasattr(unit, 'get_unload_params'):
+                return unit.get_unload_params(lane_name)
         except Exception as e:
             self.logger.error(f"Failed to get unload params for {lane_name}: {e}")
-            return None, None
+        return None, None
+
+    def _get_afc_unit_for_lane(self, lane_name: str):
+        """Resolve the AFC unit object for a lane name."""
+        afc = self._get_afc()
+        if afc is None:
+            return None
+        lane = afc.lanes.get(lane_name)
+        if lane is None:
+            return None
+        return getattr(lane, 'unit_obj', None)
 
     def _verify_engagement_with_extrude(self, fps_name: str, fps_state: 'FPSState', fps,
                                       lane_name: str, oams):
@@ -5089,23 +5012,9 @@ class OAMSManager:
             return False, f"Bay {bay_index} on {oams_name} is not ready (no spool detected)"
 
         # Load the filament
+        # NOTE: Dock purge (dropoff/pickup) is now handled by AFC_OpenAMS.load_sequence(),
+        # not here. oams_manager is purely hardware load orchestration.
         self.logger.debug(f"Loading lane {lane_name}: {oams_name} bay {bay_index} via {fps_name}")
-
-        if getattr(oam, "dock_load", False):
-            gcode = self._gcode_obj
-            if gcode is None:
-                try:
-                    gcode = self.printer.lookup_object("gcode")
-                except Exception as e:
-                    gcode = None
-                self._gcode_obj = gcode
-            if gcode is not None:
-                if not self._run_tool_crash_detection(False):
-                    self.logger.warning("Failed to stop tool crash detection before dock dropoff")
-                self.logger.info("OAMS dock purge: dropping tool off at dock before feed")
-                self._dock_purge_dropoff()
-            else:
-                self.logger.warning(f"Failed to dock tool before loading {lane_name}")
 
         # Capture state BEFORE changing fps_state.state to avoid getting stuck
         try:
@@ -5329,28 +5238,9 @@ class OAMSManager:
             self.logger.debug(f"Failed to force-update loaded_to_hub for {lane_name} after load: {e}")
 
         # Monitors are already running globally, no need to restart them
-        if getattr(oam, "dock_load", False):
-            purge_length = getattr(oam, "post_load_purge", 0.0) or 0.0
-            if purge_length > 0:
-                _, purge_speed = self._get_reload_params(lane_name)
-                purge_feed = purge_speed if purge_speed is not None else 1200.0
-                self.logger.info(
-                    f"OAMS dock purge: extruding {purge_length:.1f}mm "
-                    f"@ {purge_feed:.0f}mm/min in dock, then picking up"
-                )
-                try:
-                    self._oams_extrude(purge_length, purge_feed,
-                                       state_name="oams_post_purge", reset_pos=True)
-                except Exception as e:
-                    self.logger.warning(f"Failed to run post-load purge for {lane_name}")
-            # Pick tool back up from dock and restore position
-            self._dock_purge_pickup()
-            if not self._run_tool_crash_detection(True):
-                self.logger.warning("Failed to start tool crash detection after dock pickup")
+        # NOTE: Dock purge pickup and post-load purge extrusion are now handled
+        # by AFC_OpenAMS.load_sequence() in the finally block.
         return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
-
-        # Fallback - should not be hit, but return a failure tuple instead of None
-        return False, f"Failed to load lane {lane_name}"
 
 
     def unload_filament_with_prep_for_fps(
