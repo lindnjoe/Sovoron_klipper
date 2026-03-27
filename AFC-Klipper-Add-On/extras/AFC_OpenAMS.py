@@ -855,6 +855,79 @@ class afcAMS(afcUnit):
         """Check if dock purge is enabled on the OAMS hardware."""
         return self.oams is not None and getattr(self.oams, 'dock_load', False)
 
+    # ---- Parameter getters (AFC owns extruder config) ----
+
+    def get_engagement_params(self, lane_name):
+        """Get engagement extrusion length and speed from AFC extruder config.
+
+        :param lane_name: Lane name to get params for
+        :return: (engagement_length_mm, engagement_speed_mm_per_min) or (None, None)
+        """
+        lane = self.afc.lanes.get(lane_name)
+        if lane is None:
+            return None, None
+        extruder = getattr(lane, 'extruder_obj', None)
+        if extruder is None:
+            return None, None
+        tool_stn = getattr(extruder, 'tool_stn', None)
+        if tool_stn is None:
+            return None, None
+        engagement_length = tool_stn / 2.0
+        engagement_speed = getattr(extruder, 'tool_load_speed', 25.0) * 60.0
+        return engagement_length, engagement_speed
+
+    def get_reload_params(self, lane_name):
+        """Get post-engagement reload length and speed from AFC extruder config.
+
+        The reload length is the remaining distance after engagement verification:
+        (tool_stn / 2) + tool_sensor_after_extruder + retract_length + hotend_compensation
+
+        :param lane_name: Lane name to get params for
+        :return: (reload_length_mm, reload_speed_mm_per_min) or (None, None)
+        """
+        lane = self.afc.lanes.get(lane_name)
+        if lane is None:
+            return None, None
+        extruder = getattr(lane, 'extruder_obj', None)
+        if extruder is None:
+            return None, None
+        tool_stn = getattr(extruder, 'tool_stn', 0.0)
+        tool_sensor_after = getattr(extruder, 'tool_sensor_after_extruder', 0.0)
+        tool_load_speed = getattr(extruder, 'tool_load_speed', 25.0)
+
+        # Get additional components from macro variables
+        try:
+            macro_vars = self.printer.lookup_object('gcode_macro _oams_macro_variables', None)
+            hotend_compensation = getattr(macro_vars, 'hotend_meltzone_compensation', 0.0) if macro_vars else 0.0
+            cut_tip_vars = self.printer.lookup_object('gcode_macro _AFC_CUT_TIP_VARS', None)
+            retract_length = getattr(cut_tip_vars, 'retract_length', 0.0) if cut_tip_vars else 0.0
+        except Exception:
+            hotend_compensation = 0.0
+            retract_length = 0.0
+
+        reload_length = (tool_stn / 2.0) + tool_sensor_after + retract_length + hotend_compensation
+        reload_speed = tool_load_speed * 60.0
+        return reload_length, reload_speed
+
+    def get_unload_params(self, lane_name):
+        """Get unload retract length and speed from AFC extruder config.
+
+        :param lane_name: Lane name to get params for
+        :return: (unload_length_mm, unload_speed_mm_per_min) or (None, None)
+        """
+        lane = self.afc.lanes.get(lane_name)
+        if lane is None:
+            return None, None
+        extruder = getattr(lane, 'extruder_obj', None)
+        if extruder is None:
+            return None, None
+        unload_length = getattr(extruder, 'tool_stn_unload', None)
+        if unload_length is None or unload_length <= 0:
+            unload_length = getattr(extruder, 'tool_stn', None)
+        unload_speed = getattr(extruder, 'tool_unload_speed', None)
+        unload_speed = unload_speed * 60.0 if unload_speed is not None else None
+        return unload_length, unload_speed
+
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
         """OpenAMS load sequence — AFC-owned orchestration.
 
