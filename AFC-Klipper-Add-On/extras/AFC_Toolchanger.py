@@ -147,6 +147,10 @@ class AfcToolchanger(afcUnit):
         self.gcode.register_command("VERIFY_TOOL_DETECTED",
                                     self.cmd_VERIFY_TOOL_DETECTED,
                                     desc="Verify expected tool is detected on shuttle")
+        self.gcode.register_command("AFC_RETRY_TOOL_PICKUP",
+                                    self.cmd_AFC_RETRY_TOOL_PICKUP,
+                                    desc="Retry tool detection after manual fix")
+        self._pickup_retry_requested = False
 
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_tc_connect)
@@ -673,8 +677,13 @@ class AfcToolchanger(afcUnit):
         """Inline gcode command to verify tool detection at the dock.
 
         Called from within pickup_gcode at the 'verify' point in the path,
-        BEFORE restore moves.  This matches viesturz/klipper-toolchanger
-        behaviour: if pickup fails, error fires while still at the dock.
+        BEFORE restore moves. If detection fails, holds position at the dock
+        and prompts the user to fix the tool manually. Re-checks detection
+        after user intervention. If the user fixes it, the pickup path
+        continues normally (remaining path points lift away from dock safely).
+
+        Falls through to process_error() only if the user cannot fix it
+        (timeout or repeated failures).
         """
         if not self.has_detection:
             return
@@ -690,7 +699,61 @@ class AfcToolchanger(afcUnit):
         toolhead.wait_moves()
         # Brief pause to let detection pin edge callbacks settle
         reactor.pause(reactor.monotonic() + 0.2)
-        self._validate_detected_tool(expected, gcmd.error)
+
+        actual = self._require_detected_tool()
+        if actual == expected:
+            return  # Detection passed — continue pickup path normally
+
+        # Detection failed — shuttle is at the dock, tool not properly seated.
+        # Hold position and give the user a chance to fix it.
+        max_retries = 3
+        retry_wait = 10.0  # seconds between re-checks
+
+        for attempt in range(max_retries):
+            expected_name = expected.name if expected else "None"
+            actual_name = actual.name if actual else "None"
+            self.logger.raw(
+                "<span class=error--text>"
+                f"Tool pickup failed: expected {expected_name}, detected {actual_name}. "
+                f"Shuttle is at the dock — manually seat the tool, then wait for re-check "
+                f"(attempt {attempt + 1}/{max_retries}, re-checking in {retry_wait:.0f}s). "
+                f"Use AFC_RETRY_TOOL_PICKUP to re-check immediately."
+                "</span>"
+            )
+
+            # Wait for user to fix — check for manual retry command or timeout
+            self._pickup_retry_requested = False
+            deadline = reactor.monotonic() + retry_wait
+            while reactor.monotonic() < deadline and not self._pickup_retry_requested:
+                reactor.pause(reactor.monotonic() + 0.5)
+
+            # Re-check detection
+            toolhead.wait_moves()
+            reactor.pause(reactor.monotonic() + 0.2)
+            actual = self._require_detected_tool()
+            if actual == expected:
+                self.logger.info(
+                    f"Tool {expected_name} detected after manual fix — continuing pickup")
+                return  # Success — pickup path continues with remaining moves
+
+        # All retries exhausted — fall through to error handler
+        expected_name = expected.name if expected else "None"
+        actual_name = actual.name if actual else "None"
+        message = (
+            "Tool pickup failed after %d attempts: expected %s but detected %s. "
+            "Shuttle is at the dock." % (max_retries, expected_name, actual_name))
+        self.process_error(gcmd.error, message)
+
+    def cmd_AFC_RETRY_TOOL_PICKUP(self, gcmd):
+        """Manual command to trigger immediate re-check of tool detection.
+
+        Use this when you've manually fixed the tool on the shuttle and want
+        to skip the wait timer.
+
+        Usage: AFC_RETRY_TOOL_PICKUP
+        """
+        self._pickup_retry_requested = True
+        self.logger.info("Manual retry requested — re-checking tool detection")
 
     def process_error(self, raise_error, message):
         """Handle toolchanger errors with proper state recovery.
