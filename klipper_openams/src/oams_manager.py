@@ -5089,23 +5089,9 @@ class OAMSManager:
             return False, f"Bay {bay_index} on {oams_name} is not ready (no spool detected)"
 
         # Load the filament
+        # NOTE: Dock purge (dropoff/pickup) is now handled by AFC_OpenAMS.load_sequence(),
+        # not here. oams_manager is purely hardware load orchestration.
         self.logger.debug(f"Loading lane {lane_name}: {oams_name} bay {bay_index} via {fps_name}")
-
-        if getattr(oam, "dock_load", False):
-            gcode = self._gcode_obj
-            if gcode is None:
-                try:
-                    gcode = self.printer.lookup_object("gcode")
-                except Exception as e:
-                    gcode = None
-                self._gcode_obj = gcode
-            if gcode is not None:
-                if not self._run_tool_crash_detection(False):
-                    self.logger.warning("Failed to stop tool crash detection before dock dropoff")
-                self.logger.info("OAMS dock purge: dropping tool off at dock before feed")
-                self._dock_purge_dropoff()
-            else:
-                self.logger.warning(f"Failed to dock tool before loading {lane_name}")
 
         # Capture state BEFORE changing fps_state.state to avoid getting stuck
         try:
@@ -5329,28 +5315,9 @@ class OAMSManager:
             self.logger.debug(f"Failed to force-update loaded_to_hub for {lane_name} after load: {e}")
 
         # Monitors are already running globally, no need to restart them
-        if getattr(oam, "dock_load", False):
-            purge_length = getattr(oam, "post_load_purge", 0.0) or 0.0
-            if purge_length > 0:
-                _, purge_speed = self._get_reload_params(lane_name)
-                purge_feed = purge_speed if purge_speed is not None else 1200.0
-                self.logger.info(
-                    f"OAMS dock purge: extruding {purge_length:.1f}mm "
-                    f"@ {purge_feed:.0f}mm/min in dock, then picking up"
-                )
-                try:
-                    self._oams_extrude(purge_length, purge_feed,
-                                       state_name="oams_post_purge", reset_pos=True)
-                except Exception as e:
-                    self.logger.warning(f"Failed to run post-load purge for {lane_name}")
-            # Pick tool back up from dock and restore position
-            self._dock_purge_pickup()
-            if not self._run_tool_crash_detection(True):
-                self.logger.warning("Failed to start tool crash detection after dock pickup")
+        # NOTE: Dock purge pickup and post-load purge extrusion are now handled
+        # by AFC_OpenAMS.load_sequence() in the finally block.
         return True, f"Loaded lane {lane_name} ({oam_name} bay {bay_index})"
-
-        # Fallback - should not be hit, but return a failure tuple instead of None
-        return False, f"Failed to load lane {lane_name}"
 
 
     def unload_filament_with_prep_for_fps(

@@ -804,12 +804,63 @@ class afcAMS(afcUnit):
             return False, None, None
         return manager.clear_fps_state_for_lane(lane_name, eventtime=eventtime)
 
-    def load_sequence(self, cur_lane, cur_hub, cur_extruder):
-        """OpenAMS load sequence - delegates to OAMSManager instead of stepper-based loading.
+    # ---- Dock purge (AFC-owned, same pattern as ACE) ----
 
-        Called by AFC's upstream delegation hook:
-            if hasattr(cur_lane.unit_obj, 'load_sequence'):
-                return cur_lane.unit_obj.load_sequence(...)
+    def _dock_purge_dropoff(self):
+        """Drop off current tool at dock for dock purging.
+
+        Enters docking mode and runs the toolchanger's dropoff gcode so the
+        nozzle rests on the dock pad while filament is loaded and purged.
+        """
+        cur_extruder = self.afc.function.get_current_extruder_obj()
+        tc = cur_extruder.tc_unit_obj if cur_extruder else None
+        if not tc or not tc.active_tool:
+            self.logger.warning("OAMS dock purge: no active tool, skipping dropoff")
+            return
+        tool = tc.active_tool
+
+        self.afc.gcode.run_script_from_command("ENTER_DOCKING_MODE")
+
+        gcode_pos = list(tc.gcode_move.get_status()['gcode_position'])
+        start_pos = tc._position_with_tool_offset(gcode_pos, None)
+        self._dock_purge_context = {
+            'dropoff_tool': tool.name,
+            'pickup_tool': tool.name,
+            'dock_purge': True,
+            'start_position': tc._position_to_xyz(start_pos, 'xyz'),
+            'restore_position': tc._position_to_xyz(start_pos, 'XYZ'),
+        }
+
+        tc._run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
+        self.logger.info("OAMS dock purge: tool dropped off at dock")
+
+    def _dock_purge_pickup(self):
+        """Pick up tool from dock after purging.
+
+        Runs the toolchanger's pickup gcode and exits docking mode.
+        """
+        cur_extruder = self.afc.function.get_current_extruder_obj()
+        tc = cur_extruder.tc_unit_obj if cur_extruder else None
+        if not tc or not tc.active_tool or not hasattr(self, '_dock_purge_context') or self._dock_purge_context is None:
+            self.logger.warning("OAMS dock purge: no context for pickup, skipping")
+            return
+        tool = tc.active_tool
+
+        tc._run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
+        self.afc.gcode.run_script_from_command("EXIT_DOCKING_MODE")
+        self._dock_purge_context = None
+        self.logger.info("OAMS dock purge: tool picked up from dock")
+
+    def _is_dock_purge_enabled(self):
+        """Check if dock purge is enabled on the OAMS hardware."""
+        return self.oams is not None and getattr(self.oams, 'dock_load', False)
+
+    def load_sequence(self, cur_lane, cur_hub, cur_extruder):
+        """OpenAMS load sequence — AFC-owned orchestration.
+
+        Handles dock purge wrapper, temperature management, and delegates
+        the hardware load to oams_manager. AFC is master control: dock purge
+        happens here (not in oams_manager), same pattern as ACE.
 
         :param cur_lane: The lane object to be loaded.
         :param cur_hub: The hub object associated with the lane (unused for OpenAMS).
@@ -818,7 +869,7 @@ class afcAMS(afcUnit):
         """
         afc = self.afc
 
-        # Check if this lane is already loaded to toolhead ? sync state and skip
+        # Check if this lane is already loaded to toolhead — sync state and skip
         if cur_lane.get_toolhead_pre_sensor_state() and hasattr(cur_lane, 'tool_loaded') and cur_lane.tool_loaded:
             self.logger.debug(f"Lane {cur_lane.name} already loaded to toolhead, skipping load")
             cur_lane.set_tool_loaded()
@@ -828,16 +879,27 @@ class afcAMS(afcUnit):
         if afc._check_extruder_temp(cur_lane):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
 
+        if afc.afcDeltaTime.start_time is None:
+            afc.afcDeltaTime.set_start_time()
+        else:
+            now = datetime.now()
+            afc.afcDeltaTime.major_delta_time = now
+            afc.afcDeltaTime.last_time = now
+
+        # Dock purge phase 1: drop off tool before feeding filament
+        dock_dropped_off = False
+        if self._is_dock_purge_enabled():
+            self.logger.info("OAMS dock purge: dropping tool off at dock before feed")
+            self._dock_purge_dropoff()
+            dock_dropped_off = True
+            afc.afcDeltaTime.log_with_time("OAMS: After dock purge dropoff")
+
+        # Wrap the load so tool is always picked back up, even on failure
+        load_result = False
         try:
-            if afc.afcDeltaTime.start_time is None:
-                afc.afcDeltaTime.set_start_time()
-            else:
-                now = datetime.now()
-                afc.afcDeltaTime.major_delta_time = now
-                afc.afcDeltaTime.last_time = now
             afc._oams_suppress_tool_swap_timer = True
             self.logger.debug(
-                f"OpenAMS load: delegating to OAMSM_LOAD_FILAMENT for lane {cur_lane.name}"
+                f"OpenAMS load: delegating to oams_manager for lane {cur_lane.name}"
             )
             oams_manager = self._get_oams_manager()
             if oams_manager is None:
@@ -849,12 +911,30 @@ class afcAMS(afcUnit):
                 message = message or f"OpenAMS load failed for {cur_lane.name}"
                 afc.error.handle_lane_failure(cur_lane, message)
                 return False
+
+            load_result = True
         except Exception as e:
             message = "OpenAMS load failed for {}: {}".format(cur_lane.name, str(e))
             afc.error.handle_lane_failure(cur_lane, message)
             return False
         finally:
             afc._oams_suppress_tool_swap_timer = False
+            if dock_dropped_off:
+                # Always pick up tool — even on failure
+                if load_result:
+                    # Success: purge in dock, then pick up
+                    purge_length = getattr(self.oams, 'post_load_purge', 0.0) or 0.0
+                    if purge_length > 0:
+                        purge_speed = getattr(cur_extruder, 'tool_load_speed', 7.0)
+                        self.logger.info(
+                            f"OAMS dock purge: extruding {purge_length:.1f}mm "
+                            f"@ {purge_speed}mm/s in dock, then picking up"
+                        )
+                        afc.move_e_pos(purge_length, purge_speed, "dock purge extrude")
+                else:
+                    self.logger.info("OAMS dock purge: picking up tool after load failure")
+                self._dock_purge_pickup()
+                afc.afcDeltaTime.log_with_time("OAMS: After dock purge pickup")
 
         if not cur_lane.get_toolhead_pre_sensor_state() and not cur_lane.extruder_obj.on_shuttle():
             message = (
