@@ -1170,6 +1170,7 @@ class OAMSManager:
         self.post_load_pressure_dwell = config.getfloat("post_load_pressure_dwell", POST_LOAD_PRESSURE_DWELL, minval=0.0, maxval=60.0)
         self.load_fps_stuck_threshold = config.getfloat("load_fps_stuck_threshold", LOAD_FPS_STUCK_THRESHOLD, minval=0.0, maxval=1.0)
         self.engagement_pressure_threshold = config.getfloat("engagement_pressure_threshold", 0.6, minval=0.0, maxval=1.0)
+        self.engagement_min_pressure = config.getfloat("engagement_min_pressure", 0.25, minval=0.0, maxval=1.0)  # Minimum FPS pressure after engagement — below this means filament sliding, not gripped
         self.post_engagement_min_pressure = config.getfloat("post_engagement_min_pressure", POST_ENGAGEMENT_MIN_PRESSURE, minval=0.0, maxval=1.0)
         self.extra_retract_default = config.getfloat("extra_retract", 10.0, minval=0.0, maxval=100.0)
 
@@ -3616,6 +3617,8 @@ class OAMSManager:
             # High FPS pressure during engagement extrusion is NORMAL and expected
             fps_state.engagement_in_progress = True
             try:
+                # Keep follower enabled forward during engagement — it must always
+                # run forward to prevent loose windings and buffer issues.
                 if fps_state.current_oams is not None and fps_state.current_spool_idx is not None:
                     oams_obj = self._get_oams_object(fps_state.current_oams)
                     if oams_obj is not None:
@@ -3683,7 +3686,19 @@ class OAMSManager:
                                 )
                                 return False
 
-                            # Encoder moved and pressure dropped - filament engaged successfully.
+                            # Check for filament sliding through without gripping.
+                            # If follower is pushing filament and pressure is near zero,
+                            # the extruder isn't pulling — filament is just moving in the tube.
+                            engagement_min_pressure = self.engagement_min_pressure
+                            if fps_pressure < engagement_min_pressure:
+                                fps_state.engaged_with_extruder = False
+                                self.logger.warning(
+                                    f"Filament failed to engage for {lane_name} "
+                                    f"(encoder moved {encoder_delta} clicks but FPS pressure too low at "
+                                    f"{fps_pressure:.2f} — filament sliding, not gripped by extruder)")
+                                return False
+
+                            # Encoder moved and pressure in valid range - filament engaged successfully.
                             fps_state.engaged_with_extruder = True
                             self.logger.debug(
                                 f"Filament engagement verified for {lane_name} "
@@ -3713,6 +3728,13 @@ class OAMSManager:
                                         f"(encoder moved {encoder_delta} clicks after retry but FPS pressure stayed high at "
                                         f"{fps_pressure:.2f})"
                                     )
+                                    return False
+                                if fps_pressure < engagement_min_pressure:
+                                    fps_state.engaged_with_extruder = False
+                                    self.logger.warning(
+                                        f"Filament failed to engage for {lane_name} "
+                                        f"(encoder moved {encoder_delta} clicks after retry but FPS pressure too low at "
+                                        f"{fps_pressure:.2f} — filament sliding, not gripped)")
                                     return False
                                 fps_state.engaged_with_extruder = True
                                 self.logger.debug(
