@@ -452,7 +452,7 @@ class TestRegisterLaneMacros:
         spool.gcode.register_mux_command = MagicMock()
         lane = _make_lane("lane1")
         spool.register_lane_macros(lane)
-        assert spool.gcode.register_mux_command.call_count == 6
+        assert spool.gcode.register_mux_command.call_count == 7
 
     def test_all_commands_use_correct_lane_name(self):
         spool = _make_spool()
