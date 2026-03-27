@@ -543,6 +543,10 @@ class AFCExtruder:
 
         :param eventtime: Event time from the button press
         """
+        if not hasattr(self, 'fila_tool_start') or self.fila_tool_start is None:
+            # FPS buffer setups don't have fila_tool_start — runout is handled
+            # by the FPS/OpenAMS monitoring layer, not the filament switch.
+            return
         self._handle_toolhead_sensor_runout(self.fila_tool_start.runout_helper.filament_present, "tool_start")
         self.fila_tool_start.runout_helper.min_event_systime = self.reactor.monotonic() + self.fila_tool_start.runout_helper.event_delay
 
