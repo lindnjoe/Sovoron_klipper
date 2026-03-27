@@ -51,7 +51,7 @@
   },
   "log_path": "/tmp/helixscreen.log",
   "motion": {
-    "jog_mode": 1
+    "jog_mode": 2
   },
   "plugin_install_declined": true,
   "printer": {
@@ -175,7 +175,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-27T16:31:11Z"
+          "timestamp": "2026-03-27T18:32:01Z"
         },
         "optional": []
       },
