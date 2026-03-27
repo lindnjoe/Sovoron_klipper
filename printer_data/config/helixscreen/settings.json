@@ -40,7 +40,10 @@
   },
   "label_printer": {
     "address": "192.168.0.73",
-    "port": 9100
+    "label_size": 0,
+    "port": 9100,
+    "protocol": "raw",
+    "type": "network"
   },
   "language": "en",
   "led": {
@@ -172,7 +175,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-27T14:30:30Z"
+          "timestamp": "2026-03-27T14:41:58Z"
         },
         "optional": []
       },
