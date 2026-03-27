@@ -928,6 +928,33 @@ class afcAMS(afcUnit):
         unload_speed = unload_speed * 60.0 if unload_speed is not None else None
         return unload_length, unload_speed
 
+    # ---- State queries (AFC is source of truth) ----
+
+    def get_loaded_lane_for_extruder(self, extruder_name):
+        """Return the lane name currently loaded on the given extruder, per AFC.
+
+        This is the authoritative answer — oams_manager should use this
+        instead of its own sensor-based detection when possible.
+
+        :param extruder_name: Extruder name (e.g. 'extruder4')
+        :return: Lane name (e.g. 'lane5') or None
+        """
+        tool = self.afc.tools.get(extruder_name)
+        if tool is not None:
+            return tool.lane_loaded
+        return None
+
+    def is_lane_loaded(self, lane_name):
+        """Check if a specific lane is loaded to its extruder, per AFC.
+
+        :param lane_name: Lane name to check
+        :return: True if lane is loaded to toolhead
+        """
+        lane = self.afc.lanes.get(lane_name)
+        if lane is None:
+            return False
+        return (lane.extruder_obj.lane_loaded == lane_name)
+
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
         """OpenAMS load sequence — AFC-owned orchestration.
 
