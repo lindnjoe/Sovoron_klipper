@@ -2345,21 +2345,12 @@ class afc:
                                 )
                                 return
 
-            # Fall back to tool_number lookup for setups where T<n> refers
-            # to a physical extruder rather than a lane map entry.
-            if extruder is None:
-                for tool_obj in self.tools.values():
-                    if getattr(tool_obj, 'tool_number', -1) == toolnum:
-                        extruder = tool_obj
-                        self.logger.debug(
-                            "M109 T%d: tool_number fallback -> %s"
-                            % (toolnum, extruder.name))
-                        break
-
+            # T# must resolve through AFC's lane map. If no lane maps to this
+            # T number, it's an error — we don't fall back to tool_number matching.
             if extruder is not None:
                 self.logger.debug("Setting temperature for {} to {}".format(extruder, temp))
             else:
-                self.logger.error("extruder not configured for T{}".format(toolnum))
+                self.logger.error("No lane mapped to T{} — cannot resolve extruder".format(toolnum))
                 return
         elif extruder_name is None:
             extruder = self.toolhead.get_extruder()

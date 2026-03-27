@@ -547,14 +547,14 @@ class TestToolSwap:
         # State must NOT be stuck at TOOL_SWAP
         assert tc.afc.current_state == State.IDLE
 
-    def test_tool_swap_resets_state_on_activate_error(self):
-        """State must be IDLE even if _handle_activate_extruder throws."""
+    def test_tool_swap_survives_activate_extruder_error(self):
+        """AFC sync failure in select_tool should not crash tool_swap."""
         tc = self._make_swap_ready_tc()
         lane = _make_lane_for_swap()
         tc.afc.function._handle_activate_extruder = MagicMock(
             side_effect=RuntimeError("stepper sync failed"))
-        with pytest.raises(RuntimeError):
-            tc.tool_swap(lane)
+        # Should NOT raise — select_tool catches AFC sync errors
+        tc.tool_swap(lane)
         assert tc.afc.current_state == State.IDLE
 
     def test_tool_swap_custom_tool_swap(self):
@@ -564,21 +564,14 @@ class TestToolSwap:
         tc.tool_swap(lane)
         tc.afc.gcode.run_script_from_command.assert_any_call("MY_CUSTOM_SWAP")
 
-    def test_tool_swap_derives_tool_index_from_name(self):
-        """When tool_number is -1, derive index from extruder name."""
+    def test_tool_swap_errors_on_missing_tool_number(self):
+        """tool_number=-1 (not configured) should raise, not guess from name."""
         tc = self._make_swap_ready_tc()
         lane = _make_lane_for_swap("extruder3", tool_number=-1)
-        tc.tool_swap(lane)
-        tc.afc.gcode.run_script_from_command.assert_any_call(
-            'SELECT_TOOL T=3')
-
-    def test_tool_swap_base_extruder_index_zero(self):
-        """Base 'extruder' (no number) should resolve to T=0."""
-        tc = self._make_swap_ready_tc()
-        lane = _make_lane_for_swap("extruder", tool_number=-1)
-        tc.tool_swap(lane)
-        tc.afc.gcode.run_script_from_command.assert_any_call(
-            'SELECT_TOOL T=0')
+        with pytest.raises(Exception, match="no tool_number configured"):
+            tc.tool_swap(lane)
+        # State must still be reset to IDLE
+        assert tc.afc.current_state == State.IDLE
 
 
 # ── process_error ────────────────────────────────────────────────────────────

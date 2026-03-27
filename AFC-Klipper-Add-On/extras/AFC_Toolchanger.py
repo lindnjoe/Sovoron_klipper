@@ -459,6 +459,15 @@ class AfcToolchanger(afcUnit):
             else:
                 self.logger.info('Tool unselected')
 
+            # Notify AFC to sync lane state (buffers, steppers, LEDs, spoolman)
+            # for the newly active extruder. This ensures AFC is always in sync
+            # regardless of whether select_tool was called from tool_swap() or
+            # directly via SELECT_TOOL gcode.
+            try:
+                self.afc.function._handle_activate_extruder(0)
+            except Exception:
+                pass  # Don't let AFC sync failure block tool change completion
+
         except Exception:
             if self.status == STATUS_ERROR:
                 pass  # process_error already handled recovery
@@ -847,17 +856,18 @@ class AfcToolchanger(afcUnit):
                 self.logger.info(f"Running custom select: {lane.extruder_obj.custom_tool_swap}")
                 self.afc.gcode.run_script_from_command(f"{lane.extruder_obj.custom_tool_swap}")
             else:
-                # Use native toolchanger engine: SELECT_TOOL handles dropoff/pickup/offsets
+                # Use native toolchanger engine: SELECT_TOOL targets the physical
+                # extruder via its tool_number (dock position), not the lane's T-map.
                 tool_index = lane.extruder_obj.tool_number
                 if tool_index < 0:
-                    name = lane.extruder_obj.name
-                    tool_index = 0 if name == "extruder" else int(name.replace("extruder", ""))
+                    raise self.afc.gcode.error(
+                        "Cannot swap to %s: extruder %s has no tool_number configured"
+                        % (lane.name, lane.extruder_obj.name))
 
                 self.afc.gcode.run_script_from_command(
                     'SELECT_TOOL T={}'.format(tool_index))
-
-            # Activate klipper extruder and sync AFC lane state (buffer, stepper, etc.)
-            self.afc.function._handle_activate_extruder(0, lane=lane)
+            # select_tool() already called activate_tool() (switches klipper extruder)
+            # and _handle_activate_extruder() (syncs AFC lane state).
 
             self.afc.toolhead.wait_moves()
             self.afc.afcDeltaTime.log_with_time("Tool swap done", debug=False)
@@ -983,8 +993,20 @@ class FanSwitcher:
                 self.pending_speed = speed_to_set
 
     def _resolve_tool(self, gcmd):
+        """Resolve tool from M106/M107 P= parameter.
+
+        Uses AFC lane map first (P5 -> T5 -> lane5 -> extruder4), falling
+        back to the currently active tool when P is not specified.
+        """
         tool_nr = gcmd.get_int('P', None)
         if tool_nr is not None:
+            # Resolve through AFC lane map — consistent with M109 T= behavior
+            map_name = "T{}".format(tool_nr)
+            lane = self.toolchanger.afc.function.get_lane_by_map(map_name)
+            if lane is not None:
+                return lane.extruder_obj
+            # If no lane maps to this P number, try direct tool lookup
+            # as a last resort (for setups without full lane mapping)
             tool = self.toolchanger.lookup_tool(tool_nr)
             if tool is not None:
                 return tool

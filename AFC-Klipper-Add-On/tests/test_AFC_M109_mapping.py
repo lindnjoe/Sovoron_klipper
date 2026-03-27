@@ -243,8 +243,8 @@ class TestM109LaneMapPriority:
         # Must heat extruder4's heater, NOT extruder5's
         _assert_heater_was_set(pheaters, heater4, 250.0)
 
-    def test_tool_number_fallback_when_no_lane_map(self):
-        """When no lane maps to T5, fall back to extruder with tool_number=5."""
+    def test_no_lane_map_errors_instead_of_fallback(self):
+        """When no lane maps to T5, should error — no tool_number fallback."""
         obj = _make_afc_for_m109()
 
         ext5, heater5 = _make_extruder("extruder5", tool_number=5)
@@ -257,7 +257,10 @@ class TestM109LaneMapPriority:
         gcmd = _make_gcmd(toolnum=5, temp=220.0)
         obj._cmd_AFC_M109(gcmd, wait=False)
 
-        _assert_heater_was_set(pheaters, heater5, 220.0)
+        # Should NOT heat anything — T5 has no lane mapped
+        pheaters.set_temperature.assert_not_called()
+        errors = [m for level, m in obj.logger.messages if level == "error"]
+        assert any("T5" in e for e in errors)
 
     def test_no_t_param_uses_current_extruder(self):
         """M109 without T parameter heats the currently active extruder."""
