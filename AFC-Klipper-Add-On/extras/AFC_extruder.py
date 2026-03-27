@@ -1057,6 +1057,7 @@ class AFCExtruder:
         self.response['name'] = self.name
         self.response['tool_number'] = self.tool_number
         self.response['extruder'] = self.name
+        self.response['resonance_chip'] = self.resonance_chip
         return self.response
 
 def load_config_prefix(config):
