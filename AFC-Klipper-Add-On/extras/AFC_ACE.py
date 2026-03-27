@@ -2492,6 +2492,45 @@ class afcACE(afcUnit):
             self.logger.error(
                 "abort_load failed for %s: %s" % (cur_lane.name, e))
 
+    def lane_move(self, cur_lane, distance, speed_mode):
+        """Move filament via ACE serial driver.
+
+        Positive distance = feed forward, negative = rewind/retract.
+        Uses the ACE feed_filament/unwind_filament serial commands.
+
+        :param cur_lane: Lane object to move
+        :param distance: Distance in mm (positive = forward, negative = retract)
+        :param speed_mode: SpeedMode enum (unused — ACE uses its own feed/retract speeds)
+        """
+        ace = self._ace
+        if ace is None or not ace.connected:
+            self.logger.error("ACE not connected, cannot move %s" % cur_lane.name)
+            return
+        slot = self._get_local_slot_for_lane(cur_lane)
+        if slot < 0:
+            self.logger.error("Cannot resolve slot for %s" % cur_lane.name)
+            return
+
+        abs_distance = abs(distance)
+        try:
+            self._wait_for_ace_ready()
+            if distance > 0:
+                spd = self._quiet_speed(self.feed_speed)
+                self.logger.info(
+                    f"ACE lane move: feeding {cur_lane.name} slot {slot} "
+                    f"{abs_distance}mm @ {spd}mm/s")
+                ace.feed_filament(slot, abs_distance, spd)
+            else:
+                spd = self._quiet_speed(self.retract_speed)
+                self.logger.info(
+                    f"ACE lane move: retracting {cur_lane.name} slot {slot} "
+                    f"{abs_distance}mm @ {spd}mm/s")
+                ace.unwind_filament(slot, abs_distance, spd)
+            self._wait_for_feed_complete(slot, abs_distance, spd, lane=cur_lane)
+        except Exception as e:
+            self.logger.error(
+                f"ACE lane move failed for {cur_lane.name}: {e}")
+
     # ---- No-Op / Unsupported Operations ----
 
     def prep_load(self, lane):
