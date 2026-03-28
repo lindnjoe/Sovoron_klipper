@@ -348,7 +348,7 @@ class TestAFCLaneLoadEs:
 
         lane_b = _make_afc_lane("AFC_stepper laneB")
         lane_b.only_lane = True
-        lane_a.endstops.update({AFCHomingPoints.LOAD: {"endstop" : "PIN123", "endstop_name": "laneB_load"}})
+        lane_b.endstops.update({AFCHomingPoints.LOAD: {"endstop" : "PIN123", "endstop_name": "laneB_load"}})
 
         assert lane_a.load_es != lane_b.load_es
 
