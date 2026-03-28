@@ -229,6 +229,20 @@ class AFCFPSBuffer:
             "enable_sensors_in_gui", self.afc.enable_sensors_in_gui
         )
 
+        # ---- Register virtual filament sensors for GUI display ----
+        # Same pattern as TurtleNeck buffer which registers advance/trailing sensors.
+        # These let Mainsail show buffer state (grey = ramming mode) instead of
+        # red (no sensor). The VirtualFilamentSensor tracks advance/trailing state
+        # that gets updated in _adc_callback.
+        self.adv_filament_switch_name = f"{self.name}_expanded"
+        self.fila_adv = VirtualFilamentSensor(
+            self.printer, self.adv_filament_switch_name,
+            show_in_gui=self.enable_sensors_in_gui)
+        self.trail_filament_switch_name = f"{self.name}_compressed"
+        self.fila_trail = VirtualFilamentSensor(
+            self.printer, self.trail_filament_switch_name,
+            show_in_gui=self.enable_sensors_in_gui)
+
         # ---- Correction timer ----
         self.correction_timer = self.reactor.register_timer(self._correction_event)
 
@@ -379,9 +393,31 @@ class AFCFPSBuffer:
                 self.advance_state = False
                 self.trailing_state = False
 
+        # Update virtual filament sensors for GUI display
+        self._update_virtual_sensors(read_time)
+
     # ------------------------------------------------------------------
     # Correction timer — proportional adjustment loop
     # ------------------------------------------------------------------
+    def _update_virtual_sensors(self, eventtime):
+        """Push advance/trailing state into virtual filament sensors for GUI."""
+        try:
+            if hasattr(self, 'fila_adv') and self.fila_adv is not None:
+                self.fila_adv.runout_helper.note_filament_present(
+                    eventtime, self.advance_state)
+        except TypeError:
+            self.fila_adv.runout_helper.note_filament_present(self.advance_state)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'fila_trail') and self.fila_trail is not None:
+                self.fila_trail.runout_helper.note_filament_present(
+                    eventtime, self.trailing_state)
+        except TypeError:
+            self.fila_trail.runout_helper.note_filament_present(self.trailing_state)
+        except Exception:
+            pass
+
     def _correction_event(self, eventtime):
         """Periodically adjust rotation distance based on FPS reading."""
         if not self.enable or self.current_lane is None:
@@ -447,6 +483,7 @@ class AFCFPSBuffer:
                 )
             )
 
+        self._update_virtual_sensors(eventtime)
         return eventtime + self.update_interval
 
     # ------------------------------------------------------------------
