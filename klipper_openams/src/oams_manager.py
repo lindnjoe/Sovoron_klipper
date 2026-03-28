@@ -1056,17 +1056,6 @@ class OAMSManager:
         self._last_logged_detected_lane = {}
         self._stuck_spool_print_recovery_callback = None
 
-        # OpenAMS-owned Moonraker status publishing (does not modify AFC core behavior)
-        self.moonraker_status_interval = config.getfloat(
-            "moonraker_status_interval", 5.0, minval=1.0, maxval=120.0
-        )
-        # Deprecated: host/port are now inherited from AFC's moonraker instance.
-        # Kept so existing configs don't error on unknown options.
-        config.get("moonraker_host", "http://localhost")
-        config.getint("moonraker_port", 7125, minval=1, maxval=65535)
-        self._moonraker_patched = False
-        self._moonraker_status_timer = None
-        self._last_status_fingerprint: Optional[str] = None
 
         self._initialize_oams()
 
@@ -1268,14 +1257,6 @@ class OAMSManager:
         """Cleanup timers and resources on disconnect/shutdown."""
         self.logger.info("OAMS Manager shutting down, cleaning up timers...")
 
-        if self._moonraker_status_timer is not None:
-            try:
-                self.reactor.unregister_timer(self._moonraker_status_timer)
-            except Exception as exc:
-                self.logger.warning(f"Failed to unregister Moonraker status timer: {exc}")
-            self._moonraker_status_timer = None
-        self._moonraker_patched = False
-
         # Clean up MCU command poll timers
         for oams_name, timer in list(self._mcu_command_poll_timers.items()):
             try:
@@ -1342,94 +1323,8 @@ class OAMSManager:
         except Exception as e:
             self.logger.error(f"Failed to enable followers for loaded hubs during startup: {e}")
 
-        self._start_moonraker_status_sync()
-
         self.start_monitors()
         self.ready = True
-
-    def _start_moonraker_status_sync(self):
-        # Register timer unconditionally ? the callback will lazy-init
-        # when afc.moonraker becomes available (it's set during PREP,
-        # after klippy:ready).
-        if self._moonraker_status_timer is None:
-            self._moonraker_status_timer = self.reactor.register_timer(
-                self._moonraker_status_sync_timer,
-                self.reactor.monotonic() + self.moonraker_status_interval,
-            )
-
-    def _ensure_moonraker_patched(self):
-        """Lazy-init: patch afc.moonraker once it becomes available."""
-        if self._moonraker_patched:
-            return True
-
-        moonraker = getattr(self.afc, "moonraker", None)
-        if moonraker is None:
-            return False
-
-        _patch_moonraker_db_methods(moonraker)
-        self._moonraker_patched = True
-
-        # Recover last-known status from Moonraker DB (survives Klipper restart)
-        try:
-            result = moonraker.read_database_entry("openams", "manager_status")
-            if isinstance(result, dict):
-                persisted = result.get("value")
-                if isinstance(persisted, dict) and isinstance(persisted.get("status"), dict):
-                    age = ""
-                    if "eventtime" in persisted:
-                        age = f", age={self.reactor.monotonic() - persisted['eventtime']:.0f}s"
-                    self.logger.info(
-                        f"Recovered previous OpenAMS status from Moonraker DB"
-                        f" (keys={list(persisted['status'].keys())}{age})"
-                    )
-        except Exception as exc:
-            self.logger.debug(f"OpenAMS Moonraker status recovery failed: {exc}")
-
-        self.logger.info(
-            f"OpenAMS Moonraker status sync enabled (interval={self.moonraker_status_interval:.1f}s, mode=changes-only)"
-        )
-        return True
-
-    def _publish_moonraker_status_snapshot(self, eventtime: float):
-        moonraker = getattr(self.afc, "moonraker", None)
-        if moonraker is None or not self._moonraker_patched:
-            return
-
-        snapshot = self.get_status(eventtime)
-
-        # Fingerprint dedup: skip publish if nothing changed
-        fingerprint = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
-        if fingerprint == self._last_status_fingerprint:
-            return
-
-        result = moonraker.write_database_entry("openams", "manager_status", {
-            "eventtime": eventtime,
-            "status": snapshot,
-        })
-        if result is None:
-            self.logger.debug("OpenAMS Moonraker status publish failed")
-        else:
-            self._last_status_fingerprint = fingerprint
-
-    def _publish_moonraker_now(self):
-        if not self._moonraker_patched:
-            return
-        try:
-            self._publish_moonraker_status_snapshot(self.reactor.monotonic())
-        except Exception as exc:
-            self.logger.debug(f"OpenAMS Moonraker immediate publish error: {exc}")
-
-    def _moonraker_status_sync_timer(self, eventtime: float):
-        if not self._ensure_moonraker_patched():
-            # afc.moonraker not ready yet ? keep polling
-            return eventtime + self.moonraker_status_interval
-
-        try:
-            self._publish_moonraker_status_snapshot(eventtime)
-        except Exception as exc:
-            self.logger.debug(f"OpenAMS Moonraker status sync error: {exc}")
-
-        return eventtime + self.moonraker_status_interval
 
     def _resolve_oams_name(
         self,
@@ -6220,8 +6115,6 @@ class OAMSManager:
 
                 self.logger.info(f"Synced OAMS state from AFC: {detected_lane_name} loaded to {fps_name} (bay {bay_index} on {oam.name})")
 
-            # Push updated status to Moonraker immediately
-            self._publish_moonraker_now()
 
         except Exception as e:
             self.logger.error(f"Error processing AFC lane loaded notification for {lane_name}: {e}")
@@ -6266,8 +6159,6 @@ class OAMSManager:
 
                 self.logger.info(f"Synced OAMS state from AFC: {lane_name} unloaded from {fps_name}")
 
-            # Push updated status to Moonraker immediately
-            self._publish_moonraker_now()
 
         except Exception as e:
             self.logger.error(f"Error processing AFC lane unloaded notification for {lane_name}: {e}")
