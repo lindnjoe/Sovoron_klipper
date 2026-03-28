@@ -55,6 +55,7 @@ class OAMS:
         self.mcu = mcu.get_printer_mcu(self.printer, config.get("mcu", "mcu"))
         self.reactor = self.printer.get_reactor()
         afc_obj = self.printer.load_object(config, "AFC")
+        self.afc = afc_obj
         self.logger = afc_obj.logger
 
         self._cached_gcode = None
@@ -122,8 +123,9 @@ class OAMS:
         self._register_mcu_response(self._oams_cmd_current_status, "oams_cmd_current_status")
         self.mcu.register_config_callback(self._build_config)
 
-        self.name = config.get_name()
-        self.register_commands(self.name.split()[-1])
+        self.config_name = config.get_name()   # full Klipper section name, e.g. "oams oams1"
+        self.name = self.config_name.split()[-1]  # short name, e.g. "oams1"
+        self.register_commands(self.name)
 
         # Retry configuration
         self.load_retry_max  = config.getint("load_retry_max", 3, minval=1, maxval=5)
@@ -651,15 +653,12 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         if self.action_status_code == OAMSOpCode.SUCCESS:
             value = self.u32_to_float(self.action_status_value)
             gcmd.respond_info("Calibrated HES %d to %f threshold" % (spool_idx, value))
-            configfile = self.printer.lookup_object("configfile", None)
-            if configfile is None:
-                gcmd.error("Failed to access configfile object")
-                return
 
             self.hub_hes_on[spool_idx] = value
-            values = ",".join(map(str, self.hub_hes_on))
-            configfile.set(self.name, "hub_hes_on", "%s" % (values,))
-            gcmd.respond_info("HES calibration complete: hub_hes_on index %d has been automatically saved to your config" % (spool_idx,))
+            values = ", ".join(map(str, self.hub_hes_on))
+            cal_msg = "\n%s hub_hes_on: %s" % (self.config_name, values)
+            self.afc.function.ConfigRewrite(self.config_name, "hub_hes_on", values, cal_msg)
+            gcmd.respond_info("HES calibration complete: hub_hes_on index %d = %f saved to config" % (spool_idx, value))
         else:
             gcmd.error("Calibration of HES %d failed" % spool_idx)
 
@@ -674,14 +673,12 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
         while self.action_status is not None:
             self.reactor.pause(self.reactor.monotonic() + 0.5)
         if self.action_status_code == OAMSOpCode.SUCCESS:
-            gcmd.respond_info("Calibrated PTFE length to %d" % self.action_status_value)
-            configfile = self.printer.lookup_object("configfile", None)
-            if configfile is None:
-                gcmd.error("Failed to access configfile object")
-                return
+            ptfe_val = "%d" % self.action_status_value
+            gcmd.respond_info("Calibrated PTFE length to %s" % ptfe_val)
 
-            configfile.set(self.name, "ptfe_length", "%d" % (self.action_status_value,))
-            gcmd.respond_info("PTFE calibration complete: ptfe_length %d has been automatically saved to your config" % self.action_status_value)
+            cal_msg = "\n%s ptfe_length: %s" % (self.config_name, ptfe_val)
+            self.afc.function.ConfigRewrite(self.config_name, "ptfe_length", ptfe_val, cal_msg)
+            gcmd.respond_info("PTFE calibration complete: ptfe_length %s saved to config" % ptfe_val)
 
         else:
             gcmd.error("Calibration of PTFE length failed")
@@ -750,8 +747,17 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
             return False, "Spool unloading stopped by klipper monitor"
         elif self.action_status_code == OAMSOpCode.ERROR_BUSY:
             return False, "OAMS is busy"
+        elif self.action_status_code == OAMSOpCode.NO_SPOOL_IN_BAY:
+            # Firmware thinks spool is already unloaded — treat as success
+            self.current_spool = None
+            return True, "Spool already unloaded (NO_SPOOL_IN_BAY)"
+        elif self.action_status_code == OAMSOpCode.CANCEL:
+            return False, "Unload was cancelled (stale cancel response interfered)"
         else:
-            return False, "Unknown error from OAMS"
+            return False, (
+                "Unknown error from OAMS (status_code=%s)"
+                % self.action_status_code
+            )
 
     cmd_OAMS_UNLOAD_SPOOL_help = "Unload a spool of filament"
     def cmd_OAMS_UNLOAD_SPOOL(self, gcmd):
