@@ -578,6 +578,14 @@ class afcACE(afcUnit):
         if extruder is None:
             return
 
+        # Skip if another unit (e.g. OAMS) is actively using this shared FPS.
+        # Only process FPS readings when this ACE unit owns the currently loaded
+        # lane or is actively performing an operation.
+        if not self._operation_active:
+            loaded_lane = getattr(extruder, 'lane_loaded', None)
+            if loaded_lane and loaded_lane not in self.lanes:
+                return
+
         triggered = fps_value >= self.fps_threshold
 
         if self._operation_active:
