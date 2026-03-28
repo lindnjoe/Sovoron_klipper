@@ -64,6 +64,17 @@ def _make_toolchanger():
     tc.tool_names = []
     tc.error_message = ""
 
+    # Crash detection
+    tc.crash_detection_enabled = False
+    tc._crash_active = False
+    tc._crash_watchdog_timer = None
+    tc._crash_watchdog_errors = 0
+    tc._crash_enable_time = 0.0
+    tc._crash_watchdog_interval = 0.5
+    tc._crash_watchdog_threshold = 2
+    tc._crash_enable_grace = 2.0
+    tc.crash_mintime = 0.5
+
     tc.last_change_gcode_position = None
     tc.last_change_gcode_offset = None
     tc.last_change_restore_axis = None

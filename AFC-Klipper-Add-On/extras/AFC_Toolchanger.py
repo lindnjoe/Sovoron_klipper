@@ -69,6 +69,18 @@ class AfcToolchanger(afcUnit):
         self.verify_tool_pickup: bool = config.getboolean('verify_tool_pickup', True)
         self.transfer_fan_speed: bool = config.getboolean('transfer_fan_speed', True)
 
+        # Crash detection — monitors detection pins during printing to detect
+        # if a tool falls off the shuttle mid-print.
+        self.crash_detection_enabled: bool = config.getboolean('crash_detection', False)
+        self.crash_mintime: float = config.getfloat('crash_mintime', 0.5, above=0.)
+        self._crash_watchdog_interval: float = config.getfloat('crash_watchdog_interval', 0.5, above=0.)
+        self._crash_watchdog_threshold: int = config.getint('crash_watchdog_threshold', 2, minval=1)
+        self._crash_enable_grace: float = config.getfloat('crash_enable_grace', 2.0, minval=0.)
+        self._crash_active = False
+        self._crash_watchdog_timer = None
+        self._crash_watchdog_errors = 0
+        self._crash_enable_time = 0.0
+
         # Default gcode templates (can be overridden per-tool in AFC_extruder)
         self.default_before_change_gcode = self.gcode_macro.load_template(
             config, 'before_change_gcode', config.get('before_change_gcode', ''))
@@ -147,6 +159,12 @@ class AfcToolchanger(afcUnit):
         self.gcode.register_command("VERIFY_TOOL_DETECTED",
                                     self.cmd_VERIFY_TOOL_DETECTED,
                                     desc="Verify expected tool is detected on shuttle")
+        self.gcode.register_command("START_TOOL_CRASH_DETECTION",
+                                    self.cmd_START_TOOL_CRASH_DETECTION,
+                                    desc="Enable tool crash detection")
+        self.gcode.register_command("STOP_TOOL_CRASH_DETECTION",
+                                    self.cmd_STOP_TOOL_CRASH_DETECTION,
+                                    desc="Disable tool crash detection")
 
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_tc_connect)
@@ -192,7 +210,8 @@ class AfcToolchanger(afcUnit):
         # configured, not whether it has been sampled yet (detect_state
         # starts at -1/UNAVAILABLE until the first callback fires).
         self.has_detection = any(
-            t.detect_pin_name is not None for t in self.tools.values())
+            t.detect_pin_name is not None or getattr(t, 'tool_probe', None) is not None
+            for t in self.tools.values())
         # Register T<n> gcode command
         self._register_t_command(extruder, number)
 
@@ -271,6 +290,7 @@ class AfcToolchanger(afcUnit):
         if self.status != STATUS_READY:
             raise gcmd.error(
                 "Cannot enter docking mode, status is %s" % self.status)
+        self.stop_crash_detection()
         self.status = STATUS_CHANGING
         self._save_state("", None)
         self._set_toolchange_transform()
@@ -280,6 +300,8 @@ class AfcToolchanger(afcUnit):
             raise gcmd.error(
                 "Cannot exit docking mode, status is %s" % self.status)
         self._restore_state_and_transform(self.active_tool)
+        if self.active_tool:
+            self.start_crash_detection()
         self.status = STATUS_READY
 
     def _resolve_tool_from_gcmd(self, gcmd):
@@ -419,6 +441,8 @@ class AfcToolchanger(afcUnit):
             return
 
         try:
+            # Stop crash detection before tool change
+            self.stop_crash_detection()
             self._ensure_homed(gcmd)
             self.status = STATUS_CHANGING
             self._save_state(restore_axis, tool)
@@ -456,6 +480,8 @@ class AfcToolchanger(afcUnit):
             if tool:
                 self.logger.info('Selected tool %s (%s)' % (
                     str(tool.tool_number), tool.name))
+                # Re-enable crash detection after successful pickup
+                self.start_crash_detection()
             else:
                 self.logger.info('Tool unselected')
 
@@ -731,6 +757,132 @@ class AfcToolchanger(afcUnit):
 
         if raise_error:
             raise raise_error(message)
+
+    # ---- Crash detection ----
+
+    def start_crash_detection(self):
+        """Enable crash detection — monitors detection pins for tool loss.
+
+        Called automatically after successful tool pickup. Can also be called
+        manually via START_TOOL_CRASH_DETECTION gcode.
+        """
+        if not self.crash_detection_enabled or not self.has_detection:
+            return
+        if not self.active_tool:
+            return
+        self._crash_watchdog_errors = 0
+        self._crash_enable_time = self.printer.get_reactor().monotonic()
+        self._crash_active = True
+        # Start watchdog timer
+        if self._crash_watchdog_timer is None:
+            self._crash_watchdog_timer = self.printer.get_reactor().register_timer(
+                self._crash_watchdog_tick,
+                self.printer.get_reactor().monotonic() + self._crash_watchdog_interval)
+        self.logger.info("tool_crash: enabled")
+
+    def stop_crash_detection(self):
+        """Disable crash detection — called before tool change operations.
+
+        Called automatically when select_tool() begins (STATUS_CHANGING).
+        Can also be called manually via STOP_TOOL_CRASH_DETECTION gcode.
+        """
+        self._crash_active = False
+        self._crash_watchdog_errors = 0
+        if self._crash_watchdog_timer is not None:
+            self.printer.get_reactor().unregister_timer(self._crash_watchdog_timer)
+            self._crash_watchdog_timer = None
+        self.logger.info("tool_crash: disabled")
+
+    def _crash_watchdog_tick(self, eventtime):
+        """Periodic watchdog check — verify active tool is still detected."""
+        if not self._crash_active or not self.active_tool:
+            self._crash_watchdog_timer = None
+            return self.printer.get_reactor().NEVER
+
+        # Grace period after enable
+        if eventtime - self._crash_enable_time < self._crash_enable_grace:
+            return eventtime + self._crash_watchdog_interval
+
+        # Skip during tool changes or initialization
+        if self.status in (STATUS_CHANGING, STATUS_INITIALIZING, STATUS_UNINITIALIZED):
+            return eventtime + self._crash_watchdog_interval
+
+        # Check if active tool is still detected.
+        # Uses detection pin (Cartographer/Beacon) OR tool probe (Optotap/Tap)
+        # depending on what the extruder has configured.
+        active = self.active_tool
+        tool_present = self._is_tool_present(active)
+        if not tool_present:
+            self._crash_watchdog_errors += 1
+            if self._crash_watchdog_errors >= self._crash_watchdog_threshold:
+                self._do_crash(
+                    "tool_crash: watchdog detected loss of %s" % active.name,
+                    eventtime)
+                return self.printer.get_reactor().NEVER
+        else:
+            self._crash_watchdog_errors = 0
+
+        return eventtime + self._crash_watchdog_interval
+
+    def _is_tool_present(self, tool):
+        """Check if a tool is present on the shuttle.
+
+        Uses whichever detection method the tool has configured:
+        - detection_pin: checks detect_state (Cartographer/Beacon setups)
+        - tool_probe: queries the probe endstop (Optotap/Tap setups)
+
+        :param tool: AFCExtruder tool object
+        :return: True if tool is detected on shuttle
+        """
+        if tool is None:
+            return False
+
+        # Check detection pin first (Cartographer/Beacon)
+        if tool.detect_pin_name is not None:
+            return tool.detect_state == DETECT_PRESENT
+
+        # Check tool probe (Optotap/Tap) — query the endstop directly
+        if tool.tool_probe is not None:
+            try:
+                toolhead = self.printer.lookup_object('toolhead')
+                print_time = toolhead.get_last_move_time()
+                triggered = tool.tool_probe.mcu_probe.query_endstop(print_time)
+                # For tool probes: NOT triggered = tool present (probe is open
+                # when tool is on shuttle, triggered when touching surface)
+                return not triggered
+            except Exception:
+                return True  # Assume present on query failure
+
+        # No detection method configured
+        return True
+
+    def _do_crash(self, message, eventtime):
+        """Handle a detected tool crash — disable detection and error."""
+        self._crash_active = False
+        if self._crash_watchdog_timer is not None:
+            self.printer.get_reactor().unregister_timer(self._crash_watchdog_timer)
+            self._crash_watchdog_timer = None
+        self.logger.error(message)
+
+        # Use error_gcode if configured, otherwise shutdown
+        if self.error_gcode:
+            try:
+                self.printer.get_reactor().register_callback(
+                    lambda _: self._run_gcode('error_gcode', self.error_gcode, {}),
+                    eventtime + self.crash_mintime)
+            except Exception as e:
+                self.logger.error("crash gcode failed: %s" % e)
+                self.printer.invoke_shutdown(message)
+        else:
+            self.printer.invoke_shutdown(message)
+
+    def cmd_START_TOOL_CRASH_DETECTION(self, gcmd):
+        """Enable tool crash detection manually."""
+        self.start_crash_detection()
+
+    def cmd_STOP_TOOL_CRASH_DETECTION(self, gcmd):
+        """Disable tool crash detection manually."""
+        self.stop_crash_detection()
 
     def _gcmd_tool(self, gcmd, default=None):
         """Resolve tool from TOOL= or T= gcode parameters."""
