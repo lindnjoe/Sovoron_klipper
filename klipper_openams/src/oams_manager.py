@@ -1205,6 +1205,23 @@ class OAMSManager:
 
         return None
 
+    def _initialize_oams(self):
+        """Look up all OAMS printer objects at startup."""
+        for name, oam in self.printer.lookup_objects(module="oams"):
+            self.oams[oam.name] = oam
+
+    def _get_follower_state(self, oams_name):
+        """Get or create follower state tracking for an OAMS unit."""
+        resolved_name, _ = self._resolve_oams_name(oams_name)
+        if resolved_name is None:
+            resolved_name = oams_name
+        if resolved_name != oams_name and oams_name in self.follower_state:
+            if resolved_name not in self.follower_state:
+                self.follower_state[resolved_name] = self.follower_state.pop(oams_name)
+        if resolved_name not in self.follower_state:
+            self.follower_state[resolved_name] = FollowerState()
+        return self.follower_state[resolved_name]
+
     def determine_state(self):
         """Sync FPS state from AFC's authoritative lane_loaded state.
 
