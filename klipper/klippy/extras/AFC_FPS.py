@@ -400,13 +400,21 @@ class AFCFPSBuffer:
     # Correction timer — proportional adjustment loop
     # ------------------------------------------------------------------
     def _update_virtual_sensors(self, eventtime):
-        """Push advance/trailing state into virtual filament sensors for GUI."""
+        """Push buffer state into virtual filament sensors for GUI display.
+
+        The advance sensor reports filament present whenever the FPS reads
+        above low_point (any meaningful pressure = filament exists in buffer).
+        This prevents the indicator from going red during neutral state when
+        filament IS loaded but pressure is balanced.
+        """
+        # Filament is present if FPS reads above the low threshold
+        filament_present = self.smoothed_fps > self.low_point
         try:
             if hasattr(self, 'fila_adv') and self.fila_adv is not None:
                 self.fila_adv.runout_helper.note_filament_present(
-                    eventtime, self.advance_state)
+                    eventtime, filament_present)
         except TypeError:
-            self.fila_adv.runout_helper.note_filament_present(self.advance_state)
+            self.fila_adv.runout_helper.note_filament_present(filament_present)
         except Exception:
             pass
         try:
@@ -421,6 +429,9 @@ class AFCFPSBuffer:
     def _correction_event(self, eventtime):
         """Periodically adjust rotation distance based on FPS reading."""
         if not self.enable or self.current_lane is None:
+            return self.reactor.NEVER
+        # Non-stepper lanes (ACE/OpenAMS) don't need rotation correction
+        if getattr(self.current_lane, 'extruder_stepper', None) is None:
             return self.reactor.NEVER
 
         reading = self.smoothed_fps
@@ -492,12 +503,13 @@ class AFCFPSBuffer:
     def enable_buffer(self, lane):
         """Enable the FPS buffer for the given lane.
 
-        For stepper-based units (BoxTurtle, etc.) this starts the proportional
-        correction timer that adjusts rotation distance.  For non-stepper units
-        (OpenAMS) the correction loop is skipped — the FPS is used purely as an
-        ADC sensor and the oams_manager handles follower control directly.
+        For stepper-based units (BoxTurtle, etc.) this also starts the
+        proportional correction timer that adjusts rotation distance.
+        For non-stepper units (OpenAMS, ACE) the correction loop is skipped
+        but the buffer is still marked as enabled/active.
         """
         self.current_lane = lane
+        self.enable = True
         has_stepper = getattr(lane, 'extruder_stepper', None) is not None
 
         if self.led:
@@ -507,7 +519,6 @@ class AFCFPSBuffer:
         self.smoothed_fps = self.fps_value
 
         if has_stepper:
-            self.enable = True
             # Start the proportional correction timer
             self.reactor.update_timer(self.correction_timer, self.reactor.NOW)
 
