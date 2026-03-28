@@ -962,6 +962,76 @@ class afcAMS(afcUnit):
             except Exception:
                 pass
 
+    def handle_same_fps_reload(self, source_lane_name, target_lane_name):
+        """Handle same-FPS infinite runout reload — AFC is master control.
+
+        Called by oams_manager's runout monitor after the old filament has
+        coasted through the shared PTFE and cleared the path. The new spool's
+        filament will be pushed forward by the OAMS to meet the old filament
+        at the extruder gears and get pulled in seamlessly.
+
+        No pause, no unload, no tool swap — printing continues uninterrupted.
+
+        :param source_lane_name: Lane that ran out (e.g. 'lane4')
+        :param target_lane_name: Lane to reload from (e.g. 'lane5')
+        :return: True if reload succeeded
+        """
+        afc = self.afc
+        source_lane = afc.lanes.get(source_lane_name)
+        target_lane = afc.lanes.get(target_lane_name)
+
+        if not source_lane or not target_lane:
+            self.logger.error(
+                f"Same-FPS reload failed: source={source_lane_name} "
+                f"target={target_lane_name} — lane not found")
+            return False
+
+        self.logger.info(
+            f"Same-FPS infinite runout: {source_lane_name} -> {target_lane_name}")
+
+        # Mark source lane as empty — filament has coasted out
+        source_lane.status = AFCLaneState.NONE
+        self.lane_not_ready(source_lane)
+
+        # Tell OAMS hardware to load the new spool
+        oams_manager = self._get_oams_manager()
+        if oams_manager is None:
+            self.logger.error("Same-FPS reload: oams_manager not available")
+            return False
+
+        try:
+            success, message = oams_manager.load_filament_for_lane(target_lane_name)
+            if not success:
+                self.logger.error(f"Same-FPS reload failed: {message}")
+                self.request_pause(
+                    f"Same-FPS reload failed for {target_lane_name}: {message}",
+                    lane_name=target_lane_name)
+                return False
+        except Exception as e:
+            self.logger.error(f"Same-FPS reload exception: {e}")
+            self.request_pause(
+                f"Same-FPS reload failed for {target_lane_name}: {e}",
+                lane_name=target_lane_name)
+            return False
+
+        # Remap T# so the slicer's tool command now points to the new lane
+        source_map = source_lane.map
+        if source_map:
+            afc.gcode.run_script_from_command(
+                f'SET_MAP LANE={target_lane_name} MAP={source_map}')
+            self.logger.info(
+                f"Remapped {source_map} from {source_lane_name} to {target_lane_name}")
+
+        # Update AFC state — new lane is loaded
+        target_lane.set_tool_loaded()
+        self.lane_tool_loaded(target_lane)
+        afc.current = target_lane_name
+        afc.save_vars()
+
+        self.logger.info(
+            f"Same-FPS reload complete: {target_lane_name} now active")
+        return True
+
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
         """OpenAMS load sequence — AFC-owned orchestration.
 

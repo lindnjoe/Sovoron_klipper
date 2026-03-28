@@ -6888,56 +6888,53 @@ class OAMSManager:
                             monitor.paused()
                         return
 
-                # Standard runout handling for same-extruder runouts
-                target_lane_map, target_lane, delegate_to_afc, source_lane = self._get_infinite_runout_target_lane(fps_name, fps_state)
+                # Same-FPS runout: delegate to AFC_OpenAMS.handle_same_fps_reload()
+                # which handles state transitions, OAMS hardware load, T# remapping.
                 source_lane_name = fps_state.current_lane
+                target_lane_name = None
 
-                if delegate_to_afc:
-                    delegated = self._delegate_runout_to_afc(fps_name, fps_state, source_lane, target_lane)
-                    if delegated:
-                        fps_state.reset_runout_positions()
-                        if monitor:
-                            monitor.reset()
-                            monitor.start()
-                        return
+                # Resolve target lane from AFC's runout_lane config
+                afc = self._get_afc()
+                if afc and source_lane_name:
+                    source_lane_obj = afc.lanes.get(source_lane_name)
+                    if source_lane_obj:
+                        target_lane_name = getattr(source_lane_obj, 'runout_lane', None)
 
-                    self.logger.error(f"Failed to delegate infinite runout for {fps_name} on {source_lane_name or '<unknown>'} via AFC")
+                if not target_lane_name:
+                    self.logger.error(
+                        f"No runout lane configured for same-FPS runout on {source_lane_name or fps_name}")
                     fps_state.reset_runout_positions()
-                    self._pause_printer_message(f"Unable to delegate infinite runout for {source_lane_name or fps_name}", fps_state.current_oams or active_oams)
+                    self._request_afc_pause(
+                        f"No runout lane configured for {source_lane_name or fps_name}",
+                        lane_name=source_lane_name)
                     if monitor:
                         monitor.paused()
                     return
 
-                # Load the target lane directly
-                if target_lane is None:
-                    # No infinite runout target configured - clear the lane and pause
-                    self.logger.info(f"No infinite runout target for {source_lane_name or fps_name} on {fps_name} - clearing lane from toolhead and OAMS")
+                # Delegate to AFC_OpenAMS
+                unit = self._get_afc_unit_for_lane(source_lane_name)
+                if unit is not None and hasattr(unit, 'handle_same_fps_reload'):
+                    try:
+                        success = unit.handle_same_fps_reload(source_lane_name, target_lane_name)
+                        if success:
+                            # Update FPS state
+                            fps_state.state = FPSLoadState.LOADED
+                            fps_state.current_lane = target_lane_name
+                            fps_state.since = self.reactor.monotonic()
+                            fps_state.reset_runout_positions()
+                            if monitor:
+                                monitor.reset()
+                                monitor.start()
+                            return
+                    except Exception as e:
+                        self.logger.error(f"Same-FPS reload via AFC failed: {e}")
 
-
-                    # Clear FPS state and notify AFC (similar to cross-extruder runout handling)
-                    self._clear_lane_on_runout(fps_name, fps_state, source_lane_name)
-
-                    self.logger.error(f"No lane available to reload on {fps_name}")
-                    self._pause_printer_message(f"No lane available to reload on {fps_name}", fps_state.current_oams or active_oams)
-                    if monitor:
-                        monitor.paused()
-                    return
-
-                if target_lane_map:
-                    self.logger.info(f"Infinite runout triggered for {fps_name} on {source_lane_name} -> {target_lane}")
-
-                    # Use async non-blocking reload mechanism
-                    # Blocking waits (toolhead.dwell or reactor.pause) don't work from timer context during printing
-                    # Instead, start the OAMS hardware operation and poll for completion with timers
-                    self._start_async_reload(fps_name, fps_state, target_lane, target_lane_map,
-                                           source_lane_name, active_oams, monitor)
-                    return
-
-                # Fallback: If target_lane_map is somehow None, use async path anyway
-                # This shouldn't normally happen, but ensures we always use working async mechanism
-                self.logger.warning(f"target_lane_map is None for {source_lane_name} -> {target_lane}, using async reload anyway")
-                self._start_async_reload(fps_name, fps_state, target_lane, target_lane or "unknown",
-                                       source_lane_name, active_oams, monitor)
+                fps_state.reset_runout_positions()
+                self._request_afc_pause(
+                    f"Same-FPS reload failed for {source_lane_name} -> {target_lane_name}",
+                    lane_name=source_lane_name)
+                if monitor:
+                    monitor.paused()
 
             fps_reload_margin = getattr(self.fpss[fps_name], "reload_before_toolhead_distance", None)
             if fps_reload_margin is None:
