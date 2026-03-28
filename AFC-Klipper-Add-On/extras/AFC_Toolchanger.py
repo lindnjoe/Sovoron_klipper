@@ -464,6 +464,20 @@ class AfcToolchanger(afcUnit):
             if self.active_tool:
                 self._run_gcode('tool.dropoff_gcode',
                                self.active_tool.dropoff_gcode, extra_context)
+                # Verify old tool actually released from shuttle before
+                # moving to the pickup dock. Without this, a stuck tool
+                # gets carried to the next dock → collision.
+                if self.has_detection:
+                    old_tool = self.active_tool
+                    toolhead = self.printer.lookup_object('toolhead')
+                    toolhead.wait_moves()
+                    reactor = self.printer.get_reactor()
+                    reactor.pause(reactor.monotonic() + 0.3)
+                    if self._is_tool_present(old_tool):
+                        self.process_error(
+                            gcmd.error,
+                            "Dropoff failed: %s still detected on shuttle after dropoff. "
+                            "Tool did not release from dock." % old_tool.name)
 
             self._configure_toolhead_for_tool(tool)
             if tool is not None:
