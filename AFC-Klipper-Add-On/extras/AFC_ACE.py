@@ -1978,7 +1978,7 @@ class afcACE(afcUnit):
 
         # Brief pause to let the ACE motor start pulling before the extruder
         # pushes back — prevents slack buildup at the start of the retract.
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 2.0)
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.0)
 
         # Step 2: Full extruder retract (stn_unload + 10mm) concurrent with ACE unwind.
         self.logger.info(
