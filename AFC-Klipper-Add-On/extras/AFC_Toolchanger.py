@@ -199,7 +199,7 @@ class AfcToolchanger(afcUnit):
     def register_tool(self, extruder, number):
         """Register an AFC_extruder as a tool with the given number."""
         if number in self.tools:
-            self.logger.warning("Toolchanger: replacing tool T%d" % number)
+            self.logger.warning("Toolchanger: replacing tool_number %d" % number)
             self.tool_numbers.remove(number)
             self.tool_names.remove(self.tools[number].name)
         self.tools[number] = extruder
@@ -478,8 +478,8 @@ class AfcToolchanger(afcUnit):
             self._restore_state_and_transform(tool)
             self.status = STATUS_READY
             if tool:
-                self.logger.info('Selected tool %s (%s)' % (
-                    str(tool.tool_number), tool.name))
+                self.logger.info('Selected %s (tool_number %d)' % (
+                    tool.name, tool.tool_number))
                 # Re-enable crash detection after successful pickup
                 self.start_crash_detection()
             else:
