@@ -1465,9 +1465,8 @@ class OAMSManager:
             # we have MCU connectivity and no active loaded state to preserve.
             #
             # State Sync Flow:
-            # 1. UNSET_LANE_LOADED -> clears AFC extruder.lane_loaded (breaks stale state)
-            # 2. determine_state() -> reads hardware sensors (F1S, hub, etc.)
-            # 3. If sensors show lane loaded -> _sync_afc_lane_loaded() writes back to AFC
+            # 1. UNSET_LANE_LOADED -> clears AFC extruder.lane_loaded
+            # 2. determine_state() -> reads AFC state to sync FPS tracking
             # 4. If sensors show empty -> AFC stays unset
             # Always clear AFC lane_loaded state on explicit CLEAR_ERRORS.
             # After cancel, both fps_state and current_spool may be set to LOADED
@@ -2029,9 +2028,7 @@ class OAMSManager:
             gcmd.respond_info(f"  Spool Index: {fps_state.current_spool_idx}")
 
 
-        # Sync virtual tool sensors based on which lanes are actually loaded
-        # This fixes virtual sensor state after reboot (e.g., extruder4 showing filament when empty)
-        gcmd.respond_info("\n=== Syncing Virtual Tool Sensors ===")
+        gcmd.respond_info("\n=== Syncing State ===")
 
     cmd_STATUS_JSON_help = "Return OAMS manager status as JSON for scripts and API bridges"
     def cmd_STATUS_JSON(self, gcmd):

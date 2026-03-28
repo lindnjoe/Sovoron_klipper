@@ -729,8 +729,6 @@ class afcAMS(afcUnit):
 
         self._saved_unit_cache: Optional[Dict[str, Any]] = None
         self._saved_unit_mtime: Optional[float] = None
-
-        # Virtual tool sensor removed — FPS buffer advance_state is the toolhead sensor
         # Keep _last_hub_hes_values for HES calibration (not an AFC responsibility)
         self._last_hub_hes_values: Optional[List[float]] = None
 
@@ -744,7 +742,6 @@ class afcAMS(afcUnit):
         # Track pending TD-1 capture timers (delayed after spool insertion)
         self._pending_spool_loaded_timers: Dict[str, Any] = {}
         # Track last synced lane_tool_loaded signature per lane to avoid re-running
-        # expensive manager sync_state_with_afc() loops for repeated callbacks.
         self._last_lane_tool_loaded_sync: Dict[str, tuple] = {}
 
         self.oams = None
@@ -1309,8 +1306,7 @@ class afcAMS(afcUnit):
             oams_manager = self._get_oams_manager()
             if oams_manager is not None:
                 oams_manager.on_afc_lane_unloaded(lane_name, extruder_name=extruder_name)
-                # Clear current_spool so background sync_state_with_afc
-                # doesn't re-write the lane state
+                # Clear current_spool
                 oams_obj = getattr(self, "oams", None)
                 if oams_obj is not None:
                     oams_obj.current_spool = None
@@ -1822,10 +1818,6 @@ class afcAMS(afcUnit):
 
         # Clear runout flag if set
         lane._oams_runout_detected = False
-
-        # NOTE: Don't call sync_state_with_afc() here - it interferes with normal unload
-        # sync_state_with_afc() is only for error recovery (SET_LANE_LOADED, OAMSM_CLEAR_ERRORS)
-        # Normal unload operations update state through AFC's standard callbacks
 
         if not self._lane_matches_extruder(lane):
             return
