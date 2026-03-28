@@ -89,7 +89,7 @@ class afcUnit:
         self.led_logo_color              = self.afc.function.HexConvert(config.get('led_logo_color', '0,0,0,0'))# Default logo color when nothing is loaded
         self.led_logo_loading            = self.afc.function.HexConvert(config.get('led_logo_loading', self.led_loading ))
 
-        self.led_use_filament_color:bool  = config.getboolean('led_use_filament_color', self.afc.led_use_filament_color)  # When True, uses filament color from color field for lane LEDs instead of configured LED colors
+        self.led_use_filament_color:bool  = config.getboolean('led_use_filament_color', self.afc.led_use_filament_color)  # When True, uses filament color for lane LEDs
 
         self.long_moves_speed            = config.getfloat("long_moves_speed", self.afc.long_moves_speed)   # Speed in mm/s to move filament when doing long moves. Setting value here overrides values set in AFC.cfg file
         self.long_moves_accel            = config.getfloat("long_moves_accel", self.afc.long_moves_accel)   # Acceleration in mm/s squared when doing long moves. Setting value here overrides values set in AFC.cfg file
@@ -220,16 +220,12 @@ class afcUnit:
                     extruder=self.extruder, unit_type=self.type.replace("_", ""), unit_name=self.name )
                 raise config_error(error_string)
 
-        # Error checking for buffer (try AFC_buffer first, then AFC_FPS)
+        # Error checking for buffer
         if self.buffer_name is not None:
-            for prefix in ('AFC_buffer', 'AFC_FPS'):
-                try:
-                    self.buffer_obj = self.printer.lookup_object('{} {}'.format(prefix, self.buffer_name))
-                    break
-                except Exception:
-                    pass
-            if self.buffer_obj is None:
-                error_string = 'Error: No config found for buffer: {buffer} in [AFC_{unit_type} {unit_name}]. Please make sure [AFC_buffer {buffer}] or [AFC_FPS {buffer}] section exists in your config'.format(
+            try:
+                self.buffer_obj = self.printer.lookup_object('AFC_buffer {}'.format(self.buffer_name))
+            except:
+                error_string = 'Error: No config found for buffer: {buffer} in [AFC_{unit_type} {unit_name}]. Please make sure [AFC_buffer {buffer}] section exists in your config'.format(
                     buffer=self.buffer_name, unit_type=self.type.replace("_", ""), unit_name=self.name )
                 raise config_error(error_string)
 
@@ -497,16 +493,11 @@ class afcUnit:
         self.afc.function.afc_led(lane.led_not_ready, lane.led_index)
 
     def _get_lane_color(self, lane: AFCLane, fallback: str) -> str:
-        """
-        Use filament color if available, otherwise use the default LED color.
-        When a spool has a color set (via SET_COLOR or SET_SPOOL_ID) and
-        use_filament_color is enabled, that color is used for the lane LED.
-        Otherwise falls back to the configured state color (led_ready,
-        led_tool_loaded, etc.).
+        """Use filament color if available and enabled, otherwise use fallback LED color.
 
         :param lane: Lane object to get color for
         :param fallback: Default LED color to use if no filament color is set
-        :return: LED color value (list of floats or config color string)
+        :return: LED color value
         """
         if lane.led_use_filament_color and lane.color:
             hex_str = lane.color.replace("#", "").strip().upper()
@@ -576,9 +567,6 @@ class afcUnit:
         """
         color = self._get_lane_color(lane, lane.led_tool_loaded_idle)
         self.afc.function.afc_led(color, lane.led_index)
-        # Extruder LED also shows filament color when tool is parked/idle —
-        # gives a visual indicator of what's loaded. Reverts to config color
-        # when tool becomes active (lane_tool_loaded) or unloads (lane_tool_unloaded).
         lane.extruder_obj.set_status_led(color)
 
     def lane_illuminate_spool(self, lane):
@@ -656,6 +644,27 @@ class afcUnit:
     def calibration_lane_message(self) -> str:
         return ""
 
+    def abort_load(self, cur_lane):
+        """Cancel any in-progress load operation on the hardware.
+
+        Called by error handlers before cleanup so that unit-specific hardware
+        (e.g. OpenAMS motors) is stopped before AFC proceeds with error recovery.
+        Override in subclass for hardware-specific cancellation.
+        """
+        pass
+
+    def lane_move(self, cur_lane, distance, speed_mode):
+        """Move filament in a lane by the given distance.
+
+        Default implementation uses the lane's stepper motor (BoxTurtle, etc.).
+        Override in subclass for hardware-specific movement (ACE serial, OpenAMS).
+
+        :param cur_lane: Lane object to move
+        :param distance: Distance in mm (positive = forward, negative = retract)
+        :param speed_mode: SpeedMode enum for movement speed
+        """
+        cur_lane.move_advanced(distance, speed_mode, assist_active=AssistActive.YES)
+
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
         """Override in subclass for custom load logic. Return non-None to skip default AFC load."""
         return None
@@ -668,6 +677,11 @@ class afcUnit:
         """Override in subclass for custom lane unload. Return non-None to skip default lane unload."""
         return None
 
+    def on_lane_unset_loaded(self, lane, extruder_name):
+        """Called after a lane is manually unset from the toolhead via unset_lane_loaded.
+        Override in subclass for custom post-unset behavior."""
+        pass
+
     def prep_capture_td1(self, cur_lane):
         """Override in subclass for custom TD-1 prep capture. Return non-None to skip default behavior."""
         return None
@@ -678,6 +692,11 @@ class afcUnit:
 
     def get_lane_reset_command(self, lane, dis):
         """Override in subclass for custom lane reset command. Return None to use default."""
+        return None
+
+    def get_current_lane_fallback(self, tool_obj):
+        """Override in subclass to provide a fallback lane name when on_shuttle() is False.
+        Return lane name string to use, or None to skip."""
         return None
 
     def get_calibrated_lanes(self) -> Optional[list[str]]:
@@ -867,7 +886,7 @@ class afcUnit:
         # when load_then_home is enabled
         load_and_home = lane.load_then_home_var and distance > lane.load_undershoot
         if (load_and_home
-            and lane.extruder_obj.tool_start_is_buffer):
+            and lane.extruder_obj.is_buffer):
             load_length = distance - lane.load_undershoot
             home, dist, warn = lane.move_to(load_length, speed_mode, assist_active=assist_active,
                                             endstop=endstop, use_homing=False)

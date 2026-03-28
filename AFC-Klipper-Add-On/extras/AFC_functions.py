@@ -55,7 +55,7 @@ class afcFunction:
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.printer.register_event_handler("afc_stepper:register_macros",self.register_lane_macros)
         self.printer.register_event_handler("afc_hub:register_macros",self.register_hub_macros)
-        # TODO: Use or remove once fully moved away from KTC
+        # Activate extruder callback (reserved for future multi-extruder timer use)
         # self.reactor = self.printer.get_reactor()
         # self.activate_extruder_cb = self.reactor.register_timer( self._handle_activate_extruder )
         self.printer.register_event_handler("afc:moonraker_connect", self.handle_moonraker_connect)
@@ -385,6 +385,16 @@ class afcFunction:
             current_extruder = self.get_current_extruder()
             if current_extruder is not None:
                 return self.afc.tools[current_extruder].lane_loaded
+            # Fallback: ask the lane's unit_obj when on_shuttle() is False
+            # (e.g. ACE after power cycle with shuttle parked)
+            extruder_name = self.afc.toolhead.get_extruder().name
+            tool_obj = self.afc.tools.get(extruder_name)
+            if tool_obj is not None and tool_obj.lane_loaded is not None:
+                lane_obj = self.afc.lanes.get(tool_obj.lane_loaded)
+                if lane_obj is not None and getattr(lane_obj, 'unit_obj', None) is not None:
+                    result = lane_obj.unit_obj.get_current_lane_fallback(tool_obj)
+                    if result is not None:
+                        return result
         return None
 
     def get_current_lane_obj(self):
@@ -440,7 +450,7 @@ class afcFunction:
             error_string = "Error: Cannot find [{}] in config, make sure led_index in config is correct".format(afc_object)
         return error_string, led
 
-    def _get_led_indexes(self, index_values: str) -> list[str]:
+    def _get_led_indexes(self, index_values: str) -> list[int]:
         """
         Helper function for creating a list for index values that have dashes and commas
         so the led's can be set correctly.
@@ -459,7 +469,7 @@ class afcFunction:
                 led_indexes += range(low, high+1)
         return led_indexes
 
-    def parse_led_groups(self, idx: str) -> list[str, str]:
+    def parse_led_groups(self, idx: str) -> list[tuple[str, str]]:
         """
         Parse an LED index string into groups of (led_name, index_string).
 
@@ -521,11 +531,14 @@ class afcFunction:
         # self.reactor.update_timer( self.activate_extruder_cb, self.reactor.monotonic() + 5 )
         self._handle_activate_extruder(0)
 
-    def _handle_activate_extruder(self, eventtime):
+    def _handle_activate_extruder(self, eventtime, lane=None):
         """
-        Supposed to be a callback function from timer, currently this is not called from timer event.
-        TODO: Update this functionality before pushing to main/dev or once fully moved away from KTC
+        Syncs AFC lane state when the active extruder changes.
+        Optionally activates the klipper extruder for the given lane first,
+        then disables non-active lanes and enables the current one.
         """
+        if lane is not None:
+            lane.activate_toolhead_extruder()
 
         cur_lane_loaded = self.get_current_lane_obj()
         self.logger.debug("Activating extruder lane: {}".format(cur_lane_loaded.name if cur_lane_loaded else "None"))
@@ -555,7 +568,12 @@ class afcFunction:
 
         # Switch spoolman ID
         self.afc.spool.set_active_spool(cur_lane_loaded.spool_id)
-        # Set lanes tool loaded led (uses filament color when available via _get_lane_color)
+        # Set lanes tool loaded led
+        # TODO: Add check to see if users want to change status led to spool color if set
+        # if cur_lane_loaded.color is not None and cur_lane_loaded.color:
+        #     led_color = self.HexToLedString(cur_lane_loaded.color.replace("#", ""))
+        #     self.afc_led( led_color, cur_lane_loaded.led_index )
+        # else:
         cur_lane_loaded.unit_obj.lane_tool_loaded( cur_lane_loaded )
         # Enable stepper
         cur_lane_loaded.do_enable(True)
@@ -564,8 +582,6 @@ class afcFunction:
         cur_lane_loaded.sync_to_extruder()
         cur_lane_loaded.unit_obj.select_lane( cur_lane_loaded )
         self.logger.debug("Activate extruder done")
-        # TODO: Remove or add back once fully moved away from KTC
-        # return self.reactor.NEVER
 
     def unset_lane_loaded(self):
         """
@@ -573,12 +589,14 @@ class afcFunction:
         """
         cur_lane_loaded = self.get_current_lane_obj()
         if cur_lane_loaded is not None:
+            extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None)
             cur_lane_loaded.unsync_to_extruder()
             cur_lane_loaded.set_tool_unloaded()
             cur_lane_loaded.unit_obj.return_to_home()
             self.afc.function.handle_activate_extruder()
             self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
             self.afc.save_vars()
+            cur_lane_loaded.unit_obj.on_lane_unset_loaded(cur_lane_loaded, extruder_name)
 
     def select_loaded_lane(self):
         """
@@ -631,7 +649,7 @@ class afcFunction:
 
         :param eventtime: Current eventtime to calculate the position from, if time is not passed in uses current eventtime
         :param past_extruder_position: Previous extruder position to compare current position against.
-        :param extruder: Extruder object to get position from, if None uses current toolhead extruder
+        :param extruder: Specific extruder to get position from. If None, uses the toolhead's current extruder.
         :return float: Returns current extruder position if its greater than previous position, else returns previous position
         """
         if eventtime is None:

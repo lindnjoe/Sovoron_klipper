@@ -130,12 +130,7 @@ class AFCFPSBuffer:
         self.current_lane: Optional[AFCLane | AFCExtruderStepper] = None
         self.advance_state = False
         self.trailing_state = False
-
-        # Compatibility with hardware buffer interface — upstream code
-        # accesses buffer_obj.advance_pin / trailing_pin directly.
-        # FPS uses software endstops instead of GPIO pins.
-        self.advance_pin = None
-        self.trailing_pin = None
+        self.toolhead = None  # Set in _handle_ready
 
         self.debug = config.getboolean("debug", False)
 
@@ -234,6 +229,20 @@ class AFCFPSBuffer:
             "enable_sensors_in_gui", self.afc.enable_sensors_in_gui
         )
 
+        # ---- Register virtual filament sensors for GUI display ----
+        # Same pattern as TurtleNeck buffer which registers advance/trailing sensors.
+        # These let Mainsail show buffer state (grey = ramming mode) instead of
+        # red (no sensor). The VirtualFilamentSensor tracks advance/trailing state
+        # that gets updated in _adc_callback.
+        self.adv_filament_switch_name = f"{self.name}_expanded"
+        self.fila_adv = VirtualFilamentSensor(
+            self.printer, self.adv_filament_switch_name,
+            show_in_gui=self.enable_sensors_in_gui)
+        self.trail_filament_switch_name = f"{self.name}_compressed"
+        self.fila_trail = VirtualFilamentSensor(
+            self.printer, self.trail_filament_switch_name,
+            show_in_gui=self.enable_sensors_in_gui)
+
         # ---- Correction timer ----
         self.correction_timer = self.reactor.register_timer(self._correction_event)
 
@@ -288,38 +297,13 @@ class AFCFPSBuffer:
     def __str__(self):
         return self.name
 
-    def register_lane_endstops(self, lane, query_endstops):
-        """Register FPS software endstops on a lane.
-
-        Called by AFCLane.__init__ when the buffer has no hardware advance_pin.
-        Registers both advance (high_point) and trailing (low_point) endstops.
-        """
-        from extras.AFC_lane import AFCHomingPoints
-
-        endstop = self.fps_endstop
-        endstop_name = f"{lane.name}_{AFCHomingPoints.BUFFER}"
-        try:
-            query_endstops.register_endstop(endstop, endstop_name)
-        except Exception:
-            pass
-        lane.endstops[AFCHomingPoints.BUFFER] = {
-            "endstop": endstop, "endstop_name": endstop_name}
-
-        trail_endstop = self.fps_trailing_endstop
-        trail_endstop_name = f"{lane.name}_{AFCHomingPoints.BUFFER_TRAIL}"
-        try:
-            query_endstops.register_endstop(trail_endstop, trail_endstop_name)
-        except Exception:
-            pass
-        lane.endstops[AFCHomingPoints.BUFFER_TRAIL] = {
-            "endstop": trail_endstop, "endstop_name": trail_endstop_name}
-
     # ------------------------------------------------------------------
     # Klipper ready
     # ------------------------------------------------------------------
     def _handle_ready(self):
         self.min_event_systime = self.reactor.monotonic() + 2.
         self.toolhead = self.printer.lookup_object('toolhead')
+
         if self.error_sensitivity > 0:
             self.setup_fault_timer()
 
@@ -328,6 +312,19 @@ class AFCFPSBuffer:
             if led is None:
                 raise error(error_string)
 
+    @property
+    def extruder(self):
+        """Return the active toolhead extruder.
+
+        The native fps.py stored a direct extruder reference.  oams_manager
+        accesses ``fps.extruder.last_position`` in many places for runout
+        coasting and clog detection.  This property provides the same
+        interface without requiring an extruder config option — it simply
+        returns whatever extruder is currently active on the toolhead.
+        """
+        if self.toolhead is not None:
+            return self.toolhead.get_extruder()
+        return None
 
     def get_fps_value(self) -> float:
         """Get current FPS pressure value (0.0-1.0)."""
@@ -351,20 +348,6 @@ class AFCFPSBuffer:
         triggered — indicates the spool is not feeding fast enough or is stuck.
         """
         return self.smoothed_fps <= self.low_point
-
-    @property
-    def extruder(self):
-        """Return the active toolhead extruder.
-
-        oams_manager accesses fps.extruder.last_position for engagement
-        verification and clog detection. This property provides the
-        interface without requiring an extruder config option — it returns
-        whatever extruder is currently active on the toolhead.
-        """
-        toolhead = getattr(self, 'toolhead', None)
-        if toolhead is not None:
-            return toolhead.get_extruder()
-        return None
 
     # ------------------------------------------------------------------
     # ADC callback — runs at report_time intervals
@@ -390,41 +373,65 @@ class AFCFPSBuffer:
             + (1.0 - self.smoothing) * read_value
         )
 
-        # Keep advance/trailing state flags AND last_state current even when
-        # the correction timer is stopped (e.g. during unload).  The unload
-        # sequence checks these flags to know whether filament is still
-        # present — they must always reflect the live FPS reading.
-        #
-        # Semantics match turtleneck buffer switches:
-        #   advance_state  = buffer compressed (HIGH reading, filament loaded)
-        #   trailing_state = buffer stretched  (LOW reading, filament slack/retracted)
-        half_db = self.deadband / 2.0
-        neutral_low = self.set_point - half_db
-        neutral_high = self.set_point + half_db
-        reading = self.smoothed_fps
-        if reading > neutral_high:
-            self.advance_state = True
-            self.trailing_state = False
-            self.last_state = ADVANCING_STATE_NAME
-        elif reading < neutral_low:
-            self.advance_state = False
-            self.trailing_state = True
-            self.last_state = TRAILING_STATE_NAME
-        else:
-            self.advance_state = False
-            self.trailing_state = False
-            self.last_state = NEUTRAL_STATE_NAME
+        # Keep last_state and advance/trailing booleans current even when
+        # the correction loop isn't running (buffer disabled during
+        # loading / calibration).  Without this, get_toolhead_pre_sensor_state()
+        # returns stale False and ACE load / calibration can't detect
+        # filament arrival at the toolhead.
+        if not self.enable:
+            half_db = self.deadband / 2.0
+            if self.smoothed_fps > self.set_point + half_db:
+                self.last_state = ADVANCING_STATE_NAME
+                self.advance_state = True
+                self.trailing_state = False
+            elif self.smoothed_fps < self.set_point - half_db:
+                self.last_state = TRAILING_STATE_NAME
+                self.advance_state = False
+                self.trailing_state = True
+            else:
+                self.last_state = NEUTRAL_STATE_NAME
+                self.advance_state = False
+                self.trailing_state = False
+
+        # Update virtual filament sensors for GUI display
+        self._update_virtual_sensors(read_time)
 
     # ------------------------------------------------------------------
     # Correction timer — proportional adjustment loop
     # ------------------------------------------------------------------
+    def _update_virtual_sensors(self, eventtime):
+        """Push buffer state into virtual filament sensors for GUI display.
+
+        The advance sensor reports filament present whenever the FPS reads
+        above low_point (any meaningful pressure = filament exists in buffer).
+        This prevents the indicator from going red during neutral state when
+        filament IS loaded but pressure is balanced.
+        """
+        # Filament is present if FPS reads above the low threshold
+        filament_present = self.smoothed_fps > self.low_point
+        try:
+            if hasattr(self, 'fila_adv') and self.fila_adv is not None:
+                self.fila_adv.runout_helper.note_filament_present(
+                    eventtime, filament_present)
+        except TypeError:
+            self.fila_adv.runout_helper.note_filament_present(filament_present)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'fila_trail') and self.fila_trail is not None:
+                self.fila_trail.runout_helper.note_filament_present(
+                    eventtime, self.trailing_state)
+        except TypeError:
+            self.fila_trail.runout_helper.note_filament_present(self.trailing_state)
+        except Exception:
+            pass
+
     def _correction_event(self, eventtime):
         """Periodically adjust rotation distance based on FPS reading."""
         if not self.enable or self.current_lane is None:
-            self.logger.debug(
-                "FPS {}: correction timer stopping (enable={}, lane={})".format(
-                    self.name, self.enable,
-                    self.current_lane.name if self.current_lane else None))
+            return self.reactor.NEVER
+        # Non-stepper lanes (ACE/OpenAMS) don't need rotation correction
+        if getattr(self.current_lane, 'extruder_stepper', None) is None:
             return self.reactor.NEVER
 
         reading = self.smoothed_fps
@@ -443,13 +450,10 @@ class AFCFPSBuffer:
             self.trailing_state = False
             if self.led:
                 self.afc.function.afc_led(self.led_neutral, self.led_index)
-            # Neutral = healthy — keep fault baseline fresh
-            if self.fault_detection_enabled():
-                self.update_filament_error_pos()
             return eventtime + self.update_interval
 
         if reading > neutral_high:
-            # FPS reading is HIGH (buffer compressed / pushing too much)
+            # FPS reading is HIGH (buffer compressed / filament at toolhead)
             # Need to slow down feeding → multiplier < 1
             # Scale from 1.0 at neutral_high to multiplier_low at high_point
             range_size = self.high_point - neutral_high
@@ -481,11 +485,6 @@ class AFCFPSBuffer:
 
         self.set_multiplier(multiplier)
 
-        # Fault baseline is only reset in the Neutral branch above.
-        # Both Advancing (clog / not feeding) and Trailing (runout /
-        # filament slack) are abnormal — let them accumulate extruder
-        # travel toward the fault threshold.
-
         if self.debug:
             self.logger.debug(
                 "FPS_buffer {}: fps={:.3f} smoothed={:.3f} "
@@ -495,15 +494,23 @@ class AFCFPSBuffer:
                 )
             )
 
+        self._update_virtual_sensors(eventtime)
         return eventtime + self.update_interval
 
     # ------------------------------------------------------------------
     # Buffer enable / disable  (interface expected by AFCLane)
     # ------------------------------------------------------------------
     def enable_buffer(self, lane):
-        """Enable the FPS buffer for the given lane and start correction loop."""
+        """Enable the FPS buffer for the given lane.
+
+        For stepper-based units (BoxTurtle, etc.) this also starts the
+        proportional correction timer that adjusts rotation distance.
+        For non-stepper units (OpenAMS, ACE) the correction loop is skipped
+        but the buffer is still marked as enabled/active.
+        """
         self.current_lane = lane
         self.enable = True
+        has_stepper = getattr(lane, 'extruder_stepper', None) is not None
 
         if self.led:
             self.afc.function.afc_led(self.led_neutral, self.led_index)
@@ -511,18 +518,15 @@ class AFCFPSBuffer:
         # Reset smoothed value to current reading
         self.smoothed_fps = self.fps_value
 
-        # Start the proportional correction timer
-        self.reactor.update_timer(self.correction_timer, self.reactor.NOW)
+        if has_stepper:
+            # Start the proportional correction timer
+            self.reactor.update_timer(self.correction_timer, self.reactor.NOW)
 
-        # Start fault detection if configured — but only for stepper-based
-        # units.  OpenAMS (and similar non-stepper units) have their own
-        # clog/runout detection in oams_manager; running AFC's extruder-
-        # position-based fault timer on those lanes just causes errors.
-        if (self.fault_detection_enabled()
-                and getattr(lane, 'extruder_stepper', None) is not None):
-            self.start_fault_detection(0, 1.0)
+            # Start fault detection if configured
+            if self.fault_detection_enabled():
+                self.start_fault_detection(0, 1.0)
 
-        self.logger.debug(f"{self.name} FPS buffer enabled for {self.current_lane.name}")
+        self.logger.debug(f"{self.name} FPS buffer enabled for {self.current_lane.name} (correction={'active' if has_stepper else 'off/adc-only'})")
 
     def disable_buffer(self):
         """Disable the FPS buffer, reset multiplier, stop timers."""
@@ -648,9 +652,9 @@ class AFCFPSBuffer:
         if eventtime < self.min_event_systime or not self.enable or self.afc.function.is_paused():
             return
         if pause:
-            if self.last_state == TRAILING_STATE_NAME:
-                msg += '\nCLOG DETECTED'
             if self.last_state == ADVANCING_STATE_NAME:
+                msg += '\nCLOG DETECTED'
+            if self.last_state == TRAILING_STATE_NAME:
                 msg += '\nAFC NOT FEEDING'
             self.afc.error.AFC_error(msg, True)
 
@@ -710,8 +714,8 @@ class AFCFPSBuffer:
         Usage: ``QUERY_BUFFER BUFFER=<buffer_name>``
         """
         state_mapping = {
-            TRAILING_STATE_NAME: ' (buffer is compressing - feeding too much)',
-            ADVANCING_STATE_NAME: ' (buffer is stretching - not feeding enough)',
+            ADVANCING_STATE_NAME: ' (buffer compressed - filament loaded)',
+            TRAILING_STATE_NAME: ' (buffer stretched - not feeding enough)',
             NEUTRAL_STATE_NAME: ' (buffer is centered)',
         }
 
@@ -856,6 +860,107 @@ class AFCFPSBuffer:
         Usage: ``DISABLE_BUFFER BUFFER=<name>``
         """
         self.disable_buffer()
+
+
+# ---------------------------------------------------------------------------
+#  Virtual filament sensor & extruder patch
+#
+#  When pin_tool_start references an FPS buffer name (e.g. "FPS_buffer1"),
+#  AFCExtruder.__init__ would try to register it as a GPIO pin and fail.
+#  The patch below temporarily rewrites the config value to "buffer" (which
+#  the base init harmlessly skips), then creates a lightweight virtual
+#  filament sensor so the extruder has a valid fila_tool_start object.
+# ---------------------------------------------------------------------------
+
+
+class VirtualRunoutHelper:
+    """Minimal runout helper used by FPS virtual sensors."""
+
+    def __init__(self, printer, name, runout_cb=None, enable_runout=False):
+        self.printer = printer
+        self._reactor = printer.get_reactor()
+        self.name = name
+        self.runout_callback = runout_cb
+        self.sensor_enabled = bool(enable_runout)
+        self.filament_present = False
+        self.insert_gcode = None
+        self.runout_gcode = None
+        self.event_delay = 0.0
+        self.min_event_systime = self._reactor.NEVER
+
+    def note_filament_present(self, eventtime=None, is_filament_present=False, **_kwargs):
+        if eventtime is None:
+            eventtime = self._reactor.monotonic()
+
+        new_state = bool(is_filament_present)
+        if new_state == self.filament_present:
+            return
+
+        self.filament_present = new_state
+
+        if (not new_state and self.sensor_enabled and callable(self.runout_callback)):
+            try:
+                self.runout_callback(eventtime)
+            except TypeError:
+                self.runout_callback(eventtime=eventtime)
+
+    def get_status(self, _eventtime=None):
+        return {
+            "filament_detected": bool(self.filament_present),
+            "enabled": bool(self.sensor_enabled),
+        }
+
+
+class VirtualFilamentSensor:
+    """Lightweight filament sensor placeholder for FPS virtual pins."""
+
+    QUERY_HELP = "Query the status of the Filament Sensor"
+    SET_HELP = "Sets the filament sensor on/off"
+
+    def __init__(self, printer, name, show_in_gui=True, runout_cb=None, enable_runout=False):
+        self.printer = printer
+        self.name = name
+        self._object_name = f"filament_switch_sensor {name}"
+        self.runout_helper = VirtualRunoutHelper(printer, name, runout_cb=runout_cb, enable_runout=enable_runout)
+
+        try:
+            printer.add_object(self._object_name, self)
+            if not show_in_gui:
+                # Hide from GUI by prefixing with underscore
+                objects = getattr(printer, "objects", {})
+                if self._object_name in objects:
+                    objects["_" + self._object_name] = objects.pop(self._object_name)
+        except Exception:
+            # Fallback: direct dict registration
+            objects = getattr(printer, "objects", None)
+            if isinstance(objects, dict):
+                objects.setdefault(self._object_name, self)
+
+        gcode = printer.lookup_object("gcode", None)
+        if gcode is None:
+            return
+        try:
+            gcode.register_mux_command("QUERY_FILAMENT_SENSOR", "SENSOR", name, self.cmd_QUERY_FILAMENT_SENSOR, desc=self.QUERY_HELP)
+        except Exception:
+            pass
+        try:
+            gcode.register_mux_command("SET_FILAMENT_SENSOR", "SENSOR", name, self.cmd_SET_FILAMENT_SENSOR, desc=self.SET_HELP)
+        except Exception:
+            pass
+
+    def get_status(self, eventtime):
+        return self.runout_helper.get_status(eventtime)
+
+    def cmd_QUERY_FILAMENT_SENSOR(self, gcmd):
+        status = self.runout_helper.get_status(None)
+        if status["filament_detected"]:
+            msg = f"Filament Sensor {self.name}: filament detected"
+        else:
+            msg = f"Filament Sensor {self.name}: filament not detected"
+        self.logger.info(msg)
+
+    def cmd_SET_FILAMENT_SENSOR(self, gcmd):
+        self.runout_helper.sensor_enabled = bool(gcmd.get_int("ENABLE", 1))
 
 
 def load_config_prefix(config):
