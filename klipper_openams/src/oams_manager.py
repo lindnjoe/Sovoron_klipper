@@ -5847,62 +5847,15 @@ class OAMSManager:
     def _update_follower_for_oams(self, oams_name: str, oams: Any):
         """Follower is manually controlled; no automatic updates."""
         return
+
     def _ensure_followers_for_loaded_hubs(self):
+        """Deprecated: AFC's load/unload flow manages follower state directly.
+
+        Previously polled hardware sensors to redundantly set followers that
+        AFC already configured during load_sequence/unload_sequence. Kept as
+        no-op so callers don't need updating.
         """
-        Ensure followers are enabled forward for any OAMS unit that has:
-        1. Any hub sensor showing filament loaded, OR
-        2. Any lane on that unit showing loaded to toolhead
-
-        Called after OAMSM_CLEAR_ERRORS and other state changes.
-        User requirement: Keep follower feeding filament towards extruder when filament is present.
-        """
-        afc = self._get_afc()
-        if afc is None or not hasattr(afc, 'units'):
-            return
-
-        for unit_name, unit_obj in afc.units.items():
-            # Only process OpenAMS units
-            if not hasattr(unit_obj, 'oams_name'):
-                continue
-
-            oams_name = unit_obj.oams_name
-            oams = self.oams.get(oams_name)
-            if oams is None or not self._is_oams_mcu_ready(oams):
-                continue
-
-            should_enable_follower = False
-
-            # Check 1: Does any hub sensor show filament loaded?
-            hub_hes_values = getattr(oams, "hub_hes_value", None)
-            if hub_hes_values is not None and any(hub_hes_values):
-                should_enable_follower = True
-                self.logger.debug(f"Hub sensors on {oams_name} show filament loaded - enabling follower forward")
-
-            # Check 2: Does any lane on this unit show loaded to toolhead?
-            if not should_enable_follower and hasattr(unit_obj, 'lanes'):
-                for lane_name, lane in unit_obj.lanes.items():
-                    if getattr(lane, 'tool_loaded', False):
-                        should_enable_follower = True
-                        self.logger.debug(f"Lane {lane_name} loaded to toolhead - enabling follower forward on {oams_name}")
-                        break
-
-            # Enable follower forward if conditions met
-            if should_enable_follower:
-                # Find the FPS for this OAMS - use first loaded bay
-                fps_name = None
-                for fps_name_candidate, fps_state in self.current_state.fps_state.items():
-                    if fps_state.current_oams == oams_name and fps_state.current_spool_idx is not None:
-                        fps_name = fps_name_candidate
-                        break
-
-                if fps_name:
-                    fps_state = self.current_state.fps_state.get(fps_name)
-                    if fps_state:
-                        try:
-                            self._enable_follower(fps_name, fps_state, oams, 1, "CLEAR_ERRORS with filament present")
-                            self.logger.info(f"Enabled follower forward on {oams_name} {fps_name} - filament present in hub/toolhead")
-                        except Exception as e:
-                            self.logger.error(f"Failed to enable follower on {oams_name} {fps_name}: {e}")
+        pass
 
     def _force_enable_followers(self, ready_oams: Dict[str, Any]):
         """
