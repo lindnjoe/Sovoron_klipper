@@ -17,67 +17,6 @@ from extras.AFC_OpenAMS import (
 )
 from extras.oams import OAMSStatus, OAMSOpCode
 
-def _patch_moonraker_db_methods(moonraker):
-    # Patch generic write/read_database_entry onto AFC_moonraker if missing.
-    # Safe to call multiple times - skips if methods already exist.
-    import types
-    from urllib.request import Request
-
-    if not hasattr(moonraker, "write_database_entry"):
-        def _write(self, namespace, key, value):
-            payload = json.dumps({
-                "request_method": "POST",
-                "namespace": namespace,
-                "key": key,
-                "value": value,
-            }).encode()
-            req = Request(
-                self.database_url, payload,
-                headers={"Content-Type": "application/json"},
-            )
-            return self._get_results(req)
-
-        moonraker.write_database_entry = types.MethodType(_write, moonraker)
-
-    if not hasattr(moonraker, "read_database_entry"):
-        def _read(self, namespace, key):
-            url = self.database_url + f"?namespace={namespace}&key={key}"
-            return self._get_results(url, print_error=False)
-
-        moonraker.read_database_entry = types.MethodType(_read, moonraker)
-
-    if (
-        hasattr(moonraker, "trigger_db_backup")
-        and not getattr(moonraker, "_openams_backup_guard_patched", False)
-    ):
-        original_trigger_db_backup = moonraker.trigger_db_backup
-
-        def _trigger_db_backup_guarded(self):
-            """Skip Moonraker DB backups while printing.
-
-            Moonraker returns HTTP 400 for backup requests during active prints.
-            Guard this call so AFC reset/stat flows do not log noisy false errors
-            when invoked mid-print.
-            """
-            try:
-                idle_timeout = self.printer.lookup_object("idle_timeout", None)
-                if idle_timeout is not None:
-                    state = idle_timeout.get_status(self.printer.reactor.monotonic()).get("state")
-                    if state == "Printing":
-                        self.logger.debug(
-                            "Skipping moonraker database backup while printing; "
-                            "Moonraker rejects backup requests in active prints"
-                        )
-                        return False
-            except Exception:
-                # Fall through to original AFC behavior if print-state check fails.
-                pass
-
-            return original_trigger_db_backup()
-
-        moonraker.trigger_db_backup = types.MethodType(_trigger_db_backup_guarded, moonraker)
-        moonraker._openams_backup_guard_patched = True
-
 # Configuration constants
 PAUSE_DISTANCE = 60
 MIN_ENCODER_DIFF = 3          # Minimum encoder clicks per 2-second poll to be considered "moving"
