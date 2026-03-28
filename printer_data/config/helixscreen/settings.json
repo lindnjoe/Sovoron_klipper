@@ -92,7 +92,9 @@
         "hotend": "heater_fan T0_hotend_fan",
         "part": "fan_generic T0_partfan"
       },
-      "filament": {},
+      "filament": {
+        "auto_color_map": false
+      },
       "filament_sensors": {
         "master_enabled": true,
         "sensors": [
@@ -180,7 +182,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-27T22:15:08Z"
+          "timestamp": "2026-03-28T00:24:28Z"
         },
         "optional": []
       },
