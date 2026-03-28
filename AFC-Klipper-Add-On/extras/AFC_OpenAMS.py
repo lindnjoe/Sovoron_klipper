@@ -937,6 +937,31 @@ class afcAMS(afcUnit):
             return False
         return (lane.extruder_obj.lane_loaded == lane_name)
 
+    def request_pause(self, message, lane_name=None):
+        """Request AFC to pause the print with a message.
+
+        Called by oams_manager monitoring when it detects a problem
+        (clog, stuck spool, runout without target lane). AFC owns the
+        pause decision — oams_manager should never call PAUSE directly.
+
+        :param message: Error message to display
+        :param lane_name: Optional lane name for lane-specific error handling
+        """
+        try:
+            if lane_name:
+                lane = self.afc.lanes.get(lane_name)
+                if lane:
+                    self.afc.error.handle_lane_failure(lane, message)
+                    return
+            self.afc.error.AFC_error(message, pause=True)
+        except Exception as e:
+            self.logger.error(f"Failed to request AFC pause: {e}")
+            # Last resort — direct pause if AFC error handler fails
+            try:
+                self.afc.gcode.run_script_from_command("PAUSE")
+            except Exception:
+                pass
+
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
         """OpenAMS load sequence — AFC-owned orchestration.
 
