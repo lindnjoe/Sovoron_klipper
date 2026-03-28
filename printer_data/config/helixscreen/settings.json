@@ -150,6 +150,22 @@
             "temperature_fan controllerFan0"
           ],
           "filament_sensors": [
+            "filament_switch_sensor lane0_prep",
+            "filament_switch_sensor lane0_load",
+            "filament_switch_sensor TN_expanded",
+            "filament_switch_sensor TN_compressed",
+            "filament_switch_sensor lane1_prep",
+            "filament_switch_sensor lane1_load",
+            "filament_switch_sensor TN1_expanded",
+            "filament_switch_sensor TN1_compressed",
+            "filament_switch_sensor lane2_prep",
+            "filament_switch_sensor lane2_load",
+            "filament_switch_sensor TN2_expanded",
+            "filament_switch_sensor TN2_compressed",
+            "filament_switch_sensor lane3_prep",
+            "filament_switch_sensor lane3_load",
+            "filament_switch_sensor TN3_expanded",
+            "filament_switch_sensor TN3_compressed",
             "filament_switch_sensor virtual_bypass",
             "filament_switch_sensor quiet_mode"
           ],
@@ -182,7 +198,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-28T10:45:56Z"
+          "timestamp": "2026-03-28T11:14:47Z"
         },
         "optional": []
       },
