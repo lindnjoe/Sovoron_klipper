@@ -967,10 +967,10 @@ class afcAMS(afcUnit):
             # Wait for MCU to settle before next attempt
             self._wait_oams_idle(oams, context="post-cleanup settle")
 
-        # All attempts failed — only resume monitor if not paused
-        if self._monitor is not None:
-            if not self.afc.function.is_paused() and not getattr(self.afc.error, 'error_state', False):
-                self._monitor.start(oams)
+        # All attempts failed — do NOT restart monitor here.
+        # The caller (load_sequence) manages monitor lifecycle around
+        # dock purge. Restarting here causes false stuck spool detection
+        # during the dock purge pickup that follows a load failure.
         return False, f"All {max_retries} load attempts failed for {cur_lane.name}"
 
     def _verify_engagement(self, cur_lane):
