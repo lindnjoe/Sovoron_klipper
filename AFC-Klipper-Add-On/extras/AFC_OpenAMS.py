@@ -834,6 +834,236 @@ class afcAMS(afcUnit):
         """Check if dock purge is enabled on the OAMS hardware."""
         return self.oams is not None and getattr(self.oams, 'dock_load', False)
 
+    # ---- Direct hardware load/unload (bypasses oams_manager) ----
+
+    def _oams_load(self, cur_lane, max_retries=None):
+        """Load filament via OAMS hardware directly.
+
+        Calls oams.py load_spool_with_retry(), verifies engagement,
+        enables follower. No oams_manager involved.
+
+        :param cur_lane: Lane object to load
+        :param max_retries: Override for engagement retry count
+        :return: (success, message) tuple
+        """
+        oams = self.oams
+        if oams is None:
+            return False, "OAMS hardware not available"
+
+        spool_index = self._get_openams_spool_index(cur_lane)
+        if spool_index is None:
+            return False, f"Cannot resolve spool index for {cur_lane.name}"
+
+        # Check bay is ready
+        if not oams.is_bay_ready(spool_index):
+            return False, f"Bay {spool_index} not ready (no spool detected)"
+
+        if max_retries is None:
+            max_retries = self.afc.tool_max_unload_attempts
+
+        # Enable follower forward before load
+        from extras.AFC_OpenAMS_follower import FollowerController
+        if hasattr(self, '_follower') and self._follower is not None:
+            fps_state = self._get_monitor_state()
+            if fps_state:
+                self._follower.enable_follower(fps_state, oams, 1, "before load", force=True)
+
+        # Load with retries
+        for attempt in range(max_retries):
+            self.logger.debug(f"Load attempt {attempt + 1}/{max_retries} for {cur_lane.name}")
+
+            try:
+                result = oams.load_spool_with_retry(spool_index)
+            except Exception as e:
+                self.logger.error(f"Load failed for {cur_lane.name}: {e}")
+                continue
+
+            if result is None or not getattr(result, '__iter__', False):
+                # Simple success/failure
+                success = bool(result)
+            else:
+                success = bool(result)
+
+            if not success:
+                self.logger.warning(f"Load attempt {attempt + 1} failed for {cur_lane.name}")
+                continue
+
+            # Load succeeded — verify engagement
+            engaged = self._verify_engagement(cur_lane)
+            if engaged:
+                # Enable follower forward after successful engagement
+                if hasattr(self, '_follower') and self._follower is not None:
+                    fps_state = self._get_monitor_state()
+                    if fps_state:
+                        self._follower.enable_follower(fps_state, oams, 1, "load complete", force=True)
+                return True, f"Loaded {cur_lane.name}"
+
+            # Engagement failed — cancel and retry
+            self.logger.warning(f"Engagement failed for {cur_lane.name}, cleaning up for retry")
+            self._cancel_and_mark_loaded(spool_index, cur_lane.name)
+            # Retract the engagement extrusion
+            engagement_length, engagement_speed = self.get_engagement_params(cur_lane.name)
+            if engagement_length:
+                self.afc.move_e_pos(-engagement_length,
+                                     engagement_speed / 60.0 if engagement_speed else 7.0,
+                                     "engagement cleanup retract")
+            # Unload from OAMS
+            try:
+                oams.unload_spool_with_retry()
+            except Exception as e:
+                self.logger.error(f"Cleanup unload failed: {e}")
+                return False, f"Engagement cleanup failed for {cur_lane.name}: {e}"
+
+        return False, f"All {max_retries} load attempts failed for {cur_lane.name}"
+
+    def _verify_engagement(self, cur_lane):
+        """Verify filament engaged the extruder after OAMS load.
+
+        Extrudes engagement_length and checks:
+        - Encoder moved (follower tracked filament being pulled)
+        - FPS pressure in valid range (not too high, not too low)
+
+        :param cur_lane: Lane being loaded
+        :return: True if engaged
+        """
+        oams = self.oams
+        if oams is None:
+            return True  # Assume success if no hardware
+
+        engagement_length, engagement_speed = self.get_engagement_params(cur_lane.name)
+        if engagement_length is None:
+            return True  # No params = skip verification
+
+        self.logger.debug(
+            f"Verifying engagement for {cur_lane.name}: "
+            f"{engagement_length:.1f}mm at {engagement_speed:.0f}mm/min")
+
+        # Notify monitor to suppress detection during engagement
+        if hasattr(self, '_monitor') and self._monitor is not None:
+            self._monitor.notify_engagement_start()
+
+        try:
+            # Record encoder before
+            encoder_before = oams.encoder_clicks
+
+            # Two-phase extrusion: short prime then remaining
+            prime_length = 5.0
+            remaining = max(0.0, engagement_length - prime_length)
+
+            self._oams_extrude(prime_length, engagement_speed, "engagement_prime")
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            if remaining > 0:
+                self._oams_extrude(remaining, engagement_speed, "engagement_main")
+
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+
+            # Check encoder movement
+            encoder_after = oams.encoder_clicks
+            encoder_delta = abs(encoder_after - encoder_before)
+            expected = max(1.0, remaining * 0.5)
+            min_movement = max(1.0, expected - 3.0)
+
+            fps_pressure = oams.fps_value
+
+            # Check: pressure too high = filament backed up, not engaged
+            engagement_max = getattr(self, '_engagement_pressure_max', 0.6)
+            if encoder_delta >= min_movement and fps_pressure >= engagement_max:
+                self.logger.warning(
+                    f"Engagement failed: encoder moved {encoder_delta} clicks "
+                    f"but pressure too high ({fps_pressure:.2f})")
+                return False
+
+            # Check: pressure too low = filament sliding, not gripped
+            engagement_min = getattr(self, '_engagement_pressure_min', 0.25)
+            if encoder_delta >= min_movement and fps_pressure < engagement_min:
+                self.logger.warning(
+                    f"Engagement failed: encoder moved {encoder_delta} clicks "
+                    f"but pressure too low ({fps_pressure:.2f})")
+                return False
+
+            # Check: encoder moved enough with valid pressure = engaged
+            if encoder_delta >= min_movement:
+                self.logger.debug(
+                    f"Engagement verified for {cur_lane.name} "
+                    f"(encoder={encoder_delta}, pressure={fps_pressure:.2f})")
+                # Complete the load with remaining stn distance
+                reload_length, reload_speed = self.get_reload_params(cur_lane.name)
+                if reload_length and reload_speed and reload_length > 0:
+                    self._oams_extrude(reload_length, reload_speed, "post_engagement")
+                return True
+
+            # Encoder didn't move enough — retry with short delay
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.3)
+            encoder_retry = oams.encoder_clicks
+            encoder_delta = abs(encoder_retry - encoder_before)
+
+            if encoder_delta >= min_movement:
+                fps_pressure = oams.fps_value
+                if engagement_min <= fps_pressure < engagement_max:
+                    self.logger.debug(
+                        f"Engagement verified on retry for {cur_lane.name} "
+                        f"(encoder={encoder_delta})")
+                    reload_length, reload_speed = self.get_reload_params(cur_lane.name)
+                    if reload_length and reload_speed and reload_length > 0:
+                        self._oams_extrude(reload_length, reload_speed, "post_engagement")
+                    return True
+
+            self.logger.info(
+                f"Engagement failed for {cur_lane.name}: encoder only moved "
+                f"{encoder_delta} clicks (need >={min_movement:.1f})")
+            return False
+
+        finally:
+            if hasattr(self, '_monitor') and self._monitor is not None:
+                self._monitor.notify_engagement_end()
+
+    def _oams_extrude(self, length, speed, context="oams_move"):
+        """Extrude filament via gcode (for engagement verification).
+
+        :param length: Distance in mm
+        :param speed: Speed in mm/min
+        :param context: Logging context
+        """
+        gcode = self.afc.gcode
+        gcode.run_script_from_command(f"SAVE_GCODE_STATE NAME={context}")
+        try:
+            gcode.run_script_from_command("M83")
+            gcode.run_script_from_command(f"G92 E0")
+            gcode.run_script_from_command(f"G1 E{length:.2f} F{speed:.0f}")
+            gcode.run_script_from_command("M400")
+        finally:
+            gcode.run_script_from_command(f"RESTORE_GCODE_STATE NAME={context}")
+
+    def _oams_unload(self, cur_lane):
+        """Unload filament via OAMS hardware directly.
+
+        :param cur_lane: Lane to unload
+        :return: (success, message) tuple
+        """
+        oams = self.oams
+        if oams is None:
+            return False, "OAMS hardware not available"
+
+        # Enable follower reverse before unload
+        if hasattr(self, '_follower') and self._follower is not None:
+            fps_state = self._get_monitor_state()
+            if fps_state:
+                self._follower.set_follower_state(fps_state, oams, 1, 0, "before unload", force=True)
+
+        try:
+            result = oams.unload_spool_with_retry()
+            if result:
+                return True, f"Unloaded {cur_lane.name}"
+            return False, f"OAMS unload failed for {cur_lane.name}"
+        except Exception as e:
+            return False, f"OAMS unload error for {cur_lane.name}: {e}"
+
+    def _get_monitor_state(self):
+        """Get the FPSState from the monitor if available."""
+        if hasattr(self, '_monitor') and self._monitor is not None:
+            return self._monitor.state
+        return None
+
     # ---- Parameter getters (AFC owns extruder config) ----
 
     def get_engagement_params(self, lane_name):
@@ -991,13 +1221,8 @@ class afcAMS(afcUnit):
         self.lane_not_ready(source_lane)
 
         # Tell OAMS hardware to load the new spool
-        oams_manager = self._get_oams_manager()
-        if oams_manager is None:
-            self.logger.error("Same-FPS reload: oams_manager not available")
-            return False
-
         try:
-            success, message = oams_manager.load_filament_for_lane(target_lane_name)
+            success, message = self._oams_load(target_lane)
             if not success:
                 self.logger.error(f"Same-FPS reload failed: {message}")
                 self.request_pause(
@@ -1089,14 +1314,10 @@ class afcAMS(afcUnit):
         try:
             afc._oams_suppress_tool_swap_timer = True
             self.logger.debug(
-                f"OpenAMS load: delegating to oams_manager for lane {cur_lane.name}"
+                f"OpenAMS load: loading {cur_lane.name} via OAMS hardware"
             )
-            oams_manager = self._get_oams_manager()
-            if oams_manager is None:
-                afc.error.handle_lane_failure(cur_lane, "OpenAMS load failed: oams_manager not available")
-                return False
 
-            success, message = oams_manager.load_filament_for_lane(cur_lane.name)
+            success, message = self._oams_load(cur_lane)
             if not success:
                 message = message or f"OpenAMS load failed for {cur_lane.name}"
                 afc.error.handle_lane_failure(cur_lane, message)
@@ -1205,23 +1426,10 @@ class afcAMS(afcUnit):
             # OAMSM_UNLOAD_FILAMENT can control the spool independently.
             cur_lane.unsync_to_extruder()
 
-            oams_manager = self._get_oams_manager()
-            if oams_manager is None:
-                afc.error.handle_lane_failure(cur_lane, "OpenAMS unload failed: oams_manager not available")
-                return False
-
-            fps_name = oams_manager.get_fps_for_afc_lane(cur_lane.name)
-            if not fps_name:
-                message = "OpenAMS unload failed for {}: unable to resolve FPS".format(cur_lane.name)
-                afc.error.handle_lane_failure(cur_lane, message)
-                return False
-
             self.logger.debug(
-                "OpenAMS unload: delegating to manager helper for lane {} (FPS {})".format(
-                    cur_lane.name, fps_name
-                )
+                f"OpenAMS unload: unloading {cur_lane.name} via OAMS hardware"
             )
-            success, message = oams_manager.unload_filament_with_prep_for_fps(fps_name)
+            success, message = self._oams_unload(cur_lane)
             if not success:
                 message = message or "OpenAMS unload failed for {}".format(cur_lane.name)
                 afc.error.handle_lane_failure(cur_lane, message)
