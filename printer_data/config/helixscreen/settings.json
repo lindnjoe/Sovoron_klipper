@@ -54,6 +54,11 @@
     "jog_mode": 2
   },
   "plugin_install_declined": true,
+  "print_start_wizard": {
+    "configured": true,
+    "dismissed": false,
+    "macro_hash": "02ed800f6a7ce5fc"
+  },
   "printer": {
     "leds": {
       "startup_brightness": null
@@ -175,7 +180,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-27T21:45:04Z"
+          "timestamp": "2026-03-27T22:15:08Z"
         },
         "optional": []
       },
