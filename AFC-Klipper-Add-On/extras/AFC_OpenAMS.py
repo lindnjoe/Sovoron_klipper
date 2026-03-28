@@ -1879,8 +1879,11 @@ class afcAMS(afcUnit):
                 if should_update_current_spool:
                     spool_index = getattr(lane, 'index', None)
                     if spool_index is not None:
-                        self.oams.current_spool = spool_index - 1
-                        self.logger.debug(f"Set OAMS current_spool to {spool_index - 1} for {getattr(lane, 'name', None)}")
+                        new_spool = spool_index - 1
+                        # Skip if already set to this spool (avoid redundant MCU commands)
+                        if self.oams.current_spool != new_spool:
+                            self.oams.current_spool = new_spool
+                            self.logger.debug(f"Set OAMS current_spool to {new_spool} for {getattr(lane, 'name', None)}")
                     if lane_name is not None:
                         self._last_lane_tool_loaded_sync[lane_name] = (
                             bool(getattr(lane, "tool_loaded", False)),
