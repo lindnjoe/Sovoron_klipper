@@ -1032,59 +1032,9 @@ class OAMSManager:
             self.logger.debug("Skipping tool crash detection command; none available")
         return False
 
-    def _dock_purge_dropoff(self):
-        """Drop off current tool at dock for dock purging.
-
-        Enters docking mode and runs the toolchanger's dropoff gcode so the
-        nozzle rests on the dock pad while filament is loaded and purged.
-        This keeps the shuttle at the dock and avoids wasted gantry moves.
-        """
-        cur_extruder = self.afc.function.get_current_extruder_obj()
-        tc = cur_extruder.tc_unit_obj if cur_extruder else None
-        if not tc or not tc.active_tool:
-            self.logger.warning("OAMS dock purge: no active tool, skipping dropoff")
-            return
-        tool = tc.active_tool
-
-        gcode = self._gcode_obj
-        if gcode is None:
-            gcode = self.printer.lookup_object("gcode")
-            self._gcode_obj = gcode
-
-        gcode.run_script_from_command("ENTER_DOCKING_MODE")
-
-        gcode_pos = list(tc.gcode_move.get_status()['gcode_position'])
-        start_pos = tc._position_with_tool_offset(gcode_pos, None)
-        self._dock_purge_context = {
-            'dropoff_tool': tool.name,
-            'pickup_tool': tool.name,
-            'start_position': tc._position_to_xyz(start_pos, 'xyz'),
-            'restore_position': tc._position_to_xyz(start_pos, 'XYZ'),
-        }
-
-        tc._run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
-        self.logger.info("OAMS dock purge: tool dropped off at dock")
-
-    def _dock_purge_pickup(self):
-        """Pick up tool from dock after purging.
-
-        Runs the toolchanger's pickup gcode (nozzle wipes on pad during pickup)
-        and exits docking mode to restore normal operation.
-        """
-        cur_extruder = self.afc.function.get_current_extruder_obj()
-        tc = cur_extruder.tc_unit_obj if cur_extruder else None
-        if not tc or not tc.active_tool or not hasattr(self, '_dock_purge_context') or self._dock_purge_context is None:
-            self.logger.warning("OAMS dock purge: no context for pickup, skipping")
-            return
-        tool = tc.active_tool
-
-        tc._run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
-        gcode = self._gcode_obj
-        if gcode is None:
-            gcode = self.printer.lookup_object("gcode")
-            self._gcode_obj = gcode
-        gcode.run_script_from_command("EXIT_DOCKING_MODE")
-        self._dock_purge_context = None
+    # NOTE: Dock purge (dropoff/pickup) is now owned by AFC_OpenAMS.load_sequence().
+    # The methods were removed from oams_manager as part of the AFC-as-master-control
+    # consolidation. If you need dock purge, it's in AFC_OpenAMS._dock_purge_dropoff/pickup.
         self.logger.info("OAMS dock purge: tool picked up from dock")
 
     def __init__(self, config):
@@ -1099,7 +1049,6 @@ class OAMSManager:
 
         self.current_state = OAMSState()
         self._afc_logged   = False
-        self._dock_purge_context = None
 
         self.monitor_timers   = []
         self.runout_monitors  = {}
@@ -3572,6 +3521,27 @@ class OAMSManager:
             return None
         return getattr(lane, 'unit_obj', None)
 
+    def _request_afc_pause(self, message, lane_name=None):
+        """Request pause through AFC's error handler.
+
+        Tries AFC_OpenAMS.request_pause() first (proper AFC error flow),
+        falls back to direct PAUSE gcode if AFC is unavailable.
+        """
+        try:
+            unit = self._get_afc_unit_for_lane(lane_name) if lane_name else None
+            if unit is not None and hasattr(unit, 'request_pause'):
+                unit.request_pause(message, lane_name)
+                return
+        except Exception:
+            pass
+        # Fallback — AFC unavailable, pause directly
+        try:
+            gcode = self._gcode_obj or self.printer.lookup_object("gcode")
+            self._gcode_obj = gcode
+            gcode.run_script_from_command("PAUSE")
+        except Exception:
+            pass
+
     def _verify_engagement_with_extrude(self, fps_name: str, fps_state: 'FPSState', fps,
                                       lane_name: str, oams):
         """Verify filament engaged extruder by extruding reload length and monitoring FPS pressure.
@@ -4991,32 +4961,14 @@ class OAMSManager:
                         f"proceeding (likely timing/state lag)"
                     )
                 else:
-                    # Different lane detected (detected_lane != lane_name)
-                    # We must auto-unload the lane currently in the toolhead before loading a new lane.
-                    if afc_lane_loaded is None:
-                        self.logger.info(
-                            f"AFC thinks {fps_name} is empty, but sensors detect {detected_lane} - "
-                            f"auto-unloading (stale state from empty shuttle start)"
-                        )
-                    else:
-                        self.logger.info(
-                            f"Sensors detect {detected_lane} loaded on {fps_name} while loading {lane_name} - "
-                            f"auto-unloading to clear the toolhead"
-                        )
-                    try:
-                        gcode = self._gcode_obj
-                        if gcode is None:
-                            gcode = self.printer.lookup_object("gcode")
-                            self._gcode_obj = gcode
-
-                        self.logger.info(
-                            f"Auto-unloading {detected_lane} from {fps_name} before loading {lane_name} "
-                            f"(using TOOL_UNLOAD for proper cut/form_tip/retract sequence)"
-                        )
-                        gcode.run_script_from_command(f"TOOL_UNLOAD LANE={detected_lane}")
-                        gcode.run_script_from_command("M400")
-                    except Exception as e:
-                        return False, f"Failed to unload existing lane {detected_lane} from {fps_name}: {e}"
+                    # Different lane detected — AFC_OpenAMS.load_sequence() should
+                    # have handled auto-unload before calling us. If we still see
+                    # a conflict, fail with a clear message rather than sending
+                    # gcode commands (AFC is master control).
+                    return False, (
+                        f"Cannot load {lane_name}: sensors detect {detected_lane} "
+                        f"still loaded on {fps_name}. AFC should have unloaded it "
+                        f"before delegating to oams_manager.")
         else:
             # No lane detected as loaded - clear fps_state if it thinks it's loaded
             # This handles cases where fps_state is stale (e.g., load failed with clog)
