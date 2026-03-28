@@ -1107,6 +1107,7 @@ class afcAMS(afcUnit):
         # Follower is already reversed so it pulls along with the retract.
         unload_length, unload_speed = self.get_unload_params(cur_lane.name)
         if unload_length and unload_length > 0:
+            unload_length += 10.0  # Extra margin to fully clear extruder gears
             retract_speed = unload_speed if unload_speed else 25.0 * 60.0
             self.logger.debug(
                 f"Retracting {unload_length:.1f}mm from extruder before OAMS unload")
