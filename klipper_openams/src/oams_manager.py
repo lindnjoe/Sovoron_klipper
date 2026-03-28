@@ -3991,96 +3991,16 @@ class OAMSManager:
 
         fps_state = self.current_state.fps_state[fps_name]
 
-        # NOTE: AFC_OpenAMS.load_sequence() handles pre-load auto-unload of
-        # conflicting lanes. This sensor-based detection is a safety net for
-        # cases where AFC state and hardware sensors disagree (e.g., after
-        # power cycle with stale state). Should be removed once AFC state
-        # ownership is fully consolidated (Phase 2b/3).
-        # Synchronize with actual loaded lane before deciding how to handle the request
-        detected_lane, detected_oams, detected_spool_idx = self.determine_current_loaded_lane(fps_name)
-
-        # Get tool operation status to suppress false positive state clearing messages
-        afc = self.printer.lookup_object("AFC", None)
+        # Pre-load check: AFC owns state. If AFC says something is loaded,
+        # AFC_OpenAMS.load_sequence() should have unloaded it already.
+        afc = self._get_afc()
         is_tool_operation = getattr(afc, 'in_toolchange', False) if afc else False
-
-        if detected_lane is not None:
-            fps_state.current_lane = detected_lane
-            fps_state.current_oams = detected_oams.name if detected_oams else None
-            fps_state.current_spool_idx = detected_spool_idx
-            fps_state.state = FPSLoadState.LOADED
-            fps_state.since = self.reactor.monotonic()
-            hub_hes_values = getattr(oam, "hub_hes_value", None)
-            hub_has_filament = any(hub_hes_values) if hub_hes_values is not None else False
-            if oam.current_spool is None and not hub_has_filament:
-                # Skip clearing state during tool operations - AFC state machine handles it
-                if not is_tool_operation:
-                    self.logger.info(
-                        f"Clearing stale AFC lane_loaded state for {detected_lane} on {fps_name} "
-                        f"(no spool detected in {oams_name})"
-                    )
-                if not is_tool_operation and AMSRunoutCoordinator is not None:
-                    try:
-                        AMSRunoutCoordinator.notify_lane_tool_state(
-                            self.printer,
-                            fps_state.current_oams or oam.name,
-                            detected_lane,
-                            loaded=False,
-                            spool_index=detected_spool_idx,
-                            eventtime=fps_state.since,
-                        )
-                    except Exception as e:
-                        self.logger.error(f"Failed to clear AFC lane_loaded for {detected_lane} on {fps_name}: {e}")
-                if not is_tool_operation:
-                    fps_state.state = FPSLoadState.UNLOADED
-                    fps_state.current_lane = None
-                    fps_state.current_oams = None
-                    fps_state.current_spool_idx = None
-                    detected_lane = None
-
-            if detected_lane is not None:
-                # Check what AFC thinks is loaded for this extruder
-                # This determines if we need auto-unload or if AFC is handling the sequence
-                afc_lane_loaded = None
-                try:
-                    extruder_obj = getattr(lane, 'extruder_obj', None)
-                    if extruder_obj is not None:
-                        afc_lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
-                except Exception as e:
-                    self.logger.debug(f"Failed to read AFC lane_loaded for {lane_name}: {e}")
-
-                # "Already loaded" check - skip during tool changes or if same lane
-                if detected_lane == lane_name:
-                    if not is_tool_operation:
-                        return False, f"Lane {lane_name} is already loaded to {fps_name}"
-                    # During tool change: same lane detected, just proceed (timing issue)
-                    self.logger.debug(
-                        f"Detected {lane_name} already on {fps_name} during tool change - "
-                        f"proceeding (likely timing/state lag)"
-                    )
-                else:
-                    # Different lane detected — AFC_OpenAMS.load_sequence() should
-                    # have handled auto-unload before calling us. If we still see
-                    # a conflict, fail with a clear message rather than sending
-                    # gcode commands (AFC is master control).
-                    return False, (
-                        f"Cannot load {lane_name}: sensors detect {detected_lane} "
-                        f"still loaded on {fps_name}. AFC should have unloaded it "
-                        f"before delegating to oams_manager.")
-        else:
-            # No lane detected as loaded - clear fps_state if it thinks it's loaded
-            # This handles cases where fps_state is stale (e.g., load failed with clog)
-            # Skip during tool operations - trust AFC state machine to manage transitions
-            if not is_tool_operation and fps_state.state == FPSLoadState.LOADED:
-                self.logger.info(f"Clearing stale LOADED state for {fps_name} - no lane detected by AFC")
-                fps_state.state = FPSLoadState.UNLOADED
-                fps_state.current_lane = None
-                fps_state.current_oams = None
-                fps_state.current_spool_idx = None
-
-        # Final check: if fps_state still thinks something is loaded, error
-        # Skip during tool operations since we already handled auto-unload above
         if not is_tool_operation and fps_state.state == FPSLoadState.LOADED:
-            return False, f"FPS {fps_name} is already loaded"
+            if fps_state.current_lane == lane_name:
+                return False, f"Lane {lane_name} is already loaded to {fps_name}"
+            return False, (
+                f"Cannot load {lane_name}: {fps_state.current_lane} still loaded on {fps_name}. "
+                f"AFC should have unloaded it before delegating to oams_manager.")
 
         self._cancel_post_load_pressure_check(fps_state)
 
