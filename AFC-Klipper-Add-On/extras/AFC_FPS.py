@@ -912,12 +912,18 @@ class VirtualFilamentSensor:
         self._object_name = f"filament_switch_sensor {name}"
         self.runout_helper = VirtualRunoutHelper(printer, name, runout_cb=runout_cb, enable_runout=enable_runout)
 
-        objects = getattr(printer, "objects", None)
-        if isinstance(objects, dict):
-            objects.setdefault(self._object_name, self)
+        try:
+            printer.add_object(self._object_name, self)
             if not show_in_gui:
-                hidden_key = "_" + self._object_name
-                objects[hidden_key] = objects.pop(self._object_name)
+                # Hide from GUI by prefixing with underscore
+                objects = getattr(printer, "objects", {})
+                if self._object_name in objects:
+                    objects["_" + self._object_name] = objects.pop(self._object_name)
+        except Exception:
+            # Fallback: direct dict registration
+            objects = getattr(printer, "objects", None)
+            if isinstance(objects, dict):
+                objects.setdefault(self._object_name, self)
 
         gcode = printer.lookup_object("gcode", None)
         if gcode is None:
