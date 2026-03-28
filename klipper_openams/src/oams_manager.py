@@ -559,13 +559,20 @@ class OAMSRunoutMonitor:
                     if target_lane_name is None:
                         self.logger.info(f"OAMS: No runout_lane configured for {lane_name} - pausing without reload")
                         self.state = OAMSRunoutState.PAUSED
-                        self.runout_position = fps.extruder.last_position
+                        self.runout_position = fps.extruder.last_position if fps else None
                         fps_state.is_cross_extruder_runout = False
 
-                        gcode = self.printer.lookup_object('gcode')
-                        gcode.run_script_from_command("PAUSE")
-
-                        gcode.respond_info(f"Filament runout detected on {lane_name} with no reload lane configured")
+                        try:
+                            mgr = self.printer.lookup_object("oams_manager", None)
+                            if mgr is not None:
+                                mgr._request_afc_pause(
+                                    f"Filament runout detected on {lane_name} with no reload lane configured",
+                                    lane_name=lane_name)
+                            else:
+                                gcode = self.printer.lookup_object('gcode')
+                                gcode.run_script_from_command("PAUSE")
+                        except Exception:
+                            pass
 
                         return
 
@@ -5502,29 +5509,8 @@ class OAMSManager:
             return
 
         if all(axis in homed_axes for axis in ("x", "y", "z")):
-            pause_attempted = False
-            pause_successful = False
-            try:
-                gcode.run_script("PAUSE")
-
-                pause_attempted = True
-
-                # Verify pause state after attempting to pause
-                if pause_resume is not None:
-                    try:
-                        pause_successful = bool(getattr(pause_resume, "is_paused", False))
-                    except Exception as e:
-                        self.logger.error(f"Failed to verify pause state after PAUSE command: {e}")
-
-            except Exception as e:
-                self.logger.error(f"Failed to run PAUSE script: {e}")
-
-
-            if pause_attempted and not pause_successful:
-                self.logger.error(
-                    f"CRITICAL: Failed to pause printer for critical error: {message}. "
-                    "Print may continue despite error condition!"
-                )
+            # Route pause through AFC's error handler when possible
+            self._request_afc_pause(message)
         else:
             self.logger.warning(f"Skipping PAUSE command because axes are not homed (homed_axes={homed_axes})")
     def _cancel_post_load_pressure_check(self, fps_state: "FPSState"):
@@ -7527,10 +7513,11 @@ class OAMSManager:
                         gcode = self.printer.lookup_object("gcode")
 
 
-                        # 1. Pause printer
+                        # 1. Pause printer through AFC
                         self.logger.info("OAMS: Step 1 - Pausing printer")
-
-                        gcode.run_script("PAUSE")
+                        self._request_afc_pause(
+                            f"Cross-extruder runout: {source_lane_name} -> {target_lane_name}",
+                            lane_name=source_lane_name)
 
 
                         # 2. Save position
