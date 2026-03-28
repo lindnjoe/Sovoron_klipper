@@ -1503,91 +1503,6 @@ class OAMSManager:
 
     # _initialize_oams and _get_follower_state are defined earlier in the class
 
-    def _sync_afc_lane_loaded(self, fps_name, detected_lane):
-        if not detected_lane:
-            return
-
-        try:
-            afc = self._get_afc()
-            if afc is None:
-                return
-
-            # Find which extruder this lane belongs to
-            if not hasattr(afc, 'lanes'):
-                return
-
-            lane_obj = afc.lanes.get(detected_lane)
-            if lane_obj is None:
-                return
-
-            extruder_obj = getattr(lane_obj, 'extruder_obj', None)
-            if extruder_obj is None:
-                return
-
-            extruder_name = getattr(extruder_obj, 'name', None)
-            if not extruder_name:
-                return
-
-            # Check if AFC's lane_loaded matches what we detected
-            current_lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
-            if current_lane_loaded == detected_lane:
-                return  # Already in sync
-
-            # Guard against stale sensor back-sync during same-FPS runout handoff.
-            # If FPS state already tracks a different active lane, do not overwrite it here.
-            fps_state = self.current_state.fps_state.get(fps_name)
-            if fps_state is not None:
-                # If the FPS was explicitly set to UNLOADED (e.g. by on_afc_lane_unloaded
-                # during UNSET_LANE_LOADED or CHANGE_TOOL), filament may still be physically
-                # present in the path but we must not write it back into AFC's lane_loaded.
-                if fps_state.state == FPSLoadState.UNLOADED:
-                    self.logger.debug(
-                        f"Skipping AFC lane sync for {detected_lane} on {fps_name}: "
-                        f"FPS is in UNLOADED state (intentionally cleared)"
-                    )
-                    return
-                tracked_lane = getattr(fps_state, 'current_lane', None)
-                if tracked_lane and tracked_lane != detected_lane:
-                    self.logger.debug(
-                        f"Skipping AFC lane sync for {detected_lane} on {fps_name}: FPS currently tracks {tracked_lane}"
-                    )
-                    return
-
-            # Also preserve an actively tool-loaded lane on this extruder.
-            if current_lane_loaded and current_lane_loaded != detected_lane:
-                current_lane_obj = afc.lanes.get(current_lane_loaded)
-                if current_lane_obj is not None and bool(getattr(current_lane_obj, 'tool_loaded', False)):
-                    self.logger.debug(
-                        f"Skipping AFC lane sync to {detected_lane}: extruder {extruder_name} currently has tool-loaded {current_lane_loaded}"
-                    )
-                    return
-
-            # Update AFC's lane_loaded
-            extruder_obj.lane_loaded = detected_lane
-
-            # Persist to vars file
-            if hasattr(afc, 'save_vars') and callable(afc.save_vars):
-                try:
-                    afc.save_vars()
-                    self.logger.info(
-                        f"Synced AFC: {extruder_name}.lane_loaded = {detected_lane} "
-                        f"(was {current_lane_loaded}, detected via sensors)"
-                    )
-                except Exception as e:
-                    self.logger.error(
-                        f"Failed to save AFC vars after syncing {extruder_name}.lane_loaded to {detected_lane}: {e}"
-                    )
-            else:
-                self.logger.debug(
-                    f"Updated AFC: {extruder_name}.lane_loaded = {detected_lane} "
-                    "(vars not saved - AFC has no save_vars method)"
-                )
-        except Exception as e:
-            self.logger.error(
-                f"Failed to sync AFC lane_loaded for {detected_lane} detected on {fps_name}",
-                traceback=traceback.format_exc(),
-            )
-
     def _sync_extruder_lane_loaded(self, fps_name, extruder_obj, extruder_name, afc):
         # Check what AFC currently thinks is loaded
         current_lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
@@ -1787,46 +1702,6 @@ class OAMSManager:
             f"Synced AFC lane mismatch: {extruder_name} now loaded with {lane_to_sync} "
             f"(was {current_lane_loaded}, OAMS hardware hub sensor detected {lane_to_sync})"
         )
-
-    def _sync_all_fps_lanes_after_prep(self):
-        try:
-            for fps_name, fps_state in self.current_state.fps_state.items():
-                # For each FPS, check all lanes on that FPS and sync based on hardware
-                try:
-                    afc = self._get_afc()
-                    if afc is None or not hasattr(afc, 'lanes'):
-                        continue
-
-                    # Find all extruders that have lanes on this FPS
-                    extruders_on_fps = set()
-                    for lane_name, lane in afc.lanes.items():
-                        lane_fps = self.get_fps_for_afc_lane(lane_name)
-                        if lane_fps == fps_name:
-                            extruder_obj = getattr(lane, 'extruder_obj', None)
-                            if extruder_obj:
-                                extruders_on_fps.add(extruder_obj)
-
-                    # Sync each extruder on this FPS
-                    for extruder_obj in extruders_on_fps:
-                        extruder_name = getattr(extruder_obj, 'name', None)
-                        if not extruder_name:
-                            continue
-
-                        try:
-                            self._sync_extruder_lane_loaded(fps_name, extruder_obj, extruder_name, afc)
-                        except Exception as e:
-                            self.logger.error(f"Failed to sync {extruder_name} on {fps_name}: {e}")
-
-                except Exception as e:
-                    self.logger.error(
-                        f"Failed to sync lanes on {fps_name} after prep: {e}",
-                        traceback=traceback.format_exc()
-                    )
-        except Exception as e:
-            self.logger.error(
-                f"Failed to sync all FPS lanes after prep: {e}",
-                traceback=traceback.format_exc(),
-            )
 
     def determine_current_loaded_lane(self, fps_name):
         if fps_name not in self.fpss:
