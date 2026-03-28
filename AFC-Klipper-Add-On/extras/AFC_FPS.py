@@ -400,13 +400,21 @@ class AFCFPSBuffer:
     # Correction timer — proportional adjustment loop
     # ------------------------------------------------------------------
     def _update_virtual_sensors(self, eventtime):
-        """Push advance/trailing state into virtual filament sensors for GUI."""
+        """Push buffer state into virtual filament sensors for GUI display.
+
+        The advance sensor reports filament present whenever the FPS reads
+        above low_point (any meaningful pressure = filament exists in buffer).
+        This prevents the indicator from going red during neutral state when
+        filament IS loaded but pressure is balanced.
+        """
+        # Filament is present if FPS reads above the low threshold
+        filament_present = self.smoothed_fps > self.low_point
         try:
             if hasattr(self, 'fila_adv') and self.fila_adv is not None:
                 self.fila_adv.runout_helper.note_filament_present(
-                    eventtime, self.advance_state)
+                    eventtime, filament_present)
         except TypeError:
-            self.fila_adv.runout_helper.note_filament_present(self.advance_state)
+            self.fila_adv.runout_helper.note_filament_present(filament_present)
         except Exception:
             pass
         try:
