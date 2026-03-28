@@ -2859,15 +2859,15 @@ class afcACE(afcUnit):
                     self._set_hub_state(cur_lane, True)
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
-                        or extruder_obj.is_buffer
-                        or extruder_obj.tool_end_state
-                        or extruder_obj.on_shuttle()
+                        or cur_lane.extruder_obj.is_buffer
+                        or cur_lane.extruder_obj.tool_end_state
+                        or cur_lane.extruder_obj.on_shuttle()
                     )
-                    if tool_ready and extruder_obj.lane_loaded == cur_lane.name:
+                    if tool_ready and cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                         cur_lane.sync_to_extruder()
                         on_shuttle = ""
-                        if extruder_obj.tc_unit_obj:
-                            on_shuttle = " and toolhead on shuttle" if extruder_obj.on_shuttle() else ""
+                        if cur_lane.extruder_obj.tc_unit_obj:
+                            on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
                         msg += f'<span class=primary--text> in ToolHead{on_shuttle}</span>'
                         if cur_lane.extruder_obj.is_buffer:
                             msg += '<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>'
