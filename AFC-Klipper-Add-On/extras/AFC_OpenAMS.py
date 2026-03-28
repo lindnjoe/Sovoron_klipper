@@ -836,6 +836,31 @@ class afcAMS(afcUnit):
 
     # ---- Direct hardware load/unload ----
 
+    def _wait_oams_idle(self, oams, timeout=10.0, context="operation"):
+        """Wait for OAMS MCU to finish any in-flight action.
+
+        The MCU responds to commands asynchronously. If we send a new command
+        while it's still processing the previous one, we get ERROR_BUSY.
+        This polls action_status until None (idle) or timeout.
+        """
+        if oams.action_status is None:
+            return True
+
+        self.logger.debug(
+            f"Waiting for OAMS MCU to finish {oams.action_status} before {context}")
+        deadline = self.afc.reactor.monotonic() + timeout
+        while oams.action_status is not None:
+            if self.afc.reactor.monotonic() > deadline:
+                self.logger.warning(
+                    f"OAMS MCU still busy after {timeout}s, forcing clear for {context}")
+                oams.action_status = None
+                oams.action_status_code = None
+                return False
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.3)
+
+        self.logger.debug(f"OAMS MCU idle, proceeding with {context}")
+        return True
+
     def _oams_load(self, cur_lane, max_retries=None):
         """Load filament via OAMS hardware directly.
 
@@ -861,6 +886,9 @@ class afcAMS(afcUnit):
         if max_retries is None:
             max_retries = self.afc.tool_max_unload_attempts
 
+        # Wait for MCU to be idle before starting load
+        self._wait_oams_idle(oams, context=f"load {cur_lane.name}")
+
         # Suspend monitor during load to prevent false stuck spool detection
         if self._monitor is not None:
             self._monitor.stop()
@@ -881,9 +909,9 @@ class afcAMS(afcUnit):
                 self.logger.error(f"Load failed for {cur_lane.name}: {e}")
                 continue
 
-            if result is None or not getattr(result, '__iter__', False):
-                # Simple success/failure
-                success = bool(result)
+            # load_spool_with_retry returns (success_bool, message_str)
+            if isinstance(result, tuple):
+                success = bool(result[0])
             else:
                 success = bool(result)
 
@@ -922,9 +950,13 @@ class afcAMS(afcUnit):
                 self.logger.error(f"Cleanup unload failed: {e}")
                 return False, f"Engagement cleanup failed for {cur_lane.name}: {e}"
 
-        # All attempts failed — resume monitor anyway
+            # Wait for MCU to settle before next attempt
+            self._wait_oams_idle(oams, context="post-cleanup settle")
+
+        # All attempts failed — only resume monitor if not paused
         if self._monitor is not None:
-            self._monitor.start(oams)
+            if not self.afc.function.is_paused() and not getattr(self.afc.error, 'error_state', False):
+                self._monitor.start(oams)
         return False, f"All {max_retries} load attempts failed for {cur_lane.name}"
 
     def _verify_engagement(self, cur_lane):
@@ -1048,6 +1080,9 @@ class afcAMS(afcUnit):
     def _oams_unload(self, cur_lane):
         """Unload filament via OAMS hardware directly.
 
+        Retracts filament from extruder gears first, then tells OAMS
+        hardware to pull it back to the spool bay.
+
         :param cur_lane: Lane to unload
         :return: (success, message) tuple
         """
@@ -1055,9 +1090,25 @@ class afcAMS(afcUnit):
         if oams is None:
             return False, "OAMS hardware not available"
 
+        # Wait for MCU to be idle before starting unload
+        self._wait_oams_idle(oams, context=f"unload {cur_lane.name}")
+
         # Suspend monitor during unload to prevent false stuck spool detection
         if self._monitor is not None:
             self._monitor.stop()
+
+        # Retract filament from extruder gears before OAMS hardware unload.
+        # Without this, the OAMS tries to pull filament that's gripped by
+        # the extruder gears, causing timeout or failure.
+        unload_length, unload_speed = self.get_unload_params(cur_lane.name)
+        if unload_length and unload_length > 0:
+            retract_speed = unload_speed if unload_speed else 25.0 * 60.0
+            self.logger.debug(
+                f"Retracting {unload_length:.1f}mm from extruder before OAMS unload")
+            try:
+                self._oams_extrude(-unload_length, retract_speed, "pre_oams_unload_retract")
+            except Exception as e:
+                self.logger.warning(f"Extruder retract before OAMS unload failed: {e}")
 
         # Enable follower reverse before unload
         if self._follower is not None:
@@ -1067,17 +1118,26 @@ class afcAMS(afcUnit):
 
         try:
             result = oams.unload_spool_with_retry()
-            # Notify monitor of unload completion
+            success = bool(result) if not isinstance(result, tuple) else bool(result[0])
+
+            # Wait for MCU to fully settle after unload
+            self._wait_oams_idle(oams, context="post-unload settle")
+
+            # Notify monitor of unload completion and restart
             if self._monitor is not None:
                 self._monitor.notify_unload_complete()
-                self._monitor.start(oams)
-            if result:
+                # Only restart monitor if print is not paused/errored
+                if not self.afc.function.is_paused() and not getattr(self.afc.error, 'error_state', False):
+                    self._monitor.start(oams)
+            if success:
                 return True, f"Unloaded {cur_lane.name}"
-            return False, f"OAMS unload failed for {cur_lane.name}"
+            msg = result[1] if isinstance(result, tuple) and len(result) > 1 else f"OAMS unload failed for {cur_lane.name}"
+            return False, msg
         except Exception as e:
-            # Resume monitor even on failure
+            # Resume monitor even on failure (if not paused)
             if self._monitor is not None:
-                self._monitor.start(oams)
+                if not self.afc.function.is_paused():
+                    self._monitor.start(oams)
             return False, f"OAMS unload error for {cur_lane.name}: {e}"
 
     def _get_monitor_state(self):
