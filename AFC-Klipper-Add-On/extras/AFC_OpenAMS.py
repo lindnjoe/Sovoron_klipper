@@ -1532,6 +1532,8 @@ class afcAMS(afcUnit):
             return False
 
         cur_lane.set_tool_loaded()
+        # Enable FPS buffer for Mainsail display and fault detection
+        cur_lane.enable_buffer(disable_fault=True)
         afc.save_vars()
         return True
 
