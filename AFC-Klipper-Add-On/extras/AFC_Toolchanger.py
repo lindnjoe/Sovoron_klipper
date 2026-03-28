@@ -186,8 +186,12 @@ class AfcToolchanger(afcUnit):
         """Install the gcode offset transform on connect and find tool_probe_endstop."""
         self.gcode_transform.next_transform = self.gcode_move.set_move_transform(
             self.gcode_transform, force=True)
+        # Support both AFC_tool_probe_endstop (new) and tool_probe_endstop (legacy)
         self.tool_probe_endstop = self.printer.lookup_object(
-            'tool_probe_endstop', None)
+            'AFC_tool_probe_endstop', None)
+        if self.tool_probe_endstop is None:
+            self.tool_probe_endstop = self.printer.lookup_object(
+                'tool_probe_endstop', None)
 
     def require_fan_switcher(self):
         """Create fan switcher on demand when a tool has a fan configured."""

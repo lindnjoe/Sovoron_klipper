@@ -486,9 +486,13 @@ class AFCExtruder:
                 self.extruder_stepper_name, None)
 
         # Resolve tool_probe for optotap/tool_probe setups
+        # Supports both AFC_tool_probe (new) and tool_probe (legacy) section names
         if self.tool_number >= 0:
             self.tool_probe = self.printer.lookup_object(
-                'tool_probe T%d' % self.tool_number, None)
+                'AFC_tool_probe T%d' % self.tool_number, None)
+            if self.tool_probe is None:
+                self.tool_probe = self.printer.lookup_object(
+                    'tool_probe T%d' % self.tool_number, None)
 
         try:
             # Looking up led object if user supplied variable
