@@ -280,6 +280,9 @@ class afcACE(afcUnit):
         """Schedule deferred init - reactor pause is disabled during klippy:ready."""
         self.afc.reactor.register_callback(self._deferred_init)
 
+    # Maximum ACE serial log size before rotation (10 MB).
+    _SERIAL_LOG_MAX_BYTES = 10 * 1024 * 1024
+
     def _create_serial_logger(self):
         """Create a dedicated logger for ACE serial comms (writes to AFC_ACE_serial.log)."""
         logger = logging.getLogger("AFC_ACE_serial_file")
@@ -291,16 +294,33 @@ class afcACE(afcUnit):
             log_path = self.printer.start_args.get("log_file", None)
             if log_path:
                 log_file = Path(log_path).parent / "AFC_ACE_serial.log"
+                # Rotate oversized log on startup to prevent unbounded growth.
+                self._rotate_log_if_needed(log_file)
                 ql = AFC_QueueListener(log_file)
                 ql.setFormatter(logging.Formatter(
                     "%(asctime)s %(message)s", datefmt="%H:%M:%S"
                 ))
                 handler = QueueHandler(ql.bg_queue)
                 logger.addHandler(handler)
+                # Keep a reference so the QueueListener (and its
+                # background writer thread) is not garbage-collected.
+                self._serial_ql = ql
                 return logger
         except Exception:
             pass
         return None  # Caller will fall back to main AFC logger
+
+    def _rotate_log_if_needed(self, log_file):
+        """Rotate log file on startup if it exceeds the size limit."""
+        try:
+            log_path = Path(log_file)
+            if log_path.exists() and log_path.stat().st_size > self._SERIAL_LOG_MAX_BYTES:
+                backup = log_path.with_suffix('.log.1')
+                if backup.exists():
+                    backup.unlink()
+                log_path.rename(backup)
+        except Exception:
+            pass
 
     # USB devices may not be enumerated yet at Klipper startup.
     # Retry with backoff so a full reboot doesn't require a manual
