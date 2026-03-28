@@ -29,6 +29,7 @@ def _make_func():
     from tests.conftest import MockAFC, MockLogger
 
     afc = MockAFC()
+    afc.reactor = MagicMock()
     func.afc = afc
     func.logger = MockLogger()
     func.printer = MagicMock()
@@ -137,6 +138,83 @@ class TestGetLedIndexes:
     def test_single_element_range(self):
         func = _make_func()
         assert func._get_led_indexes("3-3") == [3]
+
+
+# ── parse_led_groups ────────────────────────────────────────────────────────
+
+class TestParseLedGroups:
+    def test_single_led_single_index(self):
+        func = _make_func()
+        assert func.parse_led_groups("AFC_Indicator:1") == [("AFC_Indicator", "1")]
+
+    def test_single_led_range(self):
+        func = _make_func()
+        assert func.parse_led_groups("AFC_Indicator:1-4") == [("AFC_Indicator", "1-4")]
+
+    def test_single_led_range_and_singles(self):
+        func = _make_func()
+        assert func.parse_led_groups("AFC_Indicator:1-4,9,10") == [("AFC_Indicator", "1-4,9,10")]
+
+    def test_multi_led_groups(self):
+        func = _make_func()
+        result = func.parse_led_groups("RGB1:1-4,RGB2:4-6,RGB3:5")
+        assert result == [("RGB1", "1-4"), ("RGB2", "4-6"), ("RGB3", "5")]
+
+    def test_multi_led_with_mixed_indexes(self):
+        func = _make_func()
+        result = func.parse_led_groups("RGB1:1-4,9,RGB2:4-6")
+        assert result == [("RGB1", "1-4,9"), ("RGB2", "4-6")]
+
+    def test_whitespace_handling(self):
+        func = _make_func()
+        result = func.parse_led_groups("RGB1: 1-4, RGB2: 5")
+        assert result == [("RGB1", "1-4"), ("RGB2", "5")]
+
+    def test_orphan_segment_logs_warning(self):
+        func = _make_func()
+        result = func.parse_led_groups("42,RGB1:1")
+        # Orphan "42" is skipped, only the valid group is returned
+        assert result == [("RGB1", "1")]
+        assert any("42" in msg for _, msg in func.logger.messages)
+
+
+# ── afc_led (integration) ───────────────────────────────────────────────────
+
+class TestAfcLed:
+    def test_none_idx_is_noop(self):
+        func = _make_func()
+        # Should not raise
+        func.afc_led("1,0,0,0", idx=None)
+
+    def test_single_led_group(self):
+        led_mock = MagicMock()
+        func = _make_func()
+        func.printer.lookup_object.return_value = led_mock
+        func.afc_led("1,0,0,0", idx="AFC_Indicator:1-4")
+        func.printer.lookup_object.assert_called_once_with("AFC_led AFC_Indicator")
+        led_mock.led_change.assert_called_once_with([1, 2, 3, 4], "1,0,0,0")
+
+    def test_multi_led_groups(self):
+        led1 = MagicMock()
+        led2 = MagicMock()
+        led3 = MagicMock()
+        lookup_map = {
+            "AFC_led RGB1": led1,
+            "AFC_led RGB2": led2,
+            "AFC_led RGB3": led3,
+        }
+        func = _make_func()
+        func.printer.lookup_object.side_effect = lambda name: lookup_map[name]
+        func.afc_led("0,1,0,0", idx="RGB1:1-4,RGB2:4-6,RGB3:5")
+        led1.led_change.assert_called_once_with([1, 2, 3, 4], "0,1,0,0")
+        led2.led_change.assert_called_once_with([4, 5, 6], "0,1,0,0")
+        led3.led_change.assert_called_once_with([5], "0,1,0,0")
+
+    def test_missing_led_logs_error(self):
+        func = _make_func()
+        func.printer.lookup_object.side_effect = Exception("not found")
+        func.afc_led("1,0,0,0", idx="BadLed:1")
+        assert any("BadLed" in msg for _, msg in func.logger.messages)
 
 
 # ── _calc_length ──────────────────────────────────────────────────────────────
@@ -295,3 +373,184 @@ class TestAfcDeltaTime:
         dt.last_time = None
         # Should not raise (caught internally)
         dt.log_with_time("safe call")
+
+
+# ── _rename ───────────────────────────────────────────────────────────────────
+
+class TestRename:
+    def test_rename_calls_register_command_for_base(self):
+        func = _make_func()
+        func.afc.gcode.register_command = MagicMock(return_value=MagicMock())
+        mock_func = MagicMock()
+        func._rename("RESUME", "_AFC_RENAMED_RESUME_", mock_func, "help text")
+        calls = func.afc.gcode.register_command.call_args_list
+        # Should call at least: register_command("RESUME", None) and
+        # register_command("RESUME", mock_func, ...)
+        names = [c[0][0] for c in calls]
+        assert "RESUME" in names
+
+    def test_rename_registers_afc_function_under_base_name(self):
+        func = _make_func()
+        mock_func = MagicMock()
+        prev_cmd = MagicMock()
+        # _rename calls register_command 3 times: unregister, re-register old, register new
+        func.afc.gcode.register_command = MagicMock(side_effect=[prev_cmd, None, None])
+        func._rename("RESUME", "_AFC_RENAMED_RESUME_", mock_func, "help")
+        final_call = func.afc.gcode.register_command.call_args_list[-1]
+        assert final_call[0][1] is mock_func
+
+    def test_rename_logs_debug_when_command_not_found(self):
+        func = _make_func()
+        func.afc.gcode.register_command = MagicMock(return_value=None)
+        func._rename("RESUME", "_AFC_RENAMED_RESUME_", MagicMock(), "help")
+        debug_msgs = [m for lvl, m in func.logger.messages if lvl == "debug"]
+        assert any("RESUME" in m for m in debug_msgs)
+
+# ── get_extruder_pos ──────────────────────────────────────────────────────────
+
+def _wire_extruder(func, last_position):
+    """
+    Return a mock extruder whose find_past_position returns last_position,
+    and wire it up as the toolhead's active extruder.
+    """
+    extruder = MagicMock()
+    extruder.find_past_position.return_value = last_position
+    func.afc.toolhead.get_extruder.return_value = extruder
+    return extruder
+
+
+# ── eventtime resolution ──────────────────────────────────────────────────────
+
+class TestGetExtruderPos_EventTime:
+    def test_uses_reactor_monotonic_when_eventtime_is_none(self):
+        func = _make_func()
+        func.afc.reactor.monotonic.return_value = 42.0
+        func.mcu.estimated_print_time.return_value = 10.0
+        _wire_extruder(func, last_position=5.0)
+
+        func.get_extruder_pos(eventtime=None)
+
+        func.afc.reactor.monotonic.assert_called_once()
+
+    def test_passes_reactor_monotonic_to_mcu(self):
+        func = _make_func()
+        func.afc.reactor.monotonic.return_value = 42.0
+        func.mcu.estimated_print_time.return_value = 10.0
+        _wire_extruder(func, last_position=5.0)
+
+        func.get_extruder_pos(eventtime=None)
+
+        func.mcu.estimated_print_time.assert_called_once_with(42.0)
+
+    def test_uses_provided_eventtime_directly(self):
+        func = _make_func()
+        func.mcu.estimated_print_time.return_value = 10.0
+        _wire_extruder(func, last_position=5.0)
+
+        func.get_extruder_pos(eventtime=99.0)
+
+        func.mcu.estimated_print_time.assert_called_once_with(99.0)
+
+    def test_reactor_not_called_when_eventtime_provided(self):
+        func = _make_func()
+        func.mcu.estimated_print_time.return_value = 10.0
+        _wire_extruder(func, last_position=5.0)
+
+        func.get_extruder_pos(eventtime=99.0)
+
+        func.afc.reactor.monotonic.assert_not_called()
+
+
+# ── extruder resolution ───────────────────────────────────────────────────────
+
+class TestGetExtruderPos_ExtruderParam:
+    def test_falls_back_to_toolhead_get_extruder_when_none(self):
+        func = _make_func()
+        func.mcu.estimated_print_time.return_value = 10.0
+        _wire_extruder(func, last_position=5.0)
+
+        func.get_extruder_pos(eventtime=1.0, extruder=None)
+
+        func.afc.toolhead.get_extruder.assert_called_once()
+
+    def test_uses_provided_extruder_directly(self):
+        func = _make_func()
+        func.mcu.estimated_print_time.return_value = 10.0
+
+        custom_extruder = MagicMock()
+        custom_extruder.find_past_position.return_value = 7.0
+
+        func.get_extruder_pos(eventtime=1.0, extruder=custom_extruder)
+
+        custom_extruder.find_past_position.assert_called_once()
+        func.afc.toolhead.get_extruder.assert_not_called()
+
+    def test_find_past_position_receives_print_time(self):
+        func = _make_func()
+        func.mcu.estimated_print_time.return_value = 55.5
+
+        custom_extruder = MagicMock()
+        custom_extruder.find_past_position.return_value = 3.0
+
+        func.get_extruder_pos(eventtime=1.0, extruder=custom_extruder)
+
+        custom_extruder.find_past_position.assert_called_once_with(55.5)
+
+
+# ── return value logic ────────────────────────────────────────────────────────
+
+class TestGetExtruderPos_ReturnValue:
+    def test_returns_last_position_when_past_is_none(self):
+        func = _make_func()
+        func.mcu.estimated_print_time.return_value = 10.0
+        _wire_extruder(func, last_position=8.0)
+
+        result = func.get_extruder_pos(eventtime=1.0, past_extruder_position=None)
+
+        assert result == pytest.approx(8.0)
+
+    def test_returns_last_position_when_greater_than_past(self):
+        func = _make_func()
+        func.mcu.estimated_print_time.return_value = 10.0
+        _wire_extruder(func, last_position=15.0)
+
+        result = func.get_extruder_pos(eventtime=1.0, past_extruder_position=10.0)
+
+        assert result == pytest.approx(15.0)
+
+    def test_returns_past_position_when_last_equals_past(self):
+        func = _make_func()
+        func.mcu.estimated_print_time.return_value = 10.0
+        _wire_extruder(func, last_position=10.0)
+
+        result = func.get_extruder_pos(eventtime=1.0, past_extruder_position=10.0)
+
+        assert result == pytest.approx(10.0)
+
+    def test_returns_past_position_when_last_less_than_past(self):
+        func = _make_func()
+        func.mcu.estimated_print_time.return_value = 10.0
+        _wire_extruder(func, last_position=3.0)
+
+        result = func.get_extruder_pos(eventtime=1.0, past_extruder_position=9.0)
+
+        assert result == pytest.approx(9.0)
+
+    def test_returns_zero_when_last_is_zero_and_past_is_none(self):
+        func = _make_func()
+        func.mcu.estimated_print_time.return_value = 10.0
+        _wire_extruder(func, last_position=0.0)
+
+        result = func.get_extruder_pos(eventtime=1.0, past_extruder_position=None)
+
+        assert result == pytest.approx(0.0)
+
+    def test_returns_float(self):
+        func = _make_func()
+        func.mcu.estimated_print_time.return_value = 10.0
+        _wire_extruder(func, last_position=4.5)
+
+        result = func.get_extruder_pos(eventtime=1.0)
+
+        assert isinstance(result, float)
+# ── end get_extruder_pos ──────────────────────────────────────────────────────

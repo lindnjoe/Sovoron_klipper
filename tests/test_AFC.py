@@ -7,6 +7,11 @@ Covers:
   - afc._remove_after_last: string helper
   - afc._get_message: message queue peek and pop
   - afc.get_status: returns required keys
+  - afc._cooldown_last_extruder: old-extruder temp-drop logic
+  - afc._heat_next_extruder: explicit next_temp path
+  - afc.CHANGE_TOOL: adjusting_temperature with new_extruder_temp
+  - afc.TOOL_LOAD: unload when destination extruder already has a different lane loaded
+  - afc.cmd_CHANGE_TOOL: NEW_EXTRUDER_TEMP parameter parsing
 """
 
 from __future__ import annotations
@@ -15,6 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from extras.AFC import afc, State, AFC_VERSION
+from extras.AFC_lane import AFCLaneState
 
 
 # ── State constants ───────────────────────────────────────────────────────────
@@ -86,7 +92,7 @@ def _make_afc():
     obj.moonraker = None
     obj.function = MagicMock()
     obj.message_queue = []
-    obj.current = None
+    # obj.current = MagicMock()
     obj.current_loading = None
     obj.next_lane_load = None
     obj.current_state = State.IDLE
@@ -94,15 +100,18 @@ def _make_afc():
     obj.position_saved = False
     obj.spoolman = None
     obj._td1_present = False
+    obj._last_td1_query = 0.0
     obj.lane_data_enabled = False
     obj.units = {}
     obj.lanes = {}
     obj.tools = {}
     obj.hubs = {}
     obj.buffers = {}
+    obj.tool_cmds = {}
     obj.led_state = True
     obj.current_toolchange = 0
     obj.number_of_toolchanges = 0
+    obj.temp_wait_tolerance = 5
     obj._get_bypass_state = MagicMock(return_value=False)
     obj._get_quiet_mode = MagicMock(return_value=False)
     return obj
@@ -217,6 +226,7 @@ class TestGetStatus:
 
     def test_current_load_none_when_nothing_loaded(self):
         obj = _make_afc()
+        obj.function.get_current_lane.return_value = None
         assert obj.get_status()["current_load"] is None
 
     def test_message_from_queue(self):
@@ -235,9 +245,11 @@ def _make_afc_for_check_extruder_temp(
     lower_extruder_temp_on_change=True,
     using_min_value=False,
 ):
+    from tests.test_AFC_lane import _make_afc_lane
     """Build an afc instance wired up for _check_extruder_temp tests."""
     obj = _make_afc()
     obj.lower_extruder_temp_on_change = lower_extruder_temp_on_change
+    obj._wait_for_temp_within_tolerance = MagicMock()
 
     heater = MagicMock()
     heater.target_temp = heater_target_temp
@@ -246,6 +258,10 @@ def _make_afc_for_check_extruder_temp(
 
     extruder = MagicMock()
     extruder.get_heater.return_value = heater
+
+    lane = _make_afc_lane()
+    lane.extruder_obj.toolhead_extruder = MagicMock()
+    lane.extruder_obj.toolhead_extruder = extruder
 
     obj.toolhead = MagicMock()
     obj.toolhead.get_extruder.return_value = extruder
@@ -258,7 +274,7 @@ def _make_afc_for_check_extruder_temp(
         return_value=(float(target_material_temp), using_min_value)
     )
 
-    return obj, heater, extruder, pheaters
+    return obj, heater, extruder, pheaters, lane
 
 
 class TestCheckExtruderTemp:
@@ -274,79 +290,1088 @@ class TestCheckExtruderTemp:
     # ── Default behaviour (lower_extruder_temp_on_change=True) ───────────────
 
     def test_lowers_to_target_when_above(self):
+        
         """Set temp more than 5° above target → lower to target, no wait."""
-        obj, heater, extruder, pheaters = _make_afc_for_check_extruder_temp(
+        obj, heater, extruder, pheaters, lane = _make_afc_for_check_extruder_temp(
             heater_target_temp=250, actual_temp=248, target_material_temp=210
         )
-        result = obj._check_extruder_temp(MagicMock())
-        pheaters.set_temperature.assert_called_once_with(heater, 210.0, wait=False)
+        result = obj._check_extruder_temp(lane)
+        pheaters.set_temperature.assert_called_once_with(heater, 210.0)
+        obj._wait_for_temp_within_tolerance.assert_not_called()
         assert result is False
 
     def test_heats_to_target_when_below(self):
         """Set temp more than 5° below target → heat to target and wait."""
-        obj, heater, extruder, pheaters = _make_afc_for_check_extruder_temp(
+        obj, heater, extruder, pheaters, lane = _make_afc_for_check_extruder_temp(
             heater_target_temp=150, actual_temp=148, target_material_temp=210
         )
-        result = obj._check_extruder_temp(MagicMock())
-        pheaters.set_temperature.assert_called_once_with(heater, 210.0, wait=True)
+        result = obj._check_extruder_temp(lane)
+        pheaters.set_temperature.assert_called_once_with(heater, 210.0)
+        obj._wait_for_temp_within_tolerance.assert_called_once_with(obj.heater, 210,
+                                                                    obj.temp_wait_tolerance*2)
         assert result is True
 
     def test_no_change_when_within_range(self):
         """Set temp within ±5° of target → no set_temperature call."""
-        obj, heater, extruder, pheaters = _make_afc_for_check_extruder_temp(
+        obj, heater, extruder, pheaters, lane = _make_afc_for_check_extruder_temp(
             heater_target_temp=212, actual_temp=210, target_material_temp=210
         )
-        obj._check_extruder_temp(MagicMock())
+        result = obj._check_extruder_temp(lane)
         pheaters.set_temperature.assert_not_called()
+        obj._wait_for_temp_within_tolerance.assert_not_called()
+        assert result is False
 
     def test_no_lower_when_using_min_extrude_temp(self):
         """When using min_extrude_temp fallback, do not lower even if above target+5."""
-        obj, heater, extruder, pheaters = _make_afc_for_check_extruder_temp(
+        obj, heater, extruder, pheaters, lane = _make_afc_for_check_extruder_temp(
             heater_target_temp=250, actual_temp=248, target_material_temp=210,
             using_min_value=True,
         )
-        obj._check_extruder_temp(MagicMock())
+        result = obj._check_extruder_temp(lane)
         pheaters.set_temperature.assert_not_called()
+        obj._wait_for_temp_within_tolerance.assert_not_called()
+        assert result is False
 
     # ── lower_extruder_temp_on_change=False ──────────────────────────────────
 
     def test_skip_lower_when_disabled_and_actual_sufficient(self):
         """lower=False, actual ≥ target-5 → lowering is skipped entirely."""
-        obj, heater, extruder, pheaters = _make_afc_for_check_extruder_temp(
+        obj, heater, extruder, pheaters, lane = _make_afc_for_check_extruder_temp(
             heater_target_temp=250, actual_temp=248, target_material_temp=210,
             lower_extruder_temp_on_change=False,
         )
-        obj._check_extruder_temp(MagicMock())
+        result = obj._check_extruder_temp(lane)
         pheaters.set_temperature.assert_not_called()
+        obj._wait_for_temp_within_tolerance.assert_not_called()
+        assert result is False
 
     def test_lower_not_skipped_when_actual_insufficient(self):
         """lower=False but actual < target-5 → skip_lower stays False, lower fires."""
-        obj, heater, extruder, pheaters = _make_afc_for_check_extruder_temp(
+        obj, heater, extruder, pheaters, lane = _make_afc_for_check_extruder_temp(
             heater_target_temp=250, actual_temp=200, target_material_temp=210,
             lower_extruder_temp_on_change=False,
         )
-        obj._check_extruder_temp(MagicMock())
-        pheaters.set_temperature.assert_any_call(heater, 210.0, wait=False)
+        result = obj._check_extruder_temp(lane)
+        pheaters.set_temperature.assert_any_call(heater, 210.0)
+        obj._wait_for_temp_within_tolerance.assert_not_called()
+        assert result is False
 
     def test_heating_unaffected_by_lower_flag(self):
         """lower=False does not suppress heating up to a higher target."""
-        obj, heater, extruder, pheaters = _make_afc_for_check_extruder_temp(
+        obj, heater, extruder, pheaters, lane = _make_afc_for_check_extruder_temp(
             heater_target_temp=150, actual_temp=148, target_material_temp=210,
             lower_extruder_temp_on_change=False,
         )
-        result = obj._check_extruder_temp(MagicMock())
-        pheaters.set_temperature.assert_called_once_with(heater, 210.0, wait=True)
+        result = obj._check_extruder_temp(lane)
+        pheaters.set_temperature.assert_called_once_with(heater, 210.0)
+        obj._wait_for_temp_within_tolerance.assert_called_once_with(obj.heater, 210,
+                                                                    obj.temp_wait_tolerance*2)
         assert result is True
 
     # ── Early-return guard ────────────────────────────────────────────────────
 
     def test_no_change_when_printing(self):
         """can_extrude=True + is_printing=True → early return, no temp change."""
-        obj, heater, extruder, pheaters = _make_afc_for_check_extruder_temp(
+        obj, heater, extruder, pheaters, lane = _make_afc_for_check_extruder_temp(
             heater_target_temp=150, actual_temp=148, target_material_temp=210
         )
         heater.can_extrude = True
         obj.function.is_printing.return_value = True
-        result = obj._check_extruder_temp(MagicMock())
+        result = obj._check_extruder_temp(lane)
         pheaters.set_temperature.assert_not_called()
+        obj._wait_for_temp_within_tolerance.assert_not_called()
         assert result is None
+    # TODO: add passing in a no_wait variable
+
+
+# ── _cooldown_last_extruder ───────────────────────────────────────────────────
+
+def _make_afc_for_cooldown(target_temp=220.0, toolchange_temp_drop=0.0, is_infinite_runout=False):
+    """Build an afc instance wired up for _cooldown_last_extruder tests."""
+    obj = _make_afc()
+
+    last_heater = MagicMock()
+    last_heater.target_temp = target_temp
+
+    last_extruder = MagicMock()
+    last_extruder.name = "extruder"
+    last_extruder.get_heater.return_value = last_heater
+    last_extruder.toolchange_temp_drop = toolchange_temp_drop
+
+    pheaters = MagicMock()
+    obj.printer._objects["heaters"] = pheaters
+
+    return obj, last_extruder, last_heater, pheaters
+
+
+class TestCooldownLastExtruder:
+    """Tests for afc._cooldown_last_extruder()."""
+
+    def test_infinite_runout_always_sets_zero(self):
+        """When is_infinite_runout=True, target is always 0 regardless of drop setting."""
+        obj, ext, heater, pheaters = _make_afc_for_cooldown(
+            target_temp=220.0, toolchange_temp_drop=30.0, is_infinite_runout=True
+        )
+        obj._cooldown_last_extruder(ext, is_infinite_runout=True)
+        pheaters.set_temperature.assert_called_once_with(heater, 0, False)
+
+    def test_no_drop_configured_keeps_current_target(self):
+        """When toolchange_temp_drop=0, temperature is unchanged (drop of 0)."""
+        obj, ext, heater, pheaters = _make_afc_for_cooldown(
+            target_temp=220.0, toolchange_temp_drop=0.0
+        )
+        obj._cooldown_last_extruder(ext, is_infinite_runout=False)
+        pheaters.set_temperature.assert_called_once_with(heater, 220.0, False)
+
+    def test_drop_reduces_temperature_by_configured_amount(self):
+        """Normal drop: target_temp - toolchange_temp_drop."""
+        obj, ext, heater, pheaters = _make_afc_for_cooldown(
+            target_temp=220.0, toolchange_temp_drop=40.0
+        )
+        obj._cooldown_last_extruder(ext, is_infinite_runout=False)
+        pheaters.set_temperature.assert_called_once_with(heater, 180.0, False)
+
+    def test_drop_larger_than_target_clamps_to_zero(self):
+        """Drop larger than current target is clamped to 0 (no negative temps)."""
+        obj, ext, heater, pheaters = _make_afc_for_cooldown(
+            target_temp=30.0, toolchange_temp_drop=50.0
+        )
+        obj._cooldown_last_extruder(ext, is_infinite_runout=False)
+        pheaters.set_temperature.assert_called_once_with(heater, 0, False)
+
+    def test_drop_equal_to_target_sets_zero(self):
+        """Drop exactly equal to target → 0."""
+        obj, ext, heater, pheaters = _make_afc_for_cooldown(
+            target_temp=50.0, toolchange_temp_drop=50.0
+        )
+        obj._cooldown_last_extruder(ext, is_infinite_runout=False)
+        pheaters.set_temperature.assert_called_once_with(heater, 0, False)
+
+    def test_logs_cooldown_message(self):
+        """A log message is emitted describing the cooldown action."""
+        obj, ext, heater, pheaters = _make_afc_for_cooldown(
+            target_temp=220.0, toolchange_temp_drop=20.0
+        )
+        obj._cooldown_last_extruder(ext, is_infinite_runout=False)
+        logged = [msg for level, msg in obj.logger.messages if "Cooling down" in msg]
+        assert len(logged) == 1
+        assert "extruder" in logged[0]
+
+
+# ── _heat_next_extruder with explicit next_temp ───────────────────────────────
+
+def _make_afc_for_heat_next(current_target=220.0, next_extruder_name="extruder1"):
+    """Build an afc instance wired up for _heat_next_extruder tests."""
+    from tests.test_AFC_lane import _make_afc_lane
+
+    obj = _make_afc()
+
+    # Current toolhead extruder (the one that ran out)
+    current_heater = MagicMock()
+    current_heater.target_temp = current_target
+    current_heater.get_temp = MagicMock(return_value=(current_target - 2, current_target))
+    current_extruder_mock = MagicMock()
+    current_extruder_mock.get_heater.return_value = current_heater
+    obj.toolhead = MagicMock()
+    obj.toolhead.get_extruder.return_value = current_extruder_mock
+
+    # Next extruder
+    next_heater = MagicMock()
+    next_extruder_obj = MagicMock()
+    next_extruder_obj.name = next_extruder_name
+    next_extruder_obj.get_heater.return_value = next_heater
+    next_extruder_obj.deadband = 3.0
+
+    # Lane pointing at next extruder
+    lane = _make_afc_lane("AFC_stepper lane2")
+    lane.extruder_obj = next_extruder_obj
+
+    obj.next_lane_load = "lane2"
+    obj.lanes["lane2"] = lane
+
+    pheaters = MagicMock()
+    obj.printer._objects["heaters"] = pheaters
+
+    # get_current_extruder returns a different name to trigger heating path
+    obj.function.get_current_extruder.return_value = "extruder0"
+
+    obj._wait_for_temp_within_tolerance = MagicMock()
+
+    return obj, next_extruder_obj, next_heater, current_heater, pheaters
+
+
+class TestHeatNextExtruderWithExplicitTemp:
+    """Tests for the new next_temp parameter of _heat_next_extruder."""
+
+    def test_explicit_temp_used_instead_of_current_heater(self):
+        """When next_temp is given, the next heater is set to that value, not the current target."""
+        obj, next_ext, next_heater, current_heater, pheaters = _make_afc_for_heat_next(
+            current_target=220.0
+        )
+        result = obj._heat_next_extruder(wait=False, next_temp=190.0)
+        pheaters.set_temperature.assert_called_once_with(next_heater, 190.0, False)
+
+    def test_explicit_temp_returns_extruder_and_temp(self):
+        """Return value is (AFCExtruder object, set_temp) — not the heater."""
+        obj, next_ext, next_heater, current_heater, pheaters = _make_afc_for_heat_next()
+        result = obj._heat_next_extruder(wait=False, next_temp=200.0)
+        assert result[0] is next_ext
+        assert result[1] == 200.0
+
+    def test_none_next_temp_reads_current_heater_target(self):
+        """When next_temp=None (infinite runout path), target is read from current heater."""
+        obj, next_ext, next_heater, current_heater, pheaters = _make_afc_for_heat_next(
+            current_target=215.0
+        )
+        result = obj._heat_next_extruder(wait=False, next_temp=None)
+        pheaters.set_temperature.assert_called_once_with(next_heater, 215.0, False)
+        assert result[1] == 215.0
+
+    def test_current_heater_not_touched_when_next_temp_given(self):
+        """Providing next_temp must NOT set or reset the current heater temperature."""
+        obj, next_ext, next_heater, current_heater, pheaters = _make_afc_for_heat_next(
+            current_target=220.0
+        )
+        obj._heat_next_extruder(wait=False, next_temp=200.0)
+        # set_temperature must only be called for the next heater, never the current one
+        for call in pheaters.set_temperature.call_args_list:
+            assert call.args[0] is next_heater, "set_temperature was called on unexpected heater"
+
+    def test_wait_skipped_when_next_extruder_is_already_current(self):
+        """
+        When the next extruder is the same as the current one, wait should be skipped.
+        """
+        obj, next_ext, next_heater, current_heater, pheaters = _make_afc_for_heat_next(
+            next_extruder_name="extruder0",  # same as current (get_current_extruder returns "extruder0")
+        )
+        obj._heat_next_extruder(wait=True, next_temp=200.0)
+        obj._wait_for_temp_within_tolerance.assert_not_called()
+
+    def test_wait_triggered_when_next_extruder_differs_from_current(self):
+        """
+        When the next extruder differs from the current one, _wait_for_temp_within_tolerance
+        must be called with the next heater and the target temp.
+        """
+        obj, next_ext, next_heater, current_heater, pheaters = _make_afc_for_heat_next(
+            next_extruder_name="extruder1",  # different from current ("extruder0")
+        )
+        obj._heat_next_extruder(wait=True, next_temp=200.0)
+        obj._wait_for_temp_within_tolerance.assert_called_once_with(next_heater, 200.0, 3.0)
+
+
+# ── CHANGE_TOOL: new_extruder_temp integration ────────────────────────────────
+
+def _make_afc_for_change_tool(lane_name="lane2", next_extruder_name="extruder1",
+                               current_lane_name="lane1", current_extruder_name="extruder0"):
+    """Build a minimal afc suitable for driving CHANGE_TOOL with new_extruder_temp."""
+    from tests.test_AFC_lane import _make_afc_lane
+
+    obj = _make_afc()
+    obj.afcDeltaTime = MagicMock()
+    obj.afc_stats = MagicMock()
+    obj.afc_stats.average_toolchange_time = MagicMock()
+    obj.testing = True
+    obj.save_pos = MagicMock()
+    obj.restore_pos = MagicMock()
+    obj.TOOL_LOAD = MagicMock(return_value=True)
+    obj.TOOL_UNLOAD = MagicMock(return_value=True)
+    obj._check_bypass = MagicMock(return_value=False)
+    obj._heat_next_extruder = MagicMock()
+    obj._cooldown_last_extruder = MagicMock()
+    obj._wait_for_temp_within_tolerance = MagicMock()
+    obj.error = MagicMock()
+
+    # Current (old) lane/extruder
+    current_extruder = MagicMock()
+    current_extruder.name = current_extruder_name
+    current_extruder.get_heater = MagicMock(return_value=MagicMock())
+    current_extruder.deadband = 2.0
+    current_extruder.estats = MagicMock()
+    current_lane = _make_afc_lane(f"AFC_stepper {current_lane_name}")
+    current_lane.extruder_obj = current_extruder
+    current_lane._afc_prep_done = True
+    obj.lanes[current_lane_name] = current_lane
+    obj.function.get_current_lane.return_value = current_lane_name
+
+    # Next (new) lane/extruder
+    next_extruder = MagicMock()
+    next_extruder.name = next_extruder_name
+    next_extruder.get_heater = MagicMock(return_value=MagicMock())
+    next_extruder.deadband = 2.0
+    next_extruder.estats = MagicMock()
+    cur_lane = _make_afc_lane(f"AFC_stepper {lane_name}")
+    cur_lane.extruder_obj = next_extruder
+    cur_lane._afc_prep_done = True
+    cur_lane.status = AFCLaneState.LOADED
+    obj.lanes[lane_name] = cur_lane
+
+    obj.function.get_current_extruder.return_value = current_extruder_name
+    obj.function.in_print.return_value = False
+    obj.function.is_paused.return_value = False
+    obj.function.log_toolhead_pos = MagicMock()
+    obj.function._handle_activate_extruder = MagicMock()
+
+    # _heat_next_extruder stub: return (next_extruder_obj, set_temp)
+    obj._heat_next_extruder.return_value = (next_extruder, 200.0)
+
+    return obj, cur_lane, current_lane
+
+
+class TestChangeTool_NewExtruderTemp:
+    """Tests for CHANGE_TOOL with new_extruder_temp (non-infinite-runout path)."""
+
+    def test_heat_next_called_with_explicit_temp(self):
+        """Providing new_extruder_temp causes _heat_next_extruder to receive that value."""
+        obj, cur_lane, current_lane = _make_afc_for_change_tool()
+        obj.CHANGE_TOOL(cur_lane, new_extruder_temp=200.0)
+        obj._heat_next_extruder.assert_called_once_with(wait=False, next_temp=200.0)
+
+    def test_cooldown_called_for_old_extruder(self):
+        """Old extruder is cooled down when new_extruder_temp is provided."""
+        obj, cur_lane, current_lane = _make_afc_for_change_tool()
+        obj.CHANGE_TOOL(cur_lane, new_extruder_temp=200.0)
+        obj._cooldown_last_extruder.assert_called_once()
+        called_extruder = obj._cooldown_last_extruder.call_args.args[0]
+        assert called_extruder is current_lane.extruder_obj
+
+    def test_heat_called_before_cooldown(self):
+        """
+        _heat_next_extruder must be called before _cooldown_last_extruder.
+
+        Note that if this ordering behavior changes in the future, ensure that the infinite runout
+        case is properly setting the new extruder temperature, because currently this order is
+        required to read the current target temp before adjustment.
+        """
+        call_order = []
+        obj, cur_lane, current_lane = _make_afc_for_change_tool()
+        obj._heat_next_extruder.side_effect = lambda **kw: (
+            call_order.append("heat"),
+            obj._heat_next_extruder.return_value
+        )[1]
+        obj._cooldown_last_extruder.side_effect = lambda *a, **kw: call_order.append("cool")
+        obj.CHANGE_TOOL(cur_lane, new_extruder_temp=200.0)
+        assert call_order == ["heat", "cool"], f"Wrong call order: {call_order}"
+
+    def test_wait_for_temp_called_after_unload(self):
+        """_wait_for_temp_within_tolerance is called (after unload) when adjusting temps."""
+        obj, cur_lane, current_lane = _make_afc_for_change_tool()
+        obj.CHANGE_TOOL(cur_lane, new_extruder_temp=200.0)
+        obj._wait_for_temp_within_tolerance.assert_called_once()
+
+    def test_no_adjusting_temperature_without_param(self):
+        """Without new_extruder_temp, _heat_next_extruder and _cooldown are not called."""
+        obj, cur_lane, current_lane = _make_afc_for_change_tool()
+        obj.CHANGE_TOOL(cur_lane)  # no new_extruder_temp
+        obj._heat_next_extruder.assert_not_called()
+        obj._cooldown_last_extruder.assert_not_called()
+
+    def test_lane_status_not_set_to_loaded_for_normal_toolchange(self):
+        """For a normal toolchange (not infinite runout), cur_lane.status is NOT forced to LOADED."""
+        obj, cur_lane, current_lane = _make_afc_for_change_tool()
+        cur_lane.status = AFCLaneState.LOADED  # already loaded
+        obj.CHANGE_TOOL(cur_lane, new_extruder_temp=200.0)
+        # status should not have been touched by the infinite_runout branch
+        assert cur_lane.status == AFCLaneState.LOADED
+
+    def test_no_cooldown_when_same_extruder(self):
+        """If cur_lane uses the same extruder as current, cooldown is not called."""
+        obj, cur_lane, current_lane = _make_afc_for_change_tool(
+            next_extruder_name="extruder0",   # same as current
+            current_extruder_name="extruder0",
+        )
+        obj.CHANGE_TOOL(cur_lane, new_extruder_temp=200.0)
+        obj._cooldown_last_extruder.assert_not_called()
+
+
+# ── cmd_CHANGE_TOOL: NEW_EXTRUDER_TEMP parameter parsing ─────────────────────
+
+class TestCmdChangeTool_NewExtruderTempParsing:
+    """Tests for NEW_EXTRUDER_TEMP parameter parsing in cmd_CHANGE_TOOL."""
+
+    def _make_gcmd(self, new_extruder_temp_str, lane="lane1", purge_length=None):
+        gcmd = MagicMock()
+        # Use a T0 command line so cmd_CHANGE_TOOL takes the simple else-branch
+        # (no "CHANGE" in command) and Tcmd = "T0" directly.
+        gcmd.get_commandline.return_value = "T0"
+        gcmd.get.side_effect = lambda key, default=None: {
+            "PURGE_LENGTH": purge_length,
+            "NEW_EXTRUDER_TEMP": new_extruder_temp_str,
+        }.get(key, default)
+        return gcmd
+
+    def _make_afc_for_cmd(self):
+        obj = _make_afc()
+        obj.CHANGE_TOOL = MagicMock()
+        obj.error = MagicMock()
+        obj.function.check_homed.return_value = True
+        obj._check_bypass = MagicMock(return_value=False)
+        lane = MagicMock()
+        obj.lanes["lane1"] = lane
+        obj.tool_cmds["T0"] = "lane1"
+        return obj
+
+    def test_plain_numeric_string_parsed_to_float(self):
+        """'220' → 220.0"""
+        obj = self._make_afc_for_cmd()
+        gcmd = self._make_gcmd("220")
+        obj.cmd_CHANGE_TOOL(gcmd)
+        _, kwargs = obj.CHANGE_TOOL.call_args
+        assert kwargs["new_extruder_temp"] == 220.0
+
+    def test_equals_prefixed_string_stripped_and_parsed(self):
+        """'=220' → 220.0 (Klipper T0 macro compat)"""
+        obj = self._make_afc_for_cmd()
+        gcmd = self._make_gcmd("=220")
+        obj.cmd_CHANGE_TOOL(gcmd)
+        _, kwargs = obj.CHANGE_TOOL.call_args
+        assert kwargs["new_extruder_temp"] == 220.0
+
+    def test_none_new_extruder_temp_passes_none(self):
+        """When the parameter is absent (None), None is forwarded to CHANGE_TOOL."""
+        obj = self._make_afc_for_cmd()
+        gcmd = self._make_gcmd(None)
+        obj.cmd_CHANGE_TOOL(gcmd)
+        _, kwargs = obj.CHANGE_TOOL.call_args
+        assert kwargs["new_extruder_temp"] is None
+
+    def test_float_string_parsed_correctly(self):
+        """'215.5' parses to 215.5"""
+        obj = self._make_afc_for_cmd()
+        gcmd = self._make_gcmd("215.5")
+        obj.cmd_CHANGE_TOOL(gcmd)
+        _, kwargs = obj.CHANGE_TOOL.call_args
+        assert kwargs["new_extruder_temp"] == 215.5
+
+    def test_invalid_new_extruder_temp_reports_error_and_does_not_call_change_tool(self):
+        """A non-numeric NEW_EXTRUDER_TEMP triggers AFC_error and aborts without calling CHANGE_TOOL."""
+        obj = self._make_afc_for_cmd()
+        gcmd = self._make_gcmd("notanumber")
+        obj.cmd_CHANGE_TOOL(gcmd)
+        obj.error.AFC_error.assert_called_once()
+        error_msg = obj.error.AFC_error.call_args.args[0]
+        assert "NEW_EXTRUDER_TEMP" in error_msg
+        obj.CHANGE_TOOL.assert_not_called()
+
+    def test_invalid_purge_length_reports_error_and_does_not_call_change_tool(self):
+        """A non-numeric PURGE_LENGTH triggers AFC_error and aborts without calling CHANGE_TOOL."""
+        obj = self._make_afc_for_cmd()
+        gcmd = MagicMock()
+        gcmd.get_commandline.return_value = "T0"
+        gcmd.get.side_effect = lambda key, default=None: {
+            "PURGE_LENGTH": "notanumber",
+            "NEW_EXTRUDER_TEMP": None,
+        }.get(key, default)
+        obj.cmd_CHANGE_TOOL(gcmd)
+        obj.error.AFC_error.assert_called_once()
+        error_msg = obj.error.AFC_error.call_args.args[0]
+        assert "PURGE_LENGTH" in error_msg
+        obj.CHANGE_TOOL.assert_not_called()
+
+
+# ── TOOL_LOAD: destination extruder already has a different lane loaded ───────
+
+def _make_afc_for_dest_extruder_loaded():
+    """
+    Build an afc instance simulating a post-restart state where:
+      - The active extruder is 'extruder1' (already current, no swap needed)
+      - 'extruder1' still has lane4 marked as loaded
+      - The print wants to load lane2 (also on extruder1)
+
+    afc.current is a property backed by get_current_lane(); stubbing
+    get_current_lane() to return 'lane2' makes self.current equal the
+    target so that after the pre-load unload check TOOL_LOAD
+    short-circuits without needing to mock the full load sequence.
+    """
+    from tests.test_AFC_lane import _make_afc_lane
+
+    obj = _make_afc()
+    obj.afcDeltaTime = MagicMock()
+    obj.afc_stats = MagicMock()
+    obj.testing = True
+    obj.TOOL_UNLOAD = MagicMock(return_value=True)
+    obj._check_bypass = MagicMock(return_value=False)
+    obj.error = MagicMock()
+    obj.verify_macro_positions = MagicMock(return_value="")
+
+    # Destination extruder — has lane4 already loaded
+    dest_extruder = MagicMock()
+    dest_extruder.name = "extruder1"
+    dest_extruder.lane_loaded = "lane4"
+    dest_extruder.estats = MagicMock()
+
+    # The lane that is already loaded on the extruder
+    loaded_lane = _make_afc_lane("AFC_stepper lane4")
+    loaded_lane.extruder_obj = dest_extruder
+    obj.lanes["lane4"] = loaded_lane
+
+    # The target lane on the same extruder
+    target_lane = _make_afc_lane("AFC_stepper lane2")
+    target_lane.extruder_obj = dest_extruder
+    obj.lanes["lane2"] = target_lane
+
+    # Current extruder is already extruder1 — no tool swap
+    obj.function.get_current_extruder.return_value = "extruder1"
+    # self.current == target lane so the full load body is skipped
+    obj.function.get_current_lane.return_value = "lane2"
+    obj.function.check_homed.return_value = True
+    obj.function.in_print.return_value = False
+    obj.function.is_paused.return_value = False
+    obj.function.log_toolhead_pos = MagicMock()
+
+    return obj, target_lane, loaded_lane, dest_extruder
+
+
+class TestToolLoad_DestExtruderAlreadyLoaded:
+    """
+    Tests for the pre-load unload check in TOOL_LOAD.
+
+    Reproduces the post-restart scenario where the destination extruder still
+    has a lane marked as loaded while a different lane is being requested.
+    """
+
+    def test_aborts_with_clear_error_when_stale_lane_not_in_lanes(self):
+        """If the stale loaded lane name is not in self.lanes, report an explicit error and abort."""
+        obj, target_lane, loaded_lane, dest_extruder = _make_afc_for_dest_extruder_loaded()
+        # Remove lane4 from lanes so it is unmapped
+        del obj.lanes["lane4"]
+        result = obj.TOOL_LOAD(target_lane)
+        assert result is False
+        obj.error.AFC_error.assert_called_once()
+        error_msg = obj.error.AFC_error.call_args.args[0]
+        assert "extruder1" in error_msg
+        assert "lane4" in error_msg
+        obj.TOOL_UNLOAD.assert_not_called()
+
+    def test_unloads_when_extruder_already_has_different_lane_loaded(self):
+        """TOOL_UNLOAD is called for the already-loaded lane before proceeding."""
+        obj, target_lane, loaded_lane, dest_extruder = _make_afc_for_dest_extruder_loaded()
+        obj.TOOL_LOAD(target_lane)
+        obj.TOOL_UNLOAD.assert_called_once_with(loaded_lane, set_start_time=False)
+
+    def test_aborts_if_unload_fails(self):
+        """If TOOL_UNLOAD returns False, TOOL_LOAD returns False immediately."""
+        obj, target_lane, loaded_lane, dest_extruder = _make_afc_for_dest_extruder_loaded()
+        obj.TOOL_UNLOAD.return_value = False
+        result = obj.TOOL_LOAD(target_lane)
+        assert result is False
+
+    def test_no_unload_when_extruder_already_has_target_lane_loaded(self):
+        """If the extruder already has the target lane loaded, no unload is triggered."""
+        obj, target_lane, loaded_lane, dest_extruder = _make_afc_for_dest_extruder_loaded()
+        dest_extruder.lane_loaded = "lane2"   # already the target
+        obj.TOOL_LOAD(target_lane)
+        obj.TOOL_UNLOAD.assert_not_called()
+
+    def test_no_unload_when_extruder_has_nothing_loaded(self):
+        """If the extruder has lane_loaded=None, no unload is triggered."""
+        obj, target_lane, loaded_lane, dest_extruder = _make_afc_for_dest_extruder_loaded()
+        dest_extruder.lane_loaded = None
+        obj.TOOL_LOAD(target_lane)
+        obj.TOOL_UNLOAD.assert_not_called()
+
+    def test_unloads_stale_lane_after_tool_swap(self):
+        """
+        The realistic restart scenario: active extruder is different from the
+        destination, so tool_swap() fires first, and only THEN the stale-lane
+        check runs.
+
+        Specifically:
+          - The printer restarts with extruder1 having lane4 still saved as loaded.
+          - The active toolhead comes up as 'extruder' (primary, nothing loaded).
+          - TOOL_LOAD is called for lane2 (on extruder1).
+          - get_current_extruder() != extruder1 → tool_swap() fires.
+          - extruder1.lane_loaded = 'lane4' != 'lane2' → stale unload triggers.
+
+        This path is distinct from the other stale-lane tests which start with
+        the active extruder already being extruder1 (no swap needed).
+        """
+        obj, target_lane, loaded_lane, dest_extruder = _make_afc_for_dest_extruder_loaded()
+
+        # Override: active extruder is 'extruder', not 'extruder1' — swap needed
+        obj.function.get_current_extruder.return_value = "extruder"
+        target_lane.tool_swap = MagicMock()
+
+        call_order = []
+        target_lane.tool_swap.side_effect = lambda: call_order.append("swap")
+        obj.TOOL_UNLOAD.side_effect = lambda *a, **kw: (call_order.append("unload"), True)[1]
+
+        obj.TOOL_LOAD(target_lane)
+
+        assert "swap" in call_order, "tool_swap was not called"
+        assert "unload" in call_order, "TOOL_UNLOAD was not called for the stale lane"
+        assert call_order.index("swap") < call_order.index("unload"), (
+            f"tool_swap must precede TOOL_UNLOAD; order was {call_order}"
+        )
+        obj.TOOL_UNLOAD.assert_called_once_with(loaded_lane, set_start_time=False)
+
+
+# ── td1_present property ─────────────────────────────────────────────────────
+
+def _make_afc_for_td1(*, td1_present=False, last_td1_query=0.0,
+                       current_time=100.0, printer_ready=True,
+                       moonraker=True, is_printing=False,
+                       moonraker_td1_result=True):
+    """
+    Build an afc instance pre-configured for td1_present property tests.
+
+    Parameters
+    ----------
+    td1_present        : initial value of _td1_present
+    last_td1_query     : initial value of _last_td1_query (seconds, monotonic)
+    current_time       : value reactor.monotonic() will return
+    printer_ready      : if True, printer.state_message == 'Printer is ready'
+    moonraker          : if True, attach a MagicMock moonraker; if False leave None
+    is_printing        : return value of function.is_printing(check_movement=True)
+    moonraker_td1_result : value moonraker.check_for_td1() returns as [1] index
+    """
+    obj = _make_afc()
+    obj._td1_present = td1_present
+    obj._last_td1_query = last_td1_query
+    obj.reactor.monotonic = MagicMock(return_value=current_time)
+    obj.printer.state_message = 'Printer is ready' if printer_ready else 'Startup'
+    obj.function.is_printing = MagicMock(return_value=is_printing)
+
+    if moonraker:
+        obj.moonraker = MagicMock()
+        obj.moonraker.check_for_td1.return_value = (None, moonraker_td1_result)
+    else:
+        obj.moonraker = None
+
+    return obj
+
+
+class TestTd1Present:
+    """Tests for the afc.td1_present property."""
+
+    # ── cached-value paths (no moonraker call) ────────────────────────────────
+
+    def test_returns_cached_when_printer_not_ready(self):
+        """Returns _td1_present without querying moonraker when printer is not ready."""
+        obj = _make_afc_for_td1(td1_present=True, printer_ready=False)
+        assert obj.td1_present is True
+
+    def test_returns_cached_when_moonraker_is_none(self):
+        """Returns _td1_present without error when moonraker is None."""
+        obj = _make_afc_for_td1(td1_present=False, moonraker=False)
+        assert obj.td1_present is False
+
+    def test_returns_cached_when_query_interval_too_short(self):
+        """Returns _td1_present when less than 30 s have elapsed since last query."""
+        # current_time - last_td1_query == 10 s (< 30 s threshold)
+        obj = _make_afc_for_td1(td1_present=True, current_time=100.0, last_td1_query=90.0)
+        assert obj.td1_present is True
+    
+    def test_returns_cached_when_query_interval_too_short_td1_false(self):
+        """Does not refresh when printer is ready and interval has not passed."""
+        obj = _make_afc_for_td1(
+            td1_present=False,
+            current_time=100.0,
+            last_td1_query=90.0,
+            is_printing=False,
+            moonraker_td1_result=True,
+        )
+        assert obj.td1_present is False
+
+    def test_returns_cached_when_exactly_30s_elapsed(self):
+        """Interval must be *greater than* 30 s; exactly 30 s still returns cached value."""
+        obj = _make_afc_for_td1(td1_present=True, current_time=100.0, last_td1_query=70.0)
+        assert obj.td1_present is True
+
+    def test_returns_cached_when_is_printing(self):
+        """Does not refresh when printer is ready and interval has passed but a print is active."""
+        obj = _make_afc_for_td1(
+            td1_present=False,
+            current_time=100.0,
+            last_td1_query=0.0,
+            is_printing=True,
+            moonraker_td1_result=True,
+        )
+        assert obj.td1_present is False
+
+    # ── moonraker not called paths ────────────────────────────────────────────
+
+    def test_moonraker_not_called_when_printer_not_ready(self):
+        """moonraker.check_for_td1 is never invoked when the printer is not ready."""
+        obj = _make_afc_for_td1(printer_ready=False)
+        _ = obj.td1_present
+        obj.moonraker.check_for_td1.assert_not_called()
+
+    def test_moonraker_not_called_when_interval_too_short(self):
+        """moonraker.check_for_td1 is never invoked when the cooldown has not expired."""
+        obj = _make_afc_for_td1(current_time=100.0, last_td1_query=90.0)
+        _ = obj.td1_present
+        obj.moonraker.check_for_td1.assert_not_called()
+
+    def test_moonraker_not_called_when_is_printing(self):
+        """moonraker.check_for_td1 is never invoked during an active print."""
+        obj = _make_afc_for_td1(current_time=100.0, last_td1_query=0.0, is_printing=True)
+        _ = obj.td1_present
+        obj.moonraker.check_for_td1.assert_not_called()
+
+    # ── refresh paths ─────────────────────────────────────────────────────────
+
+    def test_returns_moonraker_value_when_all_conditions_met(self):
+        """Returns the fresh value from moonraker when printer is ready, interval > 30 s, not printing."""
+        obj = _make_afc_for_td1(
+            td1_present=False,
+            current_time=100.0,
+            last_td1_query=0.0,
+            is_printing=False,
+            moonraker_td1_result=True,
+        )
+        assert obj.td1_present is True
+
+    def test_updates_internal_td1_present_after_refresh(self):
+        """_td1_present is updated to the moonraker result after a successful refresh."""
+        obj = _make_afc_for_td1(
+            td1_present=False,
+            current_time=100.0,
+            last_td1_query=0.0,
+            moonraker_td1_result=True,
+        )
+        _ = obj.td1_present
+        assert obj._td1_present is True
+
+    def test_updates_last_query_time_after_refresh(self):
+        """_last_td1_query is updated to current_time after a successful refresh."""
+        obj = _make_afc_for_td1(current_time=100.0, last_td1_query=0.0)
+        _ = obj.td1_present
+        assert obj._last_td1_query == 100.0
+
+    def test_last_query_time_unchanged_when_not_refreshed(self):
+        """_last_td1_query is not modified when the refresh is skipped (interval too short)."""
+        obj = _make_afc_for_td1(current_time=100.0, last_td1_query=90.0)
+        _ = obj.td1_present
+        assert obj._last_td1_query == 90.0
+
+    def test_moonraker_called_once_per_refresh(self):
+        """moonraker.check_for_td1 is called exactly once when a refresh is due."""
+        obj = _make_afc_for_td1(current_time=100.0, last_td1_query=0.0)
+        _ = obj.td1_present
+        obj.moonraker.check_for_td1.assert_called_once()
+
+    def test_is_printing_called_with_check_movement(self):
+        """is_printing is invoked with check_movement=True when the refresh gate is reached."""
+        obj = _make_afc_for_td1(current_time=100.0, last_td1_query=0.0)
+        _ = obj.td1_present
+        obj.function.is_printing.assert_called_once_with(check_movement=True)
+
+    def test_refresh_stores_false_from_moonraker(self):
+        """A False result from moonraker is correctly stored and returned."""
+        obj = _make_afc_for_td1(
+            td1_present=True,
+            current_time=100.0,
+            last_td1_query=0.0,
+            moonraker_td1_result=False,
+        )
+        assert obj.td1_present is False
+        assert obj._td1_present is False
+
+
+# ── cmd_TOOL_LOAD: lane_loaded guard ─────────────────────────────────────────
+
+class TestCmdToolLoad_LaneLoadedGuard:
+    """
+    Tests for the cmd_TOOL_LOAD GCode handler guard.
+
+    The guard should only block when the extruder already has the *target* lane
+    loaded (already done). If a *different* lane is loaded, cmd_TOOL_LOAD should
+    pass through to TOOL_LOAD which handles the auto-unload.
+    """
+
+    def _make_cmd_afc(self):
+        from tests.test_AFC_lane import _make_afc_lane
+        obj = _make_afc()
+        obj.TOOL_LOAD = MagicMock(return_value=True)
+        obj.error = MagicMock()
+        obj.function.in_print.return_value = False
+
+        extruder = MagicMock()
+        extruder.name = "extruder"
+
+        lane = _make_afc_lane("AFC_stepper lane1")
+        lane.extruder_obj = extruder
+        obj.lanes["lane1"] = lane
+        return obj, lane, extruder
+
+    def test_blocks_when_same_lane_already_loaded(self):
+        """If the target lane is already loaded, report an error and do not call TOOL_LOAD."""
+        obj, lane, extruder = self._make_cmd_afc()
+        extruder.lane_loaded = "lane1"  # same as target
+
+        gcmd = MagicMock()
+        gcmd.get = lambda key, default=None: {"LANE": "lane1", "PURGE_LENGTH": None}.get(key, default)
+
+        obj.cmd_TOOL_LOAD(gcmd)
+
+        obj.error.AFC_error.assert_called_once()
+        obj.TOOL_LOAD.assert_not_called()
+
+    def test_passes_through_when_different_lane_loaded(self):
+        """If a different lane is already loaded, cmd_TOOL_LOAD should call TOOL_LOAD (not error)."""
+        obj, lane, extruder = self._make_cmd_afc()
+        extruder.lane_loaded = "lane2"  # different lane — stale, let TOOL_LOAD handle it
+
+        gcmd = MagicMock()
+        gcmd.get = lambda key, default=None: {"LANE": "lane1", "PURGE_LENGTH": None}.get(key, default)
+
+        obj.cmd_TOOL_LOAD(gcmd)
+
+        obj.error.AFC_error.assert_not_called()
+        obj.TOOL_LOAD.assert_called_once_with(lane, None)
+
+    def test_passes_through_when_nothing_loaded(self):
+        """Normal case: nothing loaded, cmd_TOOL_LOAD proceeds."""
+        obj, lane, extruder = self._make_cmd_afc()
+        extruder.lane_loaded = None
+
+        gcmd = MagicMock()
+        gcmd.get = lambda key, default=None: {"LANE": "lane1", "PURGE_LENGTH": None}.get(key, default)
+
+        obj.cmd_TOOL_LOAD(gcmd)
+
+        obj.error.AFC_error.assert_not_called()
+        obj.TOOL_LOAD.assert_called_once_with(lane, None)
+
+
+# ── capture_toolhead_temp ─────────────────────────────────────────────────────
+
+def _make_afc_for_capture_restore(
+    *,
+    restore_enabled: bool = True,
+    is_printing: bool = False,
+    target_temp: float = 200.0,
+):
+    """
+    Build an afc instance pre-configured for capture_toolhead_temp /
+    restore_toolhead_temp tests.
+
+    Parameters
+    ----------
+    restore_enabled : value of restore_extruder_temp_on_load_or_unload
+    is_printing     : return value of function.is_printing()
+    target_temp     : heater.target_temp on the mock extruder
+    """
+    obj = _make_afc()
+    obj.restore_extruder_temp_on_load_or_unload = restore_enabled
+    obj.function.is_printing = MagicMock(return_value=is_printing)
+    obj.logger = MagicMock()
+
+    # Build a mock extruder with a heater whose target_temp is controllable
+    mock_heater = MagicMock()
+    mock_heater.target_temp = target_temp
+
+    mock_extruder = MagicMock()
+    mock_extruder.name = "extruder"
+    mock_extruder.get_heater.return_value = mock_heater
+
+    # toolhead.get_extruder() returns the same mock extruder by default
+    mock_toolhead = MagicMock()
+    mock_toolhead.get_extruder.return_value = mock_extruder
+    obj.toolhead = mock_toolhead
+
+    # printer.lookup_object('heaters') returns a mock pheaters
+    mock_pheaters = MagicMock()
+    obj.printer.lookup_object = MagicMock(return_value=mock_pheaters)
+
+    return obj, mock_extruder, mock_heater, mock_pheaters
+
+
+class TestCaptureToolheadTemp:
+    """Tests for afc.capture_toolhead_temp."""
+
+    # ── early-return paths ────────────────────────────────────────────────────
+
+    def test_returns_none_when_restore_disabled(self):
+        """Returns None immediately when restore_extruder_temp_on_load_or_unload is False."""
+        obj, extruder, heater, _ = _make_afc_for_capture_restore(restore_enabled=False)
+        assert obj.capture_toolhead_temp() is None
+
+    def test_returns_none_when_printing_and_not_async(self):
+        """Returns None when is_printing() is True and async_capture is False (default)."""
+        obj, extruder, heater, _ = _make_afc_for_capture_restore(is_printing=True)
+        assert obj.capture_toolhead_temp() is None
+
+    def test_returns_none_when_printing_explicit_async_false(self):
+        """Returns None when printing and async_capture is explicitly False."""
+        obj, extruder, heater, _ = _make_afc_for_capture_restore(is_printing=True)
+        assert obj.capture_toolhead_temp(async_capture=False) is None
+
+    # ── successful capture paths ──────────────────────────────────────────────
+
+    def test_returns_dict_when_not_printing(self):
+        """Returns a dict (not None) when the printer is idle."""
+        obj, extruder, heater, _ = _make_afc_for_capture_restore(is_printing=False)
+        result = obj.capture_toolhead_temp()
+        assert result is not None
+
+    def test_returns_dict_when_printing_and_async_capture(self):
+        """Returns a dict when printing but async_capture=True bypasses the guard."""
+        obj, extruder, heater, _ = _make_afc_for_capture_restore(is_printing=True)
+        result = obj.capture_toolhead_temp(async_capture=True)
+        assert result is not None
+
+    def test_returned_dict_has_extruder_key(self):
+        """The returned dict contains the 'extruder' key."""
+        obj, extruder, heater, _ = _make_afc_for_capture_restore()
+        result = obj.capture_toolhead_temp()
+        assert "extruder" in result
+
+    def test_returned_dict_has_target_temp_key(self):
+        """The returned dict contains the 'target_temp' key."""
+        obj, extruder, heater, _ = _make_afc_for_capture_restore()
+        result = obj.capture_toolhead_temp()
+        assert "target_temp" in result
+
+    def test_target_temp_matches_heater(self):
+        """target_temp in the returned dict equals heater.target_temp."""
+        obj, extruder, heater, _ = _make_afc_for_capture_restore(target_temp=215.0)
+        result = obj.capture_toolhead_temp()
+        assert result["target_temp"] == 215.0
+
+    def test_uses_toolhead_extruder_when_none_passed(self):
+        """When no extruder is passed, uses toolhead.get_extruder()."""
+        obj, extruder, heater, _ = _make_afc_for_capture_restore()
+        result = obj.capture_toolhead_temp()
+        obj.toolhead.get_extruder.assert_called_once()
+        assert result["extruder"] is extruder
+
+    def test_uses_passed_extruder_over_toolhead(self):
+        """When an extruder is passed explicitly, it is used instead of toolhead.get_extruder()."""
+        obj, _, _, _ = _make_afc_for_capture_restore()
+
+        custom_heater = MagicMock()
+        custom_heater.target_temp = 240.0
+        custom_extruder = MagicMock()
+        custom_extruder.get_heater.return_value = custom_heater
+
+        result = obj.capture_toolhead_temp(extruder=custom_extruder)
+
+        obj.toolhead.get_extruder.assert_not_called()
+        assert result["extruder"] is custom_extruder
+        assert result["target_temp"] == 240.0
+
+    def test_restore_disabled_skips_is_printing_check(self):
+        """When restore is disabled, is_printing is never consulted."""
+        obj, _, _, _ = _make_afc_for_capture_restore(restore_enabled=False)
+        obj.capture_toolhead_temp()
+        obj.function.is_printing.assert_not_called()
+
+
+# ── restore_toolhead_temp ─────────────────────────────────────────────────────
+
+class TestRestoreToolheadTemp:
+    """Tests for afc.restore_toolhead_temp."""
+
+    def _make_valid_temp_state(self, target_temp: float = 200.0):
+        """Return a minimal temp_state dict with a mock extruder."""
+        mock_heater = MagicMock()
+        mock_extruder = MagicMock()
+        mock_extruder.name = "extruder"
+        mock_extruder.get_heater.return_value = mock_heater
+        return {"extruder": mock_extruder, "target_temp": target_temp}
+
+    # ── early-return paths ────────────────────────────────────────────────────
+
+    def test_returns_early_when_restore_disabled(self):
+        """Does nothing when restore_extruder_temp_on_load_or_unload is False."""
+        obj, _, _, pheaters = _make_afc_for_capture_restore(restore_enabled=False)
+        temp_state = self._make_valid_temp_state()
+        obj.restore_toolhead_temp(temp_state)
+        pheaters.set_temperature.assert_not_called()
+
+    def test_returns_early_when_temp_state_is_none(self):
+        """Does nothing when temp_state is None."""
+        obj, _, _, pheaters = _make_afc_for_capture_restore()
+        obj.restore_toolhead_temp(None)
+        pheaters.set_temperature.assert_not_called()
+
+    def test_returns_early_when_temp_state_is_empty_dict(self):
+        """Does nothing when temp_state is an empty dict (falsy)."""
+        obj, _, _, pheaters = _make_afc_for_capture_restore()
+        obj.restore_toolhead_temp({})
+        pheaters.set_temperature.assert_not_called()
+
+    def test_returns_early_when_printing_and_not_async(self):
+        """Does nothing when is_printing() is True and async_restore is False (default)."""
+        obj, _, _, pheaters = _make_afc_for_capture_restore(is_printing=True)
+        temp_state = self._make_valid_temp_state()
+        obj.restore_toolhead_temp(temp_state)
+        pheaters.set_temperature.assert_not_called()
+
+    def test_returns_early_when_printing_explicit_async_false(self):
+        """Does nothing when printing and async_restore is explicitly False."""
+        obj, _, _, pheaters = _make_afc_for_capture_restore(is_printing=True)
+        temp_state = self._make_valid_temp_state()
+        obj.restore_toolhead_temp(temp_state, async_restore=False)
+        pheaters.set_temperature.assert_not_called()
+
+    # ── successful restore paths ──────────────────────────────────────────────
+
+    def test_calls_set_temperature_when_not_printing(self):
+        """Calls pheaters.set_temperature when all conditions allow a restore."""
+        obj, _, _, pheaters = _make_afc_for_capture_restore(is_printing=False)
+        temp_state = self._make_valid_temp_state(target_temp=210.0)
+        obj.restore_toolhead_temp(temp_state)
+        pheaters.set_temperature.assert_called_once()
+
+    def test_restores_correct_temperature(self):
+        """set_temperature is called with the target_temp from temp_state."""
+        obj, _, _, pheaters = _make_afc_for_capture_restore()
+        temp_state = self._make_valid_temp_state(target_temp=225.0)
+        obj.restore_toolhead_temp(temp_state)
+        _, call_kwargs = pheaters.set_temperature.call_args
+        assert call_kwargs.get("wait") is False
+        positional = pheaters.set_temperature.call_args.args
+        assert positional[1] == 225.0
+
+    def test_restores_using_extruder_heater(self):
+        """set_temperature receives the heater obtained from temp_state['extruder']."""
+        obj, _, _, pheaters = _make_afc_for_capture_restore()
+        temp_state = self._make_valid_temp_state()
+        mock_heater = temp_state["extruder"].get_heater()
+        obj.restore_toolhead_temp(temp_state)
+        positional = pheaters.set_temperature.call_args.args
+        assert positional[0] is mock_heater
+
+    def test_restores_when_printing_and_async_restore(self):
+        """Restores temperature when printing but async_restore=True bypasses the guard."""
+        obj, _, _, pheaters = _make_afc_for_capture_restore(is_printing=True)
+        temp_state = self._make_valid_temp_state()
+        obj.restore_toolhead_temp(temp_state, async_restore=True)
+        pheaters.set_temperature.assert_called_once()
+
+    def test_logs_info_after_restore(self):
+        """logger.info is called with extruder name and target temp after a successful restore."""
+        obj, _, _, _ = _make_afc_for_capture_restore()
+        temp_state = self._make_valid_temp_state(target_temp=200.0)
+        obj.restore_toolhead_temp(temp_state)
+        obj.logger.info.assert_called_once()
+        log_msg = obj.logger.info.call_args.args[0]
+        assert "extruder" in log_msg
+        assert "200" in log_msg
+
+    def test_restore_disabled_skips_is_printing_check(self):
+        """When restore is disabled, is_printing is never consulted."""
+        obj, _, _, _ = _make_afc_for_capture_restore(restore_enabled=False)
+        temp_state = self._make_valid_temp_state()
+        obj.restore_toolhead_temp(temp_state)
+        obj.function.is_printing.assert_not_called()
+
+    # ── exception handling ────────────────────────────────────────────────────
+
+    def test_logs_debug_on_exception(self):
+        """If set_temperature raises, logger.debug is called and no exception propagates."""
+        obj, _, _, pheaters = _make_afc_for_capture_restore()
+        pheaters.set_temperature.side_effect = RuntimeError("heater fault")
+        temp_state = self._make_valid_temp_state()
+        obj.restore_toolhead_temp(temp_state)   # must not raise
+        obj.logger.debug.assert_called_once()
+
+    def test_no_exception_propagated_on_lookup_failure(self):
+        """If printer.lookup_object raises, the exception is swallowed."""
+        obj, _, _, _ = _make_afc_for_capture_restore()
+        obj.printer.lookup_object.side_effect = KeyError("heaters")
+        temp_state = self._make_valid_temp_state()
+        obj.restore_toolhead_temp(temp_state)   # must not raise
+        obj.logger.debug.assert_called_once()
