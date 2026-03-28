@@ -817,6 +817,8 @@ class afcAMS(afcUnit):
         """Pick up tool from dock after purging.
 
         Runs the toolchanger's pickup gcode and exits docking mode.
+        If pickup verification fails, fires the toolchanger's error_gcode
+        (e.g. M112) to prevent dock damage.
         """
         cur_extruder = self.afc.function.get_current_extruder_obj()
         tc = cur_extruder.tc_unit_obj if cur_extruder else None
@@ -825,7 +827,19 @@ class afcAMS(afcUnit):
             return
         tool = tc.active_tool
 
-        tc._run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
+        try:
+            tc._run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
+        except Exception as e:
+            self.logger.error(f"OAMS dock purge: pickup failed: {e}")
+            # If error_gcode (M112) didn't already fire via process_error,
+            # fire it now to prevent dock damage
+            if tc.error_gcode and tc.status != 'error':
+                try:
+                    tc.process_error(None, f"Dock purge pickup failed: {e}")
+                except Exception:
+                    pass
+            self._dock_purge_context = None
+            raise
         self.afc.gcode.run_script_from_command("EXIT_DOCKING_MODE")
         self._dock_purge_context = None
         self.logger.info("OAMS dock purge: tool picked up from dock")
@@ -1482,6 +1496,12 @@ class afcAMS(afcUnit):
             dock_dropped_off = True
             afc.afcDeltaTime.log_with_time("OAMS: After dock purge dropoff")
 
+        # Suspend monitor for the entire dock purge cycle (load + purge + pickup).
+        # Without this, clog detection fires during dock purge extrusion
+        # (extruder pushes but encoder doesn't move = false clog).
+        if dock_dropped_off and self._monitor is not None:
+            self._monitor.stop()
+
         # Wrap the load so tool is always picked back up, even on failure
         load_result = False
         try:
@@ -1519,6 +1539,10 @@ class afcAMS(afcUnit):
                     self.logger.info("OAMS dock purge: picking up tool after load failure")
                 self._dock_purge_pickup()
                 afc.afcDeltaTime.log_with_time("OAMS: After dock purge pickup")
+                # Resume monitor after dock purge is fully complete
+                if self._monitor is not None and self.oams is not None:
+                    if not self.afc.function.is_paused() and not getattr(self.afc.error, 'error_state', False):
+                        self._monitor.start(self.oams)
 
         if not cur_lane.get_toolhead_pre_sensor_state() and not cur_lane.extruder_obj.on_shuttle():
             message = (
