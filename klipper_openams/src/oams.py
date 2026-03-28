@@ -686,11 +686,11 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
     def load_spool(self, spool_idx):
         self.action_status = OAMSStatus.LOADING
         self.oams_load_spool_cmd.send([spool_idx])
-        timeout = self.reactor.monotonic() + 45.0
+        timeout = self.reactor.monotonic() + 75.0
 
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
-                self.logger.error(f"OAMS[{self.oams_idx}]: Load operation timed out after 45 seconds")
+                self.logger.error(f"OAMS[{self.oams_idx}]: Load operation timed out after 75 seconds")
                 self.action_status      = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return OAMSOpCode.ERROR_UNSPECIFIED, "OAMS load operation timed out (MCU unresponsive)"
