@@ -1222,72 +1222,6 @@ class OAMSManager:
             self.follower_state[resolved_name] = FollowerState()
         return self.follower_state[resolved_name]
 
-    def _set_lane_virtual_hub_state(self, lane_obj, present, *, context=""):
-        if lane_obj is None:
-            return
-        try:
-            lane_obj.loaded_to_hub = bool(present)
-        except Exception:
-            pass
-        try:
-            now = self.reactor.monotonic()
-            hub_obj = getattr(lane_obj, 'hub_obj', None)
-            if hub_obj is not None:
-                if hasattr(hub_obj, 'switch_pin_callback'):
-                    hub_obj.switch_pin_callback(now, bool(present))
-                fila = getattr(hub_obj, 'fila', None)
-                if fila is not None and hasattr(fila, 'runout_helper'):
-                    fila.runout_helper.note_filament_present(now, bool(present))
-        except Exception as e:
-            lane_name = getattr(lane_obj, 'name', '<unknown>')
-            ctx = f" ({context})" if context else ""
-            self.logger.debug(f"Failed to mirror virtual hub sensor for {lane_name}{ctx}: {e}")
-
-    def _clear_afc_loaded_lane(self, lane_name, *, clear_hub_state=False):
-        if not lane_name:
-            return
-        try:
-            afc = self._get_afc()
-            if afc is None or not hasattr(afc, 'lanes'):
-                return
-            afc_function = getattr(afc, "function", None)
-            if afc_function is not None and hasattr(afc_function, "get_current_lane_obj"):
-                try:
-                    current_lane = afc_function.get_current_lane_obj()
-                except Exception:
-                    current_lane = None
-                if current_lane is not None and getattr(current_lane, "name", None) == lane_name:
-                    unset_lane_loaded = getattr(afc_function, "unset_lane_loaded", None)
-                    if callable(unset_lane_loaded):
-                        unset_lane_loaded()
-                        lane_obj = afc.lanes.get(lane_name)
-                        if lane_obj is not None and clear_hub_state:
-                            self._set_lane_virtual_hub_state(
-                                lane_obj, False,
-                                context=f"{lane_name} after unset_lane_loaded")
-                        return
-            lane_obj = afc.lanes.get(lane_name)
-            if lane_obj is None:
-                return
-            extruder_obj = getattr(lane_obj, 'extruder_obj', None)
-            if extruder_obj is not None:
-                try:
-                    if getattr(extruder_obj, 'lane_loaded', None) == lane_name:
-                        extruder_obj.lane_loaded = None
-                except Exception:
-                    pass
-            if getattr(lane_obj, 'tool_loaded', False):
-                lane_obj.tool_loaded = False
-            if clear_hub_state:
-                self._set_lane_virtual_hub_state(lane_obj, False, context=lane_name)
-            if hasattr(afc, 'save_vars') and callable(afc.save_vars):
-                try:
-                    afc.save_vars()
-                except Exception as e:
-                    self.logger.error(f"Failed to save AFC vars after clearing loaded lane {lane_name}: {e}")
-        except Exception as e:
-            self.logger.error(f"Failed to clear AFC loaded lane for {lane_name}: {e}")
-
     def determine_state(self):
         """Sync FPS state from AFC's authoritative lane_loaded state."""
         afc = self._get_afc()
@@ -1329,10 +1263,6 @@ class OAMSManager:
                     fps_state.current_lane = None
                     fps_state.current_oams = None
                     fps_state.current_spool_idx = None
-
-    def sync_state_with_afc(self):
-        """Deprecated: determine_state() now reads from AFC directly."""
-        self.determine_state()
 
     def _handle_disconnect(self):
         """Cleanup timers and resources on disconnect/shutdown."""
@@ -1507,206 +1437,6 @@ class OAMSManager:
         oams_obj: Optional[Any] = None,
     ) -> Tuple[Optional[str], Optional[Any]]:
         return _resolve_oams_entry(self.oams, oams_name, oams_obj)
-
-    def _sync_extruder_lane_loaded(self, fps_name, extruder_obj, extruder_name, afc):
-        # Check what AFC currently thinks is loaded
-        current_lane_loaded = getattr(extruder_obj, 'lane_loaded', None)
-
-        # Check the actual HARDWARE sensor state - read OAMS hub sensors directly
-        sensor_detected_lanes = []
-        for lane_name, lane in afc.lanes.items():
-            try:
-                # Only check lanes on this FPS
-                lane_fps = self.get_fps_for_afc_lane(lane_name)
-                if lane_fps != fps_name:
-                    continue
-
-                # Only check lanes for this extruder
-                lane_extruder = getattr(lane, 'extruder_obj', None)
-                if lane_extruder != extruder_obj:
-                    continue
-
-                # Read ACTUAL hardware sensor
-                unit_obj = getattr(lane, 'unit_obj', None)
-                if unit_obj and getattr(unit_obj, 'type', None) == 'OpenAMS':
-                    # Get OAMS hardware object
-                    oams_name = getattr(unit_obj, 'oams_name', None)
-                    if oams_name:
-                        oams_obj = self.oams.get(f"oams {oams_name}")
-                        if not oams_obj:
-                            oams_obj = self.oams.get(oams_name)
-
-                        if oams_obj:
-                            # Get the bay/spool index for this lane
-                            lane_index = getattr(lane, 'index', None)
-                            if lane_index is not None:
-                                try:
-                                    spool_idx = int(lane_index) - 1
-                                    if spool_idx >= 0:
-                                        # Read hub sensor from hardware
-                                        hub_values = getattr(oams_obj, 'hub_hes_value', None)
-                                        if hub_values and spool_idx < len(hub_values):
-                                            hub_has_filament = bool(hub_values[spool_idx])
-                                            if hub_has_filament:
-                                                sensor_detected_lanes.append(lane_name)
-                                except (TypeError, ValueError) as e:
-                                    self.logger.debug(f"Failed to parse slot number: {e}")
-            except Exception as e:
-                self.logger.debug(f"Failed to process lane snapshot: {e}")
-                continue
-
-        # Determine which lane should be loaded based on sensors
-        sensor_lane = None
-        if len(sensor_detected_lanes) == 1:
-            # Exactly one lane shows hub sensor active - use it as source of truth
-            sensor_lane = sensor_detected_lanes[0]
-        elif len(sensor_detected_lanes) > 1:
-            # Multiple lanes show hub sensor active - conflict
-            self.logger.warning(
-                f"Multiple lanes show hub sensor active for {extruder_name} on {fps_name}: "
-                f"{sensor_detected_lanes}. Cannot sync AFC state."
-            )
-            return
-
-        lane_to_sync = sensor_lane
-
-        # Determine if we need to sync
-        # Case 1: Already in sync (both None or both point to same lane)
-        if lane_to_sync == current_lane_loaded:
-            return
-
-        # Case 2: All hubs empty but AFC thinks a lane is loaded ? clear the state
-        if lane_to_sync is None and current_lane_loaded is not None:
-            old_lane_obj = afc.lanes.get(current_lane_loaded)
-            if old_lane_obj:
-                # Clear tool_loaded flag
-                if hasattr(old_lane_obj, 'tool_loaded'):
-                    old_lane_obj.tool_loaded = False
-                    self.logger.debug(f"Cleared tool_loaded flag on {current_lane_loaded} (all hubs empty)")
-
-                # Clear loaded_to_hub flag
-                if hasattr(old_lane_obj, 'loaded_to_hub'):
-                    old_lane_obj.loaded_to_hub = False
-                    self.logger.debug(f"Cleared loaded_to_hub flag on {current_lane_loaded} (all hubs empty)")
-
-            # Clear extruder's lane_loaded
-            extruder_obj.lane_loaded = None
-
-            # Update virtual tool sensor to show empty
-            try:
-                unit_obj = getattr(old_lane_obj, 'unit_obj', None) if old_lane_obj else None
-                if unit_obj and getattr(unit_obj, 'type', None) == 'OpenAMS':
-                    if hasattr(unit_obj, '_sync_virtual_tool_sensor'):
-                        eventtime = self.reactor.monotonic()
-                        unit_obj._sync_virtual_tool_sensor(eventtime, None, force=True)
-                        self.logger.debug(f"Synced virtual tool sensor to empty state")
-            except Exception as e:
-                self.logger.error(f"Failed to sync virtual tool sensor to empty: {e}")
-
-            # Persist to vars file
-            try:
-                if hasattr(afc, 'save_vars'):
-                    afc.save_vars()
-            except Exception as e:
-                self.logger.warning(f"Failed to persist AFC vars after clearing lane mismatch: {e}")
-
-            self.logger.info(
-                f"Synced AFC lane mismatch: {extruder_name} cleared (was {current_lane_loaded}, "
-                f"all OAMS hardware hub sensors show empty)"
-            )
-            return
-
-        # Case 3: Sensor shows a lane loaded (possibly different from current) ? sync to that lane
-        if lane_to_sync is None:
-            return  # No sync needed
-
-        # Get the lane object to sync
-        lane_obj_to_sync = afc.lanes.get(lane_to_sync)
-        if not lane_obj_to_sync:
-            return
-
-        # STEP 1: Clear the old lane's state if it exists
-        if current_lane_loaded:
-            old_lane_obj = afc.lanes.get(current_lane_loaded)
-            if old_lane_obj:
-                # Clear tool_loaded flag - the old lane is not actually in the tool
-                if hasattr(old_lane_obj, 'tool_loaded'):
-                    old_lane_obj.tool_loaded = False
-                    self.logger.debug(f"Cleared tool_loaded flag on old lane {current_lane_loaded}")
-
-                # Check if the old lane's hub sensor also shows empty
-                # If hardware shows it's not in the hub, clear loaded_to_hub too
-                old_lane_hub_has_filament = False
-                try:
-                    unit_obj = getattr(old_lane_obj, 'unit_obj', None)
-                    if unit_obj and getattr(unit_obj, 'type', None) == 'OpenAMS':
-                        oams_name = getattr(unit_obj, 'oams_name', None)
-                        if oams_name:
-                            oams_obj = self.oams.get(f"oams {oams_name}")
-                            if not oams_obj:
-                                oams_obj = self.oams.get(oams_name)
-                            if oams_obj:
-                                lane_index = getattr(old_lane_obj, 'index', None)
-                                if lane_index is not None:
-                                    spool_idx = int(lane_index) - 1
-                                    if spool_idx >= 0:
-                                        hub_values = getattr(oams_obj, 'hub_hes_value', None)
-                                        if hub_values and spool_idx < len(hub_values):
-                                            old_lane_hub_has_filament = bool(hub_values[spool_idx])
-                except Exception as e:
-                    self.logger.debug(f"Failed to read hub sensor for old lane {current_lane_loaded}: {e}")
-
-                # If hub sensor also shows empty, clear loaded_to_hub
-                if not old_lane_hub_has_filament and hasattr(old_lane_obj, 'loaded_to_hub'):
-                    old_lane_obj.loaded_to_hub = False
-                    self.logger.debug(f"Cleared loaded_to_hub flag on old lane {current_lane_loaded} (hub sensor empty)")
-
-        # STEP 2: Update AFC's lane_loaded to point to the correct lane
-        extruder_obj.lane_loaded = lane_to_sync
-
-        # STEP 3: Update new lane state
-        if hasattr(lane_obj_to_sync, 'loaded_to_hub'):
-            lane_obj_to_sync.loaded_to_hub = True
-
-        # Set tool_loaded flag on the new lane
-        # The extruder is pointing to this lane, and hardware shows filament in hub
-        # So the lane is effectively loaded to the tool
-        if hasattr(lane_obj_to_sync, 'tool_loaded'):
-            lane_obj_to_sync.tool_loaded = True
-            self.logger.debug(f"Set tool_loaded flag on new lane {lane_to_sync}")
-
-        # STEP 4: Persist to vars file
-        try:
-            if hasattr(afc, 'save_vars'):
-                afc.save_vars()
-        except Exception as e:
-            self.logger.warning(f"Failed to persist AFC vars after lane sync: {e}")
-
-        # STEP 5: Update lane selection if needed
-        if hasattr(lane_obj_to_sync, 'unit_obj'):
-            unit_obj = lane_obj_to_sync.unit_obj
-            if hasattr(unit_obj, 'select_lane'):
-                try:
-                    unit_obj.select_lane(lane_obj_to_sync, False)
-                except Exception as e:
-                    self.logger.error(f"Failed to select_lane for {lane_to_sync}: {e}")
-
-        # STEP 6: Update virtual tool sensor for OpenAMS units
-        try:
-            unit_obj = getattr(lane_obj_to_sync, 'unit_obj', None)
-            if unit_obj and getattr(unit_obj, 'type', None) == 'OpenAMS':
-                # Sync the virtual tool sensor to reflect the corrected lane state
-                if hasattr(unit_obj, '_sync_virtual_tool_sensor'):
-                    eventtime = self.reactor.monotonic()
-                    unit_obj._sync_virtual_tool_sensor(eventtime, lane_to_sync, force=True)
-                    self.logger.debug(f"Synced virtual tool sensor for {lane_to_sync}")
-        except Exception as e:
-            self.logger.error(f"Failed to sync virtual tool sensor for {lane_to_sync}: {e}")
-
-        self.logger.info(
-            f"Synced AFC lane mismatch: {extruder_name} now loaded with {lane_to_sync} "
-            f"(was {current_lane_loaded}, OAMS hardware hub sensor detected {lane_to_sync})"
-        )
 
     def determine_current_loaded_lane(self, fps_name):
         if fps_name not in self.fpss:
@@ -1974,7 +1704,7 @@ class OAMSManager:
                     # Step 1: Clear hardware errors (this also clears all LED errors)
                     # Note: clear_errors() already loops through all LEDs and clears them
                     oam.clear_errors()
-                    # Force clear current_spool so sync_state_with_afc() doesn't
+                    # Force clear current_spool so determine_state() doesn't
                     # re-write stale lane state from a cancelled load.
                     # determine_state() will re-detect from sensors if truly loaded.
                     oam.current_spool = None
@@ -2031,7 +1761,7 @@ class OAMSManager:
             # This validates that AFC's lane_loaded matches OAMS hardware current_spool
             if ready_oams:
                 try:
-                    self.sync_state_with_afc()
+                    self.determine_state()
                 except Exception as e:
                     restart_monitors = False
                     self.logger.error(f"State sync with AFC failed during OAMSM_CLEAR_ERRORS: {e}")
@@ -4099,65 +3829,9 @@ class OAMSManager:
         fps_state.reset_stuck_spool_state()
         fps_state.reset_clog_tracker()
 
-        # Update virtual tool sensor state after successful load
-        # This ensures the virtual sensor reflects that filament is loaded at the toolhead
-        try:
-            afc = self._get_afc()
-            if afc is not None:
-                lane = afc.lanes.get(lane_name)
-                if lane is not None:
-                    unit_obj = getattr(lane, "unit_obj", None)
-                    if unit_obj is None:
-                        base_unit_name = getattr(lane, "unit", "").split(":")[0] if getattr(lane, "unit", None) else None
-                        units = getattr(afc, "units", {})
-                        unit_obj = units.get(base_unit_name)
-
-                    if unit_obj is not None and hasattr(unit_obj, '_set_virtual_tool_sensor_state'):
-                        eventtime = self.reactor.monotonic()
-                        # Call _set_virtual_tool_sensor_state directly with force=True
-                        # This is the same approach used in SET_LANE_LOADED wrapper
-                        unit_obj._set_virtual_tool_sensor_state(True, eventtime, lane_name, force=True, lane_obj=lane)
-                        self.logger.debug(
-                            f"Updated virtual tool sensor to LOADED for {lane_name} after successful load"
-                        )
-
-                        # Notify AFC that lane is loaded to toolhead
-                        # This calls handle_openams_lane_tool_state which sets extruder.lane_loaded
-                        # Without this, determine_current_loaded_lane() can't detect what's loaded
-                        if AMSRunoutCoordinator is not None:
-                            try:
-                                AMSRunoutCoordinator.notify_lane_tool_state(
-                                    self.printer, oam_name, lane_name,
-                                    loaded=True, spool_index=bay_index, eventtime=eventtime
-                                )
-                                self.logger.debug(f"Notified AFC that lane {lane_name} is loaded to toolhead")
-                            except Exception as e:
-                                self.logger.error(f"Failed to notify AFC that lane {lane_name} loaded: {e}")
-                    else:
-                        self.logger.debug(f"Virtual tool sensor update not available for {lane_name}")
-        except Exception as e:
-            self.logger.warning(f"Failed to update virtual tool sensor for {lane_name} after load")
-
-        # Force-update loaded_to_hub from hardware hub sensor after successful load.
-        # During engagement retries, set_unloaded() clears loaded_to_hub but the hub_changed
-        # event may not re-fire if the hardware sensor didn't change between polling cycles
-        # (edge-triggered polling misses software-only state changes).
-        try:
-            afc = self._get_afc()
-            if afc is not None:
-                lane_obj = afc.lanes.get(lane_name)
-                if lane_obj is not None:
-                    hub_hes_values = getattr(oam, "hub_hes_value", None)
-                    if hub_hes_values is not None and bay_index < len(hub_hes_values):
-                        hub_sensor_state = bool(hub_hes_values[bay_index])
-                        if lane_obj.loaded_to_hub != hub_sensor_state:
-                            lane_obj.loaded_to_hub = hub_sensor_state
-                            self.logger.debug(
-                                f"Force-updated loaded_to_hub={hub_sensor_state} for {lane_name} "
-                                f"from hardware after successful load"
-                            )
-        except Exception as e:
-            self.logger.debug(f"Failed to force-update loaded_to_hub for {lane_name} after load: {e}")
+        # NOTE: AFC state updates (set_tool_loaded, loaded_to_hub, save_vars)
+        # are handled by AFC_OpenAMS.load_sequence() after this method returns.
+        # oams_manager does not write to AFC state — AFC is master control.
 
         # Monitors are already running globally, no need to restart them
         # NOTE: Dock purge pickup and post-load purge extrusion are now handled
