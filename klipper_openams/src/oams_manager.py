@@ -1056,14 +1056,6 @@ class OAMSManager:
         self._last_logged_detected_lane = {}
         self._stuck_spool_print_recovery_callback = None
 
-        # Deprecated: Moonraker status publishing removed — AFC handles this.
-        # Read and discard config so existing configs don't error.
-        config.getfloat("moonraker_status_interval", 5.0, minval=1.0, maxval=120.0)
-        # Deprecated: host/port are now inherited from AFC's moonraker instance.
-        # Kept so existing configs don't error on unknown options.
-        config.get("moonraker_host", "http://localhost")
-        config.getint("moonraker_port", 7125, minval=1, maxval=65535)
-        self._last_status_fingerprint: Optional[str] = None
 
         self._initialize_oams()
 
