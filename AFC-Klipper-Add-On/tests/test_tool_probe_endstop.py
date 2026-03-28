@@ -1,10 +1,10 @@
-"""Tests for tool_probe_endstop.py — probe routing, detection, crash detection."""
+"""Tests for AFC_tool_probe.py — probe routing and detection."""
 
 import sys
 import types
 from unittest.mock import MagicMock, patch
 
-# Mock klipper's probe module before importing tool_probe_endstop
+# Mock klipper's probe module before importing AFC_tool_probe
 _probe_mock = types.ModuleType("extras.probe")
 _probe_mock.ProbeCommandHelper = MagicMock
 _probe_mock.ProbeOffsetsHelper = MagicMock
@@ -14,10 +14,10 @@ _probe_mock.HomingViaProbeHelper = MagicMock
 _probe_mock.ProbeSessionHelper = MagicMock
 sys.modules.setdefault("extras.probe", _probe_mock)
 
-from extras.tool_probe_endstop import (
-    ToolProbeEndstop,
-    ProbeRouter,
-    EndstopRouter,
+from extras.AFC_tool_probe import (
+    AFCToolProbeEndstop as ToolProbeEndstop,
+    _ProbeRouter as ProbeRouter,
+    _EndstopRouter as EndstopRouter,
 )
 from tests.conftest import MockLogger, MockReactor
 
@@ -50,10 +50,6 @@ def _make_endstop(standalone=False):
     obj.active_tool_number = -1
     obj.gcode_macro = MagicMock()
     obj.logger = MockLogger()
-    obj.crash_detection_active = False
-    obj.crash_lasttime = 0.0
-    obj.crash_mintime = 0.5
-    obj.crash_gcode = MagicMock()
     obj.mcu_probe = EndstopRouter(obj.printer)
     obj.probe = ProbeRouter(obj.printer)
     obj.probe_offsets = obj.probe
@@ -65,30 +61,7 @@ def _make_endstop(standalone=False):
     return obj
 
 
-# ── _describe_tool_detection_issue ───────────────────────────────────────────
-
-class TestDescribeToolDetectionIssue:
-    def test_single_candidate_is_ok(self):
-        obj = _make_endstop()
-        tp = _make_tool_probe()
-        result = obj._describe_tool_detection_issue([tp])
-        assert result == "OK"
-
-    def test_no_candidates_all_triggered(self):
-        obj = _make_endstop()
-        result = obj._describe_tool_detection_issue([])
-        assert "All probes triggered" in result
-
-    def test_multiple_candidates_lists_names(self):
-        """Multiple untriggered probes should list their names (not map object)."""
-        obj = _make_endstop()
-        tp0 = _make_tool_probe("probe_T0", 0)
-        tp1 = _make_tool_probe("probe_T1", 1)
-        result = obj._describe_tool_detection_issue([tp0, tp1])
-        # Must contain actual names, not <map object>
-        assert "probe_T0" in result
-        assert "probe_T1" in result
-        assert "map object" not in result
+# ── _describe_tool_detection_issue tests removed — logic is now inline ────────
 
 
 # ── set_active_probe ─────────────────────────────────────────────────────────
@@ -211,69 +184,7 @@ class TestDetectActiveTool:
         assert obj.active_probe is None
 
 
-# ── Crash detection ──────────────────────────────────────────────────────────
-
-class TestCrashDetection:
-    def test_note_probe_triggered_ignores_when_inactive(self):
-        obj = _make_endstop()
-        obj.crash_detection_active = False
-        tp = _make_tool_probe()
-        obj.active_probe = tp
-        obj.note_probe_triggered(tp, 100.0, True)
-        assert obj.crash_lasttime == 0.0
-
-    def test_note_probe_triggered_ignores_wrong_probe(self):
-        obj = _make_endstop()
-        obj.crash_detection_active = True
-        tp0 = _make_tool_probe("probe_T0", 0)
-        tp1 = _make_tool_probe("probe_T1", 1)
-        obj.active_probe = tp0
-        obj.note_probe_triggered(tp1, 100.0, True)
-        assert obj.crash_lasttime == 0.0
-
-    def test_note_probe_triggered_sets_lasttime(self):
-        obj = _make_endstop()
-        obj.crash_detection_active = True
-        tp = _make_tool_probe()
-        obj.active_probe = tp
-        obj.note_probe_triggered(tp, 100.0, True)
-        assert obj.crash_lasttime == 100.0
-
-    def test_note_probe_untriggered_clears_lasttime(self):
-        obj = _make_endstop()
-        obj.crash_detection_active = True
-        tp = _make_tool_probe()
-        obj.active_probe = tp
-        obj.crash_lasttime = 100.0
-        obj.note_probe_triggered(tp, 101.0, False)
-        assert obj.crash_lasttime == 0.0
-
-    def test_delayed_callback_fires_crash(self):
-        """If crash_lasttime matches, delayed callback should fire crash gcode."""
-        obj = _make_endstop()
-        obj.crash_detection_active = True
-        obj.crash_lasttime = 100.0
-        obj._probe_triggered_delayed(100.0)
-        obj.crash_gcode.run_gcode_from_command.assert_called_once()
-        assert obj.crash_detection_active is False
-
-    def test_delayed_callback_cancelled(self):
-        """If crash_lasttime changed, delayed callback should not fire."""
-        obj = _make_endstop()
-        obj.crash_detection_active = True
-        obj.crash_lasttime = 0.0  # Reset (probe was un-triggered)
-        obj._probe_triggered_delayed(100.0)
-        obj.crash_gcode.run_gcode_from_command.assert_not_called()
-        assert obj.crash_detection_active is True
-
-    def test_stop_crash_detection(self):
-        obj = _make_endstop()
-        obj.crash_detection_active = True
-        obj.crash_lasttime = 50.0
-        obj.stop_crash_detection()
-        assert obj.crash_detection_active is False
-        assert obj.crash_lasttime == 0.0
-
+# ── Crash detection tests removed — now in AFC_Toolchanger ───────────────────
 
 # ── get_status ───────────────────────────────────────────────────────────────
 
