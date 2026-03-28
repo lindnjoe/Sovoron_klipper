@@ -406,7 +406,6 @@ class afcACE(afcUnit):
             )
 
         # Hydrate the virtual tool sensor for lanes that were tool-loaded
-        # FPS buffer's advance_state handles toolhead sensor — no virtual sensor needed.
 
         # Start runout detection polling
         self._start_slot_status_monitor()
@@ -1280,17 +1279,13 @@ class afcACE(afcUnit):
     def lane_tool_loaded(self, lane):
         """Set the virtual tool sensor when an ACE lane loads into the toolhead.
 
-        The base class only updates LEDs.  For ACE with a shared AMS virtual
-        pin, the FPS pressure is zero when the ACE motor isn't running, so the
-        virtual sensor must be set explicitly whenever a lane becomes tool-loaded
-        (normal load sequence, SET_LANE_LOADED recovery macro, etc.).
+        The base class only updates LEDs.
         """
         super().lane_tool_loaded(lane)
         extruder = self._fps_extruder
         if extruder is None:
             return
         eventtime = self.afc.reactor.monotonic()
-        # FPS buffer advance_state handles toolhead sensor — no virtual sensor needed
 
     def lane_tool_unloaded(self, lane):
         """Clear the virtual tool sensor when an ACE lane unloads.
@@ -1303,7 +1298,6 @@ class afcACE(afcUnit):
         if extruder is None:
             return
         eventtime = self.afc.reactor.monotonic()
-        # FPS buffer advance_state handles toolhead sensor — no virtual sensor needed
 
     def load_sequence(self, cur_lane, cur_hub, cur_extruder):
         """Load filament from ACE slot into the toolhead.
@@ -2884,7 +2878,7 @@ class afcACE(afcUnit):
                         # lane rather than get_current_lane() which depends
                         # on klipper's active extruder — unreliable during
                         # prep before the toolchanger initializes.
-                        if extruder_obj.lane_loaded == cur_lane.name:
+                        if cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             cur_lane.unit_obj.lane_tool_loaded(cur_lane)
                             cur_lane.status = AFCLaneState.TOOLED
@@ -3224,7 +3218,6 @@ class afcACE(afcUnit):
             # sensor state reflects reality.
             self._fps_latched = False
             self._fps_consecutive_hits = 0
-            # FPS buffer advance_state handles sensor — no virtual sensor clear needed
             # Allow sensor polling to catch up and hub to physically clear
             self.afc.reactor.pause(
                 self.afc.reactor.monotonic() + 3.0
