@@ -42,7 +42,7 @@ except: raise error(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.for
 try: from extras.AFC_stats import AFCStats
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
 
-AFC_VERSION="1.1.0"
+AFC_VERSION="1.1.10"
 
 # Class for holding different states so its clear what all valid states are
 class State:
@@ -511,17 +511,20 @@ class afc:
 
     @property
     def td1_present(self):
-        present = self._td1_present
-        current_time = self.reactor.monotonic()
-        if (self.printer.state_message == 'Printer is ready'
-                and self.moonraker is not None
-                and (current_time - self._last_td1_query) > 30):
-            if not self.function.is_printing(check_movement=True):
-                self._last_td1_query = current_time
-                present = self.moonraker.check_for_td1()[1]
-                self._td1_present = present
+        """Return cached TD1 presence, refreshing at most every 30 seconds.
 
-        return present
+        Previously this called moonraker.check_for_td1() on every status poll
+        (up to 4 times/sec), which consumed ~25% CPU on low-end boards.
+        """
+        now = self.reactor.monotonic()
+        if (self.printer.state_message == 'Printer is ready'
+            and self.moonraker is not None
+            and not self.function.is_printing(check_movement=True)
+            and (now - self._last_td1_query) >= 30.0):
+            self._last_td1_query = now
+            self._td1_present = self.moonraker.check_for_td1()[1]
+
+        return self._td1_present
 
     def _reset_file_callback(self):
         """
