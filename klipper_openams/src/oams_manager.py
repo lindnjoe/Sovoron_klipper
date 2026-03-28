@@ -1314,11 +1314,6 @@ class OAMSManager:
         self.determine_state()
 
         try:
-            self._sync_virtual_tool_sensors()
-        except Exception as e:
-            self.logger.error(f"Failed to sync virtual tool sensors during startup: {e}")
-
-        try:
             self._ensure_followers_for_loaded_hubs()
         except Exception as e:
             self.logger.error(f"Failed to enable followers for loaded hubs during startup: {e}")
@@ -1704,15 +1699,6 @@ class OAMSManager:
             # 3. Loading from file would overwrite correct state with potentially stale data
             # The hardware sensors are the authoritative source, not the saved file.
 
-            # Sync virtual tool sensors to match the refreshed lane state.
-            try:
-                self._sync_virtual_tool_sensors()
-            except Exception as e:
-                restart_monitors = False
-                self.logger.error(f"Failed to sync virtual tool sensors during OAMSM_CLEAR_ERRORS: {e}")
-                import traceback
-                self.logger.debug(f"Traceback: {traceback.format_exc()}")
-
             # Restore normal LED states based on NOW-CORRECT hardware-reconciled state
             # This happens AFTER state sync so LEDs reflect actual hardware state, not stale AFC state
             try:
@@ -1871,41 +1857,6 @@ class OAMSManager:
         except Exception as e:
             self.logger.debug(f"Failed to read AFC.var.unit from file: {e}")
             return None
-
-    def _sync_virtual_tool_sensors(self, gcmd: Optional[Any] = None):
-        """Sync AFC virtual tool sensors based on current lane state."""
-        afc = self._get_afc()
-        if afc is None:
-            if gcmd is not None:
-                gcmd.respond_info("AFC: Not found!")
-            return
-
-        synced_count = 0
-        try:
-            units = getattr(afc, 'units', {})
-            eventtime = self.reactor.monotonic()
-
-            for unit_name, unit_obj in units.items():
-                # Check if this is an OpenAMS unit with virtual sensor sync capability
-                if hasattr(unit_obj, '_sync_virtual_tool_sensor'):
-                    try:
-                        # Force update to ensure sensor state is corrected after reboot
-                        unit_obj._sync_virtual_tool_sensor(eventtime, force=True)
-                        synced_count += 1
-                    except Exception as e:
-                        self.logger.error(f"Failed to sync virtual tool sensor for unit {unit_name}: {e}")
-                        if gcmd is not None:
-                            gcmd.respond_info(f"  Warning: Failed to sync virtual sensor for {unit_name}")
-
-            if gcmd is not None:
-                if synced_count > 0:
-                    gcmd.respond_info(f"Successfully synced {synced_count} virtual tool sensor(s)")
-                else:
-                    gcmd.respond_info("No OpenAMS units found with virtual sensors to sync")
-        except Exception as e:
-            self.logger.error(f"Failed to sync virtual tool sensors: {e}")
-            if gcmd is not None:
-                gcmd.respond_info("  Error during virtual sensor sync - check klippy.log")
 
     def _get_lane_snapshot(self, lane_name: Optional[str], unit_name: Optional[str] = None):
         if not lane_name:
@@ -2142,7 +2093,6 @@ class OAMSManager:
         # Sync virtual tool sensors based on which lanes are actually loaded
         # This fixes virtual sensor state after reboot (e.g., extruder4 showing filament when empty)
         gcmd.respond_info("\n=== Syncing Virtual Tool Sensors ===")
-        self._sync_virtual_tool_sensors(gcmd)
 
     cmd_STATUS_JSON_help = "Return OAMS manager status as JSON for scripts and API bridges"
     def cmd_STATUS_JSON(self, gcmd):
