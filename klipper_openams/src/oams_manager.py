@@ -3450,56 +3450,9 @@ class OAMSManager:
 
         if success:
             since_time = self.reactor.monotonic()
-
-            # Notify AFC that lane is unloaded from toolhead using the normal AFC process
-            # This triggers AFC's _apply_lane_sensor_state() which handles everything properly:
-            # - Unsyncs lane from extruder
-            # - Handles shared prep/load lanes via _update_shared_lane()
-            # - Updates virtual sensor via _mirror_lane_to_virtual_sensor()
-            # - Calls lane.unit_obj.lane_unloaded() for proper cleanup
-            #
-            # Runout monitors keep their own cached spool index and lane name,
-            # so same-FPS runout coasting/reload logic remains unaffected.
-            lane_notified = False
-            if lane_name and AMSRunoutCoordinator is not None:
-                try:
-                    AMSRunoutCoordinator.notify_lane_tool_state(
-                        self.printer,
-                        fps_state.current_oams or oams.name,
-                        lane_name,
-                        loaded=False,
-                        spool_index=spool_index,
-                        eventtime=since_time
-                    )
-                    lane_notified = True
-                    self.logger.debug(f"Notified AFC coordinator that lane {lane_name} unloaded from toolhead")
-                except Exception as e:
-                    self.logger.error(f"Failed to notify AFC that lane {lane_name} unloaded on {fps_name}: {e}")
-
-            # Fallback: If lane_name wasn't available above, try to resolve it from location
-            # This ensures AFC tracking clears even if lane_name was None
-            if not lane_notified:
-                afc = self._get_afc()
-                if afc is not None and AMSRunoutCoordinator is not None:
-                    try:
-                        afc_lane_name = self._lane_by_location.get((fps_state.current_oams, spool_index)) if spool_index is not None else None
-                        if afc_lane_name:
-                            lane_obj = afc.lanes.get(afc_lane_name)
-                            if lane_obj is not None:
-                                try:
-                                    AMSRunoutCoordinator.notify_lane_tool_state(
-                                        self.printer,
-                                        fps_state.current_oams,
-                                        afc_lane_name,
-                                        loaded=False,
-                                        spool_index=spool_index,
-                                        eventtime=since_time
-                                    )
-                                    self.logger.debug(f"Notified AFC coordinator (via location lookup) that lane {afc_lane_name} unloaded")
-                                except Exception as e:
-                                    self.logger.error(f"Failed to notify AFC coordinator about lane {afc_lane_name} unload: {e}")
-                    except Exception as e:
-                        self.logger.error(f"Failed to clear AFC tool tracking during unload cleanup for {fps_name}: {e}")
+            # AFC already knows this lane is unloaded — unload_sequence() set
+            # the lane state before calling us. No need to notify via
+            # AMSRunoutCoordinator; AFC owns the state.
 
             # Clear LED error state if stuck spool was active before resetting state
             if fps_state.stuck_spool.active and oams is not None and spool_index is not None:
