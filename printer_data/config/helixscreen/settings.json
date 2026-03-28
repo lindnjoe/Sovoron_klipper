@@ -46,6 +46,7 @@
   "motion": {
     "jog_mode": 1
   },
+  "plugin_install_declined": true,
   "printer": {
     "leds": {
       "startup_brightness": null
@@ -141,7 +142,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-28T18:41:47Z"
+          "timestamp": "2026-03-28T19:02:39Z"
         },
         "optional": []
       },
