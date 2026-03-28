@@ -1097,11 +1097,17 @@ class afcAMS(afcUnit):
         if self._monitor is not None:
             self._monitor.stop()
 
+        # Set follower reverse FIRST so it assists the retract
+        if self._follower is not None:
+            fps_state = self._get_monitor_state()
+            if fps_state:
+                self._follower.set_follower_state(fps_state, oams, 1, 0, "before unload", force=True)
+
         # Retract filament from extruder gears before OAMS hardware unload.
-        # Without this, the OAMS tries to pull filament that's gripped by
-        # the extruder gears, causing timeout or failure.
+        # Follower is already reversed so it pulls along with the retract.
         unload_length, unload_speed = self.get_unload_params(cur_lane.name)
         if unload_length and unload_length > 0:
+            unload_length += 10.0  # Extra margin to fully clear extruder gears
             retract_speed = unload_speed if unload_speed else 25.0 * 60.0
             self.logger.debug(
                 f"Retracting {unload_length:.1f}mm from extruder before OAMS unload")
@@ -1109,12 +1115,6 @@ class afcAMS(afcUnit):
                 self._oams_extrude(-unload_length, retract_speed, "pre_oams_unload_retract")
             except Exception as e:
                 self.logger.warning(f"Extruder retract before OAMS unload failed: {e}")
-
-        # Enable follower reverse before unload
-        if self._follower is not None:
-            fps_state = self._get_monitor_state()
-            if fps_state:
-                self._follower.set_follower_state(fps_state, oams, 1, 0, "before unload", force=True)
 
         try:
             result = oams.unload_spool_with_retry()
@@ -1532,6 +1532,8 @@ class afcAMS(afcUnit):
             return False
 
         cur_lane.set_tool_loaded()
+        # Enable FPS buffer for Mainsail display and fault detection
+        cur_lane.enable_buffer(disable_fault=True)
         afc.save_vars()
         return True
 
