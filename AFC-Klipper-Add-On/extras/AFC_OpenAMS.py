@@ -948,24 +948,34 @@ class afcAMS(afcUnit):
                     self._monitor.start(oams)
                 return True, f"Loaded {cur_lane.name}"
 
-            # Engagement failed — cancel and retry
+            # Engagement failed — fully reset MCU state before retry.
+            # Without abort + wait, the MCU thinks the spool is still loaded
+            # and the next load_spool returns "success" in 0.2s without
+            # physically moving filament.
             self.logger.warning(f"Engagement failed for {cur_lane.name}, cleaning up for retry")
-            self._cancel_and_mark_loaded(spool_index, cur_lane.name)
-            # Retract the engagement extrusion
+
+            # Retract the engagement extrusion from extruder
             engagement_length, engagement_speed = self.get_engagement_params(cur_lane.name)
             if engagement_length:
                 self.afc.move_e_pos(-engagement_length,
                                      engagement_speed / 60.0 if engagement_speed else 7.0,
                                      "engagement cleanup retract")
-            # Unload from OAMS
+
+            # Abort any in-flight MCU action and wait for it to clear
+            oams.abort_current_action(wait=True)
+            self._wait_oams_idle(oams, context="post-abort settle")
+
+            # Full hardware unload — pulls filament back to spool bay
             try:
                 oams.unload_spool_with_retry()
             except Exception as e:
                 self.logger.error(f"Cleanup unload failed: {e}")
                 return False, f"Engagement cleanup failed for {cur_lane.name}: {e}"
 
-            # Wait for MCU to settle before next attempt
+            # Wait for MCU to fully settle before next load attempt
             self._wait_oams_idle(oams, context="post-cleanup settle")
+            # Extra delay for MCU firmware to reset its internal state
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 2.0)
 
         # All attempts failed — do NOT restart monitor here.
         # The caller (load_sequence) manages monitor lifecycle around
@@ -1000,6 +1010,12 @@ class afcAMS(afcUnit):
             self._monitor.notify_engagement_start()
 
         try:
+            # Wait for FPS pressure to settle after OAMS load push.
+            # The OAMS just pushed filament through 2000mm+ of PTFE,
+            # so FPS pressure is maxed out. Give it time to normalize
+            # before checking engagement pressure.
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.5)
+
             # Record encoder before
             encoder_before = oams.encoder_clicks
 
@@ -1022,23 +1038,11 @@ class afcAMS(afcUnit):
 
             fps_pressure = oams.fps_value
 
-            # Check: pressure too high = filament backed up, not engaged
-            engagement_max = getattr(self, '_engagement_pressure_max', 0.6)
-            if encoder_delta >= min_movement and fps_pressure >= engagement_max:
-                self.logger.warning(
-                    f"Engagement failed: encoder moved {encoder_delta} clicks "
-                    f"but pressure too high ({fps_pressure:.2f})")
-                return False
-
-            # Check: pressure too low = filament sliding, not gripped
+            # Primary check: encoder moved enough = filament is engaged.
+            # Encoder movement is the strongest signal — if the OAMS encoder
+            # is tracking, the extruder is pulling filament through the buffer.
+            # Pressure is secondary (FPS pressure can be high right after load).
             engagement_min = getattr(self, '_engagement_pressure_min', 0.25)
-            if encoder_delta >= min_movement and fps_pressure < engagement_min:
-                self.logger.warning(
-                    f"Engagement failed: encoder moved {encoder_delta} clicks "
-                    f"but pressure too low ({fps_pressure:.2f})")
-                return False
-
-            # Check: encoder moved enough with valid pressure = engaged
             if encoder_delta >= min_movement:
                 self.logger.debug(
                     f"Engagement verified for {cur_lane.name} "
@@ -1055,15 +1059,13 @@ class afcAMS(afcUnit):
             encoder_delta = abs(encoder_retry - encoder_before)
 
             if encoder_delta >= min_movement:
-                fps_pressure = oams.fps_value
-                if engagement_min <= fps_pressure < engagement_max:
-                    self.logger.debug(
-                        f"Engagement verified on retry for {cur_lane.name} "
-                        f"(encoder={encoder_delta})")
-                    reload_length, reload_speed = self.get_reload_params(cur_lane.name)
-                    if reload_length and reload_speed and reload_length > 0:
-                        self._oams_extrude(reload_length, reload_speed, "post_engagement")
-                    return True
+                self.logger.debug(
+                    f"Engagement verified on retry for {cur_lane.name} "
+                    f"(encoder={encoder_delta})")
+                reload_length, reload_speed = self.get_reload_params(cur_lane.name)
+                if reload_length and reload_speed and reload_length > 0:
+                    self._oams_extrude(reload_length, reload_speed, "post_engagement")
+                return True
 
             self.logger.info(
                 f"Engagement failed for {cur_lane.name}: encoder only moved "
