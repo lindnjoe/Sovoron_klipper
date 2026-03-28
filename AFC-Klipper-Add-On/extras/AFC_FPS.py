@@ -316,11 +316,11 @@ class AFCFPSBuffer:
     def extruder(self):
         """Return the active toolhead extruder.
 
-        The native fps.py stored a direct extruder reference.  oams_manager
-        accesses ``fps.extruder.last_position`` in many places for runout
-        coasting and clog detection.  This property provides the same
-        interface without requiring an extruder config option — it simply
-        returns whatever extruder is currently active on the toolhead.
+        The native fps.py stored a direct extruder reference.  OAMSMonitor
+        accesses ``fps.extruder.last_position`` for clog detection.
+        This property provides the same interface without requiring an
+        extruder config option — it simply returns whatever extruder is
+        currently active on the toolhead.
         """
         if self.toolhead is not None:
             return self.toolhead.get_extruder()

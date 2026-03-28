@@ -270,11 +270,11 @@ class AFCFPSBuffer:
     def extruder(self):
         """Return the active toolhead extruder.
 
-        The native fps.py stored a direct extruder reference.  oams_manager
-        accesses ``fps.extruder.last_position`` in many places for runout
-        coasting and clog detection.  This property provides the same
-        interface without requiring an extruder config option — it simply
-        returns whatever extruder is currently active on the toolhead.
+        The native fps.py stored a direct extruder reference.  OAMSMonitor
+        accesses ``fps.extruder.last_position`` for clog detection.
+        This property provides the same interface without requiring an
+        extruder config option — it simply returns whatever extruder is
+        currently active on the toolhead.
         """
         if self.toolhead is not None:
             return self.toolhead.get_extruder()
@@ -397,7 +397,7 @@ class AFCFPSBuffer:
 
         # Start fault detection if configured — but only for stepper-based
         # units.  OpenAMS (and similar non-stepper units) have their own
-        # clog/runout detection in oams_manager; running AFC's extruder-
+        # clog/runout detection in OAMSMonitor; running AFC's extruder-
         # position-based fault timer on those lanes just causes errors.
         if (self.fault_detection_enabled()
                 and getattr(lane, 'extruder_stepper', None) is not None):
