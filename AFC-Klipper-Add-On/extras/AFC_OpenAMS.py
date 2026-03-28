@@ -1564,10 +1564,14 @@ class afcAMS(afcUnit):
         """No-op for OpenAMS: hardware handles hub loading internally."""
 
     def _get_fps_id_for_lane(self, lane_name: str) -> Optional[str]:
-        oams_manager = self._get_oams_manager()
-        if oams_manager is None:
+        """Get FPS buffer name for a lane via AFC's extruder config."""
+        lane = self.afc.lanes.get(lane_name)
+        if lane is None:
             return None
-        return oams_manager.get_fps_for_afc_lane(lane_name)
+        extruder = getattr(lane, 'extruder_obj', None)
+        if extruder is None:
+            return None
+        return getattr(extruder, 'buffer_name', None)
 
     def _format_openams_calibration_command(self, base_command, lane):
         if base_command not in {"OAMS_CALIBRATE_HUB_HES", "OAMS_CALIBRATE_PTFE_LENGTH"}:
@@ -2618,17 +2622,11 @@ class afcAMS(afcUnit):
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
         # Firmware considers this spool loaded after cancel
         self.oams.current_spool = spool_index
-        # Tell oams_manager this FPS is now LOADED (FPSLoadState.LOADED = 1)
-        try:
-            oams_manager = self._get_oams_manager()
-            if oams_manager is not None and lane_name is not None:
-                fps_name = oams_manager.get_fps_for_afc_lane(lane_name)
-                if fps_name:
-                    fps_state = oams_manager.current_state.fps_state.get(fps_name)
-                    if fps_state is not None:
-                        fps_state.state = 1  # FPSLoadState.LOADED
-        except Exception:
-            pass
+        # Update monitor state if available
+        monitor_state = self._get_monitor_state()
+        if monitor_state is not None:
+            from extras.AFC_OpenAMS_monitor import FPSLoadState
+            monitor_state.state = FPSLoadState.LOADED
 
     def _cmd_test_cancel(self, gcmd):
         """Test: load a lane, cancel after 500mm, unload, then reload."""
