@@ -104,7 +104,7 @@ class afc_hub:
         self.printer.send_event("afc_hub:register_macros", self)
 
         if self.switch_pin.lower() == "virtual":
-            msg = "The following lanes need load sensors for virtual hub sensor to work correctly:"
+            msg = "The following lanes need load sensors or virtual hub sensor to work correctly:"
             report_error = False
             for lane in self.lanes.values():
                 if lane.load is None:
