@@ -741,11 +741,11 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
     def unload_spool(self):
         self.action_status = OAMSStatus.UNLOADING
         self.oams_unload_spool_cmd.send()
-        timeout = self.reactor.monotonic() + 45.0
+        timeout = self.reactor.monotonic() + 40.0
 
         while self.action_status is not None:
             if self.reactor.monotonic() > timeout:
-                self.logger.error(f"OAMS[{self.oams_idx}]: Unload operation timed out after 45 seconds")
+                self.logger.error(f"OAMS[{self.oams_idx}]: Unload operation timed out after 40 seconds")
                 self.action_status      = None
                 self.action_status_code = OAMSOpCode.ERROR_UNSPECIFIED
                 return False, "OAMS unload operation timed out (MCU unresponsive)"
