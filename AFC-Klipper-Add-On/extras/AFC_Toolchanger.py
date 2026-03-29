@@ -19,14 +19,18 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from configfile import ConfigWrapper
     from gcode import GCodeCommand
-    from extras.AFC_lane import AFCLane
+    from extras.AFC_lane import AFCLane, MoveDirection, AFCHomingPoints
     from extras.AFC_functions import afcFunction
+    from extras.AFC_stepper import AFCExtruderStepper
 
 try: from extras.AFC_utils import ERROR_STR
 except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
 
 try: from extras.AFC_unit import afcUnit
 except: raise error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
+
+try: from extras.AFC_lane import AFCMoveWarning, SpeedMode, AssistActive
+except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
 try: from extras.AFC import State
 except: raise error(ERROR_STR.format(import_lib="AFC", trace=traceback.format_exc()))
@@ -61,6 +65,39 @@ class AfcToolchanger(afcUnit):
         self.logger.raw( '{lane_name} tool cmd: {tcmd:3} {msg}'.format(lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))
         cur_lane.set_afc_prep_done()
         return True
+
+    def move_to_hub(self, lane: AFCLane, dist: float,
+                    dir: MoveDirection, use_homing: bool=True,
+                    speed_mode: SpeedMode=SpeedMode.HUB,
+                    assist_active: AssistActive=AssistActive.DYNAMIC
+                ) -> tuple[bool, float|int, AFCMoveWarning]:
+        """
+        Overriding method from AFC_unit
+
+        return: True, 0, AFCMoveWarning.NONE
+        """
+        return True, 0, AFCMoveWarning.NONE
+
+    def move_to_load(self, lane: AFCLane, dist: float,
+                     dir: MoveDirection, use_homing: bool=True,
+                     speed_mode: SpeedMode=SpeedMode.LONG
+                ) -> tuple[bool, float|int, AFCMoveWarning]:
+        """
+        Overriding method from AFC_unit
+
+        return: True, 0, AFCMoveWarning.NONE
+        """
+        return True, 0, AFCMoveWarning.NONE
+
+    def load_then_home(self, lane: AFCLane|AFCExtruderStepper, distance: float,
+                       assist_active: AssistActive, endstop: AFCHomingPoints
+                    ) -> tuple[bool, float|int, AFCMoveWarning]:
+        """
+        Overriding method from AFC_unit
+
+        return: True, 0, AFCMoveWarning.NONE
+        """
+        return True, 0, AFCMoveWarning.NONE
 
     def _increase_unselect(self):
         """

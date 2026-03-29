@@ -882,7 +882,10 @@ class AFCLane:
                 self.move_advanced(distance, speed_mode, assist_active )
                 return True, 0, warn
         else:
-            return False, 0, AFCMoveWarning.ERROR
+            if self.extruder_obj.is_standalone():
+                return True, 0, AFCMoveWarning.NONE
+            else:
+                return False, 0, AFCMoveWarning.ERROR
 
 
     def move_advanced(self, distance, speed_mode: SpeedMode, assist_active: AssistActive = AssistActive.NO):
@@ -907,19 +910,6 @@ class AFCLane:
             now load once filament is inserted.
         """
         self._afc_prep_done = True
-
-    def _handle_auto_spool_switch(self):
-        """
-        Handle automatic spool switch triggered by weight threshold.
-        Called via reactor.register_callback from update_weight_callback.
-        """
-        if self.afc.error_state or not self.afc.function.is_printing():
-            return
-
-        if self.runout_lane is not None:
-            self._perform_infinite_runout()
-        else:
-            self._perform_pause_runout()
 
     def _perform_infinite_runout(self):
         """
@@ -991,6 +981,19 @@ class AFCLane:
         msg += "\nPlease manually load next spool into toolhead and then hit resume to continue."
         self.unit_obj.lane_not_ready(self)
         self.afc.error.AFC_error(msg)
+
+    def _handle_auto_spool_switch(self):
+        """
+        Handle automatic spool switch triggered by weight threshold.
+        Called via reactor.register_callback from update_weight_callback.
+        """
+        if self.afc.error_state or not self.afc.function.is_printing():
+            return
+
+        if self.runout_lane is not None:
+            self._perform_infinite_runout()
+        else:
+            self._perform_pause_runout()
 
     def _prep_capture_td1(self):
         """
@@ -1354,13 +1357,6 @@ class AFCLane:
             self.update_remaining_weight(delta_length)
             self.past_extruder_position = extruder_pos
 
-            # self.logger.debug(f"{self.name} Weight Timer Callback: New weight {self.weight}")
-
-            # Save vars every 2 minutes
-            if self.save_counter > 120/self.UPDATE_WEIGHT_DELAY:
-                self.afc.save_vars()
-                self.save_counter = 0
-
             # Check if weight-based auto spool switch should trigger
             if (self.afc.auto_spool_switch
                 and not self.auto_switch_triggered
@@ -1376,6 +1372,13 @@ class AFCLane:
                         self.name, self.weight, self.afc.auto_spool_switch_threshold))
                 self.reactor.register_callback(
                     lambda et: self._handle_auto_spool_switch())
+
+            # self.logger.debug(f"{self.name} Weight Timer Callback: New weight {self.weight}")
+
+            # Save vars every 2 minutes
+            if self.save_counter > 120/self.UPDATE_WEIGHT_DELAY:
+                self.afc.save_vars()
+                self.save_counter = 0
 
         return self.reactor.monotonic() + self.UPDATE_WEIGHT_DELAY
 

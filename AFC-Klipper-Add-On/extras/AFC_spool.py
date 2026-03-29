@@ -154,11 +154,11 @@ class AFCSpool:
         cur_lane = self.afc.lanes[lane]
         cur_lane.color = '#{}'.format(color.replace('#',''))
         cur_lane.send_lane_data()
-        self.afc.save_vars()
         # Refresh LED only if filament is loaded — empty lanes keep their state color
         if cur_lane.load_state and cur_lane.unit in self.afc.units:
             unit = cur_lane.unit_obj
             self.afc.function.afc_led(unit._get_lane_color(cur_lane, cur_lane.led_ready), cur_lane.led_index)
+        self.afc.save_vars()
 
     cmd_SET_WEIGHT_help = "Sets filaments weight for a lane"
     def cmd_SET_WEIGHT(self, gcmd):
@@ -350,6 +350,7 @@ class AFCSpool:
                 try:
                     result = self.afc.moonraker.get_spool(SpoolID)
                     cur_lane.spool_id = SpoolID
+                    cur_lane.auto_switch_triggered = False
 
                     cur_lane.material           = self._get_filament_values(result['filament'], 'material')
                     if not self.afc.ignore_spoolman_material_temps:
