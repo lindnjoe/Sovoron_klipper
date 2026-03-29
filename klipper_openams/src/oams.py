@@ -425,6 +425,10 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                 )
                 self.reactor.pause(self.reactor.monotonic() + delay)
 
+                # Wait for MCU to finish any in-flight action before retrying
+                self.abort_current_action(wait=True)
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
+
             retry.count = retry_count + 1
             retry.last_attempt = self.reactor.monotonic()
 
@@ -503,6 +507,13 @@ OAMS[%s]: current_spool=%s fps_value=%s f1s_hes_value_0=%d f1s_hes_value_1=%d f1
                     f"OAMS[{self.oams_idx}]: Unload retry {self._unload_retry_count + 1}/{retry_limit}, waiting {delay:.1f}s"
                 )
                 self.reactor.pause(self.reactor.monotonic() + delay)
+
+                # Wait for MCU to finish any in-flight action before retrying.
+                # After a timeout, the MCU may still be processing — sending
+                # another command immediately causes "OAMS is busy".
+                self.abort_current_action(wait=True)
+                self.reactor.pause(self.reactor.monotonic() + 1.0)
+
                 try:
                     gcode = self._cached_gcode
                     if gcode is None:
