@@ -702,6 +702,7 @@ class afcAMS(afcUnit):
         self.clog_sensitivity = config.get("clog_sensitivity", "medium").lower()
 
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
+        self.printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
 
         # Lane registry integration
         self.registry = None
@@ -1139,21 +1140,16 @@ class afcAMS(afcUnit):
             # Wait for MCU to fully settle after unload
             self._wait_oams_idle(oams, context="post-unload settle")
 
-            # Notify monitor of unload completion and restart
+            # Notify monitor of unload completion — do NOT restart.
+            # No filament is loaded after unload, so monitoring is pointless
+            # and could cause false detections.
             if self._monitor is not None:
                 self._monitor.notify_unload_complete()
-                # Only restart monitor if print is not paused/errored
-                if not self.afc.function.is_paused() and not getattr(self.afc.error, 'error_state', False):
-                    self._monitor.start(oams)
             if success:
                 return True, f"Unloaded {cur_lane.name}"
             msg = result[1] if isinstance(result, tuple) and len(result) > 1 else f"OAMS unload failed for {cur_lane.name}"
             return False, msg
         except Exception as e:
-            # Resume monitor even on failure (if not paused)
-            if self._monitor is not None:
-                if not self.afc.function.is_paused():
-                    self._monitor.start(oams)
             return False, f"OAMS unload error for {cur_lane.name}: {e}"
 
     def _get_monitor_state(self):
@@ -1194,6 +1190,10 @@ class afcAMS(afcUnit):
                     on_clog=self._on_clog_detected,
                     on_stuck_cleared=self._on_stuck_spool_cleared,
                     clog_sensitivity=self.clog_sensitivity,
+                    is_printing_fn=lambda: self.afc.function.in_print(),
+                    is_lane_loaded_fn=lambda: any(
+                        getattr(l, 'tool_loaded', False)
+                        for l in self.lanes.values()),
                 )
                 # Apply config thresholds
                 self._monitor.stuck_pressure_low = self.stuck_spool_pressure_threshold
@@ -1256,6 +1256,11 @@ class afcAMS(afcUnit):
             self._follower.clear_error_led(
                 self.oams, self.oams_name, st.current_spool_idx,
                 "stuck spool cleared")
+
+    def _handle_disconnect(self):
+        """Stop monitor on klipper disconnect/shutdown."""
+        if self._monitor is not None:
+            self._monitor.stop()
 
     # ---- Parameter getters (AFC owns extruder config) ----
 
@@ -1544,10 +1549,9 @@ class afcAMS(afcUnit):
                     self.logger.info("OAMS dock purge: picking up tool after load failure")
                 self._dock_purge_pickup()
                 afc.afcDeltaTime.log_with_time("OAMS: After dock purge pickup")
-                # Resume monitor after dock purge is fully complete
-                if self._monitor is not None and self.oams is not None:
-                    if not self.afc.function.is_paused() and not getattr(self.afc.error, 'error_state', False):
-                        self._monitor.start(self.oams)
+                # Monitor was started inside _oams_load on success (with
+                # notify_load_complete). Don't restart here — on failure
+                # no filament is loaded so monitoring would be false.
 
         if not cur_lane.get_toolhead_pre_sensor_state() and not cur_lane.extruder_obj.on_shuttle():
             message = (
