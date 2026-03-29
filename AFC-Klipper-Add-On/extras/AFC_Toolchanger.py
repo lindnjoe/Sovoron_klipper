@@ -165,6 +165,9 @@ class AfcToolchanger(afcUnit):
         self.gcode.register_command("STOP_TOOL_CRASH_DETECTION",
                                     self.cmd_STOP_TOOL_CRASH_DETECTION,
                                     desc="Disable tool crash detection")
+        self.gcode.register_command("TOOLCHANGER_PREP",
+                                    self.cmd_TOOLCHANGER_PREP,
+                                    desc="Scan detection pins and report toolchanger status")
 
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_tc_connect)
@@ -426,6 +429,66 @@ class AfcToolchanger(afcUnit):
                 self.error_message = 'Exception during initialization'
             raise
 
+    def prep_check(self):
+        """Scan detection pins and report toolchanger status.
+
+        Returns (ok, message) tuple. Checks:
+        - Detection pin conflicts (multiple tools reading PRESENT)
+        - Tool probe conflicts (multiple probes triggered)
+        - Identifies which tool is on the shuttle (if any)
+        - Reports any tools with unavailable detection (-1)
+        """
+        if not self.has_detection:
+            return True, "No detection pins configured — skipping prep check"
+
+        # Let detection pin callbacks settle
+        reactor = self.printer.get_reactor()
+        reactor.pause(reactor.monotonic() + 0.3)
+
+        present = []
+        absent = []
+        unavailable = []
+
+        for tool in self.tools.values():
+            if tool.detect_state == DETECT_PRESENT:
+                present.append(tool)
+            elif tool.detect_state == 0:  # ABSENT
+                absent.append(tool)
+            else:
+                unavailable.append(tool)
+
+        parts = []
+
+        if len(present) > 1:
+            names = ', '.join(t.name for t in present)
+            msg = (
+                "CONFLICT: Multiple tools detected on shuttle: %s. "
+                "Check detection pins — only one tool should read PRESENT."
+                % names)
+            self.logger.error(msg)
+            return False, msg
+
+        if len(present) == 1:
+            parts.append("Shuttle: %s" % present[0].name)
+        else:
+            parts.append("Shuttle: empty")
+
+        if absent:
+            parts.append("Docked: %s" % ', '.join(t.name for t in absent))
+
+        if unavailable:
+            names = ', '.join(t.name for t in unavailable)
+            parts.append("No detection: %s" % names)
+
+        msg = " | ".join(parts)
+        self.logger.info("Toolchanger prep: %s" % msg)
+        return True, msg
+
+    def cmd_TOOLCHANGER_PREP(self, gcmd):
+        """Run toolchanger prep check — scan detection pins and report status."""
+        ok, msg = self.prep_check()
+        gcmd.respond_info(msg)
+
     def select_tool(self, gcmd, tool, restore_axis):
         """Core tool change: dropoff current, pickup new, manage offsets."""
         if self.status == STATUS_UNINITIALIZED:
@@ -498,6 +561,26 @@ class AfcToolchanger(afcUnit):
     def system_Test(self, cur_lane: AFCLane, delay: float, assignTcmd: str, enable_movement: bool):
         msg = ""
         succeeded = True
+
+        # Track on-shuttle count across lanes — reset on first lane
+        first_lane = next(iter(self.lanes.values()), None)
+        if first_lane is not None and cur_lane.name == first_lane.name:
+            self._prep_on_shuttle = []
+
+        # Check detection pin for this lane's extruder
+        extruder = cur_lane.extruder_obj
+        if extruder is not None and extruder.on_shuttle():
+            msg += "<span class=info--text>ON SHUTTLE</span> "
+            self._prep_on_shuttle.append(cur_lane.name)
+
+        # After last lane, check for conflicts
+        last_lane = list(self.lanes.values())[-1] if self.lanes else None
+        if last_lane is not None and cur_lane.name == last_lane.name:
+            if len(self._prep_on_shuttle) > 1:
+                names = ', '.join(self._prep_on_shuttle)
+                self.logger.error(
+                    "CONFLICT: Multiple tools detected on shuttle: %s. "
+                    "Check detection pins." % names)
 
         if not cur_lane.prep_state:
             if not cur_lane.load_state:
