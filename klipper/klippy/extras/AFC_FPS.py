@@ -130,7 +130,8 @@ class AFCFPSBuffer:
         self.current_lane: Optional[AFCLane | AFCExtruderStepper] = None
         self.advance_state = False
         self.trailing_state = False
-        self._advance_latched = False  # Latch: once advance triggers, stays True until cleared
+        self._advance_latched = False
+        self._latch_enabled = False  # Only latch during active loads
         self.toolhead = None  # Set in _handle_ready
 
         self.debug = config.getboolean("debug", False)
@@ -384,12 +385,12 @@ class AFCFPSBuffer:
             if self.smoothed_fps > self.set_point + half_db:
                 self.last_state = ADVANCING_STATE_NAME
                 self.advance_state = True
-                self._advance_latched = True  # Latch on first trigger
+                if self._latch_enabled:
+                    self._advance_latched = True
                 self.trailing_state = False
             elif self._advance_latched:
-                # Latched: keep advance_state True even if pressure drops
-                # briefly (e.g. ACE pauses between motor pulses). The latch
-                # is cleared by disable_buffer() or clear_advance_latch().
+                # Latched during load: keep advance_state True even if
+                # pressure drops briefly between ACE motor pulses.
                 self.advance_state = True
             elif self.smoothed_fps < self.set_point - half_db:
                 self.last_state = TRAILING_STATE_NAME
@@ -507,10 +508,19 @@ class AFCFPSBuffer:
     # ------------------------------------------------------------------
     # Buffer enable / disable  (interface expected by AFCLane)
     # ------------------------------------------------------------------
-    def clear_advance_latch(self):
-        """Clear the advance latch so advance_state tracks real-time pressure again."""
+    def enable_advance_latch(self):
+        """Enable latching so advance_state stays True once triggered.
+
+        Call before a load sequence. The latch prevents brief pressure
+        drops between ACE motor pulses from clearing the sensor state.
+        """
+        self._latch_enabled = True
         self._advance_latched = False
-        self.advance_state = False
+
+    def clear_advance_latch(self):
+        """Disable latching and reset advance_state to real-time pressure."""
+        self._latch_enabled = False
+        self._advance_latched = False
 
     def enable_buffer(self, lane):
         """Enable the FPS buffer for the given lane.
@@ -522,6 +532,7 @@ class AFCFPSBuffer:
         """
         self.current_lane = lane
         self.enable = True
+        self._latch_enabled = False
         self._advance_latched = False
         has_stepper = getattr(lane, 'extruder_stepper', None) is not None
 
@@ -544,6 +555,7 @@ class AFCFPSBuffer:
     def disable_buffer(self):
         """Disable the FPS buffer, reset multiplier, stop timers."""
         self.enable = False
+        self._latch_enabled = False
         self._advance_latched = False
         if self.current_lane is None:
             return
