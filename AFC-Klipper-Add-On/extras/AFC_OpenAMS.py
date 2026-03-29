@@ -1611,6 +1611,13 @@ class afcAMS(afcUnit):
         if afc._check_extruder_temp(cur_lane):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
 
+        # Set follower reverse before cut so it assists all retract phases
+        if self._follower is not None and self.oams is not None:
+            fps_state = self._get_monitor_state()
+            if fps_state:
+                self._follower.set_follower_state(
+                    fps_state, self.oams, 1, 0, "before unload cut", force=True)
+
         # Quick pull to prevent oozing
         afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
         afc.function.log_toolhead_pos("TOOL_UNLOAD quick pull: ")
