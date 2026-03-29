@@ -1128,16 +1128,8 @@ class afcAMS(afcUnit):
         if self._monitor is not None:
             self._monitor.stop()
 
-        # Set follower reverse FIRST so it assists the retract
-        if self._follower is not None:
-            fps_state = self._get_monitor_state()
-            if fps_state:
-                self._follower.set_follower_state(fps_state, oams, 1, 0, "before unload", force=True)
-                # Wait for follower MCU command to take effect before pulling
-                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
-
         # Retract filament from extruder gears before OAMS hardware unload.
-        # Follower is already reversed so it pulls along with the retract.
+        # The OAMS firmware handles follower direction internally during unload.
         unload_length, unload_speed = self.get_unload_params(cur_lane.name)
         if unload_length and unload_length > 0:
             unload_length += 10.0  # Extra margin to fully clear extruder gears
