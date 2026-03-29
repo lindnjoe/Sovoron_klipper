@@ -1902,14 +1902,15 @@ class afcACE(afcUnit):
         # Calculate full extruder retract distance
         retract_distance = cur_extruder.tool_stn_unload + 10  # +10mm margin
 
-        # Calculate ACE unwind distance (from toolhead back to hub/ACE)
+        # Calculate ACE unwind distance (from extruder back to hub position).
+        # retract_length = full ACE-to-extruder calibrated distance
+        # dist_hub = ACE slot to hub/combiner
+        # So (retract_length - dist_hub) = hub to extruder = bowden length
+        # We only unwind to the hub — filament stays staged there for fast reload.
         full_retract = self._get_retract_length(cur_lane)
         dist_hub = self._get_dist_hub(cur_lane)
-        has_real_hub_pin = cur_hub.switch_pin.lower() != "virtual"
         if dist_hub > 0 and dist_hub < full_retract:
             retract_length = full_retract - dist_hub
-            if not has_real_hub_pin:
-                retract_length += cur_hub.hub_clear_move_dis
         else:
             retract_length = full_retract
 
