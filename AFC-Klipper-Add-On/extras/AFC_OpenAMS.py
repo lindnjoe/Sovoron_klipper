@@ -1007,7 +1007,7 @@ class afcAMS(afcUnit):
             f"{engagement_length:.1f}mm at {engagement_speed:.0f}mm/min")
 
         # Notify monitor to suppress detection during engagement
-        if hasattr(self, '_monitor') and self._monitor is not None:
+        if self._monitor is not None:
             self._monitor.notify_engagement_start()
 
         try:
@@ -1074,7 +1074,7 @@ class afcAMS(afcUnit):
             return False
 
         finally:
-            if hasattr(self, '_monitor') and self._monitor is not None:
+            if self._monitor is not None:
                 self._monitor.notify_engagement_end()
 
     def _oams_extrude(self, length, speed, context="oams_move"):
@@ -4655,20 +4655,6 @@ class afcAMS(afcUnit):
     # ------------------------------------------------------------------
     # Stuck spool auto-recovery (post-engagement, during printing)
     # ------------------------------------------------------------------
-
-    def _register_stuck_spool_recovery(self):
-        """Log stuck spool recovery configuration status.
-
-        The actual registration is handled by _init_follower_and_monitor() which
-        wires the OAMSMonitor callbacks directly to _on_stuck_spool_detected().
-        """
-        if self.stuck_spool_auto_recovery:
-            self.logger.info("Stuck spool auto-recovery enabled: unload+reload+resume on stuck detection")
-        else:
-            self.logger.debug(
-                "Stuck spool auto-recovery disabled (stuck_spool_auto_recovery=False); "
-                "stuck spools during printing will pause the print instead"
-            )
 
     def _on_stuck_spool_recovery_needed(self, fps_name, lane_name):
         """Trigger stuck spool recovery (unload + reload + resume).
