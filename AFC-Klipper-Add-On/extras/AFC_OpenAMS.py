@@ -11,7 +11,6 @@ import re
 import time
 import threading
 import traceback
-from textwrap import dedent
 from datetime import datetime
 from types import MethodType
 from enum import Enum
@@ -955,12 +954,26 @@ class afcAMS(afcUnit):
             # physically moving filament.
             self.logger.warning(f"Engagement failed for {cur_lane.name}, cleaning up for retry")
 
-            # Retract the engagement extrusion from extruder
-            engagement_length, engagement_speed = self.get_engagement_params(cur_lane.name)
-            if engagement_length:
-                self.afc.move_e_pos(-engagement_length,
-                                     engagement_speed / 60.0 if engagement_speed else 7.0,
-                                     "engagement cleanup retract")
+            # Set follower reverse before retract so it assists the pull
+            if self._follower is not None:
+                fps_state = self._get_monitor_state()
+                if fps_state:
+                    self._follower.set_follower_state(
+                        fps_state, oams, 1, 0, "engagement cleanup", force=True)
+
+            # Retract full tool_stn_unload + 10mm to clear extruder gears
+            # before OAMS hardware unload. engagement_length alone isn't enough
+            # because post-engagement extrusion pushed filament further in.
+            unload_length, unload_speed = self.get_unload_params(cur_lane.name)
+            if unload_length and unload_length > 0:
+                unload_length += 10.0
+                retract_speed = unload_speed if unload_speed else 25.0 * 60.0
+                self.logger.debug(
+                    f"Retracting {unload_length:.1f}mm from extruder before cleanup unload")
+                try:
+                    self._oams_extrude(-unload_length, retract_speed, "engagement_cleanup_retract")
+                except Exception as e:
+                    self.logger.warning(f"Cleanup retract failed: {e}")
 
             # Abort any in-flight MCU action and wait for it to clear
             oams.abort_current_action(wait=True)
@@ -1007,7 +1020,7 @@ class afcAMS(afcUnit):
             f"{engagement_length:.1f}mm at {engagement_speed:.0f}mm/min")
 
         # Notify monitor to suppress detection during engagement
-        if hasattr(self, '_monitor') and self._monitor is not None:
+        if self._monitor is not None:
             self._monitor.notify_engagement_start()
 
         try:
@@ -1074,7 +1087,7 @@ class afcAMS(afcUnit):
             return False
 
         finally:
-            if hasattr(self, '_monitor') and self._monitor is not None:
+            if self._monitor is not None:
                 self._monitor.notify_engagement_end()
 
     def _oams_extrude(self, length, speed, context="oams_move"):
@@ -1515,7 +1528,7 @@ class afcAMS(afcUnit):
         # Wrap the load so tool is always picked back up, even on failure
         load_result = False
         try:
-            afc._oams_suppress_tool_swap_timer = True
+            afc._suppress_tool_swap_timer = True
             self.logger.debug(
                 f"OpenAMS load: loading {cur_lane.name} via OAMS hardware"
             )
@@ -1532,7 +1545,7 @@ class afcAMS(afcUnit):
             afc.error.handle_lane_failure(cur_lane, message)
             return False
         finally:
-            afc._oams_suppress_tool_swap_timer = False
+            afc._suppress_tool_swap_timer = False
             if dock_dropped_off:
                 # Always pick up tool — even on failure
                 if load_result:
@@ -4655,20 +4668,6 @@ class afcAMS(afcUnit):
     # ------------------------------------------------------------------
     # Stuck spool auto-recovery (post-engagement, during printing)
     # ------------------------------------------------------------------
-
-    def _register_stuck_spool_recovery(self):
-        """Log stuck spool recovery configuration status.
-
-        The actual registration is handled by _init_follower_and_monitor() which
-        wires the OAMSMonitor callbacks directly to _on_stuck_spool_detected().
-        """
-        if self.stuck_spool_auto_recovery:
-            self.logger.info("Stuck spool auto-recovery enabled: unload+reload+resume on stuck detection")
-        else:
-            self.logger.debug(
-                "Stuck spool auto-recovery disabled (stuck_spool_auto_recovery=False); "
-                "stuck spools during printing will pause the print instead"
-            )
 
     def _on_stuck_spool_recovery_needed(self, fps_name, lane_name):
         """Trigger stuck spool recovery (unload + reload + resume).

@@ -9,19 +9,14 @@ for OpenAMS hardware units. Used by AFC_OpenAMS to manage the OAMS
 follower motor that maintains filament tension in the buffer tube."""
 
 from __future__ import annotations
-from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
+from typing import Any, Dict, Optional
 
 
 class FollowerState:
     """Track follower motor state for a single OAMS unit."""
     def __init__(self):
-        self.coasting        = False
-        self.coast_start_pos = 0.0
-        self.had_filament    = False
-        self.last_state      = None  # (enable, direction) to avoid redundant MCU commands
+        self.coasting   = False
+        self.last_state = None  # (enable, direction) to avoid redundant MCU commands
 
 
 class FollowerController:
@@ -77,36 +72,16 @@ class FollowerController:
     # ---- Follower motor control ----
 
     def enable_follower(self, fps_state, oams, direction, context, force=False):
-        """Enable follower motor in the given direction.
-
-        :param fps_state: FPSState object to update
-        :param oams: OAMS hardware object
-        :param direction: 0=reverse, 1=forward
-        :param context: Logging context string
-        :param force: Force MCU command even if cached state matches
-        """
-        if fps_state.current_spool_idx is None:
-            return
+        """Enable follower motor in the given direction."""
         if oams is None:
             return
-
         direction = direction if direction in (0, 1) else 1
         oams_name = getattr(oams, 'name', None)
         if oams_name:
             self._set_follower_if_changed(oams_name, oams, 1, direction, context, force=force)
-        fps_state.following = True
-        fps_state.direction = direction
 
     def set_follower_state(self, fps_state, oams, enable, direction, context, force=False):
-        """Set follower state directly.
-
-        :param fps_state: FPSState object to update
-        :param oams: OAMS hardware object
-        :param enable: 0=disable, 1=enable
-        :param direction: 0=reverse, 1=forward
-        :param context: Logging context string
-        :param force: Force MCU command
-        """
+        """Set follower state directly."""
         if oams is None:
             return
         oams_name = getattr(oams, 'name', None)
@@ -114,28 +89,6 @@ class FollowerController:
             return
         direction = direction if direction in (0, 1) else 1
         self._set_follower_if_changed(oams_name, oams, enable, direction, context, force=force)
-        fps_state.following = bool(enable)
-        fps_state.direction = direction if enable else 0
-
-    def ensure_forward_follower(self, fps_state, context):
-        """Ensure follower is enabled forward when filament is present."""
-        if fps_state.current_spool_idx is None:
-            return
-        oams = self.get_oams(fps_state.current_oams) if fps_state.current_oams else None
-        if oams is None:
-            return
-        self.set_follower_state(fps_state, oams, 1, 1, context, force=True)
-
-    def restore_follower_if_needed(self, fps_state, oams, context):
-        """Restore follower after a pause/recovery if it was active before."""
-        if not hasattr(fps_state, 'stuck_spool'):
-            return
-        ss = fps_state.stuck_spool
-        if not ss.restore_follower:
-            return
-        direction = getattr(ss, 'restore_direction', 1)
-        self.set_follower_state(fps_state, oams, 1, direction, context, force=True)
-        ss.restore_follower = False
 
     def _set_follower_if_changed(self, oams_name, oams, enable, direction, context, force=False):
         """Send follower MCU command only if state changed (or force=True)."""

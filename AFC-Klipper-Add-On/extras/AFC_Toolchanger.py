@@ -982,8 +982,8 @@ class AfcToolchanger(afcUnit):
         :param lane: The lane object whose extruder/toolhead should be activated.
         :param set_start_time: Set true to set a starting time for afcDeltaTime.
         """
-        # OpenAMS suppresses timing during its own load sequence
-        if self.afc._oams_suppress_tool_swap_timer:
+        # Units can suppress timing during their own load sequences
+        if getattr(self.afc, '_suppress_tool_swap_timer', False):
             set_start_time = False
         if set_start_time:
             self.afc.afcDeltaTime.set_start_time()

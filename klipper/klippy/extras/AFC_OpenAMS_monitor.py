@@ -57,11 +57,7 @@ class FPSLoadState:
 
 
 class FPSState:
-    """Tracking state for one FPS buffer channel.
-
-    Tracks which lane is loaded, encoder history, and detection state
-    for stuck spool and clog monitoring.
-    """
+    """Tracking state for one FPS buffer channel."""
     def __init__(self):
         # Core state
         self.state = FPSLoadState.UNLOADED
@@ -69,10 +65,6 @@ class FPSState:
         self.current_oams = None
         self.current_spool_idx = None
         self.since = None
-
-        # Follower tracking
-        self.following = False
-        self.direction = 0
 
         # Encoder tracking
         self.last_encoder = None
@@ -90,10 +82,8 @@ class FPSState:
         # Engagement tracking (suppress detection during engagement)
         self.engagement_in_progress = False
         self.engagement_checked_at = None
-        self.engaged_with_extruder = False
 
-        # Cross-extruder runout
-        self.is_cross_extruder_runout = False
+        # Lane change tracking
         self.last_lane_change_time = None
 
     def reset(self):
