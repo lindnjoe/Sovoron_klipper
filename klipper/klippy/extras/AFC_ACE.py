@@ -1902,14 +1902,18 @@ class afcACE(afcUnit):
         # Calculate full extruder retract distance
         retract_distance = cur_extruder.tool_stn_unload + 10  # +10mm margin
 
-        # Calculate ACE unwind distance (from toolhead back to hub/ACE)
+        # Calculate ACE unwind distance (from extruder back through hub).
+        # Path: ACE → hub (dist_hub) → bowden → extruder (retract_length total)
+        # Unwind = bowden + hub_clear to pull filament back through the hub combiner.
+        # For real hub pins, the hub clearing loop handles the last part.
+        # For virtual hubs, add hub_clear_move_dis to ensure filament clears the combiner.
         full_retract = self._get_retract_length(cur_lane)
         dist_hub = self._get_dist_hub(cur_lane)
         has_real_hub_pin = cur_hub.switch_pin.lower() != "virtual"
         if dist_hub > 0 and dist_hub < full_retract:
-            retract_length = full_retract - dist_hub
+            retract_length = full_retract - dist_hub  # bowden length (hub to extruder)
             if not has_real_hub_pin:
-                retract_length += cur_hub.hub_clear_move_dis
+                retract_length += cur_hub.hub_clear_move_dis  # pull past hub combiner
         else:
             retract_length = full_retract
 
@@ -3427,8 +3431,22 @@ class afcACE(afcUnit):
             return False, msg, distance
 
         lane_name = cur_lane.name
-        new_feed_length = round(distance, 0)
-        new_retract_length = round(distance - 20, 0)
+        dist_hub = self._get_dist_hub(cur_lane)
+
+        # When homing_enabled, prep loads filament to the hub automatically.
+        # So calibration starts at the hub — the measured distance is only
+        # hub-to-extruder (bowden), not the full ACE-to-extruder path.
+        # Add dist_hub back to get the true full path for feed_length.
+        if cur_lane.loaded_to_hub and dist_hub > 0:
+            full_distance = distance + dist_hub
+            self.logger.info(
+                f"ACE calibration: filament started at hub, adding dist_hub "
+                f"({dist_hub:.0f}mm) to measured {distance:.0f}mm = {full_distance:.0f}mm full path")
+        else:
+            full_distance = distance
+
+        new_feed_length = round(full_distance, 0)
+        new_retract_length = round(full_distance - 20, 0)
 
         # Update in-memory per-lane overrides
         old_feed = self._lane_feed_length.get(lane_name, self.feed_length)
