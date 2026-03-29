@@ -1198,8 +1198,11 @@ class afcAMS(afcUnit):
                 # Apply config thresholds
                 self._monitor.stuck_pressure_low = self.stuck_spool_pressure_threshold
                 self._monitor.stuck_load_grace = self.stuck_spool_load_grace
-                self._monitor.start(oams)
-                self.logger.debug(f"OAMSMonitor started for {fps_name}")
+                # Do NOT start monitor here — it will be started after a
+                # successful load in _oams_load(). Starting at boot causes
+                # false clog detection during PRINT_START (homing, mesh, etc.)
+                # because the extruder position advances without any filament loaded.
+                self.logger.debug(f"OAMSMonitor created for {fps_name} (starts on load)")
             except Exception as e:
                 self.logger.error(f"Failed to create OAMSMonitor: {e}")
         else:
@@ -5356,9 +5359,14 @@ class afcAMS(afcUnit):
                         fps_state, oams, 1, 1, "clear_errors", force=True)
 
         finally:
-            # Restart monitor
+            # Only restart monitor if a lane is loaded to toolhead
+            # (otherwise false clog detection fires during idle)
             if self._monitor is not None:
-                self._monitor.start(oams)
+                has_loaded = any(
+                    getattr(lane, 'tool_loaded', False)
+                    for lane in self.lanes.values())
+                if has_loaded:
+                    self._monitor.start(oams)
 
         # Build summary
         loaded = []
