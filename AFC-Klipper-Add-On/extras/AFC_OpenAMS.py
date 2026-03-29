@@ -702,6 +702,7 @@ class afcAMS(afcUnit):
         self.clog_sensitivity = config.get("clog_sensitivity", "medium").lower()
 
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
+        self.printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
 
         # Lane registry integration
         self.registry = None
@@ -1190,6 +1191,9 @@ class afcAMS(afcUnit):
                     on_stuck_cleared=self._on_stuck_spool_cleared,
                     clog_sensitivity=self.clog_sensitivity,
                     is_printing_fn=lambda: self.afc.function.in_print(),
+                    is_lane_loaded_fn=lambda: any(
+                        getattr(l, 'tool_loaded', False)
+                        for l in self.lanes.values()),
                 )
                 # Apply config thresholds
                 self._monitor.stuck_pressure_low = self.stuck_spool_pressure_threshold
@@ -1252,6 +1256,11 @@ class afcAMS(afcUnit):
             self._follower.clear_error_led(
                 self.oams, self.oams_name, st.current_spool_idx,
                 "stuck spool cleared")
+
+    def _handle_disconnect(self):
+        """Stop monitor on klipper disconnect/shutdown."""
+        if self._monitor is not None:
+            self._monitor.stop()
 
     # ---- Parameter getters (AFC owns extruder config) ----
 

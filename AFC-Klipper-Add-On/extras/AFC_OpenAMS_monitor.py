@@ -126,7 +126,8 @@ class OAMSMonitor:
 
     def __init__(self, fps_name, fps_obj, reactor, logger,
                  on_stuck_spool=None, on_clog=None, on_stuck_cleared=None,
-                 clog_sensitivity='medium', is_printing_fn=None):
+                 clog_sensitivity='medium', is_printing_fn=None,
+                 is_lane_loaded_fn=None):
         """
         :param fps_name: FPS buffer name (e.g. 'FPS_buffer1')
         :param fps_obj: AFC_FPS buffer object (for ADC readings)
@@ -137,6 +138,7 @@ class OAMSMonitor:
         :param on_stuck_cleared: Callback(fps_name) when stuck condition clears
         :param clog_sensitivity: 'off', 'low', 'medium', 'high'
         :param is_printing_fn: Callable returning True when printer is actively printing
+        :param is_lane_loaded_fn: Callable returning True when a lane is loaded to toolhead
         """
         self.fps_name = fps_name
         self.fps = fps_obj
@@ -147,6 +149,7 @@ class OAMSMonitor:
         self._on_clog = on_clog
         self._on_stuck_cleared = on_stuck_cleared
         self._is_printing = is_printing_fn
+        self._is_lane_loaded = is_lane_loaded_fn
 
         self.clog_multiplier = CLOG_SENSITIVITY.get(clog_sensitivity, 1.0)
         self.enable_clog = self.clog_multiplier is not None
@@ -227,9 +230,22 @@ class OAMSMonitor:
         if st.state != FPSLoadState.LOADED:
             return eventtime + MONITOR_INTERVAL_IDLE
 
+        # Verify a lane is ACTUALLY loaded to toolhead. If state got
+        # out of sync (e.g. unload didn't go through _oams_unload),
+        # auto-stop the monitor to prevent false detections.
+        if self._is_lane_loaded and not self._is_lane_loaded():
+            self.logger.debug(
+                f"{self.fps_name}: no lane loaded to toolhead, stopping monitor")
+            self._running = False
+            self.state.reset()
+            return self.reactor.NEVER
+
         # Only run detection while actively printing — skip during
         # idle, PRINT_START, homing, probing, manual moves, etc.
         if self._is_printing and not self._is_printing():
+            # Reset clog tracking so it doesn't accumulate during non-print
+            st.clog_start_time = None
+            st.clog_start_extruder = None
             return eventtime + MONITOR_INTERVAL_IDLE
 
         # Don't monitor during engagement verification
