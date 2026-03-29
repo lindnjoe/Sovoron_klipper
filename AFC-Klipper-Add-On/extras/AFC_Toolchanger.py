@@ -487,7 +487,6 @@ class AfcToolchanger(afcUnit):
             parts.append("No detection: %s" % names)
 
         msg = " | ".join(parts)
-        self.logger.info("Toolchanger prep: %s" % msg)
         return True, msg
 
     def cmd_TOOLCHANGER_PREP(self, gcmd):
