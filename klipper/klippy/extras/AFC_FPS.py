@@ -25,8 +25,8 @@
 # provides the ADC reading.  The unit's own code (AFC_OpenAMS) manages
 # tool_start_state and virtual sensors exactly as it already does — this
 # driver just acts as the FPS hardware interface and config entry point.
-# Set  pin_tool_start: <FPS_buffer_name>  on the extruder so Klipper
-# doesn't try to register a GPIO pin for it.
+# Set  pin_tool_start: buffer  and  buffer: <FPS_buffer_name>  on
+# the extruder so Klipper treats it as a buffer, not a GPIO pin.
 
 from __future__ import annotations
 

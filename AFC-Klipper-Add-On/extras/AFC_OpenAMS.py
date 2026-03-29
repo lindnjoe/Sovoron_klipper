@@ -2717,7 +2717,7 @@ class afcAMS(afcUnit):
                         msg += '<span class=primary--text> (hub-detected: auto-set as in ToolHead)</span>'
 
                 if cur_lane.tool_loaded:
-                    tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.is_buffer or cur_lane.extruder_obj.tool_end_state or cur_lane.extruder_obj.on_shuttle())
+                    tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.tool_start == "buffer" or cur_lane.extruder_obj.tool_end_state or cur_lane.extruder_obj.on_shuttle())
                     if tool_ready and cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                         cur_lane.sync_to_extruder()
                         on_shuttle = ""
@@ -2728,7 +2728,7 @@ class afcAMS(afcUnit):
                             pass
 
                         msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
-                        if cur_lane.extruder_obj.is_buffer:
+                        if cur_lane.extruder_obj.tool_start == "buffer":
                             msg += '<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>'
                         # Filament is in the toolhead so it has passed through the hub
                         if not cur_lane.loaded_to_hub:
