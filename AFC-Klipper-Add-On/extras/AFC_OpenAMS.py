@@ -1102,11 +1102,10 @@ class afcAMS(afcUnit):
         gcode.run_script_from_command(f"SAVE_GCODE_STATE NAME={context}")
         try:
             gcode.run_script_from_command("M83")
-            gcode.run_script_from_command(f"G92 E0")
             gcode.run_script_from_command(f"G1 E{length:.2f} F{speed:.0f}")
             gcode.run_script_from_command("M400")
         finally:
-            gcode.run_script_from_command(f"RESTORE_GCODE_STATE NAME={context}")
+            gcode.run_script_from_command(f"RESTORE_GCODE_STATE NAME={context} MOVE=0")
 
     def _oams_unload(self, cur_lane):
         """Unload filament via OAMS hardware directly.
