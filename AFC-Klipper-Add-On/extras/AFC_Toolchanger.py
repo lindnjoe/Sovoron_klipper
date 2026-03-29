@@ -179,6 +179,9 @@ class AfcToolchanger(afcUnit):
         self.gcode.register_command("SAVE_TOOL_PARAMETER",
                                     self.cmd_SAVE_TOOL_PARAMETER,
                                     desc="Save a tool parameter to config")
+        self.gcode.register_command("SAVE_TOOL_Z_OFFSET",
+                                    self.cmd_SAVE_TOOL_Z_OFFSET,
+                                    desc="Save gcode_z_offset for a tool to config")
         self.gcode.register_command("ADJUST_Z_AFTER_TOOL_NOZZLE_HOME",
                                     self.cmd_ADJUST_Z_AFTER_TOOL_NOZZLE_HOME,
                                     desc="Adjust Z position by active tool's Z offset after homing")
@@ -375,6 +378,23 @@ class AfcToolchanger(afcUnit):
                 param, tool.tool_number))
         self.functions.ConfigRewrite(
             tool.fullname, param, tool.params[param], '')
+
+    def cmd_SAVE_TOOL_Z_OFFSET(self, gcmd):
+        """Save gcode_z_offset for a tool to config.
+        Usage: SAVE_TOOL_Z_OFFSET T=<num> Z=<offset>
+        Returns the old value for display.
+        """
+        tool = self._resolve_tool_from_gcmd(gcmd)
+        new_z = gcmd.get_float('Z')
+        old_z = tool.gcode_z_offset
+        tool.gcode_z_offset = new_z
+        cal_msg = (
+            f"\n gcode_z_offset: New: {new_z:.4f} Old: {old_z:.4f}")
+        self.functions.ConfigRewrite(
+            tool.fullname, "gcode_z_offset", "%.4f" % new_z, cal_msg)
+        gcmd.respond_info(
+            "%s gcode_z_offset: %.4f (was %.4f)" % (
+                tool.name, new_z, old_z))
 
     def cmd_ADJUST_Z_AFTER_TOOL_NOZZLE_HOME(self, gcmd):
         """Adjust Z position by the active tool's gcode_z_offset after nozzle homing.
