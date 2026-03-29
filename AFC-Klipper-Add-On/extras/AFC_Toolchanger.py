@@ -57,8 +57,8 @@ class AfcToolchanger(afcUnit):
         super().__init__(config)
         self.config = config
         self.type = config.get("type", "Toolchanger")
-        self.logo       = '<span class=success--text>Toolchanger Ready\n</span>'
-        self.logo_error = '<span class=error--text>Toolchanger Not Ready</span>\n'
+        self._logo_base  = '<span class=success--text>Toolchanger Ready</span>'
+        self.logo_error  = '<span class=error--text>Toolchanger Not Ready</span>\n'
         self.functions: afcFunction = self.printer.load_object(config, 'AFC_functions')
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
         self.gcode_macro = self.printer.load_object(config, 'gcode_macro')
@@ -184,6 +184,12 @@ class AfcToolchanger(afcUnit):
                                          self.cmd_AFC_SET_TOOLHEAD_LED,
                                          self.cmd_AFC_SET_TOOLHEAD_LED_help,
                                          self.cmd_AFC_SET_TOOLHEAD_LED_options)
+
+    @property
+    def logo(self):
+        """Dynamic logo with detection pin status for PREP output."""
+        ok, detail = self.prep_check()
+        return self._logo_base + '\n ' + detail + '\n'
 
     def _handle_tc_connect(self):
         """Install the gcode offset transform on connect and find tool_probe_endstop."""
