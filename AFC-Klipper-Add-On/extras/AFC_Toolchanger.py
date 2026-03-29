@@ -461,26 +461,54 @@ class AfcToolchanger(afcUnit):
             self._run_gcode('before_change_gcode', before_gcode, extra_context)
             self._set_toolchange_transform()
 
-            if self.active_tool:
+            # Determine which tool to drop off. Check PHYSICAL detection
+            # first — a tool may be on the shuttle even if active_tool is None
+            # (e.g. after restart, error recovery, or state desync).
+            tool_to_dropoff = self.active_tool
+            if tool_to_dropoff is None and self.has_detection:
+                toolhead = self.printer.lookup_object('toolhead')
+                toolhead.wait_moves()
+                reactor = self.printer.get_reactor()
+                reactor.pause(reactor.monotonic() + 0.3)
+                detected = self._require_detected_tool()
+                if detected is not None:
+                    self.logger.info(
+                        "No active_tool set but %s detected on shuttle — "
+                        "dropping it off first" % detected.name)
+                    tool_to_dropoff = detected
+                    # Temporarily set active_tool so dropoff_gcode has
+                    # the correct tool context (park coords, path, etc.)
+                    self.active_tool = detected
+
+            if tool_to_dropoff:
                 self._run_gcode('tool.dropoff_gcode',
-                               self.active_tool.dropoff_gcode, extra_context)
+                               tool_to_dropoff.dropoff_gcode, extra_context)
                 # Verify old tool actually released from shuttle before
                 # moving to the pickup dock. Without this, a stuck tool
                 # gets carried to the next dock → collision.
                 if self.has_detection:
-                    old_tool = self.active_tool
                     toolhead = self.printer.lookup_object('toolhead')
                     toolhead.wait_moves()
                     reactor = self.printer.get_reactor()
                     reactor.pause(reactor.monotonic() + 0.3)
-                    if self._is_tool_present(old_tool):
+                    if self._is_tool_present(tool_to_dropoff):
                         self.process_error(
                             gcmd.error,
                             "Dropoff failed: %s still detected on shuttle after dropoff. "
-                            "Tool did not release from dock." % old_tool.name)
+                            "Tool did not release from dock." % tool_to_dropoff.name)
 
             self._configure_toolhead_for_tool(tool)
             if tool is not None:
+                # Final safety check: shuttle must be empty before pickup.
+                # Even after a successful dropoff, re-verify no tool is
+                # physically present to prevent carrying a stuck tool.
+                if self.has_detection:
+                    stuck = self._require_detected_tool()
+                    if stuck is not None and stuck != tool:
+                        self.process_error(
+                            gcmd.error,
+                            "Cannot pick up %s: %s is still on shuttle" % (
+                                tool.name, stuck.name))
                 self._run_gcode('tool.pickup_gcode',
                                tool.pickup_gcode, extra_context)
                 # Detection is now verified inline by VERIFY_TOOL_DETECTED
