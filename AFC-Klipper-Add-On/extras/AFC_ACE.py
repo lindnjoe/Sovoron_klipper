@@ -1460,6 +1460,12 @@ class afcACE(afcUnit):
             # sensor so downstream checks see it as occupied.
             self._set_hub_state(cur_lane, True)
 
+            # Enable FPS advance latch so the toolhead sensor stays triggered
+            # even when ACE briefly pauses between motor pulses during feed.
+            buffer_obj = getattr(cur_lane, 'buffer_obj', None)
+            if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
+                buffer_obj.enable_advance_latch()
+
             _, _, early_engage = self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
 
             if self.mode == MODE_COMBINED:
@@ -1902,14 +1908,18 @@ class afcACE(afcUnit):
         # Calculate full extruder retract distance
         retract_distance = cur_extruder.tool_stn_unload + 10  # +10mm margin
 
-        # Calculate ACE unwind distance (from toolhead back to hub/ACE)
+        # Calculate ACE unwind distance (from extruder back through hub).
+        # Path: ACE → hub (dist_hub) → bowden → extruder (retract_length total)
+        # Unwind = bowden + hub_clear to pull filament back through the hub combiner.
+        # For real hub pins, the hub clearing loop handles the last part.
+        # For virtual hubs, add hub_clear_move_dis to ensure filament clears the combiner.
         full_retract = self._get_retract_length(cur_lane)
         dist_hub = self._get_dist_hub(cur_lane)
         has_real_hub_pin = cur_hub.switch_pin.lower() != "virtual"
         if dist_hub > 0 and dist_hub < full_retract:
-            retract_length = full_retract - dist_hub
+            retract_length = full_retract - dist_hub  # bowden length (hub to extruder)
             if not has_real_hub_pin:
-                retract_length += cur_hub.hub_clear_move_dis
+                retract_length += cur_hub.hub_clear_move_dis  # pull past hub combiner
         else:
             retract_length = full_retract
 
@@ -2853,7 +2863,7 @@ class afcACE(afcUnit):
                     self._set_hub_state(cur_lane, True)
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
-                        or cur_lane.extruder_obj.is_buffer
+                        or cur_lane.extruder_obj.tool_start == "buffer"
                         or cur_lane.extruder_obj.tool_end_state
                         or cur_lane.extruder_obj.on_shuttle()
                     )
@@ -2863,7 +2873,7 @@ class afcACE(afcUnit):
                         if cur_lane.extruder_obj.tc_unit_obj:
                             on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
                         msg += f'<span class=primary--text> in ToolHead{on_shuttle}</span>'
-                        if cur_lane.extruder_obj.is_buffer:
+                        if cur_lane.extruder_obj.tool_start == "buffer":
                             msg += '<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>'
 
                         # Restore combined mode tracking regardless of shuttle
@@ -3042,11 +3052,15 @@ class afcACE(afcUnit):
             buttons.append(list(group_buttons))
 
         total_buttons = sum(len(group) for group in buttons)
+        if total_buttons > 1:
+            all_lanes = [("All lanes", f"CALIBRATE_AFC LANE=all UNIT={self.name}", "default")]
+        else:
+            all_lanes = None
         if total_buttons == 0:
             text = "No lanes are loaded, please load before calibration"
 
         back = [("Back", f"UNIT_CALIBRATION UNIT={self.name}", "info")]
-        prompt.create_custom_p(title, text, None, True, buttons, back)
+        prompt.create_custom_p(title, text, all_lanes, True, buttons, back)
 
     def cmd_ACE_HUB_CALIBRATION(self, gcmd):
         """Prompt to calibrate dist_hub (slot to hub sensor) per lane.
@@ -3175,6 +3189,14 @@ class afcACE(afcUnit):
         if local_slot < 0:
             return False, f"Cannot determine slot for {cur_lane.name}", 0
 
+        # Clear FPS advance latch from any previous operation so the
+        # sensor check below reads real-time pressure, not a stale latch.
+        buffer_obj = getattr(cur_lane, 'buffer_obj', None)
+        if buffer_obj is not None and hasattr(buffer_obj, 'clear_advance_latch'):
+            buffer_obj.clear_advance_latch()
+            # Brief pause for ADC to update with current pressure
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+
         # Don't calibrate if sensor is already triggered
         if cur_lane.get_toolhead_pre_sensor_state():
             return False, "Toolhead sensor already triggered - unload first", 0
@@ -3251,11 +3273,11 @@ class afcACE(afcUnit):
         return True, "", distance
 
     def _calibrate_bowden_inner(self, cur_lane, dis, tol):
+        """Calibrate bowden and save to the UNIT config section."""
         success, msg, distance = self._measure_bowden_distance(cur_lane)
         if not success:
             return False, msg, distance
 
-        # Round to nearest integer for clean config values
         new_feed_length = round(distance, 0)
         new_retract_length = round(distance - 20, 0)
 
@@ -3265,7 +3287,7 @@ class afcACE(afcUnit):
         self.feed_length = new_feed_length
         self.retract_length = new_retract_length
 
-        # Write calibrated values to the unit config section
+        # Write to the unit config section [AFC_ACE Ace_1]
         unit_section = " ".join(self.full_name)
         cal_msg = f"\n feed_length: New: {new_feed_length} Old: {old_feed}"
         self.afc.function.ConfigRewrite(
@@ -3427,6 +3449,9 @@ class afcACE(afcUnit):
             return False, msg, distance
 
         lane_name = cur_lane.name
+
+        # _measure_bowden_distance already adds dist_hub when filament
+        # starts at the hub, so 'distance' is the full ACE-to-extruder path.
         new_feed_length = round(distance, 0)
         new_retract_length = round(distance - 20, 0)
 

@@ -25,8 +25,8 @@
 # provides the ADC reading.  The unit's own code (AFC_OpenAMS) manages
 # tool_start_state and virtual sensors exactly as it already does — this
 # driver just acts as the FPS hardware interface and config entry point.
-# Set  pin_tool_start: <FPS_buffer_name>  on the extruder so Klipper
-# doesn't try to register a GPIO pin for it.
+# Set  pin_tool_start: buffer  and  buffer: <FPS_buffer_name>  on
+# the extruder so Klipper treats it as a buffer, not a GPIO pin.
 
 from __future__ import annotations
 
@@ -130,6 +130,8 @@ class AFCFPSBuffer:
         self.current_lane: Optional[AFCLane | AFCExtruderStepper] = None
         self.advance_state = False
         self.trailing_state = False
+        self._advance_latched = False
+        self._latch_enabled = False  # Only latch during active loads
         self.toolhead = None  # Set in _handle_ready
 
         self.debug = config.getboolean("debug", False)
@@ -383,7 +385,13 @@ class AFCFPSBuffer:
             if self.smoothed_fps > self.set_point + half_db:
                 self.last_state = ADVANCING_STATE_NAME
                 self.advance_state = True
+                if self._latch_enabled:
+                    self._advance_latched = True
                 self.trailing_state = False
+            elif self._advance_latched:
+                # Latched during load: keep advance_state True even if
+                # pressure drops briefly between ACE motor pulses.
+                self.advance_state = True
             elif self.smoothed_fps < self.set_point - half_db:
                 self.last_state = TRAILING_STATE_NAME
                 self.advance_state = False
@@ -500,6 +508,20 @@ class AFCFPSBuffer:
     # ------------------------------------------------------------------
     # Buffer enable / disable  (interface expected by AFCLane)
     # ------------------------------------------------------------------
+    def enable_advance_latch(self):
+        """Enable latching so advance_state stays True once triggered.
+
+        Call before a load sequence. The latch prevents brief pressure
+        drops between ACE motor pulses from clearing the sensor state.
+        """
+        self._latch_enabled = True
+        self._advance_latched = False
+
+    def clear_advance_latch(self):
+        """Disable latching and reset advance_state to real-time pressure."""
+        self._latch_enabled = False
+        self._advance_latched = False
+
     def enable_buffer(self, lane):
         """Enable the FPS buffer for the given lane.
 
@@ -510,6 +532,8 @@ class AFCFPSBuffer:
         """
         self.current_lane = lane
         self.enable = True
+        self._latch_enabled = False
+        self._advance_latched = False
         has_stepper = getattr(lane, 'extruder_stepper', None) is not None
 
         if self.led:
@@ -531,6 +555,8 @@ class AFCFPSBuffer:
     def disable_buffer(self):
         """Disable the FPS buffer, reset multiplier, stop timers."""
         self.enable = False
+        self._latch_enabled = False
+        self._advance_latched = False
         if self.current_lane is None:
             return
 

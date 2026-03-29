@@ -960,6 +960,7 @@ class afcAMS(afcUnit):
                 if fps_state:
                     self._follower.set_follower_state(
                         fps_state, oams, 1, 0, "engagement cleanup", force=True)
+                    self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
 
             # Retract full tool_stn_unload + 10mm to clear extruder gears
             # before OAMS hardware unload. engagement_length alone isn't enough
@@ -1101,11 +1102,10 @@ class afcAMS(afcUnit):
         gcode.run_script_from_command(f"SAVE_GCODE_STATE NAME={context}")
         try:
             gcode.run_script_from_command("M83")
-            gcode.run_script_from_command(f"G92 E0")
             gcode.run_script_from_command(f"G1 E{length:.2f} F{speed:.0f}")
             gcode.run_script_from_command("M400")
         finally:
-            gcode.run_script_from_command(f"RESTORE_GCODE_STATE NAME={context}")
+            gcode.run_script_from_command(f"RESTORE_GCODE_STATE NAME={context} MOVE=0")
 
     def _oams_unload(self, cur_lane):
         """Unload filament via OAMS hardware directly.
@@ -1127,14 +1127,8 @@ class afcAMS(afcUnit):
         if self._monitor is not None:
             self._monitor.stop()
 
-        # Set follower reverse FIRST so it assists the retract
-        if self._follower is not None:
-            fps_state = self._get_monitor_state()
-            if fps_state:
-                self._follower.set_follower_state(fps_state, oams, 1, 0, "before unload", force=True)
-
         # Retract filament from extruder gears before OAMS hardware unload.
-        # Follower is already reversed so it pulls along with the retract.
+        # The OAMS firmware handles follower direction internally during unload.
         unload_length, unload_speed = self.get_unload_params(cur_lane.name)
         if unload_length and unload_length > 0:
             unload_length += 10.0  # Extra margin to fully clear extruder gears
@@ -1147,6 +1141,17 @@ class afcAMS(afcUnit):
                 self.logger.warning(f"Extruder retract before OAMS unload failed: {e}")
 
         try:
+            # Queue a 20mm extruder retract WITHOUT waiting — it runs
+            # concurrently with the OAMS hardware unload so the extruder
+            # helps pull filament back as the spool motor rewinds.
+            try:
+                gcode = self.afc.gcode
+                gcode.run_script_from_command("M83")
+                gcode.run_script_from_command("G1 E-20.00 F1500")
+                # No M400 — let it run in parallel with unload_spool
+            except Exception as e:
+                self.logger.warning(f"Concurrent retract failed: {e}")
+
             result = oams.unload_spool_with_retry()
             success = bool(result) if not isinstance(result, tuple) else bool(result[0])
 
@@ -1584,11 +1589,11 @@ class afcAMS(afcUnit):
         return True
 
     def unload_sequence(self, cur_lane, cur_hub, cur_extruder):
-        """OpenAMS unload sequence - uses shared toolhead steps then delegates to hardware.
+        """OpenAMS unload sequence - uses shared toolhead steps then delegates to OAMSManager.
 
         The toolhead steps (cut, form tip, park) are shared with stock AFC since they
-        happen at the toolhead. After those, retraction is delegated to the OpenAMS
-        hardware instead of using stepper-based retraction.
+        happen at the toolhead. After those, retraction is delegated to OAMSManager
+        instead of using stepper-based retraction.
 
         Called by AFC's upstream delegation hook:
             if hasattr(cur_lane.unit_obj, 'unload_sequence'):
@@ -1605,6 +1610,13 @@ class afcAMS(afcUnit):
 
         if afc._check_extruder_temp(cur_lane):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
+
+        # Set follower reverse before cut so it assists all retract phases
+        if self._follower is not None and self.oams is not None:
+            fps_state = self._get_monitor_state()
+            if fps_state:
+                self._follower.set_follower_state(
+                    fps_state, self.oams, 1, 0, "before unload cut", force=True)
 
         # Quick pull to prevent oozing
         afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
@@ -1869,8 +1881,9 @@ class afcAMS(afcUnit):
         index = 0
         title = f"{self.name} PTFE Length Calibration"
         text = (
-            "Select a loaded lane from {} to calibrate PTFE length using OpenAMS. "
-            "The calibrated value will be stored in your config automatically."
+            "Select any loaded lane from {} to calibrate PTFE length. "
+            "Only one lane needs to be calibrated — each bay has an equal "
+            "length path to the hub."
         ).format(self.name)
 
         for lane in self.lanes.values():
@@ -2717,7 +2730,7 @@ class afcAMS(afcUnit):
                         msg += '<span class=primary--text> (hub-detected: auto-set as in ToolHead)</span>'
 
                 if cur_lane.tool_loaded:
-                    tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.is_buffer or cur_lane.extruder_obj.tool_end_state or cur_lane.extruder_obj.on_shuttle())
+                    tool_ready = (cur_lane.get_toolhead_pre_sensor_state() or cur_lane.extruder_obj.tool_start == "buffer" or cur_lane.extruder_obj.tool_end_state or cur_lane.extruder_obj.on_shuttle())
                     if tool_ready and cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                         cur_lane.sync_to_extruder()
                         on_shuttle = ""
@@ -2728,7 +2741,7 @@ class afcAMS(afcUnit):
                             pass
 
                         msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
-                        if cur_lane.extruder_obj.is_buffer:
+                        if cur_lane.extruder_obj.tool_start == "buffer":
                             msg += '<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>'
                         # Filament is in the toolhead so it has passed through the hub
                         if not cur_lane.loaded_to_hub:
