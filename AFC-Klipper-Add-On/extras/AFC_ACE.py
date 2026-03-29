@@ -1460,6 +1460,12 @@ class afcACE(afcUnit):
             # sensor so downstream checks see it as occupied.
             self._set_hub_state(cur_lane, True)
 
+            # Enable FPS advance latch so the toolhead sensor stays triggered
+            # even when ACE briefly pauses between motor pulses during feed.
+            buffer_obj = getattr(cur_lane, 'buffer_obj', None)
+            if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
+                buffer_obj.enable_advance_latch()
+
             _, _, early_engage = self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
 
             if self.mode == MODE_COMBINED:
