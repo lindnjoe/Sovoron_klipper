@@ -57,8 +57,25 @@ class AfcToolchanger(afcUnit):
         super().__init__(config)
         self.config = config
         self.type = config.get("type", "Toolchanger")
-        self._logo_base  = '<span class=success--text>Toolchanger Ready</span>'
-        self.logo_error  = '<span class=error--text>Toolchanger Not Ready</span>\n'
+        firstLeg = '<span class=warning--text>|</span><span class=success--text>_</span>'
+        secondLeg = firstLeg + '<span class=warning--text>|</span>'
+        self._logo_base  = '<span class=success--text>'
+        self._logo_base += 'R  ___ ___ ____\n'
+        self._logo_base += 'E |_T_|_T_|  </span><span class=info--text>o</span><span class=success--text> |\n'
+        self._logo_base += 'A |       |/ __/\n'
+        self._logo_base += 'D |_________/\n'
+        self._logo_base += 'Y {first}{second} {first}{second}\n'.format(first=firstLeg, second=secondLeg)
+        self._logo_base += '  ' + self.name + '</span>'
+
+        firstLeg_e = '<span class=warning--text>|</span><span class=error--text>_</span>'
+        secondLeg_e = firstLeg_e + '<span class=warning--text>|</span>'
+        self.logo_error  = '<span class=error--text>'
+        self.logo_error += 'E  ___ ___ ____\n'
+        self.logo_error += 'R |_X_|_X_|  </span><span class=secondary--text>X</span><span class=error--text> |\n'
+        self.logo_error += 'R |       |/ __/\n'
+        self.logo_error += 'O |_________/\n'
+        self.logo_error += 'R {first}{second} {first}{second}\n'.format(first=firstLeg_e, second=secondLeg_e)
+        self.logo_error += '  ' + self.name + '</span>\n'
         self.functions: afcFunction = self.printer.load_object(config, 'AFC_functions')
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
         self.gcode_macro = self.printer.load_object(config, 'gcode_macro')
@@ -487,7 +504,6 @@ class AfcToolchanger(afcUnit):
             parts.append("No detection: %s" % names)
 
         msg = " | ".join(parts)
-        self.logger.info("Toolchanger prep: %s" % msg)
         return True, msg
 
     def cmd_TOOLCHANGER_PREP(self, gcmd):
