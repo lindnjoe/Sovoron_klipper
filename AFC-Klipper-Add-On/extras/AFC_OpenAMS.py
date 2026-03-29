@@ -1528,7 +1528,7 @@ class afcAMS(afcUnit):
         # Wrap the load so tool is always picked back up, even on failure
         load_result = False
         try:
-            afc._oams_suppress_tool_swap_timer = True
+            afc._suppress_tool_swap_timer = True
             self.logger.debug(
                 f"OpenAMS load: loading {cur_lane.name} via OAMS hardware"
             )
@@ -1545,7 +1545,7 @@ class afcAMS(afcUnit):
             afc.error.handle_lane_failure(cur_lane, message)
             return False
         finally:
-            afc._oams_suppress_tool_swap_timer = False
+            afc._suppress_tool_swap_timer = False
             if dock_dropped_off:
                 # Always pick up tool — even on failure
                 if load_result:

@@ -120,7 +120,6 @@ class afc:
         self.change_tool_pos = None
         self.in_toolchange = False
         self.tool_start = None
-        self._oams_suppress_tool_swap_timer = False
 
         # Save/resume pos variables
         self.base_position = [0.0, 0.0, 0.0, 0.0]
