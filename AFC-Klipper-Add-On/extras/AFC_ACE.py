@@ -3431,6 +3431,13 @@ class afcACE(afcUnit):
             return False, msg, distance
 
         lane_name = cur_lane.name
+        dist_hub = self._get_dist_hub(cur_lane)
+
+        # The calibration measures ACE slot → toolhead (full path).
+        # feed_length = full path (used when feeding from ACE slot)
+        # retract_length = full path minus dist_hub (hub-to-extruder + hub_clear)
+        #   because the unload code does (retract_length - dist_hub) to get
+        #   the bowden distance, and we want filament to stop near the hub.
         new_feed_length = round(distance, 0)
         new_retract_length = round(distance - 20, 0)
 
