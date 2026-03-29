@@ -3052,11 +3052,15 @@ class afcACE(afcUnit):
             buttons.append(list(group_buttons))
 
         total_buttons = sum(len(group) for group in buttons)
+        if total_buttons > 1:
+            all_lanes = [("All lanes", f"CALIBRATE_AFC LANE=all UNIT={self.name}", "default")]
+        else:
+            all_lanes = None
         if total_buttons == 0:
             text = "No lanes are loaded, please load before calibration"
 
         back = [("Back", f"UNIT_CALIBRATION UNIT={self.name}", "info")]
-        prompt.create_custom_p(title, text, None, True, buttons, back)
+        prompt.create_custom_p(title, text, all_lanes, True, buttons, back)
 
     def cmd_ACE_HUB_CALIBRATION(self, gcmd):
         """Prompt to calibrate dist_hub (slot to hub sensor) per lane.
