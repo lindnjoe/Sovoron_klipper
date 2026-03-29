@@ -1882,8 +1882,8 @@ class afcAMS(afcUnit):
         title = f"{self.name} PTFE Length Calibration"
         text = (
             "Select any loaded lane from {} to calibrate PTFE length. "
-            "Only one lane needs to be calibrated — all bays share the same "
-            "internal PTFE path to the hub, so the distance is identical."
+            "Only one lane needs to be calibrated — each bay has an equal "
+            "length path to the hub."
         ).format(self.name)
 
         for lane in self.lanes.values():
