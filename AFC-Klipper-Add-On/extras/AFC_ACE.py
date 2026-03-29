@@ -486,12 +486,12 @@ class afcACE(afcUnit):
         if extruder_obj is None:
             return
 
-        tool_start = getattr(extruder_obj, "tool_start", None)
-        if not tool_start or not isinstance(tool_start, str):
+        # Check if the extruder's buffer is an AFC_FPS buffer
+        buffer_name = getattr(extruder_obj, "buffer_name", None)
+        if not buffer_name or not isinstance(buffer_name, str):
             return
 
-        # Check if pin_tool_start references an AFC_FPS buffer
-        fps_obj = self.afc.buffers.get(tool_start, None)
+        fps_obj = self.afc.buffers.get(buffer_name, None)
         if fps_obj is not None and hasattr(fps_obj, 'get_fps_value'):
             self._fps_obj = fps_obj
             self._fps_extruder = extruder_obj
@@ -503,14 +503,14 @@ class afcACE(afcUnit):
             self.logger.info(
                 "ACE {}: linked to AFC_FPS buffer '{}' "
                 "(extruder={}, threshold={})".format(
-                    self.name, tool_start, extruder_name, self.fps_threshold
+                    self.name, buffer_name, extruder_name, self.fps_threshold
                 )
             )
             return
 
         self.logger.debug(
-            "ACE {}: extruder '{}' pin_tool_start='{}' is not an AFC_FPS buffer".format(
-                self.name, extruder_name, tool_start
+            "ACE {}: extruder '{}' buffer='{}' is not an AFC_FPS buffer".format(
+                self.name, extruder_name, buffer_name
             )
         )
 
@@ -2853,7 +2853,7 @@ class afcACE(afcUnit):
                     self._set_hub_state(cur_lane, True)
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
-                        or cur_lane.extruder_obj.is_buffer
+                        or cur_lane.extruder_obj.tool_start == "buffer"
                         or cur_lane.extruder_obj.tool_end_state
                         or cur_lane.extruder_obj.on_shuttle()
                     )
@@ -2863,7 +2863,7 @@ class afcACE(afcUnit):
                         if cur_lane.extruder_obj.tc_unit_obj:
                             on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
                         msg += f'<span class=primary--text> in ToolHead{on_shuttle}</span>'
-                        if cur_lane.extruder_obj.is_buffer:
+                        if cur_lane.extruder_obj.tool_start == "buffer":
                             msg += '<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>'
 
                         # Restore combined mode tracking regardless of shuttle

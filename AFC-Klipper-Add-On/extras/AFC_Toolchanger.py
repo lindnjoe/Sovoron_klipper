@@ -526,7 +526,7 @@ class AfcToolchanger(afcUnit):
                     # so also trust on_shuttle() detection pin as validation
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
-                        or cur_lane.extruder_obj.is_buffer
+                        or cur_lane.extruder_obj.tool_start == "buffer"
                         or cur_lane.extruder_obj.tool_end_state
                         or cur_lane.extruder_obj.on_shuttle()
                     )
@@ -541,7 +541,7 @@ class AfcToolchanger(afcUnit):
                             )
                         msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
 
-                        if (cur_lane.extruder_obj.is_buffer
+                        if (cur_lane.extruder_obj.tool_start == "buffer"
                             and (not self.afc.homing_enabled
                                  or not self.enable_buffer_tool_check)):
                             msg += "<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>"

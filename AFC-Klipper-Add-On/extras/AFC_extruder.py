@@ -229,9 +229,6 @@ class AFCExtruder:
         self.tool_unload_speed          = config.getfloat("tool_unload_speed", 25)                                      # Unload speed in mm/s when unloading toolhead. Default is 25mm/s.
         self.tool_load_speed            = config.getfloat("tool_load_speed", 25)                                        # Load speed in mm/s when loading toolhead. Default is 25mm/s.
         self.buffer_name                = config.get('buffer', None)                                                    # Buffer to use for extruder, this variable can be overridden per lane
-        # Auto-derive buffer name from FPS pin_tool_start if buffer not explicitly set
-        if self.buffer_name is None and self.is_buffer and self.tool_start is not None:
-            self.buffer_name = self.tool_start
         self.enable_sensors_in_gui      = config.getboolean("enable_sensors_in_gui",    self.afc.enable_sensors_in_gui) # Set to True toolhead sensors switches as filament sensors in mainsail/fluidd gui, overrides value set in AFC.cfg
         self.enable_runout              = config.getboolean("enable_tool_runout",       self.afc.enable_tool_runout)
         self.debounce_delay             = config.getfloat("debounce_delay",             self.afc.debounce_delay)
@@ -332,8 +329,8 @@ class AFCExtruder:
             if "unknown" == self.tool_start.lower():
                 raise error(f"Unknown is not valid for pin_tool_start in [{self.fullname}] config.")
 
-            if self.is_buffer:
-                self.logger.info(f"Setting up as buffer: {self.tool_start}")
+            if self.tool_start == "buffer":
+                self.logger.info("Setting up as buffer")
             else:
                 buttons.register_buttons([self.tool_start], self.tool_start_callback)
                 self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
@@ -417,20 +414,11 @@ class AFCExtruder:
             #  set to current tool start state
             self.tc_lane._load_state = self.tc_lane.prep_state = self.tool_start_state
 
-            if self.is_buffer:
+            if self.tool_start == "buffer":
                 raise error(
                     f"buffer is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
                 )
 
-
-    @property
-    def is_buffer(self):
-        """True when pin_tool_start uses a buffer for ramming (turtleneck or FPS)."""
-        if self.tool_start is None:
-            return False
-        if self.tool_start == "buffer":
-            return True
-        return str(self.tool_start).strip().upper().startswith("FPS_")
 
     def handle_connect(self):
         """
@@ -1053,7 +1041,7 @@ class AFCExtruder:
         self.response['tool_load_speed'] = self.tool_load_speed
         self.response['buffer'] = self.buffer_name
         self.response['lane_loaded'] = self.lane_loaded
-        self.response['tool_start'] = "buffer" if self.is_buffer else self.tool_start
+        self.response['tool_start'] = self.tool_start
         self.response['tool_start_status'] = bool(self.tool_start_state)
         self.response['tool_end'] = self.tool_end
         self.response['tool_end_status'] = bool(self.tool_end_state)

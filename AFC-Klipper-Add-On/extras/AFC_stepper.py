@@ -474,7 +474,7 @@ class AFCExtruderStepper(AFCLane):
             self._add_endstop('hub', hub_pin, 'hub')
         if tool_start_pin == 'buffer':
             self._add_endstop('tool_start', buffer_adv_pin, 'tool_start')
-        elif tool_start_pin and not str(tool_start_pin).strip().upper().startswith('FPS_'):
+        elif tool_start_pin:
             self._add_endstop('tool_start', tool_start_pin, 'tool_start')
         self._add_endstop('tool_end', tool_end_pin, 'tool_end')
         self._add_endstop('buffer_advance', buffer_adv_pin, 'buffer_adv')
