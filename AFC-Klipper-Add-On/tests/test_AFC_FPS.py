@@ -48,6 +48,8 @@ def _make_fps_buffer(name="FPS_buffer1", overrides=None):
     buf.current_lane = None
     buf.advance_state = False
     buf.trailing_state = False
+    buf._advance_latched = False
+    buf._latch_enabled = False
     buf.debug = False
 
     # ADC defaults
