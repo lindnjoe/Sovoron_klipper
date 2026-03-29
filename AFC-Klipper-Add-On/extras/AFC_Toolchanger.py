@@ -76,6 +76,15 @@ class AfcToolchanger(afcUnit):
         self.logo_error += 'O |_________/\n'
         self.logo_error += 'R {first}{second} {first}{second}\n'.format(first=firstLeg_e, second=secondLeg_e)
         self.logo_error += '  ' + self.name + '</span>\n'
+
+        # Flipped turtle for detection pin conflicts (multiple tools on shuttle)
+        self._logo_conflict  = '<span class=error--text>'
+        self._logo_conflict += 'E {first}{second} {first}{second}\n'.format(first=firstLeg_e, second=secondLeg_e)
+        self._logo_conflict += 'R  _________\n'
+        self._logo_conflict += 'R |       |\\ __\\\n'
+        self._logo_conflict += 'O |_X_|_X_|  </span><span class=secondary--text>X</span><span class=error--text> |\n'
+        self._logo_conflict += 'R  --- --- ----\n'
+        self._logo_conflict += '! ' + self.name + ' CONFLICT</span>\n'
         self.functions: afcFunction = self.printer.load_object(config, 'AFC_functions')
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
         self.gcode_macro = self.printer.load_object(config, 'gcode_macro')
@@ -206,6 +215,8 @@ class AfcToolchanger(afcUnit):
     def logo(self):
         """Dynamic logo with detection pin status for PREP output."""
         ok, detail = self.prep_check()
+        if not ok:
+            return self._logo_conflict + '\n ' + detail + '\n'
         return self._logo_base + '\n ' + detail + '\n'
 
     def _handle_tc_connect(self):
