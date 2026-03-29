@@ -1141,6 +1141,17 @@ class afcAMS(afcUnit):
                 self.logger.warning(f"Extruder retract before OAMS unload failed: {e}")
 
         try:
+            # Queue a 20mm extruder retract WITHOUT waiting — it runs
+            # concurrently with the OAMS hardware unload so the extruder
+            # helps pull filament back as the spool motor rewinds.
+            try:
+                gcode = self.afc.gcode
+                gcode.run_script_from_command("M83")
+                gcode.run_script_from_command("G1 E-20.00 F1500")
+                # No M400 — let it run in parallel with unload_spool
+            except Exception as e:
+                self.logger.warning(f"Concurrent retract failed: {e}")
+
             result = oams.unload_spool_with_retry()
             success = bool(result) if not isinstance(result, tuple) else bool(result[0])
 
