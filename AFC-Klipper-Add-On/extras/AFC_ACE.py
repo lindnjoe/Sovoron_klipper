@@ -3179,6 +3179,14 @@ class afcACE(afcUnit):
         if local_slot < 0:
             return False, f"Cannot determine slot for {cur_lane.name}", 0
 
+        # Clear FPS advance latch from any previous operation so the
+        # sensor check below reads real-time pressure, not a stale latch.
+        buffer_obj = getattr(cur_lane, 'buffer_obj', None)
+        if buffer_obj is not None and hasattr(buffer_obj, 'clear_advance_latch'):
+            buffer_obj.clear_advance_latch()
+            # Brief pause for ADC to update with current pressure
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+
         # Don't calibrate if sensor is already triggered
         if cur_lane.get_toolhead_pre_sensor_state():
             return False, "Toolhead sensor already triggered - unload first", 0
