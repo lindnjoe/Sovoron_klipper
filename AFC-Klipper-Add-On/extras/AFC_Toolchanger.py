@@ -559,6 +559,13 @@ class AfcToolchanger(afcUnit):
             raise
 
     def system_Test(self, cur_lane: AFCLane, delay: float, assignTcmd: str, enable_movement: bool):
+        # Run detection pin scan once (on first lane) to catch conflicts
+        first_lane = next(iter(self.lanes.values()), None)
+        if first_lane is not None and cur_lane.name == first_lane.name:
+            ok, check_msg = self.prep_check()
+            if not ok:
+                self.logger.error(check_msg)
+
         msg = ""
         succeeded = True
 
