@@ -553,19 +553,14 @@ class AFCExtruderStepper(AFCLane):
 
     def _get_buffer_value(self, buffer_name: str, key: str, default=None) -> Optional[str]:
         """
-        Fetch a config value from a buffer section, trying both AFC_buffer and
-        AFC_FPS prefixes so that FPS-based buffers are found correctly.
+        Fetch a config value from a buffer section.
 
         :param buffer_name: Buffer name to look up
         :param key: Config key to fetch (e.g. 'advance_pin')
         :param default: Default if not found
         :return: Config value or default
         """
-        for prefix in ('AFC_buffer', 'AFC_FPS'):
-            val = self._get_section_value(prefix, buffer_name, key)
-            if val is not None:
-                return val
-        return default
+        return self._get_section_value('AFC_buffer', buffer_name, key) or default
 
     def _get_section_value(self, section_prefix: str, name: str, key: str, default=None) -> Optional[str]:
         """
