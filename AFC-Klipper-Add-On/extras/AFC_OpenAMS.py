@@ -954,12 +954,26 @@ class afcAMS(afcUnit):
             # physically moving filament.
             self.logger.warning(f"Engagement failed for {cur_lane.name}, cleaning up for retry")
 
-            # Retract the engagement extrusion from extruder
-            engagement_length, engagement_speed = self.get_engagement_params(cur_lane.name)
-            if engagement_length:
-                self.afc.move_e_pos(-engagement_length,
-                                     engagement_speed / 60.0 if engagement_speed else 7.0,
-                                     "engagement cleanup retract")
+            # Set follower reverse before retract so it assists the pull
+            if self._follower is not None:
+                fps_state = self._get_monitor_state()
+                if fps_state:
+                    self._follower.set_follower_state(
+                        fps_state, oams, 1, 0, "engagement cleanup", force=True)
+
+            # Retract full tool_stn_unload + 10mm to clear extruder gears
+            # before OAMS hardware unload. engagement_length alone isn't enough
+            # because post-engagement extrusion pushed filament further in.
+            unload_length, unload_speed = self.get_unload_params(cur_lane.name)
+            if unload_length and unload_length > 0:
+                unload_length += 10.0
+                retract_speed = unload_speed if unload_speed else 25.0 * 60.0
+                self.logger.debug(
+                    f"Retracting {unload_length:.1f}mm from extruder before cleanup unload")
+                try:
+                    self._oams_extrude(-unload_length, retract_speed, "engagement_cleanup_retract")
+                except Exception as e:
+                    self.logger.warning(f"Cleanup retract failed: {e}")
 
             # Abort any in-flight MCU action and wait for it to clear
             oams.abort_current_action(wait=True)
