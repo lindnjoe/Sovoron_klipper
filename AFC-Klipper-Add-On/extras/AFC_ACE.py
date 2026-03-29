@@ -3255,39 +3255,8 @@ class afcACE(afcUnit):
         return True, "", distance
 
     def _calibrate_bowden_inner(self, cur_lane, dis, tol):
-        success, msg, distance = self._measure_bowden_distance(cur_lane)
-        if not success:
-            return False, msg, distance
-
-        # Round to nearest integer for clean config values
-        new_feed_length = round(distance, 0)
-        new_retract_length = round(distance - 20, 0)
-
-        # Update in-memory unit-level values
-        old_feed = self.feed_length
-        old_retract = self.retract_length
-        self.feed_length = new_feed_length
-        self.retract_length = new_retract_length
-
-        # Write calibrated values to the unit config section
-        unit_section = " ".join(self.full_name)
-        cal_msg = f"\n feed_length: New: {new_feed_length} Old: {old_feed}"
-        self.afc.function.ConfigRewrite(
-            unit_section, "feed_length", new_feed_length, cal_msg
-        )
-        cal_msg = f"\n retract_length: New: {new_retract_length} Old: {old_retract}"
-        self.afc.function.ConfigRewrite(
-            unit_section, "retract_length", new_retract_length, cal_msg
-        )
-        self.afc.save_vars()
-
-        msg = (
-            f"ACE bowden calibration: toolhead sensor triggered at {distance:.1f}mm.\n"
-            f"feed_length: {new_feed_length:.0f} (was {old_feed:.0f})\n"
-            f"retract_length: {new_retract_length:.0f} (was {old_retract:.0f})\n"
-            f"Values saved to unit config [{unit_section}]."
-        )
-        return True, msg, distance
+        # Each ACE lane has its own bowden length — always save per-lane
+        return self._calibrate_lane_inner(cur_lane, tol)
 
     def calibrate_hub(self, cur_lane, tol):
         """Calibrate dist_hub by feeding until hub sensor triggers.
@@ -3431,22 +3400,11 @@ class afcACE(afcUnit):
             return False, msg, distance
 
         lane_name = cur_lane.name
-        dist_hub = self._get_dist_hub(cur_lane)
 
-        # When homing_enabled, prep loads filament to the hub automatically.
-        # So calibration starts at the hub — the measured distance is only
-        # hub-to-extruder (bowden), not the full ACE-to-extruder path.
-        # Add dist_hub back to get the true full path for feed_length.
-        if cur_lane.loaded_to_hub and dist_hub > 0:
-            full_distance = distance + dist_hub
-            self.logger.info(
-                f"ACE calibration: filament started at hub, adding dist_hub "
-                f"({dist_hub:.0f}mm) to measured {distance:.0f}mm = {full_distance:.0f}mm full path")
-        else:
-            full_distance = distance
-
-        new_feed_length = round(full_distance, 0)
-        new_retract_length = round(full_distance - 20, 0)
+        # _measure_bowden_distance already adds dist_hub when filament
+        # starts at the hub, so 'distance' is the full ACE-to-extruder path.
+        new_feed_length = round(distance, 0)
+        new_retract_length = round(distance - 20, 0)
 
         # Update in-memory per-lane overrides
         old_feed = self._lane_feed_length.get(lane_name, self.feed_length)
