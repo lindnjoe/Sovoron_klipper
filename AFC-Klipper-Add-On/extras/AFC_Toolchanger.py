@@ -562,10 +562,25 @@ class AfcToolchanger(afcUnit):
         msg = ""
         succeeded = True
 
+        # Track on-shuttle count across lanes — reset on first lane
+        first_lane = next(iter(self.lanes.values()), None)
+        if first_lane is not None and cur_lane.name == first_lane.name:
+            self._prep_on_shuttle = []
+
         # Check detection pin for this lane's extruder
         extruder = cur_lane.extruder_obj
         if extruder is not None and extruder.on_shuttle():
             msg += "<span class=info--text>ON SHUTTLE</span> "
+            self._prep_on_shuttle.append(cur_lane.name)
+
+        # After last lane, check for conflicts
+        last_lane = list(self.lanes.values())[-1] if self.lanes else None
+        if last_lane is not None and cur_lane.name == last_lane.name:
+            if len(self._prep_on_shuttle) > 1:
+                names = ', '.join(self._prep_on_shuttle)
+                self.logger.error(
+                    "CONFLICT: Multiple tools detected on shuttle: %s. "
+                    "Check detection pins." % names)
 
         if not cur_lane.prep_state:
             if not cur_lane.load_state:
