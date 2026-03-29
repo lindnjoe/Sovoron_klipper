@@ -474,7 +474,7 @@ class AFCExtruderStepper(AFCLane):
             and hub_pin.lower() != "virtual"):
             if not self._reuse_lane_endstop('hub', AFCHomingPoints.HUB):
                 self._add_endstop('hub', hub_pin, 'hub')
-        if tool_start_pin == 'buffer' or (tool_start_pin and str(tool_start_pin).strip().upper().startswith('FPS_')):
+        if tool_start_pin == 'buffer':
             # When tool_start uses the buffer (hardware or FPS), reuse the
             # endstop already created by AFCLane.__init__ to avoid duplicate
             # pin registration or missing FPS software endstop.
