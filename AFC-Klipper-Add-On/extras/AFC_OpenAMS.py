@@ -960,6 +960,7 @@ class afcAMS(afcUnit):
                 if fps_state:
                     self._follower.set_follower_state(
                         fps_state, oams, 1, 0, "engagement cleanup", force=True)
+                    self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
 
             # Retract full tool_stn_unload + 10mm to clear extruder gears
             # before OAMS hardware unload. engagement_length alone isn't enough
@@ -1132,6 +1133,8 @@ class afcAMS(afcUnit):
             fps_state = self._get_monitor_state()
             if fps_state:
                 self._follower.set_follower_state(fps_state, oams, 1, 0, "before unload", force=True)
+                # Wait for follower MCU command to take effect before pulling
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
 
         # Retract filament from extruder gears before OAMS hardware unload.
         # Follower is already reversed so it pulls along with the retract.
