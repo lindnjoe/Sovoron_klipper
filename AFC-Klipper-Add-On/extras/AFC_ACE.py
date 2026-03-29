@@ -3255,8 +3255,39 @@ class afcACE(afcUnit):
         return True, "", distance
 
     def _calibrate_bowden_inner(self, cur_lane, dis, tol):
-        # Each ACE lane has its own bowden length — always save per-lane
-        return self._calibrate_lane_inner(cur_lane, tol)
+        """Calibrate bowden and save to the UNIT config section."""
+        success, msg, distance = self._measure_bowden_distance(cur_lane)
+        if not success:
+            return False, msg, distance
+
+        new_feed_length = round(distance, 0)
+        new_retract_length = round(distance - 20, 0)
+
+        # Update in-memory unit-level values
+        old_feed = self.feed_length
+        old_retract = self.retract_length
+        self.feed_length = new_feed_length
+        self.retract_length = new_retract_length
+
+        # Write to the unit config section [AFC_ACE Ace_1]
+        unit_section = " ".join(self.full_name)
+        cal_msg = f"\n feed_length: New: {new_feed_length} Old: {old_feed}"
+        self.afc.function.ConfigRewrite(
+            unit_section, "feed_length", new_feed_length, cal_msg
+        )
+        cal_msg = f"\n retract_length: New: {new_retract_length} Old: {old_retract}"
+        self.afc.function.ConfigRewrite(
+            unit_section, "retract_length", new_retract_length, cal_msg
+        )
+        self.afc.save_vars()
+
+        msg = (
+            f"ACE bowden calibration: toolhead sensor triggered at {distance:.1f}mm.\n"
+            f"feed_length: {new_feed_length:.0f} (was {old_feed:.0f})\n"
+            f"retract_length: {new_retract_length:.0f} (was {old_retract:.0f})\n"
+            f"Values saved to unit config [{unit_section}]."
+        )
+        return True, msg, distance
 
     def calibrate_hub(self, cur_lane, tol):
         """Calibrate dist_hub by feeding until hub sensor triggers.
