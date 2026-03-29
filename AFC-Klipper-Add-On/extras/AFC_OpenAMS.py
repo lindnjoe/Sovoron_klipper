@@ -1584,11 +1584,11 @@ class afcAMS(afcUnit):
         return True
 
     def unload_sequence(self, cur_lane, cur_hub, cur_extruder):
-        """OpenAMS unload sequence - uses shared toolhead steps then delegates to OAMSManager.
+        """OpenAMS unload sequence - uses shared toolhead steps then delegates to hardware.
 
         The toolhead steps (cut, form tip, park) are shared with stock AFC since they
-        happen at the toolhead. After those, retraction is delegated to OAMSManager
-        instead of using stepper-based retraction.
+        happen at the toolhead. After those, retraction is delegated to the OpenAMS
+        hardware instead of using stepper-based retraction.
 
         Called by AFC's upstream delegation hook:
             if hasattr(cur_lane.unit_obj, 'unload_sequence'):

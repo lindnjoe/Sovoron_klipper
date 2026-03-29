@@ -573,7 +573,7 @@ class TestExtruderProperty:
         assert buf.extruder is None
 
     def test_oams_style_access_pattern(self):
-        """Verify the fps.extruder.last_position pattern used by oams_manager."""
+        """Verify the fps.extruder.last_position access pattern."""
         buf = _make_fps_buffer()
         mock_extruder = MagicMock()
         mock_extruder.last_position = 100.0
