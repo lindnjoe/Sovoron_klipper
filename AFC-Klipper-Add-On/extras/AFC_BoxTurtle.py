@@ -110,20 +110,20 @@ class afcBoxTurtle(afcUnit):
                 if (cur_lane.tool_loaded
                     and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
                     ramming_loaded = False
-                    if cur_lane.extruder_obj.is_buffer:
+                    if cur_lane.extruder_obj.tool_start_is_buffer:
                         ramming_loaded = self._buffer_toolhead_load_check(cur_lane)
                     if (cur_lane.get_toolhead_pre_sensor_state() == True
                         or ramming_loaded
-                        or cur_lane.extruder_obj.tool_end_state
-                        or cur_lane.extruder_obj.on_shuttle()):
+                        or cur_lane.extruder_obj.tool_end_state):
                         if cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                             cur_lane.sync_to_extruder()
                             on_shuttle = ""
-                            if cur_lane.extruder_obj.tc_unit_obj:
+                            if (cur_lane.extruder_obj.tool_obj
+                                and cur_lane.extruder_obj.tc_unit_name):
                                 on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
                             msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
 
-                            if (cur_lane.extruder_obj.is_buffer
+                            if (cur_lane.extruder_obj.tool_start_is_buffer
                                 and (not self.afc.homing_enabled
                                      or not cur_lane.unit_obj.enable_buffer_tool_check)):
                                 msg += "<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>"
@@ -272,7 +272,7 @@ class afcBoxTurtle(afcUnit):
 
             bowden_dist = round(bow_pos, 2)
             if not self.afc.homing_enabled:
-                if cur_extruder.is_buffer:
+                if cur_extruder.tool_start_is_buffer:
                     bowden_dist = round(bow_pos - (cur_lane.short_move_dis * 2), 2)
                 else:
                     bowden_dist = round(bow_pos - cur_lane.short_move_dis, 2)
@@ -284,6 +284,14 @@ class afcBoxTurtle(afcUnit):
                 cur_lane.hub_obj.afc_unload_bowden_length = cur_lane.hub_obj.afc_bowden_length = bowden_dist
             else:
                 bowden_dist = bow_pos - cur_lane.short_move_dis
+
+
+            unload_cal_msg = ''
+            cal_msg = f'\n {variable_name}: New: {bowden_dist} Old: {bowden_length}'
+            if not cur_lane.is_direct_hub():
+                unload_cal_msg = f'\n afc_unload_bowden_length: New: {bowden_dist} Old: {cur_lane.hub_obj.afc_unload_bowden_length}'
+                cur_lane.hub_obj.afc_unload_bowden_length = cur_lane.hub_obj.afc_bowden_length = bowden_dist
+            else:
                 cur_lane.dist_hub = bowden_dist
 
             if bowden_dist < 0:
