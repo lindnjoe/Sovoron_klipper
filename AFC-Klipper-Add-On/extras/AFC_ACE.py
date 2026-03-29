@@ -3433,13 +3433,20 @@ class afcACE(afcUnit):
         lane_name = cur_lane.name
         dist_hub = self._get_dist_hub(cur_lane)
 
-        # The calibration measures ACE slot → toolhead (full path).
-        # feed_length = full path (used when feeding from ACE slot)
-        # retract_length = full path minus dist_hub (hub-to-extruder + hub_clear)
-        #   because the unload code does (retract_length - dist_hub) to get
-        #   the bowden distance, and we want filament to stop near the hub.
-        new_feed_length = round(distance, 0)
-        new_retract_length = round(distance - 20, 0)
+        # When homing_enabled, prep loads filament to the hub automatically.
+        # So calibration starts at the hub — the measured distance is only
+        # hub-to-extruder (bowden), not the full ACE-to-extruder path.
+        # Add dist_hub back to get the true full path for feed_length.
+        if cur_lane.loaded_to_hub and dist_hub > 0:
+            full_distance = distance + dist_hub
+            self.logger.info(
+                f"ACE calibration: filament started at hub, adding dist_hub "
+                f"({dist_hub:.0f}mm) to measured {distance:.0f}mm = {full_distance:.0f}mm full path")
+        else:
+            full_distance = distance
+
+        new_feed_length = round(full_distance, 0)
+        new_retract_length = round(full_distance - 20, 0)
 
         # Update in-memory per-lane overrides
         old_feed = self._lane_feed_length.get(lane_name, self.feed_length)
