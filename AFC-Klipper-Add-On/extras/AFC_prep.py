@@ -235,6 +235,15 @@ class afcPrep:
         except:
             pass
 
+        # Toolchanger prep: scan detection pins, verify no conflicts
+        for extruder in self.afc.tools.values():
+            tc = getattr(extruder, 'tc_unit_obj', None)
+            if tc is not None and hasattr(tc, 'prep_check'):
+                ok, msg = tc.prep_check()
+                if not ok:
+                    overrall_status = False
+                break  # Only one toolchanger — don't run multiple times
+
         self._td1_prep(overrall_status)
         # look up what current lane should be a call select lane, this is more for units that
         # have selectors to make sure the selector is on the correct lane

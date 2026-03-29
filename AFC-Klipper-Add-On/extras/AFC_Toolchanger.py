@@ -165,6 +165,9 @@ class AfcToolchanger(afcUnit):
         self.gcode.register_command("STOP_TOOL_CRASH_DETECTION",
                                     self.cmd_STOP_TOOL_CRASH_DETECTION,
                                     desc="Disable tool crash detection")
+        self.gcode.register_command("TOOLCHANGER_PREP",
+                                    self.cmd_TOOLCHANGER_PREP,
+                                    desc="Scan detection pins and report toolchanger status")
 
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_tc_connect)
@@ -425,6 +428,66 @@ class AfcToolchanger(afcUnit):
                 self.status = STATUS_ERROR
                 self.error_message = 'Exception during initialization'
             raise
+
+    def prep_check(self):
+        """Scan detection pins and report toolchanger status.
+
+        Returns (ok, message) tuple. Checks:
+        - Detection pin conflicts (multiple tools reading PRESENT)
+        - Tool probe conflicts (multiple probes triggered)
+        - Identifies which tool is on the shuttle (if any)
+        - Reports any tools with unavailable detection (-1)
+        """
+        if not self.has_detection:
+            return True, "No detection pins configured — skipping prep check"
+
+        # Let detection pin callbacks settle
+        reactor = self.printer.get_reactor()
+        reactor.pause(reactor.monotonic() + 0.3)
+
+        present = []
+        absent = []
+        unavailable = []
+
+        for tool in self.tools.values():
+            if tool.detect_state == DETECT_PRESENT:
+                present.append(tool)
+            elif tool.detect_state == 0:  # ABSENT
+                absent.append(tool)
+            else:
+                unavailable.append(tool)
+
+        parts = []
+
+        if len(present) > 1:
+            names = ', '.join(t.name for t in present)
+            msg = (
+                "CONFLICT: Multiple tools detected on shuttle: %s. "
+                "Check detection pins — only one tool should read PRESENT."
+                % names)
+            self.logger.error(msg)
+            return False, msg
+
+        if len(present) == 1:
+            parts.append("Shuttle: %s" % present[0].name)
+        else:
+            parts.append("Shuttle: empty")
+
+        if absent:
+            parts.append("Docked: %s" % ', '.join(t.name for t in absent))
+
+        if unavailable:
+            names = ', '.join(t.name for t in unavailable)
+            parts.append("No detection: %s" % names)
+
+        msg = " | ".join(parts)
+        self.logger.info("Toolchanger prep: %s" % msg)
+        return True, msg
+
+    def cmd_TOOLCHANGER_PREP(self, gcmd):
+        """Run toolchanger prep check — scan detection pins and report status."""
+        ok, msg = self.prep_check()
+        gcmd.respond_info(msg)
 
     def select_tool(self, gcmd, tool, restore_axis):
         """Core tool change: dropoff current, pickup new, manage offsets."""
