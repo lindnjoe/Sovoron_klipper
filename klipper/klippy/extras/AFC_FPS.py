@@ -380,7 +380,11 @@ class AFCFPSBuffer:
         # loading / calibration).  Without this, get_toolhead_pre_sensor_state()
         # returns stale False and ACE load / calibration can't detect
         # filament arrival at the toolhead.
-        if not self.enable:
+        # Update advance/trailing state for non-stepper lanes even when
+        # buffer is enabled — the correction timer doesn't run for them.
+        has_stepper = (self.enable and self.current_lane is not None
+                       and getattr(self.current_lane, 'extruder_stepper', None) is not None)
+        if not has_stepper:
             half_db = self.deadband / 2.0
             if self.smoothed_fps > self.set_point + half_db:
                 self.last_state = ADVANCING_STATE_NAME
