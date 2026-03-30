@@ -31,10 +31,6 @@ STUCK_DWELL = 2.0               # Seconds condition must persist before firing
 STUCK_LOAD_GRACE = 8.0          # Grace period after load completes
 STUCK_MIN_ENCODER = 3           # Minimum encoder clicks per check to be "moving"
 
-# Encoder freeze detection (covers stuck spool at any pressure)
-ENCODER_FREEZE_DWELL = 10.0     # Seconds of zero encoder movement before alerting
-ENCODER_FREEZE_MIN_CHECKS = 3   # Minimum consecutive zero-movement checks
-
 # Clog detection
 CLOG_PRESSURE_TARGET = 0.50     # Expected FPS pressure during normal printing
 CLOG_PRESSURE_BAND = 0.06       # Deadband around target (no clog if pressure varies)
@@ -87,10 +83,6 @@ class FPSState:
         self.engagement_in_progress = False
         self.engagement_checked_at = None
 
-        # Encoder freeze detection
-        self.encoder_freeze_start = None
-        self.encoder_freeze_checks = 0
-
         # Lane change tracking
         self.last_lane_change_time = None
 
@@ -107,8 +99,6 @@ class FPSState:
         self.clog_start_time = None
         self.clog_start_extruder = None
         self.clog_start_encoder = None
-        self.encoder_freeze_start = None
-        self.encoder_freeze_checks = 0
         self.engagement_in_progress = False
 
     def clear_encoder_samples(self):
@@ -269,7 +259,6 @@ class OAMSMonitor:
 
             # Run detection checks
             self._check_stuck_spool(eventtime, encoder_delta, pressure)
-            self._check_encoder_freeze(eventtime, encoder_delta, pressure)
 
             if self.enable_clog:
                 self._check_clog(eventtime, encoder_delta, pressure)
@@ -321,51 +310,6 @@ class OAMSMonitor:
                         self._on_stuck_cleared(self.fps_name)
                     st.stuck_active = False
                     st.stuck_start_time = None
-
-    # ---- Encoder freeze detection ----
-
-    def _check_encoder_freeze(self, eventtime, encoder_delta, pressure):
-        """Detect stuck spool regardless of pressure.
-
-        When a spool jams during printing, the follower keeps pushing
-        (high pressure) but the encoder stops. Neither the stuck_spool
-        check (wants low pressure) nor the clog check (wants normal
-        pressure) catches this. This check simply watches for zero
-        encoder movement over ENCODER_FREEZE_DWELL seconds.
-        """
-        st = self.state
-
-        # Grace after load/engagement
-        if st.last_lane_change_time and \
-           (eventtime - st.last_lane_change_time) < self.stuck_load_grace:
-            return
-        if st.engagement_checked_at and (eventtime - st.engagement_checked_at) < 6.0:
-            return
-
-        if encoder_delta < self.stuck_min_encoder:
-            st.encoder_freeze_checks += 1
-            if st.encoder_freeze_start is None:
-                st.encoder_freeze_start = eventtime
-            elif ((eventtime - st.encoder_freeze_start) >= ENCODER_FREEZE_DWELL
-                  and st.encoder_freeze_checks >= ENCODER_FREEZE_MIN_CHECKS):
-                if not st.stuck_active:
-                    st.stuck_active = True
-                    msg = (
-                        f"Encoder frozen on {self.fps_name}: no movement for "
-                        f"{eventtime - st.encoder_freeze_start:.1f}s "
-                        f"({st.encoder_freeze_checks} checks), "
-                        f"FPS pressure {pressure:.2f} — spool may be jammed")
-                    self.logger.info(msg)
-                    if self._on_stuck_spool:
-                        self._on_stuck_spool(self.fps_name, msg)
-        else:
-            # Encoder moving — reset freeze tracking
-            if st.encoder_freeze_start is not None:
-                st.encoder_freeze_start = None
-                st.encoder_freeze_checks = 0
-                if st.stuck_active and self._on_stuck_cleared:
-                    self._on_stuck_cleared(self.fps_name)
-                    st.stuck_active = False
 
     # ---- Clog detection ----
 
