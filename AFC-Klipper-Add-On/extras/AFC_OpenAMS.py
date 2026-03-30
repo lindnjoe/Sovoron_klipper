@@ -1811,14 +1811,25 @@ class afcAMS(afcUnit):
         """No-op for OpenAMS: hardware handles hub loading internally."""
 
     def _get_fps_id_for_lane(self, lane_name: str) -> Optional[str]:
-        """Get FPS buffer name for a lane via AFC's extruder config."""
+        """Get FPS buffer name for a lane — checks lane, unit, then extruder."""
         lane = self.afc.lanes.get(lane_name)
         if lane is None:
             return None
+        # Check lane's resolved buffer_obj first
+        buf = getattr(lane, 'buffer_obj', None)
+        if buf is not None:
+            return getattr(buf, 'name', None)
+        # Fall back to unit buffer
+        unit = getattr(lane, 'unit_obj', None)
+        if unit is not None:
+            buf_name = getattr(unit, 'buffer_name', None)
+            if buf_name:
+                return buf_name
+        # Fall back to extruder buffer
         extruder = getattr(lane, 'extruder_obj', None)
-        if extruder is None:
-            return None
-        return getattr(extruder, 'buffer_name', None)
+        if extruder is not None:
+            return getattr(extruder, 'buffer_name', None)
+        return None
 
     def _format_openams_calibration_command(self, base_command, lane):
         if base_command not in {"OAMS_CALIBRATE_HUB_HES", "OAMS_CALIBRATE_PTFE_LENGTH"}:
@@ -3316,29 +3327,6 @@ class afcAMS(afcUnit):
             self.oams.action_status = None
             self.logger.error(f"Failed to start spool load for TD-1 capture on {cur_lane.name}: {e}")
             return False, "Failed to start spool load"
-
-        fps_id = self._get_fps_id_for_lane(cur_lane.name)
-        if fps_id is None:
-            self.logger.error(f"Unable to resolve FPS for {cur_lane.name}")
-            try:
-                self.oams.set_oams_follower(0, 0)
-            except Exception:
-                pass
-            # Cancel the in-progress load (marks spool as loaded), then unload + clean up
-            try:
-                self._cancel_and_mark_loaded(spool_index, cur_lane.name)
-            except Exception:
-                pass
-            try:
-                self.oams.unload_spool()
-            except Exception:
-                pass
-            try:
-                self.oams.clear_errors()
-            except Exception:
-                pass
-            self._clear_lane_state_after_td1(cur_lane)
-            return False, "Unable to resolve FPS"
 
         # Wait for hub to load (should happen within a few seconds)
         # Use OAMS hardware sensor, not hub_obj
