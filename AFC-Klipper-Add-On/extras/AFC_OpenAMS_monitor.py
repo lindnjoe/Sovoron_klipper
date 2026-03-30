@@ -342,7 +342,13 @@ class OAMSMonitor:
         if st.engagement_checked_at and (eventtime - st.engagement_checked_at) < 6.0:
             return
 
-        if encoder_delta < self.stuck_min_encoder:
+        # Only check when pressure is HIGH — low pressure is handled by
+        # _check_stuck_spool, normal pressure by _check_clog.
+        # This covers the gap: spool physically jammed, follower compressing.
+        pressure_high = pressure > (CLOG_PRESSURE_TARGET + CLOG_PRESSURE_BAND)
+        pressure_low = pressure <= self.stuck_pressure_low
+
+        if encoder_delta < self.stuck_min_encoder and pressure_high and not pressure_low:
             st.encoder_freeze_checks += 1
             if st.encoder_freeze_start is None:
                 st.encoder_freeze_start = eventtime
