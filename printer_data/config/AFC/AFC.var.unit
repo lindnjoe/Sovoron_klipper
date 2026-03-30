@@ -338,7 +338,12 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
-            "td1_data": {}
+            "td1_data": {
+                "td": 0.5,
+                "color": "142D72",
+                "scan_time": "2026-03-30T21:40:38.760600+00:00Z",
+                "error": null
+            }
         },
         "lane11": {
             "name": "lane11",
@@ -368,7 +373,12 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
-            "td1_data": {}
+            "td1_data": {
+                "td": 4.3,
+                "color": "6E263B",
+                "scan_time": "2026-03-30T21:43:42.770597+00:00Z",
+                "error": null
+            }
         }
     },
     "Turtle_1": {

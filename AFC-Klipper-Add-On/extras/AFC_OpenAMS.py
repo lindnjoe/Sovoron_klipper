@@ -3408,6 +3408,8 @@ class afcAMS(afcUnit):
         if last_scan_times is None:
             last_scan_times = {}
             self._td1_last_scan_time_capture = last_scan_times
+        # Clear stale entry for this device so we detect fresh data
+        last_scan_times.pop(cur_lane.td1_device_id, None)
 
         def _capture_td1_if_fresh() -> bool:
             td1_data = self.afc.moonraker.get_td1_data()
