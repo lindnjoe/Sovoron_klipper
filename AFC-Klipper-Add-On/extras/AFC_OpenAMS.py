@@ -2962,7 +2962,7 @@ class afcAMS(afcUnit):
             self.logger.debug(f"Failed to clear lane state after TD-1 for {cur_lane.name}: {e}")
         self.afc.save_vars()
 
-    def _unload_after_td1(self, cur_lane, spool_index, fps_id):
+    def _unload_after_td1(self, cur_lane, spool_index):
         """
         Unload filament after TD-1 operation using the proper firmware unload_spool().
         Uses the high-level unload_spool() so the firmware properly clears its internal
@@ -3028,11 +3028,6 @@ class afcAMS(afcUnit):
             return valid, msg, 0
 
         self.logger.raw(f"Calibrating bowden length to TD-1 device with {cur_lane.name}")
-        fps_id = self._get_fps_id_for_lane(cur_lane.name)
-        if fps_id is None:
-            msg = f"Unable to resolve FPS for {cur_lane.name}"
-            self.logger.error(msg)
-            return False, msg, 0
 
         # Load the spool before starting TD-1 calibration
         # The load command is needed to move filament from spool bay to hub motor
@@ -3111,7 +3106,7 @@ class afcAMS(afcUnit):
                 self._cancel_and_mark_loaded(spool_index, cur_lane.name)
             except Exception:
                 pass
-            self._unload_after_td1(cur_lane, spool_index, fps_id)
+            self._unload_after_td1(cur_lane, spool_index)
             return False, msg, 0
 
         # Hub triggered and encoder reference captured - let the load keep feeding
@@ -3212,7 +3207,7 @@ class afcAMS(afcUnit):
             pass
 
         if not td1_detected:
-            self._unload_after_td1(cur_lane, spool_index, fps_id)
+            self._unload_after_td1(cur_lane, spool_index)
             msg = f"TD-1 failed to detect filament for {cur_lane.name}"
             return False, msg, 0
 
@@ -3226,7 +3221,7 @@ class afcAMS(afcUnit):
         if encoder_after is None:
             msg = "Unable to read encoder after TD-1 detection"
             self.logger.error(msg)
-            self._unload_after_td1(cur_lane, spool_index, fps_id)
+            self._unload_after_td1(cur_lane, spool_index)
             return False, msg, 0
 
         encoder_delta = abs(encoder_after - encoder_before)
@@ -3236,7 +3231,7 @@ class afcAMS(afcUnit):
         )
 
         # Unload filament after successful TD-1 calibration
-        self._unload_after_td1(cur_lane, spool_index, fps_id)
+        self._unload_after_td1(cur_lane, spool_index)
 
         cal_msg = f"\n td1_bowden_length: New: {encoder_delta} Old: {cur_lane.td1_bowden_length}"
         cur_lane.td1_bowden_length = encoder_delta
@@ -3517,7 +3512,7 @@ class afcAMS(afcUnit):
             pass
 
         # Always unload after capture attempt, regardless of TD-1 read result
-        self._unload_after_td1(cur_lane, spool_index, fps_id)
+        self._unload_after_td1(cur_lane, spool_index)
         self._td1_last_capture_time = self.afc.reactor.monotonic()
 
         if not td1_detected:
