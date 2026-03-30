@@ -3067,19 +3067,18 @@ class afcAMS(afcUnit):
             return False, f"Hub sensor did not trigger for {cur_lane.name}", 0
 
         # Phase 2: Let load continue, poll TD-1 while filament feeds
-        # The firmware keeps feeding after hub trigger. We poll TD-1 and
-        # watch encoder + FPS pressure.
-        compare_time = datetime.now()
-        last_scan_times = getattr(self, "_td1_last_scan_time_calibration", {})
-        self._td1_last_scan_time_calibration = last_scan_times
+        # Snapshot current TD-1 data BEFORE filament moves — we detect
+        # "fresh" by comparing against this baseline (avoids timezone issues).
+        baseline_td1 = self._get_td1_snapshot(cur_lane)
+        self.logger.debug(
+            f"TD-1 cal: baseline snapshot={baseline_td1}")
 
         td1_detected = False
         encoder_at_td1 = None
         td1_timeout = self.afc.reactor.monotonic() + 120.0
-        next_poll = self.afc.reactor.monotonic() + TD1_POLL_INTERVAL
 
         while self.afc.reactor.monotonic() < td1_timeout:
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
 
             # Check FPS pressure — stop if filament reached extruder
             try:
@@ -3092,27 +3091,21 @@ class afcAMS(afcUnit):
                     f"filament at extruder — stopping")
                 break
 
-            # Poll TD-1 periodically
-            if self.afc.reactor.monotonic() >= next_poll:
-                next_poll = self.afc.reactor.monotonic() + TD1_POLL_INTERVAL
-                try:
-                    encoder_now = int(self.oams.encoder_clicks)
-                except Exception:
-                    encoder_now = encoder_at_hub
-                total_clicks = abs(encoder_now - encoder_at_hub)
-                self.logger.debug(
-                    f"TD-1 cal: encoder={total_clicks} clicks from hub, "
-                    f"FPS={fps_pressure:.2f}")
+            # Poll TD-1 — check if data changed from baseline
+            try:
+                encoder_now = int(self.oams.encoder_clicks)
+            except Exception:
+                encoder_now = encoder_at_hub
+            total_clicks = abs(encoder_now - encoder_at_hub)
 
-                detected = self._check_td1_fresh(
-                    cur_lane, compare_time, last_scan_times)
-                if detected:
-                    td1_detected = True
-                    encoder_at_td1 = encoder_now
-                    self.logger.info(
-                        f"TD-1 cal: DETECTED at encoder={total_clicks} "
-                        f"clicks from hub")
-                    break
+            current_td1 = self._get_td1_snapshot(cur_lane)
+            if current_td1 is not None and current_td1 != baseline_td1:
+                td1_detected = True
+                encoder_at_td1 = encoder_now
+                self.logger.info(
+                    f"TD-1 cal: DETECTED at encoder={total_clicks} "
+                    f"clicks from hub (data changed from baseline)")
+                break
 
         # Stop the load
         try:
@@ -3163,35 +3156,24 @@ class afcAMS(afcUnit):
             pass
         self._clear_lane_state_after_td1(cur_lane)
 
-    def _check_td1_fresh(self, cur_lane, compare_time, last_scan_times):
-        """Check if TD-1 has fresh data since compare_time."""
+    def _get_td1_snapshot(self, cur_lane):
+        """Get a hashable snapshot of TD-1 data for change detection.
+
+        Returns (scan_time, td, color) tuple or None if no data.
+        """
         try:
             td1_data = self.afc.moonraker.get_td1_data()
         except Exception:
-            return False
+            return None
         if not td1_data or cur_lane.td1_device_id not in td1_data:
-            return False
+            return None
         data = td1_data[cur_lane.td1_device_id]
-        if data.get("td") is None or data.get("color") is None:
-            return False
         scan_time = data.get("scan_time")
+        td = data.get("td")
+        color = data.get("color")
         if scan_time is None:
-            return False
-        try:
-            if scan_time.endswith("+00:00Z"):
-                scan_time = scan_time[:-1]
-            else:
-                scan_time = scan_time[:-1] + "+00:00"
-            scan_dt = datetime.fromisoformat(scan_time).astimezone()
-        except (AttributeError, ValueError):
-            return False
-        if scan_dt <= compare_time.astimezone():
-            return False
-        last = last_scan_times.get(cur_lane.td1_device_id)
-        if last is not None and scan_dt <= last:
-            return False
-        last_scan_times[cur_lane.td1_device_id] = scan_dt
-        return True
+            return None
+        return (scan_time, td, color)
 
     def _capture_td1_with_oams(
         self,

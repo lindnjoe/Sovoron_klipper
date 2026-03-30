@@ -1339,7 +1339,7 @@ class afcFunction:
         # Determine if a specific lane is provided
         if lanes is not None:
             checked, calibrated, additional_msg = self._lane_calibration(lanes, unit, tol, dis)
-        else:
+        elif afc_bl is None and td1 is None:
             self.logger.info('No lanes selected to calibrate dist_hub')
 
         # Calibrate Bowden length with specified lane
