@@ -273,7 +273,12 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
-            "td1_data": {}
+            "td1_data": {
+                "td": 0.1,
+                "color": "4D5056",
+                "scan_time": "2026-03-30T21:04:19.414994+00:00Z",
+                "error": null
+            }
         },
         "lane9": {
             "name": "lane9",

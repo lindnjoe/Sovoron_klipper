@@ -3066,9 +3066,9 @@ class afcAMS(afcUnit):
             self._cancel_and_cleanup_td1(cur_lane, spool_index)
             return False, f"Hub sensor did not trigger for {cur_lane.name}", 0
 
-        # Phase 2: Let load continue, poll TD-1 while filament feeds
-        # Snapshot current TD-1 data BEFORE filament moves — we detect
-        # "fresh" by comparing against this baseline (avoids timezone issues).
+        # Phase 2: Let load continue, poll TD-1 while filament feeds.
+        # Record (wall_time, encoder) pairs so we can interpolate back
+        # to the exact encoder position when the TD-1 actually scanned.
         baseline_td1 = self._get_td1_snapshot(cur_lane)
         self.logger.debug(
             f"TD-1 cal: baseline snapshot={baseline_td1}")
@@ -3076,9 +3076,20 @@ class afcAMS(afcUnit):
         td1_detected = False
         encoder_at_td1 = None
         td1_timeout = self.afc.reactor.monotonic() + 120.0
+        encoder_history = []  # [(wall_time, encoder_clicks), ...]
 
         while self.afc.reactor.monotonic() < td1_timeout:
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.5)
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+
+            # Record encoder position with wall clock time
+            try:
+                encoder_now = int(self.oams.encoder_clicks)
+            except Exception:
+                encoder_now = encoder_at_hub
+            encoder_history.append((datetime.now(), encoder_now))
+            # Keep last 600 samples (~2 minutes at 0.2s interval)
+            if len(encoder_history) > 600:
+                encoder_history.pop(0)
 
             # Check FPS pressure — stop if filament reached extruder
             try:
@@ -3092,19 +3103,20 @@ class afcAMS(afcUnit):
                 break
 
             # Poll TD-1 — check if data changed from baseline
-            try:
-                encoder_now = int(self.oams.encoder_clicks)
-            except Exception:
-                encoder_now = encoder_at_hub
             total_clicks = abs(encoder_now - encoder_at_hub)
-
             current_td1 = self._get_td1_snapshot(cur_lane)
             if current_td1 is not None and current_td1 != baseline_td1:
                 td1_detected = True
-                encoder_at_td1 = encoder_now
+                # Parse the actual scan_time from the TD-1 data
+                # and look up the encoder position at that moment
+                scan_time_str = current_td1[0]  # (scan_time, td, color)
+                encoder_at_td1 = self._interpolate_encoder_at_scan(
+                    scan_time_str, encoder_history, encoder_now)
+                actual_clicks = abs(encoder_at_td1 - encoder_at_hub)
                 self.logger.info(
-                    f"TD-1 cal: DETECTED at encoder={total_clicks} "
-                    f"clicks from hub (data changed from baseline)")
+                    f"TD-1 cal: DETECTED! scan_time={scan_time_str}, "
+                    f"interpolated encoder={actual_clicks} clicks from hub "
+                    f"(current encoder={total_clicks})")
                 break
 
         # Stop the load
@@ -3155,6 +3167,45 @@ class afcAMS(afcUnit):
         except Exception:
             pass
         self._clear_lane_state_after_td1(cur_lane)
+
+    def _interpolate_encoder_at_scan(self, scan_time_str, encoder_history, fallback):
+        """Find encoder position at the TD-1 scan_time by interpolating history.
+
+        :param scan_time_str: scan_time string from TD-1 data
+        :param encoder_history: list of (datetime, encoder_clicks) pairs
+        :param fallback: encoder value to use if interpolation fails
+        :return: encoder_clicks at the scan time
+        """
+        try:
+            # Parse scan_time — handle various timezone formats
+            st = scan_time_str
+            if st.endswith("+00:00Z"):
+                st = st[:-1]
+            elif st.endswith("Z"):
+                st = st[:-1] + "+00:00"
+            elif not ('+' in st[-6:] or '-' in st[-6:]):
+                st = st + "+00:00"
+            scan_dt = datetime.fromisoformat(st).astimezone()
+        except Exception as e:
+            self.logger.debug(f"TD-1 cal: cannot parse scan_time '{scan_time_str}': {e}")
+            return fallback
+
+        # Find the closest encoder reading to scan_dt
+        best_encoder = fallback
+        best_delta = float('inf')
+        for wall_time, encoder in encoder_history:
+            try:
+                delta = abs((wall_time.astimezone() - scan_dt).total_seconds())
+            except Exception:
+                continue
+            if delta < best_delta:
+                best_delta = delta
+                best_encoder = encoder
+
+        self.logger.debug(
+            f"TD-1 cal: interpolated encoder={best_encoder} "
+            f"(closest match {best_delta:.2f}s from scan_time)")
+        return best_encoder
 
     def _get_td1_snapshot(self, cur_lane):
         """Get a hashable snapshot of TD-1 data for change detection.
