@@ -14,7 +14,7 @@
     "dim_sec": 300,
     "drm_device": "",
     "frame_counter": 17,
-    "gcode_render_mode": 1,
+    "gcode_render_mode": 3,
     "screensaver_type": 0,
     "sleep_sec": 0,
     "sleep_while_printing": false
@@ -142,7 +142,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-30T06:39:29Z"
+          "timestamp": "2026-03-30T12:34:51Z"
         },
         "optional": []
       },
