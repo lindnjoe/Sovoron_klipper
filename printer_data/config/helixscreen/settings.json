@@ -10,7 +10,9 @@
     "dim_sec": 300,
     "drm_device": "",
     "gcode_render_mode": 0,
-    "sleep_sec": 600
+    "screensaver_type": 0,
+    "sleep_sec": 0,
+    "sleep_while_printing": false
   },
   "gcode_viewer": {
     "shading_model": "phong",
@@ -145,7 +147,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-31T05:23:37Z"
+          "timestamp": "2026-03-31T13:32:41Z"
         },
         "optional": []
       },
