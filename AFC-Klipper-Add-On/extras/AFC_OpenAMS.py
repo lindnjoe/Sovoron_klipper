@@ -1989,6 +1989,44 @@ class afcAMS(afcUnit):
 
         prompt.create_custom_p(title, text, all_lanes, True, buttons, back)
 
+    def cmd_AFC_UNIT_TD_ONE_CALIBRATION(self, gcmd):
+        """Override base TD-1 calibration prompt with All lanes button."""
+        prompt = AFCprompt(gcmd, self.logger)
+        buttons = []
+        group_buttons = []
+        index = 0
+        title = f"TD-1 Bowden Calibration {self.name}"
+        text = (
+            f"Select a loaded lane from {self.name} to measure Bowden length to your TD-1 Device. "
+            "Each lane is calibrated individually. "
+            "Config option: td1_bowden_length"
+        )
+
+        for lane in self.lanes.values():
+            if lane.td1_device_id and lane.load_state:
+                button_label = f"{lane}"
+                button_command = f"CALIBRATE_AFC TD1={lane} DISTANCE=50"
+                button_style = "primary" if index % 2 == 0 else "secondary"
+                group_buttons.append((button_label, button_command, button_style))
+                if (index + 1) % 2 == 0 or index == len(self.lanes) - 1:
+                    buttons.append(list(group_buttons))
+                    group_buttons = []
+                index += 1
+
+        if group_buttons:
+            buttons.append(list(group_buttons))
+
+        total_buttons = sum(len(group) for group in buttons)
+        if total_buttons > 1:
+            all_lanes = [("All lanes", f"CALIBRATE_AFC TD1=all UNIT={self.name}", "default")]
+        else:
+            all_lanes = None
+        if total_buttons == 0:
+            text = "No lanes are loaded, please load before calibration"
+
+        back = [("Back", f"UNIT_CALIBRATION UNIT={self.name}", "info")]
+        prompt.create_custom_p(title, text, all_lanes, True, buttons, back)
+
     def handle_connect(self):
         """Initialise the AMS unit and configure custom logos."""
         super().handle_connect()

@@ -3146,11 +3146,15 @@ class afcACE(afcUnit):
             buttons.append(list(group_buttons))
 
         total_buttons = sum(len(group) for group in buttons)
+        if total_buttons > 1:
+            all_lanes = [("All lanes", f"CALIBRATE_AFC TD1=all UNIT={self.name}", "default")]
+        else:
+            all_lanes = None
         if total_buttons == 0:
             text = "No lanes are loaded, please load before calibration"
 
         back = [("Back", f"UNIT_CALIBRATION UNIT={self.name}", "info")]
-        prompt.create_custom_p(title, text, None, True, buttons, back)
+        prompt.create_custom_p(title, text, all_lanes, True, buttons, back)
 
     # ---- Calibration ----
 
@@ -3546,7 +3550,7 @@ class afcACE(afcUnit):
             success = self.get_td1_data(cur_lane, compare_time)
 
         # Retract back
-        retract_dist = feed_dist + (0 if cur_lane.loaded_to_hub else dist_hub) + 50
+        retract_dist = feed_dist + (0 if cur_lane.loaded_to_hub else dist_hub)
         self.logger.info(f"ACE TD-1 capture: retracting {retract_dist}mm for {cur_lane.name}")
         try:
             self._wait_for_ace_ready()
@@ -3646,11 +3650,9 @@ class afcACE(afcUnit):
 
         # Retract back to hub position (or ACE if we fed from there)
         if cur_lane.loaded_to_hub:
-            # Started at hub — only retract what we pulsed past the hub
-            retract_dist = bow_pos + 50
+            retract_dist = bow_pos
         else:
-            # Started from ACE — retract full distance
-            retract_dist = bow_pos + dist_hub + 50
+            retract_dist = bow_pos + dist_hub
         self.logger.info(
             f"ACE calibrate_td1: retracting {retract_dist:.0f}mm "
             f"@ {self.retract_speed}mm/s"
