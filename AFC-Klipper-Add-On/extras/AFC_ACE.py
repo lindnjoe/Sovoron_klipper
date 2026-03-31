@@ -3644,8 +3644,13 @@ class afcACE(afcUnit):
             f"ACE calibrate_td1: TD-1 detected filament at {bow_pos:.1f}mm"
         )
 
-        # Retract back to ACE unit — total distance from hub + hub distance + margin
-        retract_dist = bow_pos + dist_hub + 50
+        # Retract back to hub position (or ACE if we fed from there)
+        if cur_lane.loaded_to_hub:
+            # Started at hub — only retract what we pulsed past the hub
+            retract_dist = bow_pos + 50
+        else:
+            # Started from ACE — retract full distance
+            retract_dist = bow_pos + dist_hub + 50
         self.logger.info(
             f"ACE calibrate_td1: retracting {retract_dist:.0f}mm "
             f"@ {self.retract_speed}mm/s"
