@@ -153,7 +153,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-31T05:04:38Z"
+          "timestamp": "2026-03-31T05:12:18Z"
         },
         "optional": []
       },
@@ -477,5 +477,5 @@
     "channel": 1
   },
   "wifi_expected": false,
-  "wizard_completed": true
+  "wizard_completed": false
 }
