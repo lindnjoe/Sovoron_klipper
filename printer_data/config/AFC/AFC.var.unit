@@ -28,7 +28,12 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 250.0,
-            "td1_data": {}
+            "td1_data": {
+                "td": 2.7,
+                "color": "2A78F2",
+                "scan_time": "2026-03-31T02:18:54.845191+00:00Z",
+                "error": null
+            }
         },
         "lane13": {
             "name": "lane13",
@@ -58,7 +63,12 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 250.0,
-            "td1_data": {}
+            "td1_data": {
+                "td": 2.9,
+                "color": "842734",
+                "scan_time": "2026-03-31T02:57:39.022596+00:00Z",
+                "error": null
+            }
         },
         "lane14": {
             "name": "lane14",
@@ -88,7 +98,12 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 250.0,
-            "td1_data": {}
+            "td1_data": {
+                "td": 1.4,
+                "color": "A1527C",
+                "scan_time": "2026-03-31T02:59:02.501955+00:00Z",
+                "error": null
+            }
         },
         "lane15": {
             "name": "lane15",
@@ -118,7 +133,12 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 250.0,
-            "td1_data": {}
+            "td1_data": {
+                "td": 1.4,
+                "color": "87C2A3",
+                "scan_time": "2026-03-31T03:00:38.580039+00:00Z",
+                "error": null
+            }
         }
     },
     "Tools": {},
