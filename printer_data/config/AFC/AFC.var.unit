@@ -203,7 +203,7 @@
             "remember_spool": false,
             "spool_id": 35,
             "color": "#328169",
-            "weight": 579.2413760925658,
+            "weight": 579.2385192982435,
             "extruder_temp": 210,
             "bed_temp": 60,
             "runout_lane": null,
@@ -257,7 +257,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": false,
+            "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -304,9 +304,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 0.2,
-                "color": "51565D",
-                "scan_time": "2026-03-30T22:04:16.773131+00:00Z",
+                "td": 0.3,
+                "color": "545A61",
+                "scan_time": "2026-03-31T01:28:26.066672+00:00Z",
                 "error": null
             }
         },

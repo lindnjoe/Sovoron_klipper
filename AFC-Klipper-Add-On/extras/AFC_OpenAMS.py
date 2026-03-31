@@ -3402,55 +3402,14 @@ class afcAMS(afcUnit):
             return False, "Unable to read encoder before capture"
 
         target_clicks = max(0, int(cur_lane.td1_bowden_length))
-        compare_time = datetime.now()
         td1_timeout = self.afc.reactor.monotonic() + 30.0
-        last_scan_times = getattr(self, "_td1_last_scan_time_capture", None)
-        if last_scan_times is None:
-            last_scan_times = {}
-            self._td1_last_scan_time_capture = last_scan_times
-        # Clear stale entry for this device so we detect fresh data
-        last_scan_times.pop(cur_lane.td1_device_id, None)
 
-        def _capture_td1_if_fresh() -> bool:
-            td1_data = self.afc.moonraker.get_td1_data()
-            if not td1_data:
-                self.logger.debug(f"TD-1 capture {cur_lane.name}: no td1_data from moonraker")
-                return False
-            if cur_lane.td1_device_id not in td1_data:
-                self.logger.debug(f"TD-1 capture {cur_lane.name}: device {cur_lane.td1_device_id} not in td1_data keys: {list(td1_data.keys())}")
-                return False
-            data = td1_data[cur_lane.td1_device_id]
-            scan_time = data.get("scan_time")
-            if scan_time is None:
-                self.logger.debug(f"TD-1 capture {cur_lane.name}: scan_time is None")
-                return False
-            if scan_time.endswith("+00:00Z"):
-                scan_time = scan_time[:-1]
-            else:
-                scan_time = scan_time[:-1] + "+00:00"
-            try:
-                scan_time = datetime.fromisoformat(scan_time).astimezone()
-            except (AttributeError, ValueError) as e:
-                self.logger.debug(f"TD-1 capture {cur_lane.name}: scan_time parse failed: {e}")
-                return False
-            if scan_time <= compare_time.astimezone():
-                self.logger.debug(
-                    f"TD-1 capture {cur_lane.name}: scan_time {scan_time} <= compare_time {compare_time.astimezone()} (stale)")
-                return False
-            last_scan_time = last_scan_times.get(cur_lane.td1_device_id)
-            if last_scan_time is not None and scan_time <= last_scan_time:
-                self.logger.debug(f"TD-1 capture {cur_lane.name}: scan_time <= last_scan_time (duplicate)")
-                return False
-            if data.get("td") is None or data.get("color") is None:
-                self.logger.debug(f"TD-1 capture {cur_lane.name}: td={data.get('td')} color={data.get('color')} (incomplete)")
-                return False
-            cur_lane.td1_data = data
-            last_scan_times[cur_lane.td1_device_id] = scan_time
-            self.logger.info(
-                f"{cur_lane.name} TD-1 data captured: td={data.get('td')} color={data.get('color')}"
-            )
-            self.afc.save_vars()
-            return True
+        # Snapshot TD-1 data BEFORE filament reaches the sensor.
+        # Detect change by comparing snapshot — handles cases where
+        # scan_time doesn't update but td/color values change.
+        baseline_td1 = self._get_td1_snapshot(cur_lane)
+        self.logger.debug(
+            f"TD-1 capture {cur_lane.name}: baseline={baseline_td1}")
 
         self.logger.debug(
             f"TD-1 capture: waiting for encoder to reach {target_clicks} clicks on {cur_lane.name}"
@@ -3466,14 +3425,25 @@ class afcAMS(afcUnit):
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
         # Read TD-1 data while filament is at/passing the sensor
-        td1_detected = _capture_td1_if_fresh()
-        if not td1_detected:
-            td1_wait_deadline = self.afc.reactor.monotonic() + 3.5
-            while self.afc.reactor.monotonic() < td1_wait_deadline:
-                if _capture_td1_if_fresh():
+        td1_detected = False
+        td1_wait_deadline = self.afc.reactor.monotonic() + 5.0
+        while self.afc.reactor.monotonic() < td1_wait_deadline:
+            current_td1 = self._get_td1_snapshot(cur_lane)
+            if current_td1 is not None and current_td1 != baseline_td1:
+                # Data changed — capture it
+                try:
+                    td1_data = self.afc.moonraker.get_td1_data()
+                    data = td1_data[cur_lane.td1_device_id]
+                    cur_lane.td1_data = data
+                    self.logger.info(
+                        f"{cur_lane.name} TD-1 data captured: "
+                        f"td={data.get('td')} color={data.get('color')}")
+                    self.afc.save_vars()
                     td1_detected = True
-                    break
-                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+                except Exception as e:
+                    self.logger.error(f"TD-1 capture failed for {cur_lane.name}: {e}")
+                break
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
 
         # Cancel the load now that we have TD-1 data (or timed out), mark as loaded, then unload
         try:
