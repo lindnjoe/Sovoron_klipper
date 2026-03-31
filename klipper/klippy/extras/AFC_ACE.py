@@ -2670,6 +2670,15 @@ class afcACE(afcUnit):
                     f"ACE prep_post_load: {lane.name} staged at hub "
                     f"(dist_hub={dist_hub:.0f}mm)"
                 )
+
+                # Capture TD-1 data now that filament is at hub
+                if (lane.td1_when_loaded
+                    and lane.td1_device_id
+                    and self.afc.td1_present
+                    and self.afc.function.get_current_lane_obj() is None):
+                    self.logger.info(f"ACE prep_post_load: capturing TD-1 data for {lane.name}")
+                    self.capture_td1_data(lane)
+
                 return
             except Exception as e:
                 if attempt < max_attempts - 1:
@@ -3490,29 +3499,15 @@ class afcACE(afcUnit):
             self._fps_consecutive_hits = 0
 
     def prep_capture_td1(self, cur_lane):
-        """ACE prep TD-1 capture — feed to TD-1 position, read, retract.
+        """ACE TD-1 capture is triggered from prep_post_load (after hub feed).
 
-        Called when filament is inserted and capture_td1_when_loaded is True.
-        Returns (success, msg) tuple or None to skip.
+        Return non-None to prevent the base _prep_capture_td1 from running
+        the stepper-based path. The actual capture happens in prep_post_load.
         """
-        if not cur_lane.td1_when_loaded:
-            return None  # Not enabled for this lane
-
-        if self._ace is None or not self._ace.connected:
-            return None
-
-        if not cur_lane.td1_device_id:
-            return None
-
-        if not self.afc.td1_present:
-            return None
-
-        # Don't capture if toolhead is loaded (filament already past TD-1)
-        if self.afc.function.get_current_lane_obj() is not None:
-            self.logger.info(f"Cannot capture TD-1 for {cur_lane.name} — toolhead loaded")
-            return True, "Toolhead loaded"
-
-        return self.capture_td1_data(cur_lane)
+        if cur_lane.td1_when_loaded and cur_lane.loaded_to_hub:
+            # Already captured (or will be captured) in prep_post_load
+            return True, "TD-1 capture handled by prep_post_load"
+        return None
 
     def capture_td1_data(self, cur_lane):
         """ACE TD-1 data capture using feed_filament instead of stepper moves.
