@@ -257,7 +257,7 @@
             "load": true,
             "prep": true,
             "tool_loaded": false,
-            "loaded_to_hub": true,
+            "loaded_to_hub": false,
             "material": "PLA",
             "density": 1.24,
             "diameter": 1.75,
@@ -273,7 +273,12 @@
             "filament_status_led": "#00cc00",
             "status": "Loaded",
             "dist_hub": 60,
-            "td1_data": {}
+            "td1_data": {
+                "td": 1.8,
+                "color": "FFFFFF",
+                "scan_time": "2026-03-31T01:36:38.599065+00:00Z",
+                "error": null
+            }
         },
         "lane9": {
             "name": "lane9",
@@ -305,8 +310,8 @@
             "dist_hub": 60,
             "td1_data": {
                 "td": 0.3,
-                "color": "545A61",
-                "scan_time": "2026-03-31T01:28:26.066672+00:00Z",
+                "color": "565C63",
+                "scan_time": "2026-03-31T01:37:06.244638+00:00Z",
                 "error": null
             }
         },
@@ -341,7 +346,7 @@
             "td1_data": {
                 "td": 0.3,
                 "color": "152F75",
-                "scan_time": "2026-03-30T22:03:21.431309+00:00Z",
+                "scan_time": "2026-03-31T01:38:41.132410+00:00Z",
                 "error": null
             }
         },
@@ -374,9 +379,9 @@
             "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {
-                "td": 4.2,
-                "color": "6F2A42",
-                "scan_time": "2026-03-30T22:27:06.768790+00:00Z",
+                "td": 4.3,
+                "color": "6F283E",
+                "scan_time": "2026-03-31T01:37:33.886246+00:00Z",
                 "error": null
             }
         }
