@@ -3485,6 +3485,80 @@ class afcACE(afcUnit):
             self._fps_latched = False
             self._fps_consecutive_hits = 0
 
+    def capture_td1_data(self, cur_lane):
+        """ACE TD-1 data capture using feed_filament instead of stepper moves.
+
+        Feeds filament td1_bowden_length from hub (or current position if
+        already at hub), waits for TD-1 to scan, then retracts.
+        Returns (success, msg) tuple or None to use default behavior.
+        """
+        if self._ace is None or not self._ace.connected:
+            return None  # Fall back to default
+
+        if cur_lane.td1_device_id is None:
+            return None  # Let default handle the error
+
+        if cur_lane.td1_bowden_length is None:
+            return False, "td1_bowden_length not set — run TD-1 calibration first"
+
+        local_slot = self._get_local_slot_for_lane(cur_lane)
+        if local_slot < 0:
+            return False, f"Cannot determine slot for {cur_lane.name}"
+
+        valid, msg = self.afc.function.check_for_td1_id(cur_lane.td1_device_id)
+        if not valid:
+            return False, msg
+
+        self._operation_active = True
+        try:
+            return self._capture_td1_data_inner(cur_lane, local_slot)
+        finally:
+            self._operation_active = False
+
+    def _capture_td1_data_inner(self, cur_lane, local_slot):
+        dist_hub = self._get_dist_hub(cur_lane)
+
+        # Feed to hub if not already there
+        if not cur_lane.loaded_to_hub:
+            self.logger.info(f"ACE TD-1 capture: feeding {dist_hub}mm to hub for {cur_lane.name}")
+            self._wait_for_ace_ready()
+            self._ace.feed_filament(local_slot, dist_hub, self.feed_speed)
+            self._wait_for_ace_ready()
+
+        # Feed td1_bowden_length to reach the TD-1 device
+        feed_dist = cur_lane.td1_bowden_length
+        self.logger.info(
+            f"ACE TD-1 capture: feeding {feed_dist}mm to TD-1 for {cur_lane.name}")
+
+        compare_time = datetime.now()
+        self._wait_for_ace_ready()
+        self._ace.feed_filament(local_slot, feed_dist, self.feed_speed)
+        self._wait_for_ace_ready()
+
+        # Wait for TD-1 to scan
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 5.0)
+
+        # Check for data
+        success = self.get_td1_data(cur_lane, compare_time)
+        if not success:
+            # Try once more with a longer wait
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 3.0)
+            success = self.get_td1_data(cur_lane, compare_time)
+
+        # Retract back
+        retract_dist = feed_dist + (0 if cur_lane.loaded_to_hub else dist_hub) + 50
+        self.logger.info(f"ACE TD-1 capture: retracting {retract_dist}mm for {cur_lane.name}")
+        try:
+            self._wait_for_ace_ready()
+            self._ace.unwind_filament(local_slot, retract_dist, self.retract_speed)
+            self._wait_for_feed_complete(local_slot, retract_dist, self.retract_speed)
+        except Exception as e:
+            self.logger.error(f"ACE TD-1 capture retract failed: {e}")
+
+        if success:
+            return True, f"TD-1 data captured for {cur_lane.name}"
+        return False, "TD-1 data not captured (unload completed)"
+
     def _calibrate_td1_inner(self, cur_lane, dis, tol):
         if self._ace is None or not self._ace.connected:
             return False, "ACE not connected", 0
