@@ -3114,18 +3114,9 @@ class afcACE(afcUnit):
     def cmd_AFC_UNIT_TD_ONE_CALIBRATION(self, gcmd):
         """Override base TD-1 calibration prompt for ACE units.
 
-        Each lane is calibrated individually.  Virtual hubs block calibration.
+        Each lane is calibrated individually. For virtual hubs, the
+        calibration feeds dist_hub distance first to reach the hub position.
         """
-        if self._hub_is_virtual():
-            prompt = AFCprompt(gcmd, self.logger)
-            title = f"TD-1 Bowden Calibration {self.name}"
-            text = (
-                f"{self.name} has a virtual hub. TD-1 calibration requires a physical hub sensor. "
-                "Set td1_bowden_length manually in config."
-            )
-            back = [("Back", f"UNIT_CALIBRATION UNIT={self.name}", "info")]
-            prompt.create_custom_p(title, text, None, True, None, back)
-            return
 
         prompt = AFCprompt(gcmd, self.logger)
         buttons = []
