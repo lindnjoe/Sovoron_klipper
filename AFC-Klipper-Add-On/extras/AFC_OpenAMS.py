@@ -3500,7 +3500,11 @@ class afcAMS(afcUnit):
         return True, "TD-1 data captured"
 
     def prep_capture_td1(self, cur_lane):
-        # require_enabled=False - capture decision is made by capture_td1_data in AFC_prep
+        """OpenAMS prep TD-1 capture — only when capture_td1_when_loaded is True."""
+        if not cur_lane.td1_when_loaded:
+            return None  # Not enabled, let base handle (which also skips)
+        if self.afc.function.get_current_lane_obj() is not None:
+            return None  # Toolhead loaded, skip
         return self._capture_td1_with_oams(
             cur_lane,
             require_loaded=True,
