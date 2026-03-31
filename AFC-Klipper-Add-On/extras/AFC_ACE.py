@@ -3489,6 +3489,31 @@ class afcACE(afcUnit):
             self._fps_latched = False
             self._fps_consecutive_hits = 0
 
+    def prep_capture_td1(self, cur_lane):
+        """ACE prep TD-1 capture — feed to TD-1 position, read, retract.
+
+        Called when filament is inserted and capture_td1_when_loaded is True.
+        Returns (success, msg) tuple or None to skip.
+        """
+        if not cur_lane.td1_when_loaded:
+            return None  # Not enabled for this lane
+
+        if self._ace is None or not self._ace.connected:
+            return None
+
+        if not cur_lane.td1_device_id:
+            return None
+
+        if not self.afc.td1_present:
+            return None
+
+        # Don't capture if toolhead is loaded (filament already past TD-1)
+        if self.afc.function.get_current_lane_obj() is not None:
+            self.logger.info(f"Cannot capture TD-1 for {cur_lane.name} — toolhead loaded")
+            return True, "Toolhead loaded"
+
+        return self.capture_td1_data(cur_lane)
+
     def capture_td1_data(self, cur_lane):
         """ACE TD-1 data capture using feed_filament instead of stepper moves.
 
