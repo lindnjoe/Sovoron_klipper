@@ -1,23 +1,16 @@
 {
   "active_printer_id": "default",
-  "appearance": {
-    "toolhead_style": 3
-  },
-  "beta_features": true,
   "brightness": 80,
-  "completion_alert": 1,
+  "completion_alert": true,
   "config_version": 9,
   "dark_mode": true,
   "display": {
-    "bed_mesh_render_mode": 1,
+    "bed_mesh_render_mode": 0,
     "dim_brightness": 30,
     "dim_sec": 300,
     "drm_device": "",
-    "frame_counter": 17,
-    "gcode_render_mode": 3,
-    "screensaver_type": 0,
-    "sleep_sec": 0,
-    "sleep_while_printing": false
+    "gcode_render_mode": 0,
+    "sleep_sec": 600
   },
   "gcode_viewer": {
     "shading_model": "phong",
@@ -44,9 +37,8 @@
   },
   "log_path": "/tmp/helixscreen.log",
   "motion": {
-    "jog_mode": 0
+    "jog_mode": 1
   },
-  "plugin_install_declined": true,
   "printer": {
     "leds": {
       "startup_brightness": null
@@ -90,7 +82,7 @@
           "extruder",
           "fan_generic T0_partfan",
           "heater_fan T0_hotend_fan",
-          "neopixel led",
+          "led main_led",
           "AFC",
           "fan_generic T1_partfan",
           "heater_fan T1_hotend_fan",
@@ -153,7 +145,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-31T05:12:18Z"
+          "timestamp": "2026-03-31T05:23:37Z"
         },
         "optional": []
       },
@@ -174,14 +166,14 @@
         ],
         "last_brightness": 100,
         "last_color": "#FFFFFF",
-        "led_on_at_start": true,
+        "led_on_at_start": false,
         "macro_devices": [],
         "selected": [],
         "selected_strips": [
           "led main_led"
         ],
-        "startup_brightness": 100,
-        "strip": "neopixel led"
+        "startup_brightness": 80,
+        "strip": "led main_led"
       },
       "moonraker_api_key": false,
       "moonraker_host": "127.0.0.1",
@@ -219,11 +211,11 @@
                   "rowspan": 2
                 },
                 {
-                  "col": -1,
+                  "col": 5,
                   "colspan": 1,
-                  "enabled": false,
+                  "enabled": true,
                   "id": "shutdown",
-                  "row": -1,
+                  "row": 1,
                   "rowspan": 1
                 },
                 {
@@ -251,11 +243,11 @@
                   "rowspan": 1
                 },
                 {
-                  "col": -1,
+                  "col": 5,
                   "colspan": 1,
                   "enabled": false,
                   "id": "firmware_restart",
-                  "row": -1,
+                  "row": 3,
                   "rowspan": 1
                 },
                 {
@@ -299,11 +291,11 @@
                   "rowspan": 1
                 },
                 {
-                  "col": -1,
+                  "col": 2,
                   "colspan": 1,
                   "enabled": false,
                   "id": "nozzle_temps",
-                  "row": -1,
+                  "row": 0,
                   "rowspan": 2
                 },
                 {
@@ -311,6 +303,14 @@
                   "colspan": 1,
                   "enabled": false,
                   "id": "bed_temperature",
+                  "row": -1,
+                  "rowspan": 1
+                },
+                {
+                  "col": -1,
+                  "colspan": 1,
+                  "enabled": false,
+                  "id": "temp_stack",
                   "row": -1,
                   "rowspan": 1
                 },
@@ -326,20 +326,12 @@
                   "col": 3,
                   "colspan": 1,
                   "enabled": true,
-                  "id": "temp_stack",
-                  "row": 1,
-                  "rowspan": 1
-                },
-                {
-                  "col": 3,
-                  "colspan": 1,
-                  "enabled": true,
                   "id": "active_spool",
                   "row": 2,
                   "rowspan": 1
                 },
                 {
-                  "col": 3,
+                  "col": 2,
                   "colspan": 1,
                   "enabled": false,
                   "id": "filament",
@@ -363,7 +355,7 @@
                   "rowspan": 1
                 },
                 {
-                  "col": 4,
+                  "col": 3,
                   "colspan": 2,
                   "enabled": true,
                   "id": "clock",
@@ -379,7 +371,7 @@
                   "rowspan": 2
                 },
                 {
-                  "col": 4,
+                  "col": 3,
                   "colspan": 1,
                   "enabled": false,
                   "id": "clog_detection",
@@ -456,13 +448,11 @@
         "hotend": "extruder"
       },
       "type": "Sovol SV08",
-      "wizard_completed": true,
-      "z_movement_style": 2
+      "wizard_completed": true
     },
     "show_printer_switcher": false
   },
   "sounds_enabled": false,
-  "telemetry_enabled": true,
   "theme": {
     "preset": 0
   },
@@ -473,9 +463,6 @@
       }
     }
   },
-  "update": {
-    "channel": 1
-  },
   "wifi_expected": false,
-  "wizard_completed": false
+  "wizard_completed": true
 }
