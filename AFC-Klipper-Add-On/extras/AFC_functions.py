@@ -1382,8 +1382,11 @@ class afcFunction:
                 msg += "trying to calibrate td1_bowden_length."
                 self.afc.error.AFC_error(msg, pause=False)
                 return
-            if td1_lane.hub_obj.state:
-                msg = f"{td1_lane.hub_obj.name} hub is triggered, make sure hub is clear before trying to calibrate TD-1 bowden length"
+            # Only check physical hub sensors — virtual hubs report True
+            # when any lane's load sensor is triggered (normal for ACE lanes).
+            hub_obj = td1_lane.hub_obj
+            if hub_obj and hub_obj.switch_pin.lower() != "virtual" and hub_obj.state:
+                msg = f"{hub_obj.name} hub is triggered, make sure hub is clear before trying to calibrate TD-1 bowden length"
                 self.afc.error.AFC_error(msg, pause=False)
                 self.afc.gcode.run_script_from_command(f"AFC_CALI_FAIL TITLE='{title} Failed' FAIL={td1} DISTANCE=0 msg='{msg}' RESET=0")
                 return

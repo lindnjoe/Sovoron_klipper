@@ -3521,6 +3521,7 @@ class afcACE(afcUnit):
         # Use calibration_step if dis is not specified
         step_size = dis if dis > 0 else self.calibration_step
         max_bowden_length = 6000
+        cur_hub = cur_lane.hub_obj
 
         self.logger.info(
             f"ACE calibrate_td1: feeding slot {local_slot} in {step_size}mm steps, "
@@ -3530,7 +3531,30 @@ class afcACE(afcUnit):
         # Ensure ACE is not still busy from a previous operation
         self._wait_for_ace_ready()
 
-        # Feed incrementally until TD-1 detects filament
+        # Phase 1: Feed to hub position first
+        has_real_hub = cur_hub and cur_hub.switch_pin.lower() != "virtual"
+        dist_hub = self._get_dist_hub(cur_lane)
+        if has_real_hub:
+            # Feed until real hub sensor triggers
+            self.logger.info(f"ACE calibrate_td1: feeding to hub sensor")
+            self._ace.feed_filament(local_slot, dist_hub + 200, self.feed_speed)
+            hub_timeout = self.afc.reactor.monotonic() + 15.0
+            while self.afc.reactor.monotonic() < hub_timeout:
+                if cur_hub.state:
+                    break
+                self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.1)
+            self._wait_for_ace_ready()
+            if not cur_hub.state:
+                self._retract_slot(local_slot, lane=cur_lane)
+                return False, f"Hub sensor did not trigger for {cur_lane.name}", 0
+            self.logger.info("ACE calibrate_td1: hub reached")
+        elif dist_hub > 0:
+            # Feed dist_hub to reach virtual hub position
+            self.logger.info(f"ACE calibrate_td1: feeding {dist_hub}mm to virtual hub")
+            self._ace.feed_filament(local_slot, dist_hub, self.feed_speed)
+            self._wait_for_ace_ready()
+
+        # Phase 2: Feed incrementally from hub, checking TD-1 after each step
         bow_pos = 0.0
         compare_time = datetime.now()
         while not self.get_td1_data(cur_lane, compare_time):
@@ -3544,15 +3568,16 @@ class afcACE(afcUnit):
             bow_pos += step_size
             self._ace.feed_filament(local_slot, step_size, self.feed_speed)
 
-            # Brief pause for TD-1 to register
-            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            # Wait for ACE to finish feeding, then pause for TD-1 to scan
+            self._wait_for_ace_ready()
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 5.0)
 
         self.logger.info(
             f"ACE calibrate_td1: TD-1 detected filament at {bow_pos:.1f}mm"
         )
 
-        # Retract back to ACE unit using measured distance
-        retract_dist = bow_pos + 50
+        # Retract back to ACE unit — total distance from hub + hub distance + margin
+        retract_dist = bow_pos + dist_hub + 50
         self.logger.info(
             f"ACE calibrate_td1: retracting {retract_dist:.0f}mm "
             f"@ {self.retract_speed}mm/s"
