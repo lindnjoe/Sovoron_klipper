@@ -3522,10 +3522,13 @@ class afcACE(afcUnit):
         # Ensure ACE is not still busy from a previous operation
         self._wait_for_ace_ready()
 
-        # Phase 1: Feed to hub position first
+        # Phase 1: Get filament to hub position.
+        # If already loaded_to_hub (homing_enabled prep did it), skip.
         has_real_hub = cur_hub and cur_hub.switch_pin.lower() != "virtual"
         dist_hub = self._get_dist_hub(cur_lane)
-        if has_real_hub:
+        if cur_lane.loaded_to_hub:
+            self.logger.info(f"ACE calibrate_td1: filament already at hub, skipping hub feed")
+        elif has_real_hub:
             # Feed until real hub sensor triggers
             self.logger.info(f"ACE calibrate_td1: feeding to hub sensor")
             self._ace.feed_filament(local_slot, dist_hub + 200, self.feed_speed)
