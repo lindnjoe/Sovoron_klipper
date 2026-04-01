@@ -1030,8 +1030,19 @@ class afcACE(afcUnit):
             self._feed_assist_refresh_counter += 1
             if self._feed_assist_refresh_counter >= self._FEED_ASSIST_REFRESH_INTERVAL:
                 self._feed_assist_refresh_counter = 0
+                # Only refresh feed assist for the lane on the ACTIVE extruder.
+                # In direct mode, multiple lanes are tool_loaded on different
+                # extruders — refreshing all of them causes the ACE to
+                # physically cycle between slots.
+                try:
+                    active_extruder = self.afc.toolhead.get_extruder().name
+                except Exception:
+                    active_extruder = None
                 for lane in self.lanes.values():
                     if not getattr(lane, "tool_loaded", False):
+                        continue
+                    # Skip lanes whose extruder is not the active one
+                    if active_extruder and getattr(lane, 'extruder_name', None) != active_extruder:
                         continue
                     local_slot = self._get_local_slot_for_lane(lane)
                     if local_slot < 0:
