@@ -2,7 +2,7 @@
   "active_printer_id": "default",
   "brightness": 80,
   "completion_alert": true,
-  "config_version": 9,
+  "config_version": 10,
   "dark_mode": true,
   "display": {
     "bed_mesh_render_mode": 0,
@@ -147,7 +147,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-03-31T13:40:39Z"
+          "timestamp": "2026-04-01T04:49:20Z"
         },
         "optional": []
       },
@@ -231,8 +231,12 @@
                 {
                   "col": -1,
                   "colspan": 1,
+                  "config": {
+                    "device": "__all__",
+                    "icon": "power_cycle"
+                  },
                   "enabled": false,
-                  "id": "power",
+                  "id": "power_device:1",
                   "row": -1,
                   "rowspan": 1
                 },

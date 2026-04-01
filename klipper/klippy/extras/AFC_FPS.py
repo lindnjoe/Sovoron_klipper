@@ -539,6 +539,7 @@ class AFCFPSBuffer:
         self._latch_enabled = False
         self._advance_latched = False
         has_stepper = getattr(lane, 'extruder_stepper', None) is not None
+        is_openams = getattr(lane, 'unit_obj', None) is not None and getattr(lane.unit_obj, 'type', '') == 'OpenAMS'
 
         if self.led:
             self.afc.function.afc_led(self.led_neutral, self.led_index)
@@ -550,9 +551,10 @@ class AFCFPSBuffer:
             # Start the proportional correction timer
             self.reactor.update_timer(self.correction_timer, self.reactor.NOW)
 
-            # Start fault detection if configured
-            if self.fault_detection_enabled():
-                self.start_fault_detection(0, 1.0)
+        # Start fault detection for all unit types except OpenAMS
+        # (OpenAMS has its own OAMSMonitor for stuck spool/clog detection)
+        if not is_openams and self.fault_detection_enabled():
+            self.start_fault_detection(0, 1.0)
 
         self.logger.debug(f"{self.name} FPS buffer enabled for {self.current_lane.name} (correction={'active' if has_stepper else 'off/adc-only'})")
 
@@ -655,8 +657,11 @@ class AFCFPSBuffer:
 
     def extruder_pos_update_event(self, eventtime):
         cur_lane = self.current_lane
-        if cur_lane is not None and getattr(cur_lane, 'extruder_stepper', None) is None:
-            return eventtime + CHECK_RUNOUT_TIMEOUT
+        # Skip fault detection for OpenAMS lanes (has its own OAMSMonitor)
+        if cur_lane is not None:
+            is_openams = getattr(cur_lane, 'unit_obj', None) is not None and getattr(cur_lane.unit_obj, 'type', '') == 'OpenAMS'
+            if is_openams:
+                return eventtime + CHECK_RUNOUT_TIMEOUT
 
         if cur_lane is not None:
             active_extruder = self.afc.toolhead.get_extruder()
