@@ -1,5 +1,8 @@
 {
   "active_printer_id": "default",
+  "appearance": {
+    "toolhead_style": 3
+  },
   "brightness": 80,
   "completion_alert": true,
   "config_version": 10,
@@ -10,7 +13,9 @@
     "dim_sec": 300,
     "drm_device": "",
     "gcode_render_mode": 0,
-    "sleep_sec": 600
+    "screensaver_type": 0,
+    "sleep_sec": 0,
+    "sleep_while_printing": false
   },
   "gcode_viewer": {
     "shading_model": "phong",
@@ -75,16 +80,16 @@
       "filament": {
         "external_spool": {
           "assigned": true,
-          "bed_temp": 65,
-          "brand": "AC",
-          "color_rgb": 9021519,
+          "bed_temp": 60,
+          "brand": "Bambu Lab",
+          "color_rgb": 12660255,
           "material": "PLA",
           "nozzle_temp_max": 0,
           "nozzle_temp_min": 0,
-          "remaining_weight_g": 238.01126098632813,
-          "spool_name": "AC PLA - PLA Bean Green",
-          "spoolman_id": 46,
-          "total_weight_g": 330.0
+          "remaining_weight_g": 228.54843139648438,
+          "spool_name": "Bambu Lab PLA - Red",
+          "spoolman_id": 37,
+          "total_weight_g": 1000.0
         }
       },
       "filament_sensors": {
@@ -159,7 +164,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-04-01T18:41:22Z"
+          "timestamp": "2026-04-01T21:49:15Z"
         },
         "optional": []
       },

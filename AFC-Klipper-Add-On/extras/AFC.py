@@ -2099,7 +2099,10 @@ class afc:
                     self._cooldown_last_extruder(_last_lane.extruder_obj, infinite_runout)
 
         # If the requested lane is not the current lane, proceed with the tool change.
-        if cur_lane.name != self.current:
+        # Also proceed if the lane's extruder tool is not on the shuttle (e.g. after restart
+        # where AFC restored lane_loaded but the toolchanger has an empty shuttle).
+        tool_on_shuttle = cur_lane.extruder_obj.on_shuttle()
+        if cur_lane.name != self.current or not tool_on_shuttle:
             # Save the current toolhead position to allow restoration after the tool change.
             self.save_pos()
             # Set the in_toolchange flag to prevent overwriting the saved position during potential failures.
