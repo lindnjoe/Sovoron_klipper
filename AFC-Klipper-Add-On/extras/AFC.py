@@ -1644,18 +1644,29 @@ class afc:
             return True
         finally:
             if dock_dropped_off:
-                if load_result:
-                    purge_length = getattr(cur_lane.unit_obj, "dock_purge_length", 0.0) or 0.0
-                    purge_speed = getattr(cur_lane.unit_obj, "dock_purge_speed", 7.0) or 7.0
-                    if purge_length > 0:
-                        self.logger.info(
-                            f"AFC dock purge: extruding {purge_length:.1f}mm "
-                            f"@ {purge_speed}mm/s in dock, then picking up"
-                        )
-                        self.move_e_pos(purge_length, purge_speed, "dock purge extrude")
-                else:
-                    self.logger.info("AFC dock purge: picking up tool after load failure")
-                self._dock_purge_pickup()
+                purge_error = None
+                try:
+                    if load_result:
+                        purge_length = getattr(cur_lane.unit_obj, "dock_purge_length", 0.0) or 0.0
+                        purge_speed = getattr(cur_lane.unit_obj, "dock_purge_speed", 7.0) or 7.0
+                        if purge_length > 0:
+                            self.logger.info(
+                                f"AFC dock purge: extruding {purge_length:.1f}mm "
+                                f"@ {purge_speed}mm/s in dock, then picking up"
+                            )
+                            try:
+                                self.move_e_pos(purge_length, purge_speed, "dock purge extrude")
+                            except Exception as e:
+                                purge_error = e
+                                self.logger.error(
+                                    f"AFC dock purge: extrusion failed, attempting pickup cleanup: {e}"
+                                )
+                    else:
+                        self.logger.info("AFC dock purge: picking up tool after load failure")
+                finally:
+                    self._dock_purge_pickup()
+                if purge_error is not None:
+                    raise purge_error
 
     cmd_TOOL_UNLOAD_help = "Unload from tool head"
     def cmd_TOOL_UNLOAD(self, gcmd):
