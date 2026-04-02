@@ -14,6 +14,7 @@ import traceback
 from datetime import datetime
 from types import MethodType
 from enum import Enum
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from configparser import Error as ConfigError
 
@@ -699,6 +700,11 @@ class afcAMS(afcUnit):
         self._engagement_pressure_max = config.getfloat("engagement_pressure_threshold", 0.6, minval=0.0)
         self._engagement_pressure_min = config.getfloat("engagement_min_pressure", 0.25, minval=0.0)
         self.clog_sensitivity = config.get("clog_sensitivity", "medium").lower()
+        # AFC-level dock purge controls (ACE-compatible naming)
+        # If enabled, AFC handles dock dropoff/pickup and purge extrusion.
+        self.dock_purge = config.getboolean("dock_purge", False)
+        self.dock_purge_length = config.getfloat("dock_purge_length", 105.0, minval=0.0)
+        self.dock_purge_speed = config.getfloat("dock_purge_speed", 7.0, minval=0.0)
 
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
         self.printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
@@ -845,8 +851,11 @@ class afcAMS(afcUnit):
         self.logger.info("OAMS dock purge: tool picked up from dock")
 
     def _is_dock_purge_enabled(self):
-        """Check if dock purge is enabled on the OAMS hardware."""
-        return self.oams is not None and getattr(self.oams, 'dock_load', False)
+        """Check if dock purge is enabled for this unit.
+
+        OpenAMS uses AFC-level dock_purge controls only.
+        """
+        return self.dock_purge
 
     # ---- Direct hardware load/unload ----
 
@@ -1555,9 +1564,9 @@ class afcAMS(afcUnit):
                 # Always pick up tool — even on failure
                 if load_result:
                     # Success: purge in dock, then pick up
-                    purge_length = getattr(self.oams, 'post_load_purge', 0.0) or 0.0
+                    purge_length = self.dock_purge_length
+                    purge_speed = self.dock_purge_speed
                     if purge_length > 0:
-                        purge_speed = getattr(cur_extruder, 'tool_load_speed', 7.0)
                         self.logger.info(
                             f"OAMS dock purge: extruding {purge_length:.1f}mm "
                             f"@ {purge_speed}mm/s in dock, then picking up"
