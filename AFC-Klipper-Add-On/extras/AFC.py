@@ -1383,19 +1383,31 @@ class afc:
         if not tc or not tc.active_tool:
             self.logger.warning("AFC dock purge: no active tool, skipping dropoff")
             return False
-        tool = tc.active_tool
-        self.gcode.run_script_from_command("ENTER_DOCKING_MODE")
-        gcode_pos = list(tc.gcode_move.get_status()['gcode_position'])
-        start_pos = tc._position_with_tool_offset(gcode_pos, None)
-        self._dock_purge_context = {
-            'dropoff_tool': tool.name,
-            'pickup_tool': tool.name,
-            'dock_purge': True,
-            'start_position': tc._position_to_xyz(start_pos, 'xyz'),
-            'restore_position': tc._position_to_xyz(start_pos, 'XYZ'),
-        }
-        tc._run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
-        return True
+        self._dock_purge_mode_active = False
+        try:
+            tool = tc.active_tool
+            self.gcode.run_script_from_command("ENTER_DOCKING_MODE")
+            self._dock_purge_mode_active = True
+            gcode_pos = list(tc.gcode_move.get_status()['gcode_position'])
+            start_pos = tc._position_with_tool_offset(gcode_pos, None)
+            self._dock_purge_context = {
+                'dropoff_tool': tool.name,
+                'pickup_tool': tool.name,
+                'dock_purge': True,
+                'start_position': tc._position_to_xyz(start_pos, 'xyz'),
+                'restore_position': tc._position_to_xyz(start_pos, 'XYZ'),
+            }
+            tc._run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
+            return True
+        except Exception:
+            if getattr(self, "_dock_purge_mode_active", False):
+                try:
+                    self.gcode.run_script_from_command("EXIT_DOCKING_MODE")
+                except Exception as e:
+                    self.logger.error(f"AFC dock purge: failed to exit docking mode after dropoff error: {e}")
+            self._dock_purge_context = None
+            self._dock_purge_mode_active = False
+            raise
 
     def _dock_purge_pickup(self):
         cur_extruder = self.function.get_current_extruder_obj()
@@ -1404,6 +1416,12 @@ class afc:
             or not hasattr(self, '_dock_purge_context')
             or self._dock_purge_context is None):
             self.logger.warning("AFC dock purge: no context for pickup, skipping")
+            if getattr(self, "_dock_purge_mode_active", False):
+                try:
+                    self.gcode.run_script_from_command("EXIT_DOCKING_MODE")
+                except Exception as e:
+                    self.logger.error(f"AFC dock purge: failed to exit docking mode without pickup context: {e}")
+                self._dock_purge_mode_active = False
             return
         tool = tc.active_tool
         try:
@@ -1411,6 +1429,7 @@ class afc:
         finally:
             self.gcode.run_script_from_command("EXIT_DOCKING_MODE")
             self._dock_purge_context = None
+            self._dock_purge_mode_active = False
 
     def load_sequence(self, cur_lane: AFCLane, cur_hub: afc_hub, cur_extruder: AFCExtruder):
         """
@@ -1428,11 +1447,11 @@ class afc:
 
         dock_dropped_off = False
         load_result = False
-        if self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
-            self.logger.info("AFC dock purge: dropping tool off at dock before feed")
-            dock_dropped_off = self._dock_purge_dropoff()
-
         try:
+            if self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
+                self.logger.info("AFC dock purge: dropping tool off at dock before feed")
+                dock_dropped_off = self._dock_purge_dropoff()
+
             if cur_lane.custom_load_cmd:
                 self.logger.info("Running custom load command for lane {}".format(cur_lane.name))
                 self.gcode.run_script_from_command(cur_lane.custom_load_cmd)
