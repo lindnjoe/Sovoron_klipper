@@ -853,11 +853,9 @@ class afcAMS(afcUnit):
     def _is_dock_purge_enabled(self):
         """Check if dock purge is enabled for this unit.
 
-        Supports both AFC-native config and legacy OpenAMS dock_load config.
+        OpenAMS uses AFC-level dock_purge controls only.
         """
-        if self.dock_purge:
-            return True
-        return self.oams is not None and getattr(self.oams, 'dock_load', False)
+        return self.dock_purge
 
     # ---- Direct hardware load/unload ----
 
@@ -1566,12 +1564,8 @@ class afcAMS(afcUnit):
                 # Always pick up tool — even on failure
                 if load_result:
                     # Success: purge in dock, then pick up
-                    if self.dock_purge:
-                        purge_length = self.dock_purge_length
-                        purge_speed = self.dock_purge_speed
-                    else:
-                        purge_length = getattr(self.oams, 'post_load_purge', 0.0) or 0.0
-                        purge_speed = getattr(cur_extruder, 'tool_load_speed', 7.0)
+                    purge_length = self.dock_purge_length
+                    purge_speed = self.dock_purge_speed
                     if purge_length > 0:
                         self.logger.info(
                             f"OAMS dock purge: extruding {purge_length:.1f}mm "
