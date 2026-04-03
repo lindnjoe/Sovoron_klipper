@@ -338,6 +338,22 @@ class TestSystemTestLoadedLane:
         unit.system_Test(lane, delay=0.0, assignTcmd=True, enable_movement=False)
         assert lane.status == AFCLaneState.LOADED
 
+    def test_tool_loaded_not_promoted_active_when_shuttle_empty(self):
+        unit = _make_ace()
+        lane = _make_lane(prep_state=True, load_state=True, tool_loaded=True)
+        lane.get_toolhead_pre_sensor_state.return_value = False
+        lane.extruder_obj = MagicMock()
+        lane.extruder_obj.tool_start = "buffer"
+        lane.extruder_obj.tool_end_state = False
+        lane.extruder_obj.on_shuttle.return_value = False
+        lane.extruder_obj.lane_loaded = lane.name
+
+        unit.system_Test(lane, delay=0.0, assignTcmd=True, enable_movement=False)
+
+        assert lane.tool_loaded is True
+        assert lane.extruder_obj.lane_loaded == lane.name
+        unit.afc.spool.set_active_spool.assert_not_called()
+
 
 # ── system_Test: locked not loaded (prep=T, load=F) ─────────────────────────
 
