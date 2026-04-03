@@ -548,7 +548,11 @@ class afcFunction:
         for key, obj in self.afc.lanes.items():
             if cur_lane_loaded is None or key != cur_lane_loaded.name:
                 obj.do_enable(False)
-                obj.disable_buffer()
+                if (
+                    cur_lane_loaded is None
+                    or getattr(obj, "buffer_obj", None) is not getattr(cur_lane_loaded, "buffer_obj", None)
+                ):
+                    obj.disable_buffer()
                 if (cur_lane_loaded is None
                     or (obj.unit_obj.name != cur_lane_loaded.unit_obj.name)):
                     obj.unit_obj.return_to_home()

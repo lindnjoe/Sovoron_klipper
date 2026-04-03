@@ -243,6 +243,58 @@ class TestGetFilamentStatus:
         assert "In Tool" in status
 
 
+class TestHandleActivateExtruder:
+    def _make_lane(self, name, unit_name, buffer_obj, prep_state=False, load_state=False, tool_loaded=False):
+        lane = MagicMock()
+        lane.name = name
+        lane.unit_obj = MagicMock()
+        lane.unit_obj.name = unit_name
+        lane.buffer_obj = buffer_obj
+        lane.prep_state = prep_state
+        lane.load_state = load_state
+        lane.tool_loaded = tool_loaded
+        lane.spool_id = f"spool_{name}"
+        lane.do_enable = MagicMock()
+        lane.disable_buffer = MagicMock()
+        lane.unsync_to_extruder = MagicMock()
+        lane.sync_to_extruder = MagicMock()
+        lane.enable_buffer = MagicMock()
+        return lane
+
+    def test_shared_buffer_non_active_lane_is_not_disabled(self):
+        func = _make_func()
+        shared_buffer = object()
+        active_lane = self._make_lane("lane_active", "unit_a", shared_buffer)
+        non_active_shared = self._make_lane("lane_shared", "unit_a", shared_buffer)
+        non_active_other = self._make_lane("lane_other", "unit_b", object())
+        func.afc.lanes = {
+            active_lane.name: active_lane,
+            non_active_shared.name: non_active_shared,
+            non_active_other.name: non_active_other,
+        }
+        func.get_current_lane_obj = MagicMock(return_value=active_lane)
+
+        func._handle_activate_extruder(0)
+
+        non_active_shared.disable_buffer.assert_not_called()
+        non_active_other.disable_buffer.assert_called_once()
+        active_lane.enable_buffer.assert_called_once()
+
+    def test_unshared_non_active_lane_is_still_disabled(self):
+        func = _make_func()
+        active_lane = self._make_lane("lane_active", "unit_a", object())
+        non_active_lane = self._make_lane("lane_other", "unit_b", object())
+        func.afc.lanes = {
+            active_lane.name: active_lane,
+            non_active_lane.name: non_active_lane,
+        }
+        func.get_current_lane_obj = MagicMock(return_value=active_lane)
+
+        func._handle_activate_extruder(0)
+
+        non_active_lane.disable_buffer.assert_called_once()
+
+
 # ── afcDeltaTime ──────────────────────────────────────────────────────────────
 
 class TestAfcDeltaTime:
