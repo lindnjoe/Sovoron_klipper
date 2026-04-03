@@ -3,7 +3,7 @@
         "lane0": {
             "name": "lane0",
             "unit": "Ace_1",
-            "hub": "ace_hub1",
+            "hub": "direct",
             "extruder": "extruder",
             "buffer": null,
             "buffer_status": null,
@@ -33,7 +33,7 @@
         "lane1": {
             "name": "lane1",
             "unit": "Ace_1",
-            "hub": "ace_hub2",
+            "hub": "direct",
             "extruder": "extruder1",
             "buffer": null,
             "buffer_status": null,
@@ -63,7 +63,7 @@
         "lane2": {
             "name": "lane2",
             "unit": "Ace_1",
-            "hub": "ace_hub3",
+            "hub": "direct",
             "extruder": "extruder2",
             "buffer": null,
             "buffer_status": null,
@@ -93,7 +93,7 @@
         "lane3": {
             "name": "lane3",
             "unit": "Ace_1",
-            "hub": "ace_hub4",
+            "hub": "direct",
             "extruder": "extruder3",
             "buffer": null,
             "buffer_status": null,
@@ -423,13 +423,13 @@
             "remember_spool": false,
             "spool_id": 3,
             "color": "#FFFFFF",
-            "weight": 485.10933837728265,
+            "weight": 484.90601360483004,
             "extruder_temp": 220,
             "bed_temp": 60,
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None",
+            "status": "Loaded",
             "dist_hub": 103.01,
             "td1_data": {
                 "td": 2.2,
@@ -495,13 +495,13 @@
             "remember_spool": false,
             "spool_id": 27,
             "color": "#FF6A13",
-            "weight": 992.110178660341,
+            "weight": 991.9987494627187,
             "extruder_temp": 220,
             "bed_temp": 60,
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 156.02,
             "td1_data": {
                 "td": 7.3,
@@ -513,7 +513,7 @@
         }
     },
     "system": {
-        "current_load": "lane15",
+        "current_load": "lane0",
         "num_units": 5,
         "num_lanes": 16,
         "num_extruders": 6,
