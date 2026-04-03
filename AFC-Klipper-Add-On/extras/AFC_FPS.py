@@ -167,6 +167,7 @@ class AFCFPSBuffer:
         # Multiplier range — how aggressively the buffer corrects
         self.multiplier_high: float = config.getfloat('multiplier_high', 1.1, minval=1.0)
         self.multiplier_low: float = config.getfloat('multiplier_low', 0.9, minval=0.0, maxval=1.0)
+        self.trailing_min_multiplier: float = config.getfloat('trailing_min_multiplier', 1.05, minval=1.0)
 
         # Deadband — total width of the neutral window centered on set_point
         # No correction applied when FPS is within this range.
@@ -498,6 +499,8 @@ class AFCFPSBuffer:
             else:
                 fraction = 1.0
             multiplier = 1.0 + fraction * (self.multiplier_high - 1.0)
+            trailing_floor = min(self.trailing_min_multiplier, self.multiplier_high)
+            multiplier = max(multiplier, trailing_floor)
             self.last_state = TRAILING_STATE_NAME
             self.advance_state = False
             self.trailing_state = True
@@ -708,6 +711,12 @@ class AFCFPSBuffer:
         if (self.afc.function.is_printing(check_movement=True)
                 and extruder_pos is not None
                 and self.filament_error_pos is not None):
+            half_db = self.deadband / 2.0
+            neutral_low = self.set_point - half_db
+            neutral_high = self.set_point + half_db
+            if neutral_low <= self.smoothed_fps <= neutral_high:
+                self.update_filament_error_pos()
+                return eventtime + CHECK_RUNOUT_TIMEOUT
             if extruder_pos > self.filament_error_pos:
                 msg = "AFC FPS buffer filament fault detected! Take necessary action."
                 self.pause_on_error(msg, True)
