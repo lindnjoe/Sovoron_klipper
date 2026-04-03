@@ -244,12 +244,23 @@ class TestGetFilamentStatus:
 
 
 class TestHandleActivateExtruder:
-    def _make_lane(self, name, unit_name, buffer_obj, prep_state=False, load_state=False, tool_loaded=False):
+    def _make_lane(
+        self,
+        name,
+        unit_name,
+        buffer_obj,
+        *,
+        buffer_name=None,
+        prep_state=False,
+        load_state=False,
+        tool_loaded=False,
+    ):
         lane = MagicMock()
         lane.name = name
         lane.unit_obj = MagicMock()
         lane.unit_obj.name = unit_name
         lane.buffer_obj = buffer_obj
+        lane.buffer_name = buffer_name
         lane.prep_state = prep_state
         lane.load_state = load_state
         lane.tool_loaded = tool_loaded
@@ -293,6 +304,38 @@ class TestHandleActivateExtruder:
         func._handle_activate_extruder(0)
 
         non_active_lane.disable_buffer.assert_called_once()
+
+    def test_shared_buffer_name_non_active_lane_is_not_disabled(self):
+        func = _make_func()
+        active_lane = self._make_lane(
+            "lane_active",
+            "unit_a",
+            None,
+            buffer_name="FPS_buffer2",
+        )
+        non_active_shared_name = self._make_lane(
+            "lane_shared",
+            "unit_a",
+            object(),
+            buffer_name="FPS_buffer2",
+        )
+        non_active_other_name = self._make_lane(
+            "lane_other",
+            "unit_b",
+            object(),
+            buffer_name="FPS_buffer3",
+        )
+        func.afc.lanes = {
+            active_lane.name: active_lane,
+            non_active_shared_name.name: non_active_shared_name,
+            non_active_other_name.name: non_active_other_name,
+        }
+        func.get_current_lane_obj = MagicMock(return_value=active_lane)
+
+        func._handle_activate_extruder(0)
+
+        non_active_shared_name.disable_buffer.assert_not_called()
+        non_active_other_name.disable_buffer.assert_called_once()
 
 
 # ── afcDeltaTime ──────────────────────────────────────────────────────────────

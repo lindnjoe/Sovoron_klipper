@@ -657,3 +657,49 @@ class TestFaultDetectionOpenAMS:
         result = buf.extruder_pos_update_event(100.0)
         # Should return next check time without doing fault detection
         assert result == pytest.approx(100.5)  # CHECK_RUNOUT_TIMEOUT = 0.5
+
+    def test_extruder_pos_event_neutral_state_does_not_fault(self):
+        """When pressure is neutral, don't raise fault even if extruder pos exceeds threshold."""
+        lane = _make_mock_lane(has_stepper=True)
+        lane.extruder_name = None
+        buf = _make_fps_buffer(overrides={
+            "current_lane": lane,
+            "filament_error_pos": 100.0,
+            "smoothed_fps": 0.50,
+            "set_point": 0.50,
+            "deadband": 0.30,
+        })
+        buf.afc.function.is_printing = MagicMock(return_value=True)
+        buf.afc.toolhead = MagicMock()
+        buf.afc.toolhead.get_extruder.return_value = MagicMock(name="extruder")
+        buf.get_extruder_pos = MagicMock(return_value=150.0)
+        buf.update_filament_error_pos = MagicMock()
+        buf.pause_on_error = MagicMock()
+
+        result = buf.extruder_pos_update_event(100.0)
+
+        buf.pause_on_error.assert_not_called()
+        buf.update_filament_error_pos.assert_called_once()
+        assert result == pytest.approx(100.5)
+
+    def test_extruder_pos_event_non_neutral_still_faults(self):
+        """Outside neutral window, exceeding threshold should still fault."""
+        lane = _make_mock_lane(has_stepper=True)
+        lane.extruder_name = None
+        buf = _make_fps_buffer(overrides={
+            "current_lane": lane,
+            "filament_error_pos": 100.0,
+            "smoothed_fps": 0.95,
+            "set_point": 0.50,
+            "deadband": 0.30,
+        })
+        buf.afc.function.is_printing = MagicMock(return_value=True)
+        buf.afc.toolhead = MagicMock()
+        buf.afc.toolhead.get_extruder.return_value = MagicMock(name="extruder")
+        buf.get_extruder_pos = MagicMock(return_value=150.0)
+        buf.update_filament_error_pos = MagicMock()
+        buf.pause_on_error = MagicMock()
+
+        buf.extruder_pos_update_event(100.0)
+
+        buf.pause_on_error.assert_called_once()

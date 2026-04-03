@@ -708,6 +708,12 @@ class AFCFPSBuffer:
         if (self.afc.function.is_printing(check_movement=True)
                 and extruder_pos is not None
                 and self.filament_error_pos is not None):
+            half_db = self.deadband / 2.0
+            neutral_low = self.set_point - half_db
+            neutral_high = self.set_point + half_db
+            if neutral_low <= self.smoothed_fps <= neutral_high:
+                self.update_filament_error_pos()
+                return eventtime + CHECK_RUNOUT_TIMEOUT
             if extruder_pos > self.filament_error_pos:
                 msg = "AFC FPS buffer filament fault detected! Take necessary action."
                 self.pause_on_error(msg, True)
