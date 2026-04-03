@@ -2074,10 +2074,8 @@ class afcACE(afcUnit):
             # Direct/direct_load lanes may not have a real/virtual AFC hub
             # object and instead provide a lightweight callable placeholder.
             # Keep state in sync for those lanes without requiring a hub.
-            try:
+            if hasattr(hub, "state"):
                 hub.state = state
-            except Exception:
-                pass
         fila = getattr(hub, "fila", None)
         if fila is not None:
             helper = getattr(fila, "runout_helper", None)
