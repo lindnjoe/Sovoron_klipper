@@ -1773,7 +1773,17 @@ class afcACE(afcUnit):
         if hub is None:
             return
         eventtime = self.afc.reactor.monotonic()
-        hub.switch_pin_callback(eventtime, state)
+        switch_cb = getattr(hub, "switch_pin_callback", None)
+        if callable(switch_cb):
+            switch_cb(eventtime, state)
+        else:
+            # Direct/direct_load lanes may not have a real/virtual AFC hub
+            # object and instead provide a lightweight callable placeholder.
+            # Keep state in sync for those lanes without requiring a hub.
+            try:
+                hub.state = state
+            except Exception:
+                pass
         fila = getattr(hub, "fila", None)
         if fila is not None:
             helper = getattr(fila, "runout_helper", None)
