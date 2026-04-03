@@ -72,7 +72,7 @@ def _make_fps_buffer(name="FPS_buffer1", overrides=None):
     buf.smoothing = 0.3
     buf.smoothed_fps = 0.5
     buf.update_interval = 0.25
-    buf.flip_cooldown = 1.0
+    buf.flip_cooldown = 180.0
     buf._flip_suppress_until = 0.0
     buf._last_correction_direction = NEUTRAL_STATE_NAME
 
