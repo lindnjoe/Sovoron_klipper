@@ -349,6 +349,50 @@ class TestSystemTestLockedNotLoaded:
         assert result is False
 
 
+# ── _set_hub_state ───────────────────────────────────────────────────────────
+
+class TestSetHubState:
+    def test_uses_switch_pin_callback_when_available(self):
+        unit = _make_ace()
+        lane = _make_lane()
+        hub = MagicMock()
+        lane.hub_obj = hub
+
+        unit._set_hub_state(lane, True)
+
+        hub.switch_pin_callback.assert_called_once_with(100.0, True)
+
+    def test_falls_back_to_state_for_direct_hub_callable(self):
+        unit = _make_ace()
+        lane = _make_lane()
+
+        def hub():
+            return None
+        hub.state = False
+        lane.hub_obj = hub
+
+        unit._set_hub_state(lane, True)
+
+        assert hub.state is True
+
+
+class TestHubHasRealPin:
+    def test_returns_false_for_callable_direct_hub_placeholder(self):
+        unit = _make_ace()
+
+        def hub():
+            return None
+
+        assert unit._hub_has_real_pin(hub) is False
+
+    def test_returns_true_for_physical_hub_pin(self):
+        unit = _make_ace()
+        hub = MagicMock()
+        hub.switch_pin = "PA4"
+
+        assert unit._hub_has_real_pin(hub) is True
+
+
 # ── _poll_slot_status: shifting state handling ───────────────────────────────
 
 class TestPollSlotStatusShifting:

@@ -1650,7 +1650,7 @@ class afcACE(afcUnit):
         # fighting the extruder grip.
         full_retract = self._get_retract_length(cur_lane)
         dist_hub = self._get_dist_hub(cur_lane)
-        has_real_hub_pin = cur_hub.switch_pin.lower() != "virtual"
+        has_real_hub_pin = self._hub_has_real_pin(cur_hub)
         if dist_hub > 0 and dist_hub < full_retract:
             retract_length = full_retract - dist_hub
             if not has_real_hub_pin:
@@ -1693,9 +1693,7 @@ class afcACE(afcUnit):
             # If hub has a physical sensor, retract in small steps until
             # the hub sensor clears, then retract hub_clear_move_dis extra
             # to ensure filament is fully out of the hub exit path.
-            has_real_hub_pin = (
-                cur_hub.switch_pin.lower() != "virtual"
-            )
+            has_real_hub_pin = self._hub_has_real_pin(cur_hub)
             if has_real_hub_pin:
                 hub_clear_step = 10  # mm per check
                 max_hub_clear_tries = 30
@@ -1773,7 +1771,17 @@ class afcACE(afcUnit):
         if hub is None:
             return
         eventtime = self.afc.reactor.monotonic()
-        hub.switch_pin_callback(eventtime, state)
+        switch_cb = getattr(hub, "switch_pin_callback", None)
+        if callable(switch_cb):
+            switch_cb(eventtime, state)
+        else:
+            # Direct/direct_load lanes may not have a real/virtual AFC hub
+            # object and instead provide a lightweight callable placeholder.
+            # Keep state in sync for those lanes without requiring a hub.
+            try:
+                hub.state = state
+            except Exception:
+                pass
         fila = getattr(hub, "fila", None)
         if fila is not None:
             helper = getattr(fila, "runout_helper", None)
@@ -1782,6 +1790,13 @@ class afcACE(afcUnit):
                     helper.note_filament_present(eventtime, state)
                 except TypeError:
                     helper.note_filament_present(state)
+
+    def _hub_has_real_pin(self, hub) -> bool:
+        """Return True when a hub object has a non-virtual switch pin."""
+        if hub is None:
+            return False
+        switch_pin = getattr(hub, "switch_pin", "virtual")
+        return str(switch_pin).lower() != "virtual"
 
     def _wait_for_ace_ready(self, timeout=10.0):
         """Wait for the overall ACE status to be 'ready' before sending commands.
