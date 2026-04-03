@@ -542,13 +542,25 @@ class afcFunction:
 
         cur_lane_loaded = self.get_current_lane_obj()
         self.logger.debug("Activating extruder lane: {}".format(cur_lane_loaded.name if cur_lane_loaded else "None"))
+        active_buffer_obj = getattr(cur_lane_loaded, "buffer_obj", None) if cur_lane_loaded is not None else None
+        active_buffer_name = getattr(cur_lane_loaded, "buffer_name", None) if cur_lane_loaded is not None else None
 
         self.afc.spool.set_active_spool('')
         # Disable extruder steppers for non active lanes
         for key, obj in self.afc.lanes.items():
             if cur_lane_loaded is None or key != cur_lane_loaded.name:
                 obj.do_enable(False)
-                obj.disable_buffer()
+                if (
+                    cur_lane_loaded is None
+                    or not (
+                        (active_buffer_obj is not None and getattr(obj, "buffer_obj", None) is active_buffer_obj)
+                        or (
+                            active_buffer_name is not None
+                            and getattr(obj, "buffer_name", None) == active_buffer_name
+                        )
+                    )
+                ):
+                    obj.disable_buffer()
                 if (cur_lane_loaded is None
                     or (obj.unit_obj.name != cur_lane_loaded.unit_obj.name)):
                     obj.unit_obj.return_to_home()
