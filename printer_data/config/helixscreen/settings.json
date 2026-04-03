@@ -90,21 +90,7 @@
         "hotend": "heater_fan T0_hotend_fan",
         "part": "fan_generic T0_partfan"
       },
-      "filament": {
-        "external_spool": {
-          "assigned": true,
-          "bed_temp": 60,
-          "brand": "Bambu Lab",
-          "color_rgb": 16738835,
-          "material": "PLA",
-          "nozzle_temp_max": 0,
-          "nozzle_temp_min": 0,
-          "remaining_weight_g": 983.3191528320313,
-          "spool_name": "Bambu Lab PLA - Orange",
-          "spoolman_id": 27,
-          "total_weight_g": 1000.0
-        }
-      },
+      "filament": {},
       "filament_sensors": {
         "sensors": null
       },
@@ -177,7 +163,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-04-03T19:28:49Z"
+          "timestamp": "2026-04-03T19:36:48Z"
         },
         "optional": []
       },

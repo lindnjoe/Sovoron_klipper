@@ -167,6 +167,7 @@ class AFCFPSBuffer:
         # Multiplier range — how aggressively the buffer corrects
         self.multiplier_high: float = config.getfloat('multiplier_high', 1.1, minval=1.0)
         self.multiplier_low: float = config.getfloat('multiplier_low', 0.9, minval=0.0, maxval=1.0)
+        self.trailing_min_multiplier: float = config.getfloat('trailing_min_multiplier', 1.05, minval=1.0)
 
         # Deadband — total width of the neutral window centered on set_point
         # No correction applied when FPS is within this range.
@@ -498,6 +499,8 @@ class AFCFPSBuffer:
             else:
                 fraction = 1.0
             multiplier = 1.0 + fraction * (self.multiplier_high - 1.0)
+            trailing_floor = min(self.trailing_min_multiplier, self.multiplier_high)
+            multiplier = max(multiplier, trailing_floor)
             self.last_state = TRAILING_STATE_NAME
             self.advance_state = False
             self.trailing_state = True
