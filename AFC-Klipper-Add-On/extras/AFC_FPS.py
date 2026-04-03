@@ -506,12 +506,14 @@ class AFCFPSBuffer:
                 )
             )
 
-        # Update fault detection position every correction cycle so it
-        # tracks with the extruder. Without this, filament_error_pos is
-        # set once at enable_buffer and never updated — the extruder
-        # eventually exceeds it even though the buffer is correcting fine.
+        # Update fault detection position when FPS is in a healthy range.
+        # If pressure is near set_point (buffer correcting normally),
+        # push the error threshold forward. If pressure is stuck at an
+        # extreme (filament stopped/clogged), stop updating so the
+        # extruder eventually exceeds the threshold and triggers a fault.
         if self.fault_detection_enabled():
-            self.update_filament_error_pos()
+            if abs(self.smoothed_fps - self.set_point) < (self.high_point - self.set_point):
+                self.update_filament_error_pos()
 
         self._update_virtual_sensors(eventtime)
         return eventtime + self.update_interval
