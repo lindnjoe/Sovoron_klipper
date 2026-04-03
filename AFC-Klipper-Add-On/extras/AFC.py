@@ -1577,10 +1577,10 @@ class afc:
                             if self.homing_enabled:
                                 message += f"\nFilament can also be reset back to hub by running AFC_RESET command then select {cur_lane.name} to reset"
                                 message += f"back to hub. Once lane is reset try reload lane with {cur_lane.map} macro."
-                        if self.function.in_print():
-                            message += '\nOnce filament is fully loaded click resume to continue printing'
-                        self.error.handle_lane_failure(cur_lane, message)
-                        return False
+                            if self.function.in_print():
+                                message += '\nOnce filament is fully loaded click resume to continue printing'
+                            self.error.handle_lane_failure(cur_lane, message)
+                            return False
 
             self.afcDeltaTime.log_with_time("Filament loaded to pre-sensor")
 
