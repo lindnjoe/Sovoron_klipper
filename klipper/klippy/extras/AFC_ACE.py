@@ -2338,28 +2338,11 @@ class afcACE(afcUnit):
                     cur_lane.loaded_to_hub = True
                     # Set virtual hub sensor -- filament is actively through hub
                     self._set_hub_state(cur_lane, True)
-                    # For ACE with AMS virtual pin, the FPS reads zero
-                    # at startup (motor off) so tool_start_state is False.
-                    # If saved state confirms this lane is loaded, set the
-                    # virtual sensor directly (like OpenAMS does for its
-                    # lanes) so the toolhead-pre-sensor check passes the
-                    # same way a physical switch would on BoxTurtle.
                     extruder_obj = cur_lane.extruder_obj
-                    if extruder_obj.lane_loaded == cur_lane.name:
-                        extruder_obj.tool_start_state = True
-                        fila = getattr(extruder_obj, "fila_tool_start", None)
-                        helper = getattr(fila, "runout_helper", None) if fila else None
-                        if helper is not None:
-                            eventtime = self.afc.reactor.monotonic()
-                            try:
-                                helper.note_filament_present(eventtime, True)
-                            except TypeError:
-                                helper.note_filament_present(True)
-
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
-                        or extruder_obj.tool_start == "buffer"
                         or extruder_obj.tool_end_state
+                        or extruder_obj.on_shuttle()
                     )
                     if tool_ready and extruder_obj.lane_loaded == cur_lane.name:
                         cur_lane.sync_to_extruder()
@@ -2405,6 +2388,13 @@ class afcACE(afcUnit):
                                     )
                         else:
                             cur_lane.unit_obj.lane_tool_loaded_idle(cur_lane)
+                    elif not tool_ready:
+                        self.logger.info(
+                            f"PREP: clearing stale tool_loaded state for {cur_lane.name} "
+                            "(toolhead sensors/shuttle report empty)"
+                        )
+                        cur_lane.tool_loaded = False
+                        extruder_obj.lane_loaded = None
                     elif tool_ready:
                         msg += (
                             '<span class=error--text> error in ToolHead. '

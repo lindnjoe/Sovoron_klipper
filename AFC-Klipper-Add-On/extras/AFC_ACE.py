@@ -2896,7 +2896,6 @@ class afcACE(afcUnit):
                     self._set_hub_state(cur_lane, True)
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
-                        or cur_lane.extruder_obj.tool_start == "buffer"
                         or cur_lane.extruder_obj.tool_end_state
                         or cur_lane.extruder_obj.on_shuttle()
                     )
@@ -2950,6 +2949,13 @@ class afcACE(afcUnit):
                             cur_lane.unit_obj.lane_tool_loaded_idle(cur_lane)
 
                         cur_lane.enable_buffer()
+                    elif not tool_ready:
+                        self.logger.info(
+                            f"PREP: clearing stale tool_loaded state for {cur_lane.name} "
+                            "(toolhead sensors/shuttle report empty)"
+                        )
+                        cur_lane.tool_loaded = False
+                        cur_lane.extruder_obj.lane_loaded = None
                     elif tool_ready:
                         msg += (
                             '<span class=error--text> error in ToolHead. '
