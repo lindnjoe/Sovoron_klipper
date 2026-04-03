@@ -94,6 +94,7 @@ def _make_fps_buffer(name="FPS_buffer1", overrides=None):
 
     # Timer mock
     buf.correction_timer = MagicMock()
+    buf._correction_running = False
 
     # Function mock
     buf.function = afc.function
@@ -113,10 +114,12 @@ def _make_mock_lane(name="lane1", has_stepper=True):
     lane = MagicMock()
     lane.name = name
     if has_stepper:
+        lane.drive_stepper = MagicMock()
         lane.extruder_stepper = MagicMock()
         lane.extruder_stepper.stepper = MagicMock()
         lane.extruder_stepper.stepper.get_rotation_distance.return_value = (7.5,)
     else:
+        lane.drive_stepper = None
         lane.extruder_stepper = None
     return lane
 
@@ -160,6 +163,20 @@ class TestAdcCallback:
         buf = _make_fps_buffer(overrides={"smoothing": 0.0, "smoothed_fps": 0.5})
         buf._adc_callback(100.0, 0.8)
         assert buf.smoothed_fps == pytest.approx(0.8)
+
+    def test_adc_callback_lazily_starts_correction_timer(self):
+        lane = _make_mock_lane(has_stepper=True)
+        buf = _make_fps_buffer(overrides={
+            "enable": True,
+            "current_lane": lane,
+            "_correction_running": False,
+        })
+        buf.reactor.update_timer = MagicMock()
+
+        buf._adc_callback(100.0, 0.6)
+
+        buf.reactor.update_timer.assert_called_with(buf.correction_timer, buf.reactor.NOW)
+        assert buf._correction_running is True
 
 
 # ── Correction Algorithm ─────────────────────────────────────────────────────
@@ -375,6 +392,20 @@ class TestEnableDisableBuffer:
         buf.reactor.update_timer = MagicMock()
         buf.enable_buffer(_make_mock_lane())
         buf.reactor.update_timer.assert_called()
+
+    def test_enable_starts_timer_with_extruder_stepper_only(self):
+        buf = _make_fps_buffer()
+        buf.reactor.update_timer = MagicMock()
+        lane = MagicMock()
+        lane.name = "lane1"
+        lane.drive_stepper = None
+        lane.extruder_stepper = MagicMock()
+        lane.update_rotation_distance = MagicMock()
+
+        buf.enable_buffer(lane)
+
+        buf.reactor.update_timer.assert_called_with(buf.correction_timer, buf.reactor.NOW)
+        assert buf._correction_running is True
 
     def test_disable_resets_state(self):
         lane = _make_mock_lane()
