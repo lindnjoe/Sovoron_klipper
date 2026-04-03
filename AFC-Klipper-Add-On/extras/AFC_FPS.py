@@ -167,6 +167,7 @@ class AFCFPSBuffer:
         # Multiplier range — how aggressively the buffer corrects
         self.multiplier_high: float = config.getfloat('multiplier_high', 1.1, minval=1.0)
         self.multiplier_low: float = config.getfloat('multiplier_low', 0.9, minval=0.0, maxval=1.0)
+        self.trailing_min_multiplier: float = config.getfloat('trailing_min_multiplier', 1.05, minval=1.0)
 
         # Deadband — total width of the neutral window centered on set_point
         # No correction applied when FPS is within this range.
@@ -205,6 +206,9 @@ class AFCFPSBuffer:
 
         # Timer interval for applying corrections
         self.update_interval: float = config.getfloat('update_interval', 0.25, minval=0.05)
+        self.flip_cooldown: float = config.getfloat('flip_cooldown', 1.0, minval=0.0)
+        self._flip_suppress_until: float = 0.0
+        self._last_correction_direction: str = NEUTRAL_STATE_NAME
 
         # ---- Fault detection ----
         self.error_sensitivity: float = config.getfloat('filament_error_sensitivity', 0, minval=0, maxval=10)
@@ -469,6 +473,30 @@ class AFCFPSBuffer:
             self.last_state = NEUTRAL_STATE_NAME
             self.advance_state = False
             self.trailing_state = False
+            self._last_correction_direction = NEUTRAL_STATE_NAME
+            if self.led:
+                self.afc.function.afc_led(self.led_neutral, self.led_index)
+            return eventtime + self.update_interval
+
+        target_direction = ADVANCING_STATE_NAME if reading > neutral_high else TRAILING_STATE_NAME
+
+        if eventtime < self._flip_suppress_until:
+            self.set_multiplier(1.0)
+            self.last_state = NEUTRAL_STATE_NAME
+            self.advance_state = False
+            self.trailing_state = False
+            if self.led:
+                self.afc.function.afc_led(self.led_neutral, self.led_index)
+            return eventtime + self.update_interval
+
+        if (self._last_correction_direction in (ADVANCING_STATE_NAME, TRAILING_STATE_NAME)
+                and target_direction != self._last_correction_direction):
+            self._flip_suppress_until = eventtime + self.flip_cooldown
+            self._last_correction_direction = NEUTRAL_STATE_NAME
+            self.set_multiplier(1.0)
+            self.last_state = NEUTRAL_STATE_NAME
+            self.advance_state = False
+            self.trailing_state = False
             if self.led:
                 self.afc.function.afc_led(self.led_neutral, self.led_index)
             return eventtime + self.update_interval
@@ -486,6 +514,7 @@ class AFCFPSBuffer:
             self.last_state = ADVANCING_STATE_NAME
             self.advance_state = True
             self.trailing_state = False
+            self._last_correction_direction = ADVANCING_STATE_NAME
             if self.led:
                 self.afc.function.afc_led(self.led_advancing, self.led_index)
         else:
@@ -498,9 +527,12 @@ class AFCFPSBuffer:
             else:
                 fraction = 1.0
             multiplier = 1.0 + fraction * (self.multiplier_high - 1.0)
+            trailing_floor = min(self.trailing_min_multiplier, self.multiplier_high)
+            multiplier = max(multiplier, trailing_floor)
             self.last_state = TRAILING_STATE_NAME
             self.advance_state = False
             self.trailing_state = True
+            self._last_correction_direction = TRAILING_STATE_NAME
             if self.led:
                 self.afc.function.afc_led(self.led_trailing, self.led_index)
 
@@ -556,6 +588,8 @@ class AFCFPSBuffer:
         self.enable = True
         self._latch_enabled = False
         self._advance_latched = False
+        self._flip_suppress_until = 0.0
+        self._last_correction_direction = NEUTRAL_STATE_NAME
         has_stepper = self._lane_has_rotation_control(lane)
 
         if self.led:
@@ -708,6 +742,12 @@ class AFCFPSBuffer:
         if (self.afc.function.is_printing(check_movement=True)
                 and extruder_pos is not None
                 and self.filament_error_pos is not None):
+            half_db = self.deadband / 2.0
+            neutral_low = self.set_point - half_db
+            neutral_high = self.set_point + half_db
+            if neutral_low <= self.smoothed_fps <= neutral_high:
+                self.update_filament_error_pos()
+                return eventtime + CHECK_RUNOUT_TIMEOUT
             if extruder_pos > self.filament_error_pos:
                 msg = "AFC FPS buffer filament fault detected! Take necessary action."
                 self.pause_on_error(msg, True)

@@ -67,10 +67,14 @@ def _make_fps_buffer(name="FPS_buffer1", overrides=None):
     buf.high_point = 0.9
     buf.multiplier_high = 1.1
     buf.multiplier_low = 0.9
+    buf.trailing_min_multiplier = 1.05
     buf.deadband = 0.30
     buf.smoothing = 0.3
     buf.smoothed_fps = 0.5
     buf.update_interval = 0.25
+    buf.flip_cooldown = 1.0
+    buf._flip_suppress_until = 0.0
+    buf._last_correction_direction = NEUTRAL_STATE_NAME
 
     # Fault detection defaults
     buf.error_sensitivity = 0
@@ -285,6 +289,43 @@ class TestCorrectionEvent:
         # range_size = 0.35 - 0.1 = 0.25, fraction = (0.35-0.225)/0.25 = 0.5
         # multiplier = 1.0 + 0.5*(1.1-1.0) = 1.05
         buf.current_lane.update_rotation_distance.assert_called_with(pytest.approx(1.05))
+
+    def test_trailing_near_deadband_uses_min_boost(self):
+        """Readings just below neutral still apply a minimum trailing boost."""
+        buf = _make_fps_buffer(overrides={
+            "enable": True,
+            "current_lane": _make_mock_lane(),
+            "smoothed_fps": 0.34,  # just below neutral_low (0.35)
+        })
+        buf._correction_event(100.0)
+        buf.current_lane.update_rotation_distance.assert_called_with(pytest.approx(1.05))
+
+    def test_flip_cooldown_suppresses_rapid_direction_changes(self):
+        """When readings flip adv/trail quickly, hold neutral before correcting again."""
+        lane = _make_mock_lane()
+        buf = _make_fps_buffer(overrides={
+            "enable": True,
+            "current_lane": lane,
+            "flip_cooldown": 1.0,
+            "update_interval": 0.25,
+        })
+
+        buf.smoothed_fps = 0.80  # advancing
+        buf._correction_event(10.0)
+        first = lane.update_rotation_distance.call_args_list[-1][0][0]
+        assert first < 1.0
+
+        buf.smoothed_fps = 0.20  # immediate trailing flip
+        buf._correction_event(10.25)
+        second = lane.update_rotation_distance.call_args_list[-1][0][0]
+        assert second == pytest.approx(1.0)
+        assert buf.last_state == NEUTRAL_STATE_NAME
+
+        buf.smoothed_fps = 0.20  # after cooldown, trailing applies
+        buf._correction_event(11.30)
+        third = lane.update_rotation_distance.call_args_list[-1][0][0]
+        assert third > 1.0
+        assert buf.last_state == TRAILING_STATE_NAME
 
     def test_clamped_beyond_high_point(self):
         """Reading > high_point → fraction clamped to 1.0."""
@@ -657,3 +698,49 @@ class TestFaultDetectionOpenAMS:
         result = buf.extruder_pos_update_event(100.0)
         # Should return next check time without doing fault detection
         assert result == pytest.approx(100.5)  # CHECK_RUNOUT_TIMEOUT = 0.5
+
+    def test_extruder_pos_event_neutral_state_does_not_fault(self):
+        """When pressure is neutral, don't raise fault even if extruder pos exceeds threshold."""
+        lane = _make_mock_lane(has_stepper=True)
+        lane.extruder_name = None
+        buf = _make_fps_buffer(overrides={
+            "current_lane": lane,
+            "filament_error_pos": 100.0,
+            "smoothed_fps": 0.50,
+            "set_point": 0.50,
+            "deadband": 0.30,
+        })
+        buf.afc.function.is_printing = MagicMock(return_value=True)
+        buf.afc.toolhead = MagicMock()
+        buf.afc.toolhead.get_extruder.return_value = MagicMock(name="extruder")
+        buf.get_extruder_pos = MagicMock(return_value=150.0)
+        buf.update_filament_error_pos = MagicMock()
+        buf.pause_on_error = MagicMock()
+
+        result = buf.extruder_pos_update_event(100.0)
+
+        buf.pause_on_error.assert_not_called()
+        buf.update_filament_error_pos.assert_called_once()
+        assert result == pytest.approx(100.5)
+
+    def test_extruder_pos_event_non_neutral_still_faults(self):
+        """Outside neutral window, exceeding threshold should still fault."""
+        lane = _make_mock_lane(has_stepper=True)
+        lane.extruder_name = None
+        buf = _make_fps_buffer(overrides={
+            "current_lane": lane,
+            "filament_error_pos": 100.0,
+            "smoothed_fps": 0.95,
+            "set_point": 0.50,
+            "deadband": 0.30,
+        })
+        buf.afc.function.is_printing = MagicMock(return_value=True)
+        buf.afc.toolhead = MagicMock()
+        buf.afc.toolhead.get_extruder.return_value = MagicMock(name="extruder")
+        buf.get_extruder_pos = MagicMock(return_value=150.0)
+        buf.update_filament_error_pos = MagicMock()
+        buf.pause_on_error = MagicMock()
+
+        buf.extruder_pos_update_event(100.0)
+
+        buf.pause_on_error.assert_called_once()
