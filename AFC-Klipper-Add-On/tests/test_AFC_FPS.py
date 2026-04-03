@@ -393,6 +393,20 @@ class TestEnableDisableBuffer:
         buf.enable_buffer(_make_mock_lane())
         buf.reactor.update_timer.assert_called()
 
+    def test_enable_starts_timer_with_extruder_stepper_only(self):
+        buf = _make_fps_buffer()
+        buf.reactor.update_timer = MagicMock()
+        lane = MagicMock()
+        lane.name = "lane1"
+        lane.drive_stepper = None
+        lane.extruder_stepper = MagicMock()
+        lane.update_rotation_distance = MagicMock()
+
+        buf.enable_buffer(lane)
+
+        buf.reactor.update_timer.assert_called_with(buf.correction_timer, buf.reactor.NOW)
+        assert buf._correction_running is True
+
     def test_disable_resets_state(self):
         lane = _make_mock_lane()
         buf = _make_fps_buffer(overrides={

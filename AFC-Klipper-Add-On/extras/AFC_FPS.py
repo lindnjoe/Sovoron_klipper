@@ -636,8 +636,10 @@ class AFCFPSBuffer:
         if lane is None:
             return False
         drive_stepper = getattr(lane, 'drive_stepper', None)
+        extruder_stepper = getattr(lane, 'extruder_stepper', None)
         update_fn = getattr(lane, 'update_rotation_distance', None)
-        return drive_stepper is not None and callable(update_fn)
+        has_stepper = (drive_stepper is not None) or (extruder_stepper is not None)
+        return has_stepper and callable(update_fn)
 
     # ------------------------------------------------------------------
     # Fault detection  (same interface as AFCTrigger)
