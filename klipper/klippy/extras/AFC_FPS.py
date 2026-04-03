@@ -206,7 +206,7 @@ class AFCFPSBuffer:
 
         # Timer interval for applying corrections
         self.update_interval: float = config.getfloat('update_interval', 0.25, minval=0.05)
-        self.flip_cooldown: float = config.getfloat('flip_cooldown', 1.0, minval=0.0)
+        self.flip_cooldown: float = config.getfloat('flip_cooldown', 180.0, minval=0.0)
         self._flip_suppress_until: float = 0.0
         self._last_correction_direction: str = NEUTRAL_STATE_NAME
 
