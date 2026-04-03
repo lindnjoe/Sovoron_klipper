@@ -1926,7 +1926,7 @@ class afcACE(afcUnit):
         # For virtual hubs, add hub_clear_move_dis to ensure filament clears the combiner.
         full_retract = self._get_retract_length(cur_lane)
         dist_hub = self._get_dist_hub(cur_lane)
-        has_real_hub_pin = cur_hub.switch_pin.lower() != "virtual"
+        has_real_hub_pin = self._hub_has_real_pin(cur_hub)
         if dist_hub > 0 and dist_hub < full_retract:
             retract_length = full_retract - dist_hub  # bowden length (hub to extruder)
             if not has_real_hub_pin:
@@ -1989,9 +1989,7 @@ class afcACE(afcUnit):
             # If hub has a physical sensor, retract in small steps until
             # the hub sensor clears, then retract hub_clear_move_dis extra
             # to ensure filament is fully out of the hub exit path.
-            has_real_hub_pin = (
-                cur_hub.switch_pin.lower() != "virtual"
-            )
+            has_real_hub_pin = self._hub_has_real_pin(cur_hub)
             if has_real_hub_pin:
                 hub_clear_step = 10  # mm per check
                 max_hub_clear_tries = 30
@@ -2088,6 +2086,13 @@ class afcACE(afcUnit):
                     helper.note_filament_present(eventtime, state)
                 except TypeError:
                     helper.note_filament_present(state)
+
+    def _hub_has_real_pin(self, hub) -> bool:
+        """Return True when a hub object has a non-virtual switch pin."""
+        if hub is None:
+            return False
+        switch_pin = getattr(hub, "switch_pin", "virtual")
+        return str(switch_pin).lower() != "virtual"
 
     def _wait_for_ace_ready(self, timeout=30.0):
         """Wait for the overall ACE status to be 'ready' before sending commands.
@@ -3643,7 +3648,7 @@ class afcACE(afcUnit):
 
         # Phase 1: Get filament to hub position.
         # If already loaded_to_hub (homing_enabled prep did it), skip.
-        has_real_hub = cur_hub and cur_hub.switch_pin.lower() != "virtual"
+        has_real_hub = self._hub_has_real_pin(cur_hub)
         dist_hub = self._get_dist_hub(cur_lane)
         if cur_lane.loaded_to_hub:
             self.logger.info(f"ACE calibrate_td1: filament already at hub, skipping hub feed")
