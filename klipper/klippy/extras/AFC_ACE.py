@@ -1650,7 +1650,7 @@ class afcACE(afcUnit):
         # fighting the extruder grip.
         full_retract = self._get_retract_length(cur_lane)
         dist_hub = self._get_dist_hub(cur_lane)
-        has_real_hub_pin = cur_hub.switch_pin.lower() != "virtual"
+        has_real_hub_pin = self._hub_has_real_pin(cur_hub)
         if dist_hub > 0 and dist_hub < full_retract:
             retract_length = full_retract - dist_hub
             if not has_real_hub_pin:
@@ -1693,9 +1693,7 @@ class afcACE(afcUnit):
             # If hub has a physical sensor, retract in small steps until
             # the hub sensor clears, then retract hub_clear_move_dis extra
             # to ensure filament is fully out of the hub exit path.
-            has_real_hub_pin = (
-                cur_hub.switch_pin.lower() != "virtual"
-            )
+            has_real_hub_pin = self._hub_has_real_pin(cur_hub)
             if has_real_hub_pin:
                 hub_clear_step = 10  # mm per check
                 max_hub_clear_tries = 30
@@ -1773,7 +1771,15 @@ class afcACE(afcUnit):
         if hub is None:
             return
         eventtime = self.afc.reactor.monotonic()
-        hub.switch_pin_callback(eventtime, state)
+        switch_cb = getattr(hub, "switch_pin_callback", None)
+        if callable(switch_cb):
+            switch_cb(eventtime, state)
+        else:
+            # Direct/direct_load lanes may not have a real/virtual AFC hub
+            # object and instead provide a lightweight callable placeholder.
+            # Keep state in sync for those lanes without requiring a hub.
+            if hasattr(hub, "state"):
+                hub.state = state
         fila = getattr(hub, "fila", None)
         if fila is not None:
             helper = getattr(fila, "runout_helper", None)
@@ -1782,6 +1788,13 @@ class afcACE(afcUnit):
                     helper.note_filament_present(eventtime, state)
                 except TypeError:
                     helper.note_filament_present(state)
+
+    def _hub_has_real_pin(self, hub) -> bool:
+        """Return True when a hub object has a non-virtual switch pin."""
+        if hub is None:
+            return False
+        switch_pin = getattr(hub, "switch_pin", "virtual")
+        return str(switch_pin).lower() != "virtual"
 
     def _wait_for_ace_ready(self, timeout=10.0):
         """Wait for the overall ACE status to be 'ready' before sending commands.
@@ -2325,28 +2338,11 @@ class afcACE(afcUnit):
                     cur_lane.loaded_to_hub = True
                     # Set virtual hub sensor -- filament is actively through hub
                     self._set_hub_state(cur_lane, True)
-                    # For ACE with AMS virtual pin, the FPS reads zero
-                    # at startup (motor off) so tool_start_state is False.
-                    # If saved state confirms this lane is loaded, set the
-                    # virtual sensor directly (like OpenAMS does for its
-                    # lanes) so the toolhead-pre-sensor check passes the
-                    # same way a physical switch would on BoxTurtle.
                     extruder_obj = cur_lane.extruder_obj
-                    if extruder_obj.lane_loaded == cur_lane.name:
-                        extruder_obj.tool_start_state = True
-                        fila = getattr(extruder_obj, "fila_tool_start", None)
-                        helper = getattr(fila, "runout_helper", None) if fila else None
-                        if helper is not None:
-                            eventtime = self.afc.reactor.monotonic()
-                            try:
-                                helper.note_filament_present(eventtime, True)
-                            except TypeError:
-                                helper.note_filament_present(True)
-
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
-                        or extruder_obj.tool_start == "buffer"
                         or extruder_obj.tool_end_state
+                        or extruder_obj.on_shuttle()
                     )
                     if tool_ready and extruder_obj.lane_loaded == cur_lane.name:
                         cur_lane.sync_to_extruder()
@@ -2365,7 +2361,8 @@ class afcACE(afcUnit):
                             if local_slot >= 0:
                                 self._current_loaded_slot = local_slot
 
-                        if self.afc.function.get_current_lane() == cur_lane.name:
+                        if (self.afc.function.get_current_lane() == cur_lane.name
+                                and extruder_obj.on_shuttle()):
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             cur_lane.unit_obj.lane_tool_loaded(cur_lane)
                             cur_lane.status = AFCLaneState.TOOLED
