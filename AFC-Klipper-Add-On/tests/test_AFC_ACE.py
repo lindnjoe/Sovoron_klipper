@@ -101,6 +101,8 @@ def _make_ace(name="ACE_1", mode=MODE_COMBINED):
     unit._inventory_sync_interval = 300.0
     unit._unit_load_to_hub = None
     unit._hub_load_suppressed = set()
+    unit.auto_spoolman_create = True
+    unit._lane_auto_spoolman_create = {}
 
     return unit
 
@@ -469,3 +471,76 @@ class TestPollSlotStatusOperationGuard:
         result = unit._poll_slot_status(100.0)
 
         assert result == 101.0  # eventtime + poll_interval
+
+
+class TestSyncRfidToSpoolman:
+    def test_matches_existing_filament_by_metadata_before_creating(self):
+        unit = _make_ace()
+        lane = _make_lane(name="lane1")
+        lane.spool_id = None
+        lane.send_lane_data = MagicMock()
+
+        unit.afc.spoolman = object()
+        unit.afc.spool = MagicMock()
+        unit.afc.moonraker = MagicMock()
+
+        # No direct SKU hit, but metadata match exists.
+        unit.afc.moonraker.search_filaments.side_effect = [
+            [],
+            [{
+                "id": 42,
+                "material": "PLA",
+                "vendor": {"name": "Bambu"},
+                "color_hex": "ff0000",
+                "diameter": 1.75,
+                "article_number": "OTHER-SKU",
+            }],
+        ]
+        unit.afc.moonraker.search_spools.return_value = []
+        unit.afc.moonraker.create_spool.return_value = {"id": 77}
+
+        slot_info = {
+            "sku": "SKU-123",
+            "brand": "Bambu",
+            "material": "PLA",
+            "color": [255, 0, 0],
+            "diameter": 1.75,
+            "total_weight": 190,
+        }
+
+        unit._sync_rfid_to_spoolman(lane, slot_info)
+
+        unit.afc.moonraker.create_filament.assert_not_called()
+        unit.afc.moonraker.create_spool.assert_called_once()
+        unit.afc.spool.set_spoolID.assert_called_once_with(lane, 77)
+
+    def test_creates_filament_when_no_metadata_match(self):
+        unit = _make_ace()
+        lane = _make_lane(name="lane1")
+        lane.spool_id = None
+        lane.send_lane_data = MagicMock()
+
+        unit.afc.spoolman = object()
+        unit.afc.spool = MagicMock()
+        unit.afc.moonraker = MagicMock()
+
+        unit.afc.moonraker.search_filaments.side_effect = [[], []]
+        unit.afc.moonraker.get_or_create_vendor.return_value = {"id": 7}
+        unit.afc.moonraker.create_filament.return_value = {"id": 88}
+        unit.afc.moonraker.search_spools.return_value = []
+        unit.afc.moonraker.create_spool.return_value = {"id": 99}
+
+        slot_info = {
+            "sku": "SKU-NEW",
+            "brand": "Bambu",
+            "material": "PETG",
+            "color": [0, 255, 0],
+            "diameter": 1.75,
+            "total_weight": 180,
+        }
+
+        unit._sync_rfid_to_spoolman(lane, slot_info)
+
+        unit.afc.moonraker.create_filament.assert_called_once()
+        unit.afc.moonraker.create_spool.assert_called_once()
+        unit.afc.spool.set_spoolID.assert_called_once_with(lane, 99)
