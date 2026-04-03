@@ -338,6 +338,22 @@ class TestSystemTestLoadedLane:
         unit.system_Test(lane, delay=0.0, assignTcmd=True, enable_movement=False)
         assert lane.status == AFCLaneState.LOADED
 
+    def test_stale_tool_loaded_is_cleared_when_no_toolhead_evidence(self):
+        unit = _make_ace()
+        lane = _make_lane(prep_state=True, load_state=True, tool_loaded=True)
+        lane.get_toolhead_pre_sensor_state.return_value = False
+        lane.extruder_obj = MagicMock()
+        lane.extruder_obj.tool_start = "buffer"
+        lane.extruder_obj.tool_end_state = False
+        lane.extruder_obj.on_shuttle.return_value = False
+        lane.extruder_obj.lane_loaded = lane.name
+
+        unit.system_Test(lane, delay=0.0, assignTcmd=True, enable_movement=False)
+
+        assert lane.tool_loaded is False
+        assert lane.extruder_obj.lane_loaded is None
+        unit.afc.spool.set_active_spool.assert_not_called()
+
 
 # ── system_Test: locked not loaded (prep=T, load=F) ─────────────────────────
 
@@ -347,6 +363,60 @@ class TestSystemTestLockedNotLoaded:
         lane = _make_lane(prep_state=True, load_state=False)
         result = unit.system_Test(lane, delay=0.0, assignTcmd=True, enable_movement=False)
         assert result is False
+
+
+# ── _set_hub_state ───────────────────────────────────────────────────────────
+
+class TestSetHubState:
+    def test_uses_switch_pin_callback_when_available(self):
+        unit = _make_ace()
+        lane = _make_lane()
+        hub = MagicMock()
+        lane.hub_obj = hub
+
+        unit._set_hub_state(lane, True)
+
+        hub.switch_pin_callback.assert_called_once_with(100.0, True)
+
+    def test_falls_back_to_state_for_direct_hub_callable(self):
+        unit = _make_ace()
+        lane = _make_lane()
+
+        def hub():
+            return None
+        hub.state = False
+        lane.hub_obj = hub
+
+        unit._set_hub_state(lane, True)
+
+        assert hub.state is True
+
+    def test_direct_hub_without_state_does_not_raise(self):
+        unit = _make_ace()
+        lane = _make_lane()
+
+        def hub():
+            return None
+
+        lane.hub_obj = hub
+        unit._set_hub_state(lane, True)
+
+
+class TestHubHasRealPin:
+    def test_returns_false_for_callable_direct_hub_placeholder(self):
+        unit = _make_ace()
+
+        def hub():
+            return None
+
+        assert unit._hub_has_real_pin(hub) is False
+
+    def test_returns_true_for_physical_hub_pin(self):
+        unit = _make_ace()
+        hub = MagicMock()
+        hub.switch_pin = "PA4"
+
+        assert unit._hub_has_real_pin(hub) is True
 
 
 # ── _poll_slot_status: shifting state handling ───────────────────────────────
