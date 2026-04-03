@@ -506,6 +506,13 @@ class AFCFPSBuffer:
                 )
             )
 
+        # Update fault detection position every correction cycle so it
+        # tracks with the extruder. Without this, filament_error_pos is
+        # set once at enable_buffer and never updated — the extruder
+        # eventually exceeds it even though the buffer is correcting fine.
+        if self.fault_detection_enabled():
+            self.update_filament_error_pos()
+
         self._update_virtual_sensors(eventtime)
         return eventtime + self.update_interval
 
