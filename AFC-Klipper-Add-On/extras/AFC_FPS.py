@@ -247,6 +247,7 @@ class AFCFPSBuffer:
 
         # ---- Correction timer ----
         self.correction_timer = self.reactor.register_timer(self._correction_event)
+        self._correction_running = False
 
         # ---- Register event handlers ----
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
@@ -382,8 +383,14 @@ class AFCFPSBuffer:
         # filament arrival at the toolhead.
         # Update advance/trailing state for non-stepper lanes even when
         # buffer is enabled — the correction timer doesn't run for them.
-        has_stepper = (self.enable and self.current_lane is not None
-                       and getattr(self.current_lane, 'extruder_stepper', None) is not None)
+        has_stepper = self._lane_has_rotation_control(self.current_lane)
+
+        # If buffer was enabled before lane stepper wiring was ready,
+        # lazily start correction once the lane exposes rotation control.
+        if (self.enable and has_stepper
+                and not getattr(self, "_correction_running", False)):
+            self.reactor.update_timer(self.correction_timer, self.reactor.NOW)
+            self._correction_running = True
         if not has_stepper:
             half_db = self.deadband / 2.0
             if self.smoothed_fps > self.set_point + half_db:
@@ -441,9 +448,11 @@ class AFCFPSBuffer:
     def _correction_event(self, eventtime):
         """Periodically adjust rotation distance based on FPS reading."""
         if not self.enable or self.current_lane is None:
+            self._correction_running = False
             return self.reactor.NEVER
         # Non-stepper lanes (ACE/OpenAMS) don't need rotation correction
-        if getattr(self.current_lane, 'extruder_stepper', None) is None:
+        if not self._lane_has_rotation_control(self.current_lane):
+            self._correction_running = False
             return self.reactor.NEVER
 
         reading = self.smoothed_fps
@@ -547,7 +556,7 @@ class AFCFPSBuffer:
         self.enable = True
         self._latch_enabled = False
         self._advance_latched = False
-        has_stepper = getattr(lane, 'extruder_stepper', None) is not None
+        has_stepper = self._lane_has_rotation_control(lane)
 
         if self.led:
             self.afc.function.afc_led(self.led_neutral, self.led_index)
@@ -558,6 +567,7 @@ class AFCFPSBuffer:
         if has_stepper:
             # Start the proportional correction timer
             self.reactor.update_timer(self.correction_timer, self.reactor.NOW)
+            self._correction_running = True
 
             # Start fault detection — only for stepper lanes where the
             # correction timer keeps extruder position in sync with buffer.
@@ -566,6 +576,8 @@ class AFCFPSBuffer:
             # OpenAMS has its own OAMSMonitor for fault detection.
             if self.fault_detection_enabled():
                 self.start_fault_detection(0, 1.0)
+        else:
+            self._correction_running = False
 
         self.logger.debug(f"{self.name} FPS buffer enabled for {self.current_lane.name} (correction={'active' if has_stepper else 'off/adc-only'})")
 
@@ -586,6 +598,7 @@ class AFCFPSBuffer:
 
         # Stop correction timer
         self.reactor.update_timer(self.correction_timer, self.reactor.NEVER)
+        self._correction_running = False
 
         # Stop fault detection
         if self.error_sensitivity > 0 and self.extruder_pos_timer is not None:
@@ -603,7 +616,7 @@ class AFCFPSBuffer:
             return
         if self.current_lane is None:
             return
-        if self.current_lane.extruder_stepper is None:
+        if not self._lane_has_rotation_control(self.current_lane):
             return
 
         self.current_lane.update_rotation_distance(multiplier)
@@ -612,11 +625,19 @@ class AFCFPSBuffer:
         """Reset rotation distance back to base value."""
         if self.current_lane is None:
             return
-        if self.current_lane.extruder_stepper is None:
+        if not self._lane_has_rotation_control(self.current_lane):
             return
 
         self.current_lane.update_rotation_distance(1)
         self.logger.debug("FPS buffer multiplier reset for {}".format(self.current_lane.name))
+
+    def _lane_has_rotation_control(self, lane) -> bool:
+        """Return True when lane supports AFC stepper rotation adjustments."""
+        if lane is None:
+            return False
+        drive_stepper = getattr(lane, 'drive_stepper', None)
+        update_fn = getattr(lane, 'update_rotation_distance', None)
+        return drive_stepper is not None and callable(update_fn)
 
     # ------------------------------------------------------------------
     # Fault detection  (same interface as AFCTrigger)
