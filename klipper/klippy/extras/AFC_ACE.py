@@ -2896,7 +2896,6 @@ class afcACE(afcUnit):
                     self._set_hub_state(cur_lane, True)
                     tool_ready = (
                         cur_lane.get_toolhead_pre_sensor_state()
-                        or cur_lane.extruder_obj.tool_start == "buffer"
                         or cur_lane.extruder_obj.tool_end_state
                         or cur_lane.extruder_obj.on_shuttle()
                     )
@@ -2921,7 +2920,8 @@ class afcACE(afcUnit):
                         # lane rather than get_current_lane() which depends
                         # on klipper's active extruder — unreliable during
                         # prep before the toolchanger initializes.
-                        if cur_lane.extruder_obj.lane_loaded == cur_lane.name:
+                        if (cur_lane.extruder_obj.lane_loaded == cur_lane.name
+                                and cur_lane.extruder_obj.on_shuttle()):
                             self.afc.spool.set_active_spool(cur_lane.spool_id)
                             cur_lane.unit_obj.lane_tool_loaded(cur_lane)
                             cur_lane.status = AFCLaneState.TOOLED
