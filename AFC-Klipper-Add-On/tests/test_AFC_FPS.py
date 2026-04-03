@@ -67,6 +67,7 @@ def _make_fps_buffer(name="FPS_buffer1", overrides=None):
     buf.high_point = 0.9
     buf.multiplier_high = 1.1
     buf.multiplier_low = 0.9
+    buf.trailing_min_multiplier = 1.05
     buf.deadband = 0.30
     buf.smoothing = 0.3
     buf.smoothed_fps = 0.5
@@ -284,6 +285,16 @@ class TestCorrectionEvent:
         assert buf.last_state == TRAILING_STATE_NAME
         # range_size = 0.35 - 0.1 = 0.25, fraction = (0.35-0.225)/0.25 = 0.5
         # multiplier = 1.0 + 0.5*(1.1-1.0) = 1.05
+        buf.current_lane.update_rotation_distance.assert_called_with(pytest.approx(1.05))
+
+    def test_trailing_near_deadband_uses_min_boost(self):
+        """Readings just below neutral still apply a minimum trailing boost."""
+        buf = _make_fps_buffer(overrides={
+            "enable": True,
+            "current_lane": _make_mock_lane(),
+            "smoothed_fps": 0.34,  # just below neutral_low (0.35)
+        })
+        buf._correction_event(100.0)
         buf.current_lane.update_rotation_distance.assert_called_with(pytest.approx(1.05))
 
     def test_clamped_beyond_high_point(self):
