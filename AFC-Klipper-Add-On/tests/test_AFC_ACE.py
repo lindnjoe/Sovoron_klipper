@@ -375,6 +375,16 @@ class TestSetHubState:
 
         assert hub.state is True
 
+    def test_direct_hub_without_state_does_not_raise(self):
+        unit = _make_ace()
+        lane = _make_lane()
+
+        def hub():
+            return None
+
+        lane.hub_obj = hub
+        unit._set_hub_state(lane, True)
+
 
 class TestHubHasRealPin:
     def test_returns_false_for_callable_direct_hub_placeholder(self):
