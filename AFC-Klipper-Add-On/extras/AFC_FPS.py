@@ -206,6 +206,9 @@ class AFCFPSBuffer:
 
         # Timer interval for applying corrections
         self.update_interval: float = config.getfloat('update_interval', 0.25, minval=0.05)
+        self.flip_cooldown: float = config.getfloat('flip_cooldown', 1.0, minval=0.0)
+        self._flip_suppress_until: float = 0.0
+        self._last_correction_direction: str = NEUTRAL_STATE_NAME
 
         # ---- Fault detection ----
         self.error_sensitivity: float = config.getfloat('filament_error_sensitivity', 0, minval=0, maxval=10)
@@ -470,6 +473,30 @@ class AFCFPSBuffer:
             self.last_state = NEUTRAL_STATE_NAME
             self.advance_state = False
             self.trailing_state = False
+            self._last_correction_direction = NEUTRAL_STATE_NAME
+            if self.led:
+                self.afc.function.afc_led(self.led_neutral, self.led_index)
+            return eventtime + self.update_interval
+
+        target_direction = ADVANCING_STATE_NAME if reading > neutral_high else TRAILING_STATE_NAME
+
+        if eventtime < self._flip_suppress_until:
+            self.set_multiplier(1.0)
+            self.last_state = NEUTRAL_STATE_NAME
+            self.advance_state = False
+            self.trailing_state = False
+            if self.led:
+                self.afc.function.afc_led(self.led_neutral, self.led_index)
+            return eventtime + self.update_interval
+
+        if (self._last_correction_direction in (ADVANCING_STATE_NAME, TRAILING_STATE_NAME)
+                and target_direction != self._last_correction_direction):
+            self._flip_suppress_until = eventtime + self.flip_cooldown
+            self._last_correction_direction = NEUTRAL_STATE_NAME
+            self.set_multiplier(1.0)
+            self.last_state = NEUTRAL_STATE_NAME
+            self.advance_state = False
+            self.trailing_state = False
             if self.led:
                 self.afc.function.afc_led(self.led_neutral, self.led_index)
             return eventtime + self.update_interval
@@ -487,6 +514,7 @@ class AFCFPSBuffer:
             self.last_state = ADVANCING_STATE_NAME
             self.advance_state = True
             self.trailing_state = False
+            self._last_correction_direction = ADVANCING_STATE_NAME
             if self.led:
                 self.afc.function.afc_led(self.led_advancing, self.led_index)
         else:
@@ -504,6 +532,7 @@ class AFCFPSBuffer:
             self.last_state = TRAILING_STATE_NAME
             self.advance_state = False
             self.trailing_state = True
+            self._last_correction_direction = TRAILING_STATE_NAME
             if self.led:
                 self.afc.function.afc_led(self.led_trailing, self.led_index)
 
@@ -559,6 +588,8 @@ class AFCFPSBuffer:
         self.enable = True
         self._latch_enabled = False
         self._advance_latched = False
+        self._flip_suppress_until = 0.0
+        self._last_correction_direction = NEUTRAL_STATE_NAME
         has_stepper = self._lane_has_rotation_control(lane)
 
         if self.led:
