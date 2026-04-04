@@ -90,7 +90,21 @@
         "hotend": "heater_fan T0_hotend_fan",
         "part": "fan_generic T0_partfan"
       },
-      "filament": {},
+      "filament": {
+        "external_spool": {
+          "assigned": true,
+          "bed_temp": 65,
+          "brand": "AC",
+          "color_rgb": 9021519,
+          "material": "PLA",
+          "nozzle_temp_max": 0,
+          "nozzle_temp_min": 0,
+          "remaining_weight_g": 232.87374877929688,
+          "spool_name": "AC PLA - PLA Bean Green",
+          "spoolman_id": 46,
+          "total_weight_g": 330.0
+        }
+      },
       "filament_sensors": {
         "sensors": null
       },
@@ -163,7 +177,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-04-03T20:36:31Z"
+          "timestamp": "2026-04-04T00:15:53Z"
         },
         "optional": []
       },

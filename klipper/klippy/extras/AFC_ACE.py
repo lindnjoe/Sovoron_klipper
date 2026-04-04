@@ -872,6 +872,53 @@ class afcACE(afcUnit):
                     filament = f
                     break
 
+            # If no exact SKU match exists, try to match by RFID metadata
+            # before creating a new filament record.
+            if filament is None:
+                fallback_candidates = []
+                if brand and material:
+                    fallback_candidates = moonraker.search_filaments(
+                        vendor_name=brand, material=material)
+                elif material:
+                    fallback_candidates = moonraker.search_filaments(
+                        material=material)
+                elif brand:
+                    fallback_candidates = moonraker.search_filaments(
+                        vendor_name=brand)
+
+                best = None
+                best_score = -1
+                for f in fallback_candidates:
+                    score = 0
+                    f_material = (f.get("material") or "").strip().lower()
+                    f_vendor = (f.get("vendor", {}).get("name") or "").strip().lower()
+                    f_color = (f.get("color_hex") or "").strip().lstrip("#").lower()
+                    f_diameter = f.get("diameter")
+
+                    if material and f_material == material.strip().lower():
+                        score += 3
+                    if brand and f_vendor == brand.strip().lower():
+                        score += 3
+                    if color_hex and f_color == color_hex.strip().lower():
+                        score += 2
+                    if diameter and f_diameter is not None:
+                        try:
+                            if abs(float(f_diameter) - float(diameter)) <= 0.05:
+                                score += 1
+                        except Exception:
+                            pass
+
+                    if score > best_score:
+                        best = f
+                        best_score = score
+
+                if best is not None and best_score >= 4:
+                    filament = best
+                    self.logger.info(
+                        f"Matched existing Spoolman filament #{filament.get('id')} "
+                        f"for {lane.name} by RFID metadata "
+                        f"(brand={brand or '-'}, material={material or '-'}, sku={sku})")
+
             if filament is None:
                 if not allow_create:
                     self.logger.debug(
