@@ -465,17 +465,27 @@ class AFCFPSBuffer:
         neutral_low = self.set_point - half_db
         neutral_high = self.set_point + half_db
 
-        # Inside deadband window (.35-.65 default) — no correction.
-        # Gives the buffer room for fast retractions and tool changes
-        # without the correction loop fighting back.
+        # Inside deadband window — apply gentle proportional correction
+        # toward set_point instead of snapping to 1.0. This prevents the
+        # buffer from riding the trailing/neutral edge and toggling.
         if neutral_low <= reading <= neutral_high:
-            self.set_multiplier(1.0)
+            # How far from set_point? Positive = above, negative = below
+            offset = reading - self.set_point
+            # Scale a gentle correction: ±5% max within deadband
+            gentle_factor = (offset / half_db) * 0.05 if half_db > 0 else 0.0
+            multiplier = 1.0 - gentle_factor  # above set_point → slow down slightly, below → speed up slightly
+            self.set_multiplier(multiplier)
             self.last_state = NEUTRAL_STATE_NAME
             self.advance_state = False
             self.trailing_state = False
             self._last_correction_direction = NEUTRAL_STATE_NAME
             if self.led:
                 self.afc.function.afc_led(self.led_neutral, self.led_index)
+
+            if self.fault_detection_enabled():
+                self.update_filament_error_pos()
+
+            self._update_virtual_sensors(eventtime)
             return eventtime + self.update_interval
 
         target_direction = ADVANCING_STATE_NAME if reading > neutral_high else TRAILING_STATE_NAME
