@@ -47,6 +47,9 @@ except: raise error(ERROR_STR.format(import_lib="AFC", trace=traceback.format_ex
 try: from extras.AFC_stats import AFCStats_var
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
 
+try: from extras.AFC_stats import AFCStats_var
+except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
+
 LARGE_TIME_OFFSET = 99999.9
 
 class AFCExtruderStats:
@@ -198,6 +201,7 @@ class AFCExtruderStats:
         self.tool_unselected.reset_count()
 
 class AFCExtruder:
+    common_error = "[{}] not found in config file for {}"
     def __init__(self, config: ConfigWrapper) -> None:
         self.printer:Printer = config.get_printer()
         buttons         = self.printer.load_object(config, 'buttons')
@@ -214,8 +218,10 @@ class AFCExtruder:
 
         self.toolhead_extruder: PrinterExtruder
         self.fullname                   = config.get_name()
+        self.mutex                      = self.reactor.mutex()
 
         self.name: str                  = self.fullname.split(' ')[-1]
+        # self.extruder_name: str         = config.get("extruder_name", self.name)    # Add support for this, not sure where all this will have to be updated
         self.tool_start                 = config.get('pin_tool_start', None)                                            # Pin for sensor before(pre) extruder gears
         self.tool_end                   = config.get('pin_tool_end', None)                                              # Pin for sensor after(post) extruder gears (optional)
         self.tool_stn                   = config.getfloat("tool_stn", 72)                                               # Distance in mm from the toolhead sensor to the tip of the nozzle in mm, if `tool_end` is defined then distance is from this sensor
@@ -237,7 +243,9 @@ class AFCExtruder:
         self.set_status_color_fn        = None
         self.check_transmit_status_fn   = None
         self.status_led_count:int       = 0
-        self._captured_toolhead_temp: Optional[dict] = None
+        # U1 only related variables
+        self.filament_sensor_name: str  = config.get('u1_filament_sensor_name', None)
+        self.park_detector: str         = config.get("u1_park_detector_name", None)
 
         if self.toolhead_status_index:
             self.toolhead_status_index  = self.afc.function._get_led_indexes(self.toolhead_status_index)
@@ -269,6 +277,10 @@ class AFCExtruder:
         self.current_move_distance: float = 0
         self.estats = AFCExtruderStats(self.name, self, self.afc.tool_cut_threshold)
 
+        # U1 only related variables
+        self.park_detector_obj   = None
+        self.filament_sensor_obj = None
+
         self.tool_start_state = False
         # TODO: add a check here as pin_tool_start should always be required, or let klipper take care of it by not passing in None
         if self.tool_start is not None:
@@ -278,10 +290,19 @@ class AFCExtruder:
             if self.tool_start == "buffer":
                 self.logger.info("Setting up as buffer")
             else:
-                buttons.register_buttons([self.tool_start], self.tool_start_callback)
                 self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
-                                                                                        self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
-                                                                                        self.debounce_delay )
+                                                                                    self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
+                                                                                    self.debounce_delay )
+                buttons.register_buttons([self.tool_start], self.tool_start_callback)
+        elif self.filament_sensor_name is not None:
+            filament_motion_name = f"filament_motion_sensor {self.filament_sensor_name}"
+            try:
+                self.filament_sensor_obj = self.printer.load_object(config, filament_motion_name)
+            except error:
+                error_str = self.common_error.format(filament_motion_name, self.fullname)
+                raise error(error_str)
+            self.orig_note_filament_present = self.filament_sensor_obj.runout_helper.note_filament_present
+            self.filament_sensor_obj.runout_helper.note_filament_present = self.note_tool_start_callback
 
         self.tool_end_state = False
         if self.tool_end is not None:
@@ -365,6 +386,7 @@ class AFCExtruder:
                     f"buffer is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
                 )
 
+
     def handle_connect(self):
         """
         Handle the connection event.
@@ -373,29 +395,32 @@ class AFCExtruder:
         """
         self.reactor = self.afc.reactor
         self.afc.tools[self.name] = self
+        
+        self.toolhead_extruder = self.printer.lookup_object(self.name)
+        if not self.toolhead_extruder:
+            error_str = self.common_error.format(self.name, self.fullname)
+            raise error(error_str)
 
-        try:
-            self.toolhead_extruder = self.printer.lookup_object(self.name)
-        except:
-            raise error("[{}] not found in config file".format(self.name))
+        if self.tool:
+            self.tool_obj = self.printer.lookup_object(self.tool, None)
+            if not self.tool_obj:
+                error_str = self.common_error.format(self.tool, self.fullname)
+                raise error(error_str)
 
-        try:
-            if self.tool:
-                self.tool_obj = self.printer.lookup_object(self.tool)
-        except:
-            raise error(f'[{self.tool}] not found in config file for {self.fullname}')
+        if self.park_detector:
+            park_dect_str = f"park_detector {self.park_detector}"
+            self.park_detector_obj = self.printer.lookup_object(park_dect_str, None)
+            if not self.park_detector_obj:
+                error_str = self.common_error.format(park_dect_str, self.fullname)
+                raise error(error_str)
 
-        try:
-            if self.tc_unit_name:
-                self.tc_unit_obj = self.printer.lookup_object(
-                    f"AFC_Toolchanger {self.tc_unit_name}"
-                )
-                self.tc_lane.unit_obj = self.tc_unit_obj
-
-        except:
-            raise error(
-                f'AFC_Toolchanger {self.tc_unit_name} not found in config file for {self.fullname}'
-            )
+        if self.tc_unit_name:
+            tc_str = f"AFC_Toolchanger {self.tc_unit_name}"
+            self.tc_unit_obj = self.printer.lookup_object(tc_str, None)
+            if not self.tc_unit_obj:
+                error_str = self.common_error.format(tc_str, self.fullname)
+                raise error(error_str)
+            self.tc_lane.unit_obj = self.tc_unit_obj
 
         try:
             # Looking up led object if user supplied variable
@@ -415,7 +440,7 @@ class AFCExtruder:
                         self.set_status_color_fn = led_helper.set_color
                         self.check_transmit_status_fn = led_helper.check_transmit
 
-        except configfile.error:
+        except error:
             raise error(
                 f"{self.toolhead_leds} not found in config file for led_name variable in " \
                 f"{self.fullname} config section"
@@ -455,6 +480,10 @@ class AFCExtruder:
         """
         self._handle_toolhead_sensor_runout(self.fila_tool_start.runout_helper.filament_present, "tool_start")
         self.fila_tool_start.runout_helper.min_event_systime = self.reactor.monotonic() + self.fila_tool_start.runout_helper.event_delay
+
+    def note_tool_start_callback(self, state, force=False):
+        self.orig_note_filament_present(state, force)
+        self.tool_start_callback(0, state)
 
     def tool_start_callback(self, eventtime, state):
         """
@@ -584,7 +613,7 @@ class AFCExtruder:
         axis_r, accel_t, cruise_t, cruise_v = calc_move_time(distance, self.tool_load_speed, 5)
         print_time = toolhead.get_last_move_time()
         self.trapq_append(self.trapq, print_time, accel_t, cruise_t, accel_t,
-                            0., 0., 0., axis_r, 0., 0., 0., cruise_v, 5)
+                            0., 0., 0., axis_r, 0., 0., 0., cruise_v, 5, 0) # TODO: add a check for the zero
         print_time = print_time + accel_t + cruise_t + accel_t
 
         if self.motion_queuing is None:
@@ -778,20 +807,29 @@ class AFCExtruder:
         """
         # Return true if both are not set as this would be for single toolhead
         # setups
-        if self.tool_obj is None and self.tc_unit_name is None:
+        if ( (self.tool_obj is None 
+              and self.park_detector_obj is None)
+              and self.tc_unit_name is None):
             return True
 
         # Return true if toolchanger unit is defined but no tool object has been defined
         # this could be because someone is using custom swap and unselect macros
-        if self.tc_unit_name and self.tool_obj is None:
+        if (self.tc_unit_name
+            and (self.tool_obj is None
+                 and self.park_detector_obj is None)):
             return True
 
-        if hasattr(self.tool_obj, "detect_state"):
+        if (self.tool_obj
+            and hasattr(self.tool_obj, "detect_state")):
             from extras.toolchanger import DETECT_PRESENT
             return (
                 self.tool_obj.detect_state == DETECT_PRESENT or
                 self.tool_obj.main_toolchanger.get_selected_tool() == self.tool_obj
             )
+        elif(self.park_detector_obj
+             and hasattr(self.park_detector_obj, "get_park_detector_status")):
+            status = self.park_detector_obj.get_park_detector_status()
+            return status.get('state') == 'ACTIVATE'
         else:
             return False
 
