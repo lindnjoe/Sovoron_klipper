@@ -112,6 +112,11 @@ class AfcToolchanger(afcUnit):
         self.dock_cooling_temp: float = config.getfloat('dock_cooling_temp', 170.0, minval=0.)
         self.dock_cooling_fan_speed: float = config.getfloat('dock_cooling_fan_speed', 1.0, minval=0., maxval=1.0)
         self._dock_cooled_tools: set = set()
+        self._dock_cooling_timer = None
+        if self.dock_cooling:
+            self._dock_cooling_timer = self.printer.get_reactor().register_timer(
+                self._dock_cooling_tick)
+            self.printer.register_event_handler("klippy:ready", self._start_dock_cooling_timer)
         self._crash_enable_time = 0.0
 
         # Default gcode templates (can be overridden per-tool in AFC_extruder)
@@ -563,8 +568,6 @@ class AfcToolchanger(afcUnit):
                 'Tool %s already selected' % (tool.name if tool else None))
             return
 
-        old_tool = self.active_tool  # capture before it changes
-
         try:
             # Stop crash detection before tool change
             self.stop_crash_detection()
@@ -607,15 +610,8 @@ class AfcToolchanger(afcUnit):
                     tool.name, tool.tool_number))
                 # Re-enable crash detection after successful pickup
                 self.start_crash_detection()
-                # Stop dock cooling on the tool we just picked up
-                self._stop_dock_cooling(tool)
-                # Start dock cooling on the tool we just dropped off
-                if old_tool and old_tool != tool:
-                    self._start_dock_cooling(old_tool)
             else:
                 self.logger.info('Tool unselected')
-                if old_tool:
-                    self._start_dock_cooling(old_tool)
 
         except Exception:
             if self.status == STATUS_ERROR:
@@ -1038,47 +1034,67 @@ class AfcToolchanger(afcUnit):
 
     # ---- Dock cooling ----
 
-    def _start_dock_cooling(self, tool):
-        """Turn on part cooling fan for a docked tool if above temp threshold."""
-        if not self.dock_cooling:
-            return
-        if tool is None or tool.fan is None:
-            return
-        # Check if the tool's extruder is above the cooling threshold
-        try:
-            extruder_name = tool.name
-            heater = self.printer.lookup_object(extruder_name).get_heater()
-            current_temp, _ = heater.get_temp(self.printer.get_reactor().monotonic())
-            if current_temp < self.dock_cooling_temp:
-                return
-        except Exception:
-            return
+    def _start_dock_cooling_timer(self):
+        """Start the dock cooling polling timer."""
+        if self._dock_cooling_timer is not None:
+            reactor = self.printer.get_reactor()
+            reactor.update_timer(self._dock_cooling_timer, reactor.NOW + 5.0)
 
+    def _dock_cooling_tick(self, eventtime):
+        """Periodic check: cool any docked tool above temp threshold."""
+        if not self.dock_cooling:
+            return eventtime + 10.0
+
+        for tool in self.tools.values():
+            if tool == self.active_tool:
+                # Tool is on shuttle — stop cooling if it was running
+                self._stop_dock_cooling_fan(tool)
+                continue
+
+            # Tool is docked — check temperature
+            try:
+                heater = self.printer.lookup_object(tool.name).get_heater()
+                current_temp, _ = heater.get_temp(eventtime)
+            except Exception:
+                continue
+
+            if current_temp >= self.dock_cooling_temp:
+                self._start_dock_cooling_fan(tool, current_temp)
+            else:
+                self._stop_dock_cooling_fan(tool)
+
+        return eventtime + 5.0
+
+    def _start_dock_cooling_fan(self, tool, current_temp):
+        """Turn on part cooling fan for a docked tool."""
+        if tool.tool_number in self._dock_cooled_tools:
+            return  # Already cooling
+        fan_name = getattr(tool, 'fan_name', None)
+        if not fan_name:
+            return
         try:
-            fan_speed = self.dock_cooling_fan_speed
-            # Set fan speed via gcode for compatibility with fan_generic
-            fan_name = tool.fan_name if hasattr(tool, 'fan_name') else None
-            if fan_name:
-                self.gcode.run_script_from_command(
-                    "SET_FAN_SPEED FAN=%s SPEED=%.2f" % (fan_name, fan_speed))
+            self.gcode.run_script_from_command(
+                "SET_FAN_SPEED FAN=%s SPEED=%.2f" % (fan_name, self.dock_cooling_fan_speed))
             self._dock_cooled_tools.add(tool.tool_number)
             self.logger.info(
-                "Dock cooling: %s fan on at %.0f%% (temp %.1fC > %.1fC threshold)"
-                % (tool.name, fan_speed * 100, current_temp, self.dock_cooling_temp))
+                "Dock cooling: %s fan on at %.0f%% (temp %.1fC > %.1fC)"
+                % (tool.name, self.dock_cooling_fan_speed * 100,
+                   current_temp, self.dock_cooling_temp))
         except Exception as e:
             self.logger.warning("Dock cooling: failed to start fan for %s: %s" % (tool.name, e))
 
-    def _stop_dock_cooling(self, tool):
-        """Turn off dock cooling fan when a tool is picked up."""
-        if tool is None or tool.tool_number not in self._dock_cooled_tools:
+    def _stop_dock_cooling_fan(self, tool):
+        """Turn off dock cooling fan for a tool."""
+        if tool.tool_number not in self._dock_cooled_tools:
             return
         self._dock_cooled_tools.discard(tool.tool_number)
+        fan_name = getattr(tool, 'fan_name', None)
+        if not fan_name:
+            return
         try:
-            fan_name = tool.fan_name if hasattr(tool, 'fan_name') else None
-            if fan_name:
-                self.gcode.run_script_from_command(
-                    "SET_FAN_SPEED FAN=%s SPEED=0" % fan_name)
-            self.logger.info("Dock cooling: %s fan off (picked up)" % tool.name)
+            self.gcode.run_script_from_command(
+                "SET_FAN_SPEED FAN=%s SPEED=0" % fan_name)
+            self.logger.info("Dock cooling: %s fan off" % tool.name)
         except Exception as e:
             self.logger.warning("Dock cooling: failed to stop fan for %s: %s" % (tool.name, e))
 
