@@ -56,6 +56,8 @@ class TemperatureOAMS:
         self.temp = self.min_temp = self.max_temp = self.humidity = 0.
         self.sample_timer = self.reactor.register_timer(self._sample)
         self.printer.add_object("temperature_oams " + self.name, self)
+        # Backward compatibility: Mainsail custom branch may look for "hdc1080"
+        self.printer.add_object("hdc1080 " + self.name, self)
         self.printer.register_event_handler("klippy:connect",
                                             self.handle_connect)
         self.temp_resolution = config.getint('temp_resolution', 14, minval=11, maxval=14)
