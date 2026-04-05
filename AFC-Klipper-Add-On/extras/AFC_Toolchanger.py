@@ -112,11 +112,6 @@ class AfcToolchanger(afcUnit):
         self.dock_cooling_temp: float = config.getfloat('dock_cooling_temp', 170.0, minval=0.)
         self.dock_cooling_fan_speed: float = config.getfloat('dock_cooling_fan_speed', 1.0, minval=0., maxval=1.0)
         self._dock_cooled_tools: set = set()
-        # Timer always registered — per-extruder dock_cooling can enable
-        # even when toolchanger-level is off
-        self._dock_cooling_timer = self.printer.get_reactor().register_timer(
-            self._dock_cooling_tick)
-        self.printer.register_event_handler("klippy:ready", self._start_dock_cooling_timer)
         self._crash_enable_time = 0.0
 
         # Default gcode templates (can be overridden per-tool in AFC_extruder)
@@ -613,6 +608,9 @@ class AfcToolchanger(afcUnit):
             else:
                 self.logger.info('Tool unselected')
 
+            # Update dock cooling for all tools — runs in gcode thread
+            self._update_dock_cooling()
+
         except Exception:
             if self.status == STATUS_ERROR:
                 pass  # process_error already handled recovery
@@ -1034,16 +1032,13 @@ class AfcToolchanger(afcUnit):
 
     # ---- Dock cooling ----
 
-    def _start_dock_cooling_timer(self):
-        """Start the dock cooling polling timer."""
-        if self._dock_cooling_timer is not None:
-            reactor = self.printer.get_reactor()
-            reactor.update_timer(self._dock_cooling_timer, reactor.NOW + 5.0)
+    def _update_dock_cooling(self):
+        """Check all docked tools and start/stop cooling as needed.
 
-    def _dock_cooling_tick(self, eventtime):
-        """Periodic check: cool any docked tool above temp threshold."""
+        Called from the gcode thread (during tool changes) to avoid
+        interfering with the motion queue or gcode transform.
+        """
         for tool in self.tools.values():
-            # Per-extruder override: True/False overrides toolchanger default
             tool_dc = getattr(tool, 'dock_cooling', None)
             if tool_dc is False:
                 self._stop_dock_cooling_fan(tool)
@@ -1052,12 +1047,12 @@ class AfcToolchanger(afcUnit):
                 continue
 
             if tool == self.active_tool:
-                # Tool is on shuttle — stop cooling if it was running
                 self._stop_dock_cooling_fan(tool)
                 continue
 
             # Tool is docked — check temperature
             try:
+                eventtime = self.printer.get_reactor().monotonic()
                 heater = self.printer.lookup_object(tool.name).get_heater()
                 current_temp, _ = heater.get_temp(eventtime)
             except Exception:
@@ -1068,12 +1063,10 @@ class AfcToolchanger(afcUnit):
             else:
                 self._stop_dock_cooling_fan(tool)
 
-        return eventtime + 5.0
-
     def _start_dock_cooling_fan(self, tool, current_temp):
         """Turn on part cooling fan for a docked tool."""
         if tool.tool_number in self._dock_cooled_tools:
-            return  # Already cooling
+            return
         fan_name = getattr(tool, 'fan_name', None)
         if not fan_name:
             return
