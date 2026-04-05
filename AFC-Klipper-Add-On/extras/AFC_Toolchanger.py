@@ -112,11 +112,11 @@ class AfcToolchanger(afcUnit):
         self.dock_cooling_temp: float = config.getfloat('dock_cooling_temp', 170.0, minval=0.)
         self.dock_cooling_fan_speed: float = config.getfloat('dock_cooling_fan_speed', 1.0, minval=0., maxval=1.0)
         self._dock_cooled_tools: set = set()
-        self._dock_cooling_timer = None
-        if self.dock_cooling:
-            self._dock_cooling_timer = self.printer.get_reactor().register_timer(
-                self._dock_cooling_tick)
-            self.printer.register_event_handler("klippy:ready", self._start_dock_cooling_timer)
+        # Timer always registered — per-extruder dock_cooling can enable
+        # even when toolchanger-level is off
+        self._dock_cooling_timer = self.printer.get_reactor().register_timer(
+            self._dock_cooling_tick)
+        self.printer.register_event_handler("klippy:ready", self._start_dock_cooling_timer)
         self._crash_enable_time = 0.0
 
         # Default gcode templates (can be overridden per-tool in AFC_extruder)
@@ -1042,10 +1042,15 @@ class AfcToolchanger(afcUnit):
 
     def _dock_cooling_tick(self, eventtime):
         """Periodic check: cool any docked tool above temp threshold."""
-        if not self.dock_cooling:
-            return eventtime + 10.0
-
         for tool in self.tools.values():
+            # Per-extruder override: True/False overrides toolchanger default
+            tool_dc = getattr(tool, 'dock_cooling', None)
+            if tool_dc is False:
+                self._stop_dock_cooling_fan(tool)
+                continue
+            if tool_dc is None and not self.dock_cooling:
+                continue
+
             if tool == self.active_tool:
                 # Tool is on shuttle — stop cooling if it was running
                 self._stop_dock_cooling_fan(tool)

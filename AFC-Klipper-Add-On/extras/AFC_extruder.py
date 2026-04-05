@@ -273,6 +273,10 @@ class AFCExtruder:
         self.tool_number: int = config.getint('tool_number', -1)
         self.fan_name: Optional[str] = config.get('tool_fan', None)
         self.fan = None
+        self.dock_cooling: Optional[bool] = None
+        _dc = config.get('dock_cooling', None)
+        if _dc is not None:
+            self.dock_cooling = _dc.lower() in ('true', '1', 'yes')
         self.extruder_stepper_name: Optional[str] = config.get('tool_extruder_stepper', None)
         self.extruder_stepper = None
         self.detect_pin_name: Optional[str] = config.get('detection_pin', None)
