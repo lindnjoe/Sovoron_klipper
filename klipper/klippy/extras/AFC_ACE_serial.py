@@ -692,7 +692,7 @@ class ACEConnection:
 
     def start_feed_assist(self, slot_index):
         """Enable continuous motorized feed assist for a slot."""
-        return self.send_command(
+        self.send_command_async(
             "start_feed_assist", params={"index": slot_index}
         )
 

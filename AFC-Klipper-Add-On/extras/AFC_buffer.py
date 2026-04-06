@@ -481,6 +481,7 @@ class AFCTrigger:
             if chg_multiplier is None:
                 self.logger.info("Multiplier must be provided, HIGH or LOW")
                 return
+            chg_multiplier = chg_multiplier.upper()
             chg_factor = gcmd.get_float('FACTOR')
             if chg_factor <= 0:
                 self.logger.info("FACTOR must be greater than 0")

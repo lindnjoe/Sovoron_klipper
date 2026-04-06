@@ -2211,10 +2211,10 @@ class afc:
                 # lane loaded even when the shuttle is empty (current is None).
                 lane_to_unload = None
                 if self.current is not None:
-                    if self.current not in self.lanes:
+                    lane_to_unload = self.lanes.get(self.current)
+                    if lane_to_unload is None:
                         self.error.AFC_error('{} Unknown'.format(self.current))
                         return
-                    lane_to_unload = self.lanes[self.current]
                 elif cur_lane.extruder_obj.lane_loaded is not None:
                     # Shuttle is empty but target extruder has a lane loaded
                     # (e.g. after restart with docked tool). Need to pick up
