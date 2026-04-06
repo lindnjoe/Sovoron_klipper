@@ -1055,9 +1055,10 @@ class AfcToolchanger(afcUnit):
             if tool is None:
                 self._dock_cooled_tools.discard(tool_number)
                 continue
-            # If tool is now on shuttle, stop cooling
+            # If tool is now on shuttle, just remove from tracking.
+            # FanSwitcher already controls the active tool's fan.
             if tool == self.active_tool:
-                self._stop_dock_cooling_fan_direct(tool)
+                self._dock_cooled_tools.discard(tool_number)
                 continue
             # Check if temp dropped below threshold
             try:
@@ -1103,7 +1104,9 @@ class AfcToolchanger(afcUnit):
                 continue
 
             if tool == self.active_tool:
-                self._stop_dock_cooling_fan(tool)
+                # Just remove from tracking — FanSwitcher already
+                # controls the active tool's fan speed.
+                self._dock_cooled_tools.discard(tool.tool_number)
                 continue
 
             # Tool is docked — check temperature
