@@ -112,14 +112,14 @@ class AfcToolchanger(afcUnit):
         self.dock_cooling_temp: float = config.getfloat('dock_cooling_temp', 170.0, minval=0.)
         self.dock_cooling_fan_speed: float = config.getfloat('dock_cooling_fan_speed', 1.0, minval=0., maxval=1.0)
         self._dock_cooled_tools: set = set()
-        self._dock_cooling_timer = None
-        if self.dock_cooling:
-            self._dock_cooling_timer = self.printer.get_reactor().register_timer(
-                self._dock_cooling_tick)
-            self.printer.register_event_handler("klippy:ready",
-                lambda: self.printer.get_reactor().update_timer(
-                    self._dock_cooling_timer,
-                    self.printer.get_reactor().NOW + 5.0))
+        # Always register the timer — per-tool dock_cooling overrides
+        # can enable cooling even when the global setting is off.
+        self._dock_cooling_timer = self.printer.get_reactor().register_timer(
+            self._dock_cooling_tick)
+        self.printer.register_event_handler("klippy:ready",
+            lambda: self.printer.get_reactor().update_timer(
+                self._dock_cooling_timer,
+                self.printer.get_reactor().NOW + 5.0))
         self._crash_enable_time = 0.0
 
         # Default gcode templates (can be overridden per-tool in AFC_extruder)
@@ -1041,11 +1041,12 @@ class AfcToolchanger(afcUnit):
         """Periodic check to start/stop dock cooling fans based on temperature.
 
         Uses fan object directly (not gcode) so it's safe from reactor context.
+        Per-tool dock_cooling overrides the global setting.
         """
-        if not self.dock_cooling:
-            return eventtime + 10.0
-
         for tool in self.tools.values():
+            # Per-tool explicit False → skip.
+            # Per-tool None (unset) → fall back to global setting.
+            # Per-tool True → always cool this tool.
             tool_dc = getattr(tool, 'dock_cooling', None)
             if tool_dc is False:
                 continue
