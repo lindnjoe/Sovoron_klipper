@@ -1041,40 +1041,56 @@ class AfcToolchanger(afcUnit):
     # ---- Dock cooling ----
 
     def _dock_cooling_tick(self, eventtime):
-        """Periodic check to turn off fans when docked tools cool below threshold.
+        """Periodic check to start/stop dock cooling fans based on temperature.
 
         Uses fan object directly (not gcode) so it's safe from reactor context.
-        Only handles turning fans OFF. Turning fans ON happens in _update_dock_cooling
-        during tool changes (gcode thread).
         """
         if not self.dock_cooling:
             return eventtime + 10.0
 
-        for tool_number in list(self._dock_cooled_tools):
-            tool = self.tools.get(tool_number)
-            if tool is None:
-                self._dock_cooled_tools.discard(tool_number)
+        for tool in self.tools.values():
+            tool_dc = getattr(tool, 'dock_cooling', None)
+            if tool_dc is False:
                 continue
-            # If tool is now on shuttle, just remove from tracking.
-            # FanSwitcher already controls the active tool's fan.
+            if tool_dc is None and not self.dock_cooling:
+                continue
+            # Active tool's fan is owned by FanSwitcher — don't touch it.
             if tool == self.active_tool:
-                self._dock_cooled_tools.discard(tool_number)
+                self._dock_cooled_tools.discard(tool.tool_number)
                 continue
-            # Check if temp dropped below threshold
             try:
                 heater = self.printer.lookup_object(tool.name).get_heater()
                 current_temp, _ = heater.get_temp(eventtime)
-                if current_temp < self.dock_cooling_temp:
-                    self._stop_dock_cooling_fan_direct(tool)
-                    self.logger.info(
-                        "Dock cooling: %s fan off (temp %.1fC < %.1fC)"
-                        % (tool.name, current_temp, self.dock_cooling_temp))
             except Exception:
-                pass
+                continue
+            if current_temp >= self.dock_cooling_temp:
+                self._start_dock_cooling_fan_direct(tool, current_temp)
+            else:
+                self._stop_dock_cooling_fan_direct(tool, current_temp)
 
         return eventtime + 5.0
 
-    def _stop_dock_cooling_fan_direct(self, tool):
+    def _start_dock_cooling_fan_direct(self, tool, current_temp):
+        """Start fan using fan object directly — safe from reactor context."""
+        if tool.tool_number in self._dock_cooled_tools:
+            return
+        fan_name = getattr(tool, 'fan_name', None)
+        if not fan_name:
+            return
+        try:
+            fan_obj = self.printer.lookup_object(
+                "fan_generic " + fan_name, None)
+            if fan_obj and hasattr(fan_obj, 'fan'):
+                fan_obj.fan.set_speed(self.dock_cooling_fan_speed)
+                self._dock_cooled_tools.add(tool.tool_number)
+                self.logger.info(
+                    "Dock cooling: %s fan on at %.0f%% (temp %.1fC >= %.1fC)"
+                    % (tool.name, self.dock_cooling_fan_speed * 100,
+                       current_temp, self.dock_cooling_temp))
+        except Exception:
+            pass
+
+    def _stop_dock_cooling_fan_direct(self, tool, current_temp):
         """Stop fan using fan object directly — safe from reactor context."""
         if tool.tool_number not in self._dock_cooled_tools:
             return
@@ -1085,11 +1101,10 @@ class AfcToolchanger(afcUnit):
                 fan_obj = self.printer.lookup_object(
                     "fan_generic " + fan_name, None)
                 if fan_obj and hasattr(fan_obj, 'fan'):
-                    # Use set_speed (send_async_request) instead of
-                    # set_speed_from_command (register_lookahead_callback)
-                    # so the request is sent immediately from reactor
-                    # context rather than waiting for toolhead flush.
                     fan_obj.fan.set_speed(0.)
+                    self.logger.info(
+                        "Dock cooling: %s fan off (temp %.1fC < %.1fC)"
+                        % (tool.name, current_temp, self.dock_cooling_temp))
         except Exception:
             pass
 
