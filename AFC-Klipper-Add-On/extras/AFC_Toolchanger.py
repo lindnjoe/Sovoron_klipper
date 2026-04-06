@@ -616,9 +616,6 @@ class AfcToolchanger(afcUnit):
             else:
                 self.logger.info('Tool unselected')
 
-            # Update dock cooling for all tools — runs in gcode thread
-            self._update_dock_cooling()
-
         except Exception:
             if self.status == STATUS_ERROR:
                 pass  # process_error already handled recovery
@@ -1107,72 +1104,6 @@ class AfcToolchanger(afcUnit):
                         % (tool.name, current_temp, self.dock_cooling_temp))
         except Exception:
             pass
-
-    def _update_dock_cooling(self):
-        """Check all docked tools and start/stop cooling as needed.
-
-        Called from the gcode thread (during tool changes) to avoid
-        interfering with the motion queue or gcode transform.
-        """
-        for tool in self.tools.values():
-            tool_dc = getattr(tool, 'dock_cooling', None)
-            if tool_dc is False:
-                self._stop_dock_cooling_fan(tool)
-                continue
-            if tool_dc is None and not self.dock_cooling:
-                continue
-
-            if tool == self.active_tool:
-                # Just remove from tracking — FanSwitcher already
-                # controls the active tool's fan speed.
-                self._dock_cooled_tools.discard(tool.tool_number)
-                continue
-
-            # Tool is docked — check temperature
-            try:
-                eventtime = self.printer.get_reactor().monotonic()
-                heater = self.printer.lookup_object(tool.name).get_heater()
-                current_temp, _ = heater.get_temp(eventtime)
-            except Exception:
-                continue
-
-            if current_temp >= self.dock_cooling_temp:
-                self._start_dock_cooling_fan(tool, current_temp)
-            else:
-                self._stop_dock_cooling_fan(tool)
-
-    def _start_dock_cooling_fan(self, tool, current_temp):
-        """Turn on part cooling fan for a docked tool."""
-        if tool.tool_number in self._dock_cooled_tools:
-            return
-        fan_name = getattr(tool, 'fan_name', None)
-        if not fan_name:
-            return
-        try:
-            self.gcode.run_script_from_command(
-                "SET_FAN_SPEED FAN=%s SPEED=%.2f" % (fan_name, self.dock_cooling_fan_speed))
-            self._dock_cooled_tools.add(tool.tool_number)
-            self.logger.info(
-                "Dock cooling: %s fan on at %.0f%% (temp %.1fC > %.1fC)"
-                % (tool.name, self.dock_cooling_fan_speed * 100,
-                   current_temp, self.dock_cooling_temp))
-        except Exception as e:
-            self.logger.warning("Dock cooling: failed to start fan for %s: %s" % (tool.name, e))
-
-    def _stop_dock_cooling_fan(self, tool):
-        """Turn off dock cooling fan for a tool."""
-        if tool.tool_number not in self._dock_cooled_tools:
-            return
-        self._dock_cooled_tools.discard(tool.tool_number)
-        fan_name = getattr(tool, 'fan_name', None)
-        if not fan_name:
-            return
-        try:
-            self.gcode.run_script_from_command(
-                "SET_FAN_SPEED FAN=%s SPEED=0" % fan_name)
-            self.logger.info("Dock cooling: %s fan off" % tool.name)
-        except Exception as e:
-            self.logger.warning("Dock cooling: failed to stop fan for %s: %s" % (tool.name, e))
 
     def _gcmd_tool(self, gcmd, default=None):
         """Resolve tool from TOOL= or T= gcode parameters."""
