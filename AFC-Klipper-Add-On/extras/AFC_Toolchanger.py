@@ -1085,7 +1085,11 @@ class AfcToolchanger(afcUnit):
                 fan_obj = self.printer.lookup_object(
                     "fan_generic " + fan_name, None)
                 if fan_obj and hasattr(fan_obj, 'fan'):
-                    fan_obj.fan.set_speed_from_command(0.0)
+                    # Use set_speed (send_async_request) instead of
+                    # set_speed_from_command (register_lookahead_callback)
+                    # so the request is sent immediately from reactor
+                    # context rather than waiting for toolhead flush.
+                    fan_obj.fan.set_speed(0.)
         except Exception:
             pass
 
