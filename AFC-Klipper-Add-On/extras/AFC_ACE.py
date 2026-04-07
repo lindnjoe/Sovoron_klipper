@@ -2941,7 +2941,7 @@ class afcACE(afcUnit):
         else:
             self.lane_loaded(cur_lane)
             msg += '<span class=success--text>LOCKED</span>'
-            if not cur_lane.load_state:
+            if not cur_lane.raw_load_state:
                 msg += '<span class=error--text> NOT LOADED</span>'
                 self.lane_not_ready(cur_lane)
                 succeeded = False
