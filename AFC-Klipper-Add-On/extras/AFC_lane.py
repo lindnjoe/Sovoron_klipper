@@ -1092,14 +1092,8 @@ class AFCLane:
     def load_state(self) -> bool:
         if self.unit_obj.type in ("ViViD",) and self._hub_is_virtual:
             return self.loaded_to_hub
-        if self.unit_obj.type in ("ACE",) and self._hub_is_virtual:
-            # ACE drives virtual hub state via _set_hub_state — only True
-            # when filament is actively in the hub path to the toolhead.
-            hub = getattr(self, "hub_obj", None)
-            if hub is not None:
-                return bool(hub._state)
-            return False
-        return bool(self._load_state)
+        else:
+            return bool(self._load_state)
 
     @property
     def raw_load_state(self) -> bool:
