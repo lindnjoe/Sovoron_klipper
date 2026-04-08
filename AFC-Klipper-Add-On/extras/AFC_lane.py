@@ -41,7 +41,7 @@ EXCLUDE_TYPES = ["HTLF", "ViViD"]
 # Names to exclude from search when trying to find unit name in config file
 # These are more for name that could be in config files
 INVALID_UNIT_NAMES = ["AFC_buffer", "AFC_button", "AFC_extruder",
-                      "AFC_hub", "AFC_lane", "AFC_led", "AFC_prep" "AFC_stepper"]
+                      "AFC_hub", "AFC_lane", "AFC_led", "AFC_prep", "AFC_stepper"]
 
 class AssistActive(Enum):
     YES = 1
