@@ -309,8 +309,13 @@ class AFCSpool:
         """
         Helper function for setting lane spool values
         """
-        # set defaults if there's no spool id, or the spoolman lookup fails
-        if not cur_lane.remember_spool:
+        # Always reset debounce on spool change
+        cur_lane.auto_switch_triggered = False
+        # Only apply defaults (material type, 1000g weight) when no spool data has been
+        # assigned to this lane. If SET_SPOOL_ID or SET_COLOR was called before loading
+        # (e.g. from an NFC tag scan), the spool_id and/or color will already be set with
+        # real values — don't overwrite them with defaults during the load sequence.
+        if not cur_lane.remember_spool and cur_lane.spool_id is None and not cur_lane.color:
             cur_lane.material = self.afc.default_material_type
             cur_lane.weight = 1000 # Defaulting weight to 1000 upon load
 
