@@ -309,8 +309,13 @@ class AFCSpool:
         """
         Helper function for setting lane spool values
         """
-        # set defaults if there's no spool id, or the spoolman lookup fails
-        if not cur_lane.remember_spool:
+        # Always reset debounce on spool change
+        cur_lane.auto_switch_triggered = False
+        # Only apply defaults (material type, 1000g weight) when no spool data has been
+        # assigned to this lane. If SET_SPOOL_ID or SET_COLOR was called before loading
+        # (e.g. from an NFC tag scan), the spool_id and/or color will already be set with
+        # real values — don't overwrite them with defaults during the load sequence.
+        if not cur_lane.remember_spool and cur_lane.spool_id is None and not cur_lane.color:
             cur_lane.material = self.afc.default_material_type
             cur_lane.weight = 1000 # Defaulting weight to 1000 upon load
 
@@ -404,6 +409,7 @@ class AFCSpool:
             return
 
         runout = gcmd.get('RUNOUT', 'NONE')
+        is_none = runout.upper() == 'NONE'
         # Check to make sure runout does not equal lane
         if lane == runout:
             self.logger.error("Lane({}) and runout({}) cannot be the same".format(lane, runout))
@@ -413,12 +419,12 @@ class AFCSpool:
             self.logger.error('Unknown lane: {}'.format(lane))
             return
         # Check to make sure specified runout lane exists as long as runout is not set as 'NONE'
-        if runout != 'NONE' and runout not in self.afc.lanes:
+        if not is_none and runout not in self.afc.lanes:
             self.logger.error('Unknown runout lane: {}'.format(runout))
             return
 
         cur_lane = self.afc.lanes[lane]
-        cur_lane.runout_lane = None if runout == 'NONE' else runout
+        cur_lane.runout_lane = None if is_none else runout
         self.afc.save_vars()
 
     cmd_RESET_AFC_MAPPING_help = "Resets all lane mapping in AFC"
