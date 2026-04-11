@@ -13,6 +13,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import struct
@@ -99,6 +100,11 @@ class ACEConnection:
         # Request tracking
         self._next_request_id = 0
         self._pending = {}  # request_id -> reactor.completion()
+        # Async (fire-and-forget) request IDs we've sent. Responses with these
+        # IDs are expected — they get routed to status_callback, not treated
+        # as "unknown". Bounded size so it can't grow forever if responses
+        # are lost.
+        self._async_ids = collections.deque(maxlen=256)
 
         # Read buffer for frame reassembly
         self._read_buffer = b''
@@ -208,6 +214,7 @@ class ACEConnection:
             except Exception:
                 pass
         self._pending.clear()
+        self._async_ids.clear()
         self._read_buffer = b''
 
         if was_connected:
@@ -372,6 +379,7 @@ class ACEConnection:
 
         request_id = self._next_request_id
         self._next_request_id += 1
+        self._async_ids.append(request_id)
 
         request = {"id": request_id, "method": method}
         if params is not None:
@@ -614,16 +622,26 @@ class ACEConnection:
                 completion.complete(response)
             except Exception:
                 pass
-        else:
-            # Heartbeat (send_command_async) responses land here - they have
-            # a valid id but no pending completion.  Forward to the status
-            # callback so the unit can process slot data in near-real-time.
-            self._track_unsolicited()
-            if self.status_callback:
-                try:
-                    self.status_callback(response)
-                except Exception as e:
-                    self._logger.debug(f"ACE status_callback error: {e}")
+            return
+
+        # No pending completion — check if this matches an async request
+        # we fired earlier (heartbeat, etc.). Those are expected.
+        try:
+            self._async_ids.remove(response_id)
+            is_async = True
+        except ValueError:
+            is_async = False
+
+        # Forward to the status callback so the unit can process slot data
+        # in near-real-time.
+        self._track_unsolicited()
+        if self.status_callback:
+            try:
+                self.status_callback(response)
+            except Exception as e:
+                self._logger.debug(f"ACE status_callback error: {e}")
+
+        if not is_async:
             self._logger.debug(
                 f"ACE response for unknown request id={response_id}"
             )

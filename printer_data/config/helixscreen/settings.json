@@ -6,7 +6,7 @@
   "beta_features": true,
   "brightness": 80,
   "completion_alert": true,
-  "config_version": 10,
+  "config_version": 11,
   "dark_mode": true,
   "display": {
     "bed_mesh_render_mode": 0,
@@ -49,16 +49,12 @@
   "print_start_history": {
     "entries": [
       {
-        "phases": {
-          "3": 60
-        },
+        "phases": {},
         "timestamp": 1775145156,
         "total": 60
       },
       {
-        "phases": {
-          "3": 40
-        },
+        "phases": {},
         "temp_bucket": 125,
         "timestamp": 1775446189,
         "total": 40
@@ -171,7 +167,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-04-08T01:07:44Z"
+          "timestamp": "2026-04-11T01:55:20Z"
         },
         "optional": []
       },
@@ -192,6 +188,7 @@
         ],
         "last_brightness": 100,
         "last_color": "#FFFFFF",
+        "last_white": null,
         "led_on_at_start": false,
         "macro_devices": [],
         "selected": [],
@@ -467,7 +464,7 @@
                 {
                   "col": 3,
                   "colspan": 1,
-                  "enabled": true,
+                  "enabled": false,
                   "id": "fan_stack",
                   "row": 1,
                   "rowspan": 1
@@ -522,6 +519,7 @@
     "show_printer_switcher": false
   },
   "sounds_enabled": false,
+  "telemetry_enabled": true,
   "theme": {
     "preset": 0
   },
