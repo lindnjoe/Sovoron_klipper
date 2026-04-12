@@ -13,6 +13,7 @@
     "dim_brightness": 30,
     "dim_sec": 300,
     "drm_device": "",
+    "frame_counter": 1,
     "gcode_render_mode": 1,
     "screensaver_type": 0,
     "sleep_sec": 0,
@@ -167,7 +168,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-04-11T01:55:20Z"
+          "timestamp": "2026-04-12T05:51:54Z"
         },
         "optional": []
       },
@@ -514,7 +515,8 @@
         "hotend": "extruder"
       },
       "type": "Sovol SV08",
-      "wizard_completed": true
+      "wizard_completed": true,
+      "z_movement_style": 2
     },
     "show_printer_switcher": false
   },

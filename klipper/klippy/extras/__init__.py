@@ -1,3 +1,5 @@
-# This file makes the extras directory a Python package,
-# enabling cross-module imports (from extras.AFC_X import Y)
-# in the test environment. Klipper itself does not rely on this file.
+# Package definition for the extras directory
+#
+# Copyright (C) 2018  Kevin O'Connor <kevin@koconnor.net>
+#
+# This file may be distributed under the terms of the GNU GPLv3 license.
