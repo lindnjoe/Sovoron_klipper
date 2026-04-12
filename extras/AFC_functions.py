@@ -224,7 +224,7 @@ class afcFunction:
 
         :param cur_lane: Lane to assign auto generated T(n) macro
         """
-        if cur_lane.map == None :
+        if cur_lane.map is None:
             for x in range(99):
                 cmd = 'T{}'.format(x)
                 # Checking to see if cmd exists in lanes that have manually assigned mapping
@@ -238,13 +238,14 @@ class afcFunction:
                         break
         self.afc.tool_cmds[cur_lane.map]=cur_lane.name
         try:
-            if cur_lane._map:
+            if (cur_lane._map
+                or self.afc.force_assign_map):
                 rename_map = ("_{}".format(cur_lane.map))
                 self._rename(cur_lane.map, rename_map, self.afc.cmd_CHANGE_TOOL, self.afc.cmd_CHANGE_TOOL_help)
             else:
                 self.afc.gcode.register_command(cur_lane.map, self.afc.cmd_CHANGE_TOOL, desc=self.afc.cmd_CHANGE_TOOL_help)
         except:
-                self.logger.info("Error trying to map lane {lane} to {tool_macro}, please make sure there are no macros already setup for {tool_macro}".format(lane=[cur_lane.name], tool_macro=cur_lane.map), )
+                self.logger.error("Error trying to map lane {lane} to {tool_macro}, please make sure there are no macros already setup for {tool_macro}".format(lane=[cur_lane.name], tool_macro=cur_lane.map), )
         self.afc.save_vars()
 
     def check_macro_present(self, macro_name):
