@@ -165,8 +165,8 @@ class AFCFPSBuffer:
         self.high_point: float = config.getfloat('high_point', 0.9, minval=0.5, maxval=1.0)
 
         # Multiplier range — how aggressively the buffer corrects
-        self.multiplier_high: float = config.getfloat('multiplier_high', 1.1, minval=1.0)
-        self.multiplier_low: float = config.getfloat('multiplier_low', 0.9, minval=0.0, maxval=1.0)
+        self.multiplier_high: float = config.getfloat('multiplier_high', 1.15, minval=1.0)
+        self.multiplier_low: float = config.getfloat('multiplier_low', 0.85, minval=0.0, maxval=1.0)
         self.trailing_min_multiplier: float = config.getfloat('trailing_min_multiplier', 1.05, minval=1.0)
 
         # Deadband — total width of the neutral window centered on set_point
