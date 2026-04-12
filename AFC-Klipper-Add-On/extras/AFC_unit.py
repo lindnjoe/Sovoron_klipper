@@ -499,10 +499,12 @@ class afcUnit:
         :param fallback: Default LED color to use if no filament color is set
         :return: LED color value
         """
-        if lane.led_use_filament_color and lane.color:
-            hex_str = lane.color.replace("#", "").strip().upper()
-            if len(hex_str) in (6, 8) and all(c in "0123456789ABCDEF" for c in hex_str):
-                return self.afc.function.HexToLedString(hex_str)
+        if lane.led_use_filament_color:
+            color = lane.get_color()
+            if color:
+                hex_str = color.replace("#", "").strip().upper()
+                if len(hex_str) in (6, 8) and all(c in "0123456789ABCDEF" for c in hex_str):
+                    return self.afc.function.HexToLedString(hex_str)
         return fallback
 
     def lane_loaded(self, lane: AFCLane):
