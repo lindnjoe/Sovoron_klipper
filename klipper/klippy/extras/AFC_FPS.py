@@ -450,7 +450,12 @@ class AFCFPSBuffer:
             pass
 
     def _correction_event(self, eventtime):
-        """Periodically adjust rotation distance based on FPS reading."""
+        """Periodically adjust rotation distance based on FPS reading.
+
+        Uses continuous proportional correction across the full range.
+        The further from set_point, the stronger the correction — no dead
+        zone where the buffer can sit uncorrected.
+        """
         if not self.enable or self.current_lane is None:
             self._correction_running = False
             return self.reactor.NEVER
@@ -460,93 +465,77 @@ class AFCFPSBuffer:
             return self.reactor.NEVER
 
         reading = self.smoothed_fps
+        deviation = reading - self.set_point  # positive = high/advancing, negative = low/trailing
 
-        half_db = self.deadband / 2.0
-        neutral_low = self.set_point - half_db
-        neutral_high = self.set_point + half_db
-
-        # Inside deadband window — apply gentle proportional correction
-        # toward set_point instead of snapping to 1.0. This prevents the
-        # buffer from riding the trailing/neutral edge and toggling.
-        if neutral_low <= reading <= neutral_high:
-            # How far from set_point? Positive = above, negative = below
-            offset = reading - self.set_point
-            # Scale a gentle correction: ±5% max within deadband
-            gentle_factor = (offset / half_db) * 0.05 if half_db > 0 else 0.0
-            multiplier = 1.0 - gentle_factor  # above set_point → slow down slightly, below → speed up slightly
-            self.set_multiplier(multiplier)
-            self.last_state = NEUTRAL_STATE_NAME
-            self.advance_state = False
-            self.trailing_state = False
-            self._last_correction_direction = NEUTRAL_STATE_NAME
-            if self.led:
-                self.afc.function.afc_led(self.led_neutral, self.led_index)
-
-            if self.fault_detection_enabled():
-                self.update_filament_error_pos()
-
-            self._update_virtual_sensors(eventtime)
-            return eventtime + self.update_interval
-
-        target_direction = ADVANCING_STATE_NAME if reading > neutral_high else TRAILING_STATE_NAME
-
-        if eventtime < self._flip_suppress_until:
-            self.set_multiplier(1.0)
-            self.last_state = NEUTRAL_STATE_NAME
-            self.advance_state = False
-            self.trailing_state = False
-            if self.led:
-                self.afc.function.afc_led(self.led_neutral, self.led_index)
-            return eventtime + self.update_interval
-
-        if (self._last_correction_direction in (ADVANCING_STATE_NAME, TRAILING_STATE_NAME)
-                and target_direction != self._last_correction_direction):
-            self._flip_suppress_until = eventtime + self.flip_cooldown
-            self._last_correction_direction = NEUTRAL_STATE_NAME
-            self.set_multiplier(1.0)
-            self.last_state = NEUTRAL_STATE_NAME
-            self.advance_state = False
-            self.trailing_state = False
-            if self.led:
-                self.afc.function.afc_led(self.led_neutral, self.led_index)
-            return eventtime + self.update_interval
-
-        if reading > neutral_high:
-            # FPS reading is HIGH (buffer compressed / filament at toolhead)
-            # Need to slow down feeding → multiplier < 1
-            # Scale from 1.0 at neutral_high to multiplier_low at high_point
-            range_size = self.high_point - neutral_high
+        # Continuous proportional multiplier:
+        #   Above set_point → slow down (multiplier < 1.0)
+        #   Below set_point → speed up (multiplier > 1.0)
+        #   At set_point    → neutral  (multiplier = 1.0)
+        if deviation > 0:
+            # High side: scale from 1.0 at set_point to multiplier_low at high_point
+            range_size = self.high_point - self.set_point
             if range_size > 0:
-                fraction = min((reading - neutral_high) / range_size, 1.0)
+                fraction = min(deviation / range_size, 1.0)
             else:
                 fraction = 1.0
             multiplier = 1.0 - fraction * (1.0 - self.multiplier_low)
+        elif deviation < 0:
+            # Low side: scale from 1.0 at set_point to multiplier_high at low_point
+            range_size = self.set_point - self.low_point
+            if range_size > 0:
+                fraction = min(-deviation / range_size, 1.0)
+            else:
+                fraction = 1.0
+            multiplier = 1.0 + fraction * (self.multiplier_high - 1.0)
+            trailing_floor = min(self.trailing_min_multiplier, self.multiplier_high)
+            multiplier = max(multiplier, trailing_floor)
+        else:
+            multiplier = 1.0
+
+        # Determine state for LED indication and fault reporting
+        half_db = self.deadband / 2.0
+        if reading > self.set_point + half_db:
+            target_direction = ADVANCING_STATE_NAME
+        elif reading < self.set_point - half_db:
+            target_direction = TRAILING_STATE_NAME
+        else:
+            target_direction = NEUTRAL_STATE_NAME
+
+        # Flip cooldown — suppress rapid direction changes
+        if (self._last_correction_direction in (ADVANCING_STATE_NAME, TRAILING_STATE_NAME)
+                and target_direction not in (NEUTRAL_STATE_NAME, self._last_correction_direction)):
+            self._flip_suppress_until = eventtime + self.flip_cooldown
+            self._last_correction_direction = NEUTRAL_STATE_NAME
+
+        if eventtime < self._flip_suppress_until:
+            multiplier = 1.0
+            target_direction = NEUTRAL_STATE_NAME
+
+        # Apply multiplier
+        self.set_multiplier(multiplier)
+
+        # Update state flags
+        if target_direction == ADVANCING_STATE_NAME:
             self.last_state = ADVANCING_STATE_NAME
             self.advance_state = True
             self.trailing_state = False
             self._last_correction_direction = ADVANCING_STATE_NAME
             if self.led:
                 self.afc.function.afc_led(self.led_advancing, self.led_index)
-        else:
-            # FPS reading is LOW (buffer stretched / not feeding fast enough)
-            # Need to speed up feeding → multiplier > 1
-            # Scale from 1.0 at neutral_low to multiplier_high at low_point
-            range_size = neutral_low - self.low_point
-            if range_size > 0:
-                fraction = min((neutral_low - reading) / range_size, 1.0)
-            else:
-                fraction = 1.0
-            multiplier = 1.0 + fraction * (self.multiplier_high - 1.0)
-            trailing_floor = min(self.trailing_min_multiplier, self.multiplier_high)
-            multiplier = max(multiplier, trailing_floor)
+        elif target_direction == TRAILING_STATE_NAME:
             self.last_state = TRAILING_STATE_NAME
             self.advance_state = False
             self.trailing_state = True
             self._last_correction_direction = TRAILING_STATE_NAME
             if self.led:
                 self.afc.function.afc_led(self.led_trailing, self.led_index)
-
-        self.set_multiplier(multiplier)
+        else:
+            self.last_state = NEUTRAL_STATE_NAME
+            self.advance_state = False
+            self.trailing_state = False
+            self._last_correction_direction = NEUTRAL_STATE_NAME
+            if self.led:
+                self.afc.function.afc_led(self.led_neutral, self.led_index)
 
         if self.debug:
             self.logger.debug(
@@ -557,13 +546,12 @@ class AFCFPSBuffer:
                 )
             )
 
-        # Update fault detection position when FPS is in a healthy range.
-        # If pressure is near set_point (buffer correcting normally),
-        # push the error threshold forward. If pressure is stuck at an
-        # extreme (filament stopped/clogged), stop updating so the
-        # extruder eventually exceeds the threshold and triggers a fault.
+        # Fault detection: update error position as long as correction is
+        # actively working (multiplier applied). Only stop updating when
+        # the reading is stuck at an extreme despite correction — that
+        # indicates a real clog or feed failure.
         if self.fault_detection_enabled():
-            if abs(self.smoothed_fps - self.set_point) < (self.high_point - self.set_point):
+            if reading <= self.high_point and reading >= self.low_point:
                 self.update_filament_error_pos()
 
         self._update_virtual_sensors(eventtime)
@@ -752,10 +740,10 @@ class AFCFPSBuffer:
         if (self.afc.function.is_printing(check_movement=True)
                 and extruder_pos is not None
                 and self.filament_error_pos is not None):
-            half_db = self.deadband / 2.0
-            neutral_low = self.set_point - half_db
-            neutral_high = self.set_point + half_db
-            if neutral_low <= self.smoothed_fps <= neutral_high:
+            # Update error position as long as FPS is within the
+            # correctable range (between low_point and high_point).
+            # Only let it expire when stuck at an extreme.
+            if self.low_point <= self.smoothed_fps <= self.high_point:
                 self.update_filament_error_pos()
                 return eventtime + CHECK_RUNOUT_TIMEOUT
             if extruder_pos > self.filament_error_pos:
