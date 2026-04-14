@@ -105,6 +105,7 @@ class afcUnit:
         self.rev_long_moves_speed_factor = config.getfloat("rev_long_moves_speed_factor", self.afc.rev_long_moves_speed_factor)
         self.extruder_clear_dis          = config.getfloat("extruder_clear_dis", 50)                        # Amount to move to clear extruder gears when ejecting filament
         self.enable_buffer_tool_check    = config.getboolean("enable_buffer_tool_check", False)
+        self.tool_max_unload_attempts    = config.getint('tool_max_unload_attempts', self.afc.tool_max_unload_attempts) # Max number of attempts to unload filament from toolhead when using buffer as ramming sensor
 
         # Espooler defines
         # Time in seconds to wait between breaking n20 motors(nSleep/FWD/RWD all 1) and then releasing the break to allow coasting. Setting value here overrides values set in AFC.cfg file
@@ -483,6 +484,35 @@ class afcUnit:
         if color is not None and color:
             led_color = self.afc.function.HexToLedString(color.replace("#", ""))
             self.afc.function.afc_led( led_color, self.led_logo_index )
+    
+    def _stop_led_effects(self):
+        try:
+            self.gcode.run_script_from_command("STOP_LED_EFFECTS")
+        except Exception:
+            pass
+
+    def _trigger_led_state(self, lane: AFCLane, static_color, effect_suffix=None):
+        """
+        Smart LED Dispatcher: 
+        1. Always kills existing effects to reset the state.
+        2. Always sets the AFC static status color as the base.
+        3. If a dynamic effect is requested, it overlays it.
+        """
+        # 1. Clear any running effects
+        self._stop_led_effects()
+
+        # 2. Always apply the standard AFC static color first
+        if static_color is not None:
+            self.afc.function.afc_led(static_color, lane.led_index)
+
+        # 3. If an animation is requested, try to overlay it
+        if effect_suffix:
+            effect_name = f"{lane.name}_{effect_suffix}"
+            try:
+                self.gcode.run_script_from_command(f"SET_LED_EFFECT EFFECT={effect_name}")
+            except Exception:
+                # If the effect doesn't exist, we just stay on the static color
+                pass
 
     def lane_not_ready(self, lane):
         """
@@ -516,7 +546,11 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self.afc.function.afc_led(self._get_lane_color(lane, lane.led_ready), lane.led_index)
+        # self.afc.function.afc_led(self._get_lane_color(lane, lane.led_ready), lane.led_index)
+        self._trigger_led_state(lane, lane.led_ready)
+        # TODO: double check quattrobox led sets
+        if lane.led_spool_index:
+            self.afc.function.afc_led(lane.led_spool_illum, lane.led_spool_index)
 
     def lane_unloading(self, lane):
         """
@@ -524,7 +558,8 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self.afc.function.afc_led(lane.led_unloading, lane.led_index)
+        # self.afc.function.afc_led(lane.led_unloading, lane.led_index)
+        self._trigger_led_state(lane, lane.led_unloading, "unloading")
 
     def lane_unloaded(self, lane: AFCLane):
         """
@@ -532,7 +567,10 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self.lane_not_ready(lane)
+        # self.lane_not_ready(lane)
+        self._trigger_led_state(lane, lane.led_not_ready)
+        if lane.led_spool_index:
+            self.afc.function.afc_led(self.afc.led_off, lane.led_spool_index)
 
     def lane_loading(self, lane: AFCLane):
         """
@@ -540,7 +578,8 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self.afc.function.afc_led(lane.led_loading, lane.led_index)
+        # self.afc.function.afc_led(lane.led_loading, lane.led_index)
+        self._trigger_led_state(lane, lane.led_loading, "loading")
 
     def lane_tool_loaded(self, lane: AFCLane):
         """
@@ -549,6 +588,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
+        self._stop_led_effects()
         self.afc.function.afc_led(lane.led_tool_loaded, lane.led_index)
         lane.extruder_obj.set_status_led(lane.led_tool_loaded)
 
@@ -559,6 +599,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
+        self._stop_led_effects()
         self.afc.function.afc_led(self._get_lane_color(lane, lane.led_ready), lane.led_index)
         lane.extruder_obj.set_status_led(lane.led_tool_unloaded)
 
@@ -570,6 +611,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
+        self._stop_led_effects()
         color = self._get_lane_color(lane, lane.led_tool_loaded_idle)
         self.afc.function.afc_led(color, lane.led_index)
         # Extruder LED also shows filament color when tool is parked/idle —
@@ -591,6 +633,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
+        self._stop_led_effects()
         self.afc.function.afc_led(lane.led_fault, lane.led_index)
 
     def select_lane( self, lane: AFCLane, sel_prep:bool=False ) -> tuple[bool, float|int]:
@@ -730,7 +773,7 @@ class afcUnit:
 
         :param lane: AFCLane object for which to activate and load filament to load sensor
         """
-        self._print_function_not_defined(self.eject_lane.__name__)
+        self._print_function_not_defined(self.prep_load.__name__)
 
     def prep_post_load(self, lane: AFCLane):
         """

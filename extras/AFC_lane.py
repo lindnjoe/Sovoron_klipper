@@ -35,7 +35,9 @@ except: raise error(ERROR_STR.format(import_lib="AFC_assist", trace=traceback.fo
 try: from extras.AFC_stats import AFCStats_var
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
 
-EXCLUDE_TYPES = ["HTLF", "HTLFclaymore", "ViViD"]
+# Unit types that only have load switch
+ONLY_LOAD_TYPES = ["HTLF", "Claymore"]
+EXCLUDE_TYPES = ONLY_LOAD_TYPES + [ "ViViD"]
 # Class for holding different states so its clear what all valid states are
 
 # Names to exclude from search when trying to find unit name in config file
@@ -106,7 +108,7 @@ class AFCLane:
         self.printer.register_event_handler("afc:moonraker_connect", self.handle_moonraker_connect)
         self.cb_update_weight   = self.reactor.register_timer( self.update_weight_callback )
 
-        self.unit_obj: afcUnit
+        self.unit_obj: afcUnit  = None
         self.hub_obj: Optional[afc_hub|None] = None
         self.buffer_obj: Optional[AFCTrigger|None] = None
         self.extruder_obj: AFCExtruder
@@ -181,6 +183,7 @@ class AFCLane:
         self.load_then_home_var: bool  = config.getboolean("load_then_home", None)
         self.load_undershoot: float    = config.getfloat("load_undershoot", None)
         self.extruder_clear_dis: float = config.getfloat("extruder_clear_dis", None)
+        self.tool_max_unload_attempts  = config.getint('tool_max_unload_attempts', None) # Max number of attempts to unload filament from toolhead when using buffer as ramming sensor
 
         # Custom Load/unload Commands
         self.custom_load_cmd = config.get('custom_load_cmd', None)  # Custom command to run when loading lane, this will bypass the typical load sequence and run the command instead.
@@ -627,6 +630,7 @@ class AFCLane:
         if self.td1_device_id               is None: self.td1_device_id     = self.unit_obj.td1_device_id
         if self.extruder_clear_dis          is None: self.extruder_clear_dis= self.unit_obj.extruder_clear_dis
         if self.post_prep_macro             is None: self.post_prep_macro   = self.unit_obj.post_prep_macro
+        if self.tool_max_unload_attempts    is None: self.tool_max_unload_attempts = self.unit_obj.tool_max_unload_attempts
 
         if self.td1_bowden_length           is None:
             if not self.is_direct_hub():
@@ -842,11 +846,16 @@ class AFCLane:
         """
         warn = AFCMoveWarning.NONE
         extruder_stepper = getattr(self, "extruder_stepper", None)
+        drive_stepper_assist = None
         if (self.drive_stepper
             or extruder_stepper):
             if use_homing:
                 if self.drive_stepper:
                     home_to = self.drive_stepper.home_to
+                    # Capturing driver stepper assist_move method and replacing with lanes
+                    # assist move so spooler motors are driven when using drive/stepper based units
+                    drive_stepper_assist= self.drive_stepper.assist_move
+                    self.drive_stepper.assist_move = self.assist_move
                 else:
                     home_to = self.home_to
                 # Add extra distance to homing move to guarantee that endstop is hit
@@ -855,9 +864,15 @@ class AFCLane:
                     new_distance = distance - self.homing_overshoot
                 self.unit_obj.select_lane(self)
                 speed, accel = self.get_speed_accel(speed_mode)
-                homed, mov_dis, error = home_to(endstop, new_distance, speed, accel,
-                        distance > 0, assist_active=self.get_active_assist(distance, assist_active)
-                )
+                try:
+                    homed, mov_dis, error = home_to(endstop, new_distance, speed, accel,
+                            distance > 0, assist_active=self.get_active_assist(distance,
+                                                                               assist_active)
+                    )
+                finally:
+                    # Restoring drive stepper assist move method
+                    if drive_stepper_assist:
+                        self.drive_stepper.assist_move = drive_stepper_assist
                 if error:
                     warn = AFCMoveWarning.ERROR
                 elif (abs(distance) - mov_dis) > self.homing_delta:
@@ -994,7 +1009,9 @@ class AFCLane:
 
     @property
     def load_state(self) -> bool:
-        if self.unit_obj.type == "ViViD":
+        if (self.hub_obj is not None
+            and hasattr(self.hub_obj, 'is_virtual_pin')
+            and self.hub_obj.is_virtual_pin()):
             return self.loaded_to_hub
         else:
             return bool(self._load_state)
@@ -1009,7 +1026,7 @@ class AFCLane:
     def load_callback(self, eventtime, state):
         self._load_state = state
         if (self.printer.state_message == 'Printer is ready'
-            and self.unit_obj.type.startswith("HTLF")):
+            and self.unit_obj.type in ONLY_LOAD_TYPES):
             self.prep_state = state
 
     def handle_load_runout(self, eventtime, load_state):
@@ -1029,9 +1046,9 @@ class AFCLane:
         except:
             self.load_debounce_button._old_note_filament_present(eventtime, load_state)
 
-        if (self.printer.state_message == 'Printer is ready' and
-            self.unit_obj.type.startswith("HTLF") and
-            True == self._afc_prep_done):
+        if (self.printer.state_message == 'Printer is ready'
+            and self.unit_obj.type in ONLY_LOAD_TYPES
+            and True == self._afc_prep_done):
             if load_state:
                 self.set_loaded()
 

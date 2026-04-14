@@ -1453,6 +1453,11 @@ class afc:
                 self.error.handle_lane_failure(cur_lane, message)
                 return False
         else:
+            use_direct_dist = False
+            if (cur_lane.hub_obj
+                and cur_lane.hub_obj.use_dist_hub):
+                use_direct_dist = True
+
             if self._check_extruder_temp(cur_lane):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
 
@@ -1511,8 +1516,9 @@ class afc:
 
             # Move filament towards the toolhead.
             if not cur_lane.is_direct_hub():
+                distance = cur_lane.dist_hub if use_direct_dist else cur_hub.afc_bowden_length
                 _, _, warn = cur_lane.unit_obj.load_then_home(cur_lane,
-                                                              cur_hub.afc_bowden_length,
+                                                              distance,
                                                               AssistActive.DYNAMIC,
                                                               cur_lane.get_toolhead_endstop())
                 # Check for error and return, if error state is set then AFC tried pausing
@@ -1531,7 +1537,7 @@ class afc:
                     max_attempts = int(self.tool_homing_distance/cur_lane.short_move_dis)
                     if (self.homing_enabled
                         and self.home_to_tool):
-                        move_distance = cur_hub.afc_bowden_length if not cur_lane.is_direct_hub() else cur_lane.dist_hub
+                        move_distance = cur_hub.afc_bowden_length if not cur_lane.is_direct_hub() and not use_direct_dist else cur_lane.dist_hub
                         max_attempts = 2
                         self.logger.info("Distance stopped short of commanded distance to toolhead, "\
                                         "backing up and retrying load.")
@@ -1782,6 +1788,14 @@ class afc:
             cur_lane.status = AFCLaneState.NONE
             self.save_vars()
         else:
+            use_direct_dist = False
+            if (cur_lane.hub_obj
+                and cur_lane.hub_obj.use_dist_hub):
+                use_direct_dist = True
+            # START THE ANIMATION IMMEDIATELY (Plays while heating!)
+            # Activate LED indicator for unloading.
+            cur_lane.unit_obj.lane_unloading(cur_lane)
+
             # Prepare the extruder and heater for unloading.
             if self._check_extruder_temp(cur_lane):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
@@ -1792,9 +1806,6 @@ class afc:
 
             # Disable the buffer if it's active.
             cur_lane.disable_buffer()
-
-            # Activate LED indicator for unloading.
-            cur_lane.unit_obj.lane_unloading(cur_lane)
 
             # Synchronize the extruder stepper with the lane.
             cur_lane.sync_to_extruder()
@@ -1835,17 +1846,17 @@ class afc:
             if cur_extruder.tool_start == "buffer":
                 # if ramming is enabled, AFC will retract to collapse buffer before unloading
                 cur_lane.unsync_to_extruder()
-                while not cur_lane.get_trailing() and self.tool_max_unload_attempts > 0:
+                while not cur_lane.get_trailing() and cur_lane.tool_max_unload_attempts > 0:
                     num_tries += 1
                     self.afcDeltaTime.log_with_time(
                         f'TOOL_UNLOAD: Retracting Buffer, Try:{num_tries}'
                     )
                     # attempt to return buffer to trailing pin
                     cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT)
-                    self.reactor.pause(self.reactor.monotonic() + 0.1)
-                    if num_tries > self.tool_max_unload_attempts:
+                    self.reactor.pause(self.reactor.monotonic() + 0.5)
+                    if num_tries > cur_lane.tool_max_unload_attempts:
                         msg = ''
-                        msg += "Buffer did not become compressed after {} short moves.\n".format(self.tool_max_unload_attempts)
+                        msg += "Buffer did not become compressed after {} short moves.\n".format(cur_lane.tool_max_unload_attempts)
                         msg += "Setting and increasing 'tool_max_unload_attempts' in AFC.cfg may improve unloading reliability\n\n"
                         msg += "Please check to make sure filament is unloaded from the toolhead's extruder. If filament is still\n"
                         msg += "loaded manually retract back until its free, then run UNSET_LANE_LOADED and then do manual\n"
@@ -1879,7 +1890,7 @@ class afc:
                         )
                         # attempt to move filament back from sensor without moving extruder
                         cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT)
-                        if num_tries > self.tool_max_unload_attempts:
+                        if num_tries > cur_lane.tool_max_unload_attempts:
                             # note that this will break out of the loop and immediately fall into the error
                             # condition of the next loop for messaging to the user
                             break
@@ -1887,7 +1898,7 @@ class afc:
 
                 while cur_lane.get_toolhead_pre_sensor_state() or cur_extruder.tool_end_state:
                     num_tries += 1
-                    if num_tries > self.tool_max_unload_attempts:
+                    if num_tries > cur_lane.tool_max_unload_attempts:
                         # Handle failure if the filament cannot be unloaded.
                         message = 'Failed to unload filament from toolhead. Filament stuck in toolhead.'
                         if self.function.in_print():
@@ -1929,7 +1940,8 @@ class afc:
             # Synchronize and move filament out of the hub.
             cur_lane.unsync_to_extruder()
             if not cur_lane.is_direct_hub():
-                _, _, warn = cur_lane.unit_obj.move_to_hub(cur_lane, cur_hub.afc_unload_bowden_length,
+                distance = cur_lane.dist_hub if use_direct_dist else cur_hub.afc_unload_bowden_length
+                _, _, warn = cur_lane.unit_obj.move_to_hub(cur_lane, distance,
                                                            MoveDirection.NEG, self.homing_enabled,
                                                            speed_mode=SpeedMode.LONG)
                 # Check for error and return, if error state is set then AFC tried pausing
@@ -1991,6 +2003,7 @@ class afc:
             self.afcDeltaTime.log_with_time("Hub cleared")
 
             #Move to make sure hub path is clear based on the move_clear_dis var
+            # TODO: should just add this function to AFC_unit move_to_hub
             if not cur_lane.is_direct_hub():
                 cur_lane.move_advanced(cur_hub.hub_clear_move_dis * -1, SpeedMode.SHORT,
                                        assist_active=AssistActive.YES)
