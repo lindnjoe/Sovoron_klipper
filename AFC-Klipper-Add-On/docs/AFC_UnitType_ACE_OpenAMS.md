@@ -18,8 +18,9 @@ AFC_ACE supports two operational modes:
   The unit retracts the current slot before feeding a new one.
 - **direct** — Each ACE slot feeds its own extruder independently.
 
-AFC_ACE inherits configuration options from the base `afcUnit` section (LED colors,
-movement speeds/accelerations, homing, espooler, etc.).  Below are additional
+AFC_ACE inherits many LED, speed/acceleration, and misc options from the base
+`afcUnit` class (same as `[AFC_BoxTurtle]`), but does not use stepper- or
+espooler-specific options (ACE has no per-lane stepper).  Below are the
 configuration values specific to an ACE unit.
 
 !!! note
@@ -67,7 +68,7 @@ dist_hub: 200
 #    Default 200mm is a safe starting point — calibrate with ACE_CALIBRATE_HUB.
 
 load_to_hub:
-#    Default: None (inherits from AFC global)
+#    Default: <none> (inherits from AFC global)
 #    Unit-level override for load-to-hub behavior.  When True, filament is
 #    automatically staged at the hub after spool detection.  Can also be
 #    overridden per-lane in [AFC_lane] sections.
@@ -213,8 +214,9 @@ OpenAMS units communicate with the OAMS firmware over Klipper's CAN/serial bus
 and do not have physical stepper-based lane control — the OAMS hub motor and
 firmware PID loop handle filament feeding and tension.
 
-AFC_OpenAMS inherits configuration options from the base `afcUnit` section (LED
-colors, movement speeds, homing, espooler, etc.).  Below are additional
+AFC_OpenAMS inherits many LED, speed/acceleration, and misc options from the
+base `afcUnit` class (same as `[AFC_BoxTurtle]`), but does not use stepper- or
+espooler-specific options (OpenAMS has no per-lane stepper).  Below are the
 configuration values specific to an OpenAMS unit.
 
 !!! note
