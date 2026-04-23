@@ -253,6 +253,11 @@ class AFCFPSBuffer:
         self.correction_timer = self.reactor.register_timer(self._correction_event)
         self._correction_running = False
 
+        # Track the last applied multiplier for the active lane so we can
+        # restore it on tool changes. Key: extruder name → (lane_name, multiplier)
+        self._last_multiplier = 1.0
+        self._saved_multipliers = {}
+
         # ---- Register event handlers ----
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
@@ -594,6 +599,20 @@ class AFCFPSBuffer:
         self.smoothed_fps = self.fps_value
 
         if has_stepper:
+            # Restore the last multiplier for this extruder if the same lane
+            # is coming back (tool change with no spool swap). If a different
+            # lane is on this extruder, it's a new spool — start fresh at 1.0.
+            extruder_name = getattr(lane, 'extruder_name', None)
+            saved = self._saved_multipliers.get(extruder_name) if extruder_name else None
+            if saved is not None and saved[0] == lane.name and saved[1] != 1.0:
+                self.set_multiplier(saved[1])
+                self.logger.debug(
+                    f"{self.name} restored multiplier {saved[1]:.4f} "
+                    f"for {lane.name} on {extruder_name}"
+                )
+            else:
+                self._last_multiplier = 1.0
+
             # Start the proportional correction timer
             self.reactor.update_timer(self.correction_timer, self.reactor.NOW)
             self._correction_running = True
@@ -623,6 +642,19 @@ class AFCFPSBuffer:
         if self.led:
             self.afc.function.afc_led(self.led_buffer_disabled, self.led_index)
 
+        # Save the last multiplier for this extruder/lane so it can be
+        # restored on the next tool change back to this same lane.
+        if self._lane_has_rotation_control(self.current_lane):
+            extruder_name = getattr(self.current_lane, 'extruder_name', None)
+            if extruder_name:
+                self._saved_multipliers[extruder_name] = (
+                    self.current_lane.name, self._last_multiplier
+                )
+                self.logger.debug(
+                    f"{self.name} saved multiplier {self._last_multiplier:.4f} "
+                    f"for {self.current_lane.name} on {extruder_name}"
+                )
+
         self.reset_multiplier()
 
         # Stop correction timer
@@ -648,6 +680,7 @@ class AFCFPSBuffer:
         if not self._lane_has_rotation_control(self.current_lane):
             return
 
+        self._last_multiplier = multiplier
         self.current_lane.update_rotation_distance(multiplier)
 
     def reset_multiplier(self):
@@ -657,6 +690,7 @@ class AFCFPSBuffer:
         if not self._lane_has_rotation_control(self.current_lane):
             return
 
+        self._last_multiplier = 1.0
         self.current_lane.update_rotation_distance(1)
         self.logger.debug("FPS buffer multiplier reset for {}".format(self.current_lane.name))
 

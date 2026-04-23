@@ -6,7 +6,7 @@
   "beta_features": true,
   "brightness": 80,
   "completion_alert": true,
-  "config_version": 11,
+  "config_version": 14,
   "dark_mode": true,
   "display": {
     "bed_mesh_render_mode": 0,
@@ -44,7 +44,7 @@
   },
   "log_path": "/tmp/helixscreen.log",
   "motion": {
-    "jog_mode": 1
+    "jog_mode": 2
   },
   "plugin_install_declined": true,
   "print_start_history": {
@@ -168,7 +168,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-04-12T19:01:52Z"
+          "timestamp": "2026-04-23T00:29:24Z"
         },
         "optional": []
       },
@@ -507,6 +507,7 @@
           ]
         }
       },
+      "printer_name": "SC.0083",
       "probe_sensors": {
         "sensors": null
       },
@@ -524,6 +525,10 @@
   "telemetry_enabled": true,
   "theme": {
     "preset": 0
+  },
+  "tour": {
+    "completed": true,
+    "last_seen_version": 1
   },
   "ui": {
     "cached_grid": {
