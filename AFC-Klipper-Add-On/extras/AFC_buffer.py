@@ -40,6 +40,12 @@ class AFCTrigger:
         self.advance_state = False
         self.trailing_state = False
 
+        # Per-extruder state memory: extruder_name -> (lane_name, last_state)
+        # Lets us restore the last known buffer state after a tool change,
+        # but only if the same lane is coming back (same spool on that
+        # extruder). A different lane means a new spool — fresh start.
+        self._saved_states = {}
+
         self.debug                  = config.getboolean("debug", False)
         self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui", self.afc.enable_sensors_in_gui)  # Set to True toolhead sensors switches as filament sensors in mainsail/fluidd gui, overrides value set in AFC.cfg
         self.buttons                = self.printer.load_object(config, "buttons")
@@ -281,21 +287,35 @@ class AFCTrigger:
         if self.led:
             self.afc.function.afc_led(self.led_buffer_disabled, self.led_index)
         self.enable = True
+
+        # Restore the last known state for this extruder — but only if the
+        # same lane is coming back. A different lane on the same extruder
+        # means a new spool was loaded; start fresh instead of inheriting
+        # the previous lane's (or previous extruder's) stale state.
+        extruder_name = getattr(lane, 'extruder_name', None)
+        saved = self._saved_states.get(extruder_name) if extruder_name else None
+        if saved is not None and saved[0] == lane.name:
+            self.last_state = saved[1]
+        else:
+            self.last_state = "Unknown"
+
         multiplier = 1.0
         if self.last_state == TRAILING_STATE_NAME:
             multiplier = self.multiplier_low
             if self.fault_detection_enabled():
                 multiplier = (multiplier * 2) / 5
-        else:
+        elif self.last_state == ADVANCING_STATE_NAME:
             multiplier = self.multiplier_high
             if self.fault_detection_enabled():
                 multiplier = multiplier * 1.5
+        # Unknown / no prior state → leave at 1.0 and let the switches
+        # set the correct multiplier on the next trigger event.
 
         if self.fault_detection_enabled():
             self.start_fault_detection(0, multiplier)
         else:
             self.set_multiplier( multiplier )
-        self.logger.debug(f"{self.name} buffer enabled for {self.current_lane.name}")
+        self.logger.debug(f"{self.name} buffer enabled for {self.current_lane.name} (initial state: {self.last_state})")
 
     def disable_buffer(self):
         """
@@ -306,6 +326,15 @@ class AFCTrigger:
         self.logger.debug(f"{self.name} buffer disabled for {self.current_lane.name}")
         if self.led:
             self.afc.function.afc_led(self.led_buffer_disabled, self.led_index)
+
+        # Save the last buffer state for this extruder/lane so it can be
+        # restored on the next tool change back to this same lane.
+        extruder_name = getattr(self.current_lane, 'extruder_name', None)
+        if extruder_name:
+            self._saved_states[extruder_name] = (
+                self.current_lane.name, self.last_state
+            )
+
         self.reset_multiplier()
         if self.error_sensitivity > 0 and self.extruder_pos_timer is not None:
             eventtime = self.reactor.monotonic()
