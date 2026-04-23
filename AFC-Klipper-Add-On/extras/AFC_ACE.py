@@ -2413,11 +2413,35 @@ class afcACE(afcUnit):
         deadline = self.afc.reactor.monotonic() + max_wait
         sensor_triggered = False
 
-        # Initial delay: give the ACE time to start the motor and update
-        # its slot status before we begin polling. Without this, the first
-        # poll can see the slot still in "ready" state (or missing status)
-        # and exit immediately before the motor has begun moving.
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.0)
+        # Phase 0: Wait for the slot to leave "ready"/"empty" state (enter a
+        # motor-active state like "feeding"/"unwinding"/"shifting").  The ACE
+        # acknowledges the feed_filament RPC instantly, but the slot status
+        # update lags.  Without this gate, the completion-polling below can
+        # see the stale "ready" from before the motor started and return
+        # immediately — reporting the feed as complete before it began.
+        departure_deadline = self.afc.reactor.monotonic() + 3.0
+        motor_started = False
+        while self.afc.reactor.monotonic() < departure_deadline:
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.2)
+            try:
+                hw_status = ace.get_status(timeout=2.0)
+                if isinstance(hw_status, dict):
+                    slots = hw_status.get("slots", [])
+                    if slot_index < len(slots):
+                        slot_data = slots[slot_index]
+                        if isinstance(slot_data, dict):
+                            status = slot_data.get("status", "")
+                            if status not in ("ready", "empty", ""):
+                                motor_started = True
+                                break
+            except Exception:
+                pass
+        if not motor_started:
+            self.logger.debug(
+                f"ACE wait: slot {slot_index} never left ready state "
+                f"after feed command — motor may not have started"
+            )
+            return False
 
         while self.afc.reactor.monotonic() < deadline:
             self.afc.reactor.pause(
