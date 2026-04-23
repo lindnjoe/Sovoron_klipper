@@ -2001,12 +2001,12 @@ class afcACE(afcUnit):
 
         # ACE lanes have no lane stepper, so all retract moves use move_e_pos
         # (extruder motor).  Unload sequence:
-        #   1. Full extruder retract (tool_stn_unload) to pull filament out
-        #      of the hotend/gears into the bowden.
+        #   1. Half of tool_stn_unload extruder retract — gets filament
+        #      partially out of the hotend.
         #   2. Start ACE unwind (non-blocking) to pull filament back to spool.
-        #   3. 10mm extruder retract concurrent with ACE unwind so the
-        #      extruder motor keeps pulling while ACE takes up the slack,
-        #      maintaining tension during the handoff.
+        #   3. Remaining half of tool_stn_unload + 10mm extruder retract
+        #      concurrent with ACE unwind — keeps both motors pulling
+        #      together for the second half, maintaining tension.
         local_slot = self._get_local_slot_for_lane(cur_lane)
 
         # Calculate ACE unwind distance (from extruder back through hub).
@@ -2024,16 +2024,18 @@ class afcACE(afcUnit):
         else:
             retract_length = full_retract
 
-        # Step 1: Full extruder retract first — pulls filament out of the
-        # hotend and extruder gears into the bowden before ACE pulls back.
+        half_stn = cur_extruder.tool_stn_unload / 2.0
+
+        # Step 1: First half of extruder retract — pulls filament partially
+        # out of the hotend before starting the ACE unwind.
         self.logger.info(
-            f"ACE unload: extruder retract {cur_extruder.tool_stn_unload:.0f}mm "
-            f"@ {cur_extruder.tool_unload_speed}mm/s (pre-ACE-unwind)"
+            f"ACE unload: extruder retract {half_stn:.0f}mm "
+            f"@ {cur_extruder.tool_unload_speed}mm/s (first half)"
         )
         afc.move_e_pos(
-            cur_extruder.tool_stn_unload * -1,
+            -half_stn,
             cur_extruder.tool_unload_speed,
-            "ACE nozzle retract", wait_tool=True
+            "ACE nozzle retract 1/2", wait_tool=True
         )
 
         # Step 2: Start ACE unwind (non-blocking) to pull filament back
@@ -2054,16 +2056,24 @@ class afcACE(afcUnit):
             afc.error.handle_lane_failure(cur_lane, message)
             return False
 
-        # Step 3: 10mm extruder retract concurrent with ACE unwind — keeps
-        # the extruder motor pulling while ACE takes up the slack so the
-        # filament stays under tension during the handoff.
+        # Brief pause to let the ACE motor start pulling before the extruder
+        # continues retracting — prevents the extruder from shoving filament
+        # backward against a stationary ACE spool.
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.0)
+
+        # Step 3: Remaining half of tool_stn_unload + 10mm extruder retract
+        # concurrent with ACE unwind — both motors pulling together keeps
+        # filament under tension during the handoff.
+        remaining_retract = half_stn + 10
         self.logger.info(
-            "ACE unload: 10mm extruder retract concurrent with ACE unwind"
+            f"ACE unload: extruder retract {remaining_retract:.0f}mm "
+            f"@ {cur_extruder.tool_unload_speed}mm/s "
+            f"(second half + 10mm, concurrent with ACE unwind)"
         )
         afc.move_e_pos(
-            -10,
+            -remaining_retract,
             cur_extruder.tool_unload_speed,
-            "ACE post-unwind retract", wait_tool=True
+            "ACE nozzle retract 2/2 + overlap", wait_tool=True
         )
 
         # Move past the sensor-after-extruder if configured
