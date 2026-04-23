@@ -326,21 +326,23 @@ Inherits NightOwl/BoxTurtle. No additional config options.
 
 Section: `[AFC_ACE unit_name]`
 
-Serial-connected filament changer with RFID support.
+Serial-connected filament changer with RFID support.  Supports two modes:
+`combined` (multiple slots share one extruder via combiner) or `direct`
+(each slot feeds its own extruder).
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `serial_port` | string | **Required** | Serial port for ACE hardware |
 | `mode` | string | `combined` | `combined` (multi-slot, one extruder) or `direct` (each slot has own extruder) |
-| `feed_speed` | float | `800` | Feed speed (mm/min) |
-| `retract_speed` | float | `800` | Retract speed (mm/min) |
+| `feed_speed` | float | `60` | Feed speed in mm/s (ACE firmware native unit) |
+| `retract_speed` | float | `50` | Retract speed in mm/s (ACE firmware native unit) |
 | `feed_length` | float | `500` | ACE-to-toolhead distance (mm) |
 | `retract_length` | float | `500` | Retract distance back to ACE (mm) |
 | `unload_preretract` | float | `50` | ACE rewind before cut to tighten spool (mm) |
-| `dist_hub` | float | `200` | Slot-to-hub/combiner distance (mm) |
+| `dist_hub` | float | `200` | Slot-to-hub/combiner distance (mm). Calibrate with ACE_CALIBRATE_HUB |
 | `load_to_hub` | bool | None | Override AFC global load_to_hub |
 | `use_feed_assist` | bool | `True` | Enable feed assist for all slots |
-| `extruder_assist_length` | float | `50` | Extruder motor assist distance (mm) |
+| `extruder_assist_length` | float | `50` | Extruder motor assist distance after filament reaches sensor (mm) |
 | `extruder_assist_speed` | float | `300` | Extruder assist speed (mm/min) |
 | `sensor_approach_margin` | float | `30` | Distance before sensor for incremental feed (mm) |
 | `sensor_step` | float | `40` | Per-check distance during sensor approach (mm) |
@@ -350,11 +352,11 @@ Serial-connected filament changer with RFID support.
 | `dock_purge_length` | float | `50` | Extrude length while docked (mm) |
 | `dock_purge_speed` | float | `5` | Extrude speed while docked (mm/s) |
 | `auto_spoolman_create` | bool | `False` | Auto-create filaments/spools in Spoolman from RFID |
-| `fps_threshold` | float | `0.9` | FPS trigger threshold (0-1) |
-| `fps_load_threshold` | float | `0.65` | FPS threshold during active operations |
-| `fps_delta_threshold` | float | `0.15` | Min FPS jump for engagement detection |
-| `fps_confirm_count` | int | `3` | Consecutive ADC reads above threshold |
-| `poll_interval` | float | `1.0` | Sensor polling interval (seconds) |
+| `fps_threshold` | float | `0.9` | FPS trigger threshold (0-1) for toolhead sensor |
+| `fps_load_threshold` | float | `0.65` | FPS threshold during active operations (loading/calibration) |
+| `fps_delta_threshold` | float | `0.15` | Min FPS jump between readings for engagement detection |
+| `fps_confirm_count` | int | `3` | Consecutive ADC reads above threshold to confirm trigger |
+| `poll_interval` | float | `1.0` | Sensor/status polling interval (seconds) |
 | `baud_rate` | int | `115200` | Serial baud rate |
 
 **ACE Lane-Level Overrides** (in `[AFC_lane]` sections):
@@ -371,10 +373,22 @@ Serial-connected filament changer with RFID support.
 
 Section: `[AFC_OpenAMS unit_name]`
 
+OpenAMS units communicate with OAMS firmware over Klipper's CAN/serial bus.
+The OAMS hub motor and firmware PID loop handle filament feeding and tension.
+Only AFC_FPS buffers are supported (TurtleNeck mechanical buffers are ignored).
+
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `oams` | string | `oams1` | OpenAMS instance name |
-| `stuck_spool_auto_recovery` | bool | `False` | Auto-recover stuck spools |
+| `oams` | string | `oams1` | OpenAMS hardware instance name (must match `[AFC_oams]` section) |
+| `stuck_spool_auto_recovery` | bool | `False` | Auto unload + reload + resume on stuck spool (vs pause for manual intervention) |
+| `stuck_spool_load_grace` | float | `8.0` | Grace distance/time threshold for stuck spool detection during loading |
+| `stuck_spool_pressure_threshold` | float | `0.08` | FPS pressure value above which the spool is considered stuck |
+| `engagement_pressure_threshold` | float | `0.6` | Max FPS pressure for filament engagement detection |
+| `engagement_min_pressure` | float | `0.25` | Min FPS pressure before engagement is considered |
+| `clog_sensitivity` | string | `medium` | Clog detection sensitivity level for OAMS monitor |
+| `dock_purge` | bool | `False` | Enable dock purge during load (requires toolchanger) |
+| `dock_purge_length` | float | `105` | Extrude length while docked for purging (mm) |
+| `dock_purge_speed` | float | `7` | Extrude speed while docked (mm/s) |
 
 ---
 
