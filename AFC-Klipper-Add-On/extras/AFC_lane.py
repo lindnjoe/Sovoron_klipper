@@ -608,9 +608,12 @@ class AFCLane:
             self.extruder_obj.check_lanes()
 
         # internal is only valid for units with their own filament engagement
-        # verification (currently only ACE). Reject other types.
+        # verification (currently only ACE). Toolchanger units are also
+        # allowed since they don't do filament loading themselves — the ACE
+        # unit handles load/unload for the shared extruder.
+        _INTERNAL_ALLOWED_TYPES = ("ACE", "Toolchanger")
         if (self.extruder_obj.tool_start == "internal"
-            and self.unit_obj.type != "ACE"):
+            and self.unit_obj.type not in _INTERNAL_ALLOWED_TYPES):
             raise error(
                 "pin_tool_start=internal on extruder {ext} is only supported "
                 "by ACE units, but lane {lane} belongs to a {ut} unit. Use "
