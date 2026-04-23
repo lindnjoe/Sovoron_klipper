@@ -1571,7 +1571,9 @@ class afcACE(afcUnit):
         # check — the FPS manages filament tension itself and its
         # advance_state reflects real-time pressure, not a physical switch
         # that needs to be cleared by retracting.
-        if cur_extruder.tool_start:
+        # internal mode skips this entirely — engagement is verified
+        # later via the feed_assist_count delta after tool_stn.
+        if cur_extruder.tool_start and cur_extruder.tool_start != "internal":
             # If the FPS already latched during the feed, the filament is
             # confirmed present — skip the smart-load retry loop.  The FPS
             # is pressure-based: once the ACE stops feeding, pressure drops
@@ -1785,6 +1787,7 @@ class afcACE(afcUnit):
         # gears actually engaged and pulled filament.
         # If the count did not increase, retract 20mm via ACE and retry
         # once to re-seat the filament against the extruder gears.
+        engagement_verified = False
         if pre_assist_count is not None:
             try:
                 self._wait_for_ace_ready()
@@ -1793,6 +1796,7 @@ class afcACE(afcUnit):
                 if post_assist_count is not None:
                     delta = post_assist_count - pre_assist_count
                     if delta > 0:
+                        engagement_verified = True
                         self.logger.info(
                             f"ACE load: feed assist engaged {delta} time(s) "
                             f"during load (count {pre_assist_count} -> {post_assist_count})"
@@ -1849,6 +1853,7 @@ class afcACE(afcUnit):
                         if retry_count is not None:
                             retry_delta = retry_count - post_assist_count
                             if retry_delta > 0:
+                                engagement_verified = True
                                 self.logger.info(
                                     f"ACE load retry: feed assist engaged {retry_delta} "
                                     f"time(s) after retry — extruder gears engaged."
@@ -1861,6 +1866,17 @@ class afcACE(afcUnit):
                                 )
             except Exception as e:
                 self.logger.debug(f"ACE load: could not verify feed_assist_count: {e}")
+
+        # internal mode: feed_assist_count is the only engagement verification.
+        # Fail the load if we couldn't confirm the assist motor pushed.
+        if cur_extruder.tool_start == "internal" and not engagement_verified:
+            message = (
+                "ACE load (internal mode): feed_assist_count never increased "
+                "during load — filament did not engage extruder gears.\n"
+                f"To resolve, set lane loaded with `SET_LANE_LOADED LANE={cur_lane.name}` macro."
+            )
+            afc.error.handle_lane_failure(cur_lane, message)
+            return False
 
         cur_lane.set_tool_loaded()
         cur_lane.enable_buffer(disable_fault=True)
