@@ -2056,6 +2056,11 @@ class afcACE(afcUnit):
             afc.error.handle_lane_failure(cur_lane, message)
             return False
 
+        # Brief pause to let the ACE motor start pulling before the extruder
+        # continues retracting — prevents the extruder from shoving filament
+        # backward against a stationary ACE spool.
+        self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.0)
+
         # Step 3: Remaining half of tool_stn_unload + 10mm extruder retract
         # concurrent with ACE unwind — both motors pulling together keeps
         # filament under tension during the handoff.
