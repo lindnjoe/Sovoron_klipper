@@ -2813,6 +2813,20 @@ class afcAMS(afcUnit):
                             cur_lane.status = AFCLaneState.TOOLED
                         else:
                             cur_lane.unit_obj.lane_tool_loaded_idle(cur_lane)
+
+                        cur_lane.enable_buffer()
+
+                        oams = self.oams
+                        if self._follower is not None and oams is not None:
+                            fps_state = self._get_monitor_state()
+                            if fps_state:
+                                self._follower.enable_follower(fps_state, oams, 1, "PREP restore", force=True)
+                        if self._monitor is not None and oams is not None:
+                            spool_index = getattr(cur_lane, 'index', None)
+                            if spool_index is not None:
+                                self._monitor.notify_load_complete(
+                                    cur_lane.name, self.oams_name, spool_index - 1)
+                            self._monitor.start(oams)
                     elif tool_ready:
                         msg += '<span class=error--text> error in ToolHead. Lane identified as loaded but not identified as loaded in extruder</span>'
                         succeeded = False
