@@ -1337,34 +1337,20 @@ class afcACE(afcUnit):
     def lane_tool_loaded(self, lane):
         """Set the virtual tool sensor when an ACE lane loads into the toolhead.
 
-        The base class only updates LEDs. ACE also immediately switches
-        feed assist to the active lane's slot (stops other slots, starts
-        this one) to avoid the 4-5 second delay from the refresh timer.
+        The base class only updates LEDs. ACE also immediately starts feed
+        assist on the active lane's slot — the ACE firmware handles stopping
+        the previous slot internally when a new one is started.
         """
         super().lane_tool_loaded(lane)
 
-        # Immediately switch feed assist — don't wait for refresh timer
         if self._ace is not None and self._ace.connected:
             active_slot = self._get_local_slot_for_lane(lane)
-            if active_slot >= 0:
-                # Stop assist on all other slots
-                for other_lane in self.lanes.values():
-                    if other_lane.name == lane.name:
-                        continue
-                    other_slot = self._get_local_slot_for_lane(other_lane)
-                    if other_slot >= 0 and other_slot in self._feed_assist_active:
-                        try:
-                            self._ace.stop_feed_assist(other_slot)
-                            self._feed_assist_active.discard(other_slot)
-                        except Exception:
-                            pass
-                # Start assist on active slot
-                if self._get_feed_assist(active_slot, lane):
-                    try:
-                        self._ace.start_feed_assist(active_slot)
-                        self._feed_assist_active.add(active_slot)
-                    except Exception:
-                        pass
+            if active_slot >= 0 and self._get_feed_assist(active_slot, lane):
+                try:
+                    self._ace.start_feed_assist(active_slot)
+                    self._feed_assist_active = {active_slot}
+                except Exception:
+                    pass
 
         extruder = self._fps_extruder
         if extruder is None:

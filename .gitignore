@@ -3,7 +3,7 @@ secrets.conf
 *.swp
 *.tmp
 printer-[0-9]*_[0-9]*.cfg
-axiscope.bak
+*.bak
 *.bkp
 *.csv
 *.zip
