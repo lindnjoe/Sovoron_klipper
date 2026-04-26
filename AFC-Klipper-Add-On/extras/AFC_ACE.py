@@ -222,6 +222,13 @@ class afcACE(afcUnit):
         # skips runout detection (drying can cause transient slot changes)
         self._drying_active = False
 
+        # FPS-based runout detection: consecutive polls where FPS is below
+        # low_point for a TOOLED lane while printing.  ACE slot sensors only
+        # detect spool *presence*, not whether the spool still has filament,
+        # so FPS pressure drop is the primary runout signal.
+        self._fps_runout_counts: Dict[str, int] = {}
+        self._FPS_RUNOUT_THRESHOLD = 5  # consecutive polls (~5s at 1s interval)
+
         # Track which slots have feed assist actively running on hardware.
         # Used to restore feed assist after ACE reconnection.
         self._feed_assist_active: set = set()
@@ -4091,6 +4098,47 @@ class afcACE(afcUnit):
                     self._clear_slot_inventory(local_slot)
                     self.lane_not_ready(lane)
                     self.afc.save_vars()
+
+        # FPS-based runout detection: ACE slot sensors only detect spool
+        # presence, not whether the spool still has filament. Check FPS
+        # pressure for TOOLED lanes during printing — sustained low pressure
+        # means no filament is being fed.
+        if is_printing and self._fps_obj is not None:
+            fps_low = getattr(self._fps_obj, 'low_point', 0.1)
+            fps_val = self.get_fps_value()
+            if fps_val is not None:
+                for lane in self.lanes.values():
+                    if lane.status != AFCLaneState.TOOLED:
+                        self._fps_runout_counts.pop(lane.name, None)
+                        continue
+                    if fps_val <= fps_low:
+                        count = self._fps_runout_counts.get(lane.name, 0) + 1
+                        self._fps_runout_counts[lane.name] = count
+                        if count >= self._FPS_RUNOUT_THRESHOLD:
+                            self._fps_runout_counts[lane.name] = 0
+                            self.logger.info(
+                                f"ACE FPS runout on {lane.name}: "
+                                f"FPS {fps_val:.3f} below {fps_low:.2f} "
+                                f"for {count} consecutive polls"
+                            )
+                            lane.loaded_to_hub = False
+                            self._set_hub_state(lane, False)
+                            if lane.runout_lane:
+                                try:
+                                    lane._perform_infinite_runout()
+                                except Exception as e:
+                                    self.logger.error(
+                                        f"ACE FPS infinite spool failed for "
+                                        f"{lane.name}: {e}\n"
+                                        f"{traceback.format_exc()}"
+                                    )
+                                    lane._perform_pause_runout()
+                                finally:
+                                    lane.loaded_to_hub = False
+                            else:
+                                self._ace_pause_runout(lane)
+                    else:
+                        self._fps_runout_counts.pop(lane.name, None)
 
         # Polling rates: 2s when printing (runout detection), 5s when idle
         if is_printing:
