@@ -17,6 +17,8 @@ class ExcludeObject:
                                         self._handle_connect)
         self.printer.register_event_handler("virtual_sdcard:reset_file",
                                             self._reset_file)
+        self.printer.register_event_handler("extruder:activate_extruder",
+                                            self._handle_activate_extruder)
         self.next_transform = None
         self.last_position_extruded = [0., 0., 0., 0.]
         self.last_position_excluded = [0., 0., 0., 0.]
@@ -58,6 +60,20 @@ class ExcludeObject:
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
+
+    def _handle_activate_extruder(self):
+        if self.next_transform is None:
+            return
+        ename = self.toolhead.get_extruder().get_name()
+        if ename in self.extrusion_offsets:
+            for i in range(len(self.extrusion_offsets[ename])):
+                self.extrusion_offsets[ename][i] = 0.
+        pos = self.get_position()
+        self.last_position_extruded[:] = pos
+        self.last_position_excluded[:] = pos
+        self.max_position_extruded = pos[3]
+        self.max_position_excluded = pos[3]
+        self.extruder_adj = 0
 
     def _unregister_transform(self):
         if self.next_transform:
