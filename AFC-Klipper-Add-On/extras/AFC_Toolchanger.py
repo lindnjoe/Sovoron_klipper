@@ -746,6 +746,33 @@ class AfcToolchanger(afcUnit):
                 self.last_change_gcode_position, self.last_change_restore_axis)
             self.gcode.run_script_from_command(
                 "RESTORE_GCODE_STATE NAME=_toolchange_state MOVE=0")
+        self._sync_exclude_object_position()
+
+    def _sync_exclude_object_position(self):
+        """Resync exclude_object position tracking after a tool change.
+
+        exclude_object maintains per-extruder E offsets and position trackers
+        that don't get updated when ACTIVATE_EXTRUDER fires.  After a tool
+        change the E axis resets but exclude_object still holds the old
+        extruder's E values, causing massive offset accumulation that crashes
+        the MCU with 'Stepper too far in past' when exiting excluded regions.
+        """
+        exclude_obj = self.printer.lookup_object('exclude_object', None)
+        if exclude_obj is None or exclude_obj.next_transform is None:
+            return
+
+        toolhead = self.printer.lookup_object('toolhead')
+        ename = toolhead.get_extruder().get_name()
+        if ename in exclude_obj.extrusion_offsets:
+            for i in range(len(exclude_obj.extrusion_offsets[ename])):
+                exclude_obj.extrusion_offsets[ename][i] = 0.
+
+        pos = exclude_obj.get_position()
+        exclude_obj.last_position_extruded[:] = pos
+        exclude_obj.last_position_excluded[:] = pos
+        exclude_obj.max_position_extruded = pos[3]
+        exclude_obj.max_position_excluded = pos[3]
+        exclude_obj.extruder_adj = 0
 
     def _restore_axis(self, position, axis):
         """Move to saved position on specified axes after tool change."""
