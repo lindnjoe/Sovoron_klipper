@@ -1153,6 +1153,8 @@ class afcACE(afcUnit):
             if not slot_transient:
                 lane._load_state = slot_ready
                 lane.prep_state = slot_ready
+                if slot_ready:
+                    lane._ace_runout_triggered = False
 
             prep_done = getattr(lane, '_afc_prep_done', False)
 
@@ -1349,6 +1351,7 @@ class afcACE(afcUnit):
         the previous slot internally when a new one is started.
         """
         super().lane_tool_loaded(lane)
+        lane._ace_runout_triggered = False
 
         if self._ace is not None and self._ace.connected:
             active_slot = self._get_local_slot_for_lane(lane)
@@ -3999,6 +4002,8 @@ class afcACE(afcUnit):
             if not slot_transient:
                 lane._load_state = slot_ready
                 lane.prep_state = slot_ready
+                if slot_ready:
+                    lane._ace_runout_triggered = False
 
             prev_ready = self._prev_slot_states.get(lane.name)
             # Don't update prev state during transient states - wait
@@ -4098,6 +4103,41 @@ class afcACE(afcUnit):
                     self._clear_slot_inventory(local_slot)
                     self.lane_not_ready(lane)
                     self.afc.save_vars()
+
+        # State-based runout: if a TOOLED lane shows no filament during
+        # printing, trigger runout regardless of whether we caught the
+        # transition.  This catches edge cases where the transition-based
+        # detection missed the ready→empty change.
+        if is_printing and not self._drying_active:
+            for lane in self.lanes.values():
+                if lane.status != AFCLaneState.TOOLED:
+                    continue
+                if lane._load_state:
+                    continue
+                lane_name = lane.name
+                if getattr(lane, '_ace_runout_triggered', False):
+                    continue
+                lane._ace_runout_triggered = True
+                self.logger.info(
+                    f"ACE runout (state check) on {lane_name}: "
+                    f"lane load_state is False while TOOLED"
+                )
+                lane.loaded_to_hub = False
+                self._set_hub_state(lane, False)
+                if lane.runout_lane:
+                    try:
+                        lane._perform_infinite_runout()
+                    except Exception as e:
+                        self.logger.error(
+                            f"ACE infinite spool failed for "
+                            f"{lane_name}: {e}\n"
+                            f"{traceback.format_exc()}"
+                        )
+                        lane._perform_pause_runout()
+                    finally:
+                        lane.loaded_to_hub = False
+                else:
+                    self._ace_pause_runout(lane)
 
         # FPS-based runout detection: ACE slot sensors only detect spool
         # presence, not whether the spool still has filament. Check FPS
