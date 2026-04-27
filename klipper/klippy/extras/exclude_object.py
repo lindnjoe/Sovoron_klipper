@@ -22,6 +22,7 @@ class ExcludeObject:
         self.next_transform = None
         self.last_position_extruded = [0., 0., 0., 0.]
         self.last_position_excluded = [0., 0., 0., 0.]
+        self._tracked_extruder_name = None
 
         self._reset_state()
         self.gcode.register_command(
@@ -54,6 +55,9 @@ class ExcludeObject:
             self.initial_extrusion_moves = 5
             self.last_position = [0., 0., 0., 0.]
 
+            self._tracked_extruder_name = \
+                self.toolhead.get_extruder().get_name()
+
             self.get_position()
             self.last_position_extruded[:] = self.last_position
             self.last_position_excluded[:] = self.last_position
@@ -64,10 +68,6 @@ class ExcludeObject:
     def _handle_activate_extruder(self):
         if self.next_transform is None:
             return
-        ename = self.toolhead.get_extruder().get_name()
-        if ename in self.extrusion_offsets:
-            for i in range(len(self.extrusion_offsets[ename])):
-                self.extrusion_offsets[ename][i] = 0.
         pos = self.get_position()
         self.last_position_extruded[:] = pos
         self.last_position_excluded[:] = pos
@@ -86,6 +86,7 @@ class ExcludeObject:
 
             self.gcode_move.set_move_transform(self.next_transform, force=True)
             self.next_transform = None
+            self._tracked_extruder_name = None
             self.gcode_move.reset_last_position()
 
     def _reset_state(self):
@@ -110,6 +111,13 @@ class ExcludeObject:
 
     def get_position(self):
         pos = self.next_transform.get_position()
+        if self._tracked_extruder_name is not None:
+            ename = self.toolhead.get_extruder().get_name()
+            if ename != self._tracked_extruder_name:
+                self._tracked_extruder_name = ename
+                if ename in self.extrusion_offsets:
+                    for i in range(len(self.extrusion_offsets[ename])):
+                        self.extrusion_offsets[ename][i] = 0.
         offset = self._get_extrusion_offsets(len(pos))
         for i in range(len(pos)):
             self.last_position[i] = pos[i] + offset[i]
