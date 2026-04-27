@@ -230,14 +230,14 @@ class Homing:
             printer_homing = self.printer.lookup_object('homing')
             samples = printer_homing.homing_samples
             if samples > 1:
-                reactor = self.printer.get_reactor()
                 tolerance = printer_homing.homing_tolerance
                 max_retries = printer_homing.homing_tolerance_retries
                 settling_delay = printer_homing.settling_delay
-                trig_positions = []
+                trig_distances = []
                 for sp in hmove.stepper_positions:
                     step_dist = sp.stepper.get_step_dist()
-                    trig_positions.append(sp.trig_pos * step_dist)
+                    trig_distances.append(
+                        (sp.trig_pos - sp.start_pos) * step_dist)
                 for retry in range(max_retries):
                     if settling_delay > 0.:
                         self.toolhead.dwell(settling_delay)
@@ -246,10 +246,11 @@ class Homing:
                         hi, retract_r, axes_d)
                     for sp in hmove.stepper_positions:
                         step_dist = sp.stepper.get_step_dist()
-                        trig_positions.append(sp.trig_pos * step_dist)
+                        trig_distances.append(
+                            (sp.trig_pos - sp.start_pos) * step_dist)
                     n_steppers = len(hmove.stepper_positions)
-                    if len(trig_positions) >= samples * n_steppers:
-                        recent = trig_positions[-(samples * n_steppers):]
+                    if len(trig_distances) >= samples * n_steppers:
+                        recent = trig_distances[-(samples * n_steppers):]
                         within_tolerance = True
                         for s in range(n_steppers):
                             vals = recent[s::n_steppers]
@@ -265,7 +266,7 @@ class Homing:
                             break
                 else:
                     spreads = []
-                    recent = trig_positions[-(samples * n_steppers):]
+                    recent = trig_distances[-(samples * n_steppers):]
                     for s in range(n_steppers):
                         vals = recent[s::n_steppers]
                         spreads.append(max(vals) - min(vals))
