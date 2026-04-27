@@ -233,48 +233,49 @@ class Homing:
                 tolerance = printer_homing.homing_tolerance
                 max_retries = printer_homing.homing_tolerance_retries
                 settling_delay = printer_homing.settling_delay
-                trig_distances = []
-                for sp in hmove.stepper_positions:
-                    step_dist = sp.stepper.get_step_dist()
-                    trig_distances.append(
-                        (sp.trig_pos - sp.start_pos) * step_dist)
+                # Only track the primary stepper (first per endstop)
+                # On CoreXY both steppers are added to each endstop
+                # but only the rail's own stepper triggers reliably
+                primary_stepper = hmove.stepper_positions[0]
+                step_dist = primary_stepper.stepper.get_step_dist()
+                trig_distances = [
+                    (primary_stepper.trig_pos
+                     - primary_stepper.start_pos) * step_dist]
+                logging.info(
+                    "Homing tolerance: %s sample 1 dist=%.4fmm",
+                    primary_stepper.stepper_name,
+                    trig_distances[-1])
                 for retry in range(max_retries):
                     if settling_delay > 0.:
                         self.toolhead.dwell(settling_delay)
                     hmove = self._do_retract_and_rehome(
                         endstops, forcepos, movepos,
                         hi, retract_r, axes_d)
-                    for sp in hmove.stepper_positions:
-                        step_dist = sp.stepper.get_step_dist()
-                        trig_distances.append(
-                            (sp.trig_pos - sp.start_pos) * step_dist)
-                    n_steppers = len(hmove.stepper_positions)
-                    if len(trig_distances) >= samples * n_steppers:
-                        recent = trig_distances[-(samples * n_steppers):]
-                        within_tolerance = True
-                        for s in range(n_steppers):
-                            vals = recent[s::n_steppers]
-                            spread = max(vals) - min(vals)
-                            if spread > tolerance:
-                                within_tolerance = False
-                                break
-                        if within_tolerance:
+                    primary_stepper = hmove.stepper_positions[0]
+                    step_dist = primary_stepper.stepper.get_step_dist()
+                    dist = ((primary_stepper.trig_pos
+                             - primary_stepper.start_pos) * step_dist)
+                    trig_distances.append(dist)
+                    logging.info(
+                        "Homing tolerance: %s sample %d dist=%.4fmm",
+                        primary_stepper.stepper_name,
+                        len(trig_distances), dist)
+                    if len(trig_distances) >= samples:
+                        recent = trig_distances[-samples:]
+                        spread = max(recent) - min(recent)
+                        if spread <= tolerance:
                             logging.info(
-                                "Homing tolerance met after %d extra "
+                                "Homing tolerance met after %d "
                                 "sample(s), spread: %.4fmm",
                                 retry + 1, spread)
                             break
                 else:
-                    spreads = []
-                    recent = trig_distances[-(samples * n_steppers):]
-                    for s in range(n_steppers):
-                        vals = recent[s::n_steppers]
-                        spreads.append(max(vals) - min(vals))
+                    recent = trig_distances[-samples:]
+                    spread = max(recent) - min(recent)
                     raise self.printer.command_error(
                         "Homing tolerance %.4fmm not met after %d "
-                        "retries (spreads: %s)"
-                        % (tolerance, max_retries,
-                           ", ".join("%.4f" % s for s in spreads)))
+                        "retries (spread: %.4fmm)"
+                        % (tolerance, max_retries, spread))
         # Signal home operation complete
         self.toolhead.flush_step_generation()
         self.trigger_mcu_pos = {sp.stepper_name: sp.trig_pos
