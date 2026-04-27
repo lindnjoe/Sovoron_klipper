@@ -185,22 +185,6 @@ class Homing:
         return thcoord
     def set_homed_position(self, pos):
         self.toolhead.set_position(self._fill_coord(pos))
-    def _do_retract_and_rehome(self, endstops, forcepos, movepos,
-                               hi, retract_r, axes_d):
-        homepos = self._fill_coord(movepos)
-        retractpos = [hp - ad * retract_r
-                      for hp, ad in zip(homepos, axes_d)]
-        self.toolhead.move(retractpos, hi.retract_speed)
-        startpos = [rp - ad * retract_r
-                    for rp, ad in zip(retractpos, axes_d)]
-        self.toolhead.set_position(startpos)
-        hmove = HomingMove(self.printer, endstops)
-        hmove.homing_move(homepos, hi.second_homing_speed)
-        if hmove.check_no_movement() is not None:
-            raise self.printer.command_error(
-                "Endstop %s still triggered after retract"
-                % (hmove.check_no_movement(),))
-        return hmove
     def home_rails(self, rails, forcepos, movepos):
         # Notify of upcoming homing operation
         self.printer.send_event("homing:home_rails_begin", self, rails)
@@ -217,65 +201,25 @@ class Homing:
         hmove.homing_move(homepos, hi.speed)
         # Perform second home
         if hi.retract_dist:
-            # Calculate retract geometry
+            # Retract
             startpos = self._fill_coord(forcepos)
             homepos = self._fill_coord(movepos)
             axes_d = [hp - sp for hp, sp in zip(homepos, startpos)]
             move_d = math.sqrt(sum([d*d for d in axes_d[:3]]))
             retract_r = min(1., hi.retract_dist / move_d)
-            # Retract and home again
-            hmove = self._do_retract_and_rehome(
-                endstops, forcepos, movepos, hi, retract_r, axes_d)
-            # Multi-sample tolerance checking
-            printer_homing = self.printer.lookup_object('homing')
-            samples = printer_homing.homing_samples
-            if samples > 1:
-                tolerance = printer_homing.homing_tolerance
-                max_retries = printer_homing.homing_tolerance_retries
-                settling_delay = printer_homing.settling_delay
-                # Only track the primary stepper (first per endstop)
-                # On CoreXY both steppers are added to each endstop
-                # but only the rail's own stepper triggers reliably
-                primary_stepper = hmove.stepper_positions[0]
-                step_dist = primary_stepper.stepper.get_step_dist()
-                trig_distances = [
-                    (primary_stepper.trig_pos
-                     - primary_stepper.start_pos) * step_dist]
-                logging.info(
-                    "Homing tolerance: %s sample 1 dist=%.4fmm",
-                    primary_stepper.stepper_name,
-                    trig_distances[-1])
-                for retry in range(max_retries):
-                    if settling_delay > 0.:
-                        self.toolhead.dwell(settling_delay)
-                    hmove = self._do_retract_and_rehome(
-                        endstops, forcepos, movepos,
-                        hi, retract_r, axes_d)
-                    primary_stepper = hmove.stepper_positions[0]
-                    step_dist = primary_stepper.stepper.get_step_dist()
-                    dist = ((primary_stepper.trig_pos
-                             - primary_stepper.start_pos) * step_dist)
-                    trig_distances.append(dist)
-                    logging.info(
-                        "Homing tolerance: %s sample %d dist=%.4fmm",
-                        primary_stepper.stepper_name,
-                        len(trig_distances), dist)
-                    if len(trig_distances) >= samples:
-                        recent = trig_distances[-samples:]
-                        spread = max(recent) - min(recent)
-                        if spread <= tolerance:
-                            logging.info(
-                                "Homing tolerance met after %d "
-                                "sample(s), spread: %.4fmm",
-                                retry + 1, spread)
-                            break
-                else:
-                    recent = trig_distances[-samples:]
-                    spread = max(recent) - min(recent)
-                    raise self.printer.command_error(
-                        "Homing tolerance %.4fmm not met after %d "
-                        "retries (spread: %.4fmm)"
-                        % (tolerance, max_retries, spread))
+            retractpos = [hp - ad * retract_r
+                          for hp, ad in zip(homepos, axes_d)]
+            self.toolhead.move(retractpos, hi.retract_speed)
+            # Home again
+            startpos = [rp - ad * retract_r
+                        for rp, ad in zip(retractpos, axes_d)]
+            self.toolhead.set_position(startpos)
+            hmove = HomingMove(self.printer, endstops)
+            hmove.homing_move(homepos, hi.second_homing_speed)
+            if hmove.check_no_movement() is not None:
+                raise self.printer.command_error(
+                    "Endstop %s still triggered after retract"
+                    % (hmove.check_no_movement(),))
         # Signal home operation complete
         self.toolhead.flush_step_generation()
         self.trigger_mcu_pos = {sp.stepper_name: sp.trig_pos
@@ -301,13 +245,6 @@ class Homing:
 class PrinterHoming:
     def __init__(self, config):
         self.printer = config.get_printer()
-        self.homing_samples = config.getint('homing_samples', 1, minval=1)
-        self.homing_tolerance = config.getfloat(
-            'homing_tolerance', 0.005, above=0.)
-        self.homing_tolerance_retries = config.getint(
-            'homing_tolerance_retries', 10, minval=1)
-        self.settling_delay = config.getfloat(
-            'settling_delay', 0.25, minval=0.)
         # Register g-code commands
         gcode = self.printer.lookup_object('gcode')
         gcode.register_command('G28', self.cmd_G28)
