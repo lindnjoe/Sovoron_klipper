@@ -2147,7 +2147,7 @@ class afcACE(afcUnit):
             self._set_hub_state(cur_lane, False)
             cur_lane.loaded_to_hub = True
             cur_lane.set_tool_unloaded()
-            cur_lane.status = AFCLaneState.LOADED
+            cur_lane.status = AFCLaneState.NONE
             self.lane_tool_unloaded(cur_lane)
             self.afc.save_vars()
 
