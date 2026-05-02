@@ -17,7 +17,6 @@ class ExcludeObject:
                                         self._handle_connect)
         self.printer.register_event_handler("virtual_sdcard:reset_file",
                                             self._reset_file)
-        self.print_stats = None
         self.next_transform = None
         self.last_position_extruded = [0., 0., 0., 0.]
         self.last_position_excluded = [0., 0., 0., 0.]
@@ -47,22 +46,18 @@ class ExcludeObject:
             self.next_transform = self.gcode_move.set_move_transform(self,
                                                                      force=True)
             self.extrusion_offsets = {}
-            self.max_position_extruded_by_extruder = {}
-            self.max_position_excluded_by_extruder = {}
+            self.max_position_extruded = 0
+            self.max_position_excluded = 0
             self.extruder_adj = 0
             self.initial_extrusion_moves = 5
             self.last_position = [0., 0., 0., 0.]
-            self.last_position_e = {}
 
             self.get_position()
             self.last_position_extruded[:] = self.last_position
             self.last_position_excluded[:] = self.last_position
-            self.last_position_e_extruded = {}
-            self.last_position_e_excluded = {}
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
-        self.print_stats = self.printer.lookup_object('print_stats', None)
 
     def _unregister_transform(self):
         if self.next_transform:
@@ -87,86 +82,50 @@ class ExcludeObject:
         self._reset_state()
         self._unregister_transform()
 
-    def _get_extrusion_offsets(self):
-        extruder_name = self.toolhead.get_extruder().get_name()
-        offset = self.extrusion_offsets.get(extruder_name)
+    def _get_extrusion_offsets(self, num_coord):
+        ename = self.toolhead.get_extruder().get_name()
+        offset = self.extrusion_offsets.get(ename)
         if offset is None:
-            offset = [0., 0., 0., 0.]
-            self.extrusion_offsets[extruder_name] = offset
+            offset = [0.] * num_coord
+            self.extrusion_offsets[ename] = offset
+        if len(offset) < num_coord:
+            offset.extend([0.] * (num_coord - len(offset)))
         return offset
 
-    def _get_last_position_e(self):
-        extruder_name = self.toolhead.get_extruder().get_name()
-        pos = self.last_position_e.get(extruder_name, None)
-        if pos is None:
-            pos = 0
-            self.last_position_e[extruder_name] = pos
-        return pos
-
-    def _get_max_position_extruded(self):
-        extruder_name = self.toolhead.get_extruder().get_name()
-        pos = self.max_position_extruded_by_extruder.get(extruder_name, None)
-        if pos is None:
-            pos = 0
-            self.max_position_extruded_by_extruder[extruder_name] = pos
-        return pos
-
-    def _get_max_position_excluded(self):
-        extruder_name = self.toolhead.get_extruder().get_name()
-        pos = self.max_position_excluded_by_extruder.get(extruder_name, None)
-        if pos is None:
-            pos = 0
-            self.max_position_excluded_by_extruder[extruder_name] = pos
-        return pos
-
-    def _get_last_position_e_extruded(self):
-        extruder_name = self.toolhead.get_extruder().get_name()
-        pos = self.last_position_e_extruded.get(extruder_name, None)
-        if pos is None:
-            pos = 0
-            self.last_position_e_extruded[extruder_name] = pos
-        return pos
-
-    def _get_last_position_e_excluded(self):
-        extruder_name = self.toolhead.get_extruder().get_name()
-        pos = self.last_position_e_excluded.get(extruder_name, None)
-        if pos is None:
-            pos = 0
-            self.last_position_e_excluded[extruder_name] = pos
-        return pos
-
     def get_position(self):
-        offset = self._get_extrusion_offsets()
         pos = self.next_transform.get_position()
-        for i in range(4):
+        offset = self._get_extrusion_offsets(len(pos))
+        for i in range(len(pos)):
             self.last_position[i] = pos[i] + offset[i]
         return list(self.last_position)
 
     def _normal_move(self, newpos, speed):
-        offset = self._get_extrusion_offsets()
-        last_pos_e = self._get_last_position_e()
-        self._get_last_position_e_extruded()
-        self._get_last_position_e_excluded()
-        self._get_max_position_extruded()
-        extruder_name = self.toolhead.get_extruder().get_name()
+        offset = self._get_extrusion_offsets(len(newpos))
 
         if self.initial_extrusion_moves > 0 and \
-            last_pos_e != newpos[3]:
+            self.last_position[3] != newpos[3]:
+            # Since the transform is not loaded until there is a request to
+            # exclude an object, the transform needs to track a few extrusions
+            # to get the state of the extruder
             self.initial_extrusion_moves -= 1
 
         self.last_position[:] = newpos
-        self.last_position_e[extruder_name] = newpos[3]
         self.last_position_extruded[:] = self.last_position
-        self.last_position_e_extruded[extruder_name] = newpos[3]
-        self.max_position_extruded_by_extruder[extruder_name] = \
-            max(self._get_max_position_extruded(), newpos[3])
+        self.max_position_extruded = max(self.max_position_extruded, newpos[3])
 
+        # These next few conditionals handle the moves immediately after leaving
+        # and excluded object.  The toolhead is at the end of the last printed
+        # object and the gcode is at the end of the last excluded object.
+        #
+        # Ideally, there will be Z and E moves right away to adjust any offsets
+        # before moving away from the last position.  Any remaining corrections
+        # will be made on the firs XY move.
         if (offset[0] != 0 or offset[1] != 0) and \
             (newpos[0] != self.last_position_excluded[0] or \
             newpos[1] != self.last_position_excluded[1]):
-            offset[0] = 0
-            offset[1] = 0
-            offset[2] = 0
+            for i in range(len(newpos)):
+                if i != 3:
+                    offset[i] = 0
             offset[3] += self.extruder_adj
             self.extruder_adj = 0
 
@@ -174,50 +133,37 @@ class ExcludeObject:
             offset[2] = 0
 
         if self.extruder_adj != 0 and \
-            newpos[3] != self.last_position_e_excluded[extruder_name]:
+            newpos[3] != self.last_position_excluded[3]:
             offset[3] += self.extruder_adj
             self.extruder_adj = 0
 
         tx_pos = newpos[:]
-        for i in range(4):
+        for i in range(len(newpos)):
             tx_pos[i] = newpos[i] - offset[i]
         self.next_transform.move(tx_pos, speed)
 
     def _ignore_move(self, newpos, speed):
-        offset = self._get_extrusion_offsets()
-        last_pos_e = self._get_last_position_e()
-        self._get_last_position_e_excluded()
-        self._get_last_position_e_extruded()
-        self._get_max_position_excluded()
-        self._get_max_position_extruded()
-        extruder_name = self.toolhead.get_extruder().get_name()
-
-        for i in range(3):
-            offset[i] = newpos[i] - self.last_position_extruded[i]
-        offset[3] = offset[3] + newpos[3] - last_pos_e
+        offset = self._get_extrusion_offsets(len(newpos))
+        for i in range(len(newpos)):
+            if i != 3:
+                offset[i] = newpos[i] - self.last_position_extruded[i]
+        offset[3] = offset[3] + newpos[3] - self.last_position[3]
         self.last_position[:] = newpos
-        self.last_position_e[extruder_name] = newpos[3]
         self.last_position_excluded[:] = self.last_position
-        self.last_position_e_excluded[extruder_name] = newpos[3]
-        self.max_position_excluded_by_extruder[extruder_name] = \
-            max(self._get_max_position_excluded(), newpos[3])
+        self.max_position_excluded = max(self.max_position_excluded, newpos[3])
 
     def _move_into_excluded_region(self, newpos, speed):
         self.in_excluded_region = True
         self._ignore_move(newpos, speed)
 
     def _move_from_excluded_region(self, newpos, speed):
-        self._get_last_position_e_excluded()
-        self._get_max_position_excluded()
-        extruder_name = self.toolhead.get_extruder().get_name()
-
         self.in_excluded_region = False
 
-        self.extruder_adj = \
-            self.max_position_excluded_by_extruder[extruder_name] \
-            - self.last_position_e_excluded[extruder_name] \
-            - (self.max_position_extruded_by_extruder[extruder_name] \
-               - self.last_position_e_extruded[extruder_name])
+        # This adjustment value is used to compensate for any retraction
+        # differences between the last object printed and excluded one.
+        self.extruder_adj = self.max_position_excluded \
+            - self.last_position_excluded[3] \
+            - (self.max_position_extruded - self.last_position_extruded[3])
         self._normal_move(newpos, speed)
 
     def _test_in_excluded_region(self):
@@ -236,24 +182,17 @@ class ExcludeObject:
     def move(self, newpos, speed):
         move_in_excluded_region = self._test_in_excluded_region()
         self.last_speed = speed
-        apply_exclusion = True
 
-        if self.print_stats is not None:
-            apply_exclusion = (self.print_stats.state == 'printing')
-
-        if apply_exclusion:
-            if move_in_excluded_region:
-                if self.in_excluded_region:
-                    self._ignore_move(newpos, speed)
-                else:
-                    self._move_into_excluded_region(newpos, speed)
+        if move_in_excluded_region:
+            if self.in_excluded_region:
+                self._ignore_move(newpos, speed)
             else:
-                if self.in_excluded_region:
-                    self._move_from_excluded_region(newpos, speed)
-                else:
-                    self._normal_move(newpos, speed)
+                self._move_into_excluded_region(newpos, speed)
         else:
-            self._normal_move(newpos, speed)
+            if self.in_excluded_region:
+                self._move_from_excluded_region(newpos, speed)
+            else:
+                self._normal_move(newpos, speed)
 
     cmd_EXCLUDE_OBJECT_START_help = "Marks the beginning the current object" \
                                     " as labeled"

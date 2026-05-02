@@ -6,7 +6,7 @@
   "beta_features": true,
   "brightness": 80,
   "completion_alert": true,
-  "config_version": 14,
+  "config_version": 16,
   "dark_mode": true,
   "display": {
     "bed_mesh_render_mode": 0,
@@ -168,7 +168,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-04-27T13:20:14Z"
+          "timestamp": "2026-04-30T23:52:43Z"
         },
         "optional": []
       },
@@ -499,6 +499,14 @@
                   "colspan": 1,
                   "enabled": false,
                   "id": "favorite_macro",
+                  "row": -1,
+                  "rowspan": 1
+                },
+                {
+                  "col": -1,
+                  "colspan": 1,
+                  "enabled": false,
+                  "id": "motion",
                   "row": -1,
                   "rowspan": 1
                 }
