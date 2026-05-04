@@ -98,15 +98,15 @@
       "filament": {
         "external_spool": {
           "assigned": true,
-          "bed_temp": 60,
-          "brand": "Bambu Lab",
-          "color_rgb": 16777215,
-          "material": "PLA",
+          "bed_temp": 35,
+          "brand": "Inland",
+          "color_rgb": 0,
+          "material": "TPU for AMS",
           "nozzle_temp_max": 0,
           "nozzle_temp_min": 0,
-          "remaining_weight_g": 36.063568115234375,
-          "spool_name": "Bambu Lab PLA - Jade White",
-          "spoolman_id": 3,
+          "remaining_weight_g": 949.3656616210938,
+          "spool_name": "Inland TPU for AMS - Black ",
+          "spoolman_id": 50,
           "total_weight_g": 1000.0
         }
       },
@@ -173,12 +173,13 @@
             "temperature_fan controllerFan0",
             "tmc5160 stepper_x",
             "tmc5160 stepper_y",
+            "tmc5160 stepper_z",
             "temperature_sensor ace_temp",
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-05-04T02:53:31Z"
+          "timestamp": "2026-05-04T03:04:54Z"
         },
         "optional": []
       },
