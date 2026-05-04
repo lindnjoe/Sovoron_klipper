@@ -95,7 +95,21 @@
         "hotend": "heater_fan T0_hotend_fan",
         "part": "fan_generic T0_partfan"
       },
-      "filament": {},
+      "filament": {
+        "external_spool": {
+          "assigned": true,
+          "bed_temp": 60,
+          "brand": "Bambu Lab",
+          "color_rgb": 16777215,
+          "material": "PLA",
+          "nozzle_temp_max": 0,
+          "nozzle_temp_min": 0,
+          "remaining_weight_g": 36.063568115234375,
+          "spool_name": "Bambu Lab PLA - Jade White",
+          "spoolman_id": 3,
+          "total_weight_g": 1000.0
+        }
+      },
       "filament_sensors": {
         "sensors": null
       },
@@ -158,12 +172,13 @@
             "temperature_sensor Host_temp",
             "temperature_fan controllerFan0",
             "tmc5160 stepper_x",
+            "tmc5160 stepper_y",
             "temperature_sensor ace_temp",
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-05-04T02:33:34Z"
+          "timestamp": "2026-05-04T02:53:31Z"
         },
         "optional": []
       },
