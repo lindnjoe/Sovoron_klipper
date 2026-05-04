@@ -100,13 +100,13 @@
           "assigned": true,
           "bed_temp": 35,
           "brand": "Inland",
-          "color_rgb": 0,
+          "color_rgb": 16385028,
           "material": "TPU for AMS",
           "nozzle_temp_max": 0,
           "nozzle_temp_min": 0,
-          "remaining_weight_g": 949.3656616210938,
-          "spool_name": "Inland TPU for AMS - Black ",
-          "spoolman_id": 50,
+          "remaining_weight_g": 949.1995239257813,
+          "spool_name": "Inland TPU for AMS - Red",
+          "spoolman_id": 49,
           "total_weight_g": 1000.0
         }
       },
@@ -174,12 +174,13 @@
             "tmc5160 stepper_x",
             "tmc5160 stepper_y",
             "tmc5160 stepper_z",
+            "tmc5160 stepper_z1",
             "temperature_sensor ace_temp",
             "temperature_sensor Turtle_1",
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-05-04T03:04:54Z"
+          "timestamp": "2026-05-04T03:09:00Z"
         },
         "optional": []
       },
