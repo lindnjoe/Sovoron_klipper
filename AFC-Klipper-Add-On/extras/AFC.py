@@ -2216,6 +2216,18 @@ class afc:
             # where AFC restored lane_loaded but the toolchanger has an empty shuttle).
             tool_on_shuttle = cur_lane.extruder_obj.on_shuttle()
             if cur_lane.name != self.current or not tool_on_shuttle:
+                # The lane is already physically loaded but self.current disagrees
+                # (e.g. active Klipper extruder drifted during pause/resume).
+                # Just re-activate the correct extruder instead of a full tool swap.
+                if (tool_on_shuttle
+                    and cur_lane.extruder_obj.lane_loaded == cur_lane.name
+                    and cur_lane.tool_loaded):
+                    self.logger.info("{} already loaded, syncing extruder state".format(cur_lane.name))
+                    self.function._handle_activate_extruder(0, cur_lane)
+                    if not self.error_state and self.current_toolchange == -1:
+                        self.current_toolchange += 1
+                    return
+
                 # Save the current toolhead position to allow restoration after the tool change.
                 self.save_pos()
                 # Set the in_toolchange flag to prevent overwriting the saved position during potential failures.
