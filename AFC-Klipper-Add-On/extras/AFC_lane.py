@@ -1017,15 +1017,22 @@ class AFCLane:
         # Saving position after printer is paused
         self.afc.save_pos()
 
-        # Position will be restored after lane is unloaded so that nozzle does not sit
-        # on print while lane is unloading
-        if not self.afc.TOOL_UNLOAD(empty_lane):
-            return
+        # Standalone toolchanger lanes (U1-style): filament stays in each tool,
+        # just dock current and pick up next — no filament unload/load needed.
+        if self.extruder_obj.no_lanes and self.extruder_obj.tc_unit_name:
+            self.set_tool_unloaded()
+            change_lane.tool_swap()
+            change_lane.set_tool_loaded()
+        else:
+            # Position will be restored after lane is unloaded so that nozzle does not sit
+            # on print while lane is unloading
+            if not self.afc.TOOL_UNLOAD(empty_lane):
+                return
 
-        # Eject spool before loading next lane
-        self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
+            # Eject spool before loading next lane
+            self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
 
-        self.afc.TOOL_LOAD(change_lane)
+            self.afc.TOOL_LOAD(change_lane)
         # Change Mapping
         self.gcode.run_script_from_command('SET_MAP LANE={} MAP={}'.format(change_lane.name, empty_lane.map))
 

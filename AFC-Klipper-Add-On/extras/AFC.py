@@ -1851,6 +1851,17 @@ class afc:
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.NONE
             self.save_vars()
+        elif cur_extruder.no_lanes and cur_extruder.tc_unit_name:
+            # Standalone toolchanger tools (U1-style): filament sensor is upstream
+            # of the extruder so it will still read "loaded" after retract.
+            # Do a quick pull and inform user to manually remove filament.
+            if self._check_extruder_temp(cur_lane):
+                self.afcDeltaTime.log_with_time("Done heating toolhead")
+            self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
+            cur_lane.set_tool_unloaded()
+            self.save_vars()
+            self.logger.info("Unload complete for {}. Please manually remove filament from the filament path.".format(cur_lane.name))
+            self.gcode.respond_info("Unload complete for {}. Please manually remove filament from the filament path.".format(cur_lane.name))
         else:
             # Prepare the extruder and heater for unloading.
             if self._check_extruder_temp(cur_lane):
