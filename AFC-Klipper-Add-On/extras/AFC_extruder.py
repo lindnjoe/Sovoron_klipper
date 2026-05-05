@@ -620,7 +620,7 @@ class AFCExtruder:
                         if state:
                             if not self.load_active:
                                 self.load_unload_sequence(self.tool_stn)
-                        else:
+                        elif not self.afc.function.is_printing():
                             self.tc_lane.set_tool_unloaded()
                             self.tc_lane.set_unloaded()
 
@@ -640,13 +640,22 @@ class AFCExtruder:
     def _u1_runout_event_handler(self, eventtime):
         """Route U1 filament_motion_sensor runout through AFC instead of native Klipper pause."""
         rh = self.filament_sensor_obj.runout_helper
+        self.logger.info(
+            "U1 runout handler fired: lane_loaded={}, lanes={}, runout_lane={}".format(
+                self.lane_loaded,
+                list(self.lanes.keys()) if self.lanes else None,
+                getattr(self.lanes.get(self.lane_loaded, None), 'runout_lane', 'N/A')
+            ))
         if self.lane_loaded and self.lane_loaded in self.lanes:
             lane = self.lanes[self.lane_loaded]
             if lane.runout_lane is not None:
+                self.logger.info("Triggering infinite spool: {} -> {}".format(lane.name, lane.runout_lane))
                 lane._perform_infinite_runout()
             else:
+                self.logger.info("No runout_lane set, pausing")
                 lane._perform_pause_runout()
         else:
+            self.logger.info("No lane_loaded or lane not in self.lanes, falling back to native handler")
             self.orig_runout_event_handler(eventtime)
             return
         rh.min_event_systime = self.reactor.monotonic() + rh.event_delay

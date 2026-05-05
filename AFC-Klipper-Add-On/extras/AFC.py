@@ -428,7 +428,7 @@ class afc:
         self.gcode.register_command('_AFC_TEST_MESSAGES',   self.cmd__AFC_TEST_MESSAGES,    desc=self.cmd__AFC_TEST_MESSAGES_help)
         self.gcode.register_command('AFC_M104',             self._cmd_AFC_M104,             desc=self._cmd_AFC_M104_help)
         self.gcode.register_command('AFC_M109',             self._cmd_AFC_M109,             desc=self._cmd_AFC_M109_help)
-        self.gcode.register_command('U1_RFID_READ',         self._cmd_U1_RFID_READ,         desc=self._cmd_U1_RFID_READ_help)
+        self.gcode.register_command('AFC_RFID_READ',        self._cmd_U1_RFID_READ,         desc=self._cmd_U1_RFID_READ_help)
 
         self._rename_macros()
 
@@ -445,7 +445,7 @@ class afc:
             gcmd.respond_info("U1 RFID not configured")
             return
         if lane_name is None:
-            gcmd.respond_info("Usage: U1_RFID_READ LANE=<lane_name>")
+            gcmd.respond_info("Usage: AFC_RFID_READ LANE=<lane_name>")
             return
         self.u1_rfid.force_read(lane_name)
 
