@@ -109,6 +109,7 @@ class afc:
         self.tool_cmds  = {}
         self.led_obj    = {}
         self.led_state  = True
+        self.u1_rfid    = None
         self.bypass     = None
         self.bypass_last_state = False
         self.message_queue = []
@@ -187,6 +188,9 @@ class afc:
         # CHOICES
         self.park                   = config.getboolean("park", False)              # Set to True to enable parking during unload
         self.park_cmd               = config.get('park_cmd', None)                  # Macro to use when parking. Change macro name if you would like to use your own park macro
+        self.park_pre_load: bool    = config.getboolean("park_pre_load", False)     # Park toolhead before filament load (U1)
+        self.park_pre_load_cmd: str = config.get("park_pre_load_cmd", None)         # Macro to run for pre-load parking (U1)
+        self.force_assign_map: bool = config.getboolean("force_assign_map", False)  # Force map all lanes without per-lane map variable
         self.kick                   = config.getboolean("kick", False)              # Set to True to enable poop kicking after lane loads
         self.kick_cmd               = config.get('kick_cmd', None)                  # Macro to use when kicking. Change macro name if you would like to use your own kick macro
         self.wipe                   = config.getboolean("wipe", False)              # Set to True to enable nozzle wiping after lane loads
@@ -424,6 +428,7 @@ class afc:
         self.gcode.register_command('_AFC_TEST_MESSAGES',   self.cmd__AFC_TEST_MESSAGES,    desc=self.cmd__AFC_TEST_MESSAGES_help)
         self.gcode.register_command('AFC_M104',             self._cmd_AFC_M104,             desc=self._cmd_AFC_M104_help)
         self.gcode.register_command('AFC_M109',             self._cmd_AFC_M109,             desc=self._cmd_AFC_M109_help)
+        self.gcode.register_command('U1_RFID_READ',         self._cmd_U1_RFID_READ,         desc=self._cmd_U1_RFID_READ_help)
 
         self._rename_macros()
 
@@ -432,6 +437,17 @@ class afc:
     def _rename_macros(self):
         self.function._rename(self.BASE_M104, self.RENAMED_M104, self._cmd_AFC_M104, self._cmd_AFC_M104_help)
         self.function._rename(self.BASE_M109, self.RENAMED_M109, self._cmd_AFC_M109, self._cmd_AFC_M109_help)
+
+    _cmd_U1_RFID_READ_help = "Force RFID re-read for a U1 lane"
+    def _cmd_U1_RFID_READ(self, gcmd):
+        lane_name = gcmd.get("LANE", None)
+        if self.u1_rfid is None:
+            gcmd.respond_info("U1 RFID not configured")
+            return
+        if lane_name is None:
+            gcmd.respond_info("Usage: U1_RFID_READ LANE=<lane_name>")
+            return
+        self.u1_rfid.force_read(lane_name)
 
     def print_version(self, console_only=False):
         """
@@ -1451,6 +1467,9 @@ class afc:
         dock_dropped_off = False
         load_result = False
         try:
+            if self.park_pre_load and self.park_pre_load_cmd:
+                self.gcode.run_script_from_command(self.park_pre_load_cmd)
+
             if self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
                 self.logger.info("AFC dock purge: dropping tool off at dock before feed")
                 dock_dropped_off = self._dock_purge_dropoff()

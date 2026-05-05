@@ -265,6 +265,10 @@ class afcPrep:
         # run PREP after it has already been run once upon boot
         self.assignTcmd = False
         self.afc.prep_done = True
+        try:
+            self._start_u1_rfid()
+        except Exception as e:
+            self.logger.info(f"U1 RFID init error: {e}")
         self.afc.save_vars()
 
         if self.afc.buffers:
@@ -278,6 +282,25 @@ class afcPrep:
         error_str = self.afc.verify_macro_positions()
         if error_str:
             self.logger.error(error_str)
+
+    def _start_u1_rfid(self):
+        """Initialize U1 RFID polling if any lanes have u1_rfid_channel configured."""
+        from extras.AFC_U1_rfid import AFC_U1_RFID
+        has_u1_lanes = False
+        for lane in self.afc.lanes.values():
+            channel = getattr(lane, "u1_rfid_channel", -1)
+            if channel >= 0:
+                has_u1_lanes = True
+                break
+        if not has_u1_lanes:
+            return
+        rfid = AFC_U1_RFID(self.afc)
+        for lane in self.afc.lanes.values():
+            channel = getattr(lane, "u1_rfid_channel", -1)
+            if channel >= 0:
+                rfid.register_lane(lane, channel)
+        rfid.start()
+        self.afc.u1_rfid = rfid
 
 def load_config(config):
     return afcPrep(config)

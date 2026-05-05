@@ -73,11 +73,13 @@ class AFCExtruderStepper(AFCLane):
 
         if self.motion_queuing is not None:
             self.trapq          = self.motion_queuing.allocate_trapq()
-            self.trapq_append   = self.motion_queuing.lookup_trapq_append()
+            self._raw_trapq_append = self.motion_queuing.lookup_trapq_append()
         else:
             self.trapq                  = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
-            self.trapq_append           = ffi_lib.trapq_append
+            self._raw_trapq_append      = ffi_lib.trapq_append
             self.trapq_finalize_moves   = ffi_lib.trapq_finalize_moves
+
+        self._trapq_extra_arg = self._detect_trapq_extra_arg()
 
         self.assist_activate=False
 
@@ -90,6 +92,21 @@ class AFCExtruderStepper(AFCLane):
 
         # Get and save base rotation dist
         self.base_rotation_dist = self.extruder_stepper.stepper.get_rotation_distance()[0]
+
+    def _detect_trapq_extra_arg(self) -> bool:
+        """Detect if trapq_append requires the extra trailing arg (Snapmaker fork)."""
+        ffi_main, ffi_lib = chelper.get_ffi()
+        try:
+            sig = ffi_main.typeof(ffi_lib.trapq_append)
+            return len(sig.args) > 14
+        except Exception:
+            return False
+
+    def trapq_append(self, *args):
+        if self._trapq_extra_arg and len(args) == 14:
+            self._raw_trapq_append(*args, 0)
+        else:
+            self._raw_trapq_append(*args)
 
     def _get_tmc_values(self, config):
         """

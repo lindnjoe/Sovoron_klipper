@@ -223,6 +223,12 @@ class AFCExtruder:
         self.name: str                  = self.fullname.split(' ')[-1]
         self.tool_start                 = config.get('pin_tool_start', None)                                            # Pin for sensor before(pre) extruder gears
         self.tool_end                   = config.get('pin_tool_end', None)                                              # Pin for sensor after(post) extruder gears (optional)
+
+        # U1 specific variables
+        self.filament_sensor_name: str  = config.get('u1_filament_sensor_name', None)
+        self.park_detector: str         = config.get('u1_park_detector_name', None)
+        self.park_detector_obj          = None
+        self.filament_sensor_obj        = None
         self.tool_stn                   = config.getfloat("tool_stn", 72)                                               # Distance in mm from the toolhead sensor to the tip of the nozzle in mm, if `tool_end` is defined then distance is from this sensor
         self.tool_stn_unload            = config.getfloat("tool_stn_unload", 100)                                       # Distance to move in mm while unloading toolhead
         self.tool_sensor_after_extruder = config.getfloat("tool_sensor_after_extruder", 0)                              # Extra distance to move in mm once the pre- / post-sensors are clear. Useful for when only using post sensor, so this distance can be the amount to move to clear extruder gears
@@ -345,6 +351,23 @@ class AFCExtruder:
                 self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
                                                                                         self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
                                                                                         self.debounce_delay )
+        elif self.filament_sensor_name is not None:
+            filament_motion_name = f"filament_motion_sensor {self.filament_sensor_name}"
+            try:
+                self.filament_sensor_obj = self.printer.load_object(config, filament_motion_name)
+            except error:
+                raise error(
+                    f"[{filament_motion_name}] not found in config for [{self.fullname}]")
+            self.orig_note_filament_present = self.filament_sensor_obj.runout_helper.note_filament_present
+            self.filament_sensor_obj.runout_helper.note_filament_present = self.note_tool_start_callback
+            self.orig_runout_event_handler = self.filament_sensor_obj.runout_helper._runout_event_handler
+            self.filament_sensor_obj.runout_helper._runout_event_handler = self._u1_runout_event_handler
+            # Ensure runout_gcode is set so note_filament_present reaches our handler
+            # regardless of the user's pause_on_runout setting
+            if self.filament_sensor_obj.runout_helper.runout_gcode is None:
+                gcode_macro = self.printer.load_object(config, 'gcode_macro')
+                self.filament_sensor_obj.runout_helper.runout_gcode = gcode_macro.load_template(
+                    config, 'runout_gcode', '')
 
         self.tool_end_state = False
         if self.tool_end is not None:
@@ -378,11 +401,13 @@ class AFCExtruder:
 
             if self.motion_queuing is not None:
                 self.trapq          = self.motion_queuing.allocate_trapq()
-                self.trapq_append   = self.motion_queuing.lookup_trapq_append()
+                self._raw_trapq_append = self.motion_queuing.lookup_trapq_append()
             else:
                 self.trapq                  = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
-                self.trapq_append           = ffi_lib.trapq_append
+                self._raw_trapq_append      = ffi_lib.trapq_append
                 self.trapq_finalize_moves   = ffi_lib.trapq_finalize_moves
+
+            self._trapq_extra_arg = self._detect_trapq_extra_arg(ffi_main, ffi_lib)
 
         self.show_macros = self.afc.show_macros
         self.function: afcFunction = self.printer.load_object(config, 'AFC_functions')
@@ -397,6 +422,21 @@ class AFCExtruder:
             self.function.register_mux_command(self.show_macros, 'AFC_SET_EXTRUDER_LED', "EXTRUDER", self.name,
                                             self.cmd_AFC_SET_EXTRUDER_LED, self.cmd_AFC_SET_EXTRUDER_LED_help,
                                             self.cmd_AFC_SET_EXTRUDER_LED_options)
+
+    @staticmethod
+    def _detect_trapq_extra_arg(ffi_main, ffi_lib) -> bool:
+        """Detect if trapq_append requires the extra trailing arg (Snapmaker fork)."""
+        try:
+            sig = ffi_main.typeof(ffi_lib.trapq_append)
+            return len(sig.args) > 14
+        except Exception:
+            return False
+
+    def trapq_append(self, *args):
+        if self._trapq_extra_arg and len(args) == 14:
+            self._raw_trapq_append(*args, 0)
+        else:
+            self._raw_trapq_append(*args)
 
     def __str__(self):
         return self.name
@@ -442,6 +482,14 @@ class AFCExtruder:
             self.toolhead_extruder = self.printer.lookup_object(self.name)
         except:
             raise error("[{}] not found in config file".format(self.name))
+
+        if self.park_detector:
+            park_dect_str = f"park_detector {self.park_detector}"
+            self.park_detector_obj = self.printer.lookup_object(park_dect_str, None)
+            if not self.park_detector_obj:
+                self.logger.debug(
+                    f"[{park_dect_str}] not found for [{self.fullname}], "
+                    f"park_detector disabled")
 
         try:
             if self.tc_unit_name:
@@ -582,6 +630,26 @@ class AFCExtruder:
 
             self.tool_start_state = state
 
+
+    def note_tool_start_callback(self, state, force=False):
+        """U1 filament_motion_sensor callback wrapper.
+        Calls the original note_filament_present and feeds state to AFC's tool_start tracking."""
+        self.orig_note_filament_present(state, force)
+        self.tool_start_callback(0, state)
+
+    def _u1_runout_event_handler(self, eventtime):
+        """Route U1 filament_motion_sensor runout through AFC instead of native Klipper pause."""
+        rh = self.filament_sensor_obj.runout_helper
+        if self.lane_loaded and self.lane_loaded in self.lanes:
+            lane = self.lanes[self.lane_loaded]
+            if lane.runout_lane is not None:
+                lane._perform_infinite_runout()
+            else:
+                lane._perform_pause_runout()
+        else:
+            self.orig_runout_event_handler(eventtime)
+            return
+        rh.min_event_systime = self.reactor.monotonic() + rh.event_delay
 
     def buffer_trailing_callback(self, eventtime, state):
         self.buffer_trailing = state
@@ -935,6 +1003,12 @@ class AFCExtruder:
                 return (self.detect_state == DETECT_PRESENT or
                         self.tc_unit_obj.active_tool == self)
             return self.detect_state == DETECT_PRESENT
+
+        # U1 park_detector support
+        if (self.park_detector_obj
+            and hasattr(self.park_detector_obj, "get_park_detector_status")):
+            status = self.park_detector_obj.get_park_detector_status()
+            return status.get('state') == 'ACTIVATE'
 
         # Toolchanger configured but no detection pin (custom swap/unselect macros)
         return True
