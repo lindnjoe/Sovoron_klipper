@@ -33,7 +33,7 @@ class afc_hub:
         self.lanes: Dict[str, AFCLane] = {}
         self._state: bool = False
 
-        self.switch_pin = config.get('switch_pin', None)
+        self.switch_pin = config.get('switch_pin', 'virtual')
         # HUB Cut variables
         # Next two variables are used in AFC
         self.hub_clear_move_dis     = config.getfloat("hub_clear_move_dis", 65)     # How far to move filament so that it's not block the hub exit
@@ -111,7 +111,7 @@ class afc_hub:
             msg = "The following lanes need load sensors for virtual hub sensor to work correctly:"
             report_error = False
             for lane in self.lanes.values():
-                if lane.load is None:
+                if lane.load is None and lane.prep is not None:
                     report_error = True
                     msg += f"\n{lane.fullname}"
 
@@ -126,7 +126,11 @@ class afc_hub:
         """
         state = self._state
         if self.is_virtual_pin():
-            state = any(lane.raw_load_state for lane in self.lanes.values())
+            state = self._state or any(
+                lane.raw_load_state
+                for lane in self.lanes.values()
+                if lane.load is not None
+            )
         return state
 
     def switch_pin_callback(self, eventtime, state):

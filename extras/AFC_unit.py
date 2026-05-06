@@ -534,10 +534,12 @@ class afcUnit:
         :param fallback: Default LED color to use if no filament color is set
         :return: LED color value (list of floats or config color string)
         """
-        if lane.led_use_filament_color and lane.color:
-            hex_str = lane.color.replace("#", "").strip().upper()
-            if len(hex_str) in (6, 8) and all(c in "0123456789ABCDEF" for c in hex_str):
-                return self.afc.function.HexToLedString(hex_str)
+        if lane.led_use_filament_color:
+            color = lane.get_color()
+            if color:
+                hex_str = color.replace("#", "").strip().upper()
+                if len(hex_str) in (6, 8) and all(c in "0123456789ABCDEF" for c in hex_str):
+                    return self.afc.function.HexToLedString(hex_str)
         return fallback
 
     def lane_loaded(self, lane: AFCLane):
@@ -694,6 +696,20 @@ class afcUnit:
 
     def calibration_lane_message(self) -> str:
         return ""
+
+    def on_lane_unset_loaded(self, lane, extruder_name):
+        """Called after a lane is manually unset from the toolhead via unset_lane_loaded.
+        Override in subclass for custom post-unset behavior."""
+        pass
+
+    def get_lane_reset_command(self, lane, dis):
+        """Override in subclass for custom lane reset command. Return None to use default."""
+        return None
+
+    def get_current_lane_fallback(self, tool_obj):
+        """Override in subclass to provide a fallback lane name when on_shuttle() is False.
+        Return lane name string to use, or None to skip."""
+        return None
 
     def get_calibrated_lanes(self) -> Optional[list[str]]:
         """
@@ -994,3 +1010,58 @@ class afcUnit:
         if any_selected or force:
             self.unselect_lane(move_distance=move_dist)
             self.logger.info(f"{self.name} selector moved")
+
+    def abort_load(self, cur_lane):
+        """Cancel any in-progress load operation on the hardware.
+
+        Called by error handlers before cleanup so that unit-specific hardware
+        (e.g. OpenAMS motors) is stopped before AFC proceeds with error recovery.
+        Override in subclass for hardware-specific cancellation.
+        """
+        pass
+
+    def lane_move(self, cur_lane, distance, speed_mode):
+        """Move filament in a lane by the given distance.
+
+        Default implementation uses the lane's stepper motor (BoxTurtle, etc.).
+        Override in subclass for hardware-specific movement (ACE serial, OpenAMS).
+
+        :param cur_lane: Lane object to move
+        :param distance: Distance in mm (positive = forward, negative = retract)
+        :param speed_mode: SpeedMode enum for movement speed
+        """
+        cur_lane.move_advanced(distance, speed_mode, assist_active=AssistActive.YES)
+
+    def load_sequence(self, cur_lane, cur_hub, cur_extruder):
+        """Override in subclass for custom load logic. Return non-None to skip default AFC load."""
+        return None
+
+    def unload_sequence(self, cur_lane, cur_hub, cur_extruder):
+        """Override in subclass for custom unload logic. Return non-None to skip default AFC unload."""
+        return None
+
+    def lane_unload(self, cur_lane):
+        """Override in subclass for custom lane unload. Return non-None to skip default lane unload."""
+        return None
+
+    def on_lane_unset_loaded(self, lane, extruder_name):
+        """Called after a lane is manually unset from the toolhead via unset_lane_loaded.
+        Override in subclass for custom post-unset behavior."""
+        pass
+
+    def prep_capture_td1(self, cur_lane):
+        """Override in subclass for custom TD-1 prep capture. Return non-None to skip default behavior."""
+        return None
+
+    def capture_td1_data(self, cur_lane):
+        """Override in subclass for custom TD-1 data capture. Return non-None to skip default behavior."""
+        return None
+
+    def get_lane_reset_command(self, lane, dis):
+        """Override in subclass for custom lane reset command. Return None to use default."""
+        return None
+
+    def get_current_lane_fallback(self, tool_obj):
+        """Override in subclass to provide a fallback lane name when on_shuttle() is False.
+        Return lane name string to use, or None to skip."""
+        return None

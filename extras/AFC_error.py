@@ -294,6 +294,11 @@ class afcError:
 
     handle_lane_failure_help = "Get load errors, stop stepper and respond error"
     def handle_lane_failure(self, cur_lane, message, pause=True):
+        # Allow unit to abort any in-progress load operation
+        try:
+            cur_lane.unit_obj.abort_load(cur_lane)
+        except Exception:
+            pass
         # Disable the stepper for this lane
         cur_lane.do_enable(False)
         cur_lane.status = AFCLaneState.ERROR

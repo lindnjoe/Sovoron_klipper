@@ -110,7 +110,7 @@ class AFCled:
             if params['success']:
                 break
         else:
-            logging.info("Neopixel update did not succeed")
+            self.afc.logger.info("Neopixel update did not succeed")
 
     def update_leds(self, led_state, print_time):
         def reactor_bgfunc(eventtime):

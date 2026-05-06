@@ -121,21 +121,29 @@ class afcPrep:
             self.afc.error.AFC_error(error_string, False)
 
         # check if Lane is supposed to be loaded in tool head from saved file
+        # First pass: restore lane_loaded from saved state
         for extruder in self.afc.tools.keys():
             extruder_obj=self.afc.tools[extruder]
             extruder_obj.set_status_led( self.afc.led_tool_unloaded )
-            if extruder_obj.on_shuttle():
-                # Calls ACTIVATE_EXTRUDER if current toolhead on shuttle is not the active extruder
-                if self.afc.function.get_current_extruder() != extruder_obj.name:
-                    self.afc.gcode.run_script_from_command(
-                        f"ACTIVATE_EXTRUDER EXTRUDER={extruder_obj.name}"
-                    )
             if 'system' in units and "extruders" in units["system"]:
                 # Check to see if lane_loaded is in dictionary and its not an empty string
                 if extruder_obj.name in units["system"]["extruders"] and \
                   'lane_loaded' in units["system"]["extruders"][extruder_obj.name] and \
                   units["system"]["extruders"][extruder_obj.name]['lane_loaded']:
                     extruder_obj.lane_loaded = units["system"]["extruders"][extruder_obj.name]['lane_loaded']
+
+        # Second pass: activate the extruder whose tool is on the shuttle.
+        # Only activate one — the first extruder where on_shuttle() is
+        # True.  For non-toolchanger (single extruder) setups on_shuttle()
+        # always returns True so the default extruder stays active.
+        active_extruder = self.afc.toolhead.get_extruder().name
+        for extruder in self.afc.tools.keys():
+            extruder_obj=self.afc.tools[extruder]
+            if extruder_obj.on_shuttle() and active_extruder != extruder_obj.name:
+                self.afc.gcode.run_script_from_command(
+                    f"ACTIVATE_EXTRUDER EXTRUDER={extruder_obj.name}"
+                )
+                break
 
 
         for lane in self.afc.lanes.keys():
@@ -166,19 +174,16 @@ class afcPrep:
                         if 'bed_temp' in units[cur_lane.unit][cur_lane.name]: cur_lane.bed_temp = units[cur_lane.unit][cur_lane.name]['bed_temp']
                         if 'extruder_temp' in units[cur_lane.unit][cur_lane.name]: cur_lane.extruder_temp = units[cur_lane.unit][cur_lane.name]['extruder_temp']
 
-                        for attr_name in ("bed_temp", "extruder_temp", "weight"):
-                            value = getattr(cur_lane, attr_name, None)
-                            if value == "" or value == "NONE":
-                                setattr(cur_lane, attr_name, None)
+                        # Convert numeric fields from saved vars (may be strings)
+                        for attr in ("bed_temp", "extruder_temp", "weight"):
+                            val = getattr(cur_lane, attr, None)
+                            if val is None or val == '' or str(val).upper() == 'NONE':
+                                setattr(cur_lane, attr, None if attr != "weight" else 0)
                             else:
                                 try:
-                                    if not isinstance(value, float):
-                                        if value:
-                                            setattr(cur_lane, attr_name, float(value))
-                                        else:
-                                            setattr(cur_lane, attr_name, 0)
+                                    setattr(cur_lane, attr, float(val))
                                 except (ValueError, TypeError):
-                                    setattr(cur_lane, attr_name, 0)
+                                    setattr(cur_lane, attr, None if attr != "weight" else 0)
 
                     if 'runout_lane' in units[cur_lane.unit][cur_lane.name]: cur_lane.runout_lane = units[cur_lane.unit][cur_lane.name]['runout_lane']
                     if cur_lane.runout_lane == '' or cur_lane.runout_lane == 'NONE': cur_lane.runout_lane = None
@@ -258,6 +263,10 @@ class afcPrep:
         # run PREP after it has already been run once upon boot
         self.assignTcmd = False
         self.afc.prep_done = True
+        try:
+            self._start_u1_rfid()
+        except Exception as e:
+            self.logger.info(f"U1 RFID init error: {e}")
         self.afc.save_vars()
 
         if self.afc.buffers:
@@ -271,6 +280,25 @@ class afcPrep:
         error_str = self.afc.verify_macro_positions()
         if error_str:
             self.logger.error(error_str)
+
+    def _start_u1_rfid(self):
+        """Initialize U1 RFID polling if any lanes have u1_rfid_channel configured."""
+        from extras.AFC_U1_rfid import AFC_U1_RFID
+        has_u1_lanes = False
+        for lane in self.afc.lanes.values():
+            channel = getattr(lane, "u1_rfid_channel", -1)
+            if channel >= 0:
+                has_u1_lanes = True
+                break
+        if not has_u1_lanes:
+            return
+        rfid = AFC_U1_RFID(self.afc)
+        for lane in self.afc.lanes.values():
+            channel = getattr(lane, "u1_rfid_channel", -1)
+            if channel >= 0:
+                rfid.register_lane(lane, channel)
+        rfid.start()
+        self.afc.u1_rfid = rfid
 
 def load_config(config):
     return afcPrep(config)
