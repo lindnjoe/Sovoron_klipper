@@ -14,42 +14,30 @@ import traceback
 from datetime import datetime
 from types import MethodType
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING
 
-from configparser import Error as ConfigError
+from configfile import error as config_error
 
+if TYPE_CHECKING:
+    from typing import Any, Dict, List, Optional, Set, Tuple
 
-def _raise_import_error(import_lib: str, *, template: Optional[str] = None) -> None:
-    trace = traceback.format_exc()
-    if template is None:
-        raise ConfigError(f"Error when trying to import {import_lib}\n{trace}")
-    raise ConfigError(template.format(import_lib=import_lib, trace=trace))
+try: from extras.AFC_utils import ERROR_STR
+except:
+    trace=traceback.format_exc()
+    err_str = f"Error when trying to import AFC_utils.ERROR_STR\n{trace}"
+    raise config_error(err_str)
 
+try: from extras.AFC_unit import afcUnit
+except: raise config_error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
 
-try:
-    from extras.AFC_utils import ERROR_STR
-except Exception:
-    _raise_import_error("AFC_utils.ERROR_STR")
+try: from extras.AFC_lane import AFCLane, AFCLaneState
+except: raise config_error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
-try:
-    from extras.AFC_unit import afcUnit
-except Exception:
-    _raise_import_error("AFC_unit", template=ERROR_STR)
+try: from extras.AFC_utils import add_filament_switch
+except: raise config_error(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
 
-try:
-    from extras.AFC_lane import AFCLane, AFCLaneState
-except Exception:
-    _raise_import_error("AFC_lane", template=ERROR_STR)
-
-try:
-    from extras.AFC_utils import add_filament_switch
-except Exception:
-    _raise_import_error("AFC_utils", template=ERROR_STR)
-
-try:
-    from extras.AFC_respond import AFCprompt
-except Exception:
-    _raise_import_error("AFC_respond", template=ERROR_STR)
+try: from extras.AFC_respond import AFCprompt
+except: raise config_error(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
 
 # -- OpenAMS integration classes ------
 
