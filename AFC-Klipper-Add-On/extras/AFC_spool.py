@@ -349,6 +349,9 @@ class AFCSpool:
             if SpoolID not in ('', None):
                 try:
                     result = self.afc.moonraker.get_spool(SpoolID)
+                    if result is None:
+                        self.afc.error.AFC_error(f"set_spoolID: Could not fetch Spoolman data for ID:{SpoolID} (server may be unreachable)", False)
+                        return
                     cur_lane.spool_id = SpoolID
                     cur_lane.auto_switch_triggered = False
 
