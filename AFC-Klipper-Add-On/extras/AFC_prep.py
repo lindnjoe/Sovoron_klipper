@@ -283,7 +283,7 @@ class afcPrep:
 
     def _start_u1_rfid(self):
         """Initialize U1 RFID polling if any lanes have u1_rfid_channel configured."""
-        from extras.AFC_U1_rfid import AFC_U1_RFID
+        from extras.AFC_U1_rfid import AfcU1Rfid
         has_u1_lanes = False
         for lane in self.afc.lanes.values():
             channel = getattr(lane, "u1_rfid_channel", -1)
@@ -292,7 +292,7 @@ class afcPrep:
                 break
         if not has_u1_lanes:
             return
-        rfid = AFC_U1_RFID(self.afc)
+        rfid = AfcU1Rfid(self.afc)
         for lane in self.afc.lanes.values():
             channel = getattr(lane, "u1_rfid_channel", -1)
             if channel >= 0:
