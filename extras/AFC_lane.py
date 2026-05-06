@@ -1072,6 +1072,11 @@ class AFCLane:
         Common function to grab TD-1 data once user inserts filament into a lane. Only happens if user has specified
         this by setting `capture_td1_when_loaded: True` and if hub is clear and toolhead is not loaded.
         """
+        # Allow unit to provide custom TD-1 prep capture
+        custom_result = self.unit_obj.prep_capture_td1(self)
+        if custom_result is not None:
+            return custom_result
+
         if self.td1_when_loaded:
             if not self.hub_obj.state and self.afc.function.get_current_lane_obj() is None:
                 self.get_td1_data()
@@ -1374,7 +1379,8 @@ class AFCLane:
         to extruder or extruder is switched for multi-toolhead setups.
         """
         self.past_extruder_position = self.afc.function.get_extruder_pos(
-            None, self.past_extruder_position, self.extruder_obj.toolhead_extruder
+            None, self.past_extruder_position,
+            extruder=getattr(self.extruder_obj, 'toolhead_extruder', None)
         )
         self.reactor.update_timer( self.cb_update_weight, self.reactor.monotonic() + self.UPDATE_WEIGHT_DELAY)
 
@@ -1398,7 +1404,8 @@ class AFCLane:
         :return int: Next time to call timer callback. Current time + UPDATE_WEIGHT_DELAY
         """
         extruder_pos = self.afc.function.get_extruder_pos(
-            eventtime, self.past_extruder_position, self.extruder_obj.toolhead_extruder
+            eventtime, self.past_extruder_position,
+            extruder=getattr(self.extruder_obj, 'toolhead_extruder', None)
         )
         delta_length = extruder_pos - self.past_extruder_position
 
@@ -1722,6 +1729,11 @@ class AFCLane:
         Captures TD-1 data for lane. Has error checking to verify that lane is loaded, hub is not blocked
         and that TD-1 device is still detected before trying to capture data.
         """
+        # Allow unit to provide custom TD-1 data capture
+        custom_result = self.unit_obj.capture_td1_data(self)
+        if custom_result is not None:
+            return custom_result
+
         max_move_tries = 0
         status = True
         msg = ""
