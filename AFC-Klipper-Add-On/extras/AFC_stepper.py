@@ -19,7 +19,7 @@ except:
     raise_string = "Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc())
     raise error(raise_string)
 
-try: from extras.AFC_lane import AFCLane, AFCHomingPoints
+try: from extras.AFC_lane import AFCLane, AFCHomingPoints, VALID_DIRECT_HUB
 except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
 if TYPE_CHECKING:
@@ -93,6 +93,19 @@ class AFCExtruderStepper(AFCLane):
         # Get and save base rotation dist
         self.base_rotation_dist = self.extruder_stepper.stepper.get_rotation_distance()[0]
 
+    def _get_tmc_values(self, config):
+        """
+        Searches for TMC driver that corresponds to stepper to get run current that is specified in config
+        """
+        try:
+            self.tmc_driver = next(config.getsection(s) for s in config.fileconfig.sections() if 'tmc' in s and config.get_name() in s)
+        except:
+            msg = f"Could not find TMC for stepper {self.name},"
+            msg += "\nplease add TMC section or disable 'print_current' from config files"
+            raise self.gcode.error(msg)
+
+        self.tmc_load_current = self.tmc_driver.getfloat('run_current')
+
     def _detect_trapq_extra_arg(self) -> bool:
         """Detect if trapq_append requires the extra trailing arg (Snapmaker fork)."""
         ffi_main, ffi_lib = chelper.get_ffi()
@@ -107,19 +120,6 @@ class AFCExtruderStepper(AFCLane):
             self._raw_trapq_append(*args, 0)
         else:
             self._raw_trapq_append(*args)
-
-    def _get_tmc_values(self, config):
-        """
-        Searches for TMC driver that corresponds to stepper to get run current that is specified in config
-        """
-        try:
-            self.tmc_driver = next(config.getsection(s) for s in config.fileconfig.sections() if 'tmc' in s and config.get_name() in s)
-        except:
-            msg = f"Could not find TMC for stepper {self.name},"
-            msg += "\nplease add TMC section or disable 'print_current' from config files"
-            raise self.gcode.error(msg)
-
-        self.tmc_load_current = self.tmc_driver.getfloat('run_current')
 
     def _submit_move( self, movetime: float, distance: float, speed: float, accel: float) -> float:
         """
@@ -469,7 +469,7 @@ class AFCExtruderStepper(AFCLane):
         hub_pin = self.hub_endstop
         if hub_pin is None:
             hub_name = getattr(self, 'hub', None)
-            if not hub_name or 'direct' in hub_name:
+            if not hub_name or hub_name in VALID_DIRECT_HUB:
                 hub_name = self._inherit_from_unit('hub')
             hub_pin = self._get_section_value('AFC_hub', hub_name, 'switch_pin')
 

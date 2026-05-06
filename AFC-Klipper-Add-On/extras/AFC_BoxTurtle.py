@@ -31,9 +31,8 @@ class afcBoxTurtle(afcUnit):
     def __init__(self, config):
         super().__init__(config)
         self.type = config.get('type', 'Box_Turtle')
-        # Dock purge (toolchanger): drop tool, purge while docked, pick tool back up.
         self.dock_purge = config.getboolean("dock_purge", False)
-        self.dock_purge_length = config.getfloat("dock_purge_length", 105.0, minval=0.0)
+        self.dock_purge_length = config.getfloat("dock_purge_length", 0.0, minval=0.0)
         self.dock_purge_speed = config.getfloat("dock_purge_speed", 7.0, minval=0.0)
 
     def handle_connect(self):
@@ -123,7 +122,8 @@ class afcBoxTurtle(afcUnit):
                         if cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                             cur_lane.sync_to_extruder()
                             on_shuttle = ""
-                            if cur_lane.extruder_obj.tc_unit_obj:
+                            if (getattr(cur_lane.extruder_obj, 'tool_obj', None)
+                                and cur_lane.extruder_obj.tc_unit_name):
                                 on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
                             msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
 
@@ -168,8 +168,13 @@ class afcBoxTurtle(afcUnit):
         else:
             self.logger.raw(f'Calibrating Bowden Length with {cur_lane.name}')
 
+        use_dist_hub = False
+        if (not cur_lane.is_direct_hub()
+            and not use_dist_hub):
+            use_dist_hub = True
+
         checkpoint = "Moving to hub"
-        if not cur_lane.is_direct_hub():
+        if not use_dist_hub:
             # move to hub and retrieve that distance, the checkpoint returned and if successful
 
             if not self.afc.homing_enabled:
@@ -249,7 +254,7 @@ class afcBoxTurtle(afcUnit):
                 msg = 'Failed {} after {}mm'.format(checkpoint, bow_pos)
                 return False, msg, bow_pos
 
-            if not cur_lane.is_direct_hub():
+            if not use_dist_hub:
                 success, _, _ = cur_lane.unit_obj.move_to_hub(cur_lane, bow_pos, MoveDirection.NEG,
                                                               self.afc.homing_enabled,
                                                               speed_mode=SpeedMode.LONG)
@@ -260,7 +265,7 @@ class afcBoxTurtle(afcUnit):
                 return False, "Failed to home filament back to hub", 0
 
             if (not self.afc.homing_enabled
-                and not cur_lane.is_direct_hub()):
+                and not use_dist_hub):
                 success, message, hub_dis = self.calibrate_hub(cur_lane, tol)
 
                 if not success:
@@ -276,18 +281,26 @@ class afcBoxTurtle(afcUnit):
 
             bowden_dist = round(bow_pos, 2)
             if not self.afc.homing_enabled:
-                if cur_extruder.tool_start == "buffer":
+                if cur_extruder.tool_start == 'buffer':
                     bowden_dist = round(bow_pos - (cur_lane.short_move_dis * 2), 2)
                 else:
                     bowden_dist = round(bow_pos - cur_lane.short_move_dis, 2)
 
             unload_cal_msg = ''
             cal_msg = f'\n {variable_name}: New: {bowden_dist} Old: {bowden_length}'
-            if not cur_lane.is_direct_hub():
+            if not use_dist_hub:
                 unload_cal_msg = f'\n afc_unload_bowden_length: New: {bowden_dist} Old: {cur_lane.hub_obj.afc_unload_bowden_length}'
                 cur_lane.hub_obj.afc_unload_bowden_length = cur_lane.hub_obj.afc_bowden_length = bowden_dist
             else:
                 bowden_dist = bow_pos - cur_lane.short_move_dis
+
+
+            unload_cal_msg = ''
+            cal_msg = f'\n {variable_name}: New: {bowden_dist} Old: {bowden_length}'
+            if not use_dist_hub:
+                unload_cal_msg = f'\n afc_unload_bowden_length: New: {bowden_dist} Old: {cur_lane.hub_obj.afc_unload_bowden_length}'
+                cur_lane.hub_obj.afc_unload_bowden_length = cur_lane.hub_obj.afc_bowden_length = bowden_dist
+            else:
                 cur_lane.dist_hub = bowden_dist
 
             if bowden_dist < 0:
@@ -296,7 +309,7 @@ class afcBoxTurtle(afcUnit):
                     pause=False)
                 return False, "Invalid bowden length", bowden_dist
             self.afc.function.ConfigRewrite(fullname, variable_name, bowden_dist, cal_msg)
-            if not cur_lane.is_direct_hub():
+            if not use_dist_hub:
                 self.afc.function.ConfigRewrite(fullname, "afc_unload_bowden_length", cur_lane.hub_obj.afc_unload_bowden_length, unload_cal_msg)
                 cur_lane.loaded_to_hub  = True
 
@@ -327,6 +340,11 @@ class afcBoxTurtle(afcUnit):
             msg += "field in AFC_hub or per AFC_lane"
             return False, msg, 0
 
+        use_dist_hub = False
+        if (not cur_lane.is_direct_hub()
+            and not use_dist_hub):
+            use_dist_hub = True
+
         # Verify TD-1 is still connected before trying to get data
         valid, msg = self.afc.function.check_for_td1_id(cur_lane.td1_device_id)
         if not valid:
@@ -351,7 +369,7 @@ class afcBoxTurtle(afcUnit):
 
         compare_time = datetime.now()
         max_bowden_length = 0
-        if cur_lane.is_direct_hub():
+        if use_dist_hub:
             max_bowden_length = cur_lane.dist_hub
         else:
             max_bowden_length = cur_hub.afc_bowden_length
@@ -367,7 +385,7 @@ class afcBoxTurtle(afcUnit):
 
             cur_lane.move(dis, self.short_moves_speed, self.short_moves_accel)
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 5)
-        if not cur_lane.is_direct_hub():
+        if not use_dist_hub:
             success, _, _ = cur_lane.unit_obj.move_to_hub(cur_lane, bow_pos,
                                                           MoveDirection.NEG,
                                                           self.afc.homing_enabled,
@@ -378,7 +396,7 @@ class afcBoxTurtle(afcUnit):
                                                            self.afc.homing_enabled)
 
         if (not self.afc.homing_enabled
-            and not cur_lane.is_direct_hub()):
+            and not use_dist_hub):
             # Reset to hub
             self.calc_position(cur_lane, lambda: cur_lane.hub_obj.state, 0,
                                  cur_lane.short_move_dis, tol, 200, checkpoint)
@@ -391,7 +409,7 @@ class afcBoxTurtle(afcUnit):
 
         cal_msg = f"\n td1_bowden_length: New: {bow_pos} Old: {cur_lane.td1_bowden_length}"
 
-        if cur_lane.is_direct_hub():
+        if use_dist_hub:
             cur_lane.td1_bowden_length = bow_pos
             fullname = cur_lane.fullname
         else:
