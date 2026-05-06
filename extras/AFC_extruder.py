@@ -289,6 +289,11 @@ class AFCExtruder:
 
             if self.tool_start == "buffer":
                 self.logger.info("Setting up as buffer")
+            elif self.tool_start == "internal":
+                self.logger.info(
+                    "Setting up as internal — relying on unit firmware "
+                    "(e.g. ACE) for filament engagement verification"
+                )
             else:
                 self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
                                                                                     self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
@@ -303,6 +308,14 @@ class AFCExtruder:
                 raise error(error_str)
             self.orig_note_filament_present = self.filament_sensor_obj.runout_helper.note_filament_present
             self.filament_sensor_obj.runout_helper.note_filament_present = self.note_tool_start_callback
+            self.orig_runout_event_handler = self.filament_sensor_obj.runout_helper._runout_event_handler
+            self.filament_sensor_obj.runout_helper._runout_event_handler = self._u1_runout_event_handler
+            # Ensure runout_gcode is set so note_filament_present reaches our handler
+            # regardless of the user's pause_on_runout setting
+            if self.filament_sensor_obj.runout_helper.runout_gcode is None:
+                gcode_macro = self.printer.load_object(config, 'gcode_macro')
+                self.filament_sensor_obj.runout_helper.runout_gcode = gcode_macro.load_template(
+                    config, 'runout_gcode', '')
 
         self.tool_end_state = False
         if self.tool_end is not None:
@@ -336,11 +349,13 @@ class AFCExtruder:
 
             if self.motion_queuing is not None:
                 self.trapq          = self.motion_queuing.allocate_trapq()
-                self.trapq_append   = self.motion_queuing.lookup_trapq_append()
+                self._raw_trapq_append = self.motion_queuing.lookup_trapq_append()
             else:
                 self.trapq                  = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
-                self.trapq_append           = ffi_lib.trapq_append
+                self._raw_trapq_append      = ffi_lib.trapq_append
                 self.trapq_finalize_moves   = ffi_lib.trapq_finalize_moves
+
+            self._trapq_extra_arg = self._detect_trapq_extra_arg(ffi_main, ffi_lib)
 
         self.show_macros = self.afc.show_macros
         self.function: afcFunction = self.printer.load_object(config, 'AFC_functions')
@@ -355,6 +370,21 @@ class AFCExtruder:
             self.function.register_mux_command(self.show_macros, 'AFC_SET_EXTRUDER_LED', "EXTRUDER", self.name,
                                             self.cmd_AFC_SET_EXTRUDER_LED, self.cmd_AFC_SET_EXTRUDER_LED_help,
                                             self.cmd_AFC_SET_EXTRUDER_LED_options)
+
+    @staticmethod
+    def _detect_trapq_extra_arg(ffi_main, ffi_lib) -> bool:
+        """Detect if trapq_append requires the extra trailing arg (Snapmaker fork)."""
+        try:
+            sig = ffi_main.typeof(ffi_lib.trapq_append)
+            return len(sig.args) > 14
+        except Exception:
+            return False
+
+    def trapq_append(self, *args):
+        if self._trapq_extra_arg and len(args) == 14:
+            self._raw_trapq_append(*args, 0)
+        else:
+            self._raw_trapq_append(*args)
 
     def __str__(self):
         return self.name
@@ -381,9 +411,9 @@ class AFCExtruder:
             #  set to current tool start state
             self.tc_lane._load_state = self.tc_lane.prep_state = self.tool_start_state
 
-            if self.tool_start == "buffer":
+            if self.tool_start in ("buffer", "internal"):
                 raise error(
-                    f"buffer is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
+                    f"{self.tool_start} is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
                 )
 
 
@@ -396,10 +426,10 @@ class AFCExtruder:
         self.reactor = self.afc.reactor
         self.afc.tools[self.name] = self
         
-        self.toolhead_extruder = self.printer.lookup_object(self.name)
-        if not self.toolhead_extruder:
-            error_str = self.common_error.format(self.name, self.fullname)
-            raise error(error_str)
+        try:
+            self.toolhead_extruder = self.printer.lookup_object(self.name)
+        except configfile.error:
+            raise configfile.error(self.common_error.format(self.name, self.fullname))
 
         if self.tool:
             self.tool_obj = self.printer.lookup_object(self.tool, None)
@@ -409,10 +439,14 @@ class AFCExtruder:
 
         if self.park_detector:
             park_dect_str = f"park_detector {self.park_detector}"
-            self.park_detector_obj = self.printer.lookup_object(park_dect_str, None)
+            try:
+                self.park_detector_obj = self.printer.lookup_object(park_dect_str, None)
+            except Exception:
+                self.park_detector_obj = None
             if not self.park_detector_obj:
-                error_str = self.common_error.format(park_dect_str, self.fullname)
-                raise error(error_str)
+                self.logger.debug(
+                    f"[{park_dect_str}] not found for [{self.fullname}], "
+                    f"park_detector disabled")
 
         if self.tc_unit_name:
             tc_str = f"AFC_Toolchanger {self.tc_unit_name}"
@@ -478,6 +512,10 @@ class AFCExtruder:
 
         :param eventtime: Event time from the button press
         """
+        if not hasattr(self, 'fila_tool_start') or self.fila_tool_start is None:
+            # buffer/internal setups don't have fila_tool_start — runout is handled
+            # by the buffer/unit monitoring layer, not the filament switch.
+            return
         self._handle_toolhead_sensor_runout(self.fila_tool_start.runout_helper.filament_present, "tool_start")
         self.fila_tool_start.runout_helper.min_event_systime = self.reactor.monotonic() + self.fila_tool_start.runout_helper.event_delay
 
@@ -496,26 +534,49 @@ class AFCExtruder:
         :param eventtime: Event time from the button press
         :param state: Boolean indicating sensor state (True = filament present, False = runout)
         """
-        if state != self.tool_start_state:
-            if self.tc_unit_name and self.is_standalone():
-                self.tc_lane._load_state = state
-                self.tc_lane.prep_state = state
+        with self.mutex:
+            if state != self.tool_start_state:
+                if self.tc_unit_name and self.is_standalone():
+                    self.tc_lane._load_state = state
+                    self.tc_lane.prep_state = state
 
-                if (self.printer.state_message == READY and
-                    self.tc_lane._afc_prep_done):
-                    if state:
-                        if not self.load_active:
-                            self.load_unload_sequence(self.tool_stn)
-                    else:
-                        self.tc_lane.set_tool_unloaded()
-                        self.tc_lane.set_unloaded()
+                    if (self.printer.state_message == READY and
+                        self.tc_lane._afc_prep_done):
+                        if state:
+                            if not self.load_active:
+                                self.load_unload_sequence(self.tool_stn)
+                        elif not self.afc.function.is_printing():
+                            self.tc_lane.set_tool_unloaded()
+                            self.tc_lane.set_unloaded()
 
-                    self.afc.save_vars()
+                        self.afc.save_vars()
+            else:
+                self.logger.info("Not loading State matches tool_start_state")
+
+            self.tool_start_state = state
+
+
+    def _u1_runout_event_handler(self, eventtime):
+        """Route U1 filament_motion_sensor runout through AFC instead of native Klipper pause."""
+        rh = self.filament_sensor_obj.runout_helper
+        self.logger.info(
+            f"U1 runout handler fired: lane_loaded={self.lane_loaded}, "
+            f"lanes={list(self.lanes.keys()) if self.lanes else None}, "
+            f"runout_lane={getattr(self.lanes.get(self.lane_loaded, None), 'runout_lane', 'N/A')}"
+        )
+        if self.lane_loaded and self.lane_loaded in self.lanes:
+            lane = self.lanes[self.lane_loaded]
+            if lane.runout_lane is not None:
+                self.logger.info(f"Triggering infinite spool: {lane.name} -> {lane.runout_lane}")
+                lane._perform_infinite_runout()
+            else:
+                self.logger.info("No runout_lane set, pausing")
+                lane._perform_pause_runout()
         else:
-            self.logger.info("Not loading State matches tool_start_state")
-
-        self.tool_start_state = state
-
+            self.logger.info("No lane_loaded or lane not in self.lanes, falling back to native handler")
+            self.orig_runout_event_handler(eventtime)
+            return
+        rh.min_event_systime = self.reactor.monotonic() + rh.event_delay
 
     def buffer_trailing_callback(self, eventtime, state):
         self.buffer_trailing = state
@@ -613,7 +674,7 @@ class AFCExtruder:
         axis_r, accel_t, cruise_t, cruise_v = calc_move_time(distance, self.tool_load_speed, 5)
         print_time = toolhead.get_last_move_time()
         self.trapq_append(self.trapq, print_time, accel_t, cruise_t, accel_t,
-                            0., 0., 0., axis_r, 0., 0., 0., cruise_v, 5, 0) # TODO: add a check for the zero
+                            0., 0., 0., axis_r, 0., 0., 0., cruise_v, 5)
         print_time = print_time + accel_t + cruise_t + accel_t
 
         if self.motion_queuing is None:
@@ -755,7 +816,10 @@ class AFCExtruder:
             or self.check_transmit_status_fn is None):
             return
 
-        color = tuple(map(float, color.split(',')))
+        if isinstance(color, str):
+            color = tuple(map(float, color.split(',')))
+        elif isinstance(color, (list, tuple)):
+            color = tuple(map(float, color))
         for idx in self.toolhead_status_index:
             self.set_status_color_fn(idx, color)
 
