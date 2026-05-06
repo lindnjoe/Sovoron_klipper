@@ -1434,7 +1434,7 @@ class afc:
 
                     if self.post_load_macro is not None:
                         self.gcode.run_script_from_command(self.post_load_macro)
-                        # TODO: Add afcDeltaTime log
+                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After post_load_macro")
                 finally:
                     self.restore_toolhead_temp(temp_state)
 
@@ -1454,6 +1454,63 @@ class afc:
                     self.error.handle_lane_failure(cur_lane, message, pause=self.function.in_print())
                     return False
         return True
+
+    def _is_unit_dock_purge_enabled(self, unit_obj) -> bool:
+        return bool(getattr(unit_obj, "dock_purge", False))
+
+    def _dock_purge_dropoff(self) -> bool:
+        cur_extruder = self.function.get_current_extruder_obj()
+        tc = cur_extruder.tc_unit_obj if cur_extruder else None
+        if not tc or not tc.active_tool:
+            self.logger.warning("AFC dock purge: no active tool, skipping dropoff")
+            return False
+        self._dock_purge_mode_active = False
+        try:
+            tool = tc.active_tool
+            self.gcode.run_script_from_command("ENTER_DOCKING_MODE")
+            self._dock_purge_mode_active = True
+            gcode_pos = list(tc.gcode_move.get_status()['gcode_position'])
+            start_pos = tc._position_with_tool_offset(gcode_pos, None)
+            self._dock_purge_context = {
+                'dropoff_tool': tool.name,
+                'pickup_tool': tool.name,
+                'dock_purge': True,
+                'start_position': tc._position_to_xyz(start_pos, 'xyz'),
+                'restore_position': tc._position_to_xyz(start_pos, 'XYZ'),
+            }
+            tc._run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
+            return True
+        except Exception:
+            if getattr(self, "_dock_purge_mode_active", False):
+                try:
+                    self.gcode.run_script_from_command("EXIT_DOCKING_MODE")
+                except Exception as e:
+                    self.logger.error(f"AFC dock purge: failed to exit docking mode after dropoff error: {e}")
+            self._dock_purge_context = None
+            self._dock_purge_mode_active = False
+            raise
+
+    def _dock_purge_pickup(self):
+        cur_extruder = self.function.get_current_extruder_obj()
+        tc = cur_extruder.tc_unit_obj if cur_extruder else None
+        if (not tc or not tc.active_tool
+            or not hasattr(self, '_dock_purge_context')
+            or self._dock_purge_context is None):
+            self.logger.warning("AFC dock purge: no context for pickup, skipping")
+            if getattr(self, "_dock_purge_mode_active", False):
+                try:
+                    self.gcode.run_script_from_command("EXIT_DOCKING_MODE")
+                except Exception as e:
+                    self.logger.error(f"AFC dock purge: failed to exit docking mode without pickup context: {e}")
+                self._dock_purge_mode_active = False
+            return
+        tool = tc.active_tool
+        try:
+            tc._run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
+        finally:
+            self.gcode.run_script_from_command("EXIT_DOCKING_MODE")
+            self._dock_purge_context = None
+            self._dock_purge_mode_active = False
 
     def load_sequence(self, cur_lane: AFCLane, cur_hub: afc_hub, cur_extruder: AFCExtruder):
         """
@@ -1938,7 +1995,7 @@ class afc:
                     )
                     # attempt to return buffer to trailing pin
                     cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT)
-                    self.reactor.pause(self.reactor.monotonic() + 0.5)
+                    self.reactor.pause(self.reactor.monotonic() + 0.1)
                     if num_tries > self.tool_max_unload_attempts:
                         msg = ''
                         msg += "Buffer did not become compressed after {} short moves.\n".format(self.tool_max_unload_attempts)
@@ -2127,7 +2184,7 @@ class afc:
 
             if self.post_unload_macro is not None:
                 self.gcode.run_script_from_command(self.post_unload_macro)
-                # TODO: Add afcDeltaTime log
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After post_unload_macro")
 
             cur_lane.do_enable(False)
             cur_lane.unit_obj.return_to_home()
@@ -2250,7 +2307,22 @@ class afc:
                         self._cooldown_last_extruder(_last_lane.extruder_obj, infinite_runout)
 
             # If the requested lane is not the current lane, proceed with the tool change.
-            if cur_lane.name != self.current:
+            # Also proceed if the lane's extruder tool is not on the shuttle (e.g. after restart
+            # where AFC restored lane_loaded but the toolchanger has an empty shuttle).
+            tool_on_shuttle = cur_lane.extruder_obj.on_shuttle()
+            if cur_lane.name != self.current or not tool_on_shuttle:
+                # The lane is already physically loaded but self.current disagrees
+                # (e.g. active Klipper extruder drifted during pause/resume).
+                # Just re-activate the correct extruder instead of a full tool swap.
+                if (tool_on_shuttle
+                    and cur_lane.extruder_obj.lane_loaded == cur_lane.name
+                    and cur_lane.tool_loaded):
+                    self.logger.info("{} already loaded, syncing extruder state".format(cur_lane.name))
+                    self.function._handle_activate_extruder(0, cur_lane)
+                    if not self.error_state and self.current_toolchange == -1:
+                        self.current_toolchange += 1
+                    return
+
                 # Save the current toolhead position to allow restoration after the tool change.
                 self.save_pos()
                 # Set the in_toolchange flag to prevent overwriting the saved position during potential failures.
@@ -2265,16 +2337,30 @@ class afc:
                         self.logger.raw("//      Change {} out of {}".format(self.current_toolchange, self.number_of_toolchanges))
 
                     # If a current lane is loaded, unload it first.
-                    current_lane_name = self.current
-                    if current_lane_name is not None:
-                        unload_lane = self.lanes.get(current_lane_name, None)
-                        if unload_lane is None:
-                            self.error.AFC_error('{} Unknown'.format(current_lane_name))
+                    # For toolchangers: also check if the target extruder has a
+                    # lane loaded even when the shuttle is empty (current is None).
+                    lane_to_unload = None
+                    if self.current is not None:
+                        lane_to_unload = self.lanes.get(self.current)
+                        if lane_to_unload is None:
+                            self.error.AFC_error('{} Unknown'.format(self.current))
                             return
-                        if not self.TOOL_UNLOAD(unload_lane, set_start_time=False):
+                    elif cur_lane.extruder_obj.lane_loaded is not None:
+                        # Shuttle is empty but target extruder has a lane loaded
+                        # (e.g. after restart with docked tool). Need to pick up
+                        # that extruder and unload the lane before loading new one.
+                        loaded_name = cur_lane.extruder_obj.lane_loaded
+                        if loaded_name != cur_lane.name and loaded_name in self.lanes:
+                            lane_to_unload = self.lanes[loaded_name]
+                            self.logger.info(
+                                "Target extruder %s has %s loaded, unloading first"
+                                % (cur_lane.extruder_obj.name, loaded_name))
+
+                    if lane_to_unload is not None:
+                        if not self.TOOL_UNLOAD(lane_to_unload, set_start_time=False):
                             # Abort if the unloading process fails.
                             msg = (' UNLOAD ERROR NOT CLEARED')
-                            self.error.fix(msg, unload_lane)  #send to error handling
+                            self.error.fix(msg, lane_to_unload)  #send to error handling
                             return
 
                 if adjusting_temperature:
@@ -2297,10 +2383,7 @@ class afc:
                     if not self.testing:
                         self.afc_stats.reset_toolchange_wo_error()
             else:
-                # Calling handle activate extruder just to make sure lanes are synced as tool
-                # could have been changed with KTC SELECT_TOOL and lane might not be synced
-                # properly
-                # Take call out once transitioned away from KTC
+                # Ensure lanes are synced after tool swap
                 self.function._handle_activate_extruder(0)
                 self.logger.info("{} already loaded".format(cur_lane.name))
                 if not self.error_state and self.current_toolchange == -1:
