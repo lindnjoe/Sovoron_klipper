@@ -40,6 +40,7 @@ class AfcToolchanger(afcUnit):
     def __init__(self, config: ConfigWrapper) -> None:
         super().__init__(config)
         self.type = config.get("type", "Toolchanger")
+        self.auto_spoolman_create = config.getboolean("auto_spoolman_create", False)
         self.logo       = '<span class=success--text>Toolchanger Ready\n</span>'
         self.logo_error = '<span class=error--text>Toolchanger Not Ready</span>\n'
         self.functions: afcFunction = self.printer.load_object(config, 'AFC_functions')
