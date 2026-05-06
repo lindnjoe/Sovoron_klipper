@@ -259,6 +259,7 @@ class AFCFPSBuffer:
         self._saved_multipliers = {}
 
         # ---- Register event handlers ----
+        self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
 
         # ---- G-code commands ----
@@ -298,13 +299,15 @@ class AFCFPSBuffer:
         self.fps_trailing_endstop = FPSEndstopWrapper(
             self, lambda: self.buffer_trailing_triggered)
 
-        # Register with AFC buffer registry
-        self.afc.buffers[self.name] = self
-
-        # Also register under the AFC_buffer namespace so the upstream
+        # Register under the AFC_buffer namespace so the upstream
         # AFC_unit buffer lookup (printer.lookup_object('AFC_buffer <name>'))
         # finds us without needing changes to AFC_unit.py.
-        self.printer.add_object('AFC_buffer {}'.format(self.name), self)
+        self.printer.add_object(f'AFC_buffer {self.name}', self)
+
+    def handle_connect(self):
+        """Register with the AFC buffer registry at connect time."""
+        self.afc = self.printer.lookup_object('AFC')
+        self.afc.buffers[self.name] = self
 
     def __str__(self):
         return self.name
@@ -1094,7 +1097,7 @@ class VirtualFilamentSensor:
             msg = f"Filament Sensor {self.name}: filament detected"
         else:
             msg = f"Filament Sensor {self.name}: filament not detected"
-        self.logger.info(msg)
+        gcmd.respond_info(msg)
 
     def cmd_SET_FILAMENT_SENSOR(self, gcmd):
         self.runout_helper.sensor_enabled = bool(gcmd.get_int("ENABLE", 1))

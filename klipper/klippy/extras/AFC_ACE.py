@@ -1,4 +1,8 @@
-# Armored Turtle Automated Filament Changer
+# Armored Turtle Automated Filament Control
+#
+# Copyright (C) 2024-2026 Armored Turtle
+#
+# This file may be distributed under the terms of the GNU GPLv3 license.
 #
 # ACE Unit Type - Direct ACE PRO hardware integration without ACEPRO/DuckACE
 #
@@ -7,11 +11,9 @@
 #             Must retract current slot before feeding new one.
 #   direct:   Each ACE slot feeds its own extruder independently.
 #             No global retract-before-feed constraint.
-#
-# This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
-import logging
+import logging  # Used for dedicated serial debug log file
 import traceback
 
 from configfile import error as config_error
@@ -38,10 +40,15 @@ except: raise config_error(ERROR_STR.format(import_lib="AFC_respond", trace=trac
 try: from extras.AFC_ACE_serial import ACEConnection, ACESerialError, ACETimeoutError
 except: raise config_error(ERROR_STR.format(import_lib="AFC_ACE_serial", trace=traceback.format_exc()))
 
+# Optional: AFC_QueueListener enables dedicated serial log file; without it
+# _create_serial_logger() gracefully returns None and falls back to main log.
 try: from extras.AFC_logger import AFC_QueueListener
-except: pass  # Fallback: serial logger will use module-level default
+except: pass
 
-from queuelogger import QueueHandler
+try:
+    from queuelogger import QueueHandler
+except ImportError:
+    QueueHandler = None
 
 # Operational modes
 MODE_COMBINED = "combined"  # Multiple slots -> one toolhead (retract before feed)
@@ -237,7 +244,7 @@ class afcACE(afcUnit):
         # ~30 seconds to guard against the ACE firmware silently dropping
         # the assist motor (internal timeout, brief busy state, etc.).
         self._feed_assist_refresh_counter = 0
-        self._FEED_ASSIST_REFRESH_INTERVAL = 7  # heartbeats (~15s at 2s interval)
+        self._FEED_ASSIST_REFRESH_INTERVAL = 15  # heartbeats (~30s at 2s interval)
 
         # When True, the next successful heartbeat response will restore
         # feed assist for all tracked slots before clearing the flag.
@@ -297,6 +304,8 @@ class afcACE(afcUnit):
         logger.setLevel(logging.DEBUG)
         logger.propagate = False
         try:
+            if QueueHandler is None:
+                return None
             log_path = self.printer.start_args.get("log_file", None)
             if log_path:
                 log_file = Path(log_path).parent / "AFC_ACE_serial.log"
