@@ -109,6 +109,7 @@ class afc:
         self.tool_cmds  = {}
         self.led_obj    = {}
         self.led_state  = True
+        self.u1_rfid    = None
         self.bypass     = None
         self.bypass_last_state = False
         self.message_queue = []
@@ -400,6 +401,7 @@ class afc:
         self.toolhead   = self.printer.lookup_object('toolhead')
         self.idle       = self.printer.lookup_object('idle_timeout')
         self.gcode_move = self.printer.lookup_object('gcode_move')
+        self.tip        = self.printer.lookup_object('AFC_form_tip')
 
         # Looking up to see if manual_home has probe_pos, this is to make AFC work with klipper
         # starting with new homing update git hash(57c2e0c960f8e25f56a66ba3a1e90e124f207001)
@@ -427,6 +429,7 @@ class afc:
         self.gcode.register_command('_AFC_TEST_MESSAGES',   self.cmd__AFC_TEST_MESSAGES,    desc=self.cmd__AFC_TEST_MESSAGES_help)
         self.gcode.register_command('AFC_M104',             self._cmd_AFC_M104,             desc=self._cmd_AFC_M104_help)
         self.gcode.register_command('AFC_M109',             self._cmd_AFC_M109,             desc=self._cmd_AFC_M109_help)
+        self.gcode.register_command('AFC_RFID_READ',        self._cmd_U1_RFID_READ,         desc=self._cmd_U1_RFID_READ_help)
 
         self._rename_macros()
 
@@ -435,6 +438,17 @@ class afc:
     def _rename_macros(self):
         self.function._rename(self.BASE_M104, self.RENAMED_M104, self._cmd_AFC_M104, self._cmd_AFC_M104_help)
         self.function._rename(self.BASE_M109, self.RENAMED_M109, self._cmd_AFC_M109, self._cmd_AFC_M109_help)
+
+    _cmd_U1_RFID_READ_help = "Force RFID re-read for a U1 lane"
+    def _cmd_U1_RFID_READ(self, gcmd):
+        lane_name = gcmd.get("LANE", None)
+        if self.u1_rfid is None:
+            gcmd.respond_info("U1 RFID not configured")
+            return
+        if lane_name is None:
+            gcmd.respond_info("Usage: AFC_RFID_READ LANE=<lane_name>")
+            return
+        self.u1_rfid.force_read(lane_name)
 
     def print_version(self, console_only=False):
         """
@@ -922,7 +936,7 @@ class afc:
         if abs(distance) >= 200: speed_mode = SpeedMode.LONG
 
         cur_lane.set_load_current() # Making current is set correctly when doing lane moves
-        cur_lane.move_advanced(distance, speed_mode, assist_active = AssistActive.YES)
+        cur_lane.unit_obj.lane_move(cur_lane, distance, speed_mode)
         cur_lane.do_enable(False)
         self.current_state = State.IDLE
         cur_lane.unit_obj.return_to_home()
@@ -1137,12 +1151,17 @@ class afc:
         if not cur_lane.prep_state: return
         cur_lane.status = AFCLaneState.HUB_LOADING
         if not cur_lane.load_state:
+            num_tries = 0
             while not cur_lane.load_state:
-                # TODO: add timout routine here
                 cur_lane.move_to(cur_hub.move_dis, SpeedMode.SHORT,
                                  endstop=cur_lane.load_es,
                                  assist_active=AssistActive.DYNAMIC,
                                  use_homing=self.homing_enabled)
+                num_tries += 1
+                if num_tries >= 30:
+                    self.error.handle_lane_failure(cur_lane,
+                        f"Load sensor not triggered after {num_tries} attempts during HUB_LOAD", pause=False)
+                    return
 
         if not cur_lane.loaded_to_hub:
             dist_to_hub = cur_lane.dist_hub
@@ -1151,10 +1170,15 @@ class afc:
             cur_lane.unit_obj.move_to_hub(cur_lane, dist_to_hub, MoveDirection.POS,
                                           self.homing_enabled)
 
+        num_tries = 0
         while not cur_hub.state:
-            # TODO: add timout routine here
             cur_lane.unit_obj.move_to_hub(cur_lane, cur_hub.move_dis, MoveDirection.POS,
                                           self.homing_enabled)
+            num_tries += 1
+            if num_tries >= 30:
+                self.error.handle_lane_failure(cur_lane,
+                    f"Hub sensor not triggered after {num_tries} attempts during HUB_LOAD", pause=False)
+                return
 
         cur_lane.move_to(cur_hub.hub_clear_move_dis*MoveDirection.NEG, SpeedMode.HUB,
                          assist_active=AssistActive.YES, use_homing=False)
@@ -1196,6 +1220,11 @@ class afc:
         self.LANE_UNLOAD( cur_lane )
 
     def LANE_UNLOAD(self, cur_lane: AFCLane):
+        # Allow unit to provide custom lane unload sequence
+        custom_result = cur_lane.unit_obj.lane_unload(cur_lane)
+        if custom_result is not None:
+            return custom_result
+
         # TODO: update this to unload from toolhead and move all the way back to load
         # when homing is enabled
 
@@ -1262,8 +1291,10 @@ class afc:
             return
 
         cur_lane = self.lanes[lane]
-        if cur_lane.extruder_obj.lane_loaded == cur_lane.name:
-            self.error.AFC_error("Not loading {}, already loaded".format(lane), pause=self.function.in_print())
+        # Only block if a DIFFERENT lane is loaded on this extruder
+        if (cur_lane.extruder_obj.lane_loaded
+            and cur_lane.extruder_obj.lane_loaded != cur_lane.name):
+            self.error.AFC_error("Cannot load {}, {} currently loaded".format(lane, cur_lane.extruder_obj.lane_loaded), pause=self.function.in_print())
             return
 
         purge_length = gcmd.get('PURGE_LENGTH', None)
@@ -1433,7 +1464,15 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
-        if self.park_pre_load:
+        # Allow unit to provide custom load sequence
+        custom_result = cur_lane.unit_obj.load_sequence(cur_lane, cur_hub, cur_extruder)
+        if custom_result is not None:
+            return custom_result
+
+        dock_dropped_off = False
+        load_result = False
+        try:
+            if self.park_pre_load and self.park_pre_load_cmd:
             self.gcode.run_script_from_command(self.park_pre_load_cmd)
 
         # Placeholder for custom load sequence

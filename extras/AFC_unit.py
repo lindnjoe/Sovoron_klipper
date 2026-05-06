@@ -697,20 +697,6 @@ class afcUnit:
     def calibration_lane_message(self) -> str:
         return ""
 
-    def on_lane_unset_loaded(self, lane, extruder_name):
-        """Called after a lane is manually unset from the toolhead via unset_lane_loaded.
-        Override in subclass for custom post-unset behavior."""
-        pass
-
-    def get_lane_reset_command(self, lane, dis):
-        """Override in subclass for custom lane reset command. Return None to use default."""
-        return None
-
-    def get_current_lane_fallback(self, tool_obj):
-        """Override in subclass to provide a fallback lane name when on_shuttle() is False.
-        Return lane name string to use, or None to skip."""
-        return None
-
     def get_calibrated_lanes(self) -> Optional[list[str]]:
         """
         Helper method to return lanes in a unit that have already been calibrated and require
