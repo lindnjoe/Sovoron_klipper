@@ -670,10 +670,6 @@ class AFCTrigger:
             self.response['rotation_distance'] = None
             self.response['active_lane'] = None
 
-        # Add in multiplier information for automated testing
-        self.response['multiplier_high'] = self.multiplier_high
-        self.response['multiplier_low'] = self.multiplier_low
-
         # Add fault detection information
         self.response['fault_detection_enabled'] = self.error_sensitivity > 0
         self.response['error_sensitivity'] = self.error_sensitivity

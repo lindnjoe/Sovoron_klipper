@@ -1,8 +1,4 @@
-# Armored Turtle Automated Filament Control
-#
-# Copyright (C) 2024-2026 Armored Turtle
-#
-# This file may be distributed under the terms of the GNU GPLv3 license.
+# Armored Turtle Automated Filament Changer
 #
 # ACE Serial Communication Layer
 # Direct serial communication with Anycubic ACE PRO hardware via JSON-RPC
@@ -13,6 +9,8 @@
 # Frame format: [0xFF 0xAA] [length_le16] [json_payload] [crc_le16] [0xFE]
 #
 # Reconnection and health monitoring inspired by Kobra-S1/ACEPRO.
+#
+# This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
 import collections
@@ -21,7 +19,10 @@ import logging
 import struct
 import traceback
 
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
+
+if TYPE_CHECKING:
+    pass
 
 
 _logger = logging.getLogger("AFC_ACE_serial")

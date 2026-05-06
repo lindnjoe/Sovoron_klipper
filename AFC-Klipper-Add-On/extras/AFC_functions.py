@@ -55,7 +55,7 @@ class afcFunction:
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.printer.register_event_handler("afc_stepper:register_macros",self.register_lane_macros)
         self.printer.register_event_handler("afc_hub:register_macros",self.register_hub_macros)
-        # TODO: Use or remove once fully moved away from KTC
+        # Activate extruder callback (reserved for future multi-extruder timer use)
         # self.reactor = self.printer.get_reactor()
         # self.activate_extruder_cb = self.reactor.register_timer( self._handle_activate_extruder )
         self.printer.register_event_handler("afc:moonraker_connect", self.handle_moonraker_connect)
@@ -224,7 +224,7 @@ class afcFunction:
 
         :param cur_lane: Lane to assign auto generated T(n) macro
         """
-        if cur_lane.map is None:
+        if cur_lane.map == None :
             for x in range(99):
                 cmd = 'T{}'.format(x)
                 # Checking to see if cmd exists in lanes that have manually assigned mapping
@@ -238,14 +238,13 @@ class afcFunction:
                         break
         self.afc.tool_cmds[cur_lane.map]=cur_lane.name
         try:
-            if (cur_lane._map
-                or self.afc.force_assign_map):
+            if cur_lane._map:
                 rename_map = ("_{}".format(cur_lane.map))
                 self._rename(cur_lane.map, rename_map, self.afc.cmd_CHANGE_TOOL, self.afc.cmd_CHANGE_TOOL_help)
             else:
                 self.afc.gcode.register_command(cur_lane.map, self.afc.cmd_CHANGE_TOOL, desc=self.afc.cmd_CHANGE_TOOL_help)
         except:
-                self.logger.error("Error trying to map lane {lane} to {tool_macro}, please make sure there are no macros already setup for {tool_macro}".format(lane=[cur_lane.name], tool_macro=cur_lane.map), )
+                self.logger.info("Error trying to map lane {lane} to {tool_macro}, please make sure there are no macros already setup for {tool_macro}".format(lane=[cur_lane.name], tool_macro=cur_lane.map), )
         self.afc.save_vars()
 
     def check_macro_present(self, macro_name):
@@ -581,7 +580,12 @@ class afcFunction:
 
         # Switch spoolman ID
         self.afc.spool.set_active_spool(cur_lane_loaded.spool_id)
-        # Set lanes tool loaded led (uses filament color when available via _get_lane_color)
+        # Set lanes tool loaded led
+        # TODO: Add check to see if users want to change status led to spool color if set
+        # if cur_lane_loaded.color is not None and cur_lane_loaded.color:
+        #     led_color = self.HexToLedString(cur_lane_loaded.color.replace("#", ""))
+        #     self.afc_led( led_color, cur_lane_loaded.led_index )
+        # else:
         cur_lane_loaded.unit_obj.lane_tool_loaded( cur_lane_loaded )
         # Enable stepper
         cur_lane_loaded.do_enable(True)
@@ -590,8 +594,6 @@ class afcFunction:
         cur_lane_loaded.sync_to_extruder()
         cur_lane_loaded.unit_obj.select_lane( cur_lane_loaded )
         self.logger.debug("Activate extruder done")
-        # TODO: Remove or add back once fully moved away from KTC
-        # return self.reactor.NEVER
 
     def unset_lane_loaded(self):
         """
@@ -659,6 +661,7 @@ class afcFunction:
 
         :param eventtime: Current eventtime to calculate the position from, if time is not passed in uses current eventtime
         :param past_extruder_position: Previous extruder position to compare current position against.
+        :param extruder: Specific extruder to get position from. If None, uses the toolhead's current extruder.
         :return float: Returns current extruder position if its greater than previous position, else returns previous position
         """
         if eventtime is None:
@@ -916,7 +919,7 @@ class afcFunction:
 
         calibration_info = {}
         for lane in calibrate_lanes:
-            if lane.extruder_obj.is_standalone():
+            if lane.extruder_obj.no_lanes:
                 self.logger.info(f"{lane.name} is a standalone lane, skipping calibration")
                 continue
             if not lane.load_state or not lane.prep_state:
@@ -977,15 +980,6 @@ class afcFunction:
 
         prompt.create_custom_p(title, text, buttons,
                                True, None)
-
-    def _lane_reset_command(self, lane, dis):
-        """Return the GCode command to reset *lane*, using unit override if available."""
-        custom_command = lane.unit_obj.get_lane_reset_command(lane, dis)
-        if custom_command is not None:
-            return custom_command
-        if dis is not None:
-            return "AFC_LANE_RESET LANE={} DISTANCE={}".format(lane.name, dis)
-        return "AFC_LANE_RESET LANE={}".format(lane.name)
 
     def _afc_cali_fail(self, cali: str, dis: str, reset_lane: bool=True,
                        title: str="AFC Calibration Failed", fail_message: str="",
@@ -1230,7 +1224,7 @@ class afcFunction:
                 continue
 
             # Filtering out units that only have standalone lanes (toolchanger extruders without assist)
-            if all( lane.extruder_obj.is_standalone() for lane in self.afc.units.get(key).lanes.values() ):
+            if all( lane.extruder_obj.no_lanes for lane in self.afc.units.get(key).lanes.values() ):
                 continue
 
             # Create a button for each unit
@@ -1339,7 +1333,7 @@ class afcFunction:
 
         if (lanes is not None
             and lanes != 'all'
-            and self.afc.lanes.get(lanes).extruder_obj.is_standalone()):
+            and self.afc.lanes.get(lanes).extruder_obj.no_lanes):
             self.afc.error.AFC_error(f"{lanes} is a standalone lane, cannot calibrate", pause=False)
             return
 
@@ -1501,6 +1495,15 @@ class afcFunction:
         title           = gcmd.get("TITLE", "AFC Calibration Failed")
         fail_message    = gcmd.get("MSG", "")
         self._afc_cali_fail(cali, dis, reset_lane, title, fail_message, gcmd)
+
+    def _lane_reset_command(self, lane, dis):
+        """Return the GCode command to reset *lane*, using unit override if available."""
+        custom_command = lane.unit_obj.get_lane_reset_command(lane, dis)
+        if custom_command is not None:
+            return custom_command
+        if dis is not None:
+            return "AFC_LANE_RESET LANE={} DISTANCE={}".format(lane.name, dis)
+        return "AFC_LANE_RESET LANE={}".format(lane.name)
 
     cmd_AFC_RESET_help = 'Opens prompt to select lane to reset.'
     cmd_AFC_RESET_options = {"DISTANCE": {"default": "30", "type": "float"}}

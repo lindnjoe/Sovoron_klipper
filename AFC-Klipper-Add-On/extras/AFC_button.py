@@ -26,13 +26,7 @@ class AFCButton:
 
         # Register the button callback
         buttons = self.printer.load_object(config, 'buttons')
-        if config.get("analog_range", None) is None:
-            buttons.register_buttons([pin_name], self._button_callback)
-        else:
-            analog_min, analog_max = config.getfloatlist("analog_range", count=2)
-            pullup = config.getfloat("analog_pullup_resistor", 4700.0, above=0.0)
-            buttons.register_adc_button(pin_name, analog_min, analog_max, pullup,
-                                        self._button_callback)
+        buttons.register_buttons([pin_name], self._button_callback)
 
         self.afc.logger.info(f"AFC_button for {self.lane_id} initialized on pin: {pin_name}")
 
@@ -77,7 +71,6 @@ class AFCButton:
 
         # Long Press
         if held_time >= self.long_press_duration:
-            # TODO: Need to put in support for toolchangers
             self.afc.logger.info(f"{self.lane_id}: Long press detected.")
             if cur_lane is not None and cur_lane.name == self.lane_id:
                 self.afc.logger.info(f"Unloading {self.lane_id} before ejecting.")

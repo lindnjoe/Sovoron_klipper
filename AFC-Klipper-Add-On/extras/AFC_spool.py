@@ -49,34 +49,6 @@ class AFCSpool:
         self.gcode.register_mux_command('SET_MAP',              "LANE", lane_obj.name, self.cmd_SET_MAP,                desc=self.cmd_SET_MAP_help)
         self.gcode.register_mux_command('AFC_SET_SPOOL_TEMP',   "LANE", lane_obj.name, self.cmd_AFC_SET_SPOOL_TEMP,     desc=self.cmd_AFC_SET_SPOOL_TEMP_help)
 
-    cmd_AFC_SET_SPOOL_TEMP_help = "Set spool temperatures for a lane"
-    def cmd_AFC_SET_SPOOL_TEMP(self, gcmd):
-        """
-        This function handles setting the bed and extruder temperatures for a specified lane's spool.
-
-        Usage
-        -----
-        `AFC_SET_SPOOL_TEMP LANE=<lane> BED_TEMP=<temp> EXTRUDER_TEMP=<temp>`
-
-        Example
-        -----
-        ```
-        AFC_SET_SPOOL_TEMP LANE=lane1 BED_TEMP=60 EXTRUDER_TEMP=210
-        ```
-        """
-        lane = gcmd.get('LANE', None)
-        if lane is None:
-            self.logger.info("No LANE parameter provided, please specify a valid LANE parameter.")
-            return
-        cur_lane = self.afc.lanes.get(lane)
-        if cur_lane is None:
-            self.logger.info('{} Unknown'.format(lane))
-            return
-        cur_lane.bed_temp = gcmd.get_int('BED_TEMP', cur_lane.bed_temp, minval=0)
-        cur_lane.extruder_temp = gcmd.get_int('EXTRUDER_TEMP', cur_lane.extruder_temp, minval=0)
-        cur_lane.send_lane_data()
-        self.afc.save_vars()
-
     cmd_SET_MAP_help = "Changes T(n) mapping for a lane"
     def cmd_SET_MAP(self, gcmd):
         """
@@ -126,6 +98,31 @@ class AFCSpool:
         sw_lane.send_lane_data()
         self.afc.save_vars()
 
+    cmd_AFC_SET_SPOOL_TEMP_help = "Set spool temperatures for a lane"
+    def cmd_AFC_SET_SPOOL_TEMP(self, gcmd):
+        """
+        Set the bed and extruder temperatures for a specified lane's spool.
+
+        Usage
+        -----
+        `AFC_SET_SPOOL_TEMP LANE=<lane> BED_TEMP=<temp> EXTRUDER_TEMP=<temp>`
+
+        Example
+        -----
+        ```
+        AFC_SET_SPOOL_TEMP LANE=lane1 BED_TEMP=60 EXTRUDER_TEMP=210
+        ```
+        """
+        lane = gcmd.get('LANE', None)
+        if lane is None or lane not in self.afc.lanes:
+            self.logger.info('{} Unknown'.format(lane))
+            return
+        cur_lane = self.afc.lanes[lane]
+        cur_lane.bed_temp = gcmd.get_int('BED_TEMP', cur_lane.bed_temp, minval=0)
+        cur_lane.extruder_temp = gcmd.get_int('EXTRUDER_TEMP', cur_lane.extruder_temp, minval=0)
+        cur_lane.send_lane_data()
+        self.afc.save_vars()
+
     cmd_SET_COLOR_help = "Set filaments color for a lane"
     def cmd_SET_COLOR(self, gcmd):
         """
@@ -154,10 +151,6 @@ class AFCSpool:
         cur_lane = self.afc.lanes[lane]
         cur_lane.color = '#{}'.format(color.replace('#',''))
         cur_lane.send_lane_data()
-        # Refresh LED only if filament is loaded — empty lanes keep their state color
-        if cur_lane.load_state and cur_lane.unit in self.afc.units:
-            unit = cur_lane.unit_obj
-            self.afc.function.afc_led(unit._get_lane_color(cur_lane, cur_lane.led_ready), cur_lane.led_index)
         self.afc.save_vars()
 
     cmd_SET_WEIGHT_help = "Sets filaments weight for a lane"
@@ -383,10 +376,6 @@ class AFCSpool:
                         cur_lane.color = '#{}'.format(self._get_filament_values(result['filament'], 'color_hex'))
 
                     cur_lane.send_lane_data()
-                    # Refresh LED only if filament is loaded — empty lanes keep their state color
-                    if cur_lane.load_state and cur_lane.unit in self.afc.units:
-                        unit = cur_lane.unit_obj
-                        self.afc.function.afc_led(unit._get_lane_color(cur_lane, cur_lane.led_ready), cur_lane.led_index)
 
                 except Exception as e:
                     self.afc.error.AFC_error("Error when trying to get Spoolman data for ID:{}, Error: {}".format(SpoolID, e), False)

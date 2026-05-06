@@ -171,8 +171,10 @@ class afcPrep:
                             cur_lane.filament_diameter= units[cur_lane.unit][cur_lane.name]["diameter"]
                         if 'empty_spool_weight' in units[cur_lane.unit][cur_lane.name]:
                             cur_lane.empty_spool_weight= units[cur_lane.unit][cur_lane.name]["empty_spool_weight"]
-                        if 'bed_temp' in units[cur_lane.unit][cur_lane.name]: cur_lane.bed_temp = units[cur_lane.unit][cur_lane.name]['bed_temp']
-                        if 'extruder_temp' in units[cur_lane.unit][cur_lane.name]: cur_lane.extruder_temp = units[cur_lane.unit][cur_lane.name]['extruder_temp']
+                        if 'bed_temp' in units[cur_lane.unit][cur_lane.name]:
+                            cur_lane.bed_temp = units[cur_lane.unit][cur_lane.name]['bed_temp']
+                        if 'extruder_temp' in units[cur_lane.unit][cur_lane.name]:
+                            cur_lane.extruder_temp = units[cur_lane.unit][cur_lane.name]['extruder_temp']
 
                         # Convert numeric fields from saved vars (may be strings)
                         for attr in ("bed_temp", "extruder_temp", "weight"):
@@ -283,7 +285,7 @@ class afcPrep:
 
     def _start_u1_rfid(self):
         """Initialize U1 RFID polling if any lanes have u1_rfid_channel configured."""
-        from extras.AFC_U1_rfid import AfcU1Rfid
+        from extras.AFC_U1_rfid import AFC_U1_RFID
         has_u1_lanes = False
         for lane in self.afc.lanes.values():
             channel = getattr(lane, "u1_rfid_channel", -1)
@@ -292,7 +294,7 @@ class afcPrep:
                 break
         if not has_u1_lanes:
             return
-        rfid = AfcU1Rfid(self.afc)
+        rfid = AFC_U1_RFID(self.afc)
         for lane in self.afc.lanes.values():
             channel = getattr(lane, "u1_rfid_channel", -1)
             if channel >= 0:
