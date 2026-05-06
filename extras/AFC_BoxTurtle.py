@@ -31,6 +31,9 @@ class afcBoxTurtle(afcUnit):
     def __init__(self, config):
         super().__init__(config)
         self.type = config.get('type', 'Box_Turtle')
+        self.dock_purge = config.getboolean("dock_purge", False)
+        self.dock_purge_length = config.getfloat("dock_purge_length", 0.0, minval=0.0)
+        self.dock_purge_speed = config.getfloat("dock_purge_speed", 7.0, minval=0.0)
 
     def handle_connect(self):
         """

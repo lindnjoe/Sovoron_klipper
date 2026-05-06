@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 POLL_INTERVAL = 2.0
 
 
-class AFC_U1_RFID:
+class AfcU1Rfid:
     """Polls the Snapmaker U1 filament_detect Klipper object for RFID tag data
     and applies it to AFC lanes (material, color) and Spoolman."""
 

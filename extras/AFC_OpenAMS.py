@@ -1543,7 +1543,7 @@ class afcAMS(afcUnit):
 
             load_result = True
         except Exception as e:
-            message = "OpenAMS load failed for {}: {}".format(cur_lane.name, str(e))
+            message = f"OpenAMS load failed for {cur_lane.name}: {e}"
             afc.error.handle_lane_failure(cur_lane, message)
             return False
         finally:
@@ -1573,7 +1573,7 @@ class afcAMS(afcUnit):
                 "OpenAMS load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n"
                 "||=====||====||==>--||\nTRG   LOAD   HUB   TOOL"
             )
-            message += "\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.".format(cur_lane.name)
+            message += f"\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={cur_lane.name}` macro."
             if afc.function.in_print():
                 message += "\nOnce filament is fully loaded click resume to continue printing"
             afc.error.handle_lane_failure(cur_lane, message)
@@ -1661,7 +1661,7 @@ class afcAMS(afcUnit):
             )
             success, message = self._oams_unload(cur_lane)
             if not success:
-                message = message or "OpenAMS unload failed for {}".format(cur_lane.name)
+                message = message or f"OpenAMS unload failed for {cur_lane.name}"
                 afc.error.handle_lane_failure(cur_lane, message)
                 return False
 
@@ -1690,7 +1690,7 @@ class afcAMS(afcUnit):
             self.lane_tool_unloaded(cur_lane)
             afc.save_vars()
         except Exception as e:
-            message = "OpenAMS unload failed for {}: {}".format(cur_lane.name, str(e))
+            message = f"OpenAMS unload failed for {cur_lane.name}: {e}"
             afc.error.handle_lane_failure(cur_lane, message)
             return False
 
@@ -1889,10 +1889,10 @@ class afcAMS(afcUnit):
         index = 0
         title = f"{self.name} PTFE Length Calibration"
         text = (
-            "Select any loaded lane from {} to calibrate PTFE length. "
+            f"Select any loaded lane from {self.name} to calibrate PTFE length. "
             "Only one lane needs to be calibrated — each bay has an equal "
             "length path to the hub."
-        ).format(self.name)
+        )
 
         for lane in self.lanes.values():
             if not getattr(lane, "load_state", False):
@@ -1942,9 +1942,9 @@ class afcAMS(afcUnit):
         index = 0
         title = f"{self.name} Lane Calibration"
         text = (
-            "Select a loaded lane from {} to calibrate HUB HES using OpenAMS. "
+            f"Select a loaded lane from {self.name} to calibrate HUB HES using OpenAMS. "
             "Command: OAMS_CALIBRATE_HUB_HES"
-        ).format(self.name)
+        )
 
         for lane in self.lanes.values():
             if not getattr(lane, "load_state", False):
@@ -2816,7 +2816,7 @@ class afcAMS(afcUnit):
         if assignTcmd:
             self.afc.function.TcmdAssign(cur_lane)
         cur_lane.do_enable(False)
-        self.logger.info('{lane_name} tool cmd: {tcmd:3} {msg}'.format(lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))
+        self.logger.info(f'{cur_lane.name} tool cmd: {cur_lane.map:3} {msg}')
         cur_lane.set_afc_prep_done()
 
         # Trigger OpenAMS sensor reconciliation after PREP completes for this lane.
@@ -2883,10 +2883,10 @@ class afcAMS(afcUnit):
         msg = (
             "OpenAMS units do not support standard AFC bowden calibration. "
             "Use OpenAMS-specific calibration commands instead:\n"
-            "  - AFC_OAMS_CALIBRATE_HUB_HES UNIT={} SPOOL=<spool_index>\n"
-            "  - AFC_OAMS_CALIBRATE_PTFE UNIT={} SPOOL=<spool_index>\n"
-            "  - AFC_OAMS_CALIBRATE_HUB_HES_ALL UNIT={}"
-        ).format(self.name, self.name, self.name)
+            f"  - AFC_OAMS_CALIBRATE_HUB_HES UNIT={self.name} SPOOL=<spool_index>\n"
+            f"  - AFC_OAMS_CALIBRATE_PTFE UNIT={self.name} SPOOL=<spool_index>\n"
+            f"  - AFC_OAMS_CALIBRATE_HUB_HES_ALL UNIT={self.name}"
+        )
         self.logger.info(msg)
         return False, msg, 0
 
@@ -3528,9 +3528,9 @@ class afcAMS(afcUnit):
         msg = (
             "OpenAMS units do not support standard AFC hub calibration. "
             "Use OpenAMS-specific calibration commands instead:\n"
-            "  - AFC_OAMS_CALIBRATE_HUB_HES UNIT={} SPOOL=<spool_index>\n"
-            "  - AFC_OAMS_CALIBRATE_HUB_HES_ALL UNIT={}"
-        ).format(self.name, self.name)
+            f"  - AFC_OAMS_CALIBRATE_HUB_HES UNIT={self.name} SPOOL=<spool_index>\n"
+            f"  - AFC_OAMS_CALIBRATE_HUB_HES_ALL UNIT={self.name}"
+        )
         self.logger.info(msg)
         return False, msg, 0
 
@@ -3887,7 +3887,7 @@ class afcAMS(afcUnit):
                     pass
 
                 if not skip_runout:
-                    self.logger.info("F1S sensor False for {} (spool empty, printing), triggering runout detection".format(lane.name))
+                    self.logger.info(f"F1S sensor False for {lane.name} (spool empty, printing), triggering runout detection")
                     try:
                         self.handle_runout_detected(bay, None, lane_name=lane.name)
                     except Exception as e:
@@ -3897,7 +3897,7 @@ class afcAMS(afcUnit):
                             traceback=traceback.format_exc(),
                         )
             else:
-                self.logger.debug("F1S sensor False for {} but not printing - skipping runout detection (likely filament insertion/removal)".format(lane.name))
+                self.logger.debug(f"F1S sensor False for {lane.name} but not printing - skipping runout detection (likely filament insertion/removal)")
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -5477,7 +5477,7 @@ class afcAMS(afcUnit):
 
         if skipped:
             skipped_lanes = ", ".join(skipped)
-            self.logger.info("Skipped HUB HES calibration for lanes lacking OpenAMS mapping: {}.".format(skipped_lanes))
+            self.logger.info(f"Skipped HUB HES calibration for lanes lacking OpenAMS mapping: {skipped_lanes}.")
 
     def cmd_AFC_OAMS_CALIBRATE_PTFE(self, gcmd):
         """Run the OpenAMS PTFE calibration for this unit.
@@ -5541,13 +5541,13 @@ class afcAMS(afcUnit):
         updated_indices = []
         for index, parsed_value in sorted(hub_values.items()):
             if index >= max_length:
-                self.logger.info("HUB HES calibration reported index {} but your cfg only defines {} value(s); update the remaining entries manually.".format(index, max_length))
+                self.logger.info(f"HUB HES calibration reported index {index} but your cfg only defines {max_length} value(s); update the remaining entries manually.")
                 continue
             values[index] = parsed_value
             updated_indices.append(index)
 
         if not updated_indices:
-            self.logger.info("Completed {} but no HUB HES value was stored; check your cfg.".format(command))
+            self.logger.info(f"Completed {command} but no HUB HES value was stored; check your cfg.")
             return False
 
         formatted = self._format_sequence(values)
