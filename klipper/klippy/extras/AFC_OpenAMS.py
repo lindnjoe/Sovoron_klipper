@@ -4136,6 +4136,14 @@ class afcAMS(afcUnit):
             self.logger.debug(f"_update_shared_lane: blocked by runout handling for {lane.name}")
             return
 
+        # Block sensor sync during active tool unload/load operations.
+        # The unload/load sequence manages lane state directly; allowing
+        # sensor updates to race with it corrupts status and _afc_prep_done.
+        lane_status = getattr(lane, "status", None)
+        if lane_status in (AFCLaneState.TOOL_UNLOADING,) or getattr(lane, "prep_active", False):
+            self.logger.debug(f"_update_shared_lane: blocked by active tool operation for {lane.name} (status={lane_status})")
+            return
+
         previous = getattr(lane, "load_state", False)
         lane_val_bool = bool(lane_val)
         prep_state = getattr(lane, "prep_state", None)
@@ -4315,6 +4323,11 @@ class afcAMS(afcUnit):
         # Check if runout handling requires blocking this sensor update
         if self._should_block_sensor_update_for_runout(lane, lane_val):
             self.logger.debug(f"Ignoring sensor update for lane {getattr(lane, 'name', 'unknown')} - runout in progress")
+            return
+
+        lane_status = getattr(lane, "status", None)
+        if lane_status in (AFCLaneState.TOOL_UNLOADING,) or getattr(lane, "prep_active", False):
+            self.logger.debug(f"Ignoring sensor update for lane {getattr(lane, 'name', 'unknown')} - active tool operation")
             return
 
         try:

@@ -38,6 +38,7 @@ except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.for
 # Unit types that only have load switch
 ONLY_LOAD_TYPES = ["HTLF", "Claymore"]
 EXCLUDE_TYPES = ONLY_LOAD_TYPES + [ "ViViD"]
+SHARED_SENSOR_TYPES = ["OpenAMS", "ACE"]
 # Class for holding different states so its clear what all valid states are
 
 # Names to exclude from search when trying to find unit name in config file
@@ -1226,8 +1227,9 @@ class AFCLane:
 
                     elif (self.prep_state == True
                         and self.raw_load_state == True
-                        and not self.afc.function.is_printing()):
-                        message = 'Cannot load {} load sensor is triggered.'.format(self.name)
+                        and not self.afc.function.is_printing()
+                        and self.unit_obj.type not in SHARED_SENSOR_TYPES):
+                        message = f'Cannot load {self.name} load sensor is triggered.'
                         message += '\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.'
                         if self.unit_obj.type == "ViViD":
                             message += f'\n    If filament is not stuck in sensor run AFC_RECOVER_LANE LANE={self.name}'
