@@ -4202,13 +4202,18 @@ class afcAMS(afcUnit):
             return
 
         if lane_val_bool:
-            # Defer metadata application (material, spoolman IDs, colors, etc.) to
-            # AFC's callbacks. The callbacks will update prep/load state and apply lane data consistently for both
-            # single- and shared-sensor lanes.
-            try:
-                lane.prep_callback(eventtime, True)
-            finally:
-                lane.load_callback(eventtime, True)
+            # For shared-sensor OpenAMS lanes, set states directly rather than
+            # relying on callbacks designed for physical per-lane sensors.
+            # The callbacks have BoxTurtle-specific logic that doesn't apply here.
+            lane.prep_state = True
+            lane._load_state = True
+            lane.loaded_to_hub = True
+
+            # If prep is done and lane isn't already loaded, mark it loaded
+            if getattr(lane, '_afc_prep_done', False):
+                if lane.status not in (AFCLaneState.LOADED, AFCLaneState.TOOLED):
+                    lane.set_loaded()
+                    lane._post_prep_user_macro()
 
 
             # Publish spool_loaded event immediately (TD-1 capture delay happens in event handler)
