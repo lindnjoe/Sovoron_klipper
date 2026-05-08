@@ -152,7 +152,7 @@ class afcError:
         self.afc.function.log_toolhead_pos()
 
     def set_error_state(self, state=False):
-        self.logger.debug("setting error state {}".format(state))
+        logging.warning("AFC debug: setting error state {}".format(state))
         # Only save position on first error state call
         if state and not self.afc.error_state:
             self.afc.save_pos()
@@ -161,7 +161,7 @@ class afcError:
 
     def AFC_error(self, msg, pause=True, stack_name=None):
         # Print to logger since respond_raw does not write to logger
-        self.logger.warning(msg)
+        logging.warning(msg)
         if stack_name is None:
             stack_name = inspect.currentframe().f_back.f_code.co_name
         # Handle AFC errors
