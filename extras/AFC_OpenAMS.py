@@ -2740,7 +2740,7 @@ class afcAMS(afcUnit):
         self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.7)
 
         if not cur_lane.prep_state:
-            if not cur_lane.raw_load_state:
+            if not cur_lane.load_state:
                 # BoxTurtle-style logic: lane isn't truly empty until hub is clear too
                 # Check hub sensor before declaring empty (handles runout buffer scenarios)
                 hub_loaded = cur_lane.hub_obj and cur_lane.hub_obj.state
@@ -2760,9 +2760,10 @@ class afcAMS(afcUnit):
                 msg = '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
                 succeeded = False
         else:
+            cur_lane.loaded_to_hub = True
             self.lane_loaded(cur_lane)
             msg += '<span class=success--text>LOCKED</span>'
-            if not cur_lane.raw_load_state:
+            if not cur_lane.load_state:
                 msg += '<span class=error--text> NOT LOADED</span>'
                 self.lane_not_ready(cur_lane)
                 succeeded = False
