@@ -219,7 +219,7 @@ class AFC_moonraker:
             logger = self.logger.debug
 
         try:
-            resp = urlopen(url_string)
+            resp = urlopen(url_string, timeout=10)
             if resp.status >= 200 and resp.status <= 300:
                 data = json.load(resp)
             else:
