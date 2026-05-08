@@ -732,6 +732,10 @@ class AFCExtruder:
             load_time = self.afc.afcDeltaTime.log_major_delta(
                 "{} is now loaded in toolhead".format(self.tc_lane.name), False)
             self.afc.afc_stats.average_tool_load_time.average_time(load_time)
+            self.estats.tc_tool_load.increase_count()
+            if self.tc_lane.lane_load_count is not None:
+                self.tc_lane.lane_load_count.increase_count()
+            self.tc_lane.espooler.stats.update_database()
 
         self.tc_lane.status = AFCLaneState.NONE
         self.current_move_distance = 0
