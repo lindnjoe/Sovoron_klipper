@@ -721,7 +721,7 @@ class AFCExtruder:
         if is_load and self.park_detector and self.on_shuttle():
             self.afc.gcode.run_script_from_command("INNER_FLUSH_FILAMENT")
             self.afc.gcode.run_script_from_command("G91")
-            self.afc.gcode.run_script_from_command("G1 Y-10")
+            self.afc.gcode.run_script_from_command("G1 Y-35")
             self.afc.gcode.run_script_from_command("G90")
 
         self.tc_lane.status = AFCLaneState.NONE

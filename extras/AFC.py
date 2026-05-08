@@ -1726,7 +1726,7 @@ class afc:
             if cur_extruder.park_detector:
                 self.gcode.run_script_from_command("INNER_FLUSH_FILAMENT")
                 self.gcode.run_script_from_command("G91")
-                self.gcode.run_script_from_command("G1 Y-10")
+                self.gcode.run_script_from_command("G1 Y-35")
                 self.gcode.run_script_from_command("G90")
                 self.afcDeltaTime.log_with_time("TOOL_LOAD: After INNER_FLUSH_FILAMENT")
 
@@ -1934,7 +1934,7 @@ class afc:
             if cur_extruder.park_detector:
                 self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD")
                 self.gcode.run_script_from_command("G91")
-                self.gcode.run_script_from_command("G1 Y-10")
+                self.gcode.run_script_from_command("G1 Y-35")
                 self.gcode.run_script_from_command("G90")
                 self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After INNER_FILAMENT_UNLOAD")
             else:
@@ -2001,7 +2001,7 @@ class afc:
                 cur_lane.unsync_to_extruder()
                 self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD")
                 self.gcode.run_script_from_command("G91")
-                self.gcode.run_script_from_command("G1 Y-10")
+                self.gcode.run_script_from_command("G1 Y-35")
                 self.gcode.run_script_from_command("G90")
                 self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After INNER_FILAMENT_UNLOAD")
             elif cur_extruder.tool_start == "buffer":
