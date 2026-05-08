@@ -1724,6 +1724,7 @@ class afc:
                     cur_lane.sync_to_extruder()
 
             if cur_extruder.park_detector:
+                self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
                 self.gcode.run_script_from_command("INNER_FLUSH_FILAMENT")
                 self.gcode.run_script_from_command("M400")
                 self.gcode.run_script_from_command("G91")
