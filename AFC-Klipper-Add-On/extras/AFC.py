@@ -1723,6 +1723,16 @@ class afc:
                             return False
                     cur_lane.sync_to_extruder()
 
+            if cur_extruder.park_detector:
+                spool_temp = cur_lane.extruder_temp or 210
+                self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
+                self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
+                self.gcode.run_script_from_command("M400")
+                self.gcode.run_script_from_command("G91")
+                self.gcode.run_script_from_command("G1 Y-35")
+                self.gcode.run_script_from_command("G90")
+                self.afcDeltaTime.log_with_time("TOOL_LOAD: After INNER_FLUSH_FILAMENT")
+
             # Update tool and lane status.
             cur_lane.set_tool_loaded()
             # Setting disable_fault so that fault detection is turned off for users
@@ -1921,15 +1931,21 @@ class afc:
             cur_lane.status = AFCLaneState.NONE
             self.save_vars()
         elif cur_extruder.is_standalone() and cur_extruder.tc_unit_name:
-            # Standalone toolchanger tools (U1-style): filament sensor is upstream
-            # of the extruder so it will still read "loaded" after retract.
-            # Do a quick pull and inform user to manually remove filament.
             if self._check_extruder_temp(cur_lane):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
             self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
+            if cur_extruder.park_detector:
+                spool_temp = cur_lane.extruder_temp or 210
+                self.gcode.run_script_from_command(f"INNER_FILAMENT_UNLOAD TEMP={spool_temp}")
+                self.gcode.run_script_from_command("M400")
+                self.gcode.run_script_from_command("G91")
+                self.gcode.run_script_from_command("G1 Y-35")
+                self.gcode.run_script_from_command("G90")
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After INNER_FILAMENT_UNLOAD")
+            else:
+                self.move_e_pos(cur_extruder.tool_stn_unload * -1, cur_extruder.tool_unload_speed, "Standalone unload")
             cur_lane.set_tool_unloaded()
             self.save_vars()
-            self.logger.info("Unload complete for {}. Please manually remove filament from the filament path.".format(cur_lane.name))
             self.gcode.respond_info("Unload complete for {}. Please manually remove filament from the filament path.".format(cur_lane.name))
         else:
             use_direct_dist = False
@@ -1986,7 +2002,16 @@ class afc:
 
             # Attempt to unload the filament from the extruder, retrying if needed.
             num_tries = 0
-            if cur_extruder.tool_start == "buffer":
+            if cur_extruder.park_detector:
+                spool_temp = cur_lane.extruder_temp or 210
+                cur_lane.unsync_to_extruder()
+                self.gcode.run_script_from_command(f"INNER_FILAMENT_UNLOAD TEMP={spool_temp}")
+                self.gcode.run_script_from_command("M400")
+                self.gcode.run_script_from_command("G91")
+                self.gcode.run_script_from_command("G1 Y-35")
+                self.gcode.run_script_from_command("G90")
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After INNER_FILAMENT_UNLOAD")
+            elif cur_extruder.tool_start == "buffer":
                 # if ramming is enabled, AFC will retract to collapse buffer before unloading
                 cur_lane.unsync_to_extruder()
                 while not cur_lane.get_trailing() and cur_lane.tool_max_unload_attempts > 0:
