@@ -1725,6 +1725,9 @@ class afc:
 
             if cur_extruder.park_detector:
                 self.gcode.run_script_from_command("INNER_FLUSH_FILAMENT")
+                self.gcode.run_script_from_command("G91")
+                self.gcode.run_script_from_command("G1 Y-10")
+                self.gcode.run_script_from_command("G90")
                 self.afcDeltaTime.log_with_time("TOOL_LOAD: After INNER_FLUSH_FILAMENT")
 
             # Update tool and lane status.
@@ -1930,6 +1933,9 @@ class afc:
             self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
             if cur_extruder.park_detector:
                 self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD")
+                self.gcode.run_script_from_command("G91")
+                self.gcode.run_script_from_command("G1 Y-10")
+                self.gcode.run_script_from_command("G90")
                 self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After INNER_FILAMENT_UNLOAD")
             else:
                 self.move_e_pos(cur_extruder.tool_stn_unload * -1, cur_extruder.tool_unload_speed, "Standalone unload")
@@ -1994,6 +2000,9 @@ class afc:
             if cur_extruder.park_detector:
                 cur_lane.unsync_to_extruder()
                 self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD")
+                self.gcode.run_script_from_command("G91")
+                self.gcode.run_script_from_command("G1 Y-10")
+                self.gcode.run_script_from_command("G90")
                 self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After INNER_FILAMENT_UNLOAD")
             elif cur_extruder.tool_start == "buffer":
                 # if ramming is enabled, AFC will retract to collapse buffer before unloading
