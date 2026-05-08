@@ -546,18 +546,10 @@ class AFCExtruder:
                         self.tc_lane._afc_prep_done):
                         if state:
                             if not self.load_active:
-                                custom_load = self.tc_lane.custom_load_cmd or self.custom_load_cmd
-                                if custom_load:
-                                    self.afc.gcode.run_script_from_command(custom_load)
-                                else:
-                                    self.load_unload_sequence(self.tool_stn)
+                                self.load_unload_sequence(self.tool_stn)
                         elif not self.afc.function.is_printing():
-                            custom_unload = self.tc_lane.custom_unload_cmd or self.custom_unload_cmd
-                            if custom_unload:
-                                self.afc.gcode.run_script_from_command(custom_unload)
-                            else:
-                                self.tc_lane.set_tool_unloaded()
-                                self.tc_lane.set_unloaded()
+                            self.tc_lane.set_tool_unloaded()
+                            self.tc_lane.set_unloaded()
 
                         self.afc.save_vars()
             else:
