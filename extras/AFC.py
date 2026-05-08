@@ -1920,6 +1920,14 @@ class afc:
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.NONE
             self.save_vars()
+        elif cur_extruder.is_standalone() and cur_extruder.tc_unit_name:
+            if self._check_extruder_temp(cur_lane):
+                self.afcDeltaTime.log_with_time("Done heating toolhead")
+            self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
+            self.move_e_pos(cur_extruder.tool_stn_unload * -1, cur_extruder.tool_unload_speed, "Standalone unload")
+            cur_lane.set_tool_unloaded()
+            self.save_vars()
+            self.gcode.respond_info("Unload complete for {}. Please manually remove filament from the filament path.".format(cur_lane.name))
         else:
             use_direct_dist = False
             if (cur_lane.hub_obj
