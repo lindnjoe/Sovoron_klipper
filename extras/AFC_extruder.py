@@ -547,7 +547,7 @@ class AFCExtruder:
                         if state:
                             if not self.load_active:
                                 if self.on_shuttle():
-                                    self.afc.TOOL_LOAD(self.tc_lane)
+                                    self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
                                 else:
                                     self.load_unload_sequence(self.tool_stn)
                         elif not self.afc.function.is_printing():

@@ -1299,7 +1299,7 @@ class afc:
 
         purge_length = gcmd.get('PURGE_LENGTH', None)
 
-        self.TOOL_LOAD(cur_lane, purge_length)
+        self.TOOL_LOAD(cur_lane, purge_length, set_start_time=True)
 
     def TOOL_LOAD(self, cur_lane: AFCLane, purge_length: int=None, set_start_time=False):
         """
@@ -1919,6 +1919,8 @@ class afc:
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
             self.gcode.run_script_from_command(custom_unload)
             cur_lane.set_tool_unloaded()
+            cur_lane.do_enable(False)
+            cur_lane.extruder_obj.estats.tc_tool_unload.increase_count()
             cur_lane.status = AFCLaneState.NONE
             self.save_vars()
         elif cur_extruder.is_standalone() and cur_extruder.tc_unit_name:
@@ -1928,6 +1930,8 @@ class afc:
             self.move_e_pos(cur_extruder.tool_stn_unload * -1, cur_extruder.tool_unload_speed, "Standalone unload")
             cur_lane.set_tool_unloaded()
             cur_lane.loaded_to_hub = True
+            cur_lane.do_enable(False)
+            cur_lane.extruder_obj.estats.tc_tool_unload.increase_count()
             self.save_vars()
             self.gcode.respond_info("Unload complete for {}. Please manually remove filament from the filament path.".format(cur_lane.name))
         else:
