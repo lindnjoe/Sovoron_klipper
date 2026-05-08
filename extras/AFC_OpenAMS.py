@@ -2749,9 +2749,6 @@ class afcAMS(afcUnit):
                 msg = '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
                 succeeded = False
         else:
-            cur_lane.loaded_to_hub = True
-            if getattr(cur_lane, "fps_share_prep_load", False):
-                cur_lane._load_state = True
             self.lane_loaded(cur_lane)
             msg += '<span class=success--text>LOCKED</span>'
             if not cur_lane.load_state:
@@ -4196,19 +4193,13 @@ class afcAMS(afcUnit):
             return
 
         if lane_val_bool:
-            # For shared-sensor OpenAMS lanes, set states directly rather than
-            # relying on callbacks designed for physical per-lane sensors.
-            # The callbacks have BoxTurtle-specific logic that doesn't apply here.
-            lane.prep_state = True
-            lane._load_state = True
-            lane.loaded_to_hub = True
-
-            # If prep is done and lane isn't already loaded, mark it loaded
-            if getattr(lane, '_afc_prep_done', False):
-                if lane.status not in (AFCLaneState.LOADED, AFCLaneState.TOOLED):
-                    lane.set_loaded()
-                    lane._post_prep_user_macro()
-
+            # Defer metadata application (material, spoolman IDs, colors, etc.) to
+            # AFC's callbacks. The callbacks will update prep/load state and apply
+            # lane data consistently for both single- and shared-sensor lanes.
+            try:
+                lane.prep_callback(eventtime, True)
+            finally:
+                lane.load_callback(eventtime, True)
 
             # Publish spool_loaded event immediately (TD-1 capture delay happens in event handler)
             # Pass previous_loaded state since lane.load_state is already updated by callbacks above
@@ -5151,7 +5142,10 @@ class afcAMS(afcUnit):
         # set_loaded() applies defaults / next_spool_id.  AFC's _set_values()
         # only resets material and weight; spool_id, color, and temps would
         # otherwise persist across spool swaps.
-        if not previous_loaded and not getattr(lane, "remember_spool", False):
+        # Skip during PREP: spool data was loaded from saved state and should
+        # not be wiped by the initial sensor-triggered spool_loaded event.
+        in_prep = not getattr(self.afc, "prep_done", True)
+        if not previous_loaded and not getattr(lane, "remember_spool", False) and not in_prep:
             try:
                 self.afc.spool.clear_values(lane)
             except Exception:

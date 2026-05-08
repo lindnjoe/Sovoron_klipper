@@ -1936,6 +1936,7 @@ class afc:
             else:
                 self.move_e_pos(cur_extruder.tool_stn_unload * -1, cur_extruder.tool_unload_speed, "Standalone unload")
             cur_lane.set_tool_unloaded()
+            cur_lane.loaded_to_hub = True
             self.save_vars()
             self.gcode.respond_info("Unload complete for {}. Please manually remove filament from the filament path.".format(cur_lane.name))
         else:
