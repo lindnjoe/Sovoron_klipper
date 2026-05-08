@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from gcode import GCodeCommand
     from extras.AFC_lane import AFCLane
     from extras.AFC_functions import afcFunction
-    from extras.AFC_extruder_J0eBol import AFCExtruder
+    from extras.AFC_extruder import AFCExtruder
 
 try: from extras.AFC_utils import ERROR_STR
 except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))

@@ -29,14 +29,14 @@ if TYPE_CHECKING:
     from toolhead import ToolHead
     from extras.heaters import Heater
     from extras.AFC import afc
-    from extras.AFC_Toolchanger_J0eBol import AfcToolchanger
+    from extras.AFC_Toolchanger import AfcToolchanger
     from extras.AFC_functions import afcFunction
     from extras.AFC_utils import AFC_moonraker
 
 try: from extras.AFC_utils import ERROR_STR
 except: raise error("Error when trying to import AFC_utils.ERROR_STR\n{trace}".format(trace=traceback.format_exc()))
 
-try: from extras.AFC_Toolchanger_J0eBol import DETECT_PRESENT
+try: from extras.AFC_Toolchanger import DETECT_PRESENT
 except: DETECT_PRESENT = 1  # fallback if toolchanger not loaded
 
 try: from extras.AFC_utils import add_filament_switch
