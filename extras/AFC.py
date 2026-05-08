@@ -1533,6 +1533,15 @@ class afc:
         if custom_result is not None:
             return custom_result
 
+        if cur_extruder.is_standalone() and cur_extruder.tc_unit_name:
+            if self._check_extruder_temp(cur_lane):
+                self.afcDeltaTime.log_with_time("Done heating toolhead")
+            self.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "Standalone load")
+            cur_lane.status = AFCLaneState.TOOL_LOADED
+            cur_lane.set_tool_loaded()
+            self.save_vars()
+            return True
+
         dock_dropped_off = False
         load_result = False
         try:
@@ -1545,7 +1554,7 @@ class afc:
 
             use_direct_dist = False
             if (cur_lane.hub_obj
-                and cur_lane.hub_obj.use_dist_hub):
+                and getattr(cur_lane.hub_obj, 'use_dist_hub', False)):
                 use_direct_dist = True
 
             if self._check_extruder_temp(cur_lane):
@@ -1924,7 +1933,7 @@ class afc:
         else:
             use_direct_dist = False
             if (cur_lane.hub_obj
-                and cur_lane.hub_obj.use_dist_hub):
+                and getattr(cur_lane.hub_obj, 'use_dist_hub', False)):
                 use_direct_dist = True
             # START THE ANIMATION IMMEDIATELY (Plays while heating!)
             # Activate LED indicator for unloading.
