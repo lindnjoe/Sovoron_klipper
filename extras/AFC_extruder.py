@@ -718,7 +718,7 @@ class AFCExtruder:
         info_str = "loading" if is_load else "unloading"
         self.logger.info(f"{self.name} {info_str} done")
 
-        if is_load and self.park_detector:
+        if is_load and self.park_detector and self.on_shuttle():
             self.afc.gcode.run_script_from_command("INNER_FLUSH_FILAMENT")
             self.afc.gcode.run_script_from_command("G91")
             self.afc.gcode.run_script_from_command("G1 Y-10")
