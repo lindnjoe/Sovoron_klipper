@@ -1996,7 +1996,7 @@ class afc:
                     )
                     # attempt to return buffer to trailing pin
                     cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT)
-                    self.reactor.pause(self.reactor.monotonic() + 0.1)
+                    self.reactor.pause(self.reactor.monotonic() + 0.5)
                     if num_tries > cur_lane.tool_max_unload_attempts:
                         msg = ''
                         msg += "Buffer did not become compressed after {} short moves.\n".format(cur_lane.tool_max_unload_attempts)
