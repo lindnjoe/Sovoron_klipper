@@ -714,8 +714,13 @@ class AFCExtruder:
         self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
         self._captured_toolhead_temp = None
 
-        info_str = "loading" if self.current_move_distance > 0 else "unloading"
+        is_load = self.current_move_distance > 0
+        info_str = "loading" if is_load else "unloading"
         self.logger.info(f"{self.name} {info_str} done")
+
+        if is_load and self.park_detector:
+            self.afc.gcode.run_script_from_command("INNER_FLUSH_FILAMENT")
+
         self.tc_lane.status = AFCLaneState.NONE
         self.current_move_distance = 0
         self.afc.save_vars()

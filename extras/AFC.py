@@ -1723,6 +1723,10 @@ class afc:
                             return False
                     cur_lane.sync_to_extruder()
 
+            if cur_extruder.park_detector:
+                self.gcode.run_script_from_command("INNER_FLUSH_FILAMENT")
+                self.afcDeltaTime.log_with_time("TOOL_LOAD: After INNER_FLUSH_FILAMENT")
+
             # Update tool and lane status.
             cur_lane.set_tool_loaded()
             # Setting disable_fault so that fault detection is turned off for users
