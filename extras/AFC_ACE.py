@@ -1067,6 +1067,113 @@ class afcACE(afcUnit):
             f"ACE: restored TOOLED state for {lane.name}"
         )
 
+    def _sync_lane_states(self, resync_prev, log_prefix):
+        """Sync lane states from cached slot inventory and detect runout.
+
+        Shared by _on_hw_status_callback and _poll_slot_status to avoid
+        duplicating ~100 lines of lane-state reconciliation logic.
+        """
+        is_printing = False
+        try:
+            is_printing = self.afc.function.is_printing()
+        except Exception:
+            pass
+
+        for lane in self.lanes.values():
+            local_slot = self._get_local_slot_for_lane(lane)
+            if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
+                continue
+
+            slot_info = self._slot_inventory[local_slot]
+            slot_status = slot_info.get("status", "") if slot_info else ""
+            slot_ready = slot_status == "ready"
+            slot_transient = slot_status in ("shifting", "feeding", "unwinding")
+
+            if not slot_transient:
+                lane._load_state = slot_ready
+                lane.prep_state = slot_ready
+                if slot_ready:
+                    lane._ace_runout_triggered = False
+
+            prev_ready = self._prev_slot_states.get(lane.name)
+            if not slot_transient:
+                self._prev_slot_states[lane.name] = slot_ready
+
+            prep_done = getattr(lane, '_afc_prep_done', False)
+
+            if slot_ready and prep_done and lane.status == AFCLaneState.NONE:
+                if (lane.tool_loaded
+                        and hasattr(lane, 'extruder_obj')
+                        and lane.extruder_obj.lane_loaded == lane.name):
+                    self.logger.info(
+                        f"{log_prefix}: {lane.name} slot {local_slot} ready, "
+                        f"restoring TOOLED state from saved vars"
+                    )
+                    self._restore_tool_loaded_state(lane)
+                elif lane.name in self._hub_load_suppressed:
+                    self.logger.info(
+                        f"{log_prefix}: {lane.name} slot {local_slot} ready "
+                        f"but hub-load suppressed (ejected), setting loaded "
+                        f"without re-feed"
+                    )
+                    lane.set_loaded()
+                    self.afc.save_vars()
+                else:
+                    self.logger.info(
+                        f"{log_prefix}: {lane.name} slot {local_slot} ready, "
+                        f"setting loaded"
+                    )
+                    self.afc.spool.clear_values(lane)
+                    lane.set_loaded()
+                    self._refresh_slot_inventory(local_slot)
+                    slot_info = self._slot_inventory[local_slot]
+                    self._apply_slot_filament_defaults(lane, slot_info)
+                    self._sync_rfid_to_spoolman(lane, slot_info)
+                    self.lane_illuminate_spool(lane)
+                    self._hub_load_suppressed.discard(lane.name)
+                    self.afc.save_vars()
+                    try:
+                        self.prep_post_load(lane)
+                    except Exception as e:
+                        self.logger.error(
+                            f"{log_prefix}: prep_post_load error for "
+                            f"{lane.name}: {e}"
+                        )
+
+            elif (not self._drying_active and not resync_prev
+                    and prev_ready and not slot_ready and not slot_transient):
+                self._hub_load_suppressed.discard(lane.name)
+                if is_printing and lane.status == AFCLaneState.TOOLED:
+                    self.logger.info(
+                        f"ACE runout detected on {lane.name} "
+                        f"(slot {local_slot})"
+                    )
+                    self._clear_slot_inventory(local_slot)
+                    lane.loaded_to_hub = False
+                    self._set_hub_state(lane, False)
+                    if lane.runout_lane:
+                        try:
+                            lane._perform_infinite_runout()
+                        except Exception as e:
+                            self.logger.error(
+                                f"ACE infinite spool failed for {lane.name}: "
+                                f"{e}\n{traceback.format_exc()}"
+                            )
+                            lane._perform_pause_runout()
+                        finally:
+                            lane.loaded_to_hub = False
+                    else:
+                        self._ace_pause_runout(lane)
+                elif lane.status == AFCLaneState.LOADED:
+                    self._clear_slot_inventory(local_slot)
+                    lane.set_unloaded()
+                    self.lane_not_ready(lane)
+                    self.afc.save_vars()
+                else:
+                    self._clear_slot_inventory(local_slot)
+                    self.lane_not_ready(lane)
+                    self.afc.save_vars()
+
     def _on_hw_status_callback(self, response):
         """Process slot status from any ACE response (including heartbeat).
 
@@ -1146,125 +1253,7 @@ class afcACE(afcUnit):
             if i < self.SLOTS_PER_UNIT and isinstance(slot_data, dict):
                 self._slot_inventory[i]["status"] = slot_data.get("status", "")
 
-        # Sync slot states and ensure lane consistency
-        for lane in self.lanes.values():
-            local_slot = self._get_local_slot_for_lane(lane)
-            if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
-                continue
-
-            slot_info = self._slot_inventory[local_slot]
-            slot_status = slot_info.get("status", "") if slot_info else ""
-            slot_ready = slot_status == "ready"
-            slot_transient = slot_status in ("shifting", "feeding", "unwinding")
-
-            # Keep load/prep state in sync with slot status, but skip
-            # transient motor states so the lane doesn't briefly show empty.
-            if not slot_transient:
-                lane._load_state = slot_ready
-                lane.prep_state = slot_ready
-                if slot_ready:
-                    lane._ace_runout_triggered = False
-
-            prep_done = getattr(lane, '_afc_prep_done', False)
-
-            # State consistency: if hardware says ready but lane is stuck
-            # in NONE, fix it regardless of transition detection
-            if slot_ready and prep_done and lane.status == AFCLaneState.NONE:
-                # Check if this lane was tool-loaded before restart -
-                # restore TOOLED state instead of just LOADED.
-                if (lane.tool_loaded
-                        and hasattr(lane, 'extruder_obj')
-                        and lane.extruder_obj.lane_loaded == lane.name):
-                    self.logger.info(
-                        f"ACE callback: {lane.name} slot {local_slot} ready, "
-                        f"restoring TOOLED state from saved vars"
-                    )
-                    self._restore_tool_loaded_state(lane)
-                elif lane.name in self._hub_load_suppressed:
-                    # Lane was explicitly ejected -- slot is still ready but
-                    # we must NOT treat this as new filament.  Restore LOADED
-                    # state so the lane isn't stuck in NONE, but keep the
-                    # suppression flag so prep_post_load won't re-feed to hub.
-                    self.logger.info(
-                        f"ACE callback: {lane.name} slot {local_slot} ready "
-                        f"but hub-load suppressed (ejected), setting loaded "
-                        f"without re-feed"
-                    )
-                    lane.set_loaded()
-                    self.afc.save_vars()
-                else:
-                    self.logger.info(
-                        f"ACE callback: {lane.name} slot {local_slot} ready, "
-                        f"setting loaded"
-                    )
-                    # New filament insertion: clear old data, apply fresh.
-                    self.afc.spool.clear_values(lane)
-                    lane.set_loaded()
-                    self._refresh_slot_inventory(local_slot)
-                    slot_info = self._slot_inventory[local_slot]
-                    self._apply_slot_filament_defaults(lane, slot_info)
-                    # Auto-create/assign Spoolman spool from RFID data
-                    self._sync_rfid_to_spoolman(lane, slot_info)
-                    self.lane_illuminate_spool(lane)
-                    # New filament clears any previous suppression
-                    self._hub_load_suppressed.discard(lane.name)
-                    self.afc.save_vars()
-                    # Feed filament to hub if load_to_hub is enabled
-                    try:
-                        self.prep_post_load(lane)
-                    except Exception as e:
-                        self.logger.error(
-                            f"ACE callback: prep_post_load error for "
-                            f"{lane.name}: {e}"
-                        )
-
-            # When a slot goes empty, handle runout for TOOLED lanes
-            # or transition LOADED lanes to unloaded.  Skip transition
-            # detection on the first callback after an operation ends
-            # (_prev_slot_states is stale and would cause false triggers).
-            if not slot_ready and not slot_transient and not resync_prev:
-                prev_ready_cb = self._prev_slot_states.get(lane.name)
-                if prev_ready_cb:
-                    self._hub_load_suppressed.discard(lane.name)
-                    is_printing = False
-                    try:
-                        is_printing = self.afc.function.is_printing()
-                    except Exception:
-                        pass
-                    if (not self._drying_active
-                            and is_printing
-                            and lane.status == AFCLaneState.TOOLED):
-                        self.logger.info(
-                            f"ACE runout detected on {lane.name} "
-                            f"(slot {local_slot})"
-                        )
-                        self._clear_slot_inventory(local_slot)
-                        lane.loaded_to_hub = False
-                        self._set_hub_state(lane, False)
-                        if lane.runout_lane:
-                            try:
-                                lane._perform_infinite_runout()
-                            except Exception as e:
-                                self.logger.error(
-                                    f"ACE infinite spool failed for "
-                                    f"{lane.name}: {e}\n"
-                                    f"{traceback.format_exc()}"
-                                )
-                                lane._perform_pause_runout()
-                            finally:
-                                lane.loaded_to_hub = False
-                        else:
-                            self._ace_pause_runout(lane)
-                    elif lane.status == AFCLaneState.LOADED:
-                        self._clear_slot_inventory(local_slot)
-                        lane.set_unloaded()
-                        self.lane_not_ready(lane)
-                        self.afc.save_vars()
-
-            # Don't update prev state during transient states to
-            # avoid false runout triggers in _poll_slot_status.
-            if not slot_transient:
-                self._prev_slot_states[lane.name] = slot_ready
+        self._sync_lane_states(resync_prev, "ACE callback")
 
     def _on_ace_reconnected(self):
         """Called after ACE reconnects (power cycle or USB disconnect).
@@ -3958,12 +3947,6 @@ class afcACE(afcUnit):
         if resync_prev:
             self._prev_states_stale = False
 
-        is_printing = False
-        try:
-            is_printing = self.afc.function.is_printing()
-        except Exception:
-            pass
-
         # Single get_status call - refreshes cached hw status AND slot states
         try:
             hw_status = self._ace.get_status(timeout=2.0)
@@ -3987,136 +3970,17 @@ class afcACE(afcUnit):
             except Exception:
                 pass
 
-        # Sync loaded states and detect runout
-        for lane in self.lanes.values():
-            local_slot = self._get_local_slot_for_lane(lane)
-            if local_slot < 0 or local_slot >= self.SLOTS_PER_UNIT:
-                continue
-
-            slot_info = self._slot_inventory[local_slot]
-            slot_status = slot_info.get("status", "") if slot_info else ""
-            slot_ready = slot_status == "ready"
-
-            # "shifting" is a transient state during feed_assist start -
-            # don't treat it as not-ready or it will false-trigger runout.
-            # "feeding" and "unwinding" are motor operations (prep_post_load,
-            # eject, calibration) - don't clear load/prep state or update
-            # prev_slot_states or the lane will briefly show empty in the UI
-            # and then re-trigger set_loaded + prep_post_load when the slot
-            # returns to "ready".
-            slot_transient = slot_status in ("shifting", "feeding", "unwinding")
-
-            # Always sync load/prep state so status is accurate,
-            # but skip during transient motor operations.
-            if not slot_transient:
-                lane._load_state = slot_ready
-                lane.prep_state = slot_ready
-                if slot_ready:
-                    lane._ace_runout_triggered = False
-
-            prev_ready = self._prev_slot_states.get(lane.name)
-            # Don't update prev state during transient states - wait
-            # for a definitive ready/empty to avoid false runout triggers.
-            if not slot_transient:
-                self._prev_slot_states[lane.name] = slot_ready
-
-            # State consistency: if hardware says ready but lane is stuck
-            # in NONE, fix it (covers first poll, missed transitions, etc.)
-            if slot_ready and lane._afc_prep_done and lane.status == AFCLaneState.NONE:
-                # Check if this lane was tool-loaded before restart -
-                # restore TOOLED state instead of just LOADED.
-                if (lane.tool_loaded
-                        and hasattr(lane, 'extruder_obj')
-                        and lane.extruder_obj.lane_loaded == lane.name):
-                    self.logger.info(
-                        f"ACE poll: {lane.name} slot {local_slot} ready, "
-                        f"restoring TOOLED state from saved vars"
-                    )
-                    self._restore_tool_loaded_state(lane)
-                elif lane.name in self._hub_load_suppressed:
-                    # Lane was explicitly ejected -- slot is still ready but
-                    # we must NOT treat this as new filament.  Restore LOADED
-                    # state so the lane isn't stuck in NONE, but keep the
-                    # suppression flag so prep_post_load won't re-feed to hub.
-                    self.logger.info(
-                        f"ACE poll: {lane.name} slot {local_slot} ready "
-                        f"but hub-load suppressed (ejected), setting loaded "
-                        f"without re-feed"
-                    )
-                    lane.set_loaded()
-                    self.afc.save_vars()
-                else:
-                    self.logger.info(
-                        f"ACE poll: {lane.name} slot {local_slot} ready, "
-                        f"setting loaded"
-                    )
-                    # New filament insertion: clear old data, apply fresh.
-                    self.afc.spool.clear_values(lane)
-                    lane.set_loaded()
-                    self._refresh_slot_inventory(local_slot)
-                    slot_info = self._slot_inventory[local_slot]
-                    self._apply_slot_filament_defaults(lane, slot_info)
-                    # Auto-create/assign Spoolman spool from RFID data
-                    self._sync_rfid_to_spoolman(lane, slot_info)
-                    self.lane_illuminate_spool(lane)
-                    # New filament clears any previous suppression
-                    self._hub_load_suppressed.discard(lane.name)
-                    self.afc.save_vars()
-                    # Feed filament to hub if load_to_hub is enabled
-                    try:
-                        self.prep_post_load(lane)
-                    except Exception as e:
-                        self.logger.error(
-                            f"ACE poll: prep_post_load error for "
-                            f"{lane.name}: {e}"
-                        )
-
-            # Detect ready -> not-ready transition (filament runout)
-            # Skip runout detection while dryer is running - drying can
-            # cause transient slot state changes that aren't real runouts.
-            # Also skip on first poll after an operation ends (stale prev).
-            elif (not self._drying_active and not resync_prev
-                    and prev_ready and not slot_ready and not slot_transient):
-                self._hub_load_suppressed.discard(lane.name)
-                if is_printing and lane.status == AFCLaneState.TOOLED:
-                    self.logger.info(
-                        f"ACE runout detected on {lane.name} (slot {local_slot})"
-                    )
-                    lane.loaded_to_hub = False
-                    self._set_hub_state(lane, False)
-
-                    if lane.runout_lane:
-                        try:
-                            lane._perform_infinite_runout()
-                        except Exception as e:
-                            self.logger.error(
-                                f"ACE infinite spool failed for {lane.name}: "
-                                f"{e}\n{traceback.format_exc()}"
-                            )
-                            lane._perform_pause_runout()
-                        finally:
-                            lane.loaded_to_hub = False
-                    else:
-                        self._ace_pause_runout(lane)
-                elif lane.status == AFCLaneState.LOADED:
-                    # Slot went empty - transition to unloaded so new
-                    # filament insertion is properly detected.
-                    self._clear_slot_inventory(local_slot)
-                    lane.set_unloaded()
-                    self.lane_not_ready(lane)
-                    self.afc.save_vars()
-                else:
-                    # Filament physically removed after eject or while in
-                    # NONE/EJECTING state — clear stale inventory so a
-                    # fresh spool is properly detected on next insertion.
-                    self._clear_slot_inventory(local_slot)
-                    self.lane_not_ready(lane)
-                    self.afc.save_vars()
+        self._sync_lane_states(resync_prev, "ACE poll")
 
         # State-based runout: if a TOOLED lane shows no filament during
         # printing, trigger runout regardless of whether we caught the
         # transition.  This catches edge cases where the transition-based
         # detection missed the ready→empty change.
+        is_printing = False
+        try:
+            is_printing = self.afc.function.is_printing()
+        except Exception:
+            pass
         if is_printing and not self._drying_active:
             for lane in self.lanes.values():
                 if lane.status != AFCLaneState.TOOLED:

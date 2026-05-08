@@ -1626,18 +1626,21 @@ class afcAMS(afcUnit):
         # Shared toolhead steps: cut, park, form tip
         if afc.tool_cut:
             cur_lane.extruder_obj.estats.increase_cut_total()
-            afc.gcode.run_script_from_command(afc.tool_cut_cmd)
+            afc.gcode.run_script_from_command(
+                f"{afc.tool_cut_cmd} EXTRUDER={cur_extruder.name}")
             afc.afcDeltaTime.log_with_time("TOOL_UNLOAD: After cut")
             afc.function.log_toolhead_pos()
 
             if afc.park:
-                afc.gcode.run_script_from_command(afc.park_cmd)
+                afc.gcode.run_script_from_command(
+                    f"{afc.park_cmd} EXTRUDER={cur_extruder.name}")
                 afc.afcDeltaTime.log_with_time("TOOL_UNLOAD: After park")
                 afc.function.log_toolhead_pos()
 
         if afc.form_tip:
             if afc.park:
-                afc.gcode.run_script_from_command(afc.park_cmd)
+                afc.gcode.run_script_from_command(
+                    f"{afc.park_cmd} EXTRUDER={cur_extruder.name}")
                 afc.afcDeltaTime.log_with_time("TOOL_UNLOAD: After form tip park")
                 afc.function.log_toolhead_pos()
 
