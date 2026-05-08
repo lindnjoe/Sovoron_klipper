@@ -2819,8 +2819,8 @@ class afcAMS(afcUnit):
                 lambda et: self.sync_openams_sensors(
                     et,
                     sync_hub=True,
-                    sync_f1s=True,
-                    allow_lane_clear=True,
+                    sync_f1s=False,
+                    allow_lane_clear=False,
                 ),
                 self.afc.reactor.monotonic() + 0.2,
             )
