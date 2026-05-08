@@ -2749,7 +2749,6 @@ class afcAMS(afcUnit):
                 msg = '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
                 succeeded = False
         else:
-            cur_lane.loaded_to_hub = True
             self.lane_loaded(cur_lane)
             msg += '<span class=success--text>LOCKED</span>'
             if not cur_lane.load_state:
@@ -3922,8 +3921,20 @@ class afcAMS(afcUnit):
 
         hub = getattr(lane, "hub_obj", None)
         hub_val = bool(value)
+
+        # loaded_to_hub is a POSITION: filament staged BEFORE the hub sensor.
+        # Hub sensor True = filament actively passing through (load/unload).
+        # Hub sensor False = filament either staged before sensor (loaded_to_hub)
+        # or not present at all.
+        # Only set loaded_to_hub True when hub trips (filament reached hub).
+        # Never clear it on hub False when F1S still shows filament — that
+        # just means the filament retracted to the staged position.
+        if hub_val:
+            lane.loaded_to_hub = True
+        elif not bool(getattr(lane, "_load_state", False)):
+            lane.loaded_to_hub = False
+
         if hub is None:
-            lane.loaded_to_hub = hub_val
             if self.hardware_service is not None:
                 lane_state = getattr(lane, "load_state", False)
                 tool_state = self._lane_reports_tool_filament(lane)
@@ -3936,16 +3947,10 @@ class afcAMS(afcUnit):
                     self.logger.error(f"Failed to update lane snapshot for {lane.name}: {e}")
             return
 
-        if hub_val != getattr(lane, "loaded_to_hub", False):
-            # Don't clear loaded_to_hub when F1S still detects filament —
-            # filament is staged at the hub position, just not triggering the sensor.
-            if not hub_val and getattr(lane, "_load_state", False):
-                return
-            hub.switch_pin_callback(eventtime, hub_val)
-            lane.loaded_to_hub = hub_val
-            fila = getattr(hub, "fila", None)
-            if fila is not None:
-                fila.runout_helper.note_filament_present(eventtime, hub_val)
+        hub.switch_pin_callback(eventtime, hub_val)
+        fila = getattr(hub, "fila", None)
+        if fila is not None:
+            fila.runout_helper.note_filament_present(eventtime, hub_val)
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -3987,30 +3992,33 @@ class afcAMS(afcUnit):
                 if sync_hub and hub_values is not None and spool_idx < len(hub_values):
                     hw_hub = bool(hub_values[spool_idx])
                     current = getattr(lane, "loaded_to_hub", False)
-                    if hw_hub != current:
-                        # Don't clear loaded_to_hub when F1S still detects filament —
-                        # filament is staged at the hub position, sensor just isn't triggered.
-                        if not hw_hub and getattr(lane, "_load_state", False):
-                            pass
-                        else:
-                            lane.loaded_to_hub = hw_hub
-                            hub_obj = getattr(lane, "hub_obj", None)
-                            if hub_obj is not None:
-                                try:
-                                    if hasattr(hub_obj, "switch_pin_callback"):
-                                        hub_obj.switch_pin_callback(eventtime, hw_hub)
-                                    fila = getattr(hub_obj, "fila", None)
-                                    if fila is not None and hasattr(fila, "runout_helper"):
-                                        fila.runout_helper.note_filament_present(eventtime, hw_hub)
-                                except Exception as hub_e:
-                                    self.logger.debug(
-                                        f"sync_openams_sensors: failed to update virtual hub sensor "
-                                        f"for {lane.name}: {hub_e}"
-                                    )
+                    # loaded_to_hub is a position (before the hub sensor).
+                    # Only set True when hardware shows filament at hub.
+                    # Don't clear to False when F1S still shows filament —
+                    # that just means filament is staged before the sensor.
+                    if hw_hub and not current:
+                        lane.loaded_to_hub = True
+                    elif not hw_hub and not bool(getattr(lane, "_load_state", False)):
+                        lane.loaded_to_hub = False
+                    new_loaded = getattr(lane, "loaded_to_hub", False)
+                    hub_obj = getattr(lane, "hub_obj", None)
+                    if hub_obj is not None:
+                        try:
+                            if hasattr(hub_obj, "switch_pin_callback"):
+                                hub_obj.switch_pin_callback(eventtime, hw_hub)
+                            fila = getattr(hub_obj, "fila", None)
+                            if fila is not None and hasattr(fila, "runout_helper"):
+                                fila.runout_helper.note_filament_present(eventtime, hw_hub)
+                        except Exception as hub_e:
                             self.logger.debug(
-                                f"sync_openams_sensors: corrected loaded_to_hub "
-                                f"{current}->{hw_hub} for {lane.name}"
+                                f"sync_openams_sensors: failed to update virtual hub sensor "
+                                f"for {lane.name}: {hub_e}"
                             )
+                    if new_loaded != current:
+                        self.logger.debug(
+                            f"sync_openams_sensors: corrected loaded_to_hub "
+                            f"{current}->{new_loaded} for {lane.name}"
+                        )
 
                 # Sync F1S sensor -> load_state/prep_state (only when allowed)
                 if sync_f1s and f1s_values is not None and spool_idx < len(f1s_values):
@@ -4203,19 +4211,13 @@ class afcAMS(afcUnit):
             return
 
         if lane_val_bool:
-            # For shared-sensor OpenAMS lanes, set states directly rather than
-            # relying on callbacks designed for physical per-lane sensors.
-            # The callbacks have BoxTurtle-specific logic that doesn't apply here.
-            lane.prep_state = True
-            lane._load_state = True
-            lane.loaded_to_hub = True
-
-            # If prep is done and lane isn't already loaded, mark it loaded
-            if getattr(lane, '_afc_prep_done', False):
-                if lane.status not in (AFCLaneState.LOADED, AFCLaneState.TOOLED):
-                    lane.set_loaded()
-                    lane._post_prep_user_macro()
-
+            # Defer metadata application (material, spoolman IDs, colors, etc.) to
+            # AFC's callbacks. The callbacks will update prep/load state and apply
+            # lane data consistently for both single- and shared-sensor lanes.
+            try:
+                lane.prep_callback(eventtime, True)
+            finally:
+                lane.load_callback(eventtime, True)
 
             # Publish spool_loaded event immediately (TD-1 capture delay happens in event handler)
             # Pass previous_loaded state since lane.load_state is already updated by callbacks above
@@ -5158,7 +5160,10 @@ class afcAMS(afcUnit):
         # set_loaded() applies defaults / next_spool_id.  AFC's _set_values()
         # only resets material and weight; spool_id, color, and temps would
         # otherwise persist across spool swaps.
-        if not previous_loaded and not getattr(lane, "remember_spool", False):
+        # Skip during PREP: spool data was loaded from saved state and should
+        # not be wiped by the initial sensor-triggered spool_loaded event.
+        in_prep = not getattr(self.afc, "prep_done", True)
+        if not previous_loaded and not getattr(lane, "remember_spool", False) and not in_prep:
             try:
                 self.afc.spool.clear_values(lane)
             except Exception:
