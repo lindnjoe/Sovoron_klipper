@@ -1988,7 +1988,7 @@ class afc:
             if cur_extruder.tool_start == "buffer":
                 # if ramming is enabled, AFC will retract to collapse buffer before unloading
                 cur_lane.unsync_to_extruder()
-                while not cur_lane.get_trailing() and self.tool_max_unload_attempts > 0:
+                while not cur_lane.get_trailing() and cur_lane.tool_max_unload_attempts > 0:
                     num_tries += 1
                     self.afcDeltaTime.log_with_time(
                         f'TOOL_UNLOAD: Retracting Buffer, Try:{num_tries}'
@@ -1996,9 +1996,9 @@ class afc:
                     # attempt to return buffer to trailing pin
                     cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT)
                     self.reactor.pause(self.reactor.monotonic() + 0.1)
-                    if num_tries > self.tool_max_unload_attempts:
+                    if num_tries > cur_lane.tool_max_unload_attempts:
                         msg = ''
-                        msg += "Buffer did not become compressed after {} short moves.\n".format(self.tool_max_unload_attempts)
+                        msg += "Buffer did not become compressed after {} short moves.\n".format(cur_lane.tool_max_unload_attempts)
                         msg += "Setting and increasing 'tool_max_unload_attempts' in AFC.cfg may improve unloading reliability\n\n"
                         msg += "Please check to make sure filament is unloaded from the toolhead's extruder. If filament is still\n"
                         msg += "loaded manually retract back until its free, then run UNSET_LANE_LOADED and then do manual\n"
@@ -2032,15 +2032,15 @@ class afc:
                         )
                         # attempt to move filament back from sensor without moving extruder
                         cur_lane.move_advanced(cur_lane.short_move_dis * -1, SpeedMode.SHORT)
-                        if num_tries > self.tool_max_unload_attempts:
+                        if num_tries > cur_lane.tool_max_unload_attempts:
                             # note that this will break out of the loop and immediately fall into the error
                             # condition of the next loop for messaging to the user
                             break
-                        self.reactor.pause(self.reactor.monotonic() + 0.1)
+                        self.reactor.pause(self.reactor.monotonic() + 0.5)
 
                 while cur_lane.get_toolhead_pre_sensor_state() or cur_extruder.tool_end_state:
                     num_tries += 1
-                    if num_tries > self.tool_max_unload_attempts:
+                    if num_tries > cur_lane.tool_max_unload_attempts:
                         # Handle failure if the filament cannot be unloaded.
                         message = 'Failed to unload filament from toolhead. Filament stuck in toolhead.'
                         if self.function.in_print():
