@@ -2819,8 +2819,9 @@ class afcAMS(afcUnit):
                 lambda et: self.sync_openams_sensors(
                     et,
                     sync_hub=True,
-                    sync_f1s=False,
+                    sync_f1s=True,
                     allow_lane_clear=False,
+                    suppress_events=True,
                 ),
                 self.afc.reactor.monotonic() + 0.2,
             )
@@ -3957,7 +3958,7 @@ class afcAMS(afcUnit):
             except Exception as e:
                 self.logger.error(f"Failed to update lane snapshot for {lane.name}: {e}")
 
-    def sync_openams_sensors(self, eventtime, *, sync_hub=True, sync_f1s=False, allow_lane_clear=True):
+    def sync_openams_sensors(self, eventtime, *, sync_hub=True, sync_f1s=False, allow_lane_clear=True, suppress_events=False):
         """Periodic level-based sync of OAMS hardware sensors to AFC lane state.
 
         Called periodically as a level-based sync complement to edge-triggered callbacks.
@@ -4017,6 +4018,7 @@ class afcAMS(afcUnit):
                                 self._update_shared_lane(
                                     lane, hw_f1s, eventtime,
                                     allow_clear=allow_lane_clear,
+                                    suppress_events=suppress_events,
                                 )
                             else:
                                 lane.load_callback(eventtime, hw_f1s)
@@ -4122,7 +4124,7 @@ class afcAMS(afcUnit):
 
         return not bool(hub_state)
 
-    def _update_shared_lane(self, lane, lane_val, eventtime, *, allow_clear: bool = True):
+    def _update_shared_lane(self, lane, lane_val, eventtime, *, allow_clear: bool = True, suppress_events: bool = False):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
         # Check if runout handling requires blocking this sensor update
         if self._should_block_sensor_update_for_runout(lane, lane_val):
@@ -4211,7 +4213,7 @@ class afcAMS(afcUnit):
 
             # Publish spool_loaded event immediately (TD-1 capture delay happens in event handler)
             # Pass previous_loaded state since lane.load_state is already updated by callbacks above
-            if self.event_bus is not None:
+            if self.event_bus is not None and not suppress_events:
                 try:
                     spool_index = self._get_openams_spool_index(lane)
                     self.event_bus.publish("spool_loaded",

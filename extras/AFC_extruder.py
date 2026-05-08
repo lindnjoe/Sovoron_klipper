@@ -638,6 +638,7 @@ class AFCExtruder:
         # TODO: maybe make this so this same function can be called normally when lanes are assigned
         # to extruders...
         if distance > 0:
+            self.afc.afcDeltaTime.set_start_time()
             self.tc_lane.unit_obj.lane_loading(self.tc_lane)
             self.tc_lane.status = AFCLaneState.TOOL_LOADING
         else:
@@ -726,6 +727,11 @@ class AFCExtruder:
             self.afc.gcode.run_script_from_command("G91")
             self.afc.gcode.run_script_from_command("G1 Y-35")
             self.afc.gcode.run_script_from_command("G90")
+
+        if is_load:
+            load_time = self.afc.afcDeltaTime.log_major_delta(
+                "{} is now loaded in toolhead".format(self.tc_lane.name), False)
+            self.afc.afc_stats.average_tool_load_time.average_time(load_time)
 
         self.tc_lane.status = AFCLaneState.NONE
         self.current_move_distance = 0
