@@ -551,7 +551,7 @@ class AFCExtruder:
                                 else:
                                     self.load_unload_sequence(self.tool_stn)
                         elif not self.afc.function.is_printing():
-                            if self.on_shuttle() and self.lane_loaded:
+                            if self.lane_loaded:
                                 self.afc.TOOL_UNLOAD(self.tc_lane)
                             else:
                                 self.tc_lane.set_tool_unloaded()
