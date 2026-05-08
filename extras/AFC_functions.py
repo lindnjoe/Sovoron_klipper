@@ -1394,6 +1394,12 @@ class afcFunction:
         if td1 is not None:
             title = "TD-1 Calibration"
             td1_lane = self.afc.lanes[td1]
+            if (td1_lane.is_direct_hub()
+                and td1_lane.tool_loaded):
+                msg = f"{td1_lane.name} loaded to toolhead, unload from toolhead before "
+                msg += "trying to calibrate td1_bowden_length."
+                self.afc.error.AFC_error(msg, pause=False)
+                return
             if td1_lane.hub_obj.state:
                 msg = f"{td1_lane.hub_obj.name} hub is triggered, make sure hub is clear before trying to calibrate TD-1 bowden length"
                 self.afc.error.AFC_error(msg, pause=False)
@@ -1402,7 +1408,7 @@ class afcFunction:
 
             checked, msg, pos = td1_lane.unit_obj.calibrate_td1( td1_lane, dis, tol)
             if not checked:
-                fail_string = f"{td1} failed to calibrate bowden length {msg}"
+                fail_string = f"{td1} failed to calibrate TD-1 bowden length, {msg}"
                 self.afc.error.AFC_error(fail_string, pause=False)
                 self.afc.gcode.run_script_from_command(f"AFC_CALI_FAIL TITLE='{title} Failed' FAIL={td1} DISTANCE={pos} msg='{fail_string}' RESET=1")
                 return
