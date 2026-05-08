@@ -1935,7 +1935,8 @@ class afc:
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
             self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
             if cur_extruder.park_detector:
-                self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD")
+                spool_temp = cur_lane.extruder_temp or 210
+                self.gcode.run_script_from_command(f"INNER_FILAMENT_UNLOAD TEMP={spool_temp}")
                 self.gcode.run_script_from_command("M400")
                 self.gcode.run_script_from_command("G91")
                 self.gcode.run_script_from_command("G1 Y-35")
@@ -2002,8 +2003,9 @@ class afc:
             # Attempt to unload the filament from the extruder, retrying if needed.
             num_tries = 0
             if cur_extruder.park_detector:
+                spool_temp = cur_lane.extruder_temp or 210
                 cur_lane.unsync_to_extruder()
-                self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD")
+                self.gcode.run_script_from_command(f"INNER_FILAMENT_UNLOAD TEMP={spool_temp}")
                 self.gcode.run_script_from_command("M400")
                 self.gcode.run_script_from_command("G91")
                 self.gcode.run_script_from_command("G1 Y-35")
