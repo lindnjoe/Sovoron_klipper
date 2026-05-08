@@ -3921,8 +3921,20 @@ class afcAMS(afcUnit):
 
         hub = getattr(lane, "hub_obj", None)
         hub_val = bool(value)
+
+        # loaded_to_hub is a POSITION: filament staged BEFORE the hub sensor.
+        # Hub sensor True = filament actively passing through (load/unload).
+        # Hub sensor False = filament either staged before sensor (loaded_to_hub)
+        # or not present at all.
+        # Only set loaded_to_hub True when hub trips (filament reached hub).
+        # Never clear it on hub False when F1S still shows filament — that
+        # just means the filament retracted to the staged position.
+        if hub_val:
+            lane.loaded_to_hub = True
+        elif not bool(getattr(lane, "_load_state", False)):
+            lane.loaded_to_hub = False
+
         if hub is None:
-            lane.loaded_to_hub = hub_val
             if self.hardware_service is not None:
                 lane_state = getattr(lane, "load_state", False)
                 tool_state = self._lane_reports_tool_filament(lane)
@@ -3935,12 +3947,10 @@ class afcAMS(afcUnit):
                     self.logger.error(f"Failed to update lane snapshot for {lane.name}: {e}")
             return
 
-        if hub_val != getattr(lane, "loaded_to_hub", False):
-            hub.switch_pin_callback(eventtime, hub_val)
-            lane.loaded_to_hub = hub_val
-            fila = getattr(hub, "fila", None)
-            if fila is not None:
-                fila.runout_helper.note_filament_present(eventtime, hub_val)
+        hub.switch_pin_callback(eventtime, hub_val)
+        fila = getattr(hub, "fila", None)
+        if fila is not None:
+            fila.runout_helper.note_filament_present(eventtime, hub_val)
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -3982,24 +3992,32 @@ class afcAMS(afcUnit):
                 if sync_hub and hub_values is not None and spool_idx < len(hub_values):
                     hw_hub = bool(hub_values[spool_idx])
                     current = getattr(lane, "loaded_to_hub", False)
-                    if hw_hub != current:
-                        lane.loaded_to_hub = hw_hub
-                        hub_obj = getattr(lane, "hub_obj", None)
-                        if hub_obj is not None:
-                            try:
-                                if hasattr(hub_obj, "switch_pin_callback"):
-                                    hub_obj.switch_pin_callback(eventtime, hw_hub)
-                                fila = getattr(hub_obj, "fila", None)
-                                if fila is not None and hasattr(fila, "runout_helper"):
-                                    fila.runout_helper.note_filament_present(eventtime, hw_hub)
-                            except Exception as hub_e:
-                                self.logger.debug(
-                                    f"sync_openams_sensors: failed to update virtual hub sensor "
-                                    f"for {lane.name}: {hub_e}"
-                                )
+                    # loaded_to_hub is a position (before the hub sensor).
+                    # Only set True when hardware shows filament at hub.
+                    # Don't clear to False when F1S still shows filament —
+                    # that just means filament is staged before the sensor.
+                    if hw_hub and not current:
+                        lane.loaded_to_hub = True
+                    elif not hw_hub and not bool(getattr(lane, "_load_state", False)):
+                        lane.loaded_to_hub = False
+                    new_loaded = getattr(lane, "loaded_to_hub", False)
+                    hub_obj = getattr(lane, "hub_obj", None)
+                    if hub_obj is not None:
+                        try:
+                            if hasattr(hub_obj, "switch_pin_callback"):
+                                hub_obj.switch_pin_callback(eventtime, hw_hub)
+                            fila = getattr(hub_obj, "fila", None)
+                            if fila is not None and hasattr(fila, "runout_helper"):
+                                fila.runout_helper.note_filament_present(eventtime, hw_hub)
+                        except Exception as hub_e:
+                            self.logger.debug(
+                                f"sync_openams_sensors: failed to update virtual hub sensor "
+                                f"for {lane.name}: {hub_e}"
+                            )
+                    if new_loaded != current:
                         self.logger.debug(
                             f"sync_openams_sensors: corrected loaded_to_hub "
-                            f"{current}->{hw_hub} for {lane.name}"
+                            f"{current}->{new_loaded} for {lane.name}"
                         )
 
                 # Sync F1S sensor -> load_state/prep_state (only when allowed)
