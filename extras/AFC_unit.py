@@ -486,6 +486,8 @@ class afcUnit:
             self.afc.function.afc_led( led_color, self.led_logo_index )
     
     def _stop_led_effects(self):
+        if "STOP_LED_EFFECTS" not in getattr(self.gcode, "ready_gcode_handlers", {}):
+            return
         try:
             self.gcode.run_script_from_command("STOP_LED_EFFECTS")
         except Exception:
@@ -507,11 +509,12 @@ class afcUnit:
 
         # 3. If an animation is requested, try to overlay it
         if effect_suffix:
-            effect_name = f"{lane.name}_{effect_suffix}"
-            try:
-                self.gcode.run_script_from_command(f"SET_LED_EFFECT EFFECT={effect_name}")
-            except Exception:
-                pass
+            if "SET_LED_EFFECT" in getattr(self.gcode, "ready_gcode_handlers", {}):
+                effect_name = f"{lane.name}_{effect_suffix}"
+                try:
+                    self.gcode.run_script_from_command(f"SET_LED_EFFECT EFFECT={effect_name}")
+                except Exception:
+                    pass
 
     def lane_not_ready(self, lane):
         """
