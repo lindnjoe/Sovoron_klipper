@@ -720,6 +720,7 @@ class AFCExtruder:
 
         if is_load and self.park_detector and self.on_shuttle():
             self.afc.gcode.run_script_from_command("INNER_FLUSH_FILAMENT")
+            self.afc.gcode.run_script_from_command("M400")
             self.afc.gcode.run_script_from_command("G91")
             self.afc.gcode.run_script_from_command("G1 Y-35")
             self.afc.gcode.run_script_from_command("G90")

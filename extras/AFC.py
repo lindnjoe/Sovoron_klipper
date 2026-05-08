@@ -1725,6 +1725,7 @@ class afc:
 
             if cur_extruder.park_detector:
                 self.gcode.run_script_from_command("INNER_FLUSH_FILAMENT")
+                self.gcode.run_script_from_command("M400")
                 self.gcode.run_script_from_command("G91")
                 self.gcode.run_script_from_command("G1 Y-35")
                 self.gcode.run_script_from_command("G90")
@@ -1933,6 +1934,7 @@ class afc:
             self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
             if cur_extruder.park_detector:
                 self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD")
+                self.gcode.run_script_from_command("M400")
                 self.gcode.run_script_from_command("G91")
                 self.gcode.run_script_from_command("G1 Y-35")
                 self.gcode.run_script_from_command("G90")
@@ -2000,6 +2002,7 @@ class afc:
             if cur_extruder.park_detector:
                 cur_lane.unsync_to_extruder()
                 self.gcode.run_script_from_command("INNER_FILAMENT_UNLOAD")
+                self.gcode.run_script_from_command("M400")
                 self.gcode.run_script_from_command("G91")
                 self.gcode.run_script_from_command("G1 Y-35")
                 self.gcode.run_script_from_command("G90")
