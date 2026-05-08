@@ -1668,11 +1668,9 @@ class afcAMS(afcUnit):
                 afc.error.handle_lane_failure(cur_lane, message)
                 return False
 
-            # After unload, filament retracts back to the spool bay.
-            # If F1S still detects filament, it's staged right before the hub
-            # (the loaded_to_hub position for OpenAMS). Only clear loaded_to_hub
-            # if filament is actually gone from the bay.
-            cur_lane.loaded_to_hub = bool(cur_lane.prep_state)
+            # After unload, filament retracts back to right before the hub.
+            # That IS the loaded_to_hub position for OpenAMS.
+            cur_lane.loaded_to_hub = True
             # Sync virtual hub sensor to match loaded_to_hub state
             hub_obj = getattr(cur_lane, "hub_obj", None)
             if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
