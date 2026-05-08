@@ -1536,9 +1536,10 @@ class afc:
                 self.logger.info("AFC dock purge: dropping tool off at dock before feed")
                 dock_dropped_off = self._dock_purge_dropoff()
 
-            if cur_lane.custom_load_cmd:
+            custom_load = cur_lane.custom_load_cmd or getattr(cur_extruder, 'custom_load_cmd', None)
+            if custom_load:
                 self.logger.info("Running custom load command for lane {}".format(cur_lane.name))
-                self.gcode.run_script_from_command(cur_lane.custom_load_cmd)
+                self.gcode.run_script_from_command(custom_load)
                 if cur_lane.get_toolhead_pre_sensor_state():
                     cur_lane.status = AFCLaneState.TOOL_LOADED
                     self.save_vars()
@@ -1913,10 +1914,11 @@ class afc:
         if custom_result is not None:
             return custom_result
 
-        if cur_lane.custom_unload_cmd:
+        custom_unload = cur_lane.custom_unload_cmd or getattr(cur_extruder, 'custom_unload_cmd', None)
+        if custom_unload:
             self.logger.info("Running custom unload command for lane {}".format(cur_lane.name))
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
-            self.gcode.run_script_from_command(cur_lane.custom_unload_cmd)
+            self.gcode.run_script_from_command(custom_unload)
             cur_lane.set_tool_unloaded()
             cur_lane.status = AFCLaneState.NONE
             self.save_vars()

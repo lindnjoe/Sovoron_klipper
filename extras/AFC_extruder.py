@@ -270,6 +270,8 @@ class AFCExtruder:
         self.no_lanes                   = False
         self.custom_tool_swap: Optional[str] = config.get("custom_tool_swap", None)
         self.custom_unselect: Optional[str] = config.get("custom_unselect", None)
+        self.custom_load_cmd: Optional[str] = config.get("custom_load_cmd", None)
+        self.custom_unload_cmd: Optional[str] = config.get("custom_unload_cmd", None)
 
         self.lane_loaded: Optional[str] = None
         self.lanes: Dict                = {}
@@ -544,10 +546,18 @@ class AFCExtruder:
                         self.tc_lane._afc_prep_done):
                         if state:
                             if not self.load_active:
-                                self.load_unload_sequence(self.tool_stn)
+                                custom_load = self.tc_lane.custom_load_cmd or self.custom_load_cmd
+                                if custom_load:
+                                    self.afc.gcode.run_script_from_command(custom_load)
+                                else:
+                                    self.load_unload_sequence(self.tool_stn)
                         elif not self.afc.function.is_printing():
-                            self.tc_lane.set_tool_unloaded()
-                            self.tc_lane.set_unloaded()
+                            custom_unload = self.tc_lane.custom_unload_cmd or self.custom_unload_cmd
+                            if custom_unload:
+                                self.afc.gcode.run_script_from_command(custom_unload)
+                            else:
+                                self.tc_lane.set_tool_unloaded()
+                                self.tc_lane.set_unloaded()
 
                         self.afc.save_vars()
             else:
