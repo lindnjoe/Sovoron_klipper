@@ -543,7 +543,8 @@ class AFCExtruder:
                     self.tc_lane.prep_state = state
 
                     if (self.printer.state_message == READY and
-                        self.tc_lane._afc_prep_done):
+                        self.tc_lane._afc_prep_done and
+                        self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
                         if state:
                             if not self.load_active:
                                 if self.on_shuttle():
