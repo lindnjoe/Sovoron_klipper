@@ -1723,11 +1723,6 @@ class afc:
                             return False
                     cur_lane.sync_to_extruder()
 
-            if cur_extruder.tool_load_macro:
-                spool_temp = cur_lane.extruder_temp or 210
-                self.gcode.run_script_from_command(f"{cur_extruder.tool_load_macro} TEMP={spool_temp}")
-                self.afcDeltaTime.log_with_time("TOOL_LOAD: After tool_load_macro")
-
             # Update tool and lane status.
             cur_lane.set_tool_loaded()
             # Setting disable_fault so that fault detection is turned off for users
@@ -1929,12 +1924,7 @@ class afc:
             if self._check_extruder_temp(cur_lane):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
             self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
-            if cur_extruder.tool_unload_macro:
-                spool_temp = cur_lane.extruder_temp or 210
-                self.gcode.run_script_from_command(f"{cur_extruder.tool_unload_macro} TEMP={spool_temp}")
-                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After tool_unload_macro")
-            else:
-                self.move_e_pos(cur_extruder.tool_stn_unload * -1, cur_extruder.tool_unload_speed, "Standalone unload")
+            self.move_e_pos(cur_extruder.tool_stn_unload * -1, cur_extruder.tool_unload_speed, "Standalone unload")
             cur_lane.set_tool_unloaded()
             cur_lane.loaded_to_hub = True
             self.save_vars()
@@ -1994,12 +1984,7 @@ class afc:
 
             # Attempt to unload the filament from the extruder, retrying if needed.
             num_tries = 0
-            if cur_extruder.tool_unload_macro:
-                spool_temp = cur_lane.extruder_temp or 210
-                cur_lane.unsync_to_extruder()
-                self.gcode.run_script_from_command(f"{cur_extruder.tool_unload_macro} TEMP={spool_temp}")
-                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After tool_unload_macro")
-            elif cur_extruder.tool_start == "buffer":
+            if cur_extruder.tool_start == "buffer":
                 # if ramming is enabled, AFC will retract to collapse buffer before unloading
                 cur_lane.unsync_to_extruder()
                 while not cur_lane.get_trailing() and cur_lane.tool_max_unload_attempts > 0:

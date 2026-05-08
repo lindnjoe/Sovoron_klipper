@@ -270,8 +270,6 @@ class AFCExtruder:
         self.no_lanes                   = False
         self.custom_tool_swap: Optional[str] = config.get("custom_tool_swap", None)
         self.custom_unselect: Optional[str] = config.get("custom_unselect", None)
-        self.tool_unload_macro: Optional[str] = config.get("tool_unload_macro", None)
-        self.tool_load_macro: Optional[str] = config.get("tool_load_macro", None)
 
         self.lane_loaded: Optional[str] = None
         self.lanes: Dict                = {}
@@ -720,10 +718,6 @@ class AFCExtruder:
         is_load = self.current_move_distance > 0
         info_str = "loading" if is_load else "unloading"
         self.logger.info(f"{self.name} {info_str} done")
-
-        if is_load and self.tool_load_macro and self.on_shuttle():
-            spool_temp = self.tc_lane.extruder_temp or 210
-            self.afc.gcode.run_script_from_command(f"{self.tool_load_macro} TEMP={spool_temp}")
 
         if is_load:
             load_time = self.afc.afcDeltaTime.log_major_delta(
