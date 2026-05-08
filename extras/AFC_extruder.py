@@ -546,10 +546,16 @@ class AFCExtruder:
                         self.tc_lane._afc_prep_done):
                         if state:
                             if not self.load_active:
-                                self.load_unload_sequence(self.tool_stn)
+                                if self.on_shuttle():
+                                    self.afc.TOOL_LOAD(self.tc_lane)
+                                else:
+                                    self.load_unload_sequence(self.tool_stn)
                         elif not self.afc.function.is_printing():
-                            self.tc_lane.set_tool_unloaded()
-                            self.tc_lane.set_unloaded()
+                            if self.on_shuttle() and self.lane_loaded:
+                                self.afc.TOOL_UNLOAD(self.tc_lane)
+                            else:
+                                self.tc_lane.set_tool_unloaded()
+                                self.tc_lane.set_unloaded()
 
                         self.afc.save_vars()
             else:
