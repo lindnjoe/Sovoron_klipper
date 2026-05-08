@@ -121,7 +121,6 @@ class afcPrep:
             self.afc.error.AFC_error(error_string, False)
 
         # check if Lane is supposed to be loaded in tool head from saved file
-        # First pass: restore lane_loaded from saved state
         for extruder in self.afc.tools.keys():
             extruder_obj=self.afc.tools[extruder]
             extruder_obj.set_status_led( self.afc.led_tool_unloaded )
@@ -132,10 +131,7 @@ class afcPrep:
                   units["system"]["extruders"][extruder_obj.name]['lane_loaded']:
                     extruder_obj.lane_loaded = units["system"]["extruders"][extruder_obj.name]['lane_loaded']
 
-        # Second pass: activate the extruder whose tool is on the shuttle.
-        # Only activate one — the first extruder where on_shuttle() is
-        # True.  For non-toolchanger (single extruder) setups on_shuttle()
-        # always returns True so the default extruder stays active.
+        # Activate the extruder whose tool is on the shuttle
         active_extruder = self.afc.toolhead.get_extruder().name
         for extruder in self.afc.tools.keys():
             extruder_obj=self.afc.tools[extruder]
@@ -174,7 +170,6 @@ class afcPrep:
                         if 'bed_temp' in units[cur_lane.unit][cur_lane.name]: cur_lane.bed_temp = units[cur_lane.unit][cur_lane.name]['bed_temp']
                         if 'extruder_temp' in units[cur_lane.unit][cur_lane.name]: cur_lane.extruder_temp = units[cur_lane.unit][cur_lane.name]['extruder_temp']
 
-                        # Convert numeric fields from saved vars (may be strings)
                         for attr in ("bed_temp", "extruder_temp", "weight"):
                             val = getattr(cur_lane, attr, None)
                             if val is None or val == '' or str(val).upper() == 'NONE':
