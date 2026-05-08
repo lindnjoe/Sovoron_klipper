@@ -2760,6 +2760,7 @@ class afcAMS(afcUnit):
                 msg = '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
                 succeeded = False
         else:
+            cur_lane.loaded_to_hub = True
             self.lane_loaded(cur_lane)
             msg += '<span class=success--text>LOCKED</span>'
             if not cur_lane.load_state:
