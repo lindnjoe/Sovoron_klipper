@@ -534,9 +534,8 @@ class afcFunction:
 
     def _handle_activate_extruder(self, eventtime, lane=None):
         """
-        Syncs AFC lane state when the active extruder changes.
-        Optionally activates the klipper extruder for the given lane first,
-        then disables non-active lanes and enables the current one.
+        Supposed to be a callback function from timer, currently this is not called from timer event.
+        TODO: Update this functionality before pushing to main/dev or once fully moved away from KTC
         """
         if lane is not None:
             lane.activate_toolhead_extruder()

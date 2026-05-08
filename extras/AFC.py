@@ -1865,11 +1865,12 @@ class afc:
 
             self.logger.debug(f"Current extruder: {cur_extruder}, current lane:{cur_lane}")
 
-        # Only skip toolhead unload when the next lane is on a different extruder
-        # (or is already the loaded lane on this extruder).
+        # Default to true
         unload_toolhead = True
         if self.next_lane_load is not None:
-            if not (self.next_lane_load in cur_extruder.lanes and self.next_lane_load != cur_extruder.lane_loaded):
+            if self.next_lane_load in cur_extruder.lanes and self.next_lane_load != cur_extruder.lane_loaded:
+                unload_toolhead = True
+            else:
                 unload_toolhead = False
 
         self.logger.debug(f"Next lane load:{self.next_lane_load}, lanes:{cur_extruder.lanes}, current lane:{cur_lane}, unload_toolhead:{unload_toolhead}")
@@ -2383,7 +2384,10 @@ class afc:
                     if not self.testing:
                         self.afc_stats.reset_toolchange_wo_error()
             else:
-                # Ensure lanes are synced after tool swap
+                # Calling handle activate extruder just to make sure lanes are synced as tool
+                # could have been changed with KTC SELECT_TOOL and lane might not be synced
+                # properly
+                # Take call out once transitioned away from KTC
                 self.function._handle_activate_extruder(0)
                 self.logger.info("{} already loaded".format(cur_lane.name))
                 if not self.error_state and self.current_toolchange == -1:

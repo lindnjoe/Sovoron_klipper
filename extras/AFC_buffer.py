@@ -315,7 +315,7 @@ class AFCTrigger:
             self.start_fault_detection(0, multiplier)
         else:
             self.set_multiplier( multiplier )
-        self.logger.debug(f"{self.name} buffer enabled for {self.current_lane.name} (initial state: {self.last_state})")
+        self.logger.debug(f"{self.name} buffer enabled for {self.current_lane.name}")
 
     def disable_buffer(self):
         """
