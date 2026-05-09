@@ -34,7 +34,7 @@ except: raise error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.form
 try: from extras.AFC import State
 except: raise error(ERROR_STR.format(import_lib="AFC", trace=traceback.format_exc()))
 
-try: from extras.AFC_lane import AFCLaneState, AFCMoveWarning, SpeedMode, AssistActive
+try: from extras.AFC_lane import AFCLaneState
 except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
 # Toolchanger status constants
@@ -57,7 +57,6 @@ class AfcToolchanger(afcUnit):
         super().__init__(config)
         self.config = config
         self.type = config.get("type", "Toolchanger")
-        self.auto_spoolman_create = config.getboolean("auto_spoolman_create", False)
         firstLeg = '<span class=warning--text>|</span><span class=success--text>_</span>'
         secondLeg = firstLeg + '<span class=warning--text>|</span>'
         self._logo_base  = '<span class=success--text>'
@@ -95,6 +94,7 @@ class AfcToolchanger(afcUnit):
         self.require_tool_present: bool = config.getboolean('require_tool_present', True)
         self.verify_tool_pickup: bool = config.getboolean('verify_tool_pickup', True)
         self.transfer_fan_speed: bool = config.getboolean('transfer_fan_speed', True)
+        self.auto_spoolman_create: bool = config.getboolean('auto_spoolman_create', False)
 
         # Crash detection — monitors detection pins during printing to detect
         # if a tool falls off the shuttle mid-print.
@@ -295,8 +295,9 @@ class AfcToolchanger(afcUnit):
 
     def get_status(self, eventtime=None):
         """Return status for webhooks / gcode template context."""
+        response = super().get_status(eventtime)
         offset = self.active_tool.get_offset() if self.active_tool else [0., 0., 0.]
-        return {
+        response.update({
             'name': self.config.get_name(),
             'status': self.status,
             'tool': self.active_tool.name if self.active_tool else None,
@@ -306,7 +307,8 @@ class AfcToolchanger(afcUnit):
             'active_tool_gcode_x_offset': offset[0],
             'active_tool_gcode_y_offset': offset[1],
             'active_tool_gcode_z_offset': offset[2],
-        }
+        })
+        return response
 
     # --- Native toolchanger gcode commands ---
 
@@ -617,8 +619,6 @@ class AfcToolchanger(afcUnit):
             else:
                 self.logger.info('Tool unselected')
 
-            # Dock cooling is handled by _dock_cooling_tick timer (every 5s)
-
         except Exception:
             if self.status == STATUS_ERROR:
                 pass  # process_error already handled recovery
@@ -628,18 +628,6 @@ class AfcToolchanger(afcUnit):
                 self.status = STATUS_ERROR
                 self.error_message = 'Unexpected error during tool change'
             raise
-
-    def move_to_hub(self, lane, dist, dir, use_homing=True,
-                    speed_mode=SpeedMode.HUB,
-                    assist_active=AssistActive.DYNAMIC):
-        return True, 0, AFCMoveWarning.NONE
-
-    def move_to_load(self, lane, dist, dir, use_homing=True,
-                     speed_mode=SpeedMode.LONG):
-        return True, 0, AFCMoveWarning.NONE
-
-    def load_then_home(self, lane, distance, assist_active, endstop):
-        return True, 0, AFCMoveWarning.NONE
 
     def system_Test(self, cur_lane: AFCLane, delay: float, assignTcmd: str, enable_movement: bool):
         msg = ""
@@ -1168,7 +1156,7 @@ class AfcToolchanger(afcUnit):
         tool = self.afc.tools.get(tool_key)
 
         if tool:
-            if hasattr(tool, 'tc_lane') and tool.tc_lane is not None:
+            if tool.tc_lane is not None:
                 self.tool_swap(tool.tc_lane)
             else:
                 self.logger.error(f"Tool '{tool_key}' does not have a valid 'tc_lane' attribute.")
