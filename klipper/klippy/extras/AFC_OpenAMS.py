@@ -14,30 +14,42 @@ import traceback
 from datetime import datetime
 from types import MethodType
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from configfile import error as config_error
+from configparser import Error as ConfigError
 
-if TYPE_CHECKING:
-    from typing import Any, Dict, List, Optional, Set, Tuple
 
-try: from extras.AFC_utils import ERROR_STR
-except:
-    trace=traceback.format_exc()
-    err_str = f"Error when trying to import AFC_utils.ERROR_STR\n{trace}"
-    raise config_error(err_str)
+def _raise_import_error(import_lib: str, *, template: Optional[str] = None) -> None:
+    trace = traceback.format_exc()
+    if template is None:
+        raise ConfigError(f"Error when trying to import {import_lib}\n{trace}")
+    raise ConfigError(template.format(import_lib=import_lib, trace=trace))
 
-try: from extras.AFC_unit import afcUnit
-except: raise config_error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
 
-try: from extras.AFC_lane import AFCLane, AFCLaneState
-except: raise config_error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
+try:
+    from extras.AFC_utils import ERROR_STR
+except Exception:
+    _raise_import_error("AFC_utils.ERROR_STR")
 
-try: from extras.AFC_utils import add_filament_switch
-except: raise config_error(ERROR_STR.format(import_lib="AFC_utils", trace=traceback.format_exc()))
+try:
+    from extras.AFC_unit import afcUnit
+except Exception:
+    _raise_import_error("AFC_unit", template=ERROR_STR)
 
-try: from extras.AFC_respond import AFCprompt
-except: raise config_error(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
+try:
+    from extras.AFC_lane import AFCLane, AFCLaneState
+except Exception:
+    _raise_import_error("AFC_lane", template=ERROR_STR)
+
+try:
+    from extras.AFC_utils import add_filament_switch
+except Exception:
+    _raise_import_error("AFC_utils", template=ERROR_STR)
+
+try:
+    from extras.AFC_respond import AFCprompt
+except Exception:
+    _raise_import_error("AFC_respond", template=ERROR_STR)
 
 # -- OpenAMS integration classes ------
 
@@ -811,8 +823,7 @@ class afcAMS(afcUnit):
         """Pick up tool from dock after purging.
 
         Runs the toolchanger's pickup gcode and exits docking mode.
-        If pickup verification fails, fires the toolchanger's error_gcode
-        (e.g. M112) to prevent dock damage.
+        Toolchanger handles pickup failures internally.
         """
         cur_extruder = self.afc.function.get_current_extruder_obj()
         tc = cur_extruder.tc_unit_obj if cur_extruder else None
@@ -821,22 +832,9 @@ class afcAMS(afcUnit):
             return
         tool = tc.active_tool
 
-        try:
-            tc._run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
-        except Exception as e:
-            self.logger.error(f"OAMS dock purge: pickup failed: {e}")
-            # If error_gcode (M112) didn't already fire via process_error,
-            # fire it now to prevent dock damage
-            if tc.error_gcode and tc.status != 'error':
-                try:
-                    tc.process_error(None, f"Dock purge pickup failed: {e}")
-                except Exception:
-                    pass
-            self._dock_purge_context = None
-            raise
+        tc._run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
         self.afc.gcode.run_script_from_command("EXIT_DOCKING_MODE")
         self._dock_purge_context = None
-        self.logger.info("OAMS dock purge: tool picked up from dock")
 
     def _is_dock_purge_enabled(self):
         """Check if dock purge is enabled for this unit.
@@ -895,7 +893,7 @@ class afcAMS(afcUnit):
             return False, f"Bay {spool_index} not ready (no spool detected)"
 
         if max_retries is None:
-            max_retries = self.afc.tool_max_unload_attempts
+            max_retries = cur_lane.tool_max_unload_attempts
 
         # Wait for MCU to be idle before starting load
         self._wait_oams_idle(oams, context=f"load {cur_lane.name}")
@@ -1483,8 +1481,6 @@ class afcAMS(afcUnit):
         # Check if this lane is already loaded to toolhead — sync state and skip
         if cur_lane.get_toolhead_pre_sensor_state() and hasattr(cur_lane, 'tool_loaded') and cur_lane.tool_loaded:
             self.logger.debug(f"Lane {cur_lane.name} already loaded to toolhead, skipping load")
-            cur_lane.set_tool_loaded()
-            afc.save_vars()
             return True
 
         if afc._check_extruder_temp(cur_lane):
@@ -1543,7 +1539,7 @@ class afcAMS(afcUnit):
 
             load_result = True
         except Exception as e:
-            message = f"OpenAMS load failed for {cur_lane.name}: {e}"
+            message = "OpenAMS load failed for {}: {}".format(cur_lane.name, str(e))
             afc.error.handle_lane_failure(cur_lane, message)
             return False
         finally:
@@ -1573,40 +1569,24 @@ class afcAMS(afcUnit):
                 "OpenAMS load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n"
                 "||=====||====||==>--||\nTRG   LOAD   HUB   TOOL"
             )
-            message += f"\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={cur_lane.name}` macro."
+            message += "\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.".format(cur_lane.name)
             if afc.function.in_print():
                 message += "\nOnce filament is fully loaded click resume to continue printing"
             afc.error.handle_lane_failure(cur_lane, message)
             return False
 
-        cur_lane.set_tool_loaded()
-        # Enable FPS buffer for Mainsail display and fault detection
-        cur_lane.enable_buffer(disable_fault=True)
-        afc.save_vars()
         return True
 
     def unload_sequence(self, cur_lane, cur_hub, cur_extruder):
-        """OpenAMS unload sequence - uses shared toolhead steps then delegates to OAMSManager.
+        """OpenAMS unload sequence — called via custom_unload_cmd gcode handler.
 
-        The toolhead steps (cut, form tip, park) are shared with stock AFC since they
-        happen at the toolhead. After those, retraction is delegated to OAMSManager
-        instead of using stepper-based retraction.
-
-        Called by AFC's upstream delegation hook:
-            if hasattr(cur_lane.unit_obj, 'unload_sequence'):
-                return cur_lane.unit_obj.unload_sequence(...)
-
-        :param cur_lane: The lane object to be unloaded.
-        :param cur_hub: The hub object associated with the lane (unused for OpenAMS).
-        :param cur_extruder: The extruder object associated with the lane.
-        :return bool: True if unload was successful, False on error.
+        Handles shared toolhead steps (cut, form tip, park) then delegates
+        retraction to OAMSManager. State management (set_tool_unloaded,
+        save_vars) is handled by AFC upstream after this returns.
         """
         afc = self.afc
 
-        cur_lane.status = AFCLaneState.TOOL_UNLOADING
-
-        if afc._check_extruder_temp(cur_lane):
-            afc.afcDeltaTime.log_with_time("Done heating toolhead")
+        afc._toolhead_pre_unload_pull(cur_lane, cur_extruder)
 
         # Set follower reverse before cut so it assists all retract phases
         if self._follower is not None and self.oams is not None:
@@ -1614,44 +1594,12 @@ class afcAMS(afcUnit):
             if fps_state:
                 self._follower.set_follower_state(
                     fps_state, self.oams, 1, 0, "before unload cut", force=True)
-
-        # Quick pull to prevent oozing
-        afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
-        afc.function.log_toolhead_pos("TOOL_UNLOAD quick pull: ")
         self.lane_unloading(cur_lane)
         cur_lane.sync_to_extruder()
         cur_lane.do_enable(True)
         cur_lane.select_lane()
 
-        # Shared toolhead steps: cut, park, form tip
-        if afc.tool_cut:
-            cur_lane.extruder_obj.estats.increase_cut_total()
-            afc.gcode.run_script_from_command(
-                f"{afc.tool_cut_cmd} EXTRUDER={cur_extruder.name}")
-            afc.afcDeltaTime.log_with_time("TOOL_UNLOAD: After cut")
-            afc.function.log_toolhead_pos()
-
-            if afc.park:
-                afc.gcode.run_script_from_command(
-                    f"{afc.park_cmd} EXTRUDER={cur_extruder.name}")
-                afc.afcDeltaTime.log_with_time("TOOL_UNLOAD: After park")
-                afc.function.log_toolhead_pos()
-
-        if afc.form_tip:
-            if afc.park:
-                afc.gcode.run_script_from_command(
-                    f"{afc.park_cmd} EXTRUDER={cur_extruder.name}")
-                afc.afcDeltaTime.log_with_time("TOOL_UNLOAD: After form tip park")
-                afc.function.log_toolhead_pos()
-
-            if afc.form_tip_cmd == "AFC":
-                afc.tip.tip_form()
-                afc.afcDeltaTime.log_with_time("TOOL_UNLOAD: After afc form tip")
-                afc.function.log_toolhead_pos()
-            else:
-                afc.gcode.run_script_from_command(afc.form_tip_cmd)
-                afc.afcDeltaTime.log_with_time("TOOL_UNLOAD: After custom form tip")
-                afc.function.log_toolhead_pos()
+        afc._toolhead_cut_and_tip(cur_lane, cur_extruder)
 
         try:
             # Unsync from extruder before OpenAMS unload
@@ -1664,25 +1612,32 @@ class afcAMS(afcUnit):
             )
             success, message = self._oams_unload(cur_lane)
             if not success:
-                message = message or f"OpenAMS unload failed for {cur_lane.name}"
+                message = message or "OpenAMS unload failed for {}".format(cur_lane.name)
                 afc.error.handle_lane_failure(cur_lane, message)
                 return False
 
-            # After unload, filament retracts back to right before the hub.
-            # That IS the loaded_to_hub position for OpenAMS.
-            cur_lane.loaded_to_hub = True
-            # Sync virtual hub sensor to match loaded_to_hub state
+            # After unload, read the actual hub sensor to determine if filament
+            # is still at the hub.  The OAMS unload retracts filament back to the
+            # spool bay (past the hub sensor), so hub_hes_value will typically be 0.
+            # Hardcoding True here previously caused stale hub status on swaps.
+            hub_loaded = False
+            try:
+                spool_idx = self._get_openams_spool_index(cur_lane)
+                hub_values = getattr(self.oams, "hub_hes_value", None)
+                if hub_values is not None and spool_idx is not None and 0 <= spool_idx < len(hub_values):
+                    hub_loaded = bool(hub_values[spool_idx])
+            except Exception:
+                hub_loaded = False
+            cur_lane.loaded_to_hub = hub_loaded
+            # Clear the virtual hub sensor so Mainsail/status reflects
+            # that the hub is no longer occupied after unload.
             hub_obj = getattr(cur_lane, "hub_obj", None)
             if hub_obj is not None and hasattr(hub_obj, "switch_pin_callback"):
                 hub_obj.switch_pin_callback(
-                    self.reactor.monotonic(), cur_lane.loaded_to_hub
+                    self.reactor.monotonic(), hub_loaded
                 )
-            cur_lane.set_tool_unloaded()
-            cur_lane.status = AFCLaneState.LOADED
-            self.lane_tool_unloaded(cur_lane)
-            afc.save_vars()
         except Exception as e:
-            message = f"OpenAMS unload failed for {cur_lane.name}: {e}"
+            message = "OpenAMS unload failed for {}: {}".format(cur_lane.name, str(e))
             afc.error.handle_lane_failure(cur_lane, message)
             return False
 
@@ -1881,10 +1836,10 @@ class afcAMS(afcUnit):
         index = 0
         title = f"{self.name} PTFE Length Calibration"
         text = (
-            f"Select any loaded lane from {self.name} to calibrate PTFE length. "
+            "Select any loaded lane from {} to calibrate PTFE length. "
             "Only one lane needs to be calibrated — each bay has an equal "
             "length path to the hub."
-        )
+        ).format(self.name)
 
         for lane in self.lanes.values():
             if not getattr(lane, "load_state", False):
@@ -1934,9 +1889,9 @@ class afcAMS(afcUnit):
         index = 0
         title = f"{self.name} Lane Calibration"
         text = (
-            f"Select a loaded lane from {self.name} to calibrate HUB HES using OpenAMS. "
+            "Select a loaded lane from {} to calibrate HUB HES using OpenAMS. "
             "Command: OAMS_CALIBRATE_HUB_HES"
-        )
+        ).format(self.name)
 
         for lane in self.lanes.values():
             if not getattr(lane, "load_state", False):
@@ -2052,6 +2007,17 @@ class afcAMS(afcUnit):
         except Exception:
             pass
 
+        self.gcode.register_mux_command(
+            "_OAMS_CUSTOM_LOAD", "UNIT", self.name,
+            self._cmd_oams_custom_load,
+            desc="OpenAMS custom load sequence (used via custom_load_cmd)",
+        )
+        self.gcode.register_mux_command(
+            "_OAMS_CUSTOM_UNLOAD", "UNIT", self.name,
+            self._cmd_oams_custom_unload,
+            desc="OpenAMS custom unload sequence (used via custom_unload_cmd)",
+        )
+
         # Strip non-FPS buffers from AMS lanes.  AMS units don't have physical
         # TurtleNeck buffers, but AFC_FPS buffers ARE valid (they provide the ADC
         # reading for proportional control).  Keep any buffer that exposes
@@ -2064,8 +2030,12 @@ class afcAMS(afcUnit):
                 )
                 lane.buffer_obj = None
 
-        #  Register each lane with the shared registry
-        for lane in self.lanes.values():
+        #  Register each lane with the shared registry and set custom load/unload cmds
+        for lane_name, lane in self.lanes.items():
+            if lane.custom_load_cmd is None:
+                lane.custom_load_cmd = f"_OAMS_CUSTOM_LOAD UNIT={self.name} LANE={lane_name}"
+            if lane.custom_unload_cmd is None:
+                lane.custom_unload_cmd = f"_OAMS_CUSTOM_UNLOAD UNIT={self.name} LANE={lane_name}"
             lane.prep_state = False
             lane._load_state = False
             lane.loaded_to_hub = False
@@ -2808,7 +2778,7 @@ class afcAMS(afcUnit):
         if assignTcmd:
             self.afc.function.TcmdAssign(cur_lane)
         cur_lane.do_enable(False)
-        self.logger.info(f'{cur_lane.name} tool cmd: {cur_lane.map:3} {msg}')
+        self.logger.info('{lane_name} tool cmd: {tcmd:3} {msg}'.format(lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))
         cur_lane.set_afc_prep_done()
 
         # Trigger OpenAMS sensor reconciliation after PREP completes for this lane.
@@ -2819,8 +2789,7 @@ class afcAMS(afcUnit):
                     et,
                     sync_hub=True,
                     sync_f1s=True,
-                    allow_lane_clear=False,
-                    suppress_events=True,
+                    allow_lane_clear=True,
                 ),
                 self.afc.reactor.monotonic() + 0.2,
             )
@@ -2876,10 +2845,10 @@ class afcAMS(afcUnit):
         msg = (
             "OpenAMS units do not support standard AFC bowden calibration. "
             "Use OpenAMS-specific calibration commands instead:\n"
-            f"  - AFC_OAMS_CALIBRATE_HUB_HES UNIT={self.name} SPOOL=<spool_index>\n"
-            f"  - AFC_OAMS_CALIBRATE_PTFE UNIT={self.name} SPOOL=<spool_index>\n"
-            f"  - AFC_OAMS_CALIBRATE_HUB_HES_ALL UNIT={self.name}"
-        )
+            "  - AFC_OAMS_CALIBRATE_HUB_HES UNIT={} SPOOL=<spool_index>\n"
+            "  - AFC_OAMS_CALIBRATE_PTFE UNIT={} SPOOL=<spool_index>\n"
+            "  - AFC_OAMS_CALIBRATE_HUB_HES_ALL UNIT={}"
+        ).format(self.name, self.name, self.name)
         self.logger.info(msg)
         return False, msg, 0
 
@@ -2907,6 +2876,28 @@ class afcAMS(afcUnit):
         if monitor_state is not None:
             from extras.AFC_OpenAMS_monitor import FPSLoadState
             monitor_state.state = FPSLoadState.LOADED
+
+    def _cmd_oams_custom_load(self, gcmd):
+        lane_name = gcmd.get("LANE")
+        cur_lane = self.afc.lanes.get(lane_name)
+        if cur_lane is None:
+            raise gcmd.error(f"Unknown lane: {lane_name}")
+        cur_hub = cur_lane.hub_obj
+        cur_extruder = cur_lane.extruder_obj
+        result = self.load_sequence(cur_lane, cur_hub, cur_extruder)
+        if not result:
+            raise gcmd.error(f"OpenAMS load failed for {lane_name}")
+
+    def _cmd_oams_custom_unload(self, gcmd):
+        lane_name = gcmd.get("LANE")
+        cur_lane = self.afc.lanes.get(lane_name)
+        if cur_lane is None:
+            raise gcmd.error(f"Unknown lane: {lane_name}")
+        cur_hub = cur_lane.hub_obj
+        cur_extruder = cur_lane.extruder_obj
+        result = self.unload_sequence(cur_lane, cur_hub, cur_extruder)
+        if not result:
+            raise gcmd.error(f"OpenAMS unload failed for {lane_name}")
 
     def _cmd_test_cancel(self, gcmd):
         """Test: load a lane, cancel after 500mm, unload, then reload."""
@@ -3521,9 +3512,9 @@ class afcAMS(afcUnit):
         msg = (
             "OpenAMS units do not support standard AFC hub calibration. "
             "Use OpenAMS-specific calibration commands instead:\n"
-            f"  - AFC_OAMS_CALIBRATE_HUB_HES UNIT={self.name} SPOOL=<spool_index>\n"
-            f"  - AFC_OAMS_CALIBRATE_HUB_HES_ALL UNIT={self.name}"
-        )
+            "  - AFC_OAMS_CALIBRATE_HUB_HES UNIT={} SPOOL=<spool_index>\n"
+            "  - AFC_OAMS_CALIBRATE_HUB_HES_ALL UNIT={}"
+        ).format(self.name, self.name)
         self.logger.info(msg)
         return False, msg, 0
 
@@ -3880,7 +3871,7 @@ class afcAMS(afcUnit):
                     pass
 
                 if not skip_runout:
-                    self.logger.info(f"F1S sensor False for {lane.name} (spool empty, printing), triggering runout detection")
+                    self.logger.info("F1S sensor False for {} (spool empty, printing), triggering runout detection".format(lane.name))
                     try:
                         self.handle_runout_detected(bay, None, lane_name=lane.name)
                     except Exception as e:
@@ -3890,7 +3881,7 @@ class afcAMS(afcUnit):
                             traceback=traceback.format_exc(),
                         )
             else:
-                self.logger.debug(f"F1S sensor False for {lane.name} but not printing - skipping runout detection (likely filament insertion/removal)")
+                self.logger.debug("F1S sensor False for {} but not printing - skipping runout detection (likely filament insertion/removal)".format(lane.name))
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -3921,20 +3912,11 @@ class afcAMS(afcUnit):
 
         hub = getattr(lane, "hub_obj", None)
         hub_val = bool(value)
-
-        # loaded_to_hub is a POSITION: filament staged BEFORE the hub sensor.
-        # Hub sensor True = filament actively passing through (load/unload).
-        # Hub sensor False = filament either staged before sensor (loaded_to_hub)
-        # or not present at all.
-        # Only set loaded_to_hub True when hub trips (filament reached hub).
-        # Never clear it on hub False when F1S still shows filament — that
-        # just means the filament retracted to the staged position.
-        if hub_val:
-            lane.loaded_to_hub = True
-        elif not bool(getattr(lane, "_load_state", False)):
-            lane.loaded_to_hub = False
-
         if hub is None:
+            if hub_val:
+                lane.loaded_to_hub = True
+            elif not bool(getattr(lane, "_load_state", False)):
+                lane.loaded_to_hub = False
             if self.hardware_service is not None:
                 lane_state = getattr(lane, "load_state", False)
                 tool_state = self._lane_reports_tool_filament(lane)
@@ -3951,6 +3933,10 @@ class afcAMS(afcUnit):
         fila = getattr(hub, "fila", None)
         if fila is not None:
             fila.runout_helper.note_filament_present(eventtime, hub_val)
+        if hub_val:
+            lane.loaded_to_hub = True
+        elif not bool(getattr(lane, "_load_state", False)):
+            lane.loaded_to_hub = False
 
         # Update hardware service snapshot
         if self.hardware_service is not None:
@@ -3964,7 +3950,7 @@ class afcAMS(afcUnit):
             except Exception as e:
                 self.logger.error(f"Failed to update lane snapshot for {lane.name}: {e}")
 
-    def sync_openams_sensors(self, eventtime, *, sync_hub=True, sync_f1s=False, allow_lane_clear=True, suppress_events=False):
+    def sync_openams_sensors(self, eventtime, *, sync_hub=True, sync_f1s=False, allow_lane_clear=True):
         """Periodic level-based sync of OAMS hardware sensors to AFC lane state.
 
         Called periodically as a level-based sync complement to edge-triggered callbacks.
@@ -3992,32 +3978,26 @@ class afcAMS(afcUnit):
                 if sync_hub and hub_values is not None and spool_idx < len(hub_values):
                     hw_hub = bool(hub_values[spool_idx])
                     current = getattr(lane, "loaded_to_hub", False)
-                    # loaded_to_hub is a position (before the hub sensor).
-                    # Only set True when hardware shows filament at hub.
-                    # Don't clear to False when F1S still shows filament —
-                    # that just means filament is staged before the sensor.
                     if hw_hub and not current:
                         lane.loaded_to_hub = True
                     elif not hw_hub and not bool(getattr(lane, "_load_state", False)):
                         lane.loaded_to_hub = False
-                    new_loaded = getattr(lane, "loaded_to_hub", False)
-                    hub_obj = getattr(lane, "hub_obj", None)
-                    if hub_obj is not None:
-                        try:
-                            if hasattr(hub_obj, "switch_pin_callback"):
-                                hub_obj.switch_pin_callback(eventtime, hw_hub)
-                            fila = getattr(hub_obj, "fila", None)
-                            if fila is not None and hasattr(fila, "runout_helper"):
-                                fila.runout_helper.note_filament_present(eventtime, hw_hub)
-                        except Exception as hub_e:
-                            self.logger.debug(
-                                f"sync_openams_sensors: failed to update virtual hub sensor "
-                                f"for {lane.name}: {hub_e}"
-                            )
-                    if new_loaded != current:
+                        hub_obj = getattr(lane, "hub_obj", None)
+                        if hub_obj is not None:
+                            try:
+                                if hasattr(hub_obj, "switch_pin_callback"):
+                                    hub_obj.switch_pin_callback(eventtime, hw_hub)
+                                fila = getattr(hub_obj, "fila", None)
+                                if fila is not None and hasattr(fila, "runout_helper"):
+                                    fila.runout_helper.note_filament_present(eventtime, hw_hub)
+                            except Exception as hub_e:
+                                self.logger.debug(
+                                    f"sync_openams_sensors: failed to update virtual hub sensor "
+                                    f"for {lane.name}: {hub_e}"
+                                )
                         self.logger.debug(
                             f"sync_openams_sensors: corrected loaded_to_hub "
-                            f"{current}->{new_loaded} for {lane.name}"
+                            f"{current}->{hw_hub} for {lane.name}"
                         )
 
                 # Sync F1S sensor -> load_state/prep_state (only when allowed)
@@ -4032,7 +4012,6 @@ class afcAMS(afcUnit):
                                 self._update_shared_lane(
                                     lane, hw_f1s, eventtime,
                                     allow_clear=allow_lane_clear,
-                                    suppress_events=suppress_events,
                                 )
                             else:
                                 lane.load_callback(eventtime, hw_f1s)
@@ -4138,19 +4117,11 @@ class afcAMS(afcUnit):
 
         return not bool(hub_state)
 
-    def _update_shared_lane(self, lane, lane_val, eventtime, *, allow_clear: bool = True, suppress_events: bool = False):
+    def _update_shared_lane(self, lane, lane_val, eventtime, *, allow_clear: bool = True):
         """Synchronise shared prep/load sensor lanes without triggering errors."""
         # Check if runout handling requires blocking this sensor update
         if self._should_block_sensor_update_for_runout(lane, lane_val):
             self.logger.debug(f"_update_shared_lane: blocked by runout handling for {lane.name}")
-            return
-
-        # Block sensor sync during active tool unload/load operations.
-        # The unload/load sequence manages lane state directly; allowing
-        # sensor updates to race with it corrupts status and _afc_prep_done.
-        lane_status = getattr(lane, "status", None)
-        if lane_status in (AFCLaneState.TOOL_UNLOADING,) or getattr(lane, "prep_active", False):
-            self.logger.debug(f"_update_shared_lane: blocked by active tool operation for {lane.name} (status={lane_status})")
             return
 
         previous = getattr(lane, "load_state", False)
@@ -4212,16 +4183,17 @@ class afcAMS(afcUnit):
 
         if lane_val_bool:
             # Defer metadata application (material, spoolman IDs, colors, etc.) to
-            # AFC's callbacks. The callbacks will update prep/load state and apply
-            # lane data consistently for both single- and shared-sensor lanes.
+            # AFC's callbacks. The callbacks will update prep/load state and apply lane data consistently for both
+            # single- and shared-sensor lanes.
             try:
                 lane.prep_callback(eventtime, True)
             finally:
                 lane.load_callback(eventtime, True)
 
+
             # Publish spool_loaded event immediately (TD-1 capture delay happens in event handler)
             # Pass previous_loaded state since lane.load_state is already updated by callbacks above
-            if self.event_bus is not None and not suppress_events:
+            if self.event_bus is not None:
                 try:
                     spool_index = self._get_openams_spool_index(lane)
                     self.event_bus.publish("spool_loaded",
@@ -4331,11 +4303,6 @@ class afcAMS(afcUnit):
         # Check if runout handling requires blocking this sensor update
         if self._should_block_sensor_update_for_runout(lane, lane_val):
             self.logger.debug(f"Ignoring sensor update for lane {getattr(lane, 'name', 'unknown')} - runout in progress")
-            return
-
-        lane_status = getattr(lane, "status", None)
-        if lane_status in (AFCLaneState.TOOL_UNLOADING,) or getattr(lane, "prep_active", False):
-            self.logger.debug(f"Ignoring sensor update for lane {getattr(lane, 'name', 'unknown')} - active tool operation")
             return
 
         try:
@@ -5160,10 +5127,7 @@ class afcAMS(afcUnit):
         # set_loaded() applies defaults / next_spool_id.  AFC's _set_values()
         # only resets material and weight; spool_id, color, and temps would
         # otherwise persist across spool swaps.
-        # Skip during PREP: spool data was loaded from saved state and should
-        # not be wiped by the initial sensor-triggered spool_loaded event.
-        in_prep = not getattr(self.afc, "prep_done", True)
-        if not previous_loaded and not getattr(lane, "remember_spool", False) and not in_prep:
+        if not previous_loaded and not getattr(lane, "remember_spool", False):
             try:
                 self.afc.spool.clear_values(lane)
             except Exception:
@@ -5501,7 +5465,7 @@ class afcAMS(afcUnit):
 
         if skipped:
             skipped_lanes = ", ".join(skipped)
-            self.logger.info(f"Skipped HUB HES calibration for lanes lacking OpenAMS mapping: {skipped_lanes}.")
+            self.logger.info("Skipped HUB HES calibration for lanes lacking OpenAMS mapping: {}.".format(skipped_lanes))
 
     def cmd_AFC_OAMS_CALIBRATE_PTFE(self, gcmd):
         """Run the OpenAMS PTFE calibration for this unit.
@@ -5565,13 +5529,13 @@ class afcAMS(afcUnit):
         updated_indices = []
         for index, parsed_value in sorted(hub_values.items()):
             if index >= max_length:
-                self.logger.info(f"HUB HES calibration reported index {index} but your cfg only defines {max_length} value(s); update the remaining entries manually.")
+                self.logger.info("HUB HES calibration reported index {} but your cfg only defines {} value(s); update the remaining entries manually.".format(index, max_length))
                 continue
             values[index] = parsed_value
             updated_indices.append(index)
 
         if not updated_indices:
-            self.logger.info(f"Completed {command} but no HUB HES value was stored; check your cfg.")
+            self.logger.info("Completed {} but no HUB HES value was stored; check your cfg.".format(command))
             return False
 
         formatted = self._format_sequence(values)

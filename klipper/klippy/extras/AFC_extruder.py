@@ -223,6 +223,12 @@ class AFCExtruder:
         self.name: str                  = self.fullname.split(' ')[-1]
         self.tool_start                 = config.get('pin_tool_start', None)                                            # Pin for sensor before(pre) extruder gears
         self.tool_end                   = config.get('pin_tool_end', None)                                              # Pin for sensor after(post) extruder gears (optional)
+
+        # U1 specific variables
+        self.filament_sensor_name: str  = config.get('u1_filament_sensor_name', None)
+        self.park_detector: str         = config.get('u1_park_detector_name', None)
+        self.park_detector_obj          = None
+        self.filament_sensor_obj        = None
         self.tool_stn                   = config.getfloat("tool_stn", 72)                                               # Distance in mm from the toolhead sensor to the tip of the nozzle in mm, if `tool_end` is defined then distance is from this sensor
         self.tool_stn_unload            = config.getfloat("tool_stn_unload", 100)                                       # Distance to move in mm while unloading toolhead
         self.tool_sensor_after_extruder = config.getfloat("tool_sensor_after_extruder", 0)                              # Extra distance to move in mm once the pre- / post-sensors are clear. Useful for when only using post sensor, so this distance can be the amount to move to clear extruder gears
@@ -264,6 +270,8 @@ class AFCExtruder:
         self.no_lanes                   = False
         self.custom_tool_swap: Optional[str] = config.get("custom_tool_swap", None)
         self.custom_unselect: Optional[str] = config.get("custom_unselect", None)
+        self.custom_load_cmd: Optional[str] = config.get("custom_load_cmd", None)
+        self.custom_unload_cmd: Optional[str] = config.get("custom_unload_cmd", None)
 
         # Native toolchanger tool config (replaces KTC [tool ...] sections)
         self.gcode_x_offset: float = config.getfloat('gcode_x_offset', 0.0)
@@ -336,12 +344,32 @@ class AFCExtruder:
             if self.tool_start == "buffer":
                 self.logger.info("Setting up as buffer")
             elif self.tool_start == "internal":
-                self.logger.info("tool_start set to internal, relying on unit firmware for filament engagement verification")
+                self.logger.info(
+                    "Setting up as internal — relying on unit firmware "
+                    "(e.g. ACE) for filament engagement verification"
+                )
             else:
                 buttons.register_buttons([self.tool_start], self.tool_start_callback)
                 self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
                                                                                         self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
                                                                                         self.debounce_delay )
+        elif self.filament_sensor_name is not None:
+            filament_motion_name = f"filament_motion_sensor {self.filament_sensor_name}"
+            try:
+                self.filament_sensor_obj = self.printer.load_object(config, filament_motion_name)
+            except error:
+                raise error(
+                    f"[{filament_motion_name}] not found in config for [{self.fullname}]")
+            self.orig_note_filament_present = self.filament_sensor_obj.runout_helper.note_filament_present
+            self.filament_sensor_obj.runout_helper.note_filament_present = self.note_tool_start_callback
+            self.orig_runout_event_handler = self.filament_sensor_obj.runout_helper._runout_event_handler
+            self.filament_sensor_obj.runout_helper._runout_event_handler = self._u1_runout_event_handler
+            # Ensure runout_gcode is set so note_filament_present reaches our handler
+            # regardless of the user's pause_on_runout setting
+            if self.filament_sensor_obj.runout_helper.runout_gcode is None:
+                gcode_macro = self.printer.load_object(config, 'gcode_macro')
+                self.filament_sensor_obj.runout_helper.runout_gcode = gcode_macro.load_template(
+                    config, 'runout_gcode', '')
 
         self.tool_end_state = False
         if self.tool_end is not None:
@@ -456,6 +484,14 @@ class AFCExtruder:
             self.toolhead_extruder = self.printer.lookup_object(self.name)
         except:
             raise error("[{}] not found in config file".format(self.name))
+
+        if self.park_detector:
+            park_dect_str = f"park_detector {self.park_detector}"
+            self.park_detector_obj = self.printer.lookup_object(park_dect_str, None)
+            if not self.park_detector_obj:
+                self.logger.debug(
+                    f"[{park_dect_str}] not found for [{self.fullname}], "
+                    f"park_detector disabled")
 
         try:
             if self.tc_unit_name:
@@ -582,13 +618,20 @@ class AFCExtruder:
                     self.tc_lane.prep_state = state
 
                     if (self.printer.state_message == READY and
-                        self.tc_lane._afc_prep_done):
+                        self.tc_lane._afc_prep_done and
+                        self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
                         if state:
                             if not self.load_active:
-                                self.load_unload_sequence(self.tool_stn)
+                                if self.on_shuttle():
+                                    self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
+                                else:
+                                    self.load_unload_sequence(self.tool_stn)
                         elif not self.afc.function.is_printing():
-                            self.tc_lane.set_tool_unloaded()
-                            self.tc_lane.set_unloaded()
+                            if self.lane_loaded:
+                                self.afc.TOOL_UNLOAD(self.tc_lane)
+                            else:
+                                self.tc_lane.set_tool_unloaded()
+                                self.tc_lane.set_unloaded()
 
                         self.afc.save_vars()
             else:
@@ -596,6 +639,35 @@ class AFCExtruder:
 
             self.tool_start_state = state
 
+
+    def note_tool_start_callback(self, state, force=False):
+        """U1 filament_motion_sensor callback wrapper.
+        Calls the original note_filament_present and feeds state to AFC's tool_start tracking."""
+        self.orig_note_filament_present(state, force)
+        self.tool_start_callback(0, state)
+
+    def _u1_runout_event_handler(self, eventtime):
+        """Route U1 filament_motion_sensor runout through AFC instead of native Klipper pause."""
+        rh = self.filament_sensor_obj.runout_helper
+        self.logger.info(
+            "U1 runout handler fired: lane_loaded={}, lanes={}, runout_lane={}".format(
+                self.lane_loaded,
+                list(self.lanes.keys()) if self.lanes else None,
+                getattr(self.lanes.get(self.lane_loaded, None), 'runout_lane', 'N/A')
+            ))
+        if self.lane_loaded and self.lane_loaded in self.lanes:
+            lane = self.lanes[self.lane_loaded]
+            if lane.runout_lane is not None:
+                self.logger.info("Triggering infinite spool: {} -> {}".format(lane.name, lane.runout_lane))
+                lane._perform_infinite_runout()
+            else:
+                self.logger.info("No runout_lane set, pausing")
+                lane._perform_pause_runout()
+        else:
+            self.logger.info("No lane_loaded or lane not in self.lanes, falling back to native handler")
+            self.orig_runout_event_handler(eventtime)
+            return
+        rh.min_event_systime = self.reactor.monotonic() + rh.event_delay
 
     def buffer_trailing_callback(self, eventtime, state):
         self.buffer_trailing = state
@@ -950,12 +1022,14 @@ class AFCExtruder:
                         self.tc_unit_obj.active_tool == self)
             return self.detect_state == DETECT_PRESENT
 
+        # U1 park_detector support
+        if (self.park_detector_obj
+            and hasattr(self.park_detector_obj, "get_park_detector_status")):
+            status = self.park_detector_obj.get_park_detector_status()
+            return status.get('state') == 'ACTIVATE'
+
         # Toolchanger configured but no detection pin (custom swap/unselect macros)
         return True
-
-    def is_standalone(self):
-        """Returns True when this extruder has no AFC lanes (standalone toolchanger tool)."""
-        return self.no_lanes
 
     cmd_UPDATE_TOOLHEAD_SENSORS_help = "Gives ability to update tool_stn, tool_stn_unload, tool_sensor_after_extruder values without restarting klipper"
     cmd_UPDATE_TOOLHEAD_SENSORS_options = {
