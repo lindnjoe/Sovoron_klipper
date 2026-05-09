@@ -45,6 +45,21 @@ class AfcToolchanger(afcUnit):
         self.logo_error = '<span class=error--text>Toolchanger Not Ready</span>\n'
         self.functions: afcFunction = self.printer.load_object(config, 'AFC_functions')
 
+        # Dock cooling — turns on part cooling fan for docked tools above
+        # a temperature threshold to prevent oozing while parked.
+        self.dock_cooling: bool = config.getboolean('dock_cooling', False)
+        self.dock_cooling_temp: float = config.getfloat('dock_cooling_temp', 170.0, minval=0.)
+        self.dock_cooling_fan_speed: float = config.getfloat('dock_cooling_fan_speed', 1.0, minval=0., maxval=1.0)
+        self._dock_cooled_tools: set = set()
+        # Always register the timer — per-tool dock_cooling overrides
+        # can enable cooling even when the global setting is off.
+        self._dock_cooling_timer = self.printer.get_reactor().register_timer(
+            self._dock_cooling_tick)
+        self.printer.register_event_handler("klippy:ready",
+            lambda: self.printer.get_reactor().update_timer(
+                self._dock_cooling_timer,
+                self.printer.get_reactor().NOW + 5.0))
+
         self.functions.register_commands(self.afc.show_macros, "AFC_SELECT_TOOL",
                                          self.cmd_AFC_SELECT_TOOL, self.cmd_AFC_SELECT_TOOL_help,
                                          self.cmd_AFC_SELECT_TOOL_options )
@@ -272,6 +287,90 @@ class AfcToolchanger(afcUnit):
 
         if not success:
             raise gcmd.error(error_string)
+
+    # ---- Dock cooling ----
+
+    def _get_tools_for_cooling(self):
+        """Return extruder objects that belong to this toolchanger unit."""
+        tools = []
+        for tool in self.afc.tools.values():
+            if getattr(tool, 'tc_unit_obj', None) == self:
+                tools.append(tool)
+        return tools
+
+    def _dock_cooling_tick(self, eventtime):
+        """Periodic check to start/stop dock cooling fans based on temperature.
+
+        Uses fan object directly (not gcode) so it's safe from reactor context.
+        Per-tool dock_cooling overrides the global setting.
+
+        Fan speed is re-applied every tick so that external overrides
+        (e.g. FanSwitcher queued commands racing with dock cooling) are
+        corrected within one polling interval.  Klipper's _apply_speed
+        discards redundant set_pwm calls internally, so this is cheap.
+        """
+        for tool in self._get_tools_for_cooling():
+            tool_dc = getattr(tool, 'dock_cooling', None)
+            if tool_dc is False:
+                continue
+            if tool_dc is None and not self.dock_cooling:
+                continue
+            # Active tool's fan is owned by the slicer — don't touch it.
+            if tool.on_shuttle():
+                self._dock_cooled_tools.discard(tool.name)
+                continue
+            try:
+                current_temp, _ = tool.get_heater().get_temp(eventtime)
+            except Exception:
+                continue
+            if current_temp >= self.dock_cooling_temp:
+                self._start_dock_cooling_fan(tool, current_temp)
+            else:
+                self._stop_dock_cooling_fan(tool, current_temp)
+
+        return eventtime + 5.0
+
+    def _start_dock_cooling_fan(self, tool, current_temp):
+        """Set fan to cooling speed — safe from reactor context."""
+        fan_name = getattr(tool, 'fan_name', None)
+        if not fan_name:
+            return
+        try:
+            fan_obj = self.printer.lookup_object(
+                "fan_generic " + fan_name, None)
+            if fan_obj and hasattr(fan_obj, 'fan'):
+                fan_obj.fan.set_speed(self.dock_cooling_fan_speed)
+                if tool.name not in self._dock_cooled_tools:
+                    self._dock_cooled_tools.add(tool.name)
+                    self.logger.info(
+                        "Dock cooling: %s fan on at %.0f%% "
+                        "(temp %.1fC >= %.1fC)"
+                        % (tool.name, self.dock_cooling_fan_speed * 100,
+                           current_temp, self.dock_cooling_temp))
+        except Exception as e:
+            self.logger.warning(
+                "Dock cooling: failed to start fan for %s: %s"
+                % (tool.name, e))
+
+    def _stop_dock_cooling_fan(self, tool, current_temp):
+        """Set fan to zero — safe from reactor context."""
+        fan_name = getattr(tool, 'fan_name', None)
+        if not fan_name:
+            return
+        try:
+            fan_obj = self.printer.lookup_object(
+                "fan_generic " + fan_name, None)
+            if fan_obj and hasattr(fan_obj, 'fan'):
+                fan_obj.fan.set_speed(0.)
+                if tool.name in self._dock_cooled_tools:
+                    self._dock_cooled_tools.discard(tool.name)
+                    self.logger.info(
+                        "Dock cooling: %s fan off (temp %.1fC < %.1fC)"
+                        % (tool.name, current_temp, self.dock_cooling_temp))
+        except Exception as e:
+            self.logger.warning(
+                "Dock cooling: failed to stop fan for %s: %s"
+                % (tool.name, e))
 
 def load_config_prefix(config: ConfigWrapper):
     return AfcToolchanger(config)

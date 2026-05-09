@@ -273,6 +273,12 @@ class AFCExtruder:
         self.custom_load_cmd: Optional[str] = config.get("custom_load_cmd", None)
         self.custom_unload_cmd: Optional[str] = config.get("custom_unload_cmd", None)
 
+        self.fan_name: Optional[str] = config.get('tool_fan', None)
+        self.dock_cooling: Optional[bool] = None
+        _dc = config.get('dock_cooling', None)
+        if _dc is not None:
+            self.dock_cooling = _dc.lower() in ('true', '1', 'yes')
+
         self.lane_loaded: Optional[str] = None
         self.lanes: Dict                = {}
         self.load_active                = False
