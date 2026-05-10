@@ -290,6 +290,11 @@ class AFCExtruder:
         self.filament_sensor_obj = None
 
         self.tool_start_state = False
+        self._homing = False
+        self.printer.register_event_handler("homing:home_rails_begin",
+                                            self._on_home_begin)
+        self.printer.register_event_handler("homing:home_rails_end",
+                                            self._on_home_end)
         # TODO: add a check here as pin_tool_start should always be required, or let klipper take care of it by not passing in None
         if self.tool_start is not None:
             if "unknown" == self.tool_start.lower():
@@ -525,8 +530,17 @@ class AFCExtruder:
         self.orig_note_filament_present(state, force)
         self.tool_start_callback(0, state)
 
+    def _on_home_begin(self, *args):
+        self._homing = True
+
+    def _on_home_end(self, *args):
+        self._homing = False
+
     def _u1_runout_event_handler(self, eventtime):
         """Route U1 filament_motion_sensor runout through AFC instead of native Klipper pause."""
+        if self._homing:
+            self.logger.info("U1 runout handler ignored during homing")
+            return
         rh = self.filament_sensor_obj.runout_helper
         self.logger.info(
             "U1 runout handler fired: lane_loaded={}, lanes={}, runout_lane={}".format(
@@ -566,6 +580,7 @@ class AFCExtruder:
                     self.tc_lane.prep_state = state
 
                     if (self.printer.state_message == READY and
+                        not self._homing and
                         self.tc_lane._afc_prep_done and
                         self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
                         if state:
