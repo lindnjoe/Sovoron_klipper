@@ -573,34 +573,33 @@ class AFCExtruder:
         :param eventtime: Event time from the button press
         :param state: Boolean indicating sensor state (True = filament present, False = runout)
         """
-        with self.mutex:
-            if state != self.tool_start_state:
-                if self.tc_unit_name and self.no_lanes:
-                    self.tc_lane._load_state = state
-                    self.tc_lane.prep_state = state
+        if state != self.tool_start_state:
+            if self.tc_unit_name and self.no_lanes:
+                self.tc_lane._load_state = state
+                self.tc_lane.prep_state = state
 
-                    if (self.printer.state_message == READY and
-                        not self._homing and
-                        self.tc_lane._afc_prep_done and
-                        self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
-                        if state:
-                            if not self.load_active:
-                                if self.on_shuttle():
-                                    self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
-                                else:
-                                    self.load_unload_sequence(self.tool_stn)
-                        elif not self.afc.function.is_printing():
-                            if self.lane_loaded:
-                                self.afc.TOOL_UNLOAD(self.tc_lane)
+                if (self.printer.state_message == READY and
+                    not self._homing and
+                    self.tc_lane._afc_prep_done and
+                    self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
+                    if state:
+                        if not self.load_active:
+                            if self.on_shuttle():
+                                self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
                             else:
-                                self.tc_lane.set_tool_unloaded()
-                                self.tc_lane.set_unloaded()
+                                self.load_unload_sequence(self.tool_stn)
+                    elif not self.afc.function.is_printing():
+                        if self.lane_loaded:
+                            self.afc.TOOL_UNLOAD(self.tc_lane)
+                        else:
+                            self.tc_lane.set_tool_unloaded()
+                            self.tc_lane.set_unloaded()
 
-                            self.afc.save_vars()
-            else:
-                self.logger.info("Not loading State matches tool_start_state")
+                        self.afc.save_vars()
+        else:
+            self.logger.info("Not loading State matches tool_start_state")
 
-            self.tool_start_state = state
+        self.tool_start_state = state
 
 
     def buffer_trailing_callback(self, eventtime, state):
@@ -668,7 +667,7 @@ class AFCExtruder:
         else:
             self.tc_lane.status = AFCLaneState.TOOL_UNLOADING
 
-        self._captured_toolhead_temp = self.afc._capture_toolhead_temp()
+        self._captured_toolhead_temp = self.afc.capture_toolhead_temp()
         self.afc._check_extruder_temp(self.tc_lane, no_wait=True)
         self.reactor.update_timer(self.temp_check_timer,
                                 self.reactor.monotonic() +1 )
@@ -736,7 +735,7 @@ class AFCExtruder:
         self.function.do_enable(False, self.name)
         self.load_active = False
 
-        self.afc._restore_toolhead_temp(self._captured_toolhead_temp)
+        self.afc.restore_toolhead_temp(self._captured_toolhead_temp)
         self._captured_toolhead_temp = None
 
         info_str = "loading" if self.current_move_distance > 0 else "unloading"
