@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
+import logging
 import traceback
 import inspect
 
@@ -93,8 +94,8 @@ class afcError:
                     while (cur_lane.raw_load_state):
                         total_move_dist = cur_lane.dist_hub + cur_lane.hub_obj.afc_bowden_length + 500
                         cur_lane.unit_obj.move_to_load(cur_lane, total_move_dist,
-                                                       MoveDirection.NEG, True,
-                                                       SpeedMode.SHORT)
+                                                    MoveDirection.NEG, True,
+                                                    SpeedMode.SHORT)
                         num_tries += 1
                         if num_tries >= 5:
                             self.PauseUserIntervention(failed_to_retract_msg)
@@ -148,7 +149,7 @@ class afcError:
         self.afc.function.log_toolhead_pos()
 
     def set_error_state(self, state=False):
-        self.logger.debug("setting error state {}".format(state))
+        logging.warning("AFC debug: setting error state {}".format(state))
         # Only save position on first error state call
         if state and not self.afc.error_state:
             self.afc.save_pos()
@@ -157,7 +158,7 @@ class afcError:
 
     def AFC_error(self, msg, pause=True, stack_name=None):
         # Print to logger since respond_raw does not write to logger
-        self.logger.warning(msg)
+        logging.warning(msg)
         if stack_name is None:
             stack_name = inspect.currentframe().f_back.f_code.co_name
         # Handle AFC errors

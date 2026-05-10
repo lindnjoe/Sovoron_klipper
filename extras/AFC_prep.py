@@ -37,6 +37,20 @@ class afcPrep:
         self.afc.gcode.register_command('PREP', self.PREP, desc=None)
         self.logger = self.afc.logger
 
+    def _rename(self, base_name, rename_name, rename_macro, rename_help):
+        """
+        Helper function to get stock macros, rename to something and replace stock macro with AFC functions
+        """
+        # Renaming users Resume macro so that RESUME calls AFC_Resume function instead
+        prev_cmd = self.afc.gcode.register_command(base_name, None)
+        if prev_cmd is not None:
+            pdesc = "Renamed builtin of '%s'" % (base_name,)
+            self.afc.gcode.register_command(rename_name, prev_cmd, desc=pdesc)
+        else:
+            self.logger.debug("{}Existing command {} not found in gcode_macros{}".format("<span class=warning--text>", base_name, "</span>",))
+        self.logger.debug("PREP-renaming macro {}".format(base_name))
+        self.afc.gcode.register_command(base_name, rename_macro, desc=rename_help)
+
     def _rename_macros(self):
         """
         Helper function to rename multiple macros and substitute with AFC macros.
@@ -47,12 +61,12 @@ class afcPrep:
         # Checking to see if rename has already been done, don't want to rename again if prep was already ran
         if not self.rename_occurred:
             self.rename_occurred = True
-            self.afc.function._rename(self.afc.error.BASE_RESUME_NAME, self.afc.error.AFC_RENAME_RESUME_NAME, self.afc.error.cmd_AFC_RESUME, self.afc.error.cmd_AFC_RESUME_help)
-            self.afc.function._rename(self.afc.error.BASE_PAUSE_NAME, self.afc.error.AFC_RENAME_PAUSE_NAME, self.afc.error.cmd_AFC_PAUSE, self.afc.error.cmd_AFC_RESUME_help)
+            self._rename(self.afc.error.BASE_RESUME_NAME, self.afc.error.AFC_RENAME_RESUME_NAME, self.afc.error.cmd_AFC_RESUME, self.afc.error.cmd_AFC_RESUME_help)
+            self._rename(self.afc.error.BASE_PAUSE_NAME, self.afc.error.AFC_RENAME_PAUSE_NAME, self.afc.error.cmd_AFC_PAUSE, self.afc.error.cmd_AFC_RESUME_help)
 
             # Check to see if the user does not want to rename UNLOAD_FILAMENT macro
             if not self.dis_unload_macro:
-                self.afc.function._rename(self.afc.BASE_UNLOAD_FILAMENT, self.afc.RENAMED_UNLOAD_FILAMENT, self.afc.cmd_TOOL_UNLOAD, self.afc.cmd_TOOL_UNLOAD_help)
+                self._rename(self.afc.BASE_UNLOAD_FILAMENT, self.afc.RENAMED_UNLOAD_FILAMENT, self.afc.cmd_TOOL_UNLOAD, self.afc.cmd_TOOL_UNLOAD_help)
 
     def _td1_prep(self, overrall_status):
         '''
@@ -240,7 +254,7 @@ class afcPrep:
         # have selectors to make sure the selector is on the correct lane
         current_lane = self.afc.function.get_current_lane_obj()
         if current_lane is not None:
-            current_lane.unit_obj.select_lane(current_lane, True)
+            current_lane.unit_obj.select_lane(current_lane)
             current_lane.sync_to_extruder()
 
         # Restore previous bypass state if virtual bypass is active
