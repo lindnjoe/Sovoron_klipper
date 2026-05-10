@@ -240,6 +240,7 @@ class afcACE(afcUnit):
         self._FEED_ASSIST_REFRESH_INTERVAL = 15  # heartbeats (~30s at 2s interval)
         self._prev_feed_assist_count = None
         self._feed_assist_stall_count = 0
+        self._feed_assist_seen_increment = False
         self._FEED_ASSIST_STALL_THRESHOLD = 2  # consecutive stalled checks before re-send
 
         # When True, the next successful heartbeat response will restore
@@ -1125,10 +1126,12 @@ class afcACE(afcUnit):
                         pass
                     self._prev_feed_assist_count = None
                     self._feed_assist_stall_count = 0
+                    self._feed_assist_seen_increment = False
                 elif desired_slot >= 0 and desired_slot in self._feed_assist_active:
                     # Slot is tracked as active — verify via feed_assist_count.
-                    # If printing and the count hasn't increased across
-                    # consecutive checks, the firmware dropped the assist.
+                    # Only flag stalls after the count has incremented at least
+                    # once (proves the extruder is actually moving filament).
+                    # This avoids false positives during print_start warmup.
                     result = response.get("result", response)
                     cur_count = result.get("feed_assist_count") if isinstance(result, dict) else None
                     is_printing = False
@@ -1137,33 +1140,36 @@ class afcACE(afcUnit):
                     except Exception:
                         pass
                     if is_printing and cur_count is not None:
-                        if (self._prev_feed_assist_count is not None
-                                and cur_count <= self._prev_feed_assist_count):
-                            self._feed_assist_stall_count += 1
-                            if self._feed_assist_stall_count >= self._FEED_ASSIST_STALL_THRESHOLD:
-                                self.logger.warning(
-                                    f"ACE: feed_assist_count stalled at {cur_count} "
-                                    f"for {self._feed_assist_stall_count} checks "
-                                    f"while printing — re-sending start_feed_assist "
-                                    f"for slot {desired_slot}"
-                                )
-                                self._feed_assist_active.discard(desired_slot)
-                                try:
-                                    self._ace.stop_feed_assist(desired_slot)
-                                except Exception:
-                                    pass
-                                try:
-                                    self._ace.start_feed_assist(desired_slot)
-                                    self._feed_assist_active.add(desired_slot)
-                                except Exception:
-                                    pass
+                        if self._prev_feed_assist_count is not None:
+                            if cur_count > self._prev_feed_assist_count:
+                                self._feed_assist_seen_increment = True
                                 self._feed_assist_stall_count = 0
-                        else:
-                            self._feed_assist_stall_count = 0
+                            elif self._feed_assist_seen_increment:
+                                self._feed_assist_stall_count += 1
+                                if self._feed_assist_stall_count >= self._FEED_ASSIST_STALL_THRESHOLD:
+                                    self.logger.warning(
+                                        f"ACE: feed_assist_count stalled at {cur_count} "
+                                        f"for {self._feed_assist_stall_count} checks "
+                                        f"while extruding — re-sending start_feed_assist "
+                                        f"for slot {desired_slot}"
+                                    )
+                                    self._feed_assist_active.discard(desired_slot)
+                                    try:
+                                        self._ace.stop_feed_assist(desired_slot)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        self._ace.start_feed_assist(desired_slot)
+                                        self._feed_assist_active.add(desired_slot)
+                                    except Exception:
+                                        pass
+                                    self._feed_assist_stall_count = 0
+                                    self._feed_assist_seen_increment = False
                         self._prev_feed_assist_count = cur_count
                     elif not is_printing:
                         self._feed_assist_stall_count = 0
                         self._prev_feed_assist_count = None
+                        self._feed_assist_seen_increment = False
 
         # Skip lane state updates during active operations (load/unload/calibration)
         if self._operation_active:
@@ -1437,6 +1443,9 @@ class afcACE(afcUnit):
         """
         super().lane_tool_loaded(lane)
         lane._ace_runout_triggered = False
+        self._prev_feed_assist_count = None
+        self._feed_assist_stall_count = 0
+        self._feed_assist_seen_increment = False
 
         if self._ace is not None and self._ace.connected:
             active_slot = self._get_local_slot_for_lane(lane)
