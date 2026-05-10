@@ -1331,8 +1331,10 @@ class afc:
                     cur_lane.espooler.do_assist_move()
 
                     # Poop/wipe/kick — per-extruder overrides fall back to global.
+                    # Skip entirely when custom_load_cmd handled the full sequence.
                     # Skip when dock purge already handled purging.
                     # Standalone tools never dock, so always purge normally.
+                    custom_load = cur_lane.custom_load_cmd or getattr(cur_extruder, 'custom_load_cmd', None)
                     do_poop = cur_extruder.poop if cur_extruder.poop is not None else self.poop
                     do_wipe = cur_extruder.wipe if cur_extruder.wipe is not None else self.wipe
                     do_kick = cur_extruder.kick if cur_extruder.kick is not None else self.kick
@@ -1340,7 +1342,7 @@ class afc:
                     ext_wipe_cmd = cur_extruder.wipe_cmd or self.wipe_cmd
                     ext_kick_cmd = cur_extruder.kick_cmd or self.kick_cmd
 
-                    if cur_extruder.is_standalone() or not self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
+                    if not custom_load and (cur_extruder.is_standalone() or not self._is_unit_dock_purge_enabled(cur_lane.unit_obj)):
                         if do_poop:
                             if purge_length is not None:
                                 self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(ext_poop_cmd, purge_length, cur_extruder.name))

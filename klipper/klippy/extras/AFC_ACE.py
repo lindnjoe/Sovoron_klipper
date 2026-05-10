@@ -233,11 +233,14 @@ class afcACE(afcUnit):
         # Used to restore feed assist after ACE reconnection.
         self._feed_assist_active: set = set()
 
-        # Periodic feed assist refresh: re-send start_feed_assist every
-        # ~30 seconds to guard against the ACE firmware silently dropping
-        # the assist motor (internal timeout, brief busy state, etc.).
+        # Periodic feed assist refresh: check every ~30s that assist is
+        # still running.  Uses feed_assist_count from ACE status to detect
+        # firmware-side drops while printing.
         self._feed_assist_refresh_counter = 0
         self._FEED_ASSIST_REFRESH_INTERVAL = 15  # heartbeats (~30s at 2s interval)
+        self._prev_feed_assist_count = None
+        self._feed_assist_stall_count = 0
+        self._FEED_ASSIST_STALL_THRESHOLD = 2  # consecutive stalled checks before re-send
 
         # When True, the next successful heartbeat response will restore
         # feed assist for all tracked slots before clearing the flag.
@@ -1113,15 +1116,50 @@ class afcACE(afcUnit):
                         except Exception:
                             pass
                         self._feed_assist_active.discard(stale_slot)
-                # Only send start if the slot isn't already tracked as active.
-                # Re-sending start_feed_assist resets the ACE firmware's
-                # internal assist state, interrupting an in-progress assist.
                 if desired_slot >= 0 and desired_slot not in self._feed_assist_active:
+                    # Slot should be assisting but isn't tracked — start it.
                     try:
                         self._ace.start_feed_assist(desired_slot)
                         self._feed_assist_active.add(desired_slot)
                     except Exception:
                         pass
+                    self._prev_feed_assist_count = None
+                    self._feed_assist_stall_count = 0
+                elif desired_slot >= 0 and desired_slot in self._feed_assist_active:
+                    # Slot is tracked as active — verify via feed_assist_count.
+                    # If printing and the count hasn't increased across
+                    # consecutive checks, the firmware dropped the assist.
+                    result = response.get("result", response)
+                    cur_count = result.get("feed_assist_count") if isinstance(result, dict) else None
+                    is_printing = False
+                    try:
+                        is_printing = self.afc.function.is_printing()
+                    except Exception:
+                        pass
+                    if is_printing and cur_count is not None:
+                        if (self._prev_feed_assist_count is not None
+                                and cur_count <= self._prev_feed_assist_count):
+                            self._feed_assist_stall_count += 1
+                            if self._feed_assist_stall_count >= self._FEED_ASSIST_STALL_THRESHOLD:
+                                self.logger.warning(
+                                    f"ACE: feed_assist_count stalled at {cur_count} "
+                                    f"for {self._feed_assist_stall_count} checks "
+                                    f"while printing — re-sending start_feed_assist "
+                                    f"for slot {desired_slot}"
+                                )
+                                self._feed_assist_active.discard(desired_slot)
+                                try:
+                                    self._ace.start_feed_assist(desired_slot)
+                                    self._feed_assist_active.add(desired_slot)
+                                except Exception:
+                                    pass
+                                self._feed_assist_stall_count = 0
+                        else:
+                            self._feed_assist_stall_count = 0
+                        self._prev_feed_assist_count = cur_count
+                    elif not is_printing:
+                        self._feed_assist_stall_count = 0
+                        self._prev_feed_assist_count = None
 
         # Skip lane state updates during active operations (load/unload/calibration)
         if self._operation_active:
@@ -1389,16 +1427,18 @@ class afcACE(afcUnit):
     def lane_tool_loaded(self, lane):
         """Set the virtual tool sensor when an ACE lane loads into the toolhead.
 
-        The base class only updates LEDs. ACE also immediately starts feed
-        assist on the active lane's slot — the ACE firmware handles stopping
-        the previous slot internally when a new one is started.
+        The base class only updates LEDs. ACE also starts feed assist if it
+        wasn't already started by load_sequence (avoids double-sending
+        start_feed_assist which resets the firmware's assist state machine).
         """
         super().lane_tool_loaded(lane)
         lane._ace_runout_triggered = False
 
         if self._ace is not None and self._ace.connected:
             active_slot = self._get_local_slot_for_lane(lane)
-            if active_slot >= 0 and self._get_feed_assist(active_slot, lane):
+            if (active_slot >= 0
+                    and self._get_feed_assist(active_slot, lane)
+                    and active_slot not in self._feed_assist_active):
                 try:
                     self._ace.start_feed_assist(active_slot)
                     self._feed_assist_active = {active_slot}
