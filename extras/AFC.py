@@ -1334,7 +1334,7 @@ class afc:
                     # instead of poop/wipe/kick — the U1's built-in flush handles purging.
                     # Skip if custom_load_cmd was used — the macro already handled purging.
                     custom_load = cur_lane.custom_load_cmd or getattr(cur_extruder, 'custom_load_cmd', None)
-                    if cur_extruder.park_detector_obj and self.poop and not custom_load:
+                    if cur_extruder.park_detector_obj and self.poop and not custom_load and not cur_extruder.is_standalone():
                         spool_temp = cur_lane.extruder_temp or 210
                         self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
                         self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
