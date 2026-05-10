@@ -1330,20 +1330,9 @@ class afc:
                     cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                     cur_lane.espooler.do_assist_move()
 
-                    # Park-detector extruders (U1): use MOVE_TO_DISCARD + INNER_FLUSH
-                    # instead of poop/wipe/kick — the U1's built-in flush handles purging.
-                    # Skip if custom_load_cmd was used — the macro already handled purging.
-                    custom_load = cur_lane.custom_load_cmd or getattr(cur_extruder, 'custom_load_cmd', None)
-                    if cur_extruder.park_detector_obj and self.poop and not custom_load and not cur_extruder.is_standalone():
-                        spool_temp = cur_lane.extruder_temp or 210
-                        self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
-                        self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
-                        self.gcode.run_script_from_command("M400")
-                        self.gcode.run_script_from_command("G91")
-                        self.gcode.run_script_from_command("G1 Y-35")
-                        self.gcode.run_script_from_command("G90")
-                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After INNER_FLUSH and dock clearance")
-                    elif cur_extruder.is_standalone() or not self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
+                    # Poop/wipe/kick — skip when dock purge already handled purging.
+                    # Standalone tools never dock, so always purge normally.
+                    if cur_extruder.is_standalone() or not self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
                         # Poop/wipe/kick — skip when dock purge already handled purging.
                         # Standalone tools never dock, so always purge normally.
                         if self.poop:
@@ -1488,15 +1477,6 @@ class afc:
             if self._check_extruder_temp(cur_lane):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
             self.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "Standalone load")
-            if cur_extruder.park_detector_obj:
-                spool_temp = cur_lane.extruder_temp or 210
-                self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
-                self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
-                self.gcode.run_script_from_command("M400")
-                self.gcode.run_script_from_command("G91")
-                self.gcode.run_script_from_command("G1 Y-35")
-                self.gcode.run_script_from_command("G90")
-                self.afcDeltaTime.log_with_time("load_sequence: After INNER_FLUSH and dock clearance")
             cur_lane.status = AFCLaneState.TOOL_LOADED
             cur_lane.set_tool_loaded()
             self.save_vars()
@@ -1925,17 +1905,7 @@ class afc:
             # Do a quick pull and inform user to manually remove filament.
             if self._check_extruder_temp(cur_lane):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
-            if cur_extruder.park_detector_obj:
-                spool_temp = cur_lane.extruder_temp or 210
-                cur_lane.unsync_to_extruder()
-                self.gcode.run_script_from_command(f"INNER_FILAMENT_UNLOAD TEMP={spool_temp}")
-                self.gcode.run_script_from_command("M400")
-                self.gcode.run_script_from_command("G91")
-                self.gcode.run_script_from_command("G1 Y-35")
-                self.gcode.run_script_from_command("G90")
-                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After INNER_FILAMENT_UNLOAD")
-            else:
-                self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
+            self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
             cur_lane.set_tool_unloaded()
             cur_lane.do_enable(False)
             cur_lane.extruder_obj.estats.tc_tool_unload.increase_count()
