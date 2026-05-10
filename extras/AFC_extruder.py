@@ -268,6 +268,17 @@ class AFCExtruder:
         self.custom_tool_swap: Optional[str] = config.get("custom_tool_swap", None)
         self.custom_unselect: Optional[str] = config.get("custom_unselect", None)
 
+        # Per-extruder poop/wipe/kick overrides (fall back to global [AFC] settings when None)
+        _poop = config.get("poop", None)
+        self.poop: Optional[bool] = None if _poop is None else _poop.lower() in ('true', '1', 'yes')
+        self.poop_cmd: Optional[str] = config.get("poop_cmd", None)
+        _wipe = config.get("wipe", None)
+        self.wipe: Optional[bool] = None if _wipe is None else _wipe.lower() in ('true', '1', 'yes')
+        self.wipe_cmd: Optional[str] = config.get("wipe_cmd", None)
+        _kick = config.get("kick", None)
+        self.kick: Optional[bool] = None if _kick is None else _kick.lower() in ('true', '1', 'yes')
+        self.kick_cmd: Optional[str] = config.get("kick_cmd", None)
+
         self.lane_loaded: Optional[str] = None
         self.lanes: Dict                = {}
         self.load_active                = False
