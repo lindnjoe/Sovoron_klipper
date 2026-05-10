@@ -47,9 +47,6 @@ except: raise error(ERROR_STR.format(import_lib="AFC", trace=traceback.format_ex
 try: from extras.AFC_stats import AFCStats_var
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
 
-try: from extras.AFC_stats import AFCStats_var
-except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
-
 LARGE_TIME_OFFSET = 99999.9
 
 class AFCExtruderStats:
@@ -289,20 +286,31 @@ class AFCExtruder:
 
             if self.tool_start == "buffer":
                 self.logger.info("Setting up as buffer")
+            elif self.tool_start == "internal":
+                self.logger.info(
+                    "Setting up as internal — relying on unit firmware "
+                    "(e.g. ACE) for filament engagement verification"
+                )
             else:
-                self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
-                                                                                    self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
-                                                                                    self.debounce_delay )
                 buttons.register_buttons([self.tool_start], self.tool_start_callback)
+                self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
+                                                                                        self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
+                                                                                        self.debounce_delay )
         elif self.filament_sensor_name is not None:
             filament_motion_name = f"filament_motion_sensor {self.filament_sensor_name}"
             try:
                 self.filament_sensor_obj = self.printer.load_object(config, filament_motion_name)
             except error:
-                error_str = self.common_error.format(filament_motion_name, self.fullname)
-                raise error(error_str)
+                raise error(
+                    f"[{filament_motion_name}] not found in config for [{self.fullname}]")
             self.orig_note_filament_present = self.filament_sensor_obj.runout_helper.note_filament_present
             self.filament_sensor_obj.runout_helper.note_filament_present = self.note_tool_start_callback
+            self.orig_runout_event_handler = self.filament_sensor_obj.runout_helper._runout_event_handler
+            self.filament_sensor_obj.runout_helper._runout_event_handler = self._u1_runout_event_handler
+            if self.filament_sensor_obj.runout_helper.runout_gcode is None:
+                gcode_macro = self.printer.load_object(config, 'gcode_macro')
+                self.filament_sensor_obj.runout_helper.runout_gcode = gcode_macro.load_template(
+                    config, 'runout_gcode', '')
 
         self.tool_end_state = False
         if self.tool_end is not None:
@@ -336,11 +344,13 @@ class AFCExtruder:
 
             if self.motion_queuing is not None:
                 self.trapq          = self.motion_queuing.allocate_trapq()
-                self.trapq_append   = self.motion_queuing.lookup_trapq_append()
+                self._raw_trapq_append = self.motion_queuing.lookup_trapq_append()
             else:
                 self.trapq                  = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
-                self.trapq_append           = ffi_lib.trapq_append
+                self._raw_trapq_append      = ffi_lib.trapq_append
                 self.trapq_finalize_moves   = ffi_lib.trapq_finalize_moves
+
+            self._trapq_extra_arg = self._detect_trapq_extra_arg(ffi_main, ffi_lib)
 
         self.show_macros = self.afc.show_macros
         self.function: afcFunction = self.printer.load_object(config, 'AFC_functions')
@@ -355,6 +365,21 @@ class AFCExtruder:
             self.function.register_mux_command(self.show_macros, 'AFC_SET_EXTRUDER_LED', "EXTRUDER", self.name,
                                             self.cmd_AFC_SET_EXTRUDER_LED, self.cmd_AFC_SET_EXTRUDER_LED_help,
                                             self.cmd_AFC_SET_EXTRUDER_LED_options)
+
+    @staticmethod
+    def _detect_trapq_extra_arg(ffi_main, ffi_lib) -> bool:
+        """Detect if trapq_append requires the extra trailing arg (Snapmaker fork)."""
+        try:
+            sig = ffi_main.typeof(ffi_lib.trapq_append)
+            return len(sig.args) > 14
+        except Exception:
+            return False
+
+    def trapq_append(self, *args):
+        if self._trapq_extra_arg and len(args) == 14:
+            self._raw_trapq_append(*args, 0)
+        else:
+            self._raw_trapq_append(*args)
 
     def __str__(self):
         return self.name
@@ -381,9 +406,9 @@ class AFCExtruder:
             #  set to current tool start state
             self.tc_lane._load_state = self.tc_lane.prep_state = self.tool_start_state
 
-            if self.tool_start == "buffer":
+            if self.tool_start in ("buffer", "internal"):
                 raise error(
-                    f"buffer is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
+                    f"{self.tool_start} is not valid config for pin_tool_start when using {self.name} as a standalone extruder"
                 )
 
 
@@ -440,7 +465,7 @@ class AFCExtruder:
                         self.set_status_color_fn = led_helper.set_color
                         self.check_transmit_status_fn = led_helper.check_transmit
 
-        except error:
+        except configfile.error:
             raise error(
                 f"{self.toolhead_leds} not found in config file for led_name variable in " \
                 f"{self.fullname} config section"
@@ -478,12 +503,39 @@ class AFCExtruder:
 
         :param eventtime: Event time from the button press
         """
+        if not hasattr(self, 'fila_tool_start') or self.fila_tool_start is None:
+            return
         self._handle_toolhead_sensor_runout(self.fila_tool_start.runout_helper.filament_present, "tool_start")
         self.fila_tool_start.runout_helper.min_event_systime = self.reactor.monotonic() + self.fila_tool_start.runout_helper.event_delay
 
     def note_tool_start_callback(self, state, force=False):
+        """U1 filament_motion_sensor callback wrapper.
+        Calls the original note_filament_present and feeds state to AFC's tool_start tracking."""
         self.orig_note_filament_present(state, force)
         self.tool_start_callback(0, state)
+
+    def _u1_runout_event_handler(self, eventtime):
+        """Route U1 filament_motion_sensor runout through AFC instead of native Klipper pause."""
+        rh = self.filament_sensor_obj.runout_helper
+        self.logger.info(
+            "U1 runout handler fired: lane_loaded={}, lanes={}, runout_lane={}".format(
+                self.lane_loaded,
+                list(self.lanes.keys()) if self.lanes else None,
+                getattr(self.lanes.get(self.lane_loaded, None), 'runout_lane', 'N/A')
+            ))
+        if self.lane_loaded and self.lane_loaded in self.lanes:
+            lane = self.lanes[self.lane_loaded]
+            if lane.runout_lane is not None:
+                self.logger.info("Triggering infinite spool: {} -> {}".format(lane.name, lane.runout_lane))
+                lane._perform_infinite_runout()
+            else:
+                self.logger.info("No runout_lane set, pausing")
+                lane._perform_pause_runout()
+        else:
+            self.logger.info("No lane_loaded or lane not in self.lanes, falling back to native handler")
+            self.orig_runout_event_handler(eventtime)
+            return
+        rh.min_event_systime = self.reactor.monotonic() + rh.event_delay
 
     def tool_start_callback(self, eventtime, state):
         """
@@ -496,25 +548,33 @@ class AFCExtruder:
         :param eventtime: Event time from the button press
         :param state: Boolean indicating sensor state (True = filament present, False = runout)
         """
-        if state != self.tool_start_state:
-            if self.tc_unit_name and self.is_standalone():
-                self.tc_lane._load_state = state
-                self.tc_lane.prep_state = state
+        with self.mutex:
+            if state != self.tool_start_state:
+                if self.tc_unit_name and self.no_lanes:
+                    self.tc_lane._load_state = state
+                    self.tc_lane.prep_state = state
 
-                if (self.printer.state_message == READY and
-                    self.tc_lane._afc_prep_done):
-                    if state:
-                        if not self.load_active:
-                            self.load_unload_sequence(self.tool_stn)
-                    else:
-                        self.tc_lane.set_tool_unloaded()
-                        self.tc_lane.set_unloaded()
+                    if (self.printer.state_message == READY and
+                        self.tc_lane._afc_prep_done and
+                        self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
+                        if state:
+                            if not self.load_active:
+                                if self.on_shuttle():
+                                    self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
+                                else:
+                                    self.load_unload_sequence(self.tool_stn)
+                        elif not self.afc.function.is_printing():
+                            if self.lane_loaded:
+                                self.afc.TOOL_UNLOAD(self.tc_lane)
+                            else:
+                                self.tc_lane.set_tool_unloaded()
+                                self.tc_lane.set_unloaded()
 
-                    self.afc.save_vars()
-        else:
-            self.logger.info("Not loading State matches tool_start_state")
+                            self.afc.save_vars()
+            else:
+                self.logger.info("Not loading State matches tool_start_state")
 
-        self.tool_start_state = state
+            self.tool_start_state = state
 
 
     def buffer_trailing_callback(self, eventtime, state):
@@ -613,7 +673,7 @@ class AFCExtruder:
         axis_r, accel_t, cruise_t, cruise_v = calc_move_time(distance, self.tool_load_speed, 5)
         print_time = toolhead.get_last_move_time()
         self.trapq_append(self.trapq, print_time, accel_t, cruise_t, accel_t,
-                            0., 0., 0., axis_r, 0., 0., 0., cruise_v, 5, 0) # TODO: add a check for the zero
+                            0., 0., 0., axis_r, 0., 0., 0., cruise_v, 5)
         print_time = print_time + accel_t + cruise_t + accel_t
 
         if self.motion_queuing is None:
@@ -755,7 +815,10 @@ class AFCExtruder:
             or self.check_transmit_status_fn is None):
             return
 
-        color = tuple(map(float, color.split(',')))
+        if isinstance(color, str):
+            color = tuple(map(float, color.split(',')))
+        elif isinstance(color, (list, tuple)):
+            color = tuple(map(float, color))
         for idx in self.toolhead_status_index:
             self.set_status_color_fn(idx, color)
 
