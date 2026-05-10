@@ -1470,6 +1470,13 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
+        # Standalone extruders: heat check and tool_stn extrude first,
+        # before any custom_load_cmd runs (it needs filament at the nozzle).
+        if cur_extruder.is_standalone() and cur_extruder.tc_unit_name:
+            if self._check_extruder_temp(cur_lane):
+                self.afcDeltaTime.log_with_time("Done heating toolhead")
+            self.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "Standalone load")
+
         custom_load = cur_lane.custom_load_cmd or getattr(cur_extruder, 'custom_load_cmd', None)
         if custom_load:
             self.logger.info("Running custom load command for lane {}".format(cur_lane.name))
@@ -1482,9 +1489,6 @@ class afc:
             return True
 
         if cur_extruder.is_standalone() and cur_extruder.tc_unit_name:
-            if self._check_extruder_temp(cur_lane):
-                self.afcDeltaTime.log_with_time("Done heating toolhead")
-            self.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "Standalone load")
             cur_lane.status = AFCLaneState.TOOL_LOADED
             cur_lane.set_tool_loaded()
             self.save_vars()
