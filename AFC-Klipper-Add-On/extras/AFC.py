@@ -1330,41 +1330,38 @@ class afc:
                     cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                     cur_lane.espooler.do_assist_move()
 
-                    # Park-detector extruders (U1): use MOVE_TO_DISCARD + INNER_FLUSH
-                    # instead of poop/wipe/kick — the U1's built-in flush handles purging.
-                    if cur_extruder.park_detector_obj and self.poop:
-                        spool_temp = cur_lane.extruder_temp or 210
-                        self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
-                        self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
-                        self.gcode.run_script_from_command("M400")
-                        self.gcode.run_script_from_command("G91")
-                        self.gcode.run_script_from_command("G1 Y-35")
-                        self.gcode.run_script_from_command("G90")
-                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After INNER_FLUSH and dock clearance")
-                    elif cur_extruder.is_standalone() or not self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
-                        # Poop/wipe/kick — skip when dock purge already handled purging.
-                        # Standalone tools never dock, so always purge normally.
-                        if self.poop:
+                    # Poop/wipe/kick — per-extruder overrides fall back to global.
+                    # Skip when dock purge already handled purging.
+                    # Standalone tools never dock, so always purge normally.
+                    do_poop = cur_extruder.poop if cur_extruder.poop is not None else self.poop
+                    do_wipe = cur_extruder.wipe if cur_extruder.wipe is not None else self.wipe
+                    do_kick = cur_extruder.kick if cur_extruder.kick is not None else self.kick
+                    ext_poop_cmd = cur_extruder.poop_cmd or self.poop_cmd
+                    ext_wipe_cmd = cur_extruder.wipe_cmd or self.wipe_cmd
+                    ext_kick_cmd = cur_extruder.kick_cmd or self.kick_cmd
+
+                    if cur_extruder.is_standalone() or not self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
+                        if do_poop:
                             if purge_length is not None:
-                                self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(self.poop_cmd, purge_length, cur_extruder.name))
+                                self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(ext_poop_cmd, purge_length, cur_extruder.name))
                             else:
-                                self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.poop_cmd, cur_extruder.name))
+                                self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_poop_cmd, cur_extruder.name))
 
                             self.afcDeltaTime.log_with_time("TOOL_LOAD: After poop")
                             self.function.log_toolhead_pos()
 
-                            if self.wipe:
-                                self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.wipe_cmd, cur_extruder.name))
+                            if do_wipe:
+                                self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_wipe_cmd, cur_extruder.name))
                                 self.afcDeltaTime.log_with_time("TOOL_LOAD: After first wipe")
                                 self.function.log_toolhead_pos()
 
-                        if self.kick:
-                            self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.kick_cmd, cur_extruder.name))
+                        if do_kick:
+                            self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_kick_cmd, cur_extruder.name))
                             self.afcDeltaTime.log_with_time("TOOL_LOAD: After kick")
                             self.function.log_toolhead_pos()
 
-                        if self.wipe:
-                            self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.wipe_cmd, cur_extruder.name))
+                        if do_wipe:
+                            self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_wipe_cmd, cur_extruder.name))
                             self.afcDeltaTime.log_with_time("TOOL_LOAD: After second wipe")
                         self.function.log_toolhead_pos()
 
@@ -1486,15 +1483,6 @@ class afc:
             if self._check_extruder_temp(cur_lane):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
             self.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "Standalone load")
-            if cur_extruder.park_detector_obj:
-                spool_temp = cur_lane.extruder_temp or 210
-                self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
-                self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
-                self.gcode.run_script_from_command("M400")
-                self.gcode.run_script_from_command("G91")
-                self.gcode.run_script_from_command("G1 Y-35")
-                self.gcode.run_script_from_command("G90")
-                self.afcDeltaTime.log_with_time("load_sequence: After INNER_FLUSH and dock clearance")
             cur_lane.status = AFCLaneState.TOOL_LOADED
             cur_lane.set_tool_loaded()
             self.save_vars()
@@ -1923,17 +1911,7 @@ class afc:
             # Do a quick pull and inform user to manually remove filament.
             if self._check_extruder_temp(cur_lane):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
-            if cur_extruder.park_detector_obj:
-                spool_temp = cur_lane.extruder_temp or 210
-                cur_lane.unsync_to_extruder()
-                self.gcode.run_script_from_command(f"INNER_FILAMENT_UNLOAD TEMP={spool_temp}")
-                self.gcode.run_script_from_command("M400")
-                self.gcode.run_script_from_command("G91")
-                self.gcode.run_script_from_command("G1 Y-35")
-                self.gcode.run_script_from_command("G90")
-                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After INNER_FILAMENT_UNLOAD")
-            else:
-                self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
+            self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
             cur_lane.set_tool_unloaded()
             cur_lane.do_enable(False)
             cur_lane.extruder_obj.estats.tc_tool_unload.increase_count()
