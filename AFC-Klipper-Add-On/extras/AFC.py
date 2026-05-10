@@ -1468,13 +1468,6 @@ class afc:
                 self.logger.error("Custom load command failed for {}: {}".format(cur_lane.name, e))
                 return False
             self.afcDeltaTime.log_with_time("load_sequence: After custom load command")
-            if not cur_lane.get_toolhead_pre_sensor_state():
-                message = 'Custom load did not trigger toolhead sensor for {}, CHECK FILAMENT PATH'.format(cur_lane.name)
-                message += '\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.'.format(cur_lane.name)
-                if self.function.in_print():
-                    message += '\nOnce filament is fully loaded click resume to continue printing'
-                self.error.handle_lane_failure(cur_lane, message)
-                return False
             return True
 
         if cur_extruder.is_standalone() and cur_extruder.tc_unit_name:
