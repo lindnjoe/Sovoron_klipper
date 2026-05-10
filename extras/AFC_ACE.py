@@ -1110,6 +1110,8 @@ class afcACE(afcUnit):
                                     self._ace.stop_feed_assist_sync(slot)
                                 except Exception:
                                     pass
+                            self._wait_ace_ready()
+                            for slot in list(self._feed_assist_active):
                                 try:
                                     self._ace.start_feed_assist(slot)
                                 except Exception:
@@ -1385,6 +1387,18 @@ class afcACE(afcUnit):
 
         return response
 
+    def _wait_ace_ready(self, timeout=5.0):
+        """Poll ACE status until it is no longer busy (e.g. after unwind)."""
+        deadline = self.afc.reactor.monotonic() + timeout
+        while self.afc.reactor.monotonic() < deadline:
+            try:
+                status = self._ace.get_status(timeout=2.0)
+                if isinstance(status, dict) and status.get("status") != "busy":
+                    return
+            except Exception:
+                return
+            self.afc.reactor.pause(self.afc.reactor.monotonic() + 0.3)
+
     def lane_tool_loaded(self, lane):
         """Set the virtual tool sensor when an ACE lane loads into the toolhead.
 
@@ -1411,16 +1425,21 @@ class afcACE(afcUnit):
                 f"active_set={self._feed_assist_active}"
             )
             if active_slot >= 0 and feed_assist_enabled:
-                # Stop any stale slots synchronously — ACE firmware needs
-                # to finish processing the stop before it accepts a new start.
+                # Stop any stale slots and wait for ACE to finish unwinding.
+                # The firmware unwinds filament after stop_feed_assist and
+                # rejects start_feed_assist with FORBIDDEN while busy.
+                stopped_any = False
                 for stale in list(self._feed_assist_active):
                     if stale != active_slot:
                         try:
                             self._ace.stop_feed_assist_sync(stale)
+                            stopped_any = True
                             self.logger.debug(
                                 f"lane_tool_loaded: stopped stale slot {stale}")
                         except Exception:
                             pass
+                if stopped_any:
+                    self._wait_ace_ready()
                 if active_slot not in self._feed_assist_active:
                     try:
                         self._ace.start_feed_assist(active_slot)
