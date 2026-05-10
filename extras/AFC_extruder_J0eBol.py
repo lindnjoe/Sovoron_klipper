@@ -1003,6 +1003,15 @@ class AFCExtruder:
             self.gcode.run_script_from_command(
                 "SYNC_EXTRUDER_MOTION EXTRUDER='%s' MOTION_QUEUE=" % (self.extruder_stepper_name,))
 
+    def is_standalone(self):
+        """
+        Method for returning if extruder is a standalone lane (no unit system attached to it)
+
+        :return bool: Returns True if no unit system is attached to extruder, False if units/lanes
+            are attached.
+        """
+        return self.no_lanes
+
     def on_shuttle(self):
         """
         Helper function to easily detect if a toolhead is on the shuttle or not. This function is
