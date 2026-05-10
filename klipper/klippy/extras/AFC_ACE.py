@@ -238,7 +238,7 @@ class afcACE(afcUnit):
         self._prev_feed_assist_count = None
         self._feed_assist_stall_count = 0
         self._feed_assist_seen_increment = False
-        self._FEED_ASSIST_STALL_THRESHOLD = 5  # ~10s at 2s heartbeat
+        self._FEED_ASSIST_STALL_THRESHOLD = 15  # ~30s at 2s heartbeat
 
         # When True, the next successful heartbeat response will restore
         # feed assist for all tracked slots before clearing the flag.
