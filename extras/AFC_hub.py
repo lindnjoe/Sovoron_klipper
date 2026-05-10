@@ -54,6 +54,7 @@ class afc_hub:
         self.cut_servo_prep_angle   = config.getfloat("cut_servo_prep_angle", 75)   # Servo angle to prepare the filament for cutting (aligning the exit hole).
         self.cut_confirm            = config.getboolean("cut_confirm", 0)           # Set True to cut filament twice
 
+        self.use_dist_hub           = config.getboolean("use_dist_hub", False)       # If True, use lane dist_hub as direct distance instead of homing to hub sensor
         self.config_bowden_length   = self.afc_bowden_length                        # Used by SET_BOWDEN_LENGTH macro
         self.config_unload_bowden_length = self.afc_unload_bowden_length
         self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui",    self.afc.enable_sensors_in_gui) # Set to True to show hub sensor switches as filament sensor in mainsail/fluidd gui, overrides value set in AFC.cfg
