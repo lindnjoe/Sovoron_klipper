@@ -1357,6 +1357,13 @@ class afc:
                             self.afcDeltaTime.log_with_time("TOOL_LOAD: After second wipe")
                         self.function.log_toolhead_pos()
 
+                    if cur_extruder.park_detector_obj:
+                        self.gcode.run_script_from_command("M400")
+                        self.gcode.run_script_from_command("G91")
+                        self.gcode.run_script_from_command("G1 Y-35")
+                        self.gcode.run_script_from_command("G90")
+                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After dock clearance move")
+
                     cur_lane.set_tool_loaded()
                     cur_lane.enable_buffer(disable_fault=True)
                     cur_lane.enable_fault_detection()
@@ -1904,6 +1911,12 @@ class afc:
             if self._check_extruder_temp(cur_lane):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
             self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
+            if cur_extruder.park_detector_obj:
+                self.gcode.run_script_from_command("M400")
+                self.gcode.run_script_from_command("G91")
+                self.gcode.run_script_from_command("G1 Y-35")
+                self.gcode.run_script_from_command("G90")
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After dock clearance move")
             cur_lane.set_tool_unloaded()
             cur_lane.do_enable(False)
             cur_lane.extruder_obj.estats.tc_tool_unload.increase_count()
