@@ -582,7 +582,7 @@ class AFCExtruder:
         else:
             self.tc_lane.status = AFCLaneState.TOOL_UNLOADING
 
-        self._captured_toolhead_temp = self.afc.capture_toolhead_temp( extruder=self, async_capture=True)
+        self._captured_toolhead_temp = self.afc._capture_toolhead_temp()
         self.afc._check_extruder_temp(self.tc_lane, no_wait=True)
         self.reactor.update_timer(self.temp_check_timer,
                                 self.reactor.monotonic() +1 )
@@ -650,7 +650,7 @@ class AFCExtruder:
         self.function.do_enable(False, self.name)
         self.load_active = False
 
-        self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
+        self.afc._restore_toolhead_temp(self._captured_toolhead_temp)
         self._captured_toolhead_temp = None
 
         info_str = "loading" if self.current_move_distance > 0 else "unloading"
