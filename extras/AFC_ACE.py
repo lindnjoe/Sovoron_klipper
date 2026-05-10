@@ -1149,6 +1149,10 @@ class afcACE(afcUnit):
                                 )
                                 self._feed_assist_active.discard(desired_slot)
                                 try:
+                                    self._ace.stop_feed_assist(desired_slot)
+                                except Exception:
+                                    pass
+                                try:
                                     self._ace.start_feed_assist(desired_slot)
                                     self._feed_assist_active.add(desired_slot)
                                 except Exception:
