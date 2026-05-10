@@ -1332,7 +1332,9 @@ class afc:
 
                     # Park-detector extruders (U1): use MOVE_TO_DISCARD + INNER_FLUSH
                     # instead of poop/wipe/kick — the U1's built-in flush handles purging.
-                    if cur_extruder.park_detector_obj and self.poop:
+                    # Skip if custom_load_cmd was used — the macro already handled purging.
+                    custom_load = cur_lane.custom_load_cmd or getattr(cur_extruder, 'custom_load_cmd', None)
+                    if cur_extruder.park_detector_obj and self.poop and not custom_load:
                         spool_temp = cur_lane.extruder_temp or 210
                         self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
                         self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
