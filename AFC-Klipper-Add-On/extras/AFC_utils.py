@@ -34,9 +34,7 @@ if TYPE_CHECKING:
 
 ERROR_STR = "Error trying to import {import_lib}, please rerun install-afc.sh script in your AFC-Klipper-Add-On directory then restart klipper\n\n{trace}"
 
-def add_filament_switch(switch_name, switch_pin, printer, show_sensor=True,
-                        runout_callback = None, enable_runout=False,
-                        debounce_delay=0., extruder="extruder" ):
+def add_filament_switch( switch_name, switch_pin, printer, show_sensor=True, runout_callback = None, enable_runout=False, debounce_delay=0. ):
     """
     Helper function to register pins as filament switch sensor so it will show up in web guis
 
@@ -55,8 +53,8 @@ def add_filament_switch(switch_name, switch_pin, printer, show_sensor=True,
     filament_switch_config.add_section( new_switch_name )
     filament_switch_config.set( new_switch_name, 'switch_pin', switch_pin)
     filament_switch_config.set( new_switch_name, 'pause_on_runout', 'False')
-    filament_switch_config.set( new_switch_name, 'debounce_delay', 0.0)
     filament_switch_config.set( new_switch_name, 'extruder', 'extruder')
+    filament_switch_config.set( new_switch_name, 'debounce_delay', 0.0)
 
     cfg_wrap = configfile.ConfigWrapper( printer, filament_switch_config, {}, new_switch_name)
 
@@ -136,7 +134,6 @@ class DebounceButton:
         snapmaker_expected = ['is_filament_present', 'force']
         param_keys = list(sig.parameters.keys())
         if param_keys == expected_params:
-            # Exact match for the expected signature
             filament_sensor.runout_helper.note_filament_present = self._button_handler
         elif param_keys == snapmaker_expected:
             filament_sensor.runout_helper.note_filament_present = self.button_handler

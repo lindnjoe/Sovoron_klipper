@@ -149,7 +149,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -209,7 +209,7 @@
             "runout_lane": null,
             "filament_status": "In Tool",
             "filament_status_led": "#0000ff",
-            "status": "Tooled",
+            "status": "Loaded",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -251,7 +251,7 @@
             "hub": "Hub_5",
             "extruder": "extruder5",
             "buffer": "FPS_buffer2",
-            "buffer_status": "Trailing",
+            "buffer_status": "Neutral",
             "lane": 1,
             "map": "T8",
             "load": true,
@@ -281,7 +281,7 @@
             "hub": "Hub_6",
             "extruder": "extruder5",
             "buffer": "FPS_buffer2",
-            "buffer_status": "Trailing",
+            "buffer_status": "Neutral",
             "lane": 2,
             "map": "T9",
             "load": true,
@@ -311,7 +311,7 @@
             "hub": "Hub_7",
             "extruder": "extruder5",
             "buffer": "FPS_buffer2",
-            "buffer_status": "Trailing",
+            "buffer_status": "Neutral",
             "lane": 3,
             "map": "T10",
             "load": true,
@@ -341,7 +341,7 @@
             "hub": "Hub_8",
             "extruder": "extruder5",
             "buffer": "FPS_buffer2",
-            "buffer_status": "Trailing",
+            "buffer_status": "Neutral",
             "lane": 4,
             "map": "T11",
             "load": true,
@@ -361,7 +361,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None",
+            "status": "Loaded",
             "dist_hub": 60.0,
             "td1_data": {}
         }
@@ -373,12 +373,12 @@
             "hub": "Turtle_1",
             "extruder": "extruder5",
             "buffer": "FPS_buffer2",
-            "buffer_status": "Trailing",
+            "buffer_status": "Neutral",
             "lane": 1,
             "map": "T12",
             "load": true,
             "prep": true,
-            "tool_loaded": false,
+            "tool_loaded": true,
             "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.24,
@@ -391,14 +391,14 @@
             "extruder_temp": 220,
             "bed_temp": 60,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
-            "status": "Tool Loading",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tooled",
             "dist_hub": 187.37,
             "td1_data": {
-                "td": 2.3,
-                "color": "40A17A",
-                "scan_time": "2026-04-23T03:24:50.333028+00:00Z",
+                "td": 2.4,
+                "color": "338F68",
+                "scan_time": "2026-05-10T01:12:06.305221+00:00Z",
                 "error": null
             },
             "endstops": "load,hub,buffer_advance,buffer_trailing,lane12_prep,lane12_load,lane12_hub"
@@ -409,7 +409,7 @@
             "hub": "Turtle_1",
             "extruder": "extruder5",
             "buffer": "FPS_buffer2",
-            "buffer_status": "Trailing",
+            "buffer_status": "Neutral",
             "lane": 2,
             "map": "T13",
             "load": true,
@@ -445,7 +445,7 @@
             "hub": "Turtle_1",
             "extruder": "extruder5",
             "buffer": "FPS_buffer2",
-            "buffer_status": "Trailing",
+            "buffer_status": "Neutral",
             "lane": 3,
             "map": "T14",
             "load": true,
@@ -465,7 +465,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "None",
+            "status": "Loaded",
             "dist_hub": 132.07,
             "td1_data": {
                 "td": 2.9,
@@ -481,7 +481,7 @@
             "hub": "Turtle_1",
             "extruder": "extruder5",
             "buffer": "FPS_buffer2",
-            "buffer_status": "Trailing",
+            "buffer_status": "Neutral",
             "lane": 4,
             "map": "T15",
             "load": true,
@@ -513,7 +513,7 @@
         }
     },
     "system": {
-        "current_load": null,
+        "current_load": "lane12",
         "num_units": 5,
         "num_lanes": 16,
         "num_extruders": 6,
@@ -534,7 +534,7 @@
                 "lane_loaded": "lane6"
             },
             "extruder5": {
-                "lane_loaded": null
+                "lane_loaded": "lane12"
             }
         },
         "bypass": {

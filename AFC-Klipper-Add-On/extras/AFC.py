@@ -1330,8 +1330,9 @@ class afc:
                     cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                     cur_lane.espooler.do_assist_move()
 
-                    # Poop/wipe/kick — skip when dock purge already handled purging
-                    if not self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
+                    # Poop/wipe/kick — skip when dock purge already handled purging.
+                    # Standalone tools never dock, so always purge normally.
+                    if cur_extruder.is_standalone() or not self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
                         if self.poop:
                             if purge_length is not None:
                                 self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(self.poop_cmd, purge_length, cur_extruder.name))

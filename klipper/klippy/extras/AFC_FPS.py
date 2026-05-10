@@ -124,7 +124,6 @@ class AFCFPSBuffer:
         self.logger = self.afc.logger
 
         self.name = config.get_name().split(' ')[-1]
-        self.afc.buffers[self.name] = self
         self.lanes = {}
         self.last_state = "Unknown"
         self.enable = False
@@ -179,21 +178,27 @@ class AFCFPSBuffer:
         # Validate that low_point < set_point < high_point
         if self.low_point >= self.set_point:
             raise error(
-                f"AFC_FPS {self.name}: low_point ({self.low_point}) must be less than set_point ({self.set_point})")
+                "AFC_FPS {}: low_point ({}) must be less than set_point ({})".format(
+                    self.name, self.low_point, self.set_point))
         if self.high_point <= self.set_point:
             raise error(
-                f"AFC_FPS {self.name}: high_point ({self.high_point}) must be greater than set_point ({self.set_point})")
+                "AFC_FPS {}: high_point ({}) must be greater than set_point ({})".format(
+                    self.name, self.high_point, self.set_point))
 
         # Validate deadband doesn't exceed the available range
         half_db = self.deadband / 2.0
         if self.set_point - half_db <= self.low_point:
             raise error(
-                f"AFC_FPS {self.name}: deadband ({self.deadband}) too wide — neutral_low ({self.set_point - half_db:.3f}) "
-                f"must be above low_point ({self.low_point})")
+                "AFC_FPS {}: deadband ({}) too wide — neutral_low ({:.3f}) "
+                "must be above low_point ({})".format(
+                    self.name, self.deadband,
+                    self.set_point - half_db, self.low_point))
         if self.set_point + half_db >= self.high_point:
             raise error(
-                f"AFC_FPS {self.name}: deadband ({self.deadband}) too wide — neutral_high ({self.set_point + half_db:.3f}) "
-                f"must be below high_point ({self.high_point})")
+                "AFC_FPS {}: deadband ({}) too wide — neutral_high ({:.3f}) "
+                "must be below high_point ({})".format(
+                    self.name, self.deadband,
+                    self.set_point + half_db, self.high_point))
 
         # Smoothing factor for exponential moving average (0 = no smoothing, 1 = max)
         self.smoothing: float = config.getfloat('smoothing', 0.3, minval=0.0, maxval=0.95)
@@ -293,10 +298,13 @@ class AFCFPSBuffer:
         self.fps_trailing_endstop = FPSEndstopWrapper(
             self, lambda: self.buffer_trailing_triggered)
 
-        # Register under the AFC_buffer namespace so the upstream
+        # Register with AFC buffer registry
+        self.afc.buffers[self.name] = self
+
+        # Also register under the AFC_buffer namespace so the upstream
         # AFC_unit buffer lookup (printer.lookup_object('AFC_buffer <name>'))
         # finds us without needing changes to AFC_unit.py.
-        self.printer.add_object(f'AFC_buffer {self.name}', self)
+        self.printer.add_object('AFC_buffer {}'.format(self.name), self)
 
     def __str__(self):
         return self.name
@@ -533,8 +541,11 @@ class AFCFPSBuffer:
 
         if self.debug:
             self.logger.debug(
-                f"FPS_buffer {self.name}: fps={self.fps_value:.3f} smoothed={self.smoothed_fps:.3f} "
-                f"multiplier={multiplier:.4f} state={self.last_state}"
+                "FPS_buffer {}: fps={:.3f} smoothed={:.3f} "
+                "multiplier={:.4f} state={}".format(
+                    self.name, self.fps_value, self.smoothed_fps,
+                    multiplier, self.last_state
+                )
             )
 
         # Fault detection: update error position as long as correction is
@@ -681,7 +692,7 @@ class AFCFPSBuffer:
 
         self._last_multiplier = 1.0
         self.current_lane.update_rotation_distance(1)
-        self.logger.debug(f"FPS buffer multiplier reset for {self.current_lane.name}")
+        self.logger.debug("FPS buffer multiplier reset for {}".format(self.current_lane.name))
 
     def _lane_has_rotation_control(self, lane) -> bool:
         """Return True when lane supports AFC stepper rotation adjustments."""
@@ -846,19 +857,25 @@ class AFCFPSBuffer:
         }
 
         buffer_status = self.buffer_status()
-        state_info = f"{buffer_status}{state_mapping.get(buffer_status, '')}"
-        state_info += f"\nFPS raw: {self.fps_value:.3f}  smoothed: {self.smoothed_fps:.3f}  set_point: {self.set_point:.2f}"
+        state_info = "{}{}".format(buffer_status, state_mapping.get(buffer_status, ''))
+        state_info += "\nFPS raw: {:.3f}  smoothed: {:.3f}  set_point: {:.2f}".format(
+            self.fps_value, self.smoothed_fps, self.set_point
+        )
 
         if self.enable and self.current_lane is not None:
             if self.current_lane.extruder_stepper is not None:
                 stepper = self.current_lane.extruder_stepper.stepper
                 rotation_dist = stepper.get_rotation_distance()[0]
-                state_info += f"\n{self.current_lane.name} Rotation distance: {rotation_dist:.4f}"
+                state_info += "\n{} Rotation distance: {:.4f}".format(
+                    self.current_lane.name, rotation_dist
+                )
 
         if self.error_sensitivity > 0:
-            state_info += f"\nFault detection enabled, sensitivity {self.error_sensitivity}"
+            state_info += "\nFault detection enabled, sensitivity {}".format(
+                self.error_sensitivity
+            )
 
-        self.logger.info(f"{self.name} : {state_info}")
+        self.logger.info("{} : {}".format(self.name, state_info))
 
     cmd_AFC_SET_ERROR_SENSITIVITY_help = "Set filament error sensitivity (0-10, 0=disabled)"
 
@@ -883,7 +900,9 @@ class AFCFPSBuffer:
         elif sensitivity > 0:
             self.update_filament_error_pos()
 
-        self.logger.info(f"Error sensitivity set to {self.error_sensitivity} (fault sensitivity: {self.fault_sensitivity})")
+        self.logger.info("Error sensitivity set to {} (fault sensitivity: {})".format(
+            self.error_sensitivity, self.fault_sensitivity
+        ))
 
     cmd_SET_BUFFER_MULTIPLIER_help = "Live adjust FPS buffer high and low multiplier range"
 
@@ -904,15 +923,15 @@ class AFCFPSBuffer:
                 return
             if chg_multiplier == "HIGH" and chg_factor > 1:
                 self.multiplier_high = chg_factor
-                self.logger.info(f"multiplier_high set to {chg_factor}")
+                self.logger.info("multiplier_high set to {}".format(chg_factor))
                 self.logger.info(
-                    f'multiplier_high: {chg_factor} MUST be updated under buffer config for value to be saved'
+                    'multiplier_high: {} MUST be updated under buffer config for value to be saved'.format(chg_factor)
                 )
             elif chg_multiplier == "LOW" and chg_factor < 1:
                 self.multiplier_low = chg_factor
-                self.logger.info(f"multiplier_low set to {chg_factor}")
+                self.logger.info("multiplier_low set to {}".format(chg_factor))
                 self.logger.info(
-                    f'multiplier_low: {chg_factor} MUST be updated under buffer config for value to be saved'
+                    'multiplier_low: {} MUST be updated under buffer config for value to be saved'.format(chg_factor)
                 )
             else:
                 self.logger.info(
@@ -938,7 +957,7 @@ class AFCFPSBuffer:
             else:
                 self.set_multiplier(change_factor)
         else:
-            self.logger.info(f"BUFFER {self.name} NOT ENABLED")
+            self.logger.info("BUFFER {} NOT ENABLED".format(self.name))
 
     cmd_SET_FPS_SET_POINT_help = "Live adjust FPS buffer set point target"
 
@@ -954,7 +973,10 @@ class AFCFPSBuffer:
         self.set_point = new_set_point
         self.deadband = new_deadband
         half_db = self.deadband / 2.0
-        self.logger.info(f"FPS set_point={self.set_point:.2f} deadband={self.deadband:.2f} (neutral window {self.set_point - half_db:.2f}-{self.set_point + half_db:.2f})")
+        self.logger.info("FPS set_point={:.2f} deadband={:.2f} (neutral window {:.2f}-{:.2f})".format(
+            self.set_point, self.deadband,
+            self.set_point - half_db, self.set_point + half_db
+        ))
 
     def cmd_ENABLE_BUFFER(self, gcmd: GCodeCommand):
         """
@@ -1072,7 +1094,7 @@ class VirtualFilamentSensor:
             msg = f"Filament Sensor {self.name}: filament detected"
         else:
             msg = f"Filament Sensor {self.name}: filament not detected"
-        gcmd.respond_info(msg)
+        self.logger.info(msg)
 
     def cmd_SET_FILAMENT_SENSOR(self, gcmd):
         self.runout_helper.sensor_enabled = bool(gcmd.get_int("ENABLE", 1))
