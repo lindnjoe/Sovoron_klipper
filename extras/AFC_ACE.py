@@ -1107,7 +1107,7 @@ class afcACE(afcUnit):
                             )
                             for slot in list(self._feed_assist_active):
                                 try:
-                                    self._ace.stop_feed_assist(slot)
+                                    self._ace.stop_feed_assist_sync(slot)
                                 except Exception:
                                     pass
                                 try:
@@ -1411,11 +1411,12 @@ class afcACE(afcUnit):
                 f"active_set={self._feed_assist_active}"
             )
             if active_slot >= 0 and feed_assist_enabled:
-                # Stop any stale slots before starting new one
+                # Stop any stale slots synchronously — ACE firmware needs
+                # to finish processing the stop before it accepts a new start.
                 for stale in list(self._feed_assist_active):
                     if stale != active_slot:
                         try:
-                            self._ace.stop_feed_assist(stale)
+                            self._ace.stop_feed_assist_sync(stale)
                             self.logger.debug(
                                 f"lane_tool_loaded: stopped stale slot {stale}")
                         except Exception:

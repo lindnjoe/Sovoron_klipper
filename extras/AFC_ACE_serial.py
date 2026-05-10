@@ -720,6 +720,12 @@ class ACEConnection:
             "stop_feed_assist", params={"index": slot_index}
         )
 
+    def stop_feed_assist_sync(self, slot_index, timeout=2.0):
+        """Disable feed assist for a slot and wait for ACK."""
+        return self.send_command(
+            "stop_feed_assist", params={"index": slot_index}, timeout=timeout
+        )
+
     def update_feeding_speed(self, slot_index, speed_mm_min):
         """Update the speed of an active feed operation."""
         self.send_command_async(
