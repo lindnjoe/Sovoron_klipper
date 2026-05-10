@@ -166,7 +166,7 @@ class afcBoxTurtle(afcUnit):
 
         use_dist_hub = False
         if (not cur_lane.is_direct_hub()
-            and not use_dist_hub):
+            and cur_hub.use_dist_hub):
             use_dist_hub = True
 
         checkpoint = "Moving to hub"
@@ -188,6 +188,7 @@ class afcBoxTurtle(afcUnit):
             variable_name = "afc_bowden_length"
             fullname = cur_hub.fullname
             fault_dis = bowden_length + 500
+            self.logger.info(f"bowden length {bowden_length}")
         else:
             checkpoint = "retract to extruder"
             if not self.afc.homing_enabled:
