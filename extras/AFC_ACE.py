@@ -1389,16 +1389,18 @@ class afcACE(afcUnit):
     def lane_tool_loaded(self, lane):
         """Set the virtual tool sensor when an ACE lane loads into the toolhead.
 
-        The base class only updates LEDs. ACE also immediately starts feed
-        assist on the active lane's slot — the ACE firmware handles stopping
-        the previous slot internally when a new one is started.
+        The base class only updates LEDs. ACE also starts feed assist if it
+        wasn't already started by load_sequence (avoids double-sending
+        start_feed_assist which resets the firmware's assist state machine).
         """
         super().lane_tool_loaded(lane)
         lane._ace_runout_triggered = False
 
         if self._ace is not None and self._ace.connected:
             active_slot = self._get_local_slot_for_lane(lane)
-            if active_slot >= 0 and self._get_feed_assist(active_slot, lane):
+            if (active_slot >= 0
+                    and self._get_feed_assist(active_slot, lane)
+                    and active_slot not in self._feed_assist_active):
                 try:
                     self._ace.start_feed_assist(active_slot)
                     self._feed_assist_active = {active_slot}
