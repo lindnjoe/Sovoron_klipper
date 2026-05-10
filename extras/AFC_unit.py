@@ -43,7 +43,7 @@ CALI_WARN += "Once filament is reinserted, then lanes will be calibrated.\n"
 class afcUnit:
     HOMING_DELTA = 300  # Delta for which to warn if homing move delta is not within this amount from
                         # command move distance.
-    def __init__(self, config: ConfigWrapper) -> None:
+    def __init__(self, config):
         self.printer        = config.get_printer()
         self.gcode          = self.printer.load_object(config, 'gcode')
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
@@ -52,15 +52,14 @@ class afcUnit:
         self.reactor        = self.printer.get_reactor()
         self.function       = self.afc.function
         self.logger         = self.afc.logger
-        self.type           = None
 
         self.lanes: Dict[str, AFCLane] = {}
         self._eject_to_calibrate = False
 
         # Objects
-        self.buffer_obj: Optional[AFCTrigger|None] = None
-        self.hub_obj: Optional[afc_hub|None]       = None
-        self.extruder_obj: Optional[AFCExtruder|None] = None
+        self.buffer_obj: AFCTrigger = None
+        self.hub_obj: afc_hub       = None
+        self.extruder_obj: AFCExtruder  = None
         self.drive_stepper_obj: AFCExtruderStepper = None
         self.selector_stepper_obj: AFCExtruderStepper = None
 
@@ -71,17 +70,14 @@ class afcUnit:
         self.hub                         = config.get("hub", None)                                           # Hub name(AFC_hub) that belongs to this unit, can be overridden in AFC_stepper section
         self.extruder                    = config.get("extruder", None)                                      # Extruder name(AFC_extruder) that belongs to this unit, can be overridden in AFC_stepper section
         self.buffer_name                 = config.get('buffer', None)                                        # Buffer name(AFC_buffer) that belongs to this unit, can be overridden in AFC_stepper section
-
         self.remember_spool              = config.get('remember_spool', False)                               # Turns on/off ability to remember last ejected spool values for all lanes in this unit, can be overridden in AFC_stepper section
-        # LED SETTINGS
-        # All variables use: (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
-        self.led_fault                   = config.get('led_fault', self.afc.led_fault)                       # LED color to set when faults occur in lane
-        self.led_ready                   = config.get('led_ready', self.afc.led_ready)                       # LED color to set when lane is ready
-        self.led_not_ready               = config.get('led_not_ready', self.afc.led_not_ready)               # LED color to set when lane not ready
-        self.led_loading                 = config.get('led_loading', self.afc.led_loading)                   # LED color to set when lane is loading
-        self.led_prep_loaded             = config.get('led_loading', self.afc.led_loading)                   # LED color to set when lane is loaded
-        self.led_unloading               = config.get('led_unloading', self.afc.led_unloading)               # LED color to set when lane is unloading
-        self.led_tool_loaded             = config.get('led_tool_loaded', self.afc.led_tool_loaded)           # LED color to set when lane is loaded into tool
+        self.led_fault                   = config.get('led_fault', self.afc.led_fault)                       # LED color to set when faults occur in lane        (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
+        self.led_ready                   = config.get('led_ready', self.afc.led_ready)                       # LED color to set when lane is ready               (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
+        self.led_not_ready               = config.get('led_not_ready', self.afc.led_not_ready)               # LED color to set when lane not ready              (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
+        self.led_loading                 = config.get('led_loading', self.afc.led_loading)                   # LED color to set when lane is loading             (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
+        self.led_prep_loaded             = config.get('led_loading', self.afc.led_loading)                   # LED color to set when lane is loaded              (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
+        self.led_unloading               = config.get('led_unloading', self.afc.led_unloading)               # LED color to set when lane is unloading           (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
+        self.led_tool_loaded             = config.get('led_tool_loaded', self.afc.led_tool_loaded)           # LED color to set when lane is loaded into tool    (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
         self.led_tool_loaded_idle        = config.get('led_tool_loaded_idle', self.afc.led_tool_loaded_idle) # LED color to set when lane is loaded into tool and idle
         self.led_tool_unloaded           = config.get('led_tool_unloaded', self.afc.led_tool_unloaded)       # LED color to set when lanes extruder is unloaded
         self.led_spool_illum             = config.get('led_spool_illuminate', self.afc.led_spool_illum)      # LED color to illuminate under spool
