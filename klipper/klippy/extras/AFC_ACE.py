@@ -233,13 +233,12 @@ class afcACE(afcUnit):
         # Used to restore feed assist after ACE reconnection.
         self._feed_assist_active: set = set()
 
-        # Feed assist stall detection (log-only, no re-send).
-        # Re-sending start_feed_assist resets the ACE firmware's internal
-        # assist state machine and kills active assist — so we only log.
+        # Feed assist stall detection with stop/start recovery.
+        # Only triggers when this unit's lane is on the active extruder.
         self._prev_feed_assist_count = None
         self._feed_assist_stall_count = 0
         self._feed_assist_seen_increment = False
-        self._FEED_ASSIST_STALL_THRESHOLD = 3
+        self._FEED_ASSIST_STALL_THRESHOLD = 5  # ~10s at 2s heartbeat
 
         # When True, the next successful heartbeat response will restore
         # feed assist for all tracked slots before clearing the flag.
@@ -1075,19 +1074,25 @@ class afcACE(afcUnit):
         if self._pending_feed_assist_restore:
             self._restore_feed_assist()
 
-        # Feed assist stall detection (log-only). ACEPRO sends
-        # start_feed_assist once at load and never re-sends — re-sending
-        # resets the firmware state machine and kills active assist.
-        # We only monitor feed_assist_count to log warnings.
+        # Feed assist stall detection with stop/start recovery. Only monitors
+        # when the active extruder belongs to this ACE unit's lanes.
         if not self._operation_active and self._ace is not None:
             result = response.get("result", response)
             cur_count = result.get("feed_assist_count") if isinstance(result, dict) else None
             is_printing = False
+            active_on_this_unit = False
             try:
                 is_printing = self.afc.function.is_printing()
+                if is_printing and self._feed_assist_active:
+                    active_ext = self.afc.toolhead.get_extruder().name
+                    for lane in self.lanes.values():
+                        if (getattr(lane, 'extruder_name', None) == active_ext
+                                and getattr(lane, 'tool_loaded', False)):
+                            active_on_this_unit = True
+                            break
             except Exception:
                 pass
-            if is_printing and cur_count is not None and self._feed_assist_active:
+            if active_on_this_unit and cur_count is not None:
                 if self._prev_feed_assist_count is not None:
                     if cur_count > self._prev_feed_assist_count:
                         self._feed_assist_seen_increment = True
@@ -1098,11 +1103,21 @@ class afcACE(afcUnit):
                             self.logger.warning(
                                 f"ACE: feed_assist_count stalled at {cur_count} "
                                 f"for {self._feed_assist_stall_count} consecutive "
-                                f"checks while extruding — assist may have dropped"
+                                f"checks — attempting stop/start recovery"
                             )
+                            for slot in list(self._feed_assist_active):
+                                try:
+                                    self._ace.stop_feed_assist(slot)
+                                except Exception:
+                                    pass
+                                try:
+                                    self._ace.start_feed_assist(slot)
+                                except Exception:
+                                    self._feed_assist_active.discard(slot)
                             self._feed_assist_stall_count = 0
+                            self._feed_assist_seen_increment = False
                 self._prev_feed_assist_count = cur_count
-            elif not is_printing:
+            elif not active_on_this_unit:
                 self._feed_assist_stall_count = 0
                 self._prev_feed_assist_count = None
                 self._feed_assist_seen_increment = False
@@ -1376,6 +1391,10 @@ class afcACE(afcUnit):
         The base class only updates LEDs. ACE also starts feed assist if it
         wasn't already started by load_sequence (avoids double-sending
         start_feed_assist which resets the firmware's assist state machine).
+
+        Crucially: stops any previously active slot's assist BEFORE starting
+        the new one. The ACE firmware degrades if multiple slots have
+        concurrent assist requests or if old assists are left running.
         """
         super().lane_tool_loaded(lane)
         lane._ace_runout_triggered = False
@@ -1385,14 +1404,20 @@ class afcACE(afcUnit):
 
         if self._ace is not None and self._ace.connected:
             active_slot = self._get_local_slot_for_lane(lane)
-            if (active_slot >= 0
-                    and self._get_feed_assist(active_slot, lane)
-                    and active_slot not in self._feed_assist_active):
-                try:
-                    self._ace.start_feed_assist(active_slot)
-                    self._feed_assist_active = {active_slot}
-                except Exception:
-                    pass
+            if active_slot >= 0 and self._get_feed_assist(active_slot, lane):
+                # Stop any stale slots before starting new one
+                for stale in list(self._feed_assist_active):
+                    if stale != active_slot:
+                        try:
+                            self._ace.stop_feed_assist(stale)
+                        except Exception:
+                            pass
+                if active_slot not in self._feed_assist_active:
+                    try:
+                        self._ace.start_feed_assist(active_slot)
+                    except Exception:
+                        pass
+                self._feed_assist_active = {active_slot}
 
         extruder = self._fps_extruder
         if extruder is None:
