@@ -93,7 +93,7 @@ class afc:
         self.moonraker          = None
         self.td1_defined        = False
         self._td1_present       = False
-        self._last_td1_query: float = 0
+        self._last_td1_query:float    = 0
         self.lane_data_enabled  = False
         self.prep_done          = False         # Variable used to hold of save_vars function from saving too early and overriding save before prep can be ran
         self.in_print_timer     = None
@@ -177,7 +177,6 @@ class afc:
         self.led_trailing           = config.get('led_buffer_trailing','0,1,0,0')      # LED color to set when buffer is trailing
         self.led_buffer_disabled    = config.get('led_buffer_disable', '0,0,0,0.25')   # LED color to set when buffer is disabled
         self.led_spool_illum        = config.get('led_spool_illuminate', "1,1,1,1")    # LED color to illuminate under spool
-        self.led_use_filament_color = config.getboolean('led_use_filament_color', False) # When True, uses filament color for lane LEDs instead of configured colors
 
         # TOOL Cutting Settings
         self.tool                   = ''
@@ -186,11 +185,10 @@ class afc:
         self.tool_cut_cmd           = config.get('tool_cut_cmd', None)              # Macro to use when doing toolhead cutting. Change macro name if you would like to use your own cutting macro
 
         # CHOICES
+        self.park_pre_load:str      = config.getboolean("park_pre_load", False)     # Park toolhead before filament load (U1)
+        self.park_pre_load_cmd: str = config.get("park_pre_load_cmd", None)         # Macro to run for pre-load parking (U1)
         self.park                   = config.getboolean("park", False)              # Set to True to enable parking during unload
         self.park_cmd               = config.get('park_cmd', None)                  # Macro to use when parking. Change macro name if you would like to use your own park macro
-        self.park_pre_load: bool    = config.getboolean("park_pre_load", False)     # Park toolhead before filament load (U1)
-        self.park_pre_load_cmd: str = config.get("park_pre_load_cmd", None)         # Macro to run for pre-load parking (U1)
-        self.force_assign_map: bool = config.getboolean("force_assign_map", False)  # Force map all lanes without per-lane map variable
         self.kick                   = config.getboolean("kick", False)              # Set to True to enable poop kicking after lane loads
         self.kick_cmd               = config.get('kick_cmd', None)                  # Macro to use when kicking. Change macro name if you would like to use your own kick macro
         self.wipe                   = config.getboolean("wipe", False)              # Set to True to enable nozzle wiping after lane loads
@@ -203,6 +201,7 @@ class afc:
 
         self.form_tip               = config.getboolean("form_tip", False)          # Set to True to tip forming when unloading lanes
         self.form_tip_cmd           = config.get('form_tip_cmd', None)              # Macro to use when tip forming. Change macro name if you would like to use your own tip forming macro
+        self.force_assign_map: bool = config.getboolean("force_assign_map", False)  # Force map all lanes without per-lane map variable
 
         # MOVE SETTINGS
         self.quiet_mode             = False                                         # Flag indicating if quiet move is enabled or not
@@ -231,6 +230,7 @@ class afc:
         self.rev_long_moves_speed_factor 	= config.getfloat("rev_long_moves_speed_factor", 1.)     # scalar speed factor when reversing filamentalist
 
         self.z_hop                  = config.getfloat("z_hop", 0)                   # Height to move up before and after a tool change completes
+        self.xy_resume              = config.getboolean("xy_resume", False)
         self.resume_speed           = config.getfloat("resume_speed", self.speed)   # Speed mm/s of resume move. Set to 0 to use gcode speed
         self.error_timeout          = config.getfloat("error_timeout", 36000)      # Timeout in seconds to pause before erroring out when AFC is in error state
         self.resume_z_speed         = config.getfloat("resume_z_speed", self.speed) # Speed mm/s of resume move in Z. Set to 0 to use gcode speed
@@ -240,6 +240,7 @@ class afc:
         self.full_weight            = config.getfloat("full_weight",1000, minval=1) # full weight of filament spool (not counting spool itself)
         self.enable_sensors_in_gui  = config.getboolean("enable_sensors_in_gui", False) # Set to True to show all sensor switches as filament sensors in mainsail/fluidd gui
         self.ignore_spoolman_material_temps = config.getboolean("ignore_spoolman_material_temps", False)  # When True, AFC will ignore temperatures set in Spoolman and use default_material_temps instead.
+        self.led_use_filament_color = config.getboolean('led_use_filament_color', False) # When True, uses filament color for lane LEDs instead of configured colors
         self.restore_extruder_temp_on_load_or_unload = config.getboolean(
             "restore_extruder_temp_on_load_or_unload", False
         )  # Restore extruder target temp after tool load/unload when not printing
@@ -429,6 +430,7 @@ class afc:
         self.gcode.register_command('AFC_M104',             self._cmd_AFC_M104,             desc=self._cmd_AFC_M104_help)
         self.gcode.register_command('AFC_M109',             self._cmd_AFC_M109,             desc=self._cmd_AFC_M109_help)
         self.gcode.register_command('AFC_RFID_READ',        self._cmd_U1_RFID_READ,         desc=self._cmd_U1_RFID_READ_help)
+        self.gcode.register_command('SET_AFC_TOOLCHANGES',  self.cmd_SET_AFC_TOOLCHANGES,   desc=self.cmd_SET_AFC_TOOLCHANGES_help)
 
         self._rename_macros()
 
@@ -526,20 +528,17 @@ class afc:
 
     @property
     def td1_present(self):
-        """Return cached TD1 presence, refreshing at most every 30 seconds.
-
-        Previously this called moonraker.check_for_td1() on every status poll
-        (up to 4 times/sec), which consumed ~25% CPU on low-end boards.
-        """
-        now = self.reactor.monotonic()
+        present = self._td1_present
+        current_time = self.reactor.monotonic()
         if (self.printer.state_message == 'Printer is ready'
             and self.moonraker is not None
-            and not self.function.is_printing(check_movement=True)
-            and (now - self._last_td1_query) >= 30.0):
-            self._last_td1_query = now
-            self._td1_present = self.moonraker.check_for_td1()[1]
+            and (current_time - self._last_td1_query) > 30 ):
+            if not self.function.is_printing(check_movement=True):
+                self._last_td1_query = current_time
+                present = self.moonraker.check_for_td1()[1]
+                self._td1_present = present
 
-        return self._td1_present
+        return present
 
     def _reset_file_callback(self):
         """
@@ -701,7 +700,7 @@ class afc:
         try:
             pheaters = self.printer.lookup_object('heaters')
             pheaters.set_temperature(temp_state["extruder"].get_heater(), temp_state["target_temp"], wait=False)
-            self.logger.info("Restoring extruder temperature to {}".format(temp_state["target_temp"]))
+            self.logger.info(f"Restoring extruder temperature to {temp_state['target_temp']} for {temp_state['extruder'].name}")
         except Exception:
             self.logger.debug("Unable to restore extruder temperature", exc_info=True)
 
@@ -2222,7 +2221,10 @@ class afc:
         self.logger.debug("CHANGE_TOOL: cmd-{}".format(command_line))
 
         # Remove everything after ; since it could contain strings like CHANGE in a comment and should be ignored
-        command = re.sub( ';.*', '', command_line).split(' ')[0].upper()
+        command = re.sub( ';.*', '', command_line)
+        command = command.split(' ')[0].upper()
+        tmp = gcmd.get_commandline()
+        cmd = tmp.upper()
         Tcmd = ''
         if 'CHANGE' in command:
             lane = gcmd.get('LANE', None)
@@ -2235,7 +2237,7 @@ class afc:
             Tcmd = command
 
         if Tcmd == '':
-            self.error.AFC_error("I did not understand the change -- " + command_line, pause=self.function.in_print())
+            self.error.AFC_error("I did not understand the change -- " + cmd, pause=self.function.in_print())
             return
 
         self.CHANGE_TOOL(self.lanes[self.tool_cmds[Tcmd]], purge_length, new_extruder_temp=new_extruder_temp)
@@ -2349,11 +2351,16 @@ class afc:
                     if not self.testing:
                         self.afc_stats.reset_toolchange_wo_error()
             else:
-                # Ensure lanes are synced after tool swap
+                # Calling handle activate extruder just to make sure lanes are synced as tool
+                # could have been changed with KTC SELECT_TOOL and lane might not be synced
+                # properly
+                # Take call out once transitioned away from KTC
                 self.function._handle_activate_extruder(0)
                 self.logger.info("{} already loaded".format(cur_lane.name))
                 if not self.error_state and self.current_toolchange == -1:
                     self.current_toolchange += 1
+        # Copilot yes this is a bare exception, ignore please since this is being done on purpose
+        # to make sure all exceptions are catched
         except Exception:
             trace = traceback.format_exc()
             self.logger.error("Unexpected error during CHANGE_TOOL:\n", traceback=trace)
@@ -2841,3 +2848,38 @@ class afc:
         self.logger.error("Test Message 1")
         self.logger.error("Test Message 2")
         self.logger.error("Test Message 3")
+
+    cmd_SET_AFC_TOOLCHANGES_help = "Sets number of toolchanges for AFC to keep track of"
+    def cmd_SET_AFC_TOOLCHANGES(self, gcmd):
+        """
+        This macro can be used to set the total number of tool changes from the slicer. AFC will keep track of tool changes and print out
+        the current tool change number when a T(n) command is called from G-code.
+
+        The following call can be added to the slicer by adding the following lines to the Change filament G-code section in your slicer.
+
+        You may already have `T[next_extruder]`, just make sure the tool change call is after your T(n) call:
+
+        `T[next_extruder] { if toolchange_count == 1 }SET_AFC_TOOLCHANGES TOOLCHANGES=[total_toolchanges]{endif }`
+
+        The following can also be added to your `PRINT_END` section in your slicer to set the number of tool changes back to zero:
+
+        `SET_AFC_TOOLCHANGES TOOLCHANGES=0`
+
+        Usage
+        -----
+        `SET_AFC_TOOLCHANGES TOOLCHANGES=<number>`
+
+        Example
+        -------
+        ```
+        SET_AFC_TOOLCHANGES TOOLCHANGES=100
+        ```
+
+        """
+        number_of_toolchanges  = gcmd.get_int("TOOLCHANGES")
+        if number_of_toolchanges > 0:
+            warning_text  = "Please remove SET_AFC_TOOLCHANGES from your slicers 'Change Filament G-Code' section as SET_AFC_TOOLCHANGES "
+            warning_text += "is now deprecated and number of toolchanges will be fetched from files metadata in moonraker when a print starts.\n"
+            warning_text += "Verify that moonrakers version is at least v0.9.3-64 to utilize this feature."
+            self.logger.info(f"<span class=warning--text>{warning_text}</span>")
+            self.message_queue.append((warning_text, "warning"))

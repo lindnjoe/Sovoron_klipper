@@ -318,7 +318,7 @@ class AFCExtruder:
                 self.filament_sensor_obj = self.printer.load_object(config, filament_motion_name)
             except error:
                 raise error(
-                    f"[{filament_motion_name}] not found in config for [{self.fullname}]")
+                    self.common_error.format(filament_motion_name, self.fullname))
             self.orig_note_filament_present = self.filament_sensor_obj.runout_helper.note_filament_present
             self.filament_sensor_obj.runout_helper.note_filament_present = self.note_tool_start_callback
             self.orig_runout_event_handler = self.filament_sensor_obj.runout_helper._runout_event_handler
@@ -481,7 +481,7 @@ class AFCExtruder:
                         self.set_status_color_fn = led_helper.set_color
                         self.check_transmit_status_fn = led_helper.check_transmit
 
-        except configfile.error:
+        except error:
             raise error(
                 f"{self.toolhead_leds} not found in config file for led_name variable in " \
                 f"{self.fullname} config section"
@@ -525,8 +525,6 @@ class AFCExtruder:
         self.fila_tool_start.runout_helper.min_event_systime = self.reactor.monotonic() + self.fila_tool_start.runout_helper.event_delay
 
     def note_tool_start_callback(self, state, force=False):
-        """U1 filament_motion_sensor callback wrapper.
-        Calls the original note_filament_present and feeds state to AFC's tool_start tracking."""
         self.orig_note_filament_present(state, force)
         self.tool_start_callback(0, state)
 
@@ -667,7 +665,7 @@ class AFCExtruder:
         else:
             self.tc_lane.status = AFCLaneState.TOOL_UNLOADING
 
-        self._captured_toolhead_temp = self.afc.capture_toolhead_temp()
+        self._captured_toolhead_temp = self.afc.capture_toolhead_temp(extruder=self, async_capture=True)
         self.afc._check_extruder_temp(self.tc_lane, no_wait=True)
         self.reactor.update_timer(self.temp_check_timer,
                                 self.reactor.monotonic() +1 )
@@ -735,7 +733,7 @@ class AFCExtruder:
         self.function.do_enable(False, self.name)
         self.load_active = False
 
-        self.afc.restore_toolhead_temp(self._captured_toolhead_temp)
+        self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
         self._captured_toolhead_temp = None
 
         info_str = "loading" if self.current_move_distance > 0 else "unloading"
