@@ -220,10 +220,13 @@ class AfcU1Rfid:
         return ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
 
     def _get_auto_spoolman_create(self, lane: AFCLane) -> bool:
-        """Check if auto Spoolman creation is enabled for this lane's unit."""
+        """Check if auto Spoolman creation is enabled — unit then extruder fallback."""
         unit = getattr(lane, 'unit_obj', None)
-        if unit is not None:
-            return getattr(unit, 'auto_spoolman_create', False)
+        if unit is not None and getattr(unit, 'auto_spoolman_create', False):
+            return True
+        extruder = getattr(lane, 'extruder_obj', None)
+        if extruder is not None and getattr(extruder, 'auto_spoolman_create', False):
+            return True
         return False
 
     def _sync_to_spoolman(self, lane: AFCLane, slot_info: dict):

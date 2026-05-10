@@ -95,21 +95,7 @@
         "hotend": "heater_fan T0_hotend_fan",
         "part": "fan_generic T0_partfan"
       },
-      "filament": {
-        "external_spool": {
-          "assigned": true,
-          "bed_temp": 60,
-          "brand": "Snapmaker",
-          "color_rgb": 16039986,
-          "material": "PLA",
-          "nozzle_temp_max": 0,
-          "nozzle_temp_min": 0,
-          "remaining_weight_g": 989.39794921875,
-          "spool_name": "Snapmaker PLA - PLA",
-          "spoolman_id": 56,
-          "total_weight_g": 1000.0
-        }
-      },
+      "filament": {},
       "filament_sensors": {
         "sensors": null
       },
@@ -182,7 +168,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-05-09T21:56:40Z"
+          "timestamp": "2026-05-10T00:49:22Z"
         },
         "optional": []
       },
