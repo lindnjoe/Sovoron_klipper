@@ -1107,7 +1107,7 @@ class afcACE(afcUnit):
                             )
                             for slot in list(self._feed_assist_active):
                                 try:
-                                    self._ace.stop_feed_assist(slot)
+                                    self._ace.stop_feed_assist_sync(slot)
                                 except Exception:
                                     pass
                                 try:
@@ -1404,20 +1404,38 @@ class afcACE(afcUnit):
 
         if self._ace is not None and self._ace.connected:
             active_slot = self._get_local_slot_for_lane(lane)
-            if active_slot >= 0 and self._get_feed_assist(active_slot, lane):
-                # Stop any stale slots before starting new one
+            feed_assist_enabled = self._get_feed_assist(active_slot, lane) if active_slot >= 0 else False
+            self.logger.debug(
+                f"lane_tool_loaded({lane.name}): slot={active_slot}, "
+                f"fa_enabled={feed_assist_enabled}, "
+                f"active_set={self._feed_assist_active}"
+            )
+            if active_slot >= 0 and feed_assist_enabled:
+                # Stop any stale slots synchronously — ACE firmware needs
+                # to finish processing the stop before it accepts a new start.
                 for stale in list(self._feed_assist_active):
                     if stale != active_slot:
                         try:
-                            self._ace.stop_feed_assist(stale)
+                            self._ace.stop_feed_assist_sync(stale)
+                            self.logger.debug(
+                                f"lane_tool_loaded: stopped stale slot {stale}")
                         except Exception:
                             pass
                 if active_slot not in self._feed_assist_active:
                     try:
                         self._ace.start_feed_assist(active_slot)
-                    except Exception:
-                        pass
+                        self.logger.debug(
+                            f"lane_tool_loaded: started slot {active_slot}")
+                    except Exception as e:
+                        self.logger.warning(
+                            f"lane_tool_loaded: start_feed_assist({active_slot}) "
+                            f"failed: {e}")
                 self._feed_assist_active = {active_slot}
+        else:
+            self.logger.debug(
+                f"lane_tool_loaded({lane.name}): ACE not connected, "
+                f"skipping feed assist"
+            )
 
         extruder = self._fps_extruder
         if extruder is None:

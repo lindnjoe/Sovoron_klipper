@@ -104,7 +104,7 @@
           "material": "PLA",
           "nozzle_temp_max": 0,
           "nozzle_temp_min": 0,
-          "remaining_weight_g": 223.068603515625,
+          "remaining_weight_g": 223.04998779296875,
           "spool_name": "AC PLA - PLA Bean Green",
           "spoolman_id": 46,
           "total_weight_g": 330.0
@@ -182,7 +182,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-05-10T14:13:14Z"
+          "timestamp": "2026-05-10T14:40:17Z"
         },
         "optional": []
       },
