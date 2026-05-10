@@ -1092,10 +1092,10 @@ class afcACE(afcUnit):
                     active_extruder = self.afc.toolhead.get_extruder().name
                 except Exception:
                     active_extruder = None
+                desired_slot = -1
                 for lane in self.lanes.values():
                     if not getattr(lane, "tool_loaded", False):
                         continue
-                    # Skip lanes whose extruder is not the active one
                     if active_extruder and getattr(lane, 'extruder_name', None) != active_extruder:
                         continue
                     local_slot = self._get_local_slot_for_lane(lane)
@@ -1103,9 +1103,23 @@ class afcACE(afcUnit):
                         continue
                     if not self._get_feed_assist(local_slot, lane):
                         continue
+                    desired_slot = local_slot
+                    break
+                # Stop any slots that should no longer be assisting before
+                # starting the desired one. Without an explicit stop, the ACE
+                # firmware can get stuck acknowledging start commands without
+                # actually running the motor.
+                for stale_slot in list(self._feed_assist_active):
+                    if stale_slot != desired_slot:
+                        try:
+                            self._ace.stop_feed_assist(stale_slot)
+                        except Exception:
+                            pass
+                        self._feed_assist_active.discard(stale_slot)
+                if desired_slot >= 0:
                     try:
-                        self._ace.start_feed_assist(local_slot)
-                        self._feed_assist_active.add(local_slot)
+                        self._ace.start_feed_assist(desired_slot)
+                        self._feed_assist_active.add(desired_slot)
                     except Exception:
                         pass
 
@@ -1273,21 +1287,44 @@ class afcACE(afcUnit):
             self.logger.debug("ACE reconnect: no feed assist to restore")
 
     def _restore_feed_assist(self):
-        """Restore feed assist for all tracked active slots after reconnect."""
+        """Restore feed assist after reconnect — only for the active extruder's slot."""
         self._pending_feed_assist_restore = False
         if not self._feed_assist_active or self._ace is None:
             return
 
-        for slot_index in sorted(self._feed_assist_active):
+        try:
+            active_extruder = self.afc.toolhead.get_extruder().name
+        except Exception:
+            active_extruder = None
+
+        # Determine which single slot should be assisting right now
+        desired_slot = -1
+        for lane in self.lanes.values():
+            if not getattr(lane, "tool_loaded", False):
+                continue
+            if active_extruder and getattr(lane, 'extruder_name', None) != active_extruder:
+                continue
+            slot = self._get_local_slot_for_lane(lane)
+            if slot >= 0 and self._get_feed_assist(slot, lane):
+                desired_slot = slot
+                break
+
+        # Only restore the desired slot; discard stale ones
+        stale = [s for s in self._feed_assist_active if s != desired_slot]
+        for s in stale:
+            self._feed_assist_active.discard(s)
+
+        if desired_slot >= 0:
             try:
-                self._ace.start_feed_assist(slot_index)
+                self._ace.start_feed_assist(desired_slot)
+                self._feed_assist_active = {desired_slot}
                 self.logger.info(
-                    f"ACE reconnect: feed assist restored for slot {slot_index}"
+                    f"ACE reconnect: feed assist restored for slot {desired_slot}"
                 )
             except Exception as e:
                 self.logger.warning(
                     f"ACE reconnect: failed to restore feed assist "
-                    f"for slot {slot_index}: {e}"
+                    f"for slot {desired_slot}: {e}"
                 )
 
     def get_slot_info(self, local_slot):
@@ -1502,6 +1539,19 @@ class afcACE(afcUnit):
             return False
 
         try:
+            # Stop feed assist on any other active slots before loading the
+            # new one.  In direct mode (each slot feeds its own extruder),
+            # tool changes don't unload, so the old slot's assist is never
+            # explicitly stopped.  Sending start_feed_assist for a new slot
+            # without stopping the old one can jam the ACE firmware.
+            for stale_slot in list(self._feed_assist_active):
+                if stale_slot != local_slot:
+                    try:
+                        self._ace.stop_feed_assist(stale_slot)
+                    except Exception:
+                        pass
+                    self._feed_assist_active.discard(stale_slot)
+
             # Combined mode: retract current slot first
             if self.mode == MODE_COMBINED and self._current_loaded_slot >= 0:
                 if self._current_loaded_slot != local_slot:
