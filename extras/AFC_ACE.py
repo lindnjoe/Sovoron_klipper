@@ -1078,8 +1078,8 @@ class afcACE(afcUnit):
         # its active extruder should have feed assist running if configured.
         # This catches cases where _feed_assist_active lost track of a slot
         # (e.g. startup recovery, manual SET_LANE_LOADED, firmware drop).
-        # Also re-sends the command every ~15s to guard against the ACE
-        # firmware silently disabling the assist motor.
+        # Does NOT re-send start for already-active slots — re-sending
+        # resets the ACE firmware's internal assist state machine.
         if not self._operation_active and self._ace is not None:
             self._feed_assist_refresh_counter += 1
             if self._feed_assist_refresh_counter >= self._FEED_ASSIST_REFRESH_INTERVAL:
@@ -1105,10 +1105,7 @@ class afcACE(afcUnit):
                         continue
                     desired_slot = local_slot
                     break
-                # Stop any slots that should no longer be assisting before
-                # starting the desired one. Without an explicit stop, the ACE
-                # firmware can get stuck acknowledging start commands without
-                # actually running the motor.
+                # Stop any slots that should no longer be assisting.
                 for stale_slot in list(self._feed_assist_active):
                     if stale_slot != desired_slot:
                         try:
@@ -1116,7 +1113,10 @@ class afcACE(afcUnit):
                         except Exception:
                             pass
                         self._feed_assist_active.discard(stale_slot)
-                if desired_slot >= 0:
+                # Only send start if the slot isn't already tracked as active.
+                # Re-sending start_feed_assist resets the ACE firmware's
+                # internal assist state, interrupting an in-progress assist.
+                if desired_slot >= 0 and desired_slot not in self._feed_assist_active:
                     try:
                         self._ace.start_feed_assist(desired_slot)
                         self._feed_assist_active.add(desired_slot)
