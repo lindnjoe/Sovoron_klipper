@@ -1330,9 +1330,20 @@ class afc:
                     cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                     cur_lane.espooler.do_assist_move()
 
-                    # Poop/wipe/kick — skip when dock purge already handled purging.
-                    # Standalone tools never dock, so always purge normally.
-                    if cur_extruder.is_standalone() or not self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
+                    # Park-detector extruders (U1): use MOVE_TO_DISCARD + INNER_FLUSH
+                    # instead of poop/wipe/kick — the U1's built-in flush handles purging.
+                    if cur_extruder.park_detector_obj and self.poop:
+                        spool_temp = cur_lane.extruder_temp or 210
+                        self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
+                        self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
+                        self.gcode.run_script_from_command("M400")
+                        self.gcode.run_script_from_command("G91")
+                        self.gcode.run_script_from_command("G1 Y-35")
+                        self.gcode.run_script_from_command("G90")
+                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After INNER_FLUSH and dock clearance")
+                    elif cur_extruder.is_standalone() or not self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
+                        # Poop/wipe/kick — skip when dock purge already handled purging.
+                        # Standalone tools never dock, so always purge normally.
                         if self.poop:
                             if purge_length is not None:
                                 self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(self.poop_cmd, purge_length, cur_extruder.name))
@@ -1356,13 +1367,6 @@ class afc:
                             self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.wipe_cmd, cur_extruder.name))
                             self.afcDeltaTime.log_with_time("TOOL_LOAD: After second wipe")
                         self.function.log_toolhead_pos()
-
-                    if cur_extruder.park_detector_obj and not cur_extruder.is_standalone():
-                        self.gcode.run_script_from_command("M400")
-                        self.gcode.run_script_from_command("G91")
-                        self.gcode.run_script_from_command("G1 Y-35")
-                        self.gcode.run_script_from_command("G90")
-                        self.afcDeltaTime.log_with_time("TOOL_LOAD: After dock clearance move")
 
                     cur_lane.set_tool_loaded()
                     cur_lane.enable_buffer(disable_fault=True)
