@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import traceback
-import logging
 import inspect
 
 from configparser import Error as error
@@ -62,9 +61,6 @@ class afcError:
         self.pause= True
         self.afc = self.printer.lookup_object('AFC')
         error_handled = False
-        if isinstance(LANE, str):
-            LANE = self.afc.lanes.get(LANE, None)
-
         if problem is None:
             self.PauseUserIntervention('Paused for unknown error')
         if problem=='toolhead':
@@ -152,7 +148,7 @@ class afcError:
         self.afc.function.log_toolhead_pos()
 
     def set_error_state(self, state=False):
-        logging.warning("AFC debug: setting error state {}".format(state))
+        self.logger.debug("setting error state {}".format(state))
         # Only save position on first error state call
         if state and not self.afc.error_state:
             self.afc.save_pos()
@@ -161,7 +157,7 @@ class afcError:
 
     def AFC_error(self, msg, pause=True, stack_name=None):
         # Print to logger since respond_raw does not write to logger
-        logging.warning(msg)
+        self.logger.warning(msg)
         if stack_name is None:
             stack_name = inspect.currentframe().f_back.f_code.co_name
         # Handle AFC errors
@@ -294,7 +290,8 @@ class afcError:
 
     handle_lane_failure_help = "Get load errors, stop stepper and respond error"
     def handle_lane_failure(self, cur_lane, message, pause=True):
-        # Allow unit to abort any in-progress load operation
+        # Abort any in-progress hardware operation (e.g. OpenAMS motor)
+        # before disabling the stepper so the unit can clean up properly.
         try:
             cur_lane.unit_obj.abort_load(cur_lane)
         except Exception:

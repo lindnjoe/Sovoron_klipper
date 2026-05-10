@@ -315,7 +315,7 @@ class AFCTrigger:
             self.start_fault_detection(0, multiplier)
         else:
             self.set_multiplier( multiplier )
-        self.logger.debug(f"{self.name} buffer enabled for {self.current_lane.name}")
+        self.logger.debug(f"{self.name} buffer enabled for {self.current_lane.name} (initial state: {self.last_state})")
 
     def disable_buffer(self):
         """
@@ -669,10 +669,6 @@ class AFCTrigger:
         else:
             self.response['rotation_distance'] = None
             self.response['active_lane'] = None
-
-        # Add in multiplier information for automated testing
-        self.response['multiplier_high'] = self.multiplier_high
-        self.response['multiplier_low'] = self.multiplier_low
 
         # Add fault detection information
         self.response['fault_detection_enabled'] = self.error_sensitivity > 0
