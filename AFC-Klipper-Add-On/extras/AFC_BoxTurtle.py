@@ -113,19 +113,25 @@ class afcBoxTurtle(afcUnit):
                     ramming_loaded = False
                     if cur_lane.extruder_obj.tool_start == "buffer":
                         ramming_loaded = self._buffer_toolhead_load_check(cur_lane)
-                    if (cur_lane.get_toolhead_pre_sensor_state() == True
+                    if (cur_lane.extruder_obj.is_standalone()
+                        or cur_lane.get_toolhead_pre_sensor_state() == True
                         or ramming_loaded
-                        or cur_lane.extruder_obj.tool_end_state):
+                        or cur_lane.extruder_obj.tool_end_state
+                        or cur_lane.extruder_obj.on_shuttle()):
                         if cur_lane.extruder_obj.lane_loaded == cur_lane.name:
                             self.afc.current = cur_lane.name
                             cur_lane.sync_to_extruder()
-                            msg +="<span class=primary--text> in ToolHead</span>"
+                            on_shuttle = ""
+                            if cur_lane.extruder_obj.tc_unit_obj:
+                                on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
+                            msg +="<span class=primary--text> in ToolHead{}</span>".format(on_shuttle)
                             if (cur_lane.extruder_obj.tool_start == "buffer"
                                 and (not self.afc.homing_enabled
                                      or not cur_lane.unit_obj.enable_buffer_tool_check)):
                                 msg += "<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>"
 
-                            if self.afc.function.get_current_lane() == cur_lane.name:
+                            if (cur_lane.extruder_obj.lane_loaded == cur_lane.name
+                                    and cur_lane.extruder_obj.on_shuttle()):
                                 self.afc.spool.set_active_spool(cur_lane.spool_id)
                                 cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                                 cur_lane.status = AFCLaneState.TOOLED

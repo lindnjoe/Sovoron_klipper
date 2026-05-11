@@ -3079,7 +3079,8 @@ class afcACE(afcUnit):
                     # Set virtual hub sensor -- filament is actively through hub
                     self._set_hub_state(cur_lane, True)
                     tool_ready = (
-                        cur_lane.get_toolhead_pre_sensor_state()
+                        cur_lane.extruder_obj.is_standalone()
+                        or cur_lane.get_toolhead_pre_sensor_state()
                         or cur_lane.extruder_obj.tool_end_state
                         or cur_lane.extruder_obj.on_shuttle()
                     )
