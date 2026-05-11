@@ -734,16 +734,20 @@ class AFCExtruder:
         self.load_active = False
 
         was_loading = self.current_move_distance > 0
-        elapsed = self.reactor.monotonic() - self._load_start_time
-        info_str = "loading" if was_loading else "unloading"
-        self.logger.info(f"{self.name} {info_str} done ({elapsed:.1f}s)")
+        load_time = self.reactor.monotonic() - self._load_start_time
         if not was_loading:
             self.tc_lane.status = AFCLaneState.NONE
+            self.logger.info("Lane {} unload done t:{:.3f}".format(
+                self.tc_lane.name if self.tc_lane else self.name, load_time))
         self.current_move_distance = 0
 
         if was_loading and self.tc_lane and self.tc_lane.hub == 'direct_load':
             self.reactor.register_callback(self._direct_load_post_sequence)
         else:
+            if was_loading:
+                self.logger.info("{} is now loaded in toolhead t:{:.3f}".format(
+                    self.tc_lane.name if self.tc_lane else self.name, load_time))
+                self.afc.afc_stats.average_tool_load_time.average_time(load_time)
             self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
             self._captured_toolhead_temp = None
 
@@ -760,8 +764,10 @@ class AFCExtruder:
             self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
             self.gcode.run_script_from_command("M400")
             self.gcode.run_script_from_command("G1 Y-35")
-            elapsed = self.reactor.monotonic() - self._load_start_time
-            self.logger.info(f"{self.name} Post load purge complete ({elapsed:.1f}s)")
+            load_time = self.reactor.monotonic() - self._load_start_time
+            lane_name = self.tc_lane.name if self.tc_lane else self.name
+            self.logger.info("{} is now loaded in toolhead t:{:.3f}".format(lane_name, load_time))
+            self.afc.afc_stats.average_tool_load_time.average_time(load_time)
         except Exception as e:
             self.logger.error(f"{self.name} Post load purge failed: {e}")
         finally:
