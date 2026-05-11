@@ -60,7 +60,13 @@ class AfcToolchanger(afcUnit):
         if assignTcmd: self.afc.function.TcmdAssign(cur_lane)
         cur_lane.send_lane_data()
         msg = ""
-        if cur_lane.prep_state and cur_lane.load_state:
+        is_loaded = cur_lane.prep_state and cur_lane.load_state
+        if cur_lane.extruder_obj.no_lanes and cur_lane.extruder_obj.lane_loaded == cur_lane.name:
+            is_loaded = True
+            cur_lane.prep_state = True
+            cur_lane._load_state = True
+            cur_lane.extruder_obj.tool_start_state = True
+        if is_loaded:
             if cur_lane.extruder_obj.no_lanes:
                 cur_lane.tool_loaded = True
                 cur_lane.loaded_to_hub = True
