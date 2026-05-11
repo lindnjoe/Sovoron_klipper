@@ -589,7 +589,7 @@ class afc:
                     break
         return float(temp_value), using_min_value
 
-    def _check_extruder_temp(self, cur_lane):
+    def _check_extruder_temp(self, cur_lane, no_wait=False):
         """
         Helper function that check to see if extruder needs to be heated, and wait for hotend to get to temp if needed
         """
@@ -621,6 +621,8 @@ class afc:
         skip_lower = need_lower and not self.lower_extruder_temp_on_change and current_temp[0] >= (target_temp - 5)
         if (need_heat or need_lower) and not skip_lower:
             wait = False if need_lower else True
+            if no_wait:
+                wait = False
             self.logger.info('Setting extruder temperature to {} {}'.format(target_temp, "and waiting for extruder to reach temperature" if wait else ""))
             pheaters.set_temperature(extruder.get_heater(), target_temp, wait=wait)
 
