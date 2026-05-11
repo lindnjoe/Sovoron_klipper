@@ -1687,6 +1687,13 @@ class AFCLane:
             self.afc.error.AFC_error(msg)
         # No else: do not trigger infinite runout or pause runout here
 
+    def tool_swap(self):
+        """
+        Helper function for calling extruder's tool_swap function
+        """
+        if self.extruder_obj.tc_unit_obj is not None:
+            self.extruder_obj.tc_unit_obj.tool_swap(self, set_start_time=False)
+
     def send_lane_data(self):
         """
         Sends lane data to moonrakers `machine/set_lane_data` endpoint
