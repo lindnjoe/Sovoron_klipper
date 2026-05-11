@@ -51,6 +51,7 @@ class State:
     ERROR           = "Error"
     LOADING         = "Loading"
     UNLOADING       = "Unloading"
+    TOOL_SWAP       = "Tool Swap"
     EJECTING_LANE   = "Ejecting"
     MOVING_LANE     = "Moving"
     RESTORING_POS   = "Restoring"
