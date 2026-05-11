@@ -889,6 +889,20 @@ class afc:
         """
         return self.resume_z_speed if self.resume_z_speed > 0 else self.speed
 
+    def _exclude_object_bypass(self):
+        """Temporarily bypass exclude_object so AFC moves always execute physically."""
+        eo = self.printer.lookup_object('exclude_object', None)
+        if eo is not None and getattr(eo, 'current_object', None) is not None:
+            saved = eo.current_object
+            eo.current_object = None
+            return eo, saved
+        return None, None
+
+    def _exclude_object_restore(self, state):
+        eo, saved = state
+        if eo is not None:
+            eo.current_object = saved
+
     def move_z_pos(self, z_amount, string="", wait_moves=False):
         """
         Common function helper to move z, also does a check for max z so toolhead does not exceed max height
@@ -899,20 +913,23 @@ class afc:
 
         :return newpos: Position list with updated z position
         """
-        max_z = self.toolhead.get_status(0)['axis_maximum'][2]
-        newpos = self.gcode_move.last_position
+        eo_state = self._exclude_object_bypass()
+        try:
+            max_z = self.toolhead.get_status(0)['axis_maximum'][2]
+            newpos = self.gcode_move.last_position
 
-        # Determine z movement, get the min value to not exceed max z movement
-        newpos[2] = min(max_z - 1, z_amount)
+            newpos[2] = min(max_z - 1, z_amount)
 
-        self.gcode_move.move_with_transform(newpos, self._get_resume_speedz())
+            self.gcode_move.move_with_transform(newpos, self._get_resume_speedz())
 
-        if wait_moves:
-            self.toolhead.wait_moves()
+            if wait_moves:
+                self.toolhead.wait_moves()
 
-        self.function.log_toolhead_pos(f"move_z_pos({string}): ")
+            self.function.log_toolhead_pos(f"move_z_pos({string}): ")
 
-        return newpos[2]
+            return newpos[2]
+        finally:
+            self._exclude_object_restore(eo_state)
 
     def move_e_pos( self, e_amount, speed, log_string="", wait_tool=False):
         """
@@ -923,12 +940,16 @@ class afc:
         :param log_string: Additional string or name to log to logger when recording toolhead position in log
         :param wait_tool: Set to True to wait on toolhead moves
         """
-        newpos = self.gcode_move.last_position
-        newpos[3] += e_amount
+        eo_state = self._exclude_object_bypass()
+        try:
+            newpos = self.gcode_move.last_position
+            newpos[3] += e_amount
 
-        self.gcode_move.move_with_transform(newpos, speed)
+            self.gcode_move.move_with_transform(newpos, speed)
 
-        if wait_tool: self.toolhead.wait_moves()
+            if wait_tool: self.toolhead.wait_moves()
+        finally:
+            self._exclude_object_restore(eo_state)
 
     def save_pos(self):
         """
@@ -1246,6 +1267,13 @@ class afc:
 
         :return bool: True if load was successful, False if an error occurred.
         """
+        eo_state = self._exclude_object_bypass()
+        try:
+            return self._tool_load_inner(cur_lane, purge_length, set_start_time)
+        finally:
+            self._exclude_object_restore(eo_state)
+
+    def _tool_load_inner(self, cur_lane, purge_length, set_start_time):
         if set_start_time:
             self.afcDeltaTime.set_start_time()
 
@@ -1738,6 +1766,13 @@ class afc:
 
         :return bool: True if unloading was successful, False if an error occurred.
         """
+        eo_state = self._exclude_object_bypass()
+        try:
+            return self._tool_unload_inner(cur_lane, set_start_time)
+        finally:
+            self._exclude_object_restore(eo_state)
+
+    def _tool_unload_inner(self, cur_lane, set_start_time=True):
         # Check if the bypass filament sensor detects filament; if so unload filament and abort the tool load.
         if self._check_bypass(unload=True): return False
 
