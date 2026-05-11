@@ -656,6 +656,12 @@ class afc:
         except Exception:
             self.logger.debug("Unable to restore extruder temperature", exc_info=True)
 
+    def capture_toolhead_temp(self, extruder=None, async_capture=False):
+        return self._capture_toolhead_temp()
+
+    def restore_toolhead_temp(self, temp_state=None, async_restore=False):
+        self._restore_toolhead_temp(temp_state)
+
     def _set_quiet_mode(self, val):
         """
         Helper function to set quiet mode to on or off
