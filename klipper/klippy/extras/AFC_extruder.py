@@ -402,7 +402,7 @@ class AFCExtruder:
         if self.tc_unit_name:
             config.fileconfig.set(config.section, "unit", self.tc_unit_name.split()[-1])
             config.fileconfig.set(config.section, "extruder", self.name)
-            config.fileconfig.set(config.section, "hub", "direct")
+            config.fileconfig.set(config.section, "hub", config.get("hub", "direct"))
             self.tc_lane = AFCLane(config)
             self.printer.objects[f"AFC_lane {self.name}"] = self.tc_lane
             # TODO: Once homing is in create common function for this and AFC_stepper
@@ -477,8 +477,6 @@ class AFCExtruder:
         if self.name in self.lanes:
             self.no_lanes = True
             self.logger.info(f"{self.name} no lanes")
-            # Read actual sensor state — tool_start_state may not have been
-            # updated yet if the sensor callback hasn't fired.
             if hasattr(self, 'fila_tool_start') and self.fila_tool_start is not None:
                 self.tool_start_state = self.fila_tool_start.runout_helper.filament_present
             elif self.filament_sensor_obj is not None:
@@ -631,40 +629,30 @@ class AFCExtruder:
         :param eventtime: Event time from the button press
         :param state: Boolean indicating sensor state (True = filament present, False = runout)
         """
-        if state != self.tool_start_state:
-            if self.tc_unit_name and self.no_lanes:
-                self.tc_lane._load_state = state
-                self.tc_lane.prep_state = state
+        with self.mutex:
+            if state != self.tool_start_state:
+                if self.tc_unit_name and self.no_lanes:
+                    self.tc_lane._load_state = state
+                    self.tc_lane.prep_state = state
 
-                if (self.printer.state_message == READY and
-                    not self._homing and
-                    self.tc_lane._afc_prep_done and
-                    self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
-                    if state:
-                        if not self.load_active:
-                            has_shuttle = self.park_detector_obj is not None or self.tool_obj is not None
-                            if has_shuttle and not self.afc.function.is_printing():
-                                if not self.afc.function.check_homed():
-                                    return
-                                if not self.on_shuttle():
-                                    self.tc_lane.tool_swap()
-                                if not self.tc_lane.tool_loaded:
-                                    self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
-                                self.afc.current = self.tc_lane.name
-                            else:
+                    if (self.printer.state_message == READY and
+                        not self._homing and
+                        self.tc_lane._afc_prep_done and
+                        self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
+                        if state:
+                            if not self.load_active:
                                 self.load_unload_sequence(self.tool_stn)
-                    elif not self.afc.function.is_printing():
-                        if self.lane_loaded:
-                            self.afc.TOOL_UNLOAD(self.tc_lane)
-                        else:
-                            self.tc_lane.set_tool_unloaded()
-                            self.tc_lane.set_unloaded()
+                        elif not self.afc.function.is_printing():
+                            if self.lane_loaded:
+                                self.afc.TOOL_UNLOAD(self.tc_lane)
+                            else:
+                                self.tc_lane.set_tool_unloaded()
+                                self.tc_lane.set_unloaded()
+                            self.afc.save_vars()
+            else:
+                self.logger.info("Not loading State matches tool_start_state")
 
-                    self.afc.save_vars()
-        else:
-            self.logger.info("Not loading State matches tool_start_state")
-
-        self.tool_start_state = state
+            self.tool_start_state = state
 
 
     def note_tool_start_callback(self, state, force=False):
@@ -838,15 +826,38 @@ class AFCExtruder:
         self.function.do_enable(False, self.name)
         self.load_active = False
 
-        self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
-        self._captured_toolhead_temp = None
-
-        info_str = "loading" if self.current_move_distance > 0 else "unloading"
+        was_loading = self.current_move_distance > 0
+        info_str = "loading" if was_loading else "unloading"
         self.logger.info(f"{self.name} {info_str} done")
-        self.tc_lane.status = AFCLaneState.NONE
+        if not was_loading:
+            self.tc_lane.status = AFCLaneState.NONE
         self.current_move_distance = 0
+
+        if was_loading and self.tc_lane and self.tc_lane.hub == 'direct_load':
+            self.reactor.register_callback(self._direct_load_post_sequence)
+        else:
+            self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
+            self._captured_toolhead_temp = None
+
         self.afc.save_vars()
         return self.reactor.NEVER
+
+    def _direct_load_post_sequence(self, eventtime):
+        try:
+            if not self.afc.function.check_homed():
+                self.logger.error("Printer not homed, skipping direct_load post sequence")
+                return
+            spool_temp = self.tc_lane.extruder_temp or 210
+            self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
+            self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
+            self.gcode.run_script_from_command("M400")
+            self.gcode.run_script_from_command("G1 Y-35")
+            self.logger.info(f"{self.name} direct_load post sequence complete")
+        except Exception as e:
+            self.logger.error(f"{self.name} direct_load post sequence failed: {e}")
+        finally:
+            self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
+            self._captured_toolhead_temp = None
 
     def temp_check_cb(self, eventtime:float) -> float:
         """

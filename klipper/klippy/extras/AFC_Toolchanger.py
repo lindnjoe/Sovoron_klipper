@@ -653,6 +653,11 @@ class AfcToolchanger(afcUnit):
                     "CONFLICT: Multiple tools detected on shuttle: %s. "
                     "Check detection pins." % names)
 
+        if cur_lane.extruder_obj.no_lanes and cur_lane.extruder_obj.lane_loaded == cur_lane.name:
+            cur_lane.prep_state = True
+            cur_lane._load_state = True
+            cur_lane.extruder_obj.tool_start_state = True
+
         if not cur_lane.prep_state:
             if not cur_lane.load_state:
                 self.lane_not_ready(cur_lane)
@@ -673,6 +678,10 @@ class AfcToolchanger(afcUnit):
                 cur_lane.status = AFCLaneState.LOADED
                 msg += "<span class=success--text> AND LOADED</span>"
                 self.lane_illuminate_spool(cur_lane)
+
+                if cur_lane.extruder_obj.no_lanes:
+                    cur_lane.tool_loaded = True
+                    cur_lane.loaded_to_hub = True
 
                 if (cur_lane.tool_loaded
                     and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
