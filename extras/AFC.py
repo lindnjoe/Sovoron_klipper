@@ -2237,7 +2237,6 @@ class afc:
                     old_standalone = (old_lane.extruder_obj.is_standalone()
                                      and old_lane.extruder_obj.tc_unit_name)
                     if old_standalone:
-                        old_lane.tool_loaded = False
                         old_lane.status = AFCLaneState.LOADED
                         self.spool.set_active_spool(None)
                     else:
