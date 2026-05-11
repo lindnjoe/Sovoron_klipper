@@ -1217,16 +1217,20 @@ class afc:
         cur_lane = self.lanes[lane]
         self.TOOL_LOAD(cur_lane, purge_length)
 
-    def TOOL_LOAD(self, cur_lane, purge_length=None):
+    def TOOL_LOAD(self, cur_lane, purge_length=None, set_start_time=False):
         """
         This function handles the loading of a specified lane into the tool. It performs
         several checks and movements to ensure the lane is properly loaded.
 
         :param cur_lane: The lane object to be loaded into the tool.
         :param purge_length: Amount of filament to poop (optional).
+        :param set_start_time: Set true to set a starting time for afcDeltaTime.
 
         :return bool: True if load was successful, False if an error occurred.
         """
+        if set_start_time:
+            self.afcDeltaTime.set_start_time()
+
         if not self.function.check_homed():
             return False
 
@@ -1705,7 +1709,7 @@ class afc:
         # User manually unloaded spool from toolhead, remove spool from active status
         self.spool.set_active_spool(None)
 
-    def TOOL_UNLOAD(self, cur_lane: AFCLane):
+    def TOOL_UNLOAD(self, cur_lane: AFCLane, set_start_time=True):
         """
         This function handles the unloading of a specified lane from the tool. It performs
         several checks and movements to ensure the lane is properly unloaded.
