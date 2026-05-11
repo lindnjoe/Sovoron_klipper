@@ -655,6 +655,7 @@ class AFCExtruder:
         info_str = "Loading" if distance > 0 else "Unloading"
         self.logger.info(f"{info_str} {self.name}")
         self.load_active = True
+        self._load_start_time = self.reactor.monotonic()
         self.current_move_distance = distance
         # TODO: maybe make this so this same function can be called normally when lanes are assigned
         # to extruders...
@@ -733,8 +734,9 @@ class AFCExtruder:
         self.load_active = False
 
         was_loading = self.current_move_distance > 0
+        elapsed = self.reactor.monotonic() - self._load_start_time
         info_str = "loading" if was_loading else "unloading"
-        self.logger.info(f"{self.name} {info_str} done")
+        self.logger.info(f"{self.name} {info_str} done ({elapsed:.1f}s)")
         if not was_loading:
             self.tc_lane.status = AFCLaneState.NONE
         self.current_move_distance = 0
@@ -751,16 +753,17 @@ class AFCExtruder:
     def _direct_load_post_sequence(self, eventtime):
         try:
             if not self.afc.function.check_homed():
-                self.logger.error("Printer not homed, skipping direct_load post sequence")
+                self.logger.error("Printer not homed, skipping post load purge")
                 return
             spool_temp = self.tc_lane.extruder_temp or 210
             self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
             self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
             self.gcode.run_script_from_command("M400")
             self.gcode.run_script_from_command("G1 Y-35")
-            self.logger.info(f"{self.name} direct_load post sequence complete")
+            elapsed = self.reactor.monotonic() - self._load_start_time
+            self.logger.info(f"{self.name} Post load purge complete ({elapsed:.1f}s)")
         except Exception as e:
-            self.logger.error(f"{self.name} direct_load post sequence failed: {e}")
+            self.logger.error(f"{self.name} Post load purge failed: {e}")
         finally:
             self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
             self._captured_toolhead_temp = None
