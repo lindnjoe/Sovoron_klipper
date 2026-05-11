@@ -3107,7 +3107,7 @@ class afcACE(afcUnit):
                         if cur_lane.extruder_obj.tool_start == "buffer":
                             msg += '<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>'
                         elif cur_lane.extruder_obj.tool_start == "internal":
-                            msg += '<span class=warning--text>\n Internal sensor, confirm tool is loaded</span>'
+                            msg += '<span class=warning--text>\n Internal buffer, confirm tool is loaded</span>'
 
                         # Restore combined mode tracking regardless of shuttle
                         # state so ACE knows which slot is loaded for the next
