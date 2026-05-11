@@ -739,7 +739,7 @@ class AFCExtruder:
             self.tc_lane.status = AFCLaneState.NONE
         self.current_move_distance = 0
 
-        if was_loading and self.tc_lane and self.tc_lane.hub == 'direct_load' and self.park_detector_obj:
+        if was_loading and self.tc_lane and self.tc_lane.hub == 'direct_load':
             self.reactor.register_callback(self._direct_load_post_sequence)
         else:
             self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
