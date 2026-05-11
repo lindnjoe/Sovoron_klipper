@@ -640,10 +640,9 @@ class AFCExtruder:
                         if not self.load_active:
                             if not self.afc.function.check_homed():
                                 return
-                            if self.on_shuttle():
-                                self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
-                            else:
-                                self.load_unload_sequence(self.tool_stn)
+                            if not self.on_shuttle():
+                                self.tc_lane.tool_swap()
+                            self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
                     elif not self.afc.function.is_printing():
                         if self.lane_loaded:
                             self.afc.TOOL_UNLOAD(self.tc_lane)
