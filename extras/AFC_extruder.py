@@ -638,6 +638,8 @@ class AFCExtruder:
                     self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
                     if state:
                         if not self.load_active:
+                            if not self.afc.function.check_homed():
+                                return
                             if self.on_shuttle():
                                 self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
                             else:
