@@ -562,6 +562,18 @@ class AFCExtruder:
             return
         rh.min_event_systime = self.reactor.monotonic() + rh.event_delay
 
+    def _deferred_shuttle_load(self, eventtime):
+        """Deferred load for shuttle-aware extruders. Runs outside sensor callback context."""
+        with self.mutex:
+            if not self.afc.function.check_homed():
+                return
+            if not self.on_shuttle():
+                self.tc_lane.tool_swap()
+            if not self.tc_lane.tool_loaded:
+                self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
+            self.afc.current = self.tc_lane.name
+            self.afc.save_vars()
+
     def tool_start_callback(self, eventtime, state):
         """
         Callback for the tool_start (pre-extruder) filament sensor.
@@ -573,40 +585,35 @@ class AFCExtruder:
         :param eventtime: Event time from the button press
         :param state: Boolean indicating sensor state (True = filament present, False = runout)
         """
-        if state != self.tool_start_state:
-            if self.tc_unit_name and self.no_lanes:
-                self.tc_lane._load_state = state
-                self.tc_lane.prep_state = state
+        with self.mutex:
+            if state != self.tool_start_state:
+                if self.tc_unit_name and self.no_lanes:
+                    self.tc_lane._load_state = state
+                    self.tc_lane.prep_state = state
 
-                if (self.printer.state_message == READY and
-                    not self._homing and
-                    self.tc_lane._afc_prep_done and
-                    self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
-                    if state:
-                        if not self.load_active:
-                            has_shuttle = self.park_detector_obj is not None or self.tool_obj is not None
-                            if has_shuttle and not self.afc.function.is_printing():
-                                if not self.afc.function.check_homed():
-                                    return
-                                if not self.on_shuttle():
-                                    self.tc_lane.tool_swap()
-                                if not self.tc_lane.tool_loaded:
-                                    self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
-                                self.afc.current = self.tc_lane.name
+                    if (self.printer.state_message == READY and
+                        not self._homing and
+                        self.tc_lane._afc_prep_done and
+                        self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
+                        if state:
+                            if not self.load_active:
+                                has_shuttle = self.park_detector_obj is not None or self.tool_obj is not None
+                                if has_shuttle and not self.afc.function.is_printing():
+                                    self.reactor.register_callback(self._deferred_shuttle_load)
+                                else:
+                                    self.load_unload_sequence(self.tool_stn)
+                        elif not self.afc.function.is_printing():
+                            if self.lane_loaded:
+                                self.afc.TOOL_UNLOAD(self.tc_lane)
                             else:
-                                self.load_unload_sequence(self.tool_stn)
-                    elif not self.afc.function.is_printing():
-                        if self.lane_loaded:
-                            self.afc.TOOL_UNLOAD(self.tc_lane)
-                        else:
-                            self.tc_lane.set_tool_unloaded()
-                            self.tc_lane.set_unloaded()
+                                self.tc_lane.set_tool_unloaded()
+                                self.tc_lane.set_unloaded()
 
-                        self.afc.save_vars()
-        else:
-            self.logger.info("Not loading State matches tool_start_state")
+                            self.afc.save_vars()
+            else:
+                self.logger.info("Not loading State matches tool_start_state")
 
-        self.tool_start_state = state
+            self.tool_start_state = state
 
 
     def buffer_trailing_callback(self, eventtime, state):
