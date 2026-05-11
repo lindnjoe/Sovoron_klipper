@@ -233,6 +233,7 @@ class afc:
             "restore_extruder_temp_on_load_or_unload", False
         )  # Restore extruder target temp after tool load/unload when not printing
         self.lower_extruder_temp_on_change = config.getboolean('lower_extruder_temp_on_change', True)  # When False, AFC will not lower extruder temp during filament change if already above target - 5
+        self.toolchange_temp_drop: float = config.getfloat("toolchange_temp_drop", 0)  # Degrees to drop the old extruder's temperature after a successful toolchange when the extruder changes
         self.load_to_hub            = config.getboolean("load_to_hub", True)        # Fast loads filament to hub when inserted, set to False to disable. This is a global setting and can be overridden at AFC_stepper
         self.assisted_unload        = config.getboolean("assisted_unload", True)    # If True, the unload retract is assisted to prevent loose windings, especially on full spools. This can prevent loops from slipping off the spool
         self.bypass_pause           = config.getboolean("pause_when_bypass_active", False) # When true AFC pauses print when change tool is called and bypass is loaded
