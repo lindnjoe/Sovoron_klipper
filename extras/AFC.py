@@ -893,15 +893,32 @@ class afc:
         """Temporarily bypass exclude_object so AFC moves always execute physically."""
         eo = self.printer.lookup_object('exclude_object', None)
         if eo is not None and getattr(eo, 'current_object', None) is not None:
-            saved = eo.current_object
+            saved = {
+                'current_object': eo.current_object,
+            }
             eo.current_object = None
+            # Clear initial_position to prevent _move_from_excluded_region
+            # transition detection when exclude_object sees a non-excluded move
+            if getattr(eo, 'initial_position', None) is not None:
+                saved['initial_position'] = eo.initial_position
+                eo.initial_position = None
+            # Pre-populate per-extruder tracking dicts to prevent KeyError
+            # if the transition still fires on some Klipper versions
+            extruder_name = self.toolhead.get_extruder().get_name()
+            e_pos = self.gcode_move.last_position[3]
+            for attr_name in vars(eo):
+                val = getattr(eo, attr_name, None)
+                if isinstance(val, dict) and attr_name.endswith('_by_extruder'):
+                    val.setdefault(extruder_name, e_pos)
             return eo, saved
         return None, None
 
     def _exclude_object_restore(self, state):
         eo, saved = state
         if eo is not None:
-            eo.current_object = saved
+            eo.current_object = saved['current_object']
+            if 'initial_position' in saved:
+                eo.initial_position = saved['initial_position']
 
     def move_z_pos(self, z_amount, string="", wait_moves=False):
         """
