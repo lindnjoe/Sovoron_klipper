@@ -487,10 +487,13 @@ class afcUnit:
     def _stop_led_effects(self):
         if not self._led_effects_available:
             return
+        if "STOP_LED_EFFECTS" not in self.gcode.ready_gcode_handlers:
+            self._led_effects_available = False
+            return
         try:
             self.gcode.run_script_from_command("STOP_LED_EFFECTS")
         except Exception:
-            pass
+            self._led_effects_available = False
 
     def _trigger_led_state(self, lane: AFCLane, static_color, effect_suffix=None):
         """
@@ -503,6 +506,9 @@ class afcUnit:
         if static_color is not None:
             self.afc.function.afc_led(static_color, lane.led_index)
         if effect_suffix and self._led_effects_available:
+            if "SET_LED_EFFECT" not in self.gcode.ready_gcode_handlers:
+                self._led_effects_available = False
+                return
             effect_name = f"{lane.name}_{effect_suffix}"
             try:
                 self.gcode.run_script_from_command(f"SET_LED_EFFECT EFFECT={effect_name}")
