@@ -641,10 +641,7 @@ class AFCExtruder:
                         self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
                         if state:
                             if not self.load_active:
-                                if self.on_shuttle():
-                                    self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
-                                else:
-                                    self.load_unload_sequence(self.tool_stn)
+                                self.load_unload_sequence(self.tool_stn)
                         elif not self.afc.function.is_printing():
                             if self.lane_loaded:
                                 self.afc.TOOL_UNLOAD(self.tc_lane)
@@ -834,7 +831,8 @@ class AFCExtruder:
 
         info_str = "loading" if self.current_move_distance > 0 else "unloading"
         self.logger.info(f"{self.name} {info_str} done")
-        self.tc_lane.status = AFCLaneState.NONE
+        if self.current_move_distance <= 0:
+            self.tc_lane.status = AFCLaneState.NONE
         self.current_move_distance = 0
         self.afc.save_vars()
         return self.reactor.NEVER

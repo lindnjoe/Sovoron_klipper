@@ -1093,7 +1093,17 @@ class afcACE(afcUnit):
                         self._feed_assist_seen_increment = True
                         self._feed_assist_stall_count = 0
                     elif self._feed_assist_seen_increment:
-                        self._feed_assist_stall_count += 1
+                        extruder_advancing = False
+                        try:
+                            cur_e = self.afc.toolhead.get_position()[3]
+                            prev_e = getattr(self, '_last_stall_check_e', None)
+                            if prev_e is not None and cur_e > prev_e + 0.5:
+                                extruder_advancing = True
+                            self._last_stall_check_e = cur_e
+                        except Exception:
+                            extruder_advancing = True
+                        if extruder_advancing:
+                            self._feed_assist_stall_count += 1
                         if self._feed_assist_stall_count >= self._FEED_ASSIST_STALL_THRESHOLD:
                             self.logger.warning(
                                 f"ACE: feed_assist_count stalled at {cur_count} "
@@ -1113,11 +1123,13 @@ class afcACE(afcUnit):
                                     self._feed_assist_active.discard(slot)
                             self._feed_assist_stall_count = 0
                             self._feed_assist_seen_increment = False
+                            self._last_stall_check_e = None
                 self._prev_feed_assist_count = cur_count
             elif not active_on_this_unit:
                 self._feed_assist_stall_count = 0
                 self._prev_feed_assist_count = None
                 self._feed_assist_seen_increment = False
+                self._last_stall_check_e = None
 
         # Skip lane state updates during active operations (load/unload/calibration)
         if self._operation_active:
