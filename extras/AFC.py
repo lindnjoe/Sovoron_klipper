@@ -2171,32 +2171,51 @@ class afc:
                     self.current_toolchange += 1
                     self.logger.raw("//      Change {} out of {}".format(self.current_toolchange, self.number_of_toolchanges))
 
-                # If a current lane is loaded, unload it first.
-                if self.current is not None:
-                    c_lane = self.current
-                    if c_lane not in self.lanes:
-                        self.error.AFC_error('{} Unknown'.format(c_lane))
-                        return
-                    if not self.TOOL_UNLOAD(self.lanes[c_lane]):
-                        # Abort if the unloading process fails.
-                        msg = (' UNLOAD error NOT CLEARED')
-                        self.error.fix(msg, self.lanes[c_lane])  #send to error handling
-                        return
+                # Standalone toolchanger (U1-style): filament stays in each tool,
+                # just dock current and pick up next — no filament unload/load.
+                if (cur_lane.extruder_obj.is_standalone()
+                        and cur_lane.extruder_obj.tc_unit_name):
+                    if self.current is not None:
+                        old_lane = self.lanes.get(self.current)
+                        if old_lane is not None:
+                            old_lane.set_tool_unloaded()
+                    cur_lane.tool_swap()
+                    cur_lane.set_tool_loaded()
+                    self.current = cur_lane.name
+                    if restore_pos:
+                        self.restore_pos()
+                    total_time = self.afcDeltaTime.log_total_time("Total change time:")
+                    self.afc_stats.average_toolchange_time.average_time(total_time)
+                    self.in_toolchange = False
+                    self.next_lane_load = None
+                    cur_lane.extruder_obj.estats.increase_toolcount_change()
+                else:
+                    # If a current lane is loaded, unload it first.
+                    if self.current is not None:
+                        c_lane = self.current
+                        if c_lane not in self.lanes:
+                            self.error.AFC_error('{} Unknown'.format(c_lane))
+                            return
+                        if not self.TOOL_UNLOAD(self.lanes[c_lane]):
+                            # Abort if the unloading process fails.
+                            msg = (' UNLOAD error NOT CLEARED')
+                            self.error.fix(msg, self.lanes[c_lane])  #send to error handling
+                            return
 
-            # Load the new lane and restore the toolhead position if successful.
-            if self.TOOL_LOAD(cur_lane, purge_length) and not self.error_state:
-                if restore_pos:
-                    self.restore_pos()
-                total_time = self.afcDeltaTime.log_total_time("Total change time:")
-                self.afc_stats.average_toolchange_time.average_time(total_time)
-                self.in_toolchange = False
-                # Setting next lane load as none since toolchange was successful
-                self.next_lane_load = None
-                cur_lane.extruder_obj.estats.increase_toolcount_change()
-            else:
-                # Error happened, reset toolchanges without error count
-                if not self.testing:
-                    self.afc_stats.reset_toolchange_wo_error()
+                    # Load the new lane and restore the toolhead position if successful.
+                    if self.TOOL_LOAD(cur_lane, purge_length) and not self.error_state:
+                        if restore_pos:
+                            self.restore_pos()
+                        total_time = self.afcDeltaTime.log_total_time("Total change time:")
+                        self.afc_stats.average_toolchange_time.average_time(total_time)
+                        self.in_toolchange = False
+                        # Setting next lane load as none since toolchange was successful
+                        self.next_lane_load = None
+                        cur_lane.extruder_obj.estats.increase_toolcount_change()
+                    else:
+                        # Error happened, reset toolchanges without error count
+                        if not self.testing:
+                            self.afc_stats.reset_toolchange_wo_error()
         else:
             self.logger.info("{} already loaded".format(cur_lane.name))
             if not self.error_state and self.current_toolchange == -1:
