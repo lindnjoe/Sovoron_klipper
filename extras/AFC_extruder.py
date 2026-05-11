@@ -477,8 +477,12 @@ class AFCExtruder:
         if self.name in self.lanes:
             self.no_lanes = True
             self.logger.info(f"{self.name} no lanes")
-            # Due to race conditions at startup, these variables might not be set correctly,
-            #  set to current tool start state
+            # Read actual sensor state — tool_start_state may not have been
+            # updated yet if the sensor callback hasn't fired.
+            if hasattr(self, 'fila_tool_start') and self.fila_tool_start is not None:
+                self.tool_start_state = self.fila_tool_start.runout_helper.filament_present
+            elif self.filament_sensor_obj is not None:
+                self.tool_start_state = self.filament_sensor_obj.runout_helper.filament_present
             self.tc_lane._load_state = self.tc_lane.prep_state = self.tool_start_state
 
             if self.tool_start in ("buffer", "internal"):
