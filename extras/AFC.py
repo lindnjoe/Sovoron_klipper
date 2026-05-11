@@ -2200,8 +2200,9 @@ class afc:
                     old_standalone = (old_lane.extruder_obj.is_standalone()
                                      and old_lane.extruder_obj.tc_unit_name)
                     if old_standalone:
-                        # Standalone extruder: filament stays, just mark unloaded
-                        old_lane.set_tool_unloaded()
+                        old_lane.tool_loaded = False
+                        old_lane.status = AFCLaneState.LOADED
+                        self.spool.set_active_spool(None)
                     else:
                         if not self.TOOL_UNLOAD(old_lane):
                             msg = (' UNLOAD error NOT CLEARED')
