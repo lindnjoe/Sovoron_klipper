@@ -1031,15 +1031,44 @@ class AFCLane:
         # Saving position after printer is paused
         self.afc.save_pos()
 
-        # Position will be restored after lane is unloaded so that nozzle does not sit
-        # on print while lane is unloading
-        if not self.afc.TOOL_UNLOAD(empty_lane):
-            return
+        # Standalone toolchanger lanes (U1-style): filament stays in each tool,
+        # just dock current and pick up next — no filament unload/load needed.
+        if self.extruder_obj.no_lanes and self.extruder_obj.tc_unit_name:
+            pheaters = self.printer.lookup_object('heaters')
+            # Capture current extruder's printing temperature before swap
+            old_heater = self.extruder_obj.get_heater()
+            target_temp = old_heater.target_temp
 
-        # Eject spool before loading next lane
-        self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
+            # Start heating new extruder before swap so it warms during dock/pick
+            new_extruder = change_lane.extruder_obj
+            new_heater = new_extruder.get_heater()
+            if target_temp > 0:
+                pheaters.set_temperature(new_heater, target_temp, False)
+                self.logger.info("Heating {} to {:.0f} for infinite spool".format(
+                    new_extruder.name, target_temp))
 
-        self.afc.TOOL_LOAD(change_lane)
+            # Cool down old extruder
+            pheaters.set_temperature(old_heater, 0, False)
+
+            self.set_tool_unloaded()
+            change_lane.tool_swap()
+            change_lane.set_tool_loaded()
+
+            # Wait for new extruder to reach temperature before resuming
+            if target_temp > 0:
+                self.afc._wait_for_temp_within_tolerance(
+                    new_heater, target_temp, new_extruder.deadband)
+                self.logger.info("{} heated and ready".format(new_extruder.name))
+        else:
+            # Position will be restored after lane is unloaded so that nozzle does not sit
+            # on print while lane is unloading
+            if not self.afc.TOOL_UNLOAD(empty_lane):
+                return
+
+            # Eject spool before loading next lane
+            self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
+
+            self.afc.TOOL_LOAD(change_lane)
         # Change Mapping
         self.gcode.run_script_from_command('SET_MAP LANE={} MAP={}'.format(change_lane.name, empty_lane.map))
 
