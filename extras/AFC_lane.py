@@ -1904,7 +1904,15 @@ class AFCLane:
             self.logger.error(msg)
             return
 
-        self.afc.function.unset_lane_loaded()
+        # Only unset a lane that's loaded on THIS lane's extruder, not the globally active one
+        if self.extruder_obj.lane_loaded is not None and self.extruder_obj.lane_loaded != self.name:
+            prev_lane = self.afc.lanes.get(self.extruder_obj.lane_loaded)
+            if prev_lane is not None:
+                prev_lane.unsync_to_extruder()
+                prev_lane.set_tool_unloaded()
+                prev_lane.unit_obj.return_to_home()
+                self.logger.info("Unset {} from extruder {} before setting {} as loaded".format(
+                    prev_lane.name, self.extruder_obj.name, self.name))
 
         self.afc.function.handle_activate_extruder()
         self.set_tool_loaded()
