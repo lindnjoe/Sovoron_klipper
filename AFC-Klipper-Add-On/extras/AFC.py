@@ -318,6 +318,14 @@ class afc:
     def current(self):
         return self.function.get_current_lane()
 
+    @current.setter
+    def current(self, lane_name):
+        if lane_name is None:
+            return
+        lane_obj = self.lanes.get(lane_name)
+        if lane_obj is not None and lane_obj.extruder_obj is not None:
+            lane_obj.extruder_obj.lane_loaded = lane_name
+
     def _remove_after_last(self, string, char):
         last_index = string.rfind(char)
         if last_index != -1:
