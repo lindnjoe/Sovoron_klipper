@@ -3073,6 +3073,14 @@ class afcACE(afcUnit):
                     if load_to_hub:
                         cur_lane.loaded_to_hub = True
 
+                # For internal tool_start, trust persisted lane_loaded as
+                # proof that filament is in the toolhead — no physical sensor
+                # to verify, so restore tool_loaded from prior state.
+                if (not cur_lane.tool_loaded
+                        and cur_lane.extruder_obj.tool_start == "internal"
+                        and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
+                    cur_lane.tool_loaded = True
+
                 if cur_lane.tool_loaded:
                     # Filament is in the toolhead, so it's also in the hub path
                     cur_lane.loaded_to_hub = True
@@ -3092,6 +3100,8 @@ class afcACE(afcUnit):
                         msg += f'<span class=primary--text> in ToolHead{on_shuttle}</span>'
                         if cur_lane.extruder_obj.tool_start == "buffer":
                             msg += '<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>'
+                        elif cur_lane.extruder_obj.tool_start == "internal":
+                            msg += '<span class=warning--text>\n Internal sensor, confirm tool is loaded</span>'
 
                         # Restore combined mode tracking regardless of shuttle
                         # state so ACE knows which slot is loaded for the next
