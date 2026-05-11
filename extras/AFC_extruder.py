@@ -583,7 +583,7 @@ class AFCExtruder:
                     if state:
                         if not self.load_active:
                             has_shuttle = self.park_detector_obj is not None or self.tool_obj is not None
-                            if has_shuttle:
+                            if has_shuttle and not self.afc.function.is_printing():
                                 if not self.afc.function.check_homed():
                                     return
                                 if not self.on_shuttle():
