@@ -1743,10 +1743,6 @@ class afc:
         # Verify that printer is in absolute mode
         self.function.check_absolute_mode("TOOL_UNLOAD")
 
-        # If the current extruder is not the one associated with the lane, switch to it.
-        if self.function.get_current_extruder() != cur_lane.extruder_obj.name:
-            cur_lane.tool_swap()
-
         # Lookup current extruder and hub objects using the lane's information.
         cur_hub = cur_lane.hub_obj
         cur_extruder = cur_lane.extruder_obj
