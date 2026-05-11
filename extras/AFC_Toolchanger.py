@@ -61,6 +61,9 @@ class AfcToolchanger(afcUnit):
         cur_lane.send_lane_data()
         msg = ""
         if cur_lane.prep_state and cur_lane.load_state:
+            if cur_lane.extruder_obj.no_lanes:
+                cur_lane.tool_loaded = True
+                cur_lane.loaded_to_hub = True
             msg = "<span class=success--text>LOADED</span>"
             if (cur_lane.extruder_obj.lane_loaded == cur_lane.name
                     and cur_lane.tool_loaded):
