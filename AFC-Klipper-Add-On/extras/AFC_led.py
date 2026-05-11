@@ -4,7 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
-from extras import led
+import logging
+from . import led
 BACKGROUND_PRIORITY_CLOCK = 0x7fffffff00000000
 BIT_MAX_TIME = .000004
 RESET_MIN_TIME = .000050
@@ -109,7 +110,7 @@ class AFCled:
             if params['success']:
                 break
         else:
-            self.afc.logger.info("Neopixel update did not succeed")
+            logging.info("Neopixel update did not succeed")
 
     def update_leds(self, led_state, print_time):
         def reactor_bgfunc(eventtime):

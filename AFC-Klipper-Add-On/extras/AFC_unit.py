@@ -43,7 +43,7 @@ CALI_WARN += "Once filament is reinserted, then lanes will be calibrated.\n"
 class afcUnit:
     HOMING_DELTA = 300  # Delta for which to warn if homing move delta is not within this amount from
                         # command move distance.
-    def __init__(self, config: ConfigWrapper) -> None:
+    def __init__(self, config):
         self.printer        = config.get_printer()
         self.gcode          = self.printer.load_object(config, 'gcode')
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
@@ -52,15 +52,15 @@ class afcUnit:
         self.reactor        = self.printer.get_reactor()
         self.function       = self.afc.function
         self.logger         = self.afc.logger
-        self.type           = None
 
         self.lanes: Dict[str, AFCLane] = {}
         self._eject_to_calibrate = False
+        self._led_effects_available = True
 
         # Objects
-        self.buffer_obj: Optional[AFCTrigger|None] = None
-        self.hub_obj: Optional[afc_hub|None]       = None
-        self.extruder_obj: Optional[AFCExtruder|None] = None
+        self.buffer_obj: AFCTrigger = None
+        self.hub_obj: afc_hub       = None
+        self.extruder_obj: AFCExtruder  = None
         self.drive_stepper_obj: AFCExtruderStepper = None
         self.selector_stepper_obj: AFCExtruderStepper = None
 
@@ -71,17 +71,14 @@ class afcUnit:
         self.hub                         = config.get("hub", None)                                           # Hub name(AFC_hub) that belongs to this unit, can be overridden in AFC_stepper section
         self.extruder                    = config.get("extruder", None)                                      # Extruder name(AFC_extruder) that belongs to this unit, can be overridden in AFC_stepper section
         self.buffer_name                 = config.get('buffer', None)                                        # Buffer name(AFC_buffer) that belongs to this unit, can be overridden in AFC_stepper section
-
         self.remember_spool              = config.get('remember_spool', False)                               # Turns on/off ability to remember last ejected spool values for all lanes in this unit, can be overridden in AFC_stepper section
-        # LED SETTINGS
-        # All variables use: (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
-        self.led_fault                   = config.get('led_fault', self.afc.led_fault)                       # LED color to set when faults occur in lane
-        self.led_ready                   = config.get('led_ready', self.afc.led_ready)                       # LED color to set when lane is ready
-        self.led_not_ready               = config.get('led_not_ready', self.afc.led_not_ready)               # LED color to set when lane not ready
-        self.led_loading                 = config.get('led_loading', self.afc.led_loading)                   # LED color to set when lane is loading
-        self.led_prep_loaded             = config.get('led_loading', self.afc.led_loading)                   # LED color to set when lane is loaded
-        self.led_unloading               = config.get('led_unloading', self.afc.led_unloading)               # LED color to set when lane is unloading
-        self.led_tool_loaded             = config.get('led_tool_loaded', self.afc.led_tool_loaded)           # LED color to set when lane is loaded into tool
+        self.led_fault                   = config.get('led_fault', self.afc.led_fault)                       # LED color to set when faults occur in lane        (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
+        self.led_ready                   = config.get('led_ready', self.afc.led_ready)                       # LED color to set when lane is ready               (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
+        self.led_not_ready               = config.get('led_not_ready', self.afc.led_not_ready)               # LED color to set when lane not ready              (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
+        self.led_loading                 = config.get('led_loading', self.afc.led_loading)                   # LED color to set when lane is loading             (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
+        self.led_prep_loaded             = config.get('led_loading', self.afc.led_loading)                   # LED color to set when lane is loaded              (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
+        self.led_unloading               = config.get('led_unloading', self.afc.led_unloading)               # LED color to set when lane is unloading           (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
+        self.led_tool_loaded             = config.get('led_tool_loaded', self.afc.led_tool_loaded)           # LED color to set when lane is loaded into tool    (R,G,B,W) 0 = off, 1 = full brightness. Setting value here overrides values set in AFC.cfg file
         self.led_tool_loaded_idle        = config.get('led_tool_loaded_idle', self.afc.led_tool_loaded_idle) # LED color to set when lane is loaded into tool and idle
         self.led_tool_unloaded           = config.get('led_tool_unloaded', self.afc.led_tool_unloaded)       # LED color to set when lanes extruder is unloaded
         self.led_spool_illum             = config.get('led_spool_illuminate', self.afc.led_spool_illum)      # LED color to illuminate under spool
@@ -220,6 +217,8 @@ class afcUnit:
                 error_string = 'Error: No config found for extruder: {extruder} in [AFC_{unit_type} {unit_name}]. Please make sure [AFC_extruder {extruder}] section exists in your config'.format(
                     extruder=self.extruder, unit_type=self.type.replace("_", ""), unit_name=self.name )
                 raise config_error(error_string)
+            if getattr(self.extruder_obj, 'park_detector', None) is not None:
+                self._led_effects_available = False
 
         # Error checking for buffer
         if self.buffer_name is not None:
@@ -485,6 +484,37 @@ class afcUnit:
             led_color = self.afc.function.HexToLedString(color.replace("#", ""))
             self.afc.function.afc_led( led_color, self.led_logo_index )
 
+    def _stop_led_effects(self):
+        if not self._led_effects_available:
+            return
+        if "STOP_LED_EFFECTS" not in self.gcode.ready_gcode_handlers:
+            self._led_effects_available = False
+            return
+        try:
+            self.gcode.run_script_from_command("STOP_LED_EFFECTS")
+        except Exception:
+            self._led_effects_available = False
+
+    def _trigger_led_state(self, lane: AFCLane, static_color, effect_suffix=None):
+        """
+        Smart LED Dispatcher:
+        1. Always kills existing effects to reset the state.
+        2. Always sets the AFC static status color as the base.
+        3. If a dynamic effect is requested, it overlays it.
+        """
+        self._stop_led_effects()
+        if static_color is not None:
+            self.afc.function.afc_led(static_color, lane.led_index)
+        if effect_suffix and self._led_effects_available:
+            if "SET_LED_EFFECT" not in self.gcode.ready_gcode_handlers:
+                self._led_effects_available = False
+                return
+            effect_name = f"{lane.name}_{effect_suffix}"
+            try:
+                self.gcode.run_script_from_command(f"SET_LED_EFFECT EFFECT={effect_name}")
+            except Exception:
+                pass
+
     def lane_not_ready(self, lane):
         """
         Common function for setting a lanes led when a lane is not ready
@@ -494,18 +524,17 @@ class afcUnit:
         self.afc.function.afc_led(lane.led_not_ready, lane.led_index)
 
     def _get_lane_color(self, lane: AFCLane, fallback: str) -> str:
-        """Use filament color if available and enabled, otherwise use fallback LED color.
+        """
+        Use filament color if available, otherwise use the default LED color.
 
         :param lane: Lane object to get color for
         :param fallback: Default LED color to use if no filament color is set
-        :return: LED color value
+        :return: LED color value (list of floats or config color string)
         """
-        if lane.led_use_filament_color:
-            color = lane.get_color()
-            if color:
-                hex_str = color.replace("#", "").strip().upper()
-                if len(hex_str) in (6, 8) and all(c in "0123456789ABCDEF" for c in hex_str):
-                    return self.afc.function.HexToLedString(hex_str)
+        if lane.led_use_filament_color and lane.color:
+            hex_str = lane.color.replace("#", "").strip().upper()
+            if len(hex_str) in (6, 8) and all(c in "0123456789ABCDEF" for c in hex_str):
+                return self.afc.function.HexToLedString(hex_str)
         return fallback
 
     def lane_loaded(self, lane: AFCLane):
@@ -514,7 +543,9 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self.afc.function.afc_led(self._get_lane_color(lane, lane.led_ready), lane.led_index)
+        self._trigger_led_state(lane, lane.led_ready)
+        if lane.led_spool_index:
+            self.afc.function.afc_led(lane.led_spool_illum, lane.led_spool_index)
 
     def lane_unloading(self, lane):
         """
@@ -522,7 +553,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self.afc.function.afc_led(lane.led_unloading, lane.led_index)
+        self._trigger_led_state(lane, lane.led_unloading, "unloading")
 
     def lane_unloaded(self, lane: AFCLane):
         """
@@ -530,7 +561,9 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self.lane_not_ready(lane)
+        self._trigger_led_state(lane, lane.led_not_ready)
+        if lane.led_spool_index:
+            self.afc.function.afc_led(self.afc.led_off, lane.led_spool_index)
 
     def lane_loading(self, lane: AFCLane):
         """
@@ -538,7 +571,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self.afc.function.afc_led(lane.led_loading, lane.led_index)
+        self._trigger_led_state(lane, lane.led_loading, "loading")
 
     def lane_tool_loaded(self, lane: AFCLane):
         """
@@ -547,6 +580,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
+        self._stop_led_effects()
         self.afc.function.afc_led(lane.led_tool_loaded, lane.led_index)
         lane.extruder_obj.set_status_led(lane.led_tool_loaded)
 
@@ -557,6 +591,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
+        self._stop_led_effects()
         self.afc.function.afc_led(self._get_lane_color(lane, lane.led_ready), lane.led_index)
         lane.extruder_obj.set_status_led(lane.led_tool_unloaded)
 

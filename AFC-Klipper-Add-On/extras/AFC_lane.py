@@ -35,6 +35,7 @@ except: raise error(ERROR_STR.format(import_lib="AFC_assist", trace=traceback.fo
 try: from extras.AFC_stats import AFCStats_var
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
 
+ONLY_LOAD_TYPES = ["HTLF", "Claymore"]
 EXCLUDE_TYPES = ["HTLF", "ViViD"]
 # Class for holding different states so its clear what all valid states are
 
@@ -887,11 +888,14 @@ class AFCLane:
         """
         warn = AFCMoveWarning.NONE
         extruder_stepper = getattr(self, "extruder_stepper", None)
+        drive_stepper_assist = None
         if (self.drive_stepper
             or extruder_stepper):
             if use_homing:
                 if self.drive_stepper:
                     home_to = self.drive_stepper.home_to
+                    drive_stepper_assist= self.drive_stepper.assist_move
+                    self.drive_stepper.assist_move = self.assist_move
                 else:
                     home_to = self.home_to
                 # Add extra distance to homing move to guarantee that endstop is hit
@@ -900,9 +904,14 @@ class AFCLane:
                     new_distance = distance - self.homing_overshoot
                 self.unit_obj.select_lane(self)
                 speed, accel = self.get_speed_accel(speed_mode)
-                homed, mov_dis, error = home_to(endstop, new_distance, speed, accel,
-                        distance > 0, assist_active=self.get_active_assist(distance, assist_active)
-                )
+                try:
+                    homed, mov_dis, error = home_to(endstop, new_distance, speed, accel,
+                            distance > 0, assist_active=self.get_active_assist(distance,
+                                                                               assist_active)
+                    )
+                finally:
+                    if drive_stepper_assist:
+                        self.drive_stepper.assist_move = drive_stepper_assist
                 if error:
                     warn = AFCMoveWarning.ERROR
                 elif (abs(distance) - mov_dis) > self.homing_delta:
@@ -913,7 +922,10 @@ class AFCLane:
                 self.move_advanced(distance, speed_mode, assist_active )
                 return True, 0, warn
         else:
-            return False, 0, AFCMoveWarning.ERROR
+            if self.extruder_obj.is_standalone():
+                return True, 0, AFCMoveWarning.NONE
+            else:
+                return False, 0, AFCMoveWarning.ERROR
 
 
     def move_advanced(self, distance, speed_mode: SpeedMode, assist_active: AssistActive = AssistActive.NO):
@@ -1019,44 +1031,15 @@ class AFCLane:
         # Saving position after printer is paused
         self.afc.save_pos()
 
-        # Standalone toolchanger lanes (U1-style): filament stays in each tool,
-        # just dock current and pick up next — no filament unload/load needed.
-        if self.extruder_obj.no_lanes and self.extruder_obj.tc_unit_name:
-            pheaters = self.printer.lookup_object('heaters')
-            # Capture current extruder's printing temperature before swap
-            old_heater = self.extruder_obj.get_heater()
-            target_temp = old_heater.target_temp
+        # Position will be restored after lane is unloaded so that nozzle does not sit
+        # on print while lane is unloading
+        if not self.afc.TOOL_UNLOAD(empty_lane):
+            return
 
-            # Start heating new extruder before swap so it warms during dock/pick
-            new_extruder = change_lane.extruder_obj
-            new_heater = new_extruder.get_heater()
-            if target_temp > 0:
-                pheaters.set_temperature(new_heater, target_temp, False)
-                self.logger.info("Heating {} to {:.0f} for infinite spool".format(
-                    new_extruder.name, target_temp))
+        # Eject spool before loading next lane
+        self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
 
-            # Cool down old extruder
-            pheaters.set_temperature(old_heater, 0, False)
-
-            self.set_tool_unloaded()
-            change_lane.tool_swap()
-            change_lane.set_tool_loaded()
-
-            # Wait for new extruder to reach temperature before resuming
-            if target_temp > 0:
-                self.afc._wait_for_temp_within_tolerance(
-                    new_heater, target_temp, new_extruder.deadband)
-                self.logger.info("{} heated and ready".format(new_extruder.name))
-        else:
-            # Position will be restored after lane is unloaded so that nozzle does not sit
-            # on print while lane is unloading
-            if not self.afc.TOOL_UNLOAD(empty_lane):
-                return
-
-            # Eject spool before loading next lane
-            self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
-
-            self.afc.TOOL_LOAD(change_lane)
+        self.afc.TOOL_LOAD(change_lane)
         # Change Mapping
         self.gcode.run_script_from_command('SET_MAP LANE={} MAP={}'.format(change_lane.name, empty_lane.map))
 
@@ -1160,7 +1143,7 @@ class AFCLane:
 
     def load_callback(self, eventtime, state):
         self._load_state = state
-        if self.printer.state_message == 'Printer is ready' and self.unit_obj.type == "HTLF":
+        if self.printer.state_message == 'Printer is ready' and self.unit_obj.type in ONLY_LOAD_TYPES:
             self.prep_state = state
 
     def handle_load_runout(self, eventtime, load_state):
@@ -1181,7 +1164,7 @@ class AFCLane:
             self.load_debounce_button._old_note_filament_present(eventtime, load_state)
 
         if (self.printer.state_message == 'Printer is ready' and
-            self.unit_obj.type == "HTLF" and
+            self.unit_obj.type in ONLY_LOAD_TYPES and
             True == self._afc_prep_done):
             if load_state:
                 self.set_loaded()
@@ -1704,14 +1687,12 @@ class AFCLane:
             self.afc.error.AFC_error(msg)
         # No else: do not trigger infinite runout or pause runout here
 
-    # Toolchanger functions
     def tool_swap(self):
         """
         Helper function for calling extruder's tool_swap function
         """
         if self.extruder_obj.tc_unit_obj is not None:
             self.extruder_obj.tc_unit_obj.tool_swap(self, set_start_time=False)
-
 
     def send_lane_data(self):
         """
@@ -1930,7 +1911,15 @@ class AFCLane:
             self.logger.error(msg)
             return
 
-        self.afc.function.unset_lane_loaded()
+        # Only unset a lane that's loaded on THIS lane's extruder, not the globally active one
+        if self.extruder_obj.lane_loaded is not None and self.extruder_obj.lane_loaded != self.name:
+            prev_lane = self.afc.lanes.get(self.extruder_obj.lane_loaded)
+            if prev_lane is not None:
+                prev_lane.unsync_to_extruder()
+                prev_lane.set_tool_unloaded()
+                prev_lane.unit_obj.return_to_home()
+                self.logger.info("Unset {} from extruder {} before setting {} as loaded".format(
+                    prev_lane.name, self.extruder_obj.name, self.name))
 
         self.afc.function.handle_activate_extruder()
         self.set_tool_loaded()

@@ -128,7 +128,6 @@ class afcFunction:
         """
         Helper function to get stock macros, rename to something and replace stock macro with AFC functions
         """
-        # Renaming users Resume macro so that RESUME calls AFC_Resume function instead
         prev_cmd = self.afc.gcode.register_command(base_name, None)
         if prev_cmd is not None:
             pdesc = "Renamed builtin of '%s'" % (base_name,)
@@ -238,13 +237,14 @@ class afcFunction:
                         break
         self.afc.tool_cmds[cur_lane.map]=cur_lane.name
         try:
-            if cur_lane._map:
+            if (cur_lane._map
+                or self.afc.force_assign_map):
                 rename_map = ("_{}".format(cur_lane.map))
                 self._rename(cur_lane.map, rename_map, self.afc.cmd_CHANGE_TOOL, self.afc.cmd_CHANGE_TOOL_help)
             else:
                 self.afc.gcode.register_command(cur_lane.map, self.afc.cmd_CHANGE_TOOL, desc=self.afc.cmd_CHANGE_TOOL_help)
         except:
-                self.logger.info("Error trying to map lane {lane} to {tool_macro}, please make sure there are no macros already setup for {tool_macro}".format(lane=[cur_lane.name], tool_macro=cur_lane.map), )
+            self.logger.error("Error trying to map lane {lane} to {tool_macro}, please make sure there are no macros already setup for {tool_macro}".format(lane=[cur_lane.name], tool_macro=cur_lane.map), )
         self.afc.save_vars()
 
     def check_macro_present(self, macro_name):
@@ -298,8 +298,7 @@ class afcFunction:
         """
         curtime = self.afc.reactor.monotonic()
         kin_status = self.afc.toolhead.get_kinematics().get_status(curtime)
-        if ('x' not in kin_status['homed_axes'] or 'y' not in kin_status['homed_axes'] or 'z' not in kin_status['homed_axes']) and \
-            not self.afc.disable_homing_check:
+        if ('x' not in kin_status['homed_axes'] or 'y' not in kin_status['homed_axes'] or 'z' not in kin_status['homed_axes']):
             return False
         else:
             return True
