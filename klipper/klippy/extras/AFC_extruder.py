@@ -638,10 +638,17 @@ class AFCExtruder:
                     self.tc_lane.status not in (AFCLaneState.TOOL_LOADING, AFCLaneState.TOOL_UNLOADING)):
                     if state:
                         if not self.load_active:
-                            if not self.afc.function.check_homed():
-                                return
-                            if self.on_shuttle():
-                                self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
+                            has_shuttle = self.park_detector_obj is not None or self.tool_obj is not None
+                            if has_shuttle:
+                                if not self.afc.function.check_homed():
+                                    return
+                                if not self.on_shuttle():
+                                    self.tc_lane.tool_swap()
+                                if not self.tc_lane.tool_loaded:
+                                    self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
+                                else:
+                                    self.tc_lane.set_tool_loaded()
+                                    self.afc.current = self.tc_lane.name
                             else:
                                 self.load_unload_sequence(self.tool_stn)
                     elif not self.afc.function.is_printing():
