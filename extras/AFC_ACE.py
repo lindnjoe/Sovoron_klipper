@@ -142,11 +142,6 @@ class afcACE(afcUnit):
         self.calibration_step = config.getfloat("calibration_step", 50.0)              # mm per check during calibration
         self.max_feed_overshoot = config.getfloat("max_feed_overshoot", 100.0)         # mm extra to try past feed_length before giving up
 
-        # Dock purge: drop tool at dock, load filament, purge in dock, then pick up
-        self.dock_purge = config.getboolean("dock_purge", False)                       # Set to True to enable dock purge during load
-        self.dock_purge_length = config.getfloat("dock_purge_length", 50.0)            # mm of filament to extrude while docked for purging
-        self.dock_purge_speed = config.getfloat("dock_purge_speed", 5.0)               # mm/s extrude speed during dock purge
-
         # Auto Spoolman: when True, automatically create filaments and spools
         # in Spoolman from RFID data. When False, RFID data still matches to
         # existing filaments/spools but won't create new ones.

@@ -700,12 +700,6 @@ class afcAMS(afcUnit):
         self._engagement_pressure_max = config.getfloat("engagement_pressure_threshold", 0.6, minval=0.0)
         self._engagement_pressure_min = config.getfloat("engagement_min_pressure", 0.25, minval=0.0)
         self.clog_sensitivity = config.get("clog_sensitivity", "medium").lower()
-        # AFC-level dock purge controls (ACE-compatible naming)
-        # If enabled, AFC handles dock dropoff/pickup and purge extrusion.
-        self.dock_purge = config.getboolean("dock_purge", False)
-        self.dock_purge_length = config.getfloat("dock_purge_length", 105.0, minval=0.0)
-        self.dock_purge_speed = config.getfloat("dock_purge_speed", 7.0, minval=0.0)
-
         self.printer.register_event_handler("klippy:ready", self.handle_ready)
         self.printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
 
