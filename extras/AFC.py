@@ -594,9 +594,11 @@ class afc:
         Helper function that check to see if extruder needs to be heated, and wait for hotend to get to temp if needed
         """
 
-        # Prepare extruder and heater.
-        # This will need to be done a different way for multiple toolhead extruders
-        extruder = self.toolhead.get_extruder()
+        # Use the lane's extruder when available so toolchangers heat the correct hotend
+        if cur_lane.extruder_obj is not None and cur_lane.extruder_obj.toolhead_extruder is not None:
+            extruder = cur_lane.extruder_obj.toolhead_extruder
+        else:
+            extruder = self.toolhead.get_extruder()
         self.heater = extruder.get_heater()
         pheaters = self.printer.lookup_object('heaters')
         wait = False
