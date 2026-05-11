@@ -263,6 +263,7 @@ class AFCExtruder:
         self.tc_lane: Optional[AFCLane|None]            = None
         self.tool: Optional[str]        = config.get('tool', None)
         self.tool_obj                   = None
+        self.map: Optional[str]         = config.get('map', None)
         self.no_lanes                   = False
         self.custom_tool_swap: Optional[str] = config.get("custom_tool_swap", None)
         self.custom_unselect: Optional[str] = config.get("custom_unselect", None)

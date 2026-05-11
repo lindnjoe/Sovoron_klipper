@@ -481,6 +481,29 @@ class afcUnit:
             led_color = self.afc.function.HexToLedString(color.replace("#", ""))
             self.afc.function.afc_led( led_color, self.led_logo_index )
 
+    def _stop_led_effects(self):
+        try:
+            self.gcode.run_script_from_command("STOP_LED_EFFECTS")
+        except Exception:
+            pass
+
+    def _trigger_led_state(self, lane: AFCLane, static_color, effect_suffix=None):
+        """
+        Smart LED Dispatcher:
+        1. Always kills existing effects to reset the state.
+        2. Always sets the AFC static status color as the base.
+        3. If a dynamic effect is requested, it overlays it.
+        """
+        self._stop_led_effects()
+        if static_color is not None:
+            self.afc.function.afc_led(static_color, lane.led_index)
+        if effect_suffix:
+            effect_name = f"{lane.name}_{effect_suffix}"
+            try:
+                self.gcode.run_script_from_command(f"SET_LED_EFFECT EFFECT={effect_name}")
+            except Exception:
+                pass
+
     def lane_not_ready(self, lane):
         """
         Common function for setting a lanes led when a lane is not ready
@@ -490,18 +513,17 @@ class afcUnit:
         self.afc.function.afc_led(lane.led_not_ready, lane.led_index)
 
     def _get_lane_color(self, lane: AFCLane, fallback: str) -> str:
-        """Use filament color if available and enabled, otherwise use fallback LED color.
+        """
+        Use filament color if available, otherwise use the default LED color.
 
         :param lane: Lane object to get color for
         :param fallback: Default LED color to use if no filament color is set
-        :return: LED color value
+        :return: LED color value (list of floats or config color string)
         """
-        if lane.led_use_filament_color:
-            color = lane.get_color()
-            if color:
-                hex_str = color.replace("#", "").strip().upper()
-                if len(hex_str) in (6, 8) and all(c in "0123456789ABCDEF" for c in hex_str):
-                    return self.afc.function.HexToLedString(hex_str)
+        if lane.led_use_filament_color and lane.color:
+            hex_str = lane.color.replace("#", "").strip().upper()
+            if len(hex_str) in (6, 8) and all(c in "0123456789ABCDEF" for c in hex_str):
+                return self.afc.function.HexToLedString(hex_str)
         return fallback
 
     def lane_loaded(self, lane: AFCLane):
@@ -510,7 +532,9 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self.afc.function.afc_led(self._get_lane_color(lane, lane.led_ready), lane.led_index)
+        self._trigger_led_state(lane, lane.led_ready)
+        if lane.led_spool_index:
+            self.afc.function.afc_led(lane.led_spool_illum, lane.led_spool_index)
 
     def lane_unloading(self, lane):
         """
@@ -518,7 +542,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self.afc.function.afc_led(lane.led_unloading, lane.led_index)
+        self._trigger_led_state(lane, lane.led_unloading, "unloading")
 
     def lane_unloaded(self, lane: AFCLane):
         """
@@ -526,7 +550,9 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self.lane_not_ready(lane)
+        self._trigger_led_state(lane, lane.led_not_ready)
+        if lane.led_spool_index:
+            self.afc.function.afc_led(self.afc.led_off, lane.led_spool_index)
 
     def lane_loading(self, lane: AFCLane):
         """
@@ -534,7 +560,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
-        self.afc.function.afc_led(lane.led_loading, lane.led_index)
+        self._trigger_led_state(lane, lane.led_loading, "loading")
 
     def lane_tool_loaded(self, lane: AFCLane):
         """
@@ -543,6 +569,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
+        self._stop_led_effects()
         self.afc.function.afc_led(lane.led_tool_loaded, lane.led_index)
         lane.extruder_obj.set_status_led(lane.led_tool_loaded)
 
@@ -553,6 +580,7 @@ class afcUnit:
 
         :param lane: Lane object to set led
         """
+        self._stop_led_effects()
         self.afc.function.afc_led(self._get_lane_color(lane, lane.led_ready), lane.led_index)
         lane.extruder_obj.set_status_led(lane.led_tool_unloaded)
 

@@ -151,6 +151,9 @@ class AFCSpool:
         cur_lane = self.afc.lanes[lane]
         cur_lane.color = '#{}'.format(color.replace('#',''))
         cur_lane.send_lane_data()
+        if cur_lane.load_state and cur_lane.unit in self.afc.units:
+            unit = cur_lane.unit_obj
+            self.afc.function.afc_led(unit._get_lane_color(cur_lane, cur_lane.led_ready), cur_lane.led_index)
         self.afc.save_vars()
 
     cmd_SET_WEIGHT_help = "Sets filaments weight for a lane"
@@ -376,6 +379,9 @@ class AFCSpool:
                         cur_lane.color = '#{}'.format(self._get_filament_values(result['filament'], 'color_hex'))
 
                     cur_lane.send_lane_data()
+                    if cur_lane.load_state and cur_lane.unit in self.afc.units:
+                        unit = cur_lane.unit_obj
+                        self.afc.function.afc_led(unit._get_lane_color(cur_lane, cur_lane.led_ready), cur_lane.led_index)
 
                 except Exception as e:
                     self.afc.error.AFC_error("Error when trying to get Spoolman data for ID:{}, Error: {}".format(SpoolID, e), False)
