@@ -749,6 +749,7 @@ class AFCExtruder:
         info_str = "Loading" if distance > 0 else "Unloading"
         self.logger.info(f"{info_str} {self.name}")
         self.load_active = True
+        self._load_start_time = self.reactor.monotonic()
         self.current_move_distance = distance
         # TODO: maybe make this so this same function can be called normally when lanes are assigned
         # to extruders...
@@ -827,15 +828,20 @@ class AFCExtruder:
         self.load_active = False
 
         was_loading = self.current_move_distance > 0
-        info_str = "loading" if was_loading else "unloading"
-        self.logger.info(f"{self.name} {info_str} done")
+        load_time = self.reactor.monotonic() - self._load_start_time
         if not was_loading:
             self.tc_lane.status = AFCLaneState.NONE
+            self.logger.info("Lane {} unload done t:{:.3f}".format(
+                self.tc_lane.name if self.tc_lane else self.name, load_time))
         self.current_move_distance = 0
 
         if was_loading and self.tc_lane and self.tc_lane.hub == 'direct_load':
             self.reactor.register_callback(self._direct_load_post_sequence)
         else:
+            if was_loading:
+                self.logger.info("{} is now loaded in toolhead t:{:.3f}".format(
+                    self.tc_lane.name if self.tc_lane else self.name, load_time))
+                self.afc.afc_stats.average_tool_load_time.average_time(load_time)
             self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
             self._captured_toolhead_temp = None
 
@@ -845,16 +851,19 @@ class AFCExtruder:
     def _direct_load_post_sequence(self, eventtime):
         try:
             if not self.afc.function.check_homed():
-                self.logger.error("Printer not homed, skipping direct_load post sequence")
+                self.logger.error("Printer not homed, skipping post load purge")
                 return
             spool_temp = self.tc_lane.extruder_temp or 210
             self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
             self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
             self.gcode.run_script_from_command("M400")
             self.gcode.run_script_from_command("G1 Y-35")
-            self.logger.info(f"{self.name} direct_load post sequence complete")
+            load_time = self.reactor.monotonic() - self._load_start_time
+            lane_name = self.tc_lane.name if self.tc_lane else self.name
+            self.logger.info("{} is now loaded in toolhead t:{:.3f}".format(lane_name, load_time))
+            self.afc.afc_stats.average_tool_load_time.average_time(load_time)
         except Exception as e:
-            self.logger.error(f"{self.name} direct_load post sequence failed: {e}")
+            self.logger.error(f"{self.name} Post load purge failed: {e}")
         finally:
             self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
             self._captured_toolhead_temp = None
