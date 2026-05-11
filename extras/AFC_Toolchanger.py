@@ -32,7 +32,7 @@ except: raise error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.form
 try: from extras.AFC import State
 except: raise error(ERROR_STR.format(import_lib="AFC", trace=traceback.format_exc()))
 
-try: from extras.AFC_lane import AFCMoveWarning, SpeedMode, AssistActive
+try: from extras.AFC_lane import AFCMoveWarning, SpeedMode, AssistActive, AFCLaneState
 except: raise error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
 
@@ -58,11 +58,23 @@ class AfcToolchanger(afcUnit):
 
     def system_Test(self, cur_lane: AFCLane, delay: float, assignTcmd: str, enable_movement: bool):
         if assignTcmd: self.afc.function.TcmdAssign(cur_lane)
-        # Now that a T command is assigned, send lane data to moonraker
         cur_lane.send_lane_data()
         msg = ""
-        if( cur_lane.prep_state and cur_lane.load_state ):
-            msg = "<span class=success--text>LOADED</span> <span class=primary--text>in ToolHead</span>"
+        if cur_lane.prep_state and cur_lane.load_state:
+            msg = "<span class=success--text>LOADED</span>"
+            if (cur_lane.extruder_obj.lane_loaded == cur_lane.name
+                    and cur_lane.tool_loaded):
+                cur_lane.sync_to_extruder()
+                on_shuttle = cur_lane.extruder_obj.on_shuttle()
+                shuttle_msg = " and toolhead on shuttle" if on_shuttle else ""
+                msg += "<span class=primary--text> in ToolHead{}</span>".format(shuttle_msg)
+                if on_shuttle:
+                    self.afc.current = cur_lane.name
+                    self.afc.spool.set_active_spool(cur_lane.spool_id)
+                    self.lane_tool_loaded(cur_lane)
+                    cur_lane.status = AFCLaneState.TOOLED
+            else:
+                msg += " <span class=primary--text>in ToolHead</span>"
         self.logger.raw( '{lane_name} tool cmd: {tcmd:3} {msg}'.format(lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))
         cur_lane.set_afc_prep_done()
         return True
