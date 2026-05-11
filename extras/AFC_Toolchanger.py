@@ -674,6 +674,10 @@ class AfcToolchanger(afcUnit):
                 msg += "<span class=success--text> AND LOADED</span>"
                 self.lane_illuminate_spool(cur_lane)
 
+                if cur_lane.extruder_obj.no_lanes:
+                    cur_lane.tool_loaded = True
+                    cur_lane.loaded_to_hub = True
+
                 if (cur_lane.tool_loaded
                     and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
                     # Toolchangers can be direct-fed (no buffer/sensors),

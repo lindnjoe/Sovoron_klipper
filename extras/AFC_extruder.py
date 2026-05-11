@@ -477,11 +477,7 @@ class AFCExtruder:
         if self.name in self.lanes:
             self.no_lanes = True
             self.logger.info(f"{self.name} no lanes")
-            if self.park_detector_obj is not None:
-                self.tool_start_state = True
-                self.tc_lane.tool_loaded = True
-                self.tc_lane.loaded_to_hub = True
-            elif hasattr(self, 'fila_tool_start') and self.fila_tool_start is not None:
+            if hasattr(self, 'fila_tool_start') and self.fila_tool_start is not None:
                 self.tool_start_state = self.fila_tool_start.runout_helper.filament_present
             elif self.filament_sensor_obj is not None:
                 self.tool_start_state = self.filament_sensor_obj.runout_helper.filament_present
