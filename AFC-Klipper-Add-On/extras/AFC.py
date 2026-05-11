@@ -2333,10 +2333,15 @@ class afc:
                                 % (cur_lane.extruder_obj.name, loaded_name))
 
                     if lane_to_unload is not None:
-                        if not self.TOOL_UNLOAD(lane_to_unload, set_start_time=False):
-                            # Abort if the unloading process fails.
+                        old_standalone = (lane_to_unload.extruder_obj.is_standalone()
+                                         and lane_to_unload.extruder_obj.tc_unit_name)
+                        if old_standalone:
+                            lane_to_unload.tool_loaded = False
+                            lane_to_unload.status = AFCLaneState.LOADED
+                            self.spool.set_active_spool(None)
+                        elif not self.TOOL_UNLOAD(lane_to_unload, set_start_time=False):
                             msg = (' UNLOAD ERROR NOT CLEARED')
-                            self.error.fix(msg, lane_to_unload)  #send to error handling
+                            self.error.fix(msg, lane_to_unload)
                             return
 
                 if adjusting_temperature:
