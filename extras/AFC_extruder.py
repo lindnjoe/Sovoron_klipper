@@ -343,7 +343,7 @@ class AFCExtruder:
         if self.tc_unit_name:
             config.fileconfig.set(config.section, "unit", self.tc_unit_name.split()[-1])
             config.fileconfig.set(config.section, "extruder", self.name)
-            config.fileconfig.set(config.section, "hub", "direct")
+            config.fileconfig.set(config.section, "hub", config.get("hub", "direct"))
             self.tc_lane = AFCLane(config)
             self.printer.objects[f"AFC_lane {self.name}"] = self.tc_lane
             # TODO: Once homing is in create common function for this and AFC_stepper
@@ -732,16 +732,38 @@ class AFCExtruder:
         self.function.do_enable(False, self.name)
         self.load_active = False
 
-        self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
-        self._captured_toolhead_temp = None
-
-        info_str = "loading" if self.current_move_distance > 0 else "unloading"
+        was_loading = self.current_move_distance > 0
+        info_str = "loading" if was_loading else "unloading"
         self.logger.info(f"{self.name} {info_str} done")
-        if self.current_move_distance <= 0:
+        if not was_loading:
             self.tc_lane.status = AFCLaneState.NONE
         self.current_move_distance = 0
+
+        if was_loading and self.tc_lane and self.tc_lane.hub == 'direct_load':
+            self.reactor.register_callback(self._direct_load_post_sequence)
+        else:
+            self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
+            self._captured_toolhead_temp = None
+
         self.afc.save_vars()
         return self.reactor.NEVER
+
+    def _direct_load_post_sequence(self, eventtime):
+        try:
+            if not self.afc.function.check_homed():
+                self.logger.error("Printer not homed, skipping direct_load post sequence")
+                return
+            spool_temp = self.tc_lane.extruder_temp or 210
+            self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
+            self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
+            self.gcode.run_script_from_command("M400")
+            self.gcode.run_script_from_command("G1 Y-35")
+            self.logger.info(f"{self.name} direct_load post sequence complete")
+        except Exception as e:
+            self.logger.error(f"{self.name} direct_load post sequence failed: {e}")
+        finally:
+            self.afc.restore_toolhead_temp(temp_state=self._captured_toolhead_temp, async_restore=True)
+            self._captured_toolhead_temp = None
 
     def temp_check_cb(self, eventtime:float) -> float:
         """
