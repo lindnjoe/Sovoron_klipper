@@ -586,7 +586,11 @@ class AFCExtruder:
                                 return
                             if not self.on_shuttle():
                                 self.tc_lane.tool_swap()
-                            self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
+                            if not self.tc_lane.tool_loaded:
+                                self.afc.TOOL_LOAD(self.tc_lane, set_start_time=True)
+                            else:
+                                self.tc_lane.set_tool_loaded()
+                                self.afc.current = self.tc_lane.name
                     elif not self.afc.function.is_printing():
                         if self.lane_loaded:
                             self.afc.TOOL_UNLOAD(self.tc_lane)
