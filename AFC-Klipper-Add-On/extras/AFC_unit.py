@@ -104,6 +104,11 @@ class afcUnit:
         self.enable_buffer_tool_check    = config.getboolean("enable_buffer_tool_check", False)
         self.tool_max_unload_attempts    = config.getint('tool_max_unload_attempts', self.afc.tool_max_unload_attempts)
 
+        # Dock purge — extrude filament while tool is docked to purge old color
+        self.dock_purge                  = config.getboolean("dock_purge", False)
+        self.dock_purge_length           = config.getfloat("dock_purge_length", 50.0, minval=0.)
+        self.dock_purge_speed            = config.getfloat("dock_purge_speed", 5.0, minval=0.)
+
         # Espooler defines
         # Time in seconds to wait between breaking n20 motors(nSleep/FWD/RWD all 1) and then releasing the break to allow coasting. Setting value here overrides values set in AFC.cfg file
         self.n20_break_delay_time   = config.getfloat("n20_break_delay_time",   self.afc.n20_break_delay_time)
