@@ -55,6 +55,7 @@ class afcUnit:
 
         self.lanes: Dict[str, AFCLane] = {}
         self._eject_to_calibrate = False
+        self._led_effects_available = True
 
         # Objects
         self.buffer_obj: AFCTrigger = None
@@ -216,6 +217,8 @@ class afcUnit:
                 error_string = 'Error: No config found for extruder: {extruder} in [AFC_{unit_type} {unit_name}]. Please make sure [AFC_extruder {extruder}] section exists in your config'.format(
                     extruder=self.extruder, unit_type=self.type.replace("_", ""), unit_name=self.name )
                 raise config_error(error_string)
+            if getattr(self.extruder_obj, 'park_detector', None) is not None:
+                self._led_effects_available = False
 
         # Error checking for buffer
         if self.buffer_name is not None:
@@ -482,6 +485,8 @@ class afcUnit:
             self.afc.function.afc_led( led_color, self.led_logo_index )
 
     def _stop_led_effects(self):
+        if not self._led_effects_available:
+            return
         try:
             self.gcode.run_script_from_command("STOP_LED_EFFECTS")
         except Exception:
@@ -497,7 +502,7 @@ class afcUnit:
         self._stop_led_effects()
         if static_color is not None:
             self.afc.function.afc_led(static_color, lane.led_index)
-        if effect_suffix:
+        if effect_suffix and self._led_effects_available:
             effect_name = f"{lane.name}_{effect_suffix}"
             try:
                 self.gcode.run_script_from_command(f"SET_LED_EFFECT EFFECT={effect_name}")
