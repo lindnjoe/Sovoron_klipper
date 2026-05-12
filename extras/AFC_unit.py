@@ -87,6 +87,7 @@ class afcUnit:
         self.led_logo_loading            = self.afc.function.HexConvert(config.get('led_logo_loading', self.led_loading ))
 
         self.led_use_filament_color:bool  = config.getboolean('led_use_filament_color', self.afc.led_use_filament_color)  # When True, uses filament color for lane LEDs
+        self.auto_spoolman_create:bool   = config.getboolean('auto_spoolman_create', False)                             # When True, RFID integrations (U1, ACE) auto-create filaments/spools in Spoolman
 
         self.long_moves_speed            = config.getfloat("long_moves_speed", self.afc.long_moves_speed)   # Speed in mm/s to move filament when doing long moves. Setting value here overrides values set in AFC.cfg file
         self.long_moves_accel            = config.getfloat("long_moves_accel", self.afc.long_moves_accel)   # Acceleration in mm/s squared when doing long moves. Setting value here overrides values set in AFC.cfg file
