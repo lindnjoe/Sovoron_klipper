@@ -1329,6 +1329,7 @@ class afc:
         if cur_extruder_obj.lane_loaded == cur_lane.name:
             cur_lane.status = AFCLaneState.TOOL_LOADED
             cur_lane.set_tool_loaded()
+            self.current = cur_lane.name
             self.save_vars()
             self.logger.info("{} already loaded on {}, re-activating".format(
                 cur_lane.name, cur_extruder_obj.name))
@@ -2267,6 +2268,7 @@ class afc:
                     cur_lane.extruder_obj.estats.increase_toolcount_change()
                 else:
                     if self.TOOL_LOAD(cur_lane, purge_length) and not self.error_state:
+                        self.current = cur_lane.name
                         if restore_pos:
                             self.restore_pos()
                         total_time = self.afcDeltaTime.log_total_time("Total change time:")
