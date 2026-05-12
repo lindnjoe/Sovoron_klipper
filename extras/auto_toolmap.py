@@ -13,9 +13,11 @@
 #   shaper_calibrate: False
 
 import os
+import re
 import logging
 
 FOOTER_READ_SIZE = 131072  # 128 KB from end of file
+MAX_EXTRUDERS = 4
 
 class AutoToolmap:
     def __init__(self, config):
@@ -180,38 +182,52 @@ class AutoToolmap:
 
     def _apply_toolmap(self, cfg, parsed, gcmd):
         applied = []
+        used = [False] * MAX_EXTRUDERS
 
         fil_type = parsed.get('filament_type', '')
         if fil_type:
-            types = [t.strip() for t in fil_type.replace(';', ',').split(',')
-                     if t.strip()]
+            types = [t.strip() for t in fil_type.replace(';', ',').split(',')]
             for i, ft in enumerate(types):
-                if i < len(cfg.get('filament_type', [])):
+                if i >= MAX_EXTRUDERS:
+                    break
+                if ft and i < len(cfg.get('filament_type', [])):
                     cfg['filament_type'][i] = ft
+                    used[i] = True
             applied.append('filament_type')
 
         fil_used = parsed.get('filament_used', '')
         if fil_used:
-            values = [v.strip() for v in fil_used.replace(';', ',').split(',')
-                      if v.strip()]
-            for i, fu in enumerate(values):
+            values = [v.strip() for v in fil_used.replace(';', ',').split(',')]
+            for i, fv in enumerate(values):
+                if i >= MAX_EXTRUDERS:
+                    break
                 try:
-                    fu_val = float(fu)
+                    fu_val = float(fv)
                 except ValueError:
                     continue
-                if i < len(cfg.get('filament_used_g', [])):
+                if fu_val > 0 and i < len(cfg.get('filament_used_g', [])):
                     cfg['filament_used_g'][i] = fu_val
+                    used[i] = True
             applied.append('filament_used')
 
         fil_color = parsed.get('filament_colour',
                                parsed.get('filament_color', ''))
         if fil_color:
-            colors = [c.strip() for c in fil_color.replace(';', ',').split(',')
-                      if c.strip()]
+            colors = [c.strip() for c in fil_color.replace(';', ',').split(',')]
             for i, fc in enumerate(colors):
-                if i < len(cfg.get('filament_color', [])):
+                if i >= MAX_EXTRUDERS:
+                    break
+                if fc and i < len(cfg.get('filament_color', [])):
                     cfg['filament_color'][i] = fc
             applied.append('filament_color')
+
+        extruders_used = cfg.get('extruders_used', None)
+        if extruders_used is not None:
+            for i in range(min(MAX_EXTRUDERS, len(extruders_used))):
+                extruders_used[i] = used[i]
+            applied.append('extruders_used(%s)' %
+                           ','.join('T%d' % i for i in range(MAX_EXTRUDERS)
+                                   if used[i]))
 
         if applied:
             gcmd.respond_info(
