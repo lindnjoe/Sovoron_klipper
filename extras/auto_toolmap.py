@@ -28,6 +28,9 @@ class AutoToolmap:
         self.flow_calibrate = config.getboolean('flow_calibrate', False)
         self.shaper_calibrate = config.getboolean('shaper_calibrate', False)
 
+        self.printer.register_event_handler('klippy:connect',
+                                             self._handle_connect)
+
         self.gcode.register_command(
             'PUSH_TOOLMAP_FROM_FILE',
             self.cmd_PUSH_TOOLMAP_FROM_FILE,
@@ -36,6 +39,22 @@ class AutoToolmap:
             'AUTO_TOOLMAP_SET',
             self.cmd_AUTO_TOOLMAP_SET,
             desc="Runtime toggle for auto_toolmap flags")
+
+    def _handle_connect(self):
+        ptc_obj = self.printer.lookup_object('print_task_config', None)
+        if ptc_obj is not None:
+            cfg = ptc_obj.print_task_config
+            cfg['auto_bed_leveling'] = self.auto_bed_leveling
+            cfg['flow_calibrate'] = self.flow_calibrate
+            cfg['shaper_calibrate'] = self.shaper_calibrate
+
+    def get_status(self, eventtime=None):
+        return {
+            'enable': self.enable,
+            'auto_bed_leveling': self.auto_bed_leveling,
+            'flow_calibrate': self.flow_calibrate,
+            'shaper_calibrate': self.shaper_calibrate,
+        }
 
     # ------------------------------------------------------------------
     #  GCode commands
