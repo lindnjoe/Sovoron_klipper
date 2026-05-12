@@ -614,7 +614,7 @@ class AFCLane:
         # verification (currently only ACE). Toolchanger units are also
         # allowed since they don't do filament loading themselves — the ACE
         # unit handles load/unload for the shared extruder.
-        _INTERNAL_ALLOWED_TYPES = ("ACE", "Toolchanger")
+        _INTERNAL_ALLOWED_TYPES = ("ACE", "Toolchanger", "U1")
         if (self.extruder_obj.tool_start == "internal"
             and self.unit_obj.type not in _INTERNAL_ALLOWED_TYPES):
             raise error(
