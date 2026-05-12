@@ -2247,7 +2247,6 @@ class afc:
                     different_extruder = (old_lane.extruder_obj.name
                                          != cur_lane.extruder_obj.name)
                     if old_standalone or different_extruder:
-                        old_lane.tool_loaded = False
                         old_lane.status = AFCLaneState.LOADED
                         self.spool.set_active_spool(None)
                     else:
