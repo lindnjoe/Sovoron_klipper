@@ -1325,6 +1325,15 @@ class afc:
                 self.error.fix(msg, self.lanes[lane_name])
                 return False
 
+        # Lane is already loaded on this extruder — just re-activate it
+        if cur_extruder_obj.lane_loaded == cur_lane.name:
+            cur_lane.status = AFCLaneState.TOOL_LOADED
+            cur_lane.set_tool_loaded()
+            self.save_vars()
+            self.logger.info("{} already loaded on {}, re-activating".format(
+                cur_lane.name, cur_extruder_obj.name))
+            return True
+
         if cur_lane.name != self.current:
             # Lookup extruder and hub objects associated with the lane.
             cur_hub = cur_lane.hub_obj
