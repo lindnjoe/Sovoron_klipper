@@ -16,6 +16,66 @@ if TYPE_CHECKING:
 
 POLL_INTERVAL = 2.0
 
+# Material density (g/cm^3) used when creating a Spoolman filament from
+# an RFID tag. Spoolman computes remaining length from weight using this
+# value, so hardcoding PLA here makes length tracking wrong for every
+# other material. Anything not listed falls back to PLA.
+MATERIAL_DENSITY = {
+    'pla':     1.24,
+    'plahf':   1.24,
+    'pla+':    1.24,
+    'plapro':  1.24,
+    'plasilk': 1.24,
+    'plamatte':1.24,
+    'placf':   1.30,
+    'plagf':   1.30,
+    'petg':    1.27,
+    'pet':     1.34,
+    'petgcf':  1.32,
+    'petgf':   1.32,
+    'tpu':     1.21,
+    'tpu95':   1.21,
+    'tpu85':   1.18,
+    'abs':     1.04,
+    'abscf':   1.13,
+    'absgf':   1.13,
+    'asa':     1.07,
+    'asacf':   1.14,
+    'pc':      1.20,
+    'pccf':    1.28,
+    'pa':      1.13,
+    'nylon':   1.13,
+    'pacf':    1.16,
+    'pagf':    1.20,
+    'pa6':     1.14,
+    'pa6cf':   1.20,
+    'pa12':    1.01,
+    'peek':    1.30,
+    'pps':     1.34,
+    'ppscf':   1.42,
+    'hips':    1.04,
+    'pva':     1.23,
+    'bvoh':    1.10,
+}
+
+
+def _density_for_material(material: str) -> float:
+    """Return Spoolman density (g/cm^3) for a material string.
+    Strips spaces, dashes, underscores so 'PLA-CF', 'pla cf', 'pla_cf'
+    all match 'placf'. Falls back to PLA (1.24) for unknown materials."""
+    if not material:
+        return 1.24
+    key = material.strip().lower()
+    for ch in (' ', '-', '_', '/'):
+        key = key.replace(ch, '')
+    if key in MATERIAL_DENSITY:
+        return MATERIAL_DENSITY[key]
+    # Longest-prefix match so 'placfblack' -> 'placf', 'absgf25' -> 'absgf'.
+    for k in sorted(MATERIAL_DENSITY, key=len, reverse=True):
+        if key.startswith(k):
+            return MATERIAL_DENSITY[k]
+    return 1.24
+
 
 class AFC_U1_RFID:
     """Polls the Snapmaker U1 filament_detect Klipper object for RFID tag data
@@ -137,9 +197,19 @@ class AFC_U1_RFID:
         self.afc.save_vars()
 
     def _clear_lane(self, lane, lane_name: str):
-        """Clear RFID data from a lane when tag is removed."""
+        """Clear RFID data from a lane when tag is removed.
+
+        Also clears spool_id so the next tag inserted into this lane
+        triggers a fresh Spoolman match in _sync_to_spoolman (which
+        early-returns if spool_id is already set)."""
         lane.material = ""
         lane.color = ""
+        if getattr(lane, "spool_id", None) not in (None, "", 0):
+            try:
+                self.afc.spool.set_spoolID(lane, "")
+            except Exception as e:
+                self.logger.warning(
+                    f"U1 RFID: failed to clear spool_id on {lane_name}: {e}")
         lane.send_lane_data()
         self.afc.save_vars()
 
@@ -340,7 +410,7 @@ class AFC_U1_RFID:
                     name=filament_name,
                     vendor_id=vendor_id,
                     material=material or None,
-                    density=1.24,
+                    density=_density_for_material(material),
                     diameter=diameter,
                     color_hex=color_hex,
                     settings_extruder_temp=ext_temp,
