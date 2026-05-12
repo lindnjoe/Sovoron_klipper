@@ -930,16 +930,35 @@ class afc:
         """
         return self.resume_z_speed if self.resume_z_speed > 0 else self.speed
 
-    def _set_action_code(self, action):
-        """Set U1 touchscreen action code when machine_state_manager is present
-        and printer is in PRINTING state. No-op on non-U1 printers."""
+    _U1_DISPLAY_MAP = {
+        'loading':   ('PRINT_AUTO_FEEDING',   'AUTO_LOAD',   'AUTO_LOADING'),
+        'unloading': ('PRINT_AUTO_UNLOADING', 'AUTO_UNLOAD', 'AUTO_UNLOADING'),
+    }
+
+    def _set_u1_display(self, phase):
+        """Update U1 touchscreen during AFC operations. No-op on non-U1 printers.
+
+        :param phase: 'loading', 'unloading', or 'done'
+        """
         if self._msm is None:
             return
         try:
-            status = self._msm.get_status(None)
-            if status.get('main_state', '') == 'PRINTING':
-                self.gcode.run_script_from_command(
-                    'SET_ACTION_CODE ACTION={}'.format(action))
+            state = self._msm.get_status(None).get('main_state', '')
+            if phase == 'done':
+                if state == 'PRINTING':
+                    self.gcode.run_script_from_command('SET_ACTION_CODE ACTION=IDLE')
+                elif state in ('AUTO_LOAD', 'AUTO_UNLOAD'):
+                    self.gcode.run_script_from_command(
+                        'EXIT_TO_IDLE REQ_FROM_STATE={}'.format(state))
+            elif phase in self._U1_DISPLAY_MAP:
+                print_action, idle_state, idle_action = self._U1_DISPLAY_MAP[phase]
+                if state == 'PRINTING':
+                    self.gcode.run_script_from_command(
+                        'SET_ACTION_CODE ACTION={}'.format(print_action))
+                elif state == 'IDLE':
+                    self.gcode.run_script_from_command(
+                        'SET_MAIN_STATE MAIN_STATE={} ACTION={}'.format(
+                            idle_state, idle_action))
         except Exception:
             pass
 
@@ -1341,7 +1360,7 @@ class afc:
             if cur_lane.load_state and (not cur_hub.state or cur_lane.is_direct_hub()):
 
                 self.logger.info("Loading {}".format(cur_lane.name))
-                self._set_action_code('PRINT_AUTO_FEEDING')
+                self._set_u1_display('loading')
 
                 cur_extruder = cur_lane.extruder_obj
 
@@ -1813,7 +1832,7 @@ class afc:
             return False
 
         self.logger.info("Unloading {}".format(cur_lane.name))
-        self._set_action_code('PRINT_AUTO_UNLOADING')
+        self._set_u1_display('unloading')
 
         # Lookup current extruder object using the lane's information.
         cur_extruder = cur_lane.extruder_obj
@@ -2404,7 +2423,7 @@ class afc:
                 pause=self.function.in_print()
             )
         finally:
-            self._set_action_code('IDLE')
+            self._set_u1_display('done')
             self.next_lane_load = None
             self.function.log_toolhead_pos("Final Change Tool: Error State: {}, Is Paused {}, Position_saved {}, in toolchange: {}, POS: ".format(
                     self.error_state, self.function.is_paused(), self.position_saved, self.in_toolchange ))
