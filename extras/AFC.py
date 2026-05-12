@@ -2316,8 +2316,14 @@ class afc:
         self.CHANGE_TOOL(self.lanes[self.tool_cmds[Tcmd]], purge_length, new_extruder_temp=new_extruder_temp)
 
     def CHANGE_TOOL(self, cur_lane: AFCLane, purge_length: Optional[float]=None, restore_pos: bool=True, new_extruder_temp: Optional[float]=None) -> None:
+        eo_state = self._exclude_object_bypass()
+        try:
+            self._change_tool_inner(cur_lane, purge_length, restore_pos, new_extruder_temp)
+        finally:
+            self._exclude_object_restore(eo_state)
+
+    def _change_tool_inner(self, cur_lane: AFCLane, purge_length: Optional[float]=None, restore_pos: bool=True, new_extruder_temp: Optional[float]=None) -> None:
         self.afcDeltaTime.set_start_time()
-        # Check if the bypass filament sensor detects filament; if so, abort the tool change.
         if self._check_bypass(unload=False): return
 
         self.next_lane_load = cur_lane.name
