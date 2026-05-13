@@ -51,12 +51,38 @@ class AutoToolmap:
             cfg['shaper_calibrate'] = self.shaper_calibrate
 
     def get_status(self, eventtime=None):
-        return {
+        status = {
             'enable': self.enable,
             'auto_bed_leveling': self.auto_bed_leveling,
             'flow_calibrate': self.flow_calibrate,
             'shaper_calibrate': self.shaper_calibrate,
         }
+        ptc_obj = self.printer.lookup_object('print_task_config', None)
+        if ptc_obj is not None:
+            eu = ptc_obj.print_task_config.get('extruders_used', None)
+            if eu is not None:
+                status['extruders_used'] = list(eu)
+        return status
+
+    def _detect_print_file(self):
+        """Auto-detect current print file from virtual_sdcard + print_stats."""
+        try:
+            vsd = self.printer.lookup_object('virtual_sdcard', None)
+            if vsd is None:
+                return ''
+            sdcard_dir = getattr(vsd, 'sdcard_dirname', '')
+            if not sdcard_dir:
+                return ''
+            print_stats = self.printer.lookup_object('print_stats', None)
+            if print_stats is None:
+                return ''
+            eventtime = self.printer.lookup_object('reactor').monotonic()
+            filename = print_stats.get_status(eventtime).get('filename', '')
+            if not filename:
+                return ''
+            return os.path.join(sdcard_dir, filename)
+        except Exception:
+            return ''
 
     # ------------------------------------------------------------------
     #  GCode commands
@@ -82,10 +108,10 @@ class AutoToolmap:
 
     def cmd_PUSH_TOOLMAP_FROM_FILE(self, gcmd):
         filepath = gcmd.get('FILE', '')
-        if not filepath or not os.path.isfile(filepath):
-            gcmd.respond_info(
-                "PUSH_TOOLMAP_FROM_FILE: file not found: %s" % filepath)
-            return
+
+        # Auto-detect print file from virtual_sdcard + print_stats
+        if not filepath:
+            filepath = self._detect_print_file()
 
         ptc_obj = self.printer.lookup_object('print_task_config', None)
         if ptc_obj is None:
@@ -94,10 +120,15 @@ class AutoToolmap:
             return
         cfg = ptc_obj.print_task_config
 
-        # --- calibration flags (always pushed, even when toolmap disabled) ---
+        # --- calibration flags (always pushed, even when file not found) ---
         cfg['auto_bed_leveling'] = self.auto_bed_leveling
         cfg['flow_calibrate'] = self.flow_calibrate
         cfg['shaper_calibrate'] = self.shaper_calibrate
+
+        if not filepath or not os.path.isfile(filepath):
+            gcmd.respond_info(
+                "PUSH_TOOLMAP_FROM_FILE: file not found: %s" % filepath)
+            return
 
         if not self.enable:
             gcmd.respond_info(
