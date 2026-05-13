@@ -2207,66 +2207,56 @@ class afc:
         self.CHANGE_TOOL(self.lanes[self.tool_cmds[Tcmd]], purge_length)
 
     def CHANGE_TOOL(self, cur_lane: AFCLane, purge_length=None, restore_pos=True):
-        self.afcDeltaTime.set_start_time()
-        # Check if the bypass filament sensor detects filament; if so, abort the tool change.
-        if self._check_bypass(unload=False): return
+        try:
+            self.afcDeltaTime.set_start_time()
+            # Check if the bypass filament sensor detects filament; if so, abort the tool change.
+            if self._check_bypass(unload=False): return
 
-        self.next_lane_load = cur_lane.name
+            self.next_lane_load = cur_lane.name
 
-        # If the requested lane is not the current lane, proceed with the tool change.
-        if cur_lane.name != self.current:
-            # Save the current toolhead position to allow restoration after the tool change.
-            self.save_pos()
-            # Set the in_toolchange flag to prevent overwriting the saved position during potential failures.
-            self.in_toolchange = True
+            # If the requested lane is not the current lane, proceed with the tool change.
+            if cur_lane.name != self.current:
+                # Save the current toolhead position to allow restoration after the tool change.
+                self.save_pos()
+                # Set the in_toolchange flag to prevent overwriting the saved position during potential failures.
+                self.in_toolchange = True
 
-            # Check if the lane has completed the preparation process required for tool changes.
-            if cur_lane._afc_prep_done:
-                # Log the tool change operation for debugging or informational purposes.
-                self.logger.info("Tool Change - {} -> {}".format(self.current, cur_lane.name))
-                if not self.error_state and self.number_of_toolchanges != 0 and self.current_toolchange != self.number_of_toolchanges:
-                    self.current_toolchange += 1
-                    self.logger.raw("//      Change {} out of {}".format(self.current_toolchange, self.number_of_toolchanges))
+                # Check if the lane has completed the preparation process required for tool changes.
+                if cur_lane._afc_prep_done:
+                    # Log the tool change operation for debugging or informational purposes.
+                    self.logger.info("Tool Change - {} -> {}".format(self.current, cur_lane.name))
+                    if not self.error_state and self.number_of_toolchanges != 0 and self.current_toolchange != self.number_of_toolchanges:
+                        self.current_toolchange += 1
+                        self.logger.raw("//      Change {} out of {}".format(self.current_toolchange, self.number_of_toolchanges))
 
-                new_standalone = (cur_lane.extruder_obj.is_standalone()
-                                  and cur_lane.extruder_obj.tc_unit_name)
+                    new_standalone = (cur_lane.extruder_obj.is_standalone()
+                                      and cur_lane.extruder_obj.tc_unit_name)
 
-                # Unload current lane if one is loaded
-                if self.current is not None:
-                    c_lane = self.current
-                    if c_lane not in self.lanes:
-                        self.error.AFC_error('{} Unknown'.format(c_lane))
-                        return
-                    old_lane = self.lanes[c_lane]
-                    old_standalone = (old_lane.extruder_obj.is_standalone()
-                                     and old_lane.extruder_obj.tc_unit_name)
-                    different_extruder = (old_lane.extruder_obj.name
-                                         != cur_lane.extruder_obj.name)
-                    if old_standalone or different_extruder:
-                        old_lane.status = AFCLaneState.LOADED
-                        self.spool.set_active_spool(None)
-                    else:
-                        if not self.TOOL_UNLOAD(old_lane):
-                            msg = (' UNLOAD error NOT CLEARED')
-                            self.error.fix(msg, old_lane)
+                    # Unload current lane if one is loaded
+                    if self.current is not None:
+                        c_lane = self.current
+                        if c_lane not in self.lanes:
+                            self.error.AFC_error('{} Unknown'.format(c_lane))
                             return
+                        old_lane = self.lanes[c_lane]
+                        old_standalone = (old_lane.extruder_obj.is_standalone()
+                                         and old_lane.extruder_obj.tc_unit_name)
+                        different_extruder = (old_lane.extruder_obj.name
+                                             != cur_lane.extruder_obj.name)
+                        if old_standalone or different_extruder:
+                            old_lane.status = AFCLaneState.LOADED
+                            self.spool.set_active_spool(None)
+                        else:
+                            if not self.TOOL_UNLOAD(old_lane):
+                                msg = (' UNLOAD error NOT CLEARED')
+                                self.error.fix(msg, old_lane)
+                                return
 
-                # Load new lane
-                if new_standalone:
-                    # Standalone extruder: just swap toolhead, filament stays
-                    cur_lane.tool_swap()
-                    cur_lane.set_tool_loaded()
-                    self.current = cur_lane.name
-                    self.save_vars()
-                    if restore_pos:
-                        self.restore_pos()
-                    total_time = self.afcDeltaTime.log_total_time("Total change time:")
-                    self.afc_stats.average_toolchange_time.average_time(total_time)
-                    self.in_toolchange = False
-                    self.next_lane_load = None
-                    cur_lane.extruder_obj.estats.increase_toolcount_change()
-                else:
-                    if self.TOOL_LOAD(cur_lane, purge_length) and not self.error_state:
+                    # Load new lane
+                    if new_standalone:
+                        # Standalone extruder: just swap toolhead, filament stays
+                        cur_lane.tool_swap()
+                        cur_lane.set_tool_loaded()
                         self.current = cur_lane.name
                         self.save_vars()
                         if restore_pos:
@@ -2274,19 +2264,30 @@ class afc:
                         total_time = self.afcDeltaTime.log_total_time("Total change time:")
                         self.afc_stats.average_toolchange_time.average_time(total_time)
                         self.in_toolchange = False
-                        self.next_lane_load = None
                         cur_lane.extruder_obj.estats.increase_toolcount_change()
                     else:
-                        if not self.testing:
-                            self.afc_stats.reset_toolchange_wo_error()
-        else:
-            self.logger.info("{} already loaded".format(cur_lane.name))
-            if not self.error_state and self.current_toolchange == -1:
-                self.current_toolchange += 1
+                        if self.TOOL_LOAD(cur_lane, purge_length) and not self.error_state:
+                            self.current = cur_lane.name
+                            self.save_vars()
+                            if restore_pos:
+                                self.restore_pos()
+                            total_time = self.afcDeltaTime.log_total_time("Total change time:")
+                            self.afc_stats.average_toolchange_time.average_time(total_time)
+                            self.in_toolchange = False
+                            cur_lane.extruder_obj.estats.increase_toolcount_change()
+                        else:
+                            if not self.testing:
+                                self.afc_stats.reset_toolchange_wo_error()
+            else:
+                self.logger.info("{} already loaded".format(cur_lane.name))
+                if not self.error_state and self.current_toolchange == -1:
+                    self.current_toolchange += 1
 
-        self._set_u1_display('done')
-        self.function.log_toolhead_pos("Final Change Tool: Error State: {}, Is Paused {}, Position_saved {}, in toolchange: {}, POS: ".format(
-                self.error_state, self.function.is_paused(), self.position_saved, self.in_toolchange ))
+            self._set_u1_display('done')
+        finally:
+            self.next_lane_load = None
+            self.function.log_toolhead_pos("Final Change Tool: Error State: {}, Is Paused {}, Position_saved {}, in toolchange: {}, POS: ".format(
+                    self.error_state, self.function.is_paused(), self.position_saved, self.in_toolchange ))
 
     def _get_message(self, clear=False):
         """

@@ -447,10 +447,10 @@ class AFCLane:
             raise error("Unit {unit} is not defined in your configuration file. Please defined unit ex. [AFC_BoxTurtle {unit}]".format(unit=self.unit))
 
         if self.led_index is not None:
-            # Verify that LED config is found
-            error_string, led = self.afc.function.verify_led_object(self.led_index)
-            if led is None:
-                raise error(error_string)
+            for led_name, index_str in self.afc.function.parse_led_groups(self.led_index):
+                error_string, led = self.afc.function.verify_led_object(led_name)
+                if led is None:
+                    raise error(error_string)
         self.espooler.handle_ready()
 
         # Setting debounce delay after ready so that callback does not get triggered when initially loading
@@ -1121,7 +1121,7 @@ class AFCLane:
 
     @property
     def load_state(self) -> bool:
-        if self.unit_obj.type in ("ViViD",) and self._hub_is_virtual:
+        if self._hub_is_virtual:
             return self.loaded_to_hub
         else:
             return bool(self._load_state)
