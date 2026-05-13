@@ -122,7 +122,6 @@ class AFCLane:
         # when lanes are unloaded
         self.tool_loaded        = False
         self.loaded_to_hub      = False
-
         self.spool_id           = None
         self.color              = None
         self.weight             = 0
@@ -711,7 +710,7 @@ class AFCLane:
             unit_cfg = next(
                 config.getsection(s) for s in config.fileconfig.sections()
                 if self.unit in s
-                and "AFC" in s
+                and s.startswith("AFC_")
                 and not any(x in s for x in INVALID_UNIT_NAMES))
             self.unit_obj: afcUnit = self.printer.load_object(config, unit_cfg.get_name())
 
@@ -895,6 +894,8 @@ class AFCLane:
             if use_homing:
                 if self.drive_stepper:
                     home_to = self.drive_stepper.home_to
+                    # Capturing driver stepper assist_move method and replacing with lanes
+                    # assist move so spooler motors are driven when using drive/stepper based units
                     drive_stepper_assist= self.drive_stepper.assist_move
                     self.drive_stepper.assist_move = self.assist_move
                 else:
@@ -911,6 +912,7 @@ class AFCLane:
                                                                                assist_active)
                     )
                 finally:
+                    # Restoring drive stepper assist move method
                     if drive_stepper_assist:
                         self.drive_stepper.assist_move = drive_stepper_assist
                 if error:
@@ -1473,8 +1475,8 @@ class AFCLane:
         :return int: Next time to call timer callback. Current time + UPDATE_WEIGHT_DELAY
         """
         extruder_pos = self.afc.function.get_extruder_pos(
-            eventtime, self.past_extruder_position,
-            extruder=getattr(self.extruder_obj, 'toolhead_extruder', None))
+            eventtime, self.past_extruder_position, self.extruder_obj.toolhead_extruder
+        )
         delta_length = extruder_pos - self.past_extruder_position
 
         if -1 == self.past_extruder_position:
