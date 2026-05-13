@@ -17,7 +17,8 @@ import re
 import logging
 
 FOOTER_READ_SIZE = 131072  # 128 KB from end of file
-MAX_EXTRUDERS = 4
+MAX_FILAMENTS = 16  # max slicer filament slots to parse
+NUM_EXTRUDERS = 4   # physical extruders on the U1
 
 class AutoToolmap:
     def __init__(self, config):
@@ -78,6 +79,28 @@ class AutoToolmap:
             return ''
         except Exception:
             return ''
+
+    def _get_tool_to_extruder_map(self):
+        """Map slicer T-index to physical extruder index via AFC lane data.
+        Returns dict like {0: 0, 1: 1, 2: 2, 3: 3, 4: 0, 5: 0, 6: 0}."""
+        mapping = {}
+        try:
+            afc = self.printer.lookup_object('AFC', None)
+            if afc is None:
+                return mapping
+            for t_name, lane_name in afc.tool_cmds.items():
+                try:
+                    t_idx = int(t_name[1:])
+                except (ValueError, IndexError):
+                    continue
+                lane = afc.lanes.get(lane_name)
+                if lane and lane.extruder_obj:
+                    ext_name = lane.extruder_obj.name
+                    suffix = ext_name.replace('extruder', '')
+                    mapping[t_idx] = int(suffix) if suffix else 0
+        except Exception:
+            pass
+        return mapping
 
     # ------------------------------------------------------------------
     #  GCode commands
@@ -225,18 +248,21 @@ class AutoToolmap:
     def _apply_toolmap(self, cfg, parsed, gcmd):
         applied = []
         details = []
-        used = [False] * MAX_EXTRUDERS
+        t_to_ext = self._get_tool_to_extruder_map()
+        filament_used_by_t = {}
         have_usage_data = False
 
         fil_type = parsed.get('filament_type', '')
         if fil_type:
             types = [t.strip() for t in fil_type.replace(';', ',').split(',')]
             type_detail = []
+            cfg_types = cfg.get('filament_type', [])
             for i, ft in enumerate(types):
-                if i >= MAX_EXTRUDERS:
+                if i >= MAX_FILAMENTS:
                     break
-                if ft and i < len(cfg.get('filament_type', [])):
-                    cfg['filament_type'][i] = ft
+                if ft and i < len(cfg_types):
+                    cfg_types[i] = ft
+                if ft:
                     type_detail.append('T%d=%s' % (i, ft))
             applied.append('filament_type')
             if type_detail:
@@ -247,42 +273,37 @@ class AutoToolmap:
         if fil_used:
             values = [v.strip() for v in fil_used.replace(';', ',').split(',')]
             used_detail = []
+            cfg_used = cfg.get('filament_used_g', [])
             for i, fv in enumerate(values):
-                if i >= MAX_EXTRUDERS:
+                if i >= MAX_FILAMENTS:
                     break
                 try:
                     fu_val = float(fv)
                 except ValueError:
                     continue
                 have_usage_data = True
+                filament_used_by_t[i] = fu_val
                 if fu_val > 0:
-                    used[i] = True
-                    if i < len(cfg.get('filament_used_g', [])):
-                        cfg['filament_used_g'][i] = fu_val
+                    if i < len(cfg_used):
+                        cfg_used[i] = fu_val
                     used_detail.append('T%d=%.1f' % (i, fu_val))
                 else:
                     used_detail.append('T%d=0' % i)
             applied.append('filament_used')
             details.append('filament_used: %s' % ', '.join(used_detail))
 
-        if not have_usage_data and fil_type:
-            for i, ft in enumerate(types):
-                if i >= MAX_EXTRUDERS:
-                    break
-                if ft:
-                    used[i] = True
-            details.append('(no filament_used data, marking all typed extruders as used)')
-
         fil_color = parsed.get('filament_colour',
                                parsed.get('filament_color', ''))
         if fil_color:
             colors = [c.strip() for c in fil_color.replace(';', ',').split(',')]
             color_detail = []
+            cfg_colors = cfg.get('filament_color', [])
             for i, fc in enumerate(colors):
-                if i >= MAX_EXTRUDERS:
+                if i >= MAX_FILAMENTS:
                     break
-                if fc and i < len(cfg.get('filament_color', [])):
-                    cfg['filament_color'][i] = fc
+                if fc and i < len(cfg_colors):
+                    cfg_colors[i] = fc
+                if fc:
                     color_detail.append('T%d=%s' % (i, fc))
             applied.append('filament_color')
             if color_detail:
@@ -290,11 +311,40 @@ class AutoToolmap:
 
         extruders_used = cfg.get('extruders_used', None)
         if extruders_used is not None:
-            for i in range(min(MAX_EXTRUDERS, len(extruders_used))):
-                extruders_used[i] = used[i]
-            used_names = ','.join('T%d' % i for i in range(MAX_EXTRUDERS)
-                                  if used[i])
-            applied.append('extruders_used(%s)' % used_names)
+            ext_used = [False] * NUM_EXTRUDERS
+
+            if have_usage_data:
+                for t_idx, amount in filament_used_by_t.items():
+                    if amount > 0:
+                        ext_idx = t_to_ext.get(t_idx, t_idx)
+                        if 0 <= ext_idx < NUM_EXTRUDERS:
+                            ext_used[ext_idx] = True
+            elif fil_type:
+                for i, ft in enumerate(types):
+                    if i >= MAX_FILAMENTS:
+                        break
+                    if ft:
+                        ext_idx = t_to_ext.get(i, i)
+                        if 0 <= ext_idx < NUM_EXTRUDERS:
+                            ext_used[ext_idx] = True
+                details.append(
+                    '(no filament_used data, marking all typed extruders as used)')
+
+            for i in range(min(NUM_EXTRUDERS, len(extruders_used))):
+                extruders_used[i] = ext_used[i]
+
+            used_names = ','.join('E%d' % i for i in range(NUM_EXTRUDERS)
+                                  if ext_used[i])
+            if t_to_ext:
+                t_names = ','.join(
+                    'T%d->E%d' % (t, e)
+                    for t, e in sorted(t_to_ext.items())
+                    if filament_used_by_t.get(t, 0) > 0)
+                applied.append('extruders_used(%s)' % used_names)
+                if t_names:
+                    details.append('tool mapping: %s' % t_names)
+            else:
+                applied.append('extruders_used(%s)' % used_names)
 
         if applied:
             gcmd.respond_info(
