@@ -2060,52 +2060,27 @@ class afcACE(afcUnit):
 
         afc._toolhead_cut_and_tip(cur_lane, cur_extruder)
 
-        # ACE lanes have no lane stepper, so all retract moves use move_e_pos
-        # (extruder motor).  Unload sequence:
-        #   1. Half of tool_stn_unload extruder retract — gets filament
-        #      partially out of the hotend.
-        #   2. Start ACE unwind (non-blocking) to pull filament back to spool.
-        #   3. Remaining half of tool_stn_unload + 10mm extruder retract
-        #      concurrent with ACE unwind — keeps both motors pulling
-        #      together for the second half, maintaining tension.
-        local_slot = self._get_local_slot_for_lane(cur_lane)
+        # form_tip_cmd (e.g. SNAPMAKER_MOVE_THEN_UNLOAD) has already retracted
+        # filament out of the toolhead.  Unsync and let ACE unwind pull it back
+        # through the bowden.
+        cur_lane.unsync_to_extruder()
 
-        # Calculate ACE unwind distance (from extruder back through hub).
-        # Path: ACE → hub (dist_hub) → bowden → extruder (retract_length total)
-        # Unwind = bowden + hub_clear to pull filament back through the hub combiner.
-        # For real hub pins, the hub clearing loop handles the last part.
-        # For virtual hubs, add hub_clear_move_dis to ensure filament clears the combiner.
+        local_slot = self._get_local_slot_for_lane(cur_lane)
         full_retract = self._get_retract_length(cur_lane)
         dist_hub = self._get_dist_hub(cur_lane)
         has_real_hub_pin = self._hub_has_real_pin(cur_hub)
         if dist_hub > 0 and dist_hub < full_retract:
-            retract_length = full_retract - dist_hub  # bowden length (hub to extruder)
+            retract_length = full_retract - dist_hub
             if not has_real_hub_pin:
-                retract_length += cur_hub.hub_clear_move_dis  # pull past hub combiner
+                retract_length += cur_hub.hub_clear_move_dis
         else:
             retract_length = full_retract
 
-        half_stn = cur_extruder.tool_stn_unload / 2.0
-
-        # Step 1: First half of extruder retract — pulls filament partially
-        # out of the hotend before starting the ACE unwind.
-        self.logger.info(
-            f"ACE unload: extruder retract {half_stn:.0f}mm "
-            f"@ {cur_extruder.tool_unload_speed}mm/s (first half)"
-        )
-        afc.move_e_pos(
-            -half_stn,
-            cur_extruder.tool_unload_speed,
-            "ACE nozzle retract 1/2", wait_tool=True
-        )
-
-        # Step 2: Start ACE unwind (non-blocking) to pull filament back
-        # through the hub toward the spool.
-        self.logger.info(
-            f"ACE unload: starting ACE unwind slot {local_slot} "
-            f"{retract_length:.0f}mm (to hub) for lane {cur_lane.name}"
-        )
         unload_spd = self._quiet_speed(self.retract_speed)
+        self.logger.info(
+            f"ACE unload: unwinding slot {local_slot} "
+            f"{retract_length:.0f}mm for lane {cur_lane.name}"
+        )
         try:
             self._wait_for_ace_ready()
             self._ace.unwind_filament(
@@ -2116,36 +2091,6 @@ class afcACE(afcUnit):
             self.logger.error(f"{message}\n{traceback.format_exc()}")
             afc.error.handle_lane_failure(cur_lane, message)
             return False
-
-        # Brief pause to let the ACE motor start pulling before the extruder
-        # continues retracting — prevents the extruder from shoving filament
-        # backward against a stationary ACE spool.
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.0)
-
-        # Step 3: Remaining half of tool_stn_unload + 10mm extruder retract
-        # concurrent with ACE unwind — both motors pulling together keeps
-        # filament under tension during the handoff.
-        remaining_retract = half_stn + 10
-        self.logger.info(
-            f"ACE unload: extruder retract {remaining_retract:.0f}mm "
-            f"@ {cur_extruder.tool_unload_speed}mm/s "
-            f"(second half + 10mm, concurrent with ACE unwind)"
-        )
-        afc.move_e_pos(
-            -remaining_retract,
-            cur_extruder.tool_unload_speed,
-            "ACE nozzle retract 2/2 + overlap", wait_tool=True
-        )
-
-        # Move past the sensor-after-extruder if configured
-        if cur_extruder.tool_sensor_after_extruder > 0:
-            afc.move_e_pos(
-                cur_extruder.tool_sensor_after_extruder * -1,
-                cur_extruder.tool_unload_speed, "After extruder"
-            )
-
-        # Unsync from extruder now that filament is clear of the gears
-        cur_lane.unsync_to_extruder()
 
         try:
             self.logger.info(
