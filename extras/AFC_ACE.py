@@ -1671,7 +1671,7 @@ class afcACE(afcUnit):
             if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
                 buffer_obj.enable_advance_latch()
 
-            _, _, early_engage = self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
+            self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
 
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = local_slot
@@ -1797,204 +1797,8 @@ class afcACE(afcUnit):
                     afc.error.handle_lane_failure(cur_lane, message)
                     return False
 
-        # ── Early extruder engagement (FPS buffer + home_to_tool) ────
-        # When the FPS latched during the home_to_tool feed, sync the
-        # extruder and start feed_assist immediately, then advance
-        # tool_stn.  Skips the normal feed_assist_count verification.
-        if early_engage:
-            self.logger.info(
-                "ACE load: FPS early engage — starting extruder immediately"
-            )
-            cur_lane.sync_to_extruder()
-
-            # Start feed assist right away so ACE pushes while extruder
-            # pulls — this keeps tension during engagement.
-            if local_slot >= 0 and self._get_feed_assist(local_slot, cur_lane):
-                try:
-                    self._wait_for_ace_ready()
-                    self._ace.start_feed_assist(local_slot)
-                    self._feed_assist_active.add(local_slot)
-                    self.logger.info(
-                        f"ACE load: early engage — feed assist started "
-                        f"for slot {local_slot}"
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"ACE load: early engage — start_feed_assist failed: {e}"
-                    )
-
-            # If tool_end sensor exists, feed until it triggers
-            if cur_extruder.tool_end:
-                tool_attempts = 0
-                while not cur_extruder.tool_end_state:
-                    tool_attempts += 1
-                    afc.move_e_pos(
-                        cur_lane.short_move_dis, cur_extruder.tool_load_speed,
-                        "Tool end", wait_tool=True
-                    )
-                    if tool_attempts > 20:
-                        message = (
-                            "ACE load: filament failed to trigger post-extruder sensor.\n"
-                            "To resolve, set lane loaded with "
-                            f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                        )
-                        afc.error.handle_lane_failure(cur_lane, message)
-                        return False
-
-            # Advance into nozzle — extruder pulls, feed assist pushes
-            if cur_extruder.tool_stn:
-                self.logger.info(
-                    f"ACE load: early engage — advancing {cur_extruder.tool_stn}mm "
-                    f"into nozzle @ {cur_extruder.tool_load_speed}mm/s"
-                )
-                afc.move_e_pos(
-                    cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn"
-                )
-
-            return True
-
-        # ── Normal engagement path ───────────────────────────────────
-        # Sync to extruder and load filament into the nozzle using tool_stn
-        cur_lane.sync_to_extruder()
-
-        # Snapshot feed_assist_count now that the extruder is synced and
-        # about to pull filament.  The assist motor should engage once the
-        # extruder gears start pulling, so we compare after tool_stn.
-        pre_assist_count = None
-        try:
-            self._wait_for_ace_ready()
-            pre_status = self._ace.get_status()
-            pre_assist_count = pre_status.get("feed_assist_count")
-        except Exception:
-            pass
-
-        # If tool_end sensor exists, feed until it triggers
-        if cur_extruder.tool_end:
-            tool_attempts = 0
-            while not cur_extruder.tool_end_state:
-                tool_attempts += 1
-                afc.move_e_pos(
-                    cur_lane.short_move_dis, cur_extruder.tool_load_speed,
-                    "Tool end", wait_tool=True
-                )
-                if tool_attempts > 20:
-                    message = (
-                        "ACE load: filament failed to trigger post-extruder sensor.\n"
-                        "To resolve, set lane loaded with "
-                        f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                    )
-                    afc.error.handle_lane_failure(cur_lane, message)
-                    return False
-
-        # Push filament into the nozzle using tool_stn distance
-        if cur_extruder.tool_stn:
-            self.logger.info(
-                f"ACE load: advancing {cur_extruder.tool_stn}mm into nozzle "
-                f"@ {cur_extruder.tool_load_speed}mm/s"
-            )
-            afc.move_e_pos(
-                cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn"
-            )
-
-        # Verify feed assist count increased — confirms the ACE assist
-        # motor pushed filament during the load, meaning the extruder
-        # gears actually engaged and pulled filament.
-        # If the count did not increase, retract 20mm via ACE and retry
-        # once to re-seat the filament against the extruder gears.
-        engagement_verified = False
-        if pre_assist_count is not None:
-            try:
-                self._wait_for_ace_ready()
-                post_status = self._ace.get_status()
-                post_assist_count = post_status.get("feed_assist_count")
-                if post_assist_count is not None:
-                    delta = post_assist_count - pre_assist_count
-                    if delta > 0:
-                        engagement_verified = True
-                        self.logger.info(
-                            f"ACE load: feed assist engaged {delta} time(s) "
-                            f"during load (count {pre_assist_count} -> {post_assist_count})"
-                        )
-                    else:
-                        self.logger.warning(
-                            f"ACE load: feed_assist_count did not increase "
-                            f"during load ({pre_assist_count} -> {post_assist_count}). "
-                            f"Retracting tool_stn + 20mm and retrying to engage extruder gears."
-                        )
-                        retry_dist = 20.0
-                        retry_spd = self._quiet_speed(self.retract_speed)
-                        feed_spd = self._quiet_speed(self.feed_speed)
-                        # 1. Retract extruder by tool_stn to pull filament
-                        #    back out of the nozzle area
-                        if cur_extruder.tool_stn:
-                            self.logger.info(
-                                f"ACE load retry: retracting extruder "
-                                f"{cur_extruder.tool_stn}mm "
-                                f"@ {cur_extruder.tool_load_speed}mm/s"
-                            )
-                            afc.move_e_pos(
-                                -cur_extruder.tool_stn,
-                                cur_extruder.tool_load_speed,
-                                "tool stn retract",
-                            )
-                        # 2. ACE unwinds 20mm to pull filament back further
-                        self._wait_for_ace_ready()
-                        self._ace.unwind_filament(local_slot, retry_dist, retry_spd)
-                        self._wait_for_feed_complete(
-                            local_slot, retry_dist, retry_spd
-                        )
-                        # 3. ACE re-feeds 20mm to push filament back in
-                        self._wait_for_ace_ready()
-                        self._ace.feed_filament(local_slot, retry_dist, feed_spd)
-                        self._wait_for_feed_complete(
-                            local_slot, retry_dist, feed_spd
-                        )
-                        # 4. Re-advance extruder by tool_stn into nozzle
-                        if cur_extruder.tool_stn:
-                            self.logger.info(
-                                f"ACE load retry: advancing {cur_extruder.tool_stn}mm "
-                                f"into nozzle @ {cur_extruder.tool_load_speed}mm/s"
-                            )
-                            afc.move_e_pos(
-                                cur_extruder.tool_stn,
-                                cur_extruder.tool_load_speed,
-                                "tool stn retry",
-                            )
-                        # Re-check feed_assist_count after retry
-                        self._wait_for_ace_ready()
-                        retry_status = self._ace.get_status()
-                        retry_count = retry_status.get("feed_assist_count")
-                        if retry_count is not None:
-                            retry_delta = retry_count - post_assist_count
-                            if retry_delta > 0:
-                                engagement_verified = True
-                                self.logger.info(
-                                    f"ACE load retry: feed assist engaged {retry_delta} "
-                                    f"time(s) after retry — extruder gears engaged."
-                                )
-                            else:
-                                self.logger.warning(
-                                    f"ACE load: feed_assist_count still did not increase "
-                                    f"after retry ({post_assist_count} -> {retry_count}). "
-                                    f"Filament may not be engaged with extruder gears."
-                                )
-            except Exception as e:
-                self.logger.debug(f"ACE load: could not verify feed_assist_count: {e}")
-
-        # internal mode: feed_assist_count is the only engagement verification.
-        # Fail the load if we couldn't confirm the assist motor pushed.
-        if cur_extruder.tool_start == "internal" and not engagement_verified:
-            message = (
-                "ACE load (internal mode): feed_assist_count never increased "
-                "during load — filament did not engage extruder gears.\n"
-                f"To resolve, set lane loaded with `SET_LANE_LOADED LANE={cur_lane.name}` macro."
-            )
-            afc.error.handle_lane_failure(cur_lane, message)
-            return False
-
-        # Ensure feed assist is running while filament is loaded.
-        # _feed_slot starts it during phase 3, but if the sensor triggered
-        # early (during bulk feed) phase 3 may not have run.
+        # Ensure feed assist is running so ACE pushes while the extruder
+        # pulls during the toolhead engagement phase (handled by AFC core).
         local_slot = self._get_local_slot_for_lane(cur_lane)
         if local_slot >= 0 and self._get_feed_assist(local_slot, cur_lane):
             try:
@@ -2161,6 +1965,10 @@ class afcACE(afcUnit):
             # hub path, just nearby for convenience.
             self._set_hub_state(cur_lane, False)
             cur_lane.loaded_to_hub = True
+            # Suppress hub-load so the heartbeat callback does not treat
+            # this still-present slot as a new filament insertion and
+            # clear spool info.
+            self._hub_load_suppressed.add(cur_lane.name)
 
         except Exception as e:
             message = f"ACE unload failed for {cur_lane.name}: {e}"
