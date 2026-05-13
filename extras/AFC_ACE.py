@@ -1860,18 +1860,8 @@ class afcACE(afcUnit):
         # Disable buffer before unloading (safe no-op if no buffer)
         cur_lane.disable_buffer()
 
-        afc._toolhead_pre_unload_pull(cur_lane, cur_extruder)
-
         self.lane_unloading(cur_lane)
-        cur_lane.sync_to_extruder()
-        cur_lane.do_enable(True)
-        cur_lane.select_lane()
 
-        afc._toolhead_cut_and_tip(cur_lane, cur_extruder)
-
-        # form_tip_cmd (e.g. SNAPMAKER_MOVE_THEN_UNLOAD) has already retracted
-        # filament out of the toolhead.  Unsync and let ACE unwind pull it back
-        # through the bowden.
         cur_lane.unsync_to_extruder()
 
         local_slot = self._get_local_slot_for_lane(cur_lane)
