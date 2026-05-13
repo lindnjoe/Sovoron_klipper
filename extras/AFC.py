@@ -254,6 +254,9 @@ class afc:
         self.toolchange_temp_drop: float = config.getfloat(
             "toolchange_temp_drop", 0
         )  # Degrees to drop the old extruder's temperature (no wait) after a successful toolchange when the extruder changes.
+        self.temp_wait_tolerance: float = config.getfloat("temp_wait_tolerance", 2)  # Degrees +/- from target temp to consider extruder "at temperature"
+        self.force_assign_map       = config.getboolean("force_assign_map", False)
+        self.disable_homing_check   = config.getboolean("disable_homing_check", False)
         self.load_to_hub            = config.getboolean("load_to_hub", True)        # Fast loads filament to hub when inserted, set to False to disable. This is a global setting and can be overridden at AFC_stepper
         self.disable_homing_check   = config.getboolean("disable_homing_check", False)# Disables homing check when doing toolchanges. Only use this if you are using a toolchanger and don't need to home to unload toolheads
         self.assisted_unload        = config.getboolean("assisted_unload", True)    # If True, the unload retract is assisted to prevent loose windings, especially on full spools. This can prevent loops from slipping off the spool
@@ -652,7 +655,7 @@ class afc:
         if self.function.is_printing():
             if self.heater.can_extrude:
                 target_temp, _ = self._get_default_material_temps(cur_lane)
-                if self.heater.target_temp >= (target_temp - 5):
+                if self.heater.target_temp >= (target_temp - self.temp_wait_tolerance):
                     return
                 self.logger.info(
                     'Raising extruder to {} for {} (target was {:.0f}, likely ooze prevention)'.format(
@@ -2002,7 +2005,6 @@ class afc:
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
             self.gcode.run_script_from_command(cur_lane.custom_unload_cmd)
             cur_lane.set_tool_unloaded()
-            cur_lane.status = AFCLaneState.NONE
             self.save_vars()
         else:
             use_direct_dist = False
@@ -2538,6 +2540,8 @@ class afc:
 
         for buffer in self.buffers.values():
             str["system"]["buffers"][buffer.name] = buffer.get_status()
+
+        str["maps"] = list(self.tool_cmds.keys())
 
         web_request.send( {"status:" : {"AFC": str}})
 

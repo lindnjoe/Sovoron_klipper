@@ -52,6 +52,7 @@ class afcUnit:
         self.reactor        = self.printer.get_reactor()
         self.function       = self.afc.function
         self.logger         = self.afc.logger
+        self.type           = None
 
         self.lanes: Dict[str, AFCLane] = {}
         self._eject_to_calibrate = False
