@@ -64,47 +64,69 @@ class AutoToolmap:
                 status['extruders_used'] = list(eu)
         return status
 
-    def _detect_print_file(self):
+    def _detect_print_file(self, gcmd=None):
         """Auto-detect current print file from print_stats + virtual_sdcard."""
+        def _info(msg):
+            if gcmd:
+                gcmd.respond_info(msg)
+            self.logger.info(msg)
+
         try:
+            # 1. Check print_stats for filename
             filename = ''
             print_stats = self.printer.lookup_object('print_stats', None)
             if print_stats is not None:
                 eventtime = self.printer.lookup_object('reactor').monotonic()
-                filename = print_stats.get_status(eventtime).get('filename', '')
+                ps_status = print_stats.get_status(eventtime)
+                filename = ps_status.get('filename', '')
+                _info("auto_toolmap: print_stats state=%s filename='%s'"
+                      % (ps_status.get('state', '?'), filename))
 
-            if not filename:
-                self.logger.info("auto_toolmap: print_stats has no filename")
-                return ''
+            # 2. Check print_task_config for file-related keys
+            ptc_obj = self.printer.lookup_object('print_task_config', None)
+            ptc_keys = {}
+            if ptc_obj is not None:
+                cfg = ptc_obj.print_task_config
+                for key in cfg:
+                    val = cfg[key]
+                    if isinstance(val, str) and ('/' in val or val.endswith('.gcode')):
+                        ptc_keys[key] = val
+                if ptc_keys:
+                    _info("auto_toolmap: print_task_config file keys: %s"
+                          % ptc_keys)
 
-            # If filename is already a full path, use it directly
-            if os.path.isabs(filename) and os.path.isfile(filename):
-                return filename
-
-            # Try virtual_sdcard base directory
+            # 3. Check virtual_sdcard
             vsd = self.printer.lookup_object('virtual_sdcard', None)
+            sdcard_dir = ''
             if vsd is not None:
                 sdcard_dir = getattr(vsd, 'sdcard_dirname', '')
                 if sdcard_dir:
-                    full = os.path.join(sdcard_dir, filename)
+                    _info("auto_toolmap: virtual_sdcard dir='%s'" % sdcard_dir)
+
+            # --- resolve full path ---
+            # Try print_task_config paths first (most specific)
+            for key, val in ptc_keys.items():
+                if os.path.isabs(val) and os.path.isfile(val):
+                    return val
+
+            if not filename:
+                return ''
+
+            if os.path.isabs(filename) and os.path.isfile(filename):
+                return filename
+
+            if sdcard_dir:
+                full = os.path.join(sdcard_dir, filename)
+                if os.path.isfile(full):
+                    return full
+
+            # Try paths from print_task_config as base dirs
+            for key, val in ptc_keys.items():
+                if os.path.isabs(val):
+                    full = os.path.join(os.path.dirname(val), filename)
                     if os.path.isfile(full):
                         return full
 
-            # Try print_task_config for base path
-            ptc_obj = self.printer.lookup_object('print_task_config', None)
-            if ptc_obj is not None:
-                cfg = ptc_obj.print_task_config
-                for key in ('file_path', 'filepath', 'gcode_path'):
-                    base = cfg.get(key, '')
-                    if base and os.path.isabs(base):
-                        if os.path.isfile(base):
-                            return base
-                        full = os.path.join(os.path.dirname(base), filename)
-                        if os.path.isfile(full):
-                            return full
-
-            self.logger.info(
-                "auto_toolmap: could not resolve full path for '%s'" % filename)
             return ''
         except Exception as e:
             self.logger.warning("auto_toolmap: file detect error: %s" % e)
@@ -135,9 +157,9 @@ class AutoToolmap:
     def cmd_PUSH_TOOLMAP_FROM_FILE(self, gcmd):
         filepath = gcmd.get('FILE', '')
 
-        # Auto-detect print file from virtual_sdcard + print_stats
+        # Auto-detect print file from print_stats / print_task_config / virtual_sdcard
         if not filepath:
-            filepath = self._detect_print_file()
+            filepath = self._detect_print_file(gcmd=gcmd)
 
         ptc_obj = self.printer.lookup_object('print_task_config', None)
         if ptc_obj is None:
