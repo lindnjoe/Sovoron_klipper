@@ -1559,7 +1559,7 @@ class AFCLane:
         """
         self.tool_loaded = False
         self.extruder_obj.lane_loaded = None
-        self.status = AFCLaneState.NONE
+        self.status = AFCLaneState.LOADED
         self.afc.current_loading = None
         self.afc.spool.set_active_spool(None)
         self.unit_obj.lane_tool_unloaded(self)
