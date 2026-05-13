@@ -1538,16 +1538,6 @@ class afc:
             return True
 
         if cur_extruder.is_standalone() and cur_extruder.tc_unit_name:
-            if getattr(cur_extruder, 'park_detector_obj', None):
-                spool_temp = cur_lane.extruder_temp or 210
-                self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
-                self.gcode.run_script_from_command(f"INNER_FLUSH_FILAMENT TEMP={spool_temp}")
-                self.gcode.run_script_from_command("M400")
-                self.gcode.run_script_from_command("G1 Y-35")
-                self.afcDeltaTime.log_with_time("load_sequence: After INNER_FLUSH_FILAMENT")
-            cur_lane.status = AFCLaneState.TOOL_LOADED
-            cur_lane.set_tool_loaded()
-            self.save_vars()
             self.logger.info("Standalone load complete for {}".format(cur_lane.name))
             return True
 
