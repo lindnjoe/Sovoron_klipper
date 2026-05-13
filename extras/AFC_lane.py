@@ -448,9 +448,10 @@ class AFCLane:
 
         if self.led_index is not None:
             # Verify that LED config is found
-            error_string, led = self.afc.function.verify_led_object(self.led_index)
-            if led is None:
-                raise error(error_string)
+            for led_name, index_str in self.afc.function.parse_led_groups(self.led_index):
+                error_string, led = self.afc.function.verify_led_object(led_name)
+                if led is None:
+                    raise error(error_string)
         self.espooler.handle_ready()
 
         # Setting debounce delay after ready so that callback does not get triggered when initially loading
@@ -552,9 +553,6 @@ class AFCLane:
         # Inherit remember_spool from unit unless explicitly set in lane config
         if self.remember_spool is None:
             self.remember_spool = bool(self.unit_obj.remember_spool)
-        # Inherit led_use_filament_color from unit unless explicitly set in lane config
-        if self.led_use_filament_color is None:
-            self.led_use_filament_color = bool(self.unit_obj.led_use_filament_color)
 
         # Register all lanes if their type is not HTLF or only register lanes that are HTLF and have AFC_lane
         # in the name so that HTLF stepper names do not get added since they are not a lane for this unit type
@@ -656,6 +654,7 @@ class AFCLane:
         if self.led_tool_loaded_idle is None: self.led_tool_loaded_idle = self.unit_obj.led_tool_loaded_idle
         if self.led_tool_unloaded    is None: self.led_tool_unloaded    = self.unit_obj.led_tool_unloaded
         if self.led_spool_illum      is None: self.led_spool_illum      = self.unit_obj.led_spool_illum
+        if self.led_use_filament_color is None: self.led_use_filament_color = self.unit_obj.led_use_filament_color
 
         if self.rev_long_moves_speed_factor is None: self.rev_long_moves_speed_factor  = self.unit_obj.rev_long_moves_speed_factor
         if self.long_moves_speed            is None: self.long_moves_speed  = self.unit_obj.long_moves_speed
@@ -1085,12 +1084,13 @@ class AFCLane:
             self.unit_obj.lane_not_ready(self)
 
     def _handle_auto_spool_switch(self):
-        """Handle automatic spool switch triggered by weight threshold.
-
+        """
+        Handle automatic spool switch triggered by weight threshold.
         Called via reactor.register_callback from update_weight_callback.
         """
         if self.afc.error_state or not self.afc.function.is_printing():
             return
+
         if self.runout_lane is not None:
             runout_lane = self.afc.lanes.get(self.runout_lane)
             if runout_lane is not None:
@@ -1276,38 +1276,38 @@ class AFCLane:
                         self.status = AFCLaneState.NONE
                         self.logger.debug(f"Prep: Load Done-{self.name}")
 
-                    # Verify that load state is still true as this would still trigger if prep sensor was triggered and then filament was removed
-                    #   This is only really a issue when using direct_load and still using load sensor
-                    if self.hub == 'direct_load' and self.prep_state:
-                        self.logger.debug(f"Prep: direct load logic-{self.name}-{self.hub}")
-                        self.afc.TOOL_LOAD(self)
-                        self.afc.spool._set_values(self)
-                        self.logger.debug(f"Prep: direct load logic done-{self.name}-{self.hub}")
-                        break
+                        # Verify that load state is still true as this would still trigger if prep sensor was triggered and then filament was removed
+                        #   This is only really a issue when using direct_load and still using load sensor
+                        if self.hub == 'direct_load' and self.prep_state:
+                            self.logger.debug(f"Prep: direct load logic-{self.name}-{self.hub}")
+                            self.afc.TOOL_LOAD(self)
+                            self.afc.spool._set_values(self)
+                            self.logger.debug(f"Prep: direct load logic done-{self.name}-{self.hub}")
+                            break
 
-                    self.unit_obj.prep_post_load(self)
+                        self.unit_obj.prep_post_load(self)
 
-                    self.do_enable(False)
-                    if (self.load_state
-                        and self.prep_state):
-                        self.set_loaded()
-                        self._post_prep_user_macro()
-                        # Check if user wants to get TD-1 data when loading
-                        # TODO: When implementing multi-extruder this could still happen if a lane is loaded for a
-                        # different extruder/hub
-                        if self.td1_device_id:
-                            self._prep_capture_td1()
+                        self.do_enable(False)
+                        if (self.load_state
+                            and self.prep_state):
+                            self.set_loaded()
+                            self._post_prep_user_macro()
+                            # Check if user wants to get TD-1 data when loading
+                            # TODO: When implementing multi-extruder this could still happen if a lane is loaded for a
+                            # different extruder/hub
+                            if self.td1_device_id:
+                                self._prep_capture_td1()
 
-                elif (self.prep_state == True
-                      and self.raw_load_state == True
-                      and not self.afc.function.is_printing()):
-                    message = 'Cannot load {} load sensor is triggered.'.format(self.name)
-                    message += '\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.'
-                    if self.unit_obj.type == "ViViD":
-                        message += f'\n    If filament is not stuck in sensor run AFC_RECOVER_LANE LANE={self.name}'
-                        message += " to reset internal AFC state."
-                    message += '\n    Once cleared try loading again'
-                    self.afc.error.AFC_error(message, pause=False)
+                    elif (self.prep_state == True
+                        and self.raw_load_state == True
+                        and not self.afc.function.is_printing()):
+                        message = 'Cannot load {} load sensor is triggered.'.format(self.name)
+                        message += '\n    Make sure filament is not stuck in load sensor or check to make sure load sensor is not stuck triggered.'
+                        if self.unit_obj.type == "ViViD":
+                            message += f'\n    If filament is not stuck in sensor run AFC_RECOVER_LANE LANE={self.name}'
+                            message += " to reset internal AFC state."
+                        message += '\n    Once cleared try loading again'
+                        self.afc.error.AFC_error(message, pause=False)
         self.prep_active = False
         self.afc.save_vars()
 
@@ -1452,7 +1452,9 @@ class AFCLane:
         Helper function to enable weight callback timer, should be called once a lane is loaded
         to extruder or extruder is switched for multi-toolhead setups.
         """
-        self.past_extruder_position = self.afc.function.get_extruder_pos( None, self.past_extruder_position )
+        self.past_extruder_position = self.afc.function.get_extruder_pos(
+            None, self.past_extruder_position, self.extruder_obj.toolhead_extruder
+        )
         self.reactor.update_timer( self.cb_update_weight, self.reactor.monotonic() + self.UPDATE_WEIGHT_DELAY)
 
     def disable_weight_timer(self):
@@ -1503,6 +1505,8 @@ class AFCLane:
                 self.reactor.register_callback(
                     lambda et: self._handle_auto_spool_switch())
 
+            # self.logger.debug(f"{self.name} Weight Timer Callback: New weight {self.weight}")
+
             # Save vars every 2 minutes
             if self.save_counter > 120/self.UPDATE_WEIGHT_DELAY:
                 self.afc.save_vars()
@@ -1539,7 +1543,6 @@ class AFCLane:
         self.tool_loaded = False
         self.status = AFCLaneState.NONE
         self.loaded_to_hub = False
-
         self.td1_data = {}
         if not self.remember_spool:
             self.afc.spool.clear_values(self)
@@ -1563,7 +1566,7 @@ class AFCLane:
         """
         self.tool_loaded = False
         self.extruder_obj.lane_loaded = None
-        self.status = AFCLaneState.LOADED
+        self.status = AFCLaneState.NONE
         self.afc.current_loading = None
         self.afc.spool.set_active_spool(None)
         self.unit_obj.lane_tool_unloaded(self)
@@ -1649,8 +1652,10 @@ class AFCLane:
 
     def activate_toolhead_extruder(self):
         if self.afc.toolhead.get_extruder() is self.extruder_obj.toolhead_extruder:
+            # self.afc.gcode.respond_info("Extruder already active") #TODO remove before pushing to dev/main
             return
         else:
+            # self.afc.gcode.respond_info("Activating extruder")
             # Code below is pulled exactly from klippy/kinematics/extruder.py file without the prints
             self.afc.toolhead.flush_step_generation()
             self.afc.toolhead.set_extruder( self.extruder_obj.toolhead_extruder, 0.)
@@ -1720,12 +1725,14 @@ class AFCLane:
             self.afc.error.AFC_error(msg)
         # No else: do not trigger infinite runout or pause runout here
 
+    # Toolchanger functions
     def tool_swap(self):
         """
         Helper function for calling extruder's tool_swap function
         """
         if self.extruder_obj.tc_unit_obj is not None:
             self.extruder_obj.tc_unit_obj.tool_swap(self, set_start_time=False)
+
 
     def send_lane_data(self):
         """
@@ -1747,7 +1754,8 @@ class AFCLane:
                     "scan_time"     : scan_time,
                     "td"            : td,
                     "lane"          : lane_number,
-                    "spool_id"      : self.spool_id
+                    "spool_id"      : self.spool_id,
+                    "weight"        : self.weight
                 }
             }
             self.afc.moonraker.send_lane_data(lane_data)
@@ -2168,7 +2176,6 @@ class AFCLane:
         self.tool_loaded = False
         self.status = AFCLaneState.NONE
         self.loaded_to_hub = False
-
         self.td1_data = {}
         if not self.remember_spool:
             self.afc.spool.clear_values(self)
@@ -2193,7 +2200,6 @@ class AFCLane:
             response["selector"] = bool(self._selector_state)
         response["tool_loaded"] = self.tool_loaded
         response["loaded_to_hub"] = self.loaded_to_hub
-
         response["material"]=self.material
         if save_to_file:
             response["density"]=self.filament_density
