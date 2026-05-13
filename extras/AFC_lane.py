@@ -35,8 +35,9 @@ except: raise error(ERROR_STR.format(import_lib="AFC_assist", trace=traceback.fo
 try: from extras.AFC_stats import AFCStats_var
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
 
+# Unit types that only have load switch
 ONLY_LOAD_TYPES = ["HTLF", "Claymore"]
-EXCLUDE_TYPES = ["HTLF", "ViViD"]
+EXCLUDE_TYPES = ONLY_LOAD_TYPES + [ "ViViD"]
 # Class for holding different states so its clear what all valid states are
 
 # Names to exclude from search when trying to find unit name in config file
@@ -170,7 +171,7 @@ class AFCLane:
         self.led_tool_unloaded    = config.get('led_tool_unloaded', None)               # LED color to set when lanes extruder is unloaded
         self.led_spool_index      = config.get('led_spool_index', None)                 # LED index to illuminate under spool
         self.led_spool_illum      = config.get('led_spool_illuminate', None)            # LED color to illuminate under spool
-        self.led_use_filament_color = config.getboolean('led_use_filament_color', None) # Per-lane override for filament color LEDs
+        self.led_use_filament_color: bool = config.getboolean('led_use_filament_color', None)  # When True, uses filament color from color field for lane LEDs instead of configured LED colors
 
         self.long_moves_speed: float   = config.getfloat("long_moves_speed", None)             # Speed in mm/s to move filament when doing long moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
         self.long_moves_accel: float   = config.getfloat("long_moves_accel", None)             # Acceleration in mm/s squared when doing long moves. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
@@ -184,6 +185,7 @@ class AFCLane:
         self.load_then_home_var: bool  = config.getboolean("load_then_home", None)
         self.load_undershoot: float    = config.getfloat("load_undershoot", None)
         self.extruder_clear_dis: float = config.getfloat("extruder_clear_dis", None)
+        self.tool_max_unload_attempts  = config.getint('tool_max_unload_attempts', None) # Max number of attempts to unload filament from toolhead when using buffer as ramming sensor
 
         # Custom Load/unload Commands
         self.custom_load_cmd = config.get('custom_load_cmd', None)  # Custom command to run when loading lane, this will bypass the typical load sequence and run the command instead.
@@ -200,7 +202,6 @@ class AFCLane:
         self.enable_runout: bool    = config.getboolean("enable_hub_runout",        self.afc.enable_hub_runout)
         self.sensor_to_show: str    = config.get("sensor_to_show", None)                # Set to prep to only show prep sensor, set to load to only show load sensor. Do not add if you want both prep and load sensors to show in web gui
 
-        self.tool_max_unload_attempts  = config.getint('tool_max_unload_attempts', None)
         self.assisted_unload: bool = config.getboolean("assisted_unload", None) # If True, the unload retract is assisted to prevent loose windings, especially on full spools. This can prevent loops from slipping off the spool. Setting value here overrides values set in unit(AFC_BoxTurtle/NightOwl/etc) section
         self.td1_when_loaded: bool = config.getboolean("capture_td1_when_loaded", None)
         self.td1_device_id: str    = config.get("td1_device_id", None)
@@ -447,10 +448,10 @@ class AFCLane:
             raise error("Unit {unit} is not defined in your configuration file. Please defined unit ex. [AFC_BoxTurtle {unit}]".format(unit=self.unit))
 
         if self.led_index is not None:
-            for led_name, index_str in self.afc.function.parse_led_groups(self.led_index):
-                error_string, led = self.afc.function.verify_led_object(led_name)
-                if led is None:
-                    raise error(error_string)
+            # Verify that LED config is found
+            error_string, led = self.afc.function.verify_led_object(self.led_index)
+            if led is None:
+                raise error(error_string)
         self.espooler.handle_ready()
 
         # Setting debounce delay after ready so that callback does not get triggered when initially loading
@@ -671,8 +672,8 @@ class AFCLane:
         if self.td1_when_loaded             is None: self.td1_when_loaded   = self.unit_obj.td1_when_loaded
         if self.td1_device_id               is None: self.td1_device_id     = self.unit_obj.td1_device_id
         if self.extruder_clear_dis          is None: self.extruder_clear_dis= self.unit_obj.extruder_clear_dis
-        if self.tool_max_unload_attempts    is None: self.tool_max_unload_attempts = self.unit_obj.tool_max_unload_attempts
         if self.post_prep_macro             is None: self.post_prep_macro   = self.unit_obj.post_prep_macro
+        if self.tool_max_unload_attempts    is None: self.tool_max_unload_attempts = self.unit_obj.tool_max_unload_attempts
 
         if self.td1_bowden_length           is None:
             if not self.is_direct_hub():
@@ -1031,15 +1032,44 @@ class AFCLane:
         # Saving position after printer is paused
         self.afc.save_pos()
 
-        # Position will be restored after lane is unloaded so that nozzle does not sit
-        # on print while lane is unloading
-        if not self.afc.TOOL_UNLOAD(empty_lane):
-            return
+        # Standalone toolchanger lanes (U1-style): filament stays in each tool,
+        # just dock current and pick up next — no filament unload/load needed.
+        if self.extruder_obj.no_lanes and self.extruder_obj.tc_unit_name:
+            pheaters = self.printer.lookup_object('heaters')
+            # Capture current extruder's printing temperature before swap
+            old_heater = self.extruder_obj.get_heater()
+            target_temp = old_heater.target_temp
 
-        # Eject spool before loading next lane
-        self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
+            # Start heating new extruder before swap so it warms during dock/pick
+            new_extruder = change_lane.extruder_obj
+            new_heater = new_extruder.get_heater()
+            if target_temp > 0:
+                pheaters.set_temperature(new_heater, target_temp, False)
+                self.logger.info("Heating {} to {:.0f} for infinite spool".format(
+                    new_extruder.name, target_temp))
 
-        self.afc.TOOL_LOAD(change_lane)
+            # Cool down old extruder
+            pheaters.set_temperature(old_heater, 0, False)
+
+            self.set_tool_unloaded()
+            change_lane.tool_swap()
+            change_lane.set_tool_loaded()
+
+            # Wait for new extruder to reach temperature before resuming
+            if target_temp > 0:
+                self.afc._wait_for_temp_within_tolerance(
+                    new_heater, target_temp, new_extruder.deadband)
+                self.logger.info("{} heated and ready".format(new_extruder.name))
+        else:
+            # Position will be restored after lane is unloaded so that nozzle does not sit
+            # on print while lane is unloading
+            if not self.afc.TOOL_UNLOAD(empty_lane):
+                return
+
+            # Eject spool before loading next lane
+            self.gcode.run_script_from_command('LANE_UNLOAD LANE={}'.format(empty_lane.name))
+
+            self.afc.TOOL_LOAD(change_lane)
         # Change Mapping
         self.gcode.run_script_from_command('SET_MAP LANE={} MAP={}'.format(change_lane.name, empty_lane.map))
 
@@ -1121,7 +1151,7 @@ class AFCLane:
 
     @property
     def load_state(self) -> bool:
-        if self._hub_is_virtual:
+        if self.unit_obj.type in ("ViViD",) and self._hub_is_virtual:
             return self.loaded_to_hub
         else:
             return bool(self._load_state)
@@ -1143,7 +1173,8 @@ class AFCLane:
 
     def load_callback(self, eventtime, state):
         self._load_state = state
-        if self.printer.state_message == 'Printer is ready' and self.unit_obj.type in ONLY_LOAD_TYPES:
+        if (self.printer.state_message == 'Printer is ready'
+            and self.unit_obj.type in ONLY_LOAD_TYPES):
             self.prep_state = state
 
     def handle_load_runout(self, eventtime, load_state):
@@ -1163,9 +1194,9 @@ class AFCLane:
         except:
             self.load_debounce_button._old_note_filament_present(eventtime, load_state)
 
-        if (self.printer.state_message == 'Printer is ready' and
-            self.unit_obj.type in ONLY_LOAD_TYPES and
-            True == self._afc_prep_done):
+        if (self.printer.state_message == 'Printer is ready'
+            and self.unit_obj.type in ONLY_LOAD_TYPES
+            and True == self._afc_prep_done):
             if load_state:
                 self.set_loaded()
 
