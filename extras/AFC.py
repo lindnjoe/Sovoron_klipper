@@ -1463,6 +1463,7 @@ class afc:
                             self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_wipe_cmd, cur_extruder.name))
                             self.afcDeltaTime.log_with_time("TOOL_LOAD: After second wipe")
                         self.function.log_toolhead_pos()
+                        self._u1_dock_clearance(cur_extruder)
 
                     cur_lane.set_tool_loaded()
                     cur_lane.enable_buffer(disable_fault=True)
@@ -1939,6 +1940,8 @@ class afc:
             finally:
                 self.restore_toolhead_temp(temp_state)
 
+            self._u1_dock_clearance(cur_extruder)
+
             unload_time = self.afcDeltaTime.log_major_delta("Lane {} unload done".format(cur_lane.name if cur_lane is not None else "None"))
             self.afc_stats.average_tool_unload_time.average_time(unload_time)
         self.current_state = State.IDLE
@@ -2021,7 +2024,13 @@ class afc:
             # Do a quick pull and inform user to manually remove filament.
             if self._check_extruder_temp(cur_lane):
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
-            self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
+            if getattr(cur_extruder, 'park_detector_obj', None):
+                spool_temp = cur_lane.extruder_temp or 210
+                cur_lane.unsync_to_extruder()
+                self.gcode.run_script_from_command(f"INNER_FILAMENT_UNLOAD TEMP={spool_temp}")
+                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After INNER_FILAMENT_UNLOAD")
+            else:
+                self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
             cur_lane.set_tool_unloaded()
             cur_lane.do_enable(False)
             cur_lane.extruder_obj.estats.tc_tool_unload.increase_count()
