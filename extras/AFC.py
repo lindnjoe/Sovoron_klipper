@@ -983,16 +983,6 @@ class afc:
         except Exception:
             pass
 
-    def _u1_dock_clearance(self, cur_extruder):
-        """Move Y-35 to clear the U1 dock after any flush/purge operation.
-        No-op on non-U1 extruders (those without park_detector_obj).
-        """
-        if getattr(cur_extruder, 'park_detector_obj', None) is not None:
-            self.gcode.run_script_from_command("M400")
-            self.gcode.run_script_from_command("G91")
-            self.gcode.run_script_from_command("G1 Y-35")
-            self.gcode.run_script_from_command("G90")
-
     def move_z_pos(self, z_amount, string="", wait_moves=False):
         """
         Common function helper to move z, also does a check for max z so toolhead does not exceed max height
@@ -1442,13 +1432,6 @@ class afc:
                     cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                     cur_lane.espooler.do_assist_move()
 
-                    # Poop/wipe/kick — per-extruder overrides fall back to global.
-                    # Skip when standalone extruder custom_load_cmd handles the full
-                    # sequence (load + purge).  Lane-level custom_load_cmd (e.g. ACE)
-                    # only handles feeding, so poop still runs.
-                    # Skip when dock purge already handled purging.
-                    standalone_custom_load = (cur_extruder.is_standalone()
-                                              and getattr(cur_extruder, 'custom_load_cmd', None))
                     do_poop = cur_extruder.poop if cur_extruder.poop is not None else self.poop
                     do_wipe = cur_extruder.wipe if cur_extruder.wipe is not None else self.wipe
                     do_kick = cur_extruder.kick if cur_extruder.kick is not None else self.kick
@@ -1456,7 +1439,7 @@ class afc:
                     ext_wipe_cmd = cur_extruder.wipe_cmd or self.wipe_cmd
                     ext_kick_cmd = cur_extruder.kick_cmd or self.kick_cmd
 
-                    if not standalone_custom_load and not self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
+                    if not self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
                         if do_poop:
                             try:
                                 if purge_length is not None:
@@ -1464,7 +1447,6 @@ class afc:
                                 else:
                                     self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_poop_cmd, cur_extruder.name))
                             except Exception:
-                                self._u1_dock_clearance(cur_extruder)
                                 raise
 
                             self.afcDeltaTime.log_with_time("TOOL_LOAD: After poop")
@@ -1484,7 +1466,6 @@ class afc:
                             self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_wipe_cmd, cur_extruder.name))
                             self.afcDeltaTime.log_with_time("TOOL_LOAD: After second wipe")
                         self.function.log_toolhead_pos()
-                        self._u1_dock_clearance(cur_extruder)
 
                     cur_lane.set_tool_loaded()
                     cur_lane.enable_buffer(disable_fault=True)
@@ -1588,31 +1569,24 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
-        if self.park_pre_load and self.park_pre_load_cmd:
+        if self.park_pre_load:
             self.gcode.run_script_from_command(self.park_pre_load_cmd)
 
-        # Standalone extruders: heat check and tool_stn extrude first,
-        # before any custom_load_cmd runs (it needs filament at the nozzle).
-        if cur_extruder.is_standalone() and cur_extruder.tc_unit_name:
-            if self._check_extruder_temp(cur_lane):
-                self.afcDeltaTime.log_with_time("Done heating toolhead")
-            self.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "Standalone load")
-
-        custom_load = getattr(cur_lane, 'custom_load_cmd', None)
-        if custom_load is None and cur_extruder.is_standalone():
-            custom_load = getattr(cur_extruder, 'custom_load_cmd', None)
-        if custom_load:
+        if cur_lane.custom_load_cmd:
             self.logger.info("Running custom load command for lane {}".format(cur_lane.name))
-            try:
-                self.gcode.run_script_from_command(custom_load)
-            except Exception as e:
-                self.logger.error("Custom load command failed for {}: {}".format(cur_lane.name, e))
+            self.gcode.run_script_from_command(cur_lane.custom_load_cmd)
+            if cur_lane.get_toolhead_pre_sensor_state():
+                cur_lane.status = AFCLaneState.TOOL_LOADED
+                self.save_vars()
+            else:
+                message = 'Custom load command did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n||=====||====||==>--||\nTRG   LOAD   HUB   TOOL'
+                message += '\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.'.format(cur_lane.name)
+                message += '\nManually move filament until filament is right before toolhead extruder gears,'
+                message += '\nthen load into extruder gears with extrude button in your gui of choice until the color fully changes'
+                if self.function.in_print():
+                    message += '\nOnce filament is fully loaded click resume to continue printing'
+                self.error.handle_lane_failure(cur_lane, message)
                 return False
-            self.afcDeltaTime.log_with_time("load_sequence: After custom load command")
-            return True
-
-        if cur_extruder.is_standalone() and cur_extruder.tc_unit_name:
-            self.logger.info("Standalone load complete for {}".format(cur_lane.name))
             return True
 
         dock_dropped_off = False
@@ -1919,14 +1893,11 @@ class afc:
             return False
 
         next_extruder   = next_lane.extruder_obj.name
-        # TODO: need to check if its just a tool swap, or tool swap with a lane unload
 
         # If the next extruder is specified and it is not the current extruder, perform a tool swap.
         if next_extruder is not None and self.function.get_current_extruder() != next_extruder:
             next_lane.tool_swap()
 
-            # Lookup the current extruder and lane objects based on the next lane to load.
-            # This is necessary to ensure the correct extruder and lane are used for unloading.
             cur_extruder = self.function.get_current_extruder_obj()
             if cur_extruder and cur_extruder.lane_loaded is not None:
                 cur_lane = self.function.get_current_lane_obj()
@@ -1935,8 +1906,6 @@ class afc:
 
             self.logger.debug(f"Current extruder: {cur_extruder}, current lane:{cur_lane}")
 
-        # Only skip toolhead unload when the next lane is on a different extruder
-        # (or is already the loaded lane on this extruder).
         unload_toolhead = True
         if self.next_lane_load is not None:
             if not (self.next_lane_load in cur_extruder.lanes and self.next_lane_load != cur_extruder.lane_loaded):
@@ -1951,22 +1920,19 @@ class afc:
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
             self.save_vars()
 
-            # Lookup current hub object using the lane's information.
             cur_hub = cur_lane.hub_obj
+
+            pos = self.gcode_move.last_position
+            pos[2] += self.z_hop
+            self.move_z_pos(pos[2], "Tool_Unload z_hop", wait_moves=True)
 
             temp_state = self.capture_toolhead_temp()
             try:
-                # Run the unload sequence, which may include custom gcode commands.
                 success = self.unload_sequence(cur_lane, cur_hub, cur_extruder)
                 if not success:
                     return success
             finally:
                 self.restore_toolhead_temp(temp_state)
-
-            self._u1_dock_clearance(cur_extruder)
-
-            if self.post_unload_macro is not None:
-                self.gcode.run_script_from_command(self.post_unload_macro)
 
             unload_time = self.afcDeltaTime.log_major_delta("Lane {} unload done".format(cur_lane.name if cur_lane is not None else "None"))
             self.afc_stats.average_tool_unload_time.average_time(unload_time)
@@ -2031,38 +1997,13 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
-        custom_unload = getattr(cur_lane, 'custom_unload_cmd', None)
-        if custom_unload is None and cur_extruder.is_standalone():
-            custom_unload = getattr(cur_extruder, 'custom_unload_cmd', None)
-        if custom_unload:
+        if cur_lane.custom_unload_cmd:
             self.logger.info("Running custom unload command for lane {}".format(cur_lane.name))
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
-            try:
-                self.gcode.run_script_from_command(custom_unload)
-            except Exception as e:
-                self.logger.error("Custom unload command failed for {}: {}".format(cur_lane.name, e))
-                self._u1_dock_clearance(cur_extruder)
-                return False
+            self.gcode.run_script_from_command(cur_lane.custom_unload_cmd)
             cur_lane.set_tool_unloaded()
-        elif cur_extruder.no_lanes and cur_extruder.tc_unit_name:
-            # Standalone toolchanger tools (U1-style): filament sensor is upstream
-            # of the extruder so it will still read "loaded" after retract.
-            # Do a quick pull and inform user to manually remove filament.
-            if self._check_extruder_temp(cur_lane):
-                self.afcDeltaTime.log_with_time("Done heating toolhead")
-            if getattr(cur_extruder, 'park_detector_obj', None):
-                spool_temp = cur_lane.extruder_temp or 210
-                cur_lane.unsync_to_extruder()
-                self.gcode.run_script_from_command(f"INNER_FILAMENT_UNLOAD TEMP={spool_temp}")
-                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After INNER_FILAMENT_UNLOAD")
-            else:
-                self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
-            cur_lane.set_tool_unloaded()
-            cur_lane.do_enable(False)
-            cur_lane.extruder_obj.estats.tc_tool_unload.increase_count()
+            cur_lane.status = AFCLaneState.NONE
             self.save_vars()
-            self.logger.info("Unload complete for {}. Please manually remove filament from the filament path.".format(cur_lane.name))
-            self.gcode.respond_info("Unload complete for {}. Please manually remove filament from the filament path.".format(cur_lane.name))
         else:
             use_direct_dist = False
             if (cur_lane.hub_obj
@@ -2280,7 +2221,6 @@ class afc:
 
             if self.post_unload_macro is not None:
                 self.gcode.run_script_from_command(self.post_unload_macro)
-                self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After post_unload_macro")
 
             cur_lane.do_enable(False)
             cur_lane.unit_obj.return_to_home()
