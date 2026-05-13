@@ -1370,7 +1370,9 @@ class afc:
                     # Skip entirely when custom_load_cmd handled the full sequence.
                     # Skip when dock purge already handled purging.
                     # Standalone tools never dock, so always purge normally.
-                    custom_load = getattr(cur_lane, 'custom_load_cmd', None) or getattr(cur_extruder, 'custom_load_cmd', None)
+                    custom_load = getattr(cur_lane, 'custom_load_cmd', None)
+                    if custom_load is None and cur_extruder.is_standalone():
+                        custom_load = getattr(cur_extruder, 'custom_load_cmd', None)
                     do_poop = cur_extruder.poop if cur_extruder.poop is not None else self.poop
                     do_wipe = cur_extruder.wipe if cur_extruder.wipe is not None else self.wipe
                     do_kick = cur_extruder.kick if cur_extruder.kick is not None else self.kick
@@ -1508,7 +1510,9 @@ class afc:
                 self.afcDeltaTime.log_with_time("Done heating toolhead")
             self.move_e_pos(cur_extruder.tool_stn, cur_extruder.tool_load_speed, "Standalone load")
 
-        custom_load = getattr(cur_lane, 'custom_load_cmd', None) or getattr(cur_extruder, 'custom_load_cmd', None)
+        custom_load = getattr(cur_lane, 'custom_load_cmd', None)
+        if custom_load is None and cur_extruder.is_standalone():
+            custom_load = getattr(cur_extruder, 'custom_load_cmd', None)
         if custom_load:
             self.logger.info("Running custom load command for lane {}".format(cur_lane.name))
             try:
@@ -1888,7 +1892,9 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
-        custom_unload = getattr(cur_lane, 'custom_unload_cmd', None) or getattr(cur_extruder, 'custom_unload_cmd', None)
+        custom_unload = getattr(cur_lane, 'custom_unload_cmd', None)
+        if custom_unload is None and cur_extruder.is_standalone():
+            custom_unload = getattr(cur_extruder, 'custom_unload_cmd', None)
         if custom_unload:
             self.logger.info("Running custom unload command for lane {}".format(cur_lane.name))
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
