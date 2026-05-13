@@ -212,22 +212,28 @@ class AutoToolmap:
 
     def _apply_toolmap(self, cfg, parsed, gcmd):
         applied = []
+        details = []
         used = [False] * MAX_EXTRUDERS
 
         fil_type = parsed.get('filament_type', '')
         if fil_type:
             types = [t.strip() for t in fil_type.replace(';', ',').split(',')]
+            type_detail = []
             for i, ft in enumerate(types):
                 if i >= MAX_EXTRUDERS:
                     break
                 if ft and i < len(cfg.get('filament_type', [])):
                     cfg['filament_type'][i] = ft
                     used[i] = True
+                    type_detail.append('T%d=%s' % (i, ft))
             applied.append('filament_type')
+            if type_detail:
+                details.append('filament_type: %s' % ', '.join(type_detail))
 
         fil_used = parsed.get('filament_used', '')
         if fil_used:
             values = [v.strip() for v in fil_used.replace(';', ',').split(',')]
+            used_detail = []
             for i, fv in enumerate(values):
                 if i >= MAX_EXTRUDERS:
                     break
@@ -238,31 +244,40 @@ class AutoToolmap:
                 if fu_val > 0 and i < len(cfg.get('filament_used_g', [])):
                     cfg['filament_used_g'][i] = fu_val
                     used[i] = True
+                    used_detail.append('T%d=%.1fg' % (i, fu_val))
             applied.append('filament_used')
+            if used_detail:
+                details.append('filament_used: %s' % ', '.join(used_detail))
 
         fil_color = parsed.get('filament_colour',
                                parsed.get('filament_color', ''))
         if fil_color:
             colors = [c.strip() for c in fil_color.replace(';', ',').split(',')]
+            color_detail = []
             for i, fc in enumerate(colors):
                 if i >= MAX_EXTRUDERS:
                     break
                 if fc and i < len(cfg.get('filament_color', [])):
                     cfg['filament_color'][i] = fc
+                    color_detail.append('T%d=%s' % (i, fc))
             applied.append('filament_color')
+            if color_detail:
+                details.append('filament_color: %s' % ', '.join(color_detail))
 
         extruders_used = cfg.get('extruders_used', None)
         if extruders_used is not None:
             for i in range(min(MAX_EXTRUDERS, len(extruders_used))):
                 extruders_used[i] = used[i]
-            applied.append('extruders_used(%s)' %
-                           ','.join('T%d' % i for i in range(MAX_EXTRUDERS)
-                                   if used[i]))
+            used_names = ','.join('T%d' % i for i in range(MAX_EXTRUDERS)
+                                  if used[i])
+            applied.append('extruders_used(%s)' % used_names)
 
         if applied:
             gcmd.respond_info(
                 "auto_toolmap: applied %s from gcode footer" %
                 ', '.join(applied))
+            for line in details:
+                gcmd.respond_info("  %s" % line)
         else:
             gcmd.respond_info(
                 "auto_toolmap: CONFIG_BLOCK found but no filament data matched")
