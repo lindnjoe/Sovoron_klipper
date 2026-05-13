@@ -192,6 +192,12 @@ class afc:
         self.form_tip               = config.getboolean("form_tip", False)          # Set to True to tip forming when unloading lanes
         self.form_tip_cmd           = config.get('form_tip_cmd', None)              # Macro to use when tip forming. Change macro name if you would like to use your own tip forming macro
 
+        self.park_pre_load          = config.getboolean("park_pre_load", False)     # Set to True to park toolhead before loading
+        self.park_pre_load_cmd      = config.get("park_pre_load_cmd", None)         # Macro to run before loading to position toolhead
+
+        self.post_load_macro        = config.get("post_load_macro", None)           # Macro to run after a tool load completes
+        self.post_unload_macro      = config.get("post_unload_macro", None)         # Macro to run after a tool unload completes
+
         # MOVE SETTINGS
         self.quiet_mode             = False                                         # Flag indicating if quiet move is enabled or not
         self.auto_home              = config.getboolean("auto_home", False)         # Flag indicating if homing needs to be done if printer is not already homed
@@ -1448,6 +1454,9 @@ class afc:
                     cur_lane.extruder_obj.estats.tc_tool_load.increase_count()
                     cur_lane.lane_load_count.increase_count()
                     cur_lane.espooler.stats.update_database()
+
+                    if self.post_load_macro is not None:
+                        self.gcode.run_script_from_command(self.post_load_macro)
                 finally:
                     self.restore_toolhead_temp(temp_state)
 
@@ -1533,6 +1542,9 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
+        if self.park_pre_load and self.park_pre_load_cmd:
+            self.gcode.run_script_from_command(self.park_pre_load_cmd)
+
         # Standalone extruders: heat check and tool_stn extrude first,
         # before any custom_load_cmd runs (it needs filament at the nozzle).
         if cur_extruder.is_standalone() and cur_extruder.tc_unit_name:
@@ -1853,6 +1865,9 @@ class afc:
             self.restore_toolhead_temp(temp_state)
 
         self._u1_dock_clearance(cur_extruder)
+
+        if self.post_unload_macro is not None:
+            self.gcode.run_script_from_command(self.post_unload_macro)
 
         unload_time = self.afcDeltaTime.log_major_delta("Lane {} unload done".format(cur_lane.name if cur_lane is not None else "None"))
         self.afc_stats.average_tool_unload_time.average_time(unload_time)
