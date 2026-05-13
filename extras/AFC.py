@@ -922,6 +922,16 @@ class afc:
         except Exception:
             pass
 
+    def _u1_dock_clearance(self, cur_extruder):
+        """Move Y-35 to clear the U1 dock after any flush/purge operation.
+        No-op on non-U1 extruders (those without park_detector_obj).
+        """
+        if getattr(cur_extruder, 'park_detector_obj', None) is not None:
+            self.gcode.run_script_from_command("M400")
+            self.gcode.run_script_from_command("G91")
+            self.gcode.run_script_from_command("G1 Y-35")
+            self.gcode.run_script_from_command("G90")
+
     def move_z_pos(self, z_amount, string="", wait_moves=False):
         """
         Common function helper to move z, also does a check for max z so toolhead does not exceed max height
@@ -1382,10 +1392,14 @@ class afc:
 
                     if not custom_load and (cur_extruder.is_standalone() or not self._is_unit_dock_purge_enabled(cur_lane.unit_obj)):
                         if do_poop:
-                            if purge_length is not None:
-                                self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(ext_poop_cmd, purge_length, cur_extruder.name))
-                            else:
-                                self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_poop_cmd, cur_extruder.name))
+                            try:
+                                if purge_length is not None:
+                                    self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(ext_poop_cmd, purge_length, cur_extruder.name))
+                                else:
+                                    self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_poop_cmd, cur_extruder.name))
+                            except Exception:
+                                self._u1_dock_clearance(cur_extruder)
+                                raise
 
                             self.afcDeltaTime.log_with_time("TOOL_LOAD: After poop")
                             self.function.log_toolhead_pos()
@@ -1902,6 +1916,7 @@ class afc:
                 self.gcode.run_script_from_command(custom_unload)
             except Exception as e:
                 self.logger.error("Custom unload command failed for {}: {}".format(cur_lane.name, e))
+                self._u1_dock_clearance(cur_extruder)
                 return False
             cur_lane.set_tool_unloaded()
         elif cur_extruder.no_lanes and cur_extruder.tc_unit_name:
