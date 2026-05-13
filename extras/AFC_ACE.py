@@ -789,32 +789,40 @@ class afcACE(afcUnit):
                     self._sync_rfid_to_spoolman(lane, slot_info)
 
     def _apply_slot_filament_defaults(self, lane, slot_info):
-        """Apply filament material/color to a lane if not already set.
+        """Apply filament material/color/temps to a lane if not already set.
 
         Priority: existing lane values > Spoolman next_spool_id > ACE RFID > AFC defaults.
         Never overwrites values that are already set.
         """
-        # If lane already has material and color set, don't touch them
         has_material = getattr(lane, "material", None) not in (None, "")
         has_color = getattr(lane, "color", None) not in (None, "", "#000000")
-
-        if has_material and has_color:
-            return
+        has_extruder_temp = getattr(lane, "extruder_temp", None) is not None
+        has_bed_temp = getattr(lane, "bed_temp", None) is not None
 
         # Try ACE RFID data from slot inventory
         rfid_material = slot_info.get("material", "") if slot_info else ""
         rfid_color = slot_info.get("color", [0, 0, 0]) if slot_info else [0, 0, 0]
+        rfid_extruder_temp = slot_info.get("extruder_temp_max") if slot_info else None
+        rfid_bed_temp = slot_info.get("bed_temp_max") if slot_info else None
 
         # Treat "unknown" material from 3rd-party spools as empty
         if rfid_material and rfid_material.lower() == "unknown":
             rfid_material = ""
-        rfid_has_data = bool(rfid_material) or rfid_color != [0, 0, 0]
 
-        if rfid_has_data:
-            if not has_material and rfid_material:
-                lane.material = rfid_material
-            if not has_color and rfid_color != [0, 0, 0]:
-                lane.color = self._ace_color_to_hex(rfid_color)
+        if not has_material and rfid_material:
+            lane.material = rfid_material
+        if not has_color and rfid_color != [0, 0, 0]:
+            lane.color = self._ace_color_to_hex(rfid_color)
+        if not has_extruder_temp and rfid_extruder_temp is not None:
+            try:
+                lane.extruder_temp = int(rfid_extruder_temp)
+            except (TypeError, ValueError):
+                pass
+        if not has_bed_temp and rfid_bed_temp is not None:
+            try:
+                lane.bed_temp = int(rfid_bed_temp)
+            except (TypeError, ValueError):
+                pass
 
         # Apply AFC defaults for anything still missing
         if not has_material and not getattr(lane, "material", None):
