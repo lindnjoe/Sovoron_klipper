@@ -56,6 +56,7 @@ class afcUnit:
 
         self.lanes: Dict[str, AFCLane] = {}
         self._eject_to_calibrate = False
+        self._led_effects_available = True
 
         # Objects
         self.buffer_obj: Optional[AFCTrigger|None] = None
