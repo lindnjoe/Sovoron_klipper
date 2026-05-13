@@ -1377,12 +1377,12 @@ class afc:
                     cur_lane.espooler.do_assist_move()
 
                     # Poop/wipe/kick — per-extruder overrides fall back to global.
-                    # Skip entirely when custom_load_cmd handled the full sequence.
+                    # Skip when standalone extruder custom_load_cmd handles the full
+                    # sequence (load + purge).  Lane-level custom_load_cmd (e.g. ACE)
+                    # only handles feeding, so poop still runs.
                     # Skip when dock purge already handled purging.
-                    # Standalone tools never dock, so always purge normally.
-                    custom_load = getattr(cur_lane, 'custom_load_cmd', None)
-                    if custom_load is None and cur_extruder.is_standalone():
-                        custom_load = getattr(cur_extruder, 'custom_load_cmd', None)
+                    standalone_custom_load = (cur_extruder.is_standalone()
+                                              and getattr(cur_extruder, 'custom_load_cmd', None))
                     do_poop = cur_extruder.poop if cur_extruder.poop is not None else self.poop
                     do_wipe = cur_extruder.wipe if cur_extruder.wipe is not None else self.wipe
                     do_kick = cur_extruder.kick if cur_extruder.kick is not None else self.kick
@@ -1390,7 +1390,7 @@ class afc:
                     ext_wipe_cmd = cur_extruder.wipe_cmd or self.wipe_cmd
                     ext_kick_cmd = cur_extruder.kick_cmd or self.kick_cmd
 
-                    if not custom_load and (cur_extruder.is_standalone() or not self._is_unit_dock_purge_enabled(cur_lane.unit_obj)):
+                    if not standalone_custom_load and not self._is_unit_dock_purge_enabled(cur_lane.unit_obj):
                         if do_poop:
                             try:
                                 if purge_length is not None:
@@ -1787,8 +1787,10 @@ class afc:
         cur_lane = self.lanes[lane]
         self.TOOL_UNLOAD(cur_lane)
 
-        # User manually unloaded spool from toolhead, remove spool from active status
+        # User manually unloaded spool from toolhead, clear active tracking
+        self.current = None
         self.spool.set_active_spool(None)
+        self.save_vars()
 
     def TOOL_UNLOAD(self, cur_lane: AFCLane, set_start_time=True):
         """
@@ -2282,6 +2284,7 @@ class afc:
                     cur_lane.tool_swap()
                     cur_lane.set_tool_loaded()
                     self.current = cur_lane.name
+                    self.save_vars()
                     if restore_pos:
                         self.restore_pos()
                     total_time = self.afcDeltaTime.log_total_time("Total change time:")
@@ -2292,6 +2295,7 @@ class afc:
                 else:
                     if self.TOOL_LOAD(cur_lane, purge_length) and not self.error_state:
                         self.current = cur_lane.name
+                        self.save_vars()
                         if restore_pos:
                             self.restore_pos()
                         total_time = self.afcDeltaTime.log_total_time("Total change time:")

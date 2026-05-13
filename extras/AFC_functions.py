@@ -603,6 +603,7 @@ class afcFunction:
             extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None)
             cur_lane_loaded.unsync_to_extruder()
             cur_lane_loaded.set_tool_unloaded()
+            self.afc.current = None
             cur_lane_loaded.unit_obj.return_to_home()
             self.afc.function.handle_activate_extruder()
             self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
