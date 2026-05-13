@@ -35,8 +35,9 @@ except: raise error(ERROR_STR.format(import_lib="AFC_assist", trace=traceback.fo
 try: from extras.AFC_stats import AFCStats_var
 except: raise error(ERROR_STR.format(import_lib="AFC_stats", trace=traceback.format_exc()))
 
+# Unit types that only have load switch
 ONLY_LOAD_TYPES = ["HTLF", "Claymore"]
-EXCLUDE_TYPES = ["HTLF", "ViViD"]
+EXCLUDE_TYPES = ONLY_LOAD_TYPES + [ "ViViD"]
 # Class for holding different states so its clear what all valid states are
 
 # Names to exclude from search when trying to find unit name in config file
@@ -671,8 +672,8 @@ class AFCLane:
         if self.td1_when_loaded             is None: self.td1_when_loaded   = self.unit_obj.td1_when_loaded
         if self.td1_device_id               is None: self.td1_device_id     = self.unit_obj.td1_device_id
         if self.extruder_clear_dis          is None: self.extruder_clear_dis= self.unit_obj.extruder_clear_dis
-        if self.tool_max_unload_attempts    is None: self.tool_max_unload_attempts = self.unit_obj.tool_max_unload_attempts
         if self.post_prep_macro             is None: self.post_prep_macro   = self.unit_obj.post_prep_macro
+        if self.tool_max_unload_attempts    is None: self.tool_max_unload_attempts = self.unit_obj.tool_max_unload_attempts
 
         if self.td1_bowden_length           is None:
             if not self.is_direct_hub():

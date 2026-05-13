@@ -136,6 +136,7 @@ class DebounceButton:
         snapmaker_expected = ['is_filament_present', 'force']
         param_keys = list(sig.parameters.keys())
         if param_keys == expected_params:
+            # Exact match for the expected signature
             filament_sensor.runout_helper.note_filament_present = self._button_handler
         elif param_keys == snapmaker_expected:
             filament_sensor.runout_helper.note_filament_present = self.button_handler
@@ -218,7 +219,7 @@ class AFC_moonraker:
             logger = self.logger.debug
 
         try:
-            resp = urlopen(url_string, timeout=10)
+            resp = urlopen(url_string)
             if resp.status >= 200 and resp.status <= 300:
                 data = json.load(resp)
             else:

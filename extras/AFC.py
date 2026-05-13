@@ -203,12 +203,6 @@ class afc:
         self.form_tip_cmd           = config.get('form_tip_cmd', None)              # Macro to use when tip forming. Change macro name if you would like to use your own tip forming macro
         self.force_assign_map: bool = config.getboolean("force_assign_map", False)  # Force map all lanes without per-lane map variable
 
-        self.park_pre_load          = config.getboolean("park_pre_load", False)     # Set to True to park toolhead before loading
-        self.park_pre_load_cmd      = config.get("park_pre_load_cmd", None)         # Macro to run before loading to position toolhead
-
-        self.post_load_macro        = config.get("post_load_macro", None)           # Macro to run after a tool load completes
-        self.post_unload_macro      = config.get("post_unload_macro", None)         # Macro to run after a tool unload completes
-
         # MOVE SETTINGS
         self.quiet_mode             = False                                         # Flag indicating if quiet move is enabled or not
         self.auto_home              = config.getboolean("auto_home", False)         # Flag indicating if homing needs to be done if printer is not already homed

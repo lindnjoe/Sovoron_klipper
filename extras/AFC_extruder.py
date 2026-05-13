@@ -365,10 +365,10 @@ class AFCExtruder:
                     "(e.g. ACE) for filament engagement verification"
                 )
             else:
-                buttons.register_buttons([self.tool_start], self.tool_start_callback)
                 self.fila_tool_start, self.debounce_button_start = add_filament_switch(f"{self.name}_tool_start", self.tool_start, self.printer,
-                                                                                        self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
-                                                                                        self.debounce_delay )
+                                                                                    self.enable_sensors_in_gui, self.handle_start_runout, self.enable_runout,
+                                                                                    self.debounce_delay )
+                buttons.register_buttons([self.tool_start], self.tool_start_callback)
         elif self.filament_sensor_name is not None:
             filament_motion_name = f"filament_motion_sensor {self.filament_sensor_name}"
             try:
