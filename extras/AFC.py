@@ -310,7 +310,7 @@ class afc:
         self.function.register_commands(self.show_macros, 'AFC_TOGGLE_MACRO', self.cmd_AFC_TOGGLE_MACRO,
                                         self.cmd_AFC_TOGGLE_MACRO_help, self.cmd_AFC_TOGGLE_MACRO_options)
         self.function.register_commands(self.show_macros, 'UNSET_LANE_LOADED', self.cmd_UNSET_LANE_LOADED,
-                                        self.cmd_UNSET_LANE_LOADED_help)
+                                        self.cmd_UNSET_LANE_LOADED_help, self.cmd_UNSET_LANE_LOADED_options)
         self.function.register_commands(self.show_macros, 'AFC_RESET_STATS', self.cmd_AFC_RESET_STATS,
                                         self.cmd_AFC_RESET_STATS_help, self.cmd_AFC_RESET_STATS_options)
 
@@ -853,6 +853,7 @@ class afc:
         self.logger.info("QuietMode {}, max speed of {} mm/sec".format(self._get_quiet_mode(), self.quiet_moves_speed))
 
     cmd_UNSET_LANE_LOADED_help = "Removes active lane loaded from toolhead loaded status"
+    cmd_UNSET_LANE_LOADED_options = {"LANE": {"type": "string", "default": None}}
     def cmd_UNSET_LANE_LOADED(self, gcmd):
         """
         Unsets the current lane from AFC loaded status.
@@ -862,15 +863,17 @@ class afc:
 
         Usage
         -------
-        `UNSET_LANE_LOADED`
+        `UNSET_LANE_LOADED [LANE=<lane_name>]`
 
         Example
         -------
         ```
         UNSET_LANE_LOADED
+        UNSET_LANE_LOADED LANE=lane2
         ```
         """
-        self.function.unset_lane_loaded()
+        lane_name = gcmd.get('LANE', None)
+        self.function.unset_lane_loaded(lane_name=lane_name)
 
     cmd_LANE_MOVE_help = "Lane Manual Movements"
     cmd_LANE_MOVE_options = {"LANE": {"type": "string", "default": "lane1"}, "DISTANCE": {"type": "int", "default": 20}}
