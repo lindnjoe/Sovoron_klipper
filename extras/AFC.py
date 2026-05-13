@@ -242,6 +242,8 @@ class afc:
         self.lower_extruder_temp_on_change = config.getboolean('lower_extruder_temp_on_change', True)  # When False, AFC will not lower extruder temp during filament change if already above target - 5
         self.toolchange_temp_drop: float = config.getfloat("toolchange_temp_drop", 0)  # Degrees to drop the old extruder's temperature after a successful toolchange when the extruder changes
         self.temp_wait_tolerance: float = config.getfloat("temp_wait_tolerance", 2)  # Degrees +/- from target temp to consider extruder "at temperature"
+        self.force_assign_map       = config.getboolean("force_assign_map", False)
+        self.disable_homing_check   = config.getboolean("disable_homing_check", False)
         self.load_to_hub            = config.getboolean("load_to_hub", True)        # Fast loads filament to hub when inserted, set to False to disable. This is a global setting and can be overridden at AFC_stepper
         self.assisted_unload        = config.getboolean("assisted_unload", True)    # If True, the unload retract is assisted to prevent loose windings, especially on full spools. This can prevent loops from slipping off the spool
         self.bypass_pause           = config.getboolean("pause_when_bypass_active", False) # When true AFC pauses print when change tool is called and bypass is loaded
@@ -617,7 +619,7 @@ class afc:
         if self.function.is_printing():
             if self.heater.can_extrude:
                 target_temp, _ = self._get_default_material_temps(cur_lane)
-                if self.heater.target_temp >= (target_temp - 5):
+                if self.heater.target_temp >= (target_temp - self.temp_wait_tolerance):
                     return
                 self.logger.info(
                     'Raising extruder to {} for {} (target was {:.0f}, likely ooze prevention)'.format(
@@ -636,10 +638,10 @@ class afc:
             self.logger.info('Current temp {:.1f} is below set temp {}'.format(current_temp[0], target_temp))
 
         # Check to make sure temp is within +/-5 of target temp, not setting if temp is over target temp and using min_extrude_temp value
-        need_lower = self.heater.target_temp >= (target_temp + 5) and not using_min_value
-        need_heat  = self.heater.target_temp <= (target_temp - 5)
+        need_lower = self.heater.target_temp >= (target_temp + self.temp_wait_tolerance) and not using_min_value
+        need_heat  = self.heater.target_temp <= (target_temp - self.temp_wait_tolerance)
         # Skip lowering if disabled and the actual current temp is already sufficient for the target material
-        skip_lower = need_lower and not self.lower_extruder_temp_on_change and current_temp[0] >= (target_temp - 5)
+        skip_lower = need_lower and not self.lower_extruder_temp_on_change and current_temp[0] >= (target_temp - self.temp_wait_tolerance)
         if (need_heat or need_lower) and not skip_lower:
             wait = False if need_lower else True
             if no_wait:
@@ -1909,7 +1911,6 @@ class afc:
             cur_lane.status = AFCLaneState.TOOL_UNLOADING
             self.gcode.run_script_from_command(cur_lane.custom_unload_cmd)
             cur_lane.set_tool_unloaded()
-            cur_lane.status = AFCLaneState.NONE
             self.save_vars()
         else:
             use_direct_dist = False
@@ -2174,8 +2175,11 @@ class afc:
         # for some sort of backwards compatibility, so for example: T0 PURGE_LENGTH=200, the purge_length would be
         # equal to "=200". So run this check to remove it:
         if purge_length is not None:
-            if purge_length.startswith('='):
-                purge_length = purge_length[1:]
+            try:
+                purge_length = float(purge_length.lstrip('='))
+            except ValueError:
+                self.error.AFC_error("PURGE_LENGTH must be a numeric value", pause=False)
+                return
 
         command_line = gcmd.get_commandline()
         self.logger.debug("CHANGE_TOOL: cmd-{}".format(command_line))
@@ -2372,6 +2376,8 @@ class afc:
 
         for buffer in self.buffers.values():
             str["system"]["buffers"][buffer.name] = buffer.get_status()
+
+        str["maps"] = list(self.tool_cmds.keys())
 
         web_request.send( {"status:" : {"AFC": str}})
 

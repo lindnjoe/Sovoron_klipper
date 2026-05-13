@@ -216,7 +216,7 @@ class afcBoxTurtle(afcUnit):
 
             success, _, _ = cur_lane.unit_obj.move_to_hub(cur_lane, bow_pos, MoveDirection.NEG,
                                                           self.afc.homing_enabled,
-                                                          speedMode=SpeedMode.LONG)
+                                                          speed_mode=SpeedMode.LONG)
             if not success:
                 return False, "Failed to home filament back to hub", 0
 
@@ -317,7 +317,7 @@ class afcBoxTurtle(afcUnit):
         cur_lane.unit_obj.move_to_hub(cur_lane, bow_pos,
                                       MoveDirection.NEG,
                                       self.afc.homing_enabled,
-                                      speedMode=SpeedMode.LONG)
+                                      speed_mode=SpeedMode.LONG)
 
         # Reset to hub
         if not self.afc.homing_enabled:

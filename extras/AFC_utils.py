@@ -34,7 +34,9 @@ if TYPE_CHECKING:
 
 ERROR_STR = "Error trying to import {import_lib}, please rerun install-afc.sh script in your AFC-Klipper-Add-On directory then restart klipper\n\n{trace}"
 
-def add_filament_switch( switch_name, switch_pin, printer, show_sensor=True, runout_callback = None, enable_runout=False, debounce_delay=0. ):
+def add_filament_switch(switch_name, switch_pin, printer, show_sensor=True,
+                        runout_callback = None, enable_runout=False,
+                        debounce_delay=0., extruder="extruder" ):
     """
     Helper function to register pins as filament switch sensor so it will show up in web guis
 
@@ -53,8 +55,8 @@ def add_filament_switch( switch_name, switch_pin, printer, show_sensor=True, run
     filament_switch_config.add_section( new_switch_name )
     filament_switch_config.set( new_switch_name, 'switch_pin', switch_pin)
     filament_switch_config.set( new_switch_name, 'pause_on_runout', 'False')
-    filament_switch_config.set( new_switch_name, 'extruder', 'extruder')
     filament_switch_config.set( new_switch_name, 'debounce_delay', 0.0)
+    filament_switch_config.set( new_switch_name, "extruder") # TODO: put in a proper fix for this
 
     cfg_wrap = configfile.ConfigWrapper( printer, filament_switch_config, {}, new_switch_name)
 
