@@ -2312,16 +2312,18 @@ class afc:
         self.CHANGE_TOOL(self.lanes[self.tool_cmds[Tcmd]], purge_length, new_extruder_temp=new_extruder_temp)
 
     def CHANGE_TOOL(self, cur_lane: AFCLane, purge_length: Optional[float]=None, restore_pos: bool=True, new_extruder_temp: Optional[float]=None) -> None:
-        self.afcDeltaTime.set_start_time()
-        if self._check_bypass(unload=False): return
-
-        self.next_lane_load = cur_lane.name
-        next_extruder = cur_lane.extruder_obj.name
-        infinite_runout: bool = cur_lane.status == AFCLaneState.INFINITE_RUNOUT
-        adjusting_temperature: bool = new_extruder_temp is not None or \
-            (infinite_runout and self.function.get_current_extruder() != next_extruder)
-
         try:
+            self.afcDeltaTime.set_start_time()
+            # Check if the bypass filament sensor detects filament; if so, abort the tool change.
+            if self._check_bypass(unload=False):
+                return
+
+            self.next_lane_load = cur_lane.name
+            next_extruder = cur_lane.extruder_obj.name
+            infinite_runout: bool = cur_lane.status == AFCLaneState.INFINITE_RUNOUT
+            adjusting_temperature: bool = new_extruder_temp is not None or \
+                (infinite_runout and self.function.get_current_extruder() != next_extruder)
+
             if adjusting_temperature:
                 # Heat the next extruder FIRST so that _heat_next_extruder reads the
                 # current target temperature before it is changed by the cooldown below.
