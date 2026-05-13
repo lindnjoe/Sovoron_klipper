@@ -2058,20 +2058,6 @@ class afcACE(afcUnit):
 
         afc._toolhead_pre_unload_pull(cur_lane, cur_extruder)
 
-        # Tighten the spool loop: command the ACE to rewind before the cut
-        # so the filament rewinds cleanly onto the spool.
-        if self.unload_preretract > 0:
-            try:
-                self._wait_for_ace_ready()
-                self._ace.unwind_filament(
-                    local_slot, self.unload_preretract,
-                    self._quiet_speed(self.retract_speed),
-                )
-            except Exception as e:
-                self.logger.warning(
-                    f"ACE unload: pre-cut spool tighten failed for slot {local_slot}: {e}"
-                )
-
         self.lane_unloading(cur_lane)
         cur_lane.sync_to_extruder()
         cur_lane.do_enable(True)
