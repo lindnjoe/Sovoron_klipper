@@ -310,6 +310,9 @@ class AutoToolmap:
                 details.append('filament_color: %s' % ', '.join(color_detail))
 
         extruders_used = cfg.get('extruders_used', None)
+        gcmd.respond_info(
+            "  extruders_used from cfg: %s (type=%s)" %
+            (extruders_used, type(extruders_used).__name__))
         if extruders_used is not None:
             ext_used = [False] * NUM_EXTRUDERS
 
@@ -332,6 +335,9 @@ class AutoToolmap:
 
             for i in range(min(NUM_EXTRUDERS, len(extruders_used))):
                 extruders_used[i] = ext_used[i]
+
+            gcmd.respond_info(
+                "  extruders_used after update: %s" % list(extruders_used))
 
             used_names = ','.join('E%d' % i for i in range(NUM_EXTRUDERS)
                                   if ext_used[i])

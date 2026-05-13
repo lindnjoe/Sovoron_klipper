@@ -593,6 +593,7 @@ class AFCLane:
             self.hub_obj.state = False
             self.hub_obj.move_dis = 75
             self.hub_obj.hub_clear_move_dis = 65
+            self.hub_obj.use_dist_hub = False
 
         self.extruder_obj = self.unit_obj.extruder_obj
         if self.extruder_name is not None:
