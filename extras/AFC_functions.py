@@ -594,21 +594,35 @@ class afcFunction:
         cur_lane_loaded.unit_obj.select_lane( cur_lane_loaded )
         self.logger.debug("Activate extruder done")
 
-    def unset_lane_loaded(self):
+    def unset_lane_loaded(self, lane_name=None):
         """
-        Helper function to get current lane and unsync lane from toolhead extruder
+        Helper function to get current lane and unsync lane from toolhead extruder.
+
+        :param lane_name: Optional lane name to unset. When None, auto-detects
+                          from active extruder or falls back to self.current.
         """
-        cur_lane_loaded = self.get_current_lane_obj()
-        if cur_lane_loaded is not None:
-            extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None)
-            cur_lane_loaded.unsync_to_extruder()
-            cur_lane_loaded.set_tool_unloaded()
-            self.afc.current = None
-            cur_lane_loaded.unit_obj.return_to_home()
-            self.afc.function.handle_activate_extruder()
-            self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
-            self.afc.save_vars()
-            cur_lane_loaded.unit_obj.on_lane_unset_loaded(cur_lane_loaded, extruder_name)
+        cur_lane_loaded = None
+        if lane_name is not None:
+            cur_lane_loaded = self.afc.lanes.get(lane_name)
+            if cur_lane_loaded is None:
+                self.logger.info("UNSET_LANE_LOADED: unknown lane '{}'".format(lane_name))
+                return
+        else:
+            cur_lane_loaded = self.get_current_lane_obj()
+        if cur_lane_loaded is None and self.afc.current is not None:
+            cur_lane_loaded = self.afc.lanes.get(self.afc.current)
+        if cur_lane_loaded is None:
+            self.logger.info("UNSET_LANE_LOADED: no lane currently loaded")
+            return
+        extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None)
+        cur_lane_loaded.unsync_to_extruder()
+        cur_lane_loaded.set_tool_unloaded()
+        self.afc.current = None
+        cur_lane_loaded.unit_obj.return_to_home()
+        self.afc.function.handle_activate_extruder()
+        self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
+        self.afc.save_vars()
+        cur_lane_loaded.unit_obj.on_lane_unset_loaded(cur_lane_loaded, extruder_name)
 
     def select_loaded_lane(self):
         """
