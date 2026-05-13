@@ -639,9 +639,21 @@ class afc:
         pheaters = self.printer.lookup_object('heaters')
         wait = False
 
-        # If extruder can extrude and printing, return and do not update temperature. Don't want to modify extruder temperature during prints
-        if self.heater.can_extrude and self.function.is_printing():
-            return
+        # During printing, only skip temp management when the heater target is
+        # already sufficient for the material.  Slicer ooze-prevention may have
+        # lowered the target between tool changes — raise it back so the
+        # upcoming load/unload can extrude safely.
+        if self.function.is_printing():
+            if self.heater.can_extrude:
+                target_temp, _ = self._get_default_material_temps(cur_lane)
+                if self.heater.target_temp >= (target_temp - 5):
+                    return
+                self.logger.info(
+                    'Raising extruder to {} for {} (target was {:.0f}, likely ooze prevention)'.format(
+                        target_temp, cur_lane.name, self.heater.target_temp))
+                pheaters.set_temperature(extruder.get_heater(), target_temp,
+                                         wait=not no_wait)
+                return not no_wait
         target_temp, using_min_value = self._get_default_material_temps(cur_lane)
 
         current_temp = self.heater.get_temp(self.reactor.monotonic())
