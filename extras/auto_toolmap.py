@@ -147,6 +147,11 @@ class AutoToolmap:
                 "PUSH_TOOLMAP_FROM_FILE: no CONFIG_BLOCK found in footer")
             return
 
+        filament_keys = [k for k in parsed
+                         if 'filament' in k.lower() or 'used' in k.lower()]
+        gcmd.respond_info(
+            "auto_toolmap: parsed keys: %s" % ', '.join(filament_keys))
+
         self._apply_toolmap(cfg, parsed, gcmd)
 
     # ------------------------------------------------------------------
@@ -165,7 +170,8 @@ class AutoToolmap:
             return None
 
     def _parse_config_block(self, text):
-        """Extract key=value pairs from Orca/PrusaSlicer CONFIG_BLOCK."""
+        """Extract key=value pairs from Orca/PrusaSlicer CONFIG_BLOCK
+        plus filament usage data from loose comments above the block."""
         result = {}
         in_block = False
         for line in text.split('\n'):
@@ -184,14 +190,20 @@ class AutoToolmap:
 
         if not result:
             result = self._parse_loose_comments(text)
+        else:
+            loose = self._parse_loose_comments(text)
+            for key in ('filament_used', 'filament used [mm]'):
+                if key in loose and key not in result:
+                    result[key] = loose[key]
         return result
 
     def _parse_loose_comments(self, text):
         """Fallback: scan for filament-related comment lines outside a
         CONFIG_BLOCK (some slicers don't wrap them)."""
         keys_of_interest = {
-            'filament_type', 'filament_used', 'filament_colour',
-            'filament_color', 'nozzle_diameter', 'filament_density',
+            'filament_type', 'filament_used', 'filament used [mm]',
+            'filament_colour', 'filament_color',
+            'nozzle_diameter', 'filament_density',
         }
         result = {}
         for line in text.split('\n'):
@@ -214,6 +226,7 @@ class AutoToolmap:
         applied = []
         details = []
         used = [False] * MAX_EXTRUDERS
+        have_usage_data = False
 
         fil_type = parsed.get('filament_type', '')
         if fil_type:
@@ -224,13 +237,13 @@ class AutoToolmap:
                     break
                 if ft and i < len(cfg.get('filament_type', [])):
                     cfg['filament_type'][i] = ft
-                    used[i] = True
                     type_detail.append('T%d=%s' % (i, ft))
             applied.append('filament_type')
             if type_detail:
                 details.append('filament_type: %s' % ', '.join(type_detail))
 
-        fil_used = parsed.get('filament_used', '')
+        fil_used = parsed.get('filament_used',
+                              parsed.get('filament used [mm]', ''))
         if fil_used:
             values = [v.strip() for v in fil_used.replace(';', ',').split(',')]
             used_detail = []
@@ -241,13 +254,24 @@ class AutoToolmap:
                     fu_val = float(fv)
                 except ValueError:
                     continue
-                if fu_val > 0 and i < len(cfg.get('filament_used_g', [])):
-                    cfg['filament_used_g'][i] = fu_val
+                have_usage_data = True
+                if fu_val > 0:
                     used[i] = True
-                    used_detail.append('T%d=%.1fg' % (i, fu_val))
+                    if i < len(cfg.get('filament_used_g', [])):
+                        cfg['filament_used_g'][i] = fu_val
+                    used_detail.append('T%d=%.1f' % (i, fu_val))
+                else:
+                    used_detail.append('T%d=0' % i)
             applied.append('filament_used')
-            if used_detail:
-                details.append('filament_used: %s' % ', '.join(used_detail))
+            details.append('filament_used: %s' % ', '.join(used_detail))
+
+        if not have_usage_data and fil_type:
+            for i, ft in enumerate(types):
+                if i >= MAX_EXTRUDERS:
+                    break
+                if ft:
+                    used[i] = True
+            details.append('(no filament_used data, marking all typed extruders as used)')
 
         fil_color = parsed.get('filament_colour',
                                parsed.get('filament_color', ''))
