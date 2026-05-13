@@ -65,23 +65,49 @@ class AutoToolmap:
         return status
 
     def _detect_print_file(self):
-        """Auto-detect current print file from virtual_sdcard + print_stats."""
+        """Auto-detect current print file from print_stats + virtual_sdcard."""
         try:
-            vsd = self.printer.lookup_object('virtual_sdcard', None)
-            if vsd is None:
-                return ''
-            sdcard_dir = getattr(vsd, 'sdcard_dirname', '')
-            if not sdcard_dir:
-                return ''
+            filename = ''
             print_stats = self.printer.lookup_object('print_stats', None)
-            if print_stats is None:
-                return ''
-            eventtime = self.printer.lookup_object('reactor').monotonic()
-            filename = print_stats.get_status(eventtime).get('filename', '')
+            if print_stats is not None:
+                eventtime = self.printer.lookup_object('reactor').monotonic()
+                filename = print_stats.get_status(eventtime).get('filename', '')
+
             if not filename:
+                self.logger.info("auto_toolmap: print_stats has no filename")
                 return ''
-            return os.path.join(sdcard_dir, filename)
-        except Exception:
+
+            # If filename is already a full path, use it directly
+            if os.path.isabs(filename) and os.path.isfile(filename):
+                return filename
+
+            # Try virtual_sdcard base directory
+            vsd = self.printer.lookup_object('virtual_sdcard', None)
+            if vsd is not None:
+                sdcard_dir = getattr(vsd, 'sdcard_dirname', '')
+                if sdcard_dir:
+                    full = os.path.join(sdcard_dir, filename)
+                    if os.path.isfile(full):
+                        return full
+
+            # Try print_task_config for base path
+            ptc_obj = self.printer.lookup_object('print_task_config', None)
+            if ptc_obj is not None:
+                cfg = ptc_obj.print_task_config
+                for key in ('file_path', 'filepath', 'gcode_path'):
+                    base = cfg.get(key, '')
+                    if base and os.path.isabs(base):
+                        if os.path.isfile(base):
+                            return base
+                        full = os.path.join(os.path.dirname(base), filename)
+                        if os.path.isfile(full):
+                            return full
+
+            self.logger.info(
+                "auto_toolmap: could not resolve full path for '%s'" % filename)
+            return ''
+        except Exception as e:
+            self.logger.warning("auto_toolmap: file detect error: %s" % e)
             return ''
 
     # ------------------------------------------------------------------
@@ -127,7 +153,11 @@ class AutoToolmap:
 
         if not filepath or not os.path.isfile(filepath):
             gcmd.respond_info(
-                "PUSH_TOOLMAP_FROM_FILE: file not found: %s" % filepath)
+                "PUSH_TOOLMAP_FROM_FILE: file not found: '%s'" % filepath)
+            gcmd.respond_info(
+                "Calibration flags still set: bed_level=%s flow_cal=%s shaper_cal=%s"
+                % (self.auto_bed_leveling, self.flow_calibrate,
+                   self.shaper_calibrate))
             return
 
         if not self.enable:
