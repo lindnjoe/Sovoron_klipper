@@ -2081,6 +2081,16 @@ class afcACE(afcUnit):
         # Ensure ACE is not still busy from a previous operation
         self._wait_for_ace_ready()
 
+        # Clear stale toolhead sensor state before feeding.
+        # U1 filament_motion_sensors retain filament_present from a
+        # previous load's retract, which tricks the feed polling into
+        # thinking filament has already arrived — bypassing home_to_tool.
+        if lane is not None:
+            ext = lane.extruder_obj
+            ext.tool_start_state = False
+            if getattr(ext, 'filament_sensor_obj', None) is not None:
+                ext.filament_sensor_obj.runout_helper.filament_present = False
+
         # Determine homing behaviour from AFC global config.  When
         # home_to_tool and homing_enabled are both True we send one
         # single continuous feed for the full distance + tool_homing_distance
