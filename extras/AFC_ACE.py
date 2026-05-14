@@ -142,11 +142,6 @@ class afcACE(afcUnit):
         self.calibration_step = config.getfloat("calibration_step", 50.0)              # mm per check during calibration
         self.max_feed_overshoot = config.getfloat("max_feed_overshoot", 100.0)         # mm extra to try past feed_length before giving up
 
-        # Dock purge: drop tool at dock, load filament, purge in dock, then pick up
-        self.dock_purge = config.getboolean("dock_purge", False)                       # Set to True to enable dock purge during load
-        self.dock_purge_length = config.getfloat("dock_purge_length", 50.0)            # mm of filament to extrude while docked for purging
-        self.dock_purge_speed = config.getfloat("dock_purge_speed", 5.0)               # mm/s extrude speed during dock purge
-
         # Auto Spoolman: when True, automatically create filaments and spools
         # in Spoolman from RFID data. When False, RFID data still matches to
         # existing filaments/spools but won't create new ones.
@@ -655,61 +650,6 @@ class afcACE(afcUnit):
                     f"lane {lane_name} to prevent cross-lane fault detection"
                 )
                 buf.disable_buffer()
-
-    def _dock_purge_dropoff(self):
-        """Drop off current tool at dock for dock purging.
-
-        Enters docking mode and runs the toolchanger's dropoff gcode so the
-        nozzle rests on the dock pad while filament is loaded and purged.
-        Uses the native AFC toolchanger engine.
-        """
-        # Find the AFC_Toolchanger unit for the current extruder
-        cur_extruder = self.afc.function.get_current_extruder_obj()
-        tc = cur_extruder.tc_unit_obj if cur_extruder else None
-        if not tc or not tc.active_tool:
-            self.logger.warning("ACE dock purge: no active tool, skipping dropoff")
-            return
-        tool = tc.active_tool
-
-        # If the toolchanger is in error (e.g. detection failure during a
-        # prior tool swap), re-initialize before attempting docking mode.
-        if tc.status == 'error':
-            self.logger.warning(
-                "ACE dock purge: toolchanger in error state (%s), "
-                "re-initializing" % tc.error_message)
-            tc.initialize(tc.active_tool)
-
-        self.afc.gcode.run_script_from_command("ENTER_DOCKING_MODE")
-
-        gcode_pos = list(tc.gcode_move.get_status()['gcode_position'])
-        start_pos = tc._position_with_tool_offset(gcode_pos, None)
-        self._dock_purge_context = {
-            'dropoff_tool': tool.name,
-            'pickup_tool': tool.name,
-            'dock_purge': True,
-            'start_position': tc._position_to_xyz(start_pos, 'xyz'),
-            'restore_position': tc._position_to_xyz(start_pos, 'XYZ'),
-        }
-
-        tc._run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
-
-    def _dock_purge_pickup(self):
-        """Pick up tool from dock after purging.
-
-        Runs the toolchanger's pickup gcode (nozzle wipes on pad during pickup)
-        and exits docking mode to restore normal operation.
-        Uses the native AFC toolchanger engine.
-        """
-        cur_extruder = self.afc.function.get_current_extruder_obj()
-        tc = cur_extruder.tc_unit_obj if cur_extruder else None
-        if not tc or not tc.active_tool or not hasattr(self, '_dock_purge_context'):
-            self.logger.warning("ACE dock purge: no context for pickup, skipping")
-            return
-        tool = tc.active_tool
-
-        tc._run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
-        self.afc.gcode.run_script_from_command("EXIT_DOCKING_MODE")
-        self._dock_purge_context = None
 
     # ---- Inventory / State Sync ----
 
@@ -1556,43 +1496,9 @@ class afcACE(afcUnit):
         if afc._check_extruder_temp(cur_lane):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
 
-        # Dock purge phase 1: drop off tool at dock before feeding filament
-        dock_dropped_off = False
-        if self.dock_purge:
-            self.logger.info("ACE dock purge: dropping tool off at dock before feed")
-            self._dock_purge_dropoff()
-            dock_dropped_off = True
-            afc.afcDeltaTime.log_with_time("ACE: After dock purge dropoff")
-
-        # Wrap the rest of the load in try/finally so the tool is always
-        # picked back up from the dock even if the load fails.
-        load_result = False
-        try:
-            load_result = self._load_sequence_feed_and_verify(
-                cur_lane, cur_hub, cur_extruder, afc
-            )
-        finally:
-            if dock_dropped_off:
-                # Always pick up the tool -even on failure
-                if load_result and self.dock_purge:
-                    # Success path: purge in dock, then pick up
-                    purge_spd = self._quiet_speed(self.dock_purge_speed)
-                    self.logger.info(
-                        f"ACE dock purge: extruding {self.dock_purge_length}mm "
-                        f"@ {purge_spd}mm/s in dock, then picking up"
-                    )
-                    afc.move_e_pos(
-                        self.dock_purge_length, purge_spd,
-                        "dock purge extrude"
-                    )
-                else:
-                    self.logger.info(
-                        "ACE dock purge: picking up tool after load failure"
-                    )
-                self._dock_purge_pickup()
-                afc.afcDeltaTime.log_with_time("ACE: After dock purge pickup")
-
-        return load_result
+        return self._load_sequence_feed_and_verify(
+            cur_lane, cur_hub, cur_extruder, afc
+        )
 
     def _load_sequence_feed_and_verify(self, cur_lane, cur_hub,
                                        cur_extruder, afc):
