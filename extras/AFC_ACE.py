@@ -1680,12 +1680,22 @@ class afcACE(afcUnit):
             cur_lane.loaded_to_hub = True
 
         except Exception as e:
-            # Load failed -- clear virtual hub since filament may not be in path
-            self._set_hub_state(cur_lane, False)
-            message = f"ACE load failed for {cur_lane.name}: {e}"
-            self.logger.error(f"{message}\n{traceback.format_exc()}")
-            afc.error.handle_lane_failure(cur_lane, message)
-            return False
+            # ACE serial can drop mid-feed.  If the FPS latched or the
+            # toolhead sensor is currently triggered, filament reached
+            # the toolhead despite the error — continue the load.
+            if self._fps_latched or cur_lane.get_toolhead_pre_sensor_state():
+                self.logger.info(
+                    f"ACE load: error during feed but filament at toolhead "
+                    f"(fps_latched={self._fps_latched}, sensor={cur_lane.get_toolhead_pre_sensor_state()}), "
+                    f"continuing despite: {e}"
+                )
+                cur_lane.loaded_to_hub = True
+            else:
+                self._set_hub_state(cur_lane, False)
+                message = f"ACE load failed for {cur_lane.name}: {e}"
+                self.logger.error(f"{message}\n{traceback.format_exc()}")
+                afc.error.handle_lane_failure(cur_lane, message)
+                return False
 
         # Verify toolhead sensor triggered.
         # ACE lanes with FPS buffers skip the traditional buffer decompress

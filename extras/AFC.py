@@ -2615,6 +2615,7 @@ class afc:
                 #   extruder does not have a lane loaded, so that M109 can set temperature in a
                 #   start macro for the initial tool, prior to loading filament.
                 if (not self.disable_ooze_check
+                    and not self.error_state
                     and curr_extruder
                     and curr_extruder.lane_loaded is not None):
                     for curr_extr_lane in curr_extruder.lanes:
