@@ -1511,27 +1511,44 @@ class afc:
         """
         do_park_pre_load = cur_extruder.park_pre_load if cur_extruder.park_pre_load is not None else self.park_pre_load
         ext_park_pre_load_cmd = cur_extruder.park_pre_load_cmd or self.park_pre_load_cmd
+        ext_post_load_cleanup = cur_extruder.post_load_macro or self.post_load_macro
+        parked_pre_load = False
 
         if do_park_pre_load and ext_park_pre_load_cmd:
             self.gcode.run_script_from_command(ext_park_pre_load_cmd)
+            parked_pre_load = True
 
-        if cur_lane.custom_load_cmd:
-            self.logger.info("Running custom load command for lane {}".format(cur_lane.name))
-            self.gcode.run_script_from_command(cur_lane.custom_load_cmd)
-            if cur_lane.get_toolhead_pre_sensor_state():
-                cur_lane.status = AFCLaneState.TOOL_LOADED
-                self.save_vars()
-            else:
-                message = 'Custom load command did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n||=====||====||==>--||\nTRG   LOAD   HUB   TOOL'
-                message += '\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.'.format(cur_lane.name)
-                message += '\nManually move filament until filament is right before toolhead extruder gears,'
-                message += '\nthen load into extruder gears with extrude button in your gui of choice until the color fully changes'
-                if self.function.in_print():
-                    message += '\nOnce filament is fully loaded click resume to continue printing'
-                self.error.handle_lane_failure(cur_lane, message)
-                return False
-            return True
+        load_succeeded = False
+        try:
+            if cur_lane.custom_load_cmd:
+                self.logger.info("Running custom load command for lane {}".format(cur_lane.name))
+                self.gcode.run_script_from_command(cur_lane.custom_load_cmd)
+                if cur_lane.get_toolhead_pre_sensor_state():
+                    cur_lane.status = AFCLaneState.TOOL_LOADED
+                    self.save_vars()
+                else:
+                    message = 'Custom load command did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n||=====||====||==>--||\nTRG   LOAD   HUB   TOOL'
+                    message += '\nTo resolve set lane loaded with `SET_LANE_LOADED LANE={}` macro.'.format(cur_lane.name)
+                    message += '\nManually move filament until filament is right before toolhead extruder gears,'
+                    message += '\nthen load into extruder gears with extrude button in your gui of choice until the color fully changes'
+                    if self.function.in_print():
+                        message += '\nOnce filament is fully loaded click resume to continue printing'
+                    self.error.handle_lane_failure(cur_lane, message)
+                    return False
+                load_succeeded = True
+                return True
 
+            load_succeeded = self._load_sequence_standard(cur_lane, cur_hub, cur_extruder)
+            return load_succeeded
+        finally:
+            if parked_pre_load and not load_succeeded and ext_post_load_cleanup:
+                self.logger.info("Load failed after park_pre_load, running cleanup: %s" % ext_post_load_cleanup)
+                try:
+                    self.gcode.run_script_from_command(ext_post_load_cleanup)
+                except Exception as e:
+                    self.logger.error("Cleanup macro failed: %s" % str(e))
+
+    def _load_sequence_standard(self, cur_lane: AFCLane, cur_hub: afc_hub, cur_extruder: AFCExtruder):
         use_direct_dist = False
         if (cur_lane.hub_obj
             and cur_lane.hub_obj.use_dist_hub):
