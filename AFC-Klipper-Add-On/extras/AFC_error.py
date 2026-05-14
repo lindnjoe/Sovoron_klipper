@@ -5,8 +5,8 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 from __future__ import annotations
 
-import logging
 import traceback
+import logging
 import inspect
 
 from configparser import Error as error
@@ -62,6 +62,9 @@ class afcError:
         self.pause= True
         self.afc = self.printer.lookup_object('AFC')
         error_handled = False
+        if isinstance(LANE, str):
+            LANE = self.afc.lanes.get(LANE, None)
+
         if problem is None:
             self.PauseUserIntervention('Paused for unknown error')
         if problem=='toolhead':
@@ -94,8 +97,8 @@ class afcError:
                     while (cur_lane.raw_load_state):
                         total_move_dist = cur_lane.dist_hub + cur_lane.hub_obj.afc_bowden_length + 500
                         cur_lane.unit_obj.move_to_load(cur_lane, total_move_dist,
-                                                    MoveDirection.NEG, True,
-                                                    SpeedMode.SHORT)
+                                                       MoveDirection.NEG, True,
+                                                       SpeedMode.SHORT)
                         num_tries += 1
                         if num_tries >= 5:
                             self.PauseUserIntervention(failed_to_retract_msg)

@@ -55,7 +55,7 @@ class afcFunction:
         self.printer.register_event_handler("klippy:connect", self.handle_connect)
         self.printer.register_event_handler("afc_stepper:register_macros",self.register_lane_macros)
         self.printer.register_event_handler("afc_hub:register_macros",self.register_hub_macros)
-        # Activate extruder callback (reserved for future multi-extruder timer use)
+        # TODO: Use or remove once fully moved away from KTC
         # self.reactor = self.printer.get_reactor()
         # self.activate_extruder_cb = self.reactor.register_timer( self._handle_activate_extruder )
         self.printer.register_event_handler("afc:moonraker_connect", self.handle_moonraker_connect)
@@ -128,6 +128,7 @@ class afcFunction:
         """
         Helper function to get stock macros, rename to something and replace stock macro with AFC functions
         """
+        # Renaming users Resume macro so that RESUME calls AFC_Resume function instead
         prev_cmd = self.afc.gcode.register_command(base_name, None)
         if prev_cmd is not None:
             pdesc = "Renamed builtin of '%s'" % (base_name,)
@@ -595,20 +596,35 @@ class afcFunction:
         cur_lane_loaded.unit_obj.select_lane( cur_lane_loaded )
         self.logger.debug("Activate extruder done")
 
-    def unset_lane_loaded(self):
+    def unset_lane_loaded(self, lane_name=None):
         """
-        Helper function to get current lane and unsync lane from toolhead extruder
+        Helper function to get current lane and unsync lane from toolhead extruder.
+
+        :param lane_name: Optional lane name to unset. When None, auto-detects
+                          from active extruder or falls back to self.current.
         """
-        cur_lane_loaded = self.get_current_lane_obj()
-        if cur_lane_loaded is not None:
-            extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None)
-            cur_lane_loaded.unsync_to_extruder()
-            cur_lane_loaded.set_tool_unloaded()
-            cur_lane_loaded.unit_obj.return_to_home()
-            self.afc.function.handle_activate_extruder()
-            self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
-            self.afc.save_vars()
-            cur_lane_loaded.unit_obj.on_lane_unset_loaded(cur_lane_loaded, extruder_name)
+        cur_lane_loaded = None
+        if lane_name is not None:
+            cur_lane_loaded = self.afc.lanes.get(lane_name)
+            if cur_lane_loaded is None:
+                self.logger.info("UNSET_LANE_LOADED: unknown lane '{}'".format(lane_name))
+                return
+        else:
+            cur_lane_loaded = self.get_current_lane_obj()
+        if cur_lane_loaded is None and self.afc.current is not None:
+            cur_lane_loaded = self.afc.lanes.get(self.afc.current)
+        if cur_lane_loaded is None:
+            self.logger.info("UNSET_LANE_LOADED: no lane currently loaded")
+            return
+        extruder_name = getattr(cur_lane_loaded.extruder_obj, "name", None)
+        cur_lane_loaded.unsync_to_extruder()
+        cur_lane_loaded.set_tool_unloaded()
+        self.afc.current = None
+        cur_lane_loaded.unit_obj.return_to_home()
+        self.afc.function.handle_activate_extruder()
+        self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
+        self.afc.save_vars()
+        cur_lane_loaded.unit_obj.on_lane_unset_loaded(cur_lane_loaded, extruder_name)
 
     def select_loaded_lane(self):
         """
@@ -1361,7 +1377,9 @@ class afcFunction:
 
             # Setting tool start to buffer if only tool_end is set and user has buffer so calibration can run
             if cur_lane.extruder_obj.tool_start is None:
-                if cur_lane.extruder_obj.tool_end is not None and cur_lane.buffer_obj is not None:
+                if cur_lane.extruder_obj.filament_sensor_obj is not None:
+                    self.logger.info("Using U1 filament sensor as tool_start for calibration")
+                elif cur_lane.extruder_obj.tool_end is not None and cur_lane.buffer_obj is not None:
                     self.logger.info("Cannot run calibration using post extruder sensor, using buffer to calibrate bowden length")
                     cur_lane.extruder_obj.tool_start = "buffer"
                     set_tool_start_back_to_none = True

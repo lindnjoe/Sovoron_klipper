@@ -651,61 +651,6 @@ class afcACE(afcUnit):
                 )
                 buf.disable_buffer()
 
-    def _dock_purge_dropoff(self):
-        """Drop off current tool at dock for dock purging.
-
-        Enters docking mode and runs the toolchanger's dropoff gcode so the
-        nozzle rests on the dock pad while filament is loaded and purged.
-        Uses the native AFC toolchanger engine.
-        """
-        # Find the AFC_Toolchanger unit for the current extruder
-        cur_extruder = self.afc.function.get_current_extruder_obj()
-        tc = cur_extruder.tc_unit_obj if cur_extruder else None
-        if not tc or not tc.active_tool:
-            self.logger.warning("ACE dock purge: no active tool, skipping dropoff")
-            return
-        tool = tc.active_tool
-
-        # If the toolchanger is in error (e.g. detection failure during a
-        # prior tool swap), re-initialize before attempting docking mode.
-        if tc.status == 'error':
-            self.logger.warning(
-                "ACE dock purge: toolchanger in error state (%s), "
-                "re-initializing" % tc.error_message)
-            tc.initialize(tc.active_tool)
-
-        self.afc.gcode.run_script_from_command("ENTER_DOCKING_MODE")
-
-        gcode_pos = list(tc.gcode_move.get_status()['gcode_position'])
-        start_pos = tc._position_with_tool_offset(gcode_pos, None)
-        self._dock_purge_context = {
-            'dropoff_tool': tool.name,
-            'pickup_tool': tool.name,
-            'dock_purge': True,
-            'start_position': tc._position_to_xyz(start_pos, 'xyz'),
-            'restore_position': tc._position_to_xyz(start_pos, 'XYZ'),
-        }
-
-        tc._run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, self._dock_purge_context)
-
-    def _dock_purge_pickup(self):
-        """Pick up tool from dock after purging.
-
-        Runs the toolchanger's pickup gcode (nozzle wipes on pad during pickup)
-        and exits docking mode to restore normal operation.
-        Uses the native AFC toolchanger engine.
-        """
-        cur_extruder = self.afc.function.get_current_extruder_obj()
-        tc = cur_extruder.tc_unit_obj if cur_extruder else None
-        if not tc or not tc.active_tool or not hasattr(self, '_dock_purge_context'):
-            self.logger.warning("ACE dock purge: no context for pickup, skipping")
-            return
-        tool = tc.active_tool
-
-        tc._run_gcode('tool.pickup_gcode', tool.pickup_gcode, self._dock_purge_context)
-        self.afc.gcode.run_script_from_command("EXIT_DOCKING_MODE")
-        self._dock_purge_context = None
-
     # ---- Inventory / State Sync ----
 
     def _sync_inventory(self):
@@ -784,32 +729,40 @@ class afcACE(afcUnit):
                     self._sync_rfid_to_spoolman(lane, slot_info)
 
     def _apply_slot_filament_defaults(self, lane, slot_info):
-        """Apply filament material/color to a lane if not already set.
+        """Apply filament material/color/temps to a lane if not already set.
 
         Priority: existing lane values > Spoolman next_spool_id > ACE RFID > AFC defaults.
         Never overwrites values that are already set.
         """
-        # If lane already has material and color set, don't touch them
         has_material = getattr(lane, "material", None) not in (None, "")
         has_color = getattr(lane, "color", None) not in (None, "", "#000000")
-
-        if has_material and has_color:
-            return
+        has_extruder_temp = getattr(lane, "extruder_temp", None) is not None
+        has_bed_temp = getattr(lane, "bed_temp", None) is not None
 
         # Try ACE RFID data from slot inventory
         rfid_material = slot_info.get("material", "") if slot_info else ""
         rfid_color = slot_info.get("color", [0, 0, 0]) if slot_info else [0, 0, 0]
+        rfid_extruder_temp = slot_info.get("extruder_temp_max") if slot_info else None
+        rfid_bed_temp = slot_info.get("bed_temp_max") if slot_info else None
 
         # Treat "unknown" material from 3rd-party spools as empty
         if rfid_material and rfid_material.lower() == "unknown":
             rfid_material = ""
-        rfid_has_data = bool(rfid_material) or rfid_color != [0, 0, 0]
 
-        if rfid_has_data:
-            if not has_material and rfid_material:
-                lane.material = rfid_material
-            if not has_color and rfid_color != [0, 0, 0]:
-                lane.color = self._ace_color_to_hex(rfid_color)
+        if not has_material and rfid_material:
+            lane.material = rfid_material
+        if not has_color and rfid_color != [0, 0, 0]:
+            lane.color = self._ace_color_to_hex(rfid_color)
+        if not has_extruder_temp and rfid_extruder_temp is not None:
+            try:
+                lane.extruder_temp = int(rfid_extruder_temp)
+            except (TypeError, ValueError):
+                pass
+        if not has_bed_temp and rfid_bed_temp is not None:
+            try:
+                lane.bed_temp = int(rfid_bed_temp)
+            except (TypeError, ValueError):
+                pass
 
         # Apply AFC defaults for anything still missing
         if not has_material and not getattr(lane, "material", None):
@@ -1543,43 +1496,9 @@ class afcACE(afcUnit):
         if afc._check_extruder_temp(cur_lane):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
 
-        # Dock purge phase 1: drop off tool at dock before feeding filament
-        dock_dropped_off = False
-        if self.dock_purge:
-            self.logger.info("ACE dock purge: dropping tool off at dock before feed")
-            self._dock_purge_dropoff()
-            dock_dropped_off = True
-            afc.afcDeltaTime.log_with_time("ACE: After dock purge dropoff")
-
-        # Wrap the rest of the load in try/finally so the tool is always
-        # picked back up from the dock even if the load fails.
-        load_result = False
-        try:
-            load_result = self._load_sequence_feed_and_verify(
-                cur_lane, cur_hub, cur_extruder, afc
-            )
-        finally:
-            if dock_dropped_off:
-                # Always pick up the tool -even on failure
-                if load_result and self.dock_purge:
-                    # Success path: purge in dock, then pick up
-                    purge_spd = self._quiet_speed(self.dock_purge_speed)
-                    self.logger.info(
-                        f"ACE dock purge: extruding {self.dock_purge_length}mm "
-                        f"@ {purge_spd}mm/s in dock, then picking up"
-                    )
-                    afc.move_e_pos(
-                        self.dock_purge_length, purge_spd,
-                        "dock purge extrude"
-                    )
-                else:
-                    self.logger.info(
-                        "ACE dock purge: picking up tool after load failure"
-                    )
-                self._dock_purge_pickup()
-                afc.afcDeltaTime.log_with_time("ACE: After dock purge pickup")
-
-        return load_result
+        return self._load_sequence_feed_and_verify(
+            cur_lane, cur_hub, cur_extruder, afc
+        )
 
     def _load_sequence_feed_and_verify(self, cur_lane, cur_hub,
                                        cur_extruder, afc):
@@ -1658,7 +1577,7 @@ class afcACE(afcUnit):
             if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
                 buffer_obj.enable_advance_latch()
 
-            _, _, early_engage = self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
+            self._feed_slot(local_slot, lane=cur_lane, feed_distance=feed_distance)
 
             if self.mode == MODE_COMBINED:
                 self._current_loaded_slot = local_slot
@@ -1784,204 +1703,8 @@ class afcACE(afcUnit):
                     afc.error.handle_lane_failure(cur_lane, message)
                     return False
 
-        # ── Early extruder engagement (FPS buffer + home_to_tool) ────
-        # When the FPS latched during the home_to_tool feed, sync the
-        # extruder and start feed_assist immediately, then advance
-        # tool_stn.  Skips the normal feed_assist_count verification.
-        if early_engage:
-            self.logger.info(
-                "ACE load: FPS early engage — starting extruder immediately"
-            )
-            cur_lane.sync_to_extruder()
-
-            # Start feed assist right away so ACE pushes while extruder
-            # pulls — this keeps tension during engagement.
-            if local_slot >= 0 and self._get_feed_assist(local_slot, cur_lane):
-                try:
-                    self._wait_for_ace_ready()
-                    self._ace.start_feed_assist(local_slot)
-                    self._feed_assist_active.add(local_slot)
-                    self.logger.info(
-                        f"ACE load: early engage — feed assist started "
-                        f"for slot {local_slot}"
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"ACE load: early engage — start_feed_assist failed: {e}"
-                    )
-
-            # If tool_end sensor exists, feed until it triggers
-            if cur_extruder.tool_end:
-                tool_attempts = 0
-                while not cur_extruder.tool_end_state:
-                    tool_attempts += 1
-                    afc.move_e_pos(
-                        cur_lane.short_move_dis, cur_extruder.tool_load_speed,
-                        "Tool end", wait_tool=True
-                    )
-                    if tool_attempts > 20:
-                        message = (
-                            "ACE load: filament failed to trigger post-extruder sensor.\n"
-                            "To resolve, set lane loaded with "
-                            f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                        )
-                        afc.error.handle_lane_failure(cur_lane, message)
-                        return False
-
-            # Advance into nozzle — extruder pulls, feed assist pushes
-            if cur_extruder.tool_stn:
-                self.logger.info(
-                    f"ACE load: early engage — advancing {cur_extruder.tool_stn}mm "
-                    f"into nozzle @ {cur_extruder.tool_load_speed}mm/s"
-                )
-                afc.move_e_pos(
-                    cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn"
-                )
-
-            return True
-
-        # ── Normal engagement path ───────────────────────────────────
-        # Sync to extruder and load filament into the nozzle using tool_stn
-        cur_lane.sync_to_extruder()
-
-        # Snapshot feed_assist_count now that the extruder is synced and
-        # about to pull filament.  The assist motor should engage once the
-        # extruder gears start pulling, so we compare after tool_stn.
-        pre_assist_count = None
-        try:
-            self._wait_for_ace_ready()
-            pre_status = self._ace.get_status()
-            pre_assist_count = pre_status.get("feed_assist_count")
-        except Exception:
-            pass
-
-        # If tool_end sensor exists, feed until it triggers
-        if cur_extruder.tool_end:
-            tool_attempts = 0
-            while not cur_extruder.tool_end_state:
-                tool_attempts += 1
-                afc.move_e_pos(
-                    cur_lane.short_move_dis, cur_extruder.tool_load_speed,
-                    "Tool end", wait_tool=True
-                )
-                if tool_attempts > 20:
-                    message = (
-                        "ACE load: filament failed to trigger post-extruder sensor.\n"
-                        "To resolve, set lane loaded with "
-                        f"`SET_LANE_LOADED LANE={cur_lane.name}` macro."
-                    )
-                    afc.error.handle_lane_failure(cur_lane, message)
-                    return False
-
-        # Push filament into the nozzle using tool_stn distance
-        if cur_extruder.tool_stn:
-            self.logger.info(
-                f"ACE load: advancing {cur_extruder.tool_stn}mm into nozzle "
-                f"@ {cur_extruder.tool_load_speed}mm/s"
-            )
-            afc.move_e_pos(
-                cur_extruder.tool_stn, cur_extruder.tool_load_speed, "tool stn"
-            )
-
-        # Verify feed assist count increased — confirms the ACE assist
-        # motor pushed filament during the load, meaning the extruder
-        # gears actually engaged and pulled filament.
-        # If the count did not increase, retract 20mm via ACE and retry
-        # once to re-seat the filament against the extruder gears.
-        engagement_verified = False
-        if pre_assist_count is not None:
-            try:
-                self._wait_for_ace_ready()
-                post_status = self._ace.get_status()
-                post_assist_count = post_status.get("feed_assist_count")
-                if post_assist_count is not None:
-                    delta = post_assist_count - pre_assist_count
-                    if delta > 0:
-                        engagement_verified = True
-                        self.logger.info(
-                            f"ACE load: feed assist engaged {delta} time(s) "
-                            f"during load (count {pre_assist_count} -> {post_assist_count})"
-                        )
-                    else:
-                        self.logger.warning(
-                            f"ACE load: feed_assist_count did not increase "
-                            f"during load ({pre_assist_count} -> {post_assist_count}). "
-                            f"Retracting tool_stn + 20mm and retrying to engage extruder gears."
-                        )
-                        retry_dist = 20.0
-                        retry_spd = self._quiet_speed(self.retract_speed)
-                        feed_spd = self._quiet_speed(self.feed_speed)
-                        # 1. Retract extruder by tool_stn to pull filament
-                        #    back out of the nozzle area
-                        if cur_extruder.tool_stn:
-                            self.logger.info(
-                                f"ACE load retry: retracting extruder "
-                                f"{cur_extruder.tool_stn}mm "
-                                f"@ {cur_extruder.tool_load_speed}mm/s"
-                            )
-                            afc.move_e_pos(
-                                -cur_extruder.tool_stn,
-                                cur_extruder.tool_load_speed,
-                                "tool stn retract",
-                            )
-                        # 2. ACE unwinds 20mm to pull filament back further
-                        self._wait_for_ace_ready()
-                        self._ace.unwind_filament(local_slot, retry_dist, retry_spd)
-                        self._wait_for_feed_complete(
-                            local_slot, retry_dist, retry_spd
-                        )
-                        # 3. ACE re-feeds 20mm to push filament back in
-                        self._wait_for_ace_ready()
-                        self._ace.feed_filament(local_slot, retry_dist, feed_spd)
-                        self._wait_for_feed_complete(
-                            local_slot, retry_dist, feed_spd
-                        )
-                        # 4. Re-advance extruder by tool_stn into nozzle
-                        if cur_extruder.tool_stn:
-                            self.logger.info(
-                                f"ACE load retry: advancing {cur_extruder.tool_stn}mm "
-                                f"into nozzle @ {cur_extruder.tool_load_speed}mm/s"
-                            )
-                            afc.move_e_pos(
-                                cur_extruder.tool_stn,
-                                cur_extruder.tool_load_speed,
-                                "tool stn retry",
-                            )
-                        # Re-check feed_assist_count after retry
-                        self._wait_for_ace_ready()
-                        retry_status = self._ace.get_status()
-                        retry_count = retry_status.get("feed_assist_count")
-                        if retry_count is not None:
-                            retry_delta = retry_count - post_assist_count
-                            if retry_delta > 0:
-                                engagement_verified = True
-                                self.logger.info(
-                                    f"ACE load retry: feed assist engaged {retry_delta} "
-                                    f"time(s) after retry — extruder gears engaged."
-                                )
-                            else:
-                                self.logger.warning(
-                                    f"ACE load: feed_assist_count still did not increase "
-                                    f"after retry ({post_assist_count} -> {retry_count}). "
-                                    f"Filament may not be engaged with extruder gears."
-                                )
-            except Exception as e:
-                self.logger.debug(f"ACE load: could not verify feed_assist_count: {e}")
-
-        # internal mode: feed_assist_count is the only engagement verification.
-        # Fail the load if we couldn't confirm the assist motor pushed.
-        if cur_extruder.tool_start == "internal" and not engagement_verified:
-            message = (
-                "ACE load (internal mode): feed_assist_count never increased "
-                "during load — filament did not engage extruder gears.\n"
-                f"To resolve, set lane loaded with `SET_LANE_LOADED LANE={cur_lane.name}` macro."
-            )
-            afc.error.handle_lane_failure(cur_lane, message)
-            return False
-
-        # Ensure feed assist is running while filament is loaded.
-        # _feed_slot starts it during phase 3, but if the sensor triggered
-        # early (during bulk feed) phase 3 may not have run.
+        # Ensure feed assist is running so ACE pushes while the extruder
+        # pulls during the toolhead engagement phase (handled by AFC core).
         local_slot = self._get_local_slot_for_lane(cur_lane)
         if local_slot >= 0 and self._get_feed_assist(local_slot, cur_lane):
             try:
@@ -2045,20 +1768,6 @@ class afcACE(afcUnit):
 
         afc._toolhead_pre_unload_pull(cur_lane, cur_extruder)
 
-        # Tighten the spool loop: command the ACE to rewind before the cut
-        # so the filament rewinds cleanly onto the spool.
-        if self.unload_preretract > 0:
-            try:
-                self._wait_for_ace_ready()
-                self._ace.unwind_filament(
-                    local_slot, self.unload_preretract,
-                    self._quiet_speed(self.retract_speed),
-                )
-            except Exception as e:
-                self.logger.warning(
-                    f"ACE unload: pre-cut spool tighten failed for slot {local_slot}: {e}"
-                )
-
         self.lane_unloading(cur_lane)
         cur_lane.sync_to_extruder()
         cur_lane.do_enable(True)
@@ -2066,52 +1775,27 @@ class afcACE(afcUnit):
 
         afc._toolhead_cut_and_tip(cur_lane, cur_extruder)
 
-        # ACE lanes have no lane stepper, so all retract moves use move_e_pos
-        # (extruder motor).  Unload sequence:
-        #   1. Half of tool_stn_unload extruder retract — gets filament
-        #      partially out of the hotend.
-        #   2. Start ACE unwind (non-blocking) to pull filament back to spool.
-        #   3. Remaining half of tool_stn_unload + 10mm extruder retract
-        #      concurrent with ACE unwind — keeps both motors pulling
-        #      together for the second half, maintaining tension.
-        local_slot = self._get_local_slot_for_lane(cur_lane)
+        # form_tip_cmd (e.g. SNAPMAKER_MOVE_THEN_UNLOAD) has already retracted
+        # filament out of the toolhead.  Unsync and let ACE unwind pull it back
+        # through the bowden.
+        cur_lane.unsync_to_extruder()
 
-        # Calculate ACE unwind distance (from extruder back through hub).
-        # Path: ACE → hub (dist_hub) → bowden → extruder (retract_length total)
-        # Unwind = bowden + hub_clear to pull filament back through the hub combiner.
-        # For real hub pins, the hub clearing loop handles the last part.
-        # For virtual hubs, add hub_clear_move_dis to ensure filament clears the combiner.
+        local_slot = self._get_local_slot_for_lane(cur_lane)
         full_retract = self._get_retract_length(cur_lane)
         dist_hub = self._get_dist_hub(cur_lane)
         has_real_hub_pin = self._hub_has_real_pin(cur_hub)
         if dist_hub > 0 and dist_hub < full_retract:
-            retract_length = full_retract - dist_hub  # bowden length (hub to extruder)
+            retract_length = full_retract - dist_hub
             if not has_real_hub_pin:
-                retract_length += cur_hub.hub_clear_move_dis  # pull past hub combiner
+                retract_length += cur_hub.hub_clear_move_dis
         else:
             retract_length = full_retract
 
-        half_stn = cur_extruder.tool_stn_unload / 2.0
-
-        # Step 1: First half of extruder retract — pulls filament partially
-        # out of the hotend before starting the ACE unwind.
-        self.logger.info(
-            f"ACE unload: extruder retract {half_stn:.0f}mm "
-            f"@ {cur_extruder.tool_unload_speed}mm/s (first half)"
-        )
-        afc.move_e_pos(
-            -half_stn,
-            cur_extruder.tool_unload_speed,
-            "ACE nozzle retract 1/2", wait_tool=True
-        )
-
-        # Step 2: Start ACE unwind (non-blocking) to pull filament back
-        # through the hub toward the spool.
-        self.logger.info(
-            f"ACE unload: starting ACE unwind slot {local_slot} "
-            f"{retract_length:.0f}mm (to hub) for lane {cur_lane.name}"
-        )
         unload_spd = self._quiet_speed(self.retract_speed)
+        self.logger.info(
+            f"ACE unload: unwinding slot {local_slot} "
+            f"{retract_length:.0f}mm for lane {cur_lane.name}"
+        )
         try:
             self._wait_for_ace_ready()
             self._ace.unwind_filament(
@@ -2122,36 +1806,6 @@ class afcACE(afcUnit):
             self.logger.error(f"{message}\n{traceback.format_exc()}")
             afc.error.handle_lane_failure(cur_lane, message)
             return False
-
-        # Brief pause to let the ACE motor start pulling before the extruder
-        # continues retracting — prevents the extruder from shoving filament
-        # backward against a stationary ACE spool.
-        self.afc.reactor.pause(self.afc.reactor.monotonic() + 1.0)
-
-        # Step 3: Remaining half of tool_stn_unload + 10mm extruder retract
-        # concurrent with ACE unwind — both motors pulling together keeps
-        # filament under tension during the handoff.
-        remaining_retract = half_stn + 10
-        self.logger.info(
-            f"ACE unload: extruder retract {remaining_retract:.0f}mm "
-            f"@ {cur_extruder.tool_unload_speed}mm/s "
-            f"(second half + 10mm, concurrent with ACE unwind)"
-        )
-        afc.move_e_pos(
-            -remaining_retract,
-            cur_extruder.tool_unload_speed,
-            "ACE nozzle retract 2/2 + overlap", wait_tool=True
-        )
-
-        # Move past the sensor-after-extruder if configured
-        if cur_extruder.tool_sensor_after_extruder > 0:
-            afc.move_e_pos(
-                cur_extruder.tool_sensor_after_extruder * -1,
-                cur_extruder.tool_unload_speed, "After extruder"
-            )
-
-        # Unsync from extruder now that filament is clear of the gears
-        cur_lane.unsync_to_extruder()
 
         try:
             self.logger.info(
@@ -2217,6 +1871,10 @@ class afcACE(afcUnit):
             # hub path, just nearby for convenience.
             self._set_hub_state(cur_lane, False)
             cur_lane.loaded_to_hub = True
+            # Suppress hub-load so the heartbeat callback does not treat
+            # this still-present slot as a new filament insertion and
+            # clear spool info.
+            self._hub_load_suppressed.add(cur_lane.name)
 
         except Exception as e:
             message = f"ACE unload failed for {cur_lane.name}: {e}"

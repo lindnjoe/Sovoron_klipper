@@ -189,6 +189,12 @@ class AfcToolchanger(afcUnit):
         self.gcode.register_command("EXIT_DOCKING_MODE",
                                     self.cmd_EXIT_DOCKING_MODE,
                                     desc="Exit docking mode")
+        self.gcode.register_command("DOCK_TOOL",
+                                    self.cmd_DOCK_TOOL,
+                                    desc="Run active tool's dropoff gcode (docking mode)")
+        self.gcode.register_command("UNDOCK_TOOL",
+                                    self.cmd_UNDOCK_TOOL,
+                                    desc="Run active tool's pickup gcode (docking mode)")
         self.gcode.register_command("SET_TOOL_PARAMETER",
                                     self.cmd_SET_TOOL_PARAMETER,
                                     desc="Set a tool parameter at runtime")
@@ -361,6 +367,42 @@ class AfcToolchanger(afcUnit):
         if self.active_tool:
             self.start_crash_detection()
         self.status = STATUS_READY
+
+    def cmd_DOCK_TOOL(self, gcmd):
+        if self.status != STATUS_CHANGING:
+            raise gcmd.error(
+                "DOCK_TOOL requires docking mode (ENTER_DOCKING_MODE first)")
+        if not self.active_tool:
+            raise gcmd.error("DOCK_TOOL: no active tool to dock")
+        tool = self.active_tool
+        gcode_pos = list(self.gcode_move.get_status()['gcode_position'])
+        start_pos = self._position_with_tool_offset(gcode_pos, None)
+        extra_context = {
+            'dropoff_tool': tool.name,
+            'pickup_tool': tool.name,
+            'dock_purge': True,
+            'start_position': self._position_to_xyz(start_pos, 'xyz'),
+            'restore_position': self._position_to_xyz(start_pos, 'XYZ'),
+        }
+        self._run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, extra_context)
+
+    def cmd_UNDOCK_TOOL(self, gcmd):
+        if self.status != STATUS_CHANGING:
+            raise gcmd.error(
+                "UNDOCK_TOOL requires docking mode (ENTER_DOCKING_MODE first)")
+        if not self.active_tool:
+            raise gcmd.error("UNDOCK_TOOL: no active tool to undock")
+        tool = self.active_tool
+        gcode_pos = list(self.gcode_move.get_status()['gcode_position'])
+        start_pos = self._position_with_tool_offset(gcode_pos, None)
+        extra_context = {
+            'dropoff_tool': tool.name,
+            'pickup_tool': tool.name,
+            'dock_purge': True,
+            'start_position': self._position_to_xyz(start_pos, 'xyz'),
+            'restore_position': self._position_to_xyz(start_pos, 'XYZ'),
+        }
+        self._run_gcode('tool.pickup_gcode', tool.pickup_gcode, extra_context)
 
     def _resolve_tool_from_gcmd(self, gcmd):
         """Look up a tool by T=<number> from a gcode command."""
