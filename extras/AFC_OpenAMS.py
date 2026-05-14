@@ -842,6 +842,14 @@ class afcAMS(afcUnit):
         if self._monitor is not None:
             self._monitor.stop()
 
+        # Enable FPS advance latch so the toolhead sensor stays triggered
+        # even when pressure drops briefly after OAMS feed completes.
+        # Without this, FPS goes advancing→neutral before the sensor check
+        # runs and load_sequence reports a false failure.
+        buffer_obj = getattr(cur_lane, 'buffer_obj', None)
+        if buffer_obj is not None and hasattr(buffer_obj, 'enable_advance_latch'):
+            buffer_obj.enable_advance_latch()
+
         # Enable follower forward before load
         if self._follower is not None:
             fps_state = self._get_monitor_state()
@@ -927,10 +935,14 @@ class afcAMS(afcUnit):
             # Extra delay for MCU firmware to reset its internal state
             self.afc.reactor.pause(self.afc.reactor.monotonic() + 2.0)
 
-        # All attempts failed — do NOT restart monitor here.
-        # The caller (load_sequence) manages monitor lifecycle around
-        # dock purge. Restarting here causes false stuck spool detection
-        # during the dock purge pickup that follows a load failure.
+        # All attempts failed — clear advance latch so stale state
+        # doesn't confuse subsequent operations.
+        if buffer_obj is not None and hasattr(buffer_obj, 'clear_advance_latch'):
+            buffer_obj.clear_advance_latch()
+
+        # Do NOT restart monitor here. The caller (load_sequence) manages
+        # monitor lifecycle. Restarting here causes false stuck spool
+        # detection during the dock purge pickup that follows a load failure.
         return False, f"All {max_retries} load attempts failed for {cur_lane.name}"
 
     def _verify_engagement(self, cur_lane):
