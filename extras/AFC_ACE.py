@@ -1211,9 +1211,9 @@ class afcACE(afcUnit):
                     # we must NOT treat this as new filament.  Restore LOADED
                     # state so the lane isn't stuck in NONE, but keep the
                     # suppression flag so prep_post_load won't re-feed to hub.
-                    self.logger.info(
+                    self.logger.debug(
                         f"ACE callback: {lane.name} slot {local_slot} ready "
-                        f"but hub-load suppressed (ejected), setting loaded "
+                        f"but hub-load suppressed, setting loaded "
                         f"without re-feed"
                     )
                     lane.set_loaded()
@@ -3877,9 +3877,9 @@ class afcACE(afcUnit):
                     # we must NOT treat this as new filament.  Restore LOADED
                     # state so the lane isn't stuck in NONE, but keep the
                     # suppression flag so prep_post_load won't re-feed to hub.
-                    self.logger.info(
+                    self.logger.debug(
                         f"ACE poll: {lane.name} slot {local_slot} ready "
-                        f"but hub-load suppressed (ejected), setting loaded "
+                        f"but hub-load suppressed, setting loaded "
                         f"without re-feed"
                     )
                     lane.set_loaded()
