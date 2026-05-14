@@ -993,6 +993,7 @@ class afcACE(afcUnit):
                 and self._get_feed_assist(local_slot, lane)
                 and self._ace is not None):
             try:
+                self._wait_for_ace_ready()
                 self._ace.start_feed_assist(local_slot)
                 self._feed_assist_active.add(local_slot)
             except Exception:
@@ -1068,9 +1069,10 @@ class afcACE(afcUnit):
                                     self._ace.stop_feed_assist_sync(slot)
                                 except Exception:
                                     pass
-                            self._wait_ace_ready()
+                            self._wait_for_ace_ready()
                             for slot in list(self._feed_assist_active):
                                 try:
+                                    self._wait_for_ace_ready()
                                     self._ace.start_feed_assist(slot)
                                 except Exception:
                                     self._feed_assist_active.discard(slot)
@@ -1277,6 +1279,7 @@ class afcACE(afcUnit):
 
         if desired_slot >= 0:
             try:
+                self._wait_for_ace_ready()
                 self._ace.start_feed_assist(desired_slot)
                 self._feed_assist_active = {desired_slot}
                 self.logger.info(
@@ -1399,9 +1402,10 @@ class afcACE(afcUnit):
                         except Exception:
                             pass
                 if stopped_any:
-                    self._wait_ace_ready()
+                    self._wait_for_ace_ready()
                 if active_slot not in self._feed_assist_active:
                     try:
+                        self._wait_for_ace_ready()
                         self._ace.start_feed_assist(active_slot)
                         self.logger.debug(
                             f"lane_tool_loaded: started slot {active_slot}")
@@ -1524,6 +1528,7 @@ class afcACE(afcUnit):
             for stale_slot in list(self._feed_assist_active):
                 if stale_slot != local_slot:
                     try:
+                        self._wait_for_ace_ready()
                         self._ace.stop_feed_assist(stale_slot)
                     except Exception:
                         pass
@@ -1682,6 +1687,7 @@ class afcACE(afcUnit):
                         if (local_slot >= 0
                                 and self._get_feed_assist(local_slot, cur_lane)):
                             try:
+                                self._wait_for_ace_ready()
                                 self._ace.start_feed_assist(local_slot)
                                 self._feed_assist_active.add(local_slot)
                             except Exception:
@@ -2053,6 +2059,7 @@ class afcACE(afcUnit):
                     # Non-FPS sensor: re-enable feed assist now as before.
                     if self._get_feed_assist(slot_index, lane):
                         try:
+                            self._wait_for_ace_ready()
                             ace.start_feed_assist(slot_index)
                             self._feed_assist_active.add(slot_index)
                         except Exception:
@@ -2091,6 +2098,7 @@ class afcACE(afcUnit):
             max_total = feed_length + overshoot
             remaining = max_total - total_fed
             if not sensor_triggered and remaining > 0:
+                self._wait_for_ace_ready()
                 ace.feed_filament(slot_index, remaining, feed_spd)
                 sensor_hit = self._wait_for_feed_complete(
                     slot_index, remaining, feed_spd, lane=lane,
@@ -2107,6 +2115,7 @@ class afcACE(afcUnit):
                     # disabled it on the ACE firmware side.
                     if self._get_feed_assist(slot_index, lane):
                         try:
+                            self._wait_for_ace_ready()
                             ace.start_feed_assist(slot_index)
                             self._feed_assist_active.add(slot_index)
                         except Exception:
@@ -2818,6 +2827,7 @@ class afcACE(afcUnit):
                                     and self._get_feed_assist_for_slot(fa_slot)
                                     and self._ace is not None):
                                 try:
+                                    self._wait_for_ace_ready()
                                     self._ace.start_feed_assist(fa_slot)
                                     self._feed_assist_active.add(fa_slot)
                                     self.logger.info(
