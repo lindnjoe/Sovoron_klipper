@@ -1863,6 +1863,9 @@ class afcACE(afcUnit):
         afc._toolhead_pre_unload_pull(cur_lane, cur_extruder)
 
         self.lane_unloading(cur_lane)
+        cur_lane.sync_to_extruder()
+        cur_lane.do_enable(True)
+        cur_lane.select_lane()
 
         afc._toolhead_cut_and_tip(cur_lane, cur_extruder)
 
