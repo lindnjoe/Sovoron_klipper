@@ -159,7 +159,8 @@ class AFC_U1_RFID:
                 self._last_uid[channel] = 0
                 lane = self.afc.lanes.get(lane_name)
                 if lane is not None and getattr(lane, "status", "") not in self._LOCKED_STATES:
-                    self._clear_lane(lane, lane_name)
+                    if not getattr(lane, 'spool_scanner', False):
+                        self._clear_lane(lane, lane_name)
             return
 
         if card_uid == self._last_uid.get(channel):
@@ -185,6 +186,11 @@ class AFC_U1_RFID:
             f"color={slot_info.get('color_hex', '') or 'none'} "
             f"sku={slot_info.get('sku', '') or 'none'} "
             f"uid={card_uid}")
+
+        if getattr(lane, 'spool_scanner', False):
+            self._sync_to_spoolman(lane, slot_info, set_next=True)
+            return
+
         # New tag detected — clear old spool assignment so sync can rematch
         if getattr(lane, "spool_id", None) not in (None, "", 0):
             self.logger.info(
@@ -299,15 +305,19 @@ class AFC_U1_RFID:
             return True
         return False
 
-    def _sync_to_spoolman(self, lane: AFCLane, slot_info: dict):
+    def _sync_to_spoolman(self, lane: AFCLane, slot_info: dict,
+                          set_next: bool = False):
         """Sync RFID data to Spoolman: match existing or create filament+spool.
 
         Always searches for existing filaments/spools to match.
         Only creates new ones when auto_spoolman_create is enabled on the unit.
+
+        When set_next is True, stages the spool as next_spool_id instead of
+        assigning it to the lane directly (spool scanner mode).
         """
         if self.afc.spoolman is None or self.afc.moonraker is None:
             return
-        if getattr(lane, "spool_id", None) not in (None, "", 0):
+        if not set_next and getattr(lane, "spool_id", None) not in (None, "", 0):
             return
 
         sku = slot_info.get("sku", "")
@@ -460,8 +470,14 @@ class AFC_U1_RFID:
                     f"U1 RFID: created Spoolman spool #{spool['id']} for {lane.name}")
 
             spool_id = spool.get("id")
-            self.afc.spool.set_spoolID(lane, spool_id)
-            lane.send_lane_data()
+            if set_next:
+                self.afc.spool.next_spool_id = spool_id
+                self.logger.info(
+                    f"U1 RFID scanner: spool #{spool_id} staged as "
+                    f"next_spool_id (scanned on {lane.name})")
+            else:
+                self.afc.spool.set_spoolID(lane, spool_id)
+                lane.send_lane_data()
 
         except Exception as e:
             self.logger.error(f"U1 RFID Spoolman sync failed for {lane.name}: {e}")
