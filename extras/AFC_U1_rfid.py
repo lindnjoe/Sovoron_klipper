@@ -88,12 +88,14 @@ class AFC_U1_RFID:
         self.logger = afc_obj.logger
         self._filament_detect = None
         self._lane_channel_map: Dict[str, int] = {}
+        self._lane_objects: Dict[str, AFCLane] = {}
         self._last_uid: Dict[int, Optional[list]] = {}
         self._poll_timer = None
 
     def register_lane(self, lane: AFCLane, channel: int):
         """Register a lane to monitor a specific filament_detect channel."""
         self._lane_channel_map[lane.name] = channel
+        self._lane_objects[lane.name] = lane
         self._last_uid[channel] = None
 
     def start(self):
@@ -157,7 +159,7 @@ class AFC_U1_RFID:
         if not card_uid or card_uid == 0:
             if self._last_uid.get(channel) not in (None, 0):
                 self._last_uid[channel] = 0
-                lane = self.afc.lanes.get(lane_name)
+                lane = self._lane_objects.get(lane_name)
                 if lane is not None and getattr(lane, "status", "") not in self._LOCKED_STATES:
                     if not getattr(lane, 'spool_scanner', False):
                         self._clear_lane(lane, lane_name)
@@ -166,7 +168,7 @@ class AFC_U1_RFID:
         if card_uid == self._last_uid.get(channel):
             return
 
-        lane = self.afc.lanes.get(lane_name)
+        lane = self._lane_objects.get(lane_name)
         if lane is None:
             return
 
