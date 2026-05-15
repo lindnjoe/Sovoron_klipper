@@ -174,7 +174,7 @@ class AFC_U1_RFID:
         self._lane_objects: Dict[str, AFCLane] = {}
         self._last_uid: Dict[int, Optional[list]] = {}
         self._poll_timer = None
-        self._scanner_channels: list = []
+        self._scanner_channels: set = set()
         self._channel_to_lane: Dict[int, str] = {}
 
     def register_lane(self, lane: AFCLane, channel: int):
@@ -193,8 +193,8 @@ class AFC_U1_RFID:
             self.logger.info("U1 RFID: filament_detect module not found")
             return
         channels = list(self._lane_channel_map.items())
-        self._scanner_channels = [ch for name, ch in channels
-                                   if getattr(self._lane_objects.get(name), 'spool_scanner', False)]
+        self._scanner_channels = {ch for name, ch in channels
+                                   if getattr(self._lane_objects.get(name), 'spool_scanner', False)}
         self.logger.info(
             f"U1 RFID: monitoring {len(channels)} channel(s): "
             + ", ".join(f"{name}=ch{ch}" for name, ch in channels))
@@ -244,6 +244,8 @@ class AFC_U1_RFID:
             except Exception:
                 pass
         for lane_name, channel in self._lane_channel_map.items():
+            if channel in self._scanner_channels:
+                continue
             try:
                 self._check_channel(lane_name, channel)
             except Exception:
