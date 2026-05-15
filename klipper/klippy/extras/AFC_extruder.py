@@ -266,6 +266,8 @@ class AFCExtruder:
         self.tc_unit_name: Optional[str] = config.get("toolchanger_unit", None)
         self.tc_unit_obj: Optional[AfcToolchanger|None] = None
         self.tc_lane: Optional[AFCLane|None]            = None
+        self.tool: Optional[str]        = config.get('tool', None)
+        self.tool_obj                   = None
         self.map: Optional[str]         = config.get('map', None)
         self.no_lanes                   = False
         self.custom_tool_swap: Optional[str] = config.get("custom_tool_swap", None)
@@ -521,6 +523,9 @@ class AFCExtruder:
             self.toolhead_extruder = self.printer.lookup_object(self.name)
         except:
             raise error("[{}] not found in config file".format(self.name))
+
+        if self.tool:
+            self.tool_obj = self.printer.lookup_object(self.tool, None)
 
         if self.park_detector:
             park_dect_str = f"park_detector {self.park_detector}"
