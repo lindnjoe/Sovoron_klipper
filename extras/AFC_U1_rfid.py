@@ -168,19 +168,14 @@ class AFC_U1_RFID:
 
         if not card_uid or card_uid == 0:
             if self._last_uid.get(channel) not in (None, 0):
-                self._last_uid[channel] = 0
-                if lane is not None and getattr(lane, "status", "") not in self._LOCKED_STATES:
-                    if not is_scanner:
+                if not is_scanner:
+                    self._last_uid[channel] = 0
+                    if lane is not None and getattr(lane, "status", "") not in self._LOCKED_STATES:
                         self._clear_lane(lane, lane_name)
             return
 
         if card_uid == self._last_uid.get(channel):
-            if is_scanner:
-                next_id = getattr(self.afc.spool, 'next_spool_id', None)
-                if next_id:
-                    return
-            else:
-                return
+            return
 
         if lane is None:
             return
