@@ -143,8 +143,8 @@ class AFC_U1_RFID:
         for lane_name, channel in self._lane_channel_map.items():
             try:
                 self._check_channel(lane_name, channel)
-            except Exception:
-                pass
+            except Exception as e:
+                self.logger.debug(f"U1 RFID ch{channel} ({lane_name}) poll error: {e}")
         return eventtime + POLL_INTERVAL
 
     _LOCKED_STATES = frozenset({
@@ -163,24 +163,28 @@ class AFC_U1_RFID:
             return
 
         card_uid = info.get("CARD_UID")
-        self.logger.debug(f"U1 RFID ch{channel} ({lane_name}): CARD_UID={card_uid}, MAIN_TYPE={info.get('MAIN_TYPE')}, last_uid={self._last_uid.get(channel)}")
+        lane = self._lane_objects.get(lane_name)
+        is_scanner = lane is not None and getattr(lane, 'spool_scanner', False)
+
         if not card_uid or card_uid == 0:
             if self._last_uid.get(channel) not in (None, 0):
                 self._last_uid[channel] = 0
-                lane = self._lane_objects.get(lane_name)
                 if lane is not None and getattr(lane, "status", "") not in self._LOCKED_STATES:
-                    if not getattr(lane, 'spool_scanner', False):
+                    if not is_scanner:
                         self._clear_lane(lane, lane_name)
             return
 
         if card_uid == self._last_uid.get(channel):
-            return
+            if is_scanner:
+                next_id = getattr(self.afc.spool, 'next_spool_id', None)
+                if next_id:
+                    return
+            else:
+                return
 
-        lane = self._lane_objects.get(lane_name)
         if lane is None:
             return
 
-        is_scanner = getattr(lane, 'spool_scanner', False)
         if not is_scanner and getattr(lane, "status", "") in self._LOCKED_STATES:
             return
 

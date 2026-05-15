@@ -294,6 +294,10 @@ class afcPrep:
         """Initialize U1 RFID polling if any lanes/extruders have u1_rfid_channel configured."""
         from extras.AFC_U1_rfid import AFC_U1_RFID
 
+        old_rfid = getattr(self.afc, 'u1_rfid', None)
+        if old_rfid is not None:
+            old_rfid.stop()
+
         # Collect all lanes and extruder tc_lanes that have RFID channels.
         # Extruder tc_lanes may have been removed from afc.lanes by
         # check_lanes() when other lanes share the same extruder, but
