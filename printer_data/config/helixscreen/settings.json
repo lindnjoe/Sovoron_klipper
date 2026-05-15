@@ -96,7 +96,21 @@
         "hotend": "heater_fan T0_hotend_fan",
         "part": "fan_generic T0_partfan"
       },
-      "filament": {},
+      "filament": {
+        "external_spool": {
+          "assigned": true,
+          "bed_temp": 65,
+          "brand": "Inland",
+          "color_rgb": 15861768,
+          "material": "PLA",
+          "nozzle_temp_max": 0,
+          "nozzle_temp_min": 0,
+          "remaining_weight_g": 325.70123291015625,
+          "spool_name": "Inland PLA - True Red",
+          "spoolman_id": 5,
+          "total_weight_g": 1000.0
+        }
+      },
       "filament_sensors": {
         "sensors": null
       },
@@ -169,7 +183,7 @@
             "temperature_sensor oams1",
             "temperature_sensor oams2"
           ],
-          "timestamp": "2026-05-15T12:43:05Z"
+          "timestamp": "2026-05-15T20:56:39Z"
         },
         "optional": []
       },

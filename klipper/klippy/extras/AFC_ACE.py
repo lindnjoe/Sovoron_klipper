@@ -29,6 +29,8 @@ except: raise config_error("Error when trying to import AFC_utils.ERROR_STR\n{tr
 try: from extras.AFC_unit import afcUnit
 except: raise config_error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
 
+from extras.AFC_U1_rfid import _color_name, _log_new_filament, _log_new_spool, _density_for_material
+
 try: from extras.AFC_lane import AFCLane, AFCLaneState
 except: raise config_error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
@@ -844,6 +846,7 @@ class afcACE(afcUnit):
 
                 best = None
                 best_score = -1
+                best_color_dist = float('inf')
                 for f in fallback_candidates:
                     score = 0
                     f_material = (f.get("material") or "").strip().lower()
@@ -855,8 +858,18 @@ class afcACE(afcUnit):
                         score += 3
                     if brand and f_vendor == brand.strip().lower():
                         score += 3
-                    if color_hex and f_color == color_hex.strip().lower():
-                        score += 2
+
+                    cdist = float('inf')
+                    if color_hex and f_color and len(f_color) >= 6:
+                        cdist = self._color_distance_static(
+                            color_hex.strip().lower(), f_color[:6])
+                        if cdist < 10:
+                            score += 5
+                        else:
+                            score -= 6
+                    elif color_hex and not f_color:
+                        score -= 3
+
                     if diameter and f_diameter is not None:
                         try:
                             if abs(float(f_diameter) - float(diameter)) <= 0.05:
@@ -864,16 +877,18 @@ class afcACE(afcUnit):
                         except Exception:
                             pass
 
-                    if score > best_score:
+                    is_better = (score > best_score or
+                                 (score == best_score and cdist < best_color_dist))
+                    if is_better:
                         best = f
                         best_score = score
+                        best_color_dist = cdist
 
                 if best is not None and best_score >= 4:
-                    filament = best
-                    self.logger.info(
-                        f"Matched existing Spoolman filament #{filament.get('id')} "
-                        f"for {lane.name} by RFID metadata "
-                        f"(brand={brand or '-'}, material={material or '-'}, sku={sku})")
+                    if color_hex and best_color_dist >= 10 and allow_create:
+                        pass
+                    else:
+                        filament = best
 
             if filament is None:
                 if not allow_create:
@@ -895,7 +910,7 @@ class afcACE(afcUnit):
                     name=filament_name,
                     vendor_id=vendor_id,
                     material=material or None,
-                    density=1.24,
+                    density=_density_for_material(material),
                     diameter=diameter,
                     color_hex=color_hex,
                     settings_extruder_temp=ext_temp,
@@ -905,12 +920,10 @@ class afcACE(afcUnit):
                     article_number=sku,
                 )
                 if filament is None:
-                    self.logger.error(
-                        f"Failed to create filament in Spoolman for SKU {sku}")
                     return
-                self.logger.info(
-                    f"Created Spoolman filament #{filament['id']}: "
-                    f"{filament_name} ({material})")
+                _log_new_filament(self.logger, "ACE RFID", filament,
+                                  brand, material, color_hex, diameter,
+                                  ext_temp, bed_temp, sku)
 
             filament_id = filament.get("id")
             if filament_id is None:
@@ -930,10 +943,6 @@ class afcACE(afcUnit):
                         best = s
                 if best is not None:
                     spool = best
-                    self.logger.info(
-                        f"Found existing Spoolman spool #{spool['id']} for {lane.name} "
-                        f"(SKU: {sku}, filament #{filament_id}, "
-                        f"remaining: {spool.get('remaining_weight', '?')}g)")
 
             # Create a new spool only if no existing one was found
             if spool is None:
@@ -950,18 +959,32 @@ class afcACE(afcUnit):
                     spool_weight=spool_weight if spool_weight > 0 else None,
                 )
                 if spool is None:
-                    self.logger.error(
-                        f"Failed to create spool in Spoolman for filament #{filament_id}")
                     return
-                self.logger.info(
-                    f"Created Spoolman spool #{spool['id']} for {lane.name} "
-                    f"(SKU: {sku}, filament #{filament_id})")
+                _log_new_spool(self.logger, "ACE RFID", spool,
+                               default_filament_weight,
+                               spool_weight if spool_weight > 0 else None)
 
             spool_id = spool.get("id")
+            fil_name = filament.get("name", "")
+            fil_color = (filament.get("color_hex") or "").strip().lstrip("#")
+            remaining = spool.get("remaining_weight")
+            remaining_str = f", {remaining:.0f}g left" if remaining else ""
+            if fil_color:
+                cname = _color_name(fil_color)
+                color_str = f", {cname} #{fil_color}" if cname else f", #{fil_color}"
+            else:
+                color_str = ""
+            desc = f"'{fil_name}'{color_str}{remaining_str}"
 
-            # Assign spool_id to lane through AFC's normal flow
             self.afc.spool.set_spoolID(lane, spool_id)
             lane.send_lane_data()
+            tag_desc = f"{brand} {material}".strip() or "Unknown"
+            if color_hex:
+                cname = _color_name(color_hex)
+                tag_desc += f" ({cname} #{color_hex})" if cname else f" (#{color_hex})"
+            self.logger.info(f"ACE RFID: tag detected on {lane.name} — {tag_desc}")
+            self.logger.info(
+                f"ACE RFID: spool #{spool_id} ({desc}) assigned to {lane.name}")
 
         except Exception as e:
             self.logger.error(
@@ -4322,6 +4345,14 @@ class afcACE(afcUnit):
         self.logger.info(msg)
 
     # ---- Utilities ----
+
+    @staticmethod
+    @staticmethod
+    def _color_distance_static(hex1: str, hex2: str) -> float:
+        """Euclidean RGB distance between two hex color strings."""
+        r1, g1, b1 = int(hex1[0:2], 16), int(hex1[2:4], 16), int(hex1[4:6], 16)
+        r2, g2, b2 = int(hex2[0:2], 16), int(hex2[2:4], 16), int(hex2[4:6], 16)
+        return ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
 
     @staticmethod
     def _ace_color_to_hex(color_array):

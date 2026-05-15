@@ -16,6 +16,102 @@ if TYPE_CHECKING:
 
 POLL_INTERVAL = 2.0
 
+_COLOR_NAMES = {
+    "ff0000": "Red",       "cc0000": "Red",       "990000": "Dark Red",
+    "660000": "Dark Red",  "4d0000": "Dark Red",  "330000": "Maroon",
+    "c03020": "Red",       "b02018": "Red",       "cc3333": "Red",
+    "e02020": "Red",       "a01818": "Dark Red",  "801010": "Dark Red",
+    "00ff00": "Green",     "00cc00": "Green",     "006600": "Dark Green",
+    "003300": "Dark Green","1a3300": "Dark Green",
+    "0000ff": "Blue",      "0000cc": "Blue",      "000099": "Dark Blue",
+    "000066": "Dark Blue", "003366": "Dark Blue",
+    "ffffff": "White",     "f0f0f0": "White",     "e0e0e0": "Light Gray",
+    "000000": "Black",     "0a0a0a": "Black",     "141414": "Black",
+    "ffff00": "Yellow",    "cccc00": "Yellow",    "ffd700": "Gold",
+    "998200": "Dark Gold", "b8860b": "Dark Gold",
+    "ff8000": "Orange",    "ff6600": "Orange",    "ff4500": "Orange",
+    "cc5500": "Dark Orange","993d00": "Dark Orange",
+    "800080": "Purple",    "660066": "Purple",    "9900cc": "Purple",
+    "330033": "Dark Purple","4a0066": "Dark Purple",
+    "ff00ff": "Magenta",   "cc00cc": "Magenta",
+    "ffc0cb": "Pink",      "ff69b4": "Pink",      "ff1493": "Hot Pink",
+    "808080": "Gray",      "999999": "Gray",      "666666": "Dark Gray",
+    "4d4d4d": "Dark Gray", "333333": "Dark Gray",
+    "a0a0a0": "Gray",      "c0c0c0": "Silver",    "b0b0b0": "Silver",
+    "8b4513": "Brown",     "654321": "Brown",     "a0522d": "Brown",
+    "3b1e08": "Dark Brown","4a2812": "Dark Brown", "3f231c": "Dark Brown",
+    "2c1a0e": "Dark Brown","5c3a1e": "Dark Brown", "6b3a2a": "Brown",
+    "d2691e": "Chocolate", "7b3f00": "Chocolate",
+    "00ffff": "Cyan",      "008b8b": "Teal",      "008080": "Teal",
+    "004d4d": "Dark Teal", "003333": "Dark Teal",
+    "000080": "Navy",      "191970": "Navy",
+    "f5f5dc": "Beige",     "d2b48c": "Tan",       "ffe4c4": "Bisque",
+    "ff7f50": "Coral",     "fa8072": "Salmon",
+    "7fff00": "Chartreuse","32cd32": "Lime",      "00ff7f": "Mint",
+    "4b0082": "Indigo",    "ee82ee": "Violet",    "dda0dd": "Plum",
+    "40e0d0": "Turquoise", "87ceeb": "Sky Blue",  "4169e1": "Royal Blue",
+    "556b2f": "Olive",     "808000": "Olive",     "333300": "Dark Olive",
+    "f0e68c": "Khaki",     "bdb76b": "Dark Khaki",
+    "fffdd0": "Cream",     "fffacd": "Lemon",
+    "e6e6fa": "Lavender",  "d8bfd8": "Thistle",
+    "fff0f5": "Blush",     "ffe4e1": "Misty Rose",
+}
+
+
+def _color_name(hex_str: str) -> str:
+    """Return nearest human-readable color name for a hex color string."""
+    if not hex_str or len(hex_str) < 6:
+        return ""
+    h = hex_str.strip().lstrip("#").lower()[:6]
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return ""
+    best_name = ""
+    best_dist = float('inf')
+    for ref_hex, name in _COLOR_NAMES.items():
+        rr, gg, bb = int(ref_hex[0:2], 16), int(ref_hex[2:4], 16), int(ref_hex[4:6], 16)
+        dist = ((r - rr) ** 2 + (g - gg) ** 2 + (b - bb) ** 2) ** 0.5
+        if dist < best_dist:
+            best_dist = dist
+            best_name = name
+    return best_name
+
+
+def _log_new_filament(logger, prefix, filament, brand, material, color_hex,
+                      diameter, ext_temp, bed_temp, sku=""):
+    """Log a detailed breakdown when a new filament is created in Spoolman."""
+    fid = filament.get("id", "?")
+    parts = [f"{prefix}: created filament #{fid} in Spoolman:"]
+    if brand:
+        parts.append(f"  vendor: {brand}")
+    if material:
+        parts.append(f"  material: {material}")
+    if color_hex:
+        cname = _color_name(color_hex)
+        clabel = f"{cname} #{color_hex}" if cname else f"#{color_hex}"
+        parts.append(f"  color: {clabel}")
+    parts.append(f"  diameter: {diameter}mm")
+    if ext_temp:
+        parts.append(f"  nozzle temp: {ext_temp}°C")
+    if bed_temp:
+        parts.append(f"  bed temp: {bed_temp}°C")
+    if sku:
+        parts.append(f"  SKU: {sku}")
+    logger.info("\n".join(parts))
+
+
+def _log_new_spool(logger, prefix, spool, weight, spool_weight=None):
+    """Log a detailed breakdown when a new spool is created in Spoolman."""
+    sid = spool.get("id", "?")
+    parts = [f"{prefix}: created spool #{sid} in Spoolman:"]
+    parts.append(f"  filament weight: {weight}g")
+    if spool_weight:
+        parts.append(f"  spool weight (tare): {spool_weight}g")
+    parts.append(f"  remaining: {weight}g")
+    logger.info("\n".join(parts))
+
+
 # Material density (g/cm^3) used when creating a Spoolman filament from
 # an RFID tag. Spoolman computes remaining length from weight using this
 # value, so hardcoding PLA here makes length tracking wrong for every
@@ -88,13 +184,18 @@ class AFC_U1_RFID:
         self.logger = afc_obj.logger
         self._filament_detect = None
         self._lane_channel_map: Dict[str, int] = {}
+        self._lane_objects: Dict[str, AFCLane] = {}
         self._last_uid: Dict[int, Optional[list]] = {}
         self._poll_timer = None
+        self._scanner_channels: set = set()
+        self._channel_to_lane: Dict[int, str] = {}
 
     def register_lane(self, lane: AFCLane, channel: int):
         """Register a lane to monitor a specific filament_detect channel."""
         self._lane_channel_map[lane.name] = channel
+        self._lane_objects[lane.name] = lane
         self._last_uid[channel] = None
+        self._channel_to_lane[channel] = lane.name
 
     def start(self):
         """Start polling filament_detect for RFID data."""
@@ -105,9 +206,16 @@ class AFC_U1_RFID:
             self.logger.info("U1 RFID: filament_detect module not found")
             return
         channels = list(self._lane_channel_map.items())
+        self._scanner_channels = {ch for name, ch in channels
+                                   if getattr(self._lane_objects.get(name), 'spool_scanner', False)}
         self.logger.info(
-            f"U1 RFID: polling {len(channels)} channel(s): "
+            f"U1 RFID: monitoring {len(channels)} channel(s): "
             + ", ".join(f"{name}=ch{ch}" for name, ch in channels))
+        if self._scanner_channels:
+            scanner_names = [name for name, ch in channels
+                             if ch in self._scanner_channels]
+            self.logger.info(f"U1 RFID: spool scanner active on: {', '.join(scanner_names)}")
+        self._gcode = self.afc.gcode
         if hasattr(self._filament_detect, 'register_cb_2_update_filament_info'):
             try:
                 self._filament_detect.register_cb_2_update_filament_info(
@@ -118,7 +226,17 @@ class AFC_U1_RFID:
             self._poll_cb, self.reactor.monotonic() + POLL_INTERVAL)
 
     def _on_filament_info_update(self, *args):
-        """Callback fired by filament_detect when RFID data changes."""
+        """Callback fired by filament_detect with (channel, info_dict, official)."""
+        if len(args) >= 2 and isinstance(args[0], int) and isinstance(args[1], dict):
+            channel = args[0]
+            info = args[1]
+            lane_name = self._channel_to_lane.get(channel)
+            if lane_name is not None:
+                try:
+                    self._check_channel(lane_name, channel, info=info)
+                except Exception:
+                    pass
+            return
         for lane_name, channel in self._lane_channel_map.items():
             try:
                 self._check_channel(lane_name, channel)
@@ -132,7 +250,15 @@ class AFC_U1_RFID:
 
     def _poll_cb(self, eventtime):
         """Periodic check for new RFID data on registered channels."""
+        for ch in self._scanner_channels:
+            try:
+                self._gcode.run_script_from_command(
+                    f"FILAMENT_DT_UPDATE CHANNEL={ch}")
+            except Exception:
+                pass
         for lane_name, channel in self._lane_channel_map.items():
+            if channel in self._scanner_channels:
+                continue
             try:
                 self._check_channel(lane_name, channel)
             except Exception:
@@ -144,32 +270,39 @@ class AFC_U1_RFID:
         "HUB Loading",
     })
 
-    def _check_channel(self, lane_name: str, channel: int):
+    def _check_channel(self, lane_name: str, channel: int, info: dict = None):
         """Check a single channel for new or changed RFID data."""
         if self._filament_detect is None:
             return
 
-        info = self._get_channel_info(channel)
+        if info is None:
+            info = self._get_channel_info(channel)
+        lane = self._lane_objects.get(lane_name)
+        is_scanner = lane is not None and getattr(lane, 'spool_scanner', False)
+
         if info is None:
             return
 
         card_uid = info.get("CARD_UID")
         if not card_uid or card_uid == 0:
             if self._last_uid.get(channel) not in (None, 0):
-                self._last_uid[channel] = 0
-                lane = self.afc.lanes.get(lane_name)
-                if lane is not None and getattr(lane, "status", "") not in self._LOCKED_STATES:
-                    self._clear_lane(lane, lane_name)
+                if not is_scanner:
+                    self._last_uid[channel] = 0
+                    if lane is not None and getattr(lane, "status", "") not in self._LOCKED_STATES:
+                        self._clear_lane(lane, lane_name)
             return
 
         if card_uid == self._last_uid.get(channel):
-            return
+            if is_scanner:
+                if getattr(self.afc.spool, 'next_spool_id', None):
+                    return
+            else:
+                return
 
-        lane = self.afc.lanes.get(lane_name)
         if lane is None:
             return
 
-        if getattr(lane, "status", "") in self._LOCKED_STATES:
+        if not is_scanner and getattr(lane, "status", "") in self._LOCKED_STATES:
             return
 
         self._last_uid[channel] = card_uid
@@ -179,17 +312,22 @@ class AFC_U1_RFID:
             return
 
         slot_info = self._map_to_slot_info(info)
-        self.logger.info(
-            f"U1 RFID ch{channel} → {lane_name}: "
-            f"{slot_info.get('brand', '')} {slot_info.get('material', '')} "
-            f"color={slot_info.get('color_hex', '') or 'none'} "
-            f"sku={slot_info.get('sku', '') or 'none'} "
-            f"uid={card_uid}")
-        # New tag detected — clear old spool assignment so sync can rematch
+        brand = slot_info.get('brand', '')
+        material = slot_info.get('material', '')
+        color = slot_info.get('color_hex', '')
+        tag_desc = f"{brand} {material}".strip() or "Unknown"
+        if color:
+            cname = _color_name(color)
+            tag_desc += f" ({cname} #{color})" if cname else f" (#{color})"
+
+        if is_scanner:
+            self.logger.info(f"U1 RFID: spool scanned — {tag_desc}")
+            self.afc.spool.next_spool_info = dict(slot_info)
+            self._sync_to_spoolman(lane, slot_info, set_next=True)
+            return
+
+        self.logger.info(f"U1 RFID: tag detected on {lane_name} — {tag_desc}")
         if getattr(lane, "spool_id", None) not in (None, "", 0):
-            self.logger.info(
-                f"U1 RFID: new tag on {lane_name}, clearing old spool_id "
-                f"{lane.spool_id}")
             self.afc.spool.set_spoolID(lane, "")
         self._apply_filament_defaults(lane, slot_info)
         self._sync_to_spoolman(lane, slot_info)
@@ -223,13 +361,28 @@ class AFC_U1_RFID:
                     return info
             except Exception:
                 pass
+        if hasattr(fd, 'get_all_filament_info'):
+            try:
+                all_info = fd.get_all_filament_info()
+                if isinstance(all_info, (list, tuple)) and channel < len(all_info):
+                    entry = all_info[channel]
+                    if isinstance(entry, dict):
+                        return entry
+                elif isinstance(all_info, dict):
+                    entry = all_info.get(channel) or all_info.get(str(channel))
+                    if isinstance(entry, dict):
+                        return entry
+            except Exception:
+                pass
         if hasattr(fd, 'get_status'):
             try:
                 status = fd.get_status()
                 if isinstance(status, dict):
                     info_list = status.get('info')
                     if info_list and channel < len(info_list):
-                        return info_list[channel]
+                        entry = info_list[channel]
+                        if isinstance(entry, dict) and entry.get("CARD_UID"):
+                            return entry
             except Exception:
                 pass
         return None
@@ -299,15 +452,19 @@ class AFC_U1_RFID:
             return True
         return False
 
-    def _sync_to_spoolman(self, lane: AFCLane, slot_info: dict):
+    def _sync_to_spoolman(self, lane: AFCLane, slot_info: dict,
+                          set_next: bool = False):
         """Sync RFID data to Spoolman: match existing or create filament+spool.
 
         Always searches for existing filaments/spools to match.
         Only creates new ones when auto_spoolman_create is enabled on the unit.
+
+        When set_next is True, stages the spool as next_spool_id instead of
+        assigning it to the lane directly (spool scanner mode).
         """
         if self.afc.spoolman is None or self.afc.moonraker is None:
             return
-        if getattr(lane, "spool_id", None) not in (None, "", 0):
+        if not set_next and getattr(lane, "spool_id", None) not in (None, "", 0):
             return
 
         sku = slot_info.get("sku", "")
@@ -365,12 +522,12 @@ class AFC_U1_RFID:
                     if color_hex and f_color and len(f_color) >= 6:
                         cdist = self._color_distance(
                             color_hex.strip().lower(), f_color[:6])
-                        if cdist < 50:
-                            score += 3
-                        elif cdist < 120:
-                            score += 1
+                        if cdist < 10:
+                            score += 5
                         else:
-                            score -= 2
+                            score -= 6
+                    elif color_hex and not f_color:
+                        score -= 3
 
                     is_better = (score > best_score or
                                  (score == best_score and cdist < best_color_dist))
@@ -378,22 +535,12 @@ class AFC_U1_RFID:
                         best = f
                         best_score = score
                         best_color_dist = cdist
-                    self.logger.info(
-                        f"U1 RFID: candidate filament #{f.get('id')} "
-                        f"'{f.get('name', '')}' color={f_color or 'none'} "
-                        f"dist={cdist:.0f} score={score} for {lane.name}")
 
                 if best is not None and best_score >= 4:
-                    if color_hex and best_color_dist > 60 and allow_create:
-                        self.logger.info(
-                            f"U1 RFID: best match '{best.get('name', '')}' "
-                            f"color dist {best_color_dist:.0f} too far, "
-                            f"creating new filament for {lane.name}")
+                    if color_hex and best_color_dist >= 10 and allow_create:
+                        pass
                     else:
                         filament = best
-                        self.logger.info(
-                            f"U1 RFID: matched filament #{filament.get('id')} "
-                            f"'{filament.get('name', '')}' for {lane.name}")
 
             if filament is None:
                 if not allow_create:
@@ -421,8 +568,9 @@ class AFC_U1_RFID:
                 )
                 if filament is None:
                     return
-                self.logger.info(
-                    f"U1 RFID: created Spoolman filament #{filament['id']} for {lane.name}")
+                _log_new_filament(self.logger, "U1 RFID", filament,
+                                  brand, material, color_hex, diameter,
+                                  ext_temp, bed_temp, sku)
 
             filament_id = filament.get("id")
             if filament_id is None:
@@ -438,16 +586,10 @@ class AFC_U1_RFID:
                         best = s
                 if best is not None:
                     spool = best
-                    self.logger.info(
-                        f"U1 RFID: matched spool #{spool['id']} "
-                        f"(filament #{filament_id}, "
-                        f"{spool.get('remaining_weight', '?')}g remaining) "
-                        f"for {lane.name}")
 
             if spool is None:
                 if not allow_create:
                     return
-
                 spool = moonraker.create_spool(
                     filament_id=filament_id,
                     initial_weight=default_filament_weight,
@@ -456,12 +598,30 @@ class AFC_U1_RFID:
                 )
                 if spool is None:
                     return
-                self.logger.info(
-                    f"U1 RFID: created Spoolman spool #{spool['id']} for {lane.name}")
+                _log_new_spool(self.logger, "U1 RFID", spool,
+                               default_filament_weight)
 
             spool_id = spool.get("id")
-            self.afc.spool.set_spoolID(lane, spool_id)
-            lane.send_lane_data()
+            fil_name = filament.get("name", "")
+            fil_color = (filament.get("color_hex") or "").strip().lstrip("#")
+            remaining = spool.get("remaining_weight")
+            remaining_str = f", {remaining:.0f}g left" if remaining else ""
+            if fil_color:
+                cname = _color_name(fil_color)
+                color_str = f", {cname} #{fil_color}" if cname else f", #{fil_color}"
+            else:
+                color_str = ""
+            desc = f"'{fil_name}'{color_str}{remaining_str}"
+
+            if set_next:
+                self.afc.spool.next_spool_id = spool_id
+                self.logger.info(
+                    f"U1 RFID: spool #{spool_id} ({desc}) staged as next_spool_id")
+            else:
+                self.afc.spool.set_spoolID(lane, spool_id)
+                lane.send_lane_data()
+                self.logger.info(
+                    f"U1 RFID: spool #{spool_id} ({desc}) assigned to {lane.name}")
 
         except Exception as e:
             self.logger.error(f"U1 RFID Spoolman sync failed for {lane.name}: {e}")
