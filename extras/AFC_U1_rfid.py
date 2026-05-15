@@ -322,6 +322,7 @@ class AFC_U1_RFID:
 
         if is_scanner:
             self.logger.info(f"U1 RFID: spool scanned — {tag_desc}")
+            self.afc.spool.next_spool_info = dict(slot_info)
             self._sync_to_spoolman(lane, slot_info, set_next=True)
             return
 
