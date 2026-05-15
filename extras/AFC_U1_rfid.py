@@ -508,12 +508,14 @@ class AFC_U1_RFID:
                     if color_hex and f_color and len(f_color) >= 6:
                         cdist = self._color_distance(
                             color_hex.strip().lower(), f_color[:6])
-                        if cdist < 50:
-                            score += 3
-                        elif cdist < 120:
-                            score += 1
+                        if cdist < 30:
+                            score += 5
+                        elif cdist < 80:
+                            score += 2
                         else:
-                            score -= 2
+                            score -= 6
+                    elif color_hex and not f_color:
+                        score -= 3
 
                     is_better = (score > best_score or
                                  (score == best_score and cdist < best_color_dist))
@@ -523,7 +525,7 @@ class AFC_U1_RFID:
                         best_color_dist = cdist
 
                 if best is not None and best_score >= 4:
-                    if color_hex and best_color_dist > 60 and allow_create:
+                    if color_hex and best_color_dist > 50 and allow_create:
                         pass
                     else:
                         filament = best
