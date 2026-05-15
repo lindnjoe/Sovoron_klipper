@@ -129,12 +129,12 @@
             "hub": "Hub_1",
             "extruder": "extruder4",
             "buffer": "FPS_buffer1",
-            "buffer_status": "Trailing",
+            "buffer_status": "Neutral",
             "lane": 1,
             "map": "T4",
             "load": true,
             "prep": true,
-            "tool_loaded": false,
+            "tool_loaded": true,
             "loaded_to_hub": true,
             "material": "PLA",
             "density": 1.24,
@@ -143,13 +143,13 @@
             "remember_spool": false,
             "spool_id": 56,
             "color": "#f4c032",
-            "weight": 974.5861410517309,
+            "weight": 974.5841352936995,
             "extruder_temp": 230,
             "bed_temp": 60,
             "runout_lane": null,
-            "filament_status": "Ready",
-            "filament_status_led": "#00cc00",
-            "status": "None",
+            "filament_status": "In Tool",
+            "filament_status_led": "#0000ff",
+            "status": "Tooled",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -159,7 +159,7 @@
             "hub": "Hub_2",
             "extruder": "extruder4",
             "buffer": "FPS_buffer1",
-            "buffer_status": "Trailing",
+            "buffer_status": "Neutral",
             "lane": 2,
             "map": "T5",
             "load": true,
@@ -189,7 +189,7 @@
             "hub": "Hub_3",
             "extruder": "extruder4",
             "buffer": "FPS_buffer1",
-            "buffer_status": "Trailing",
+            "buffer_status": "Neutral",
             "lane": 3,
             "map": "T6",
             "load": true,
@@ -209,7 +209,7 @@
             "runout_lane": null,
             "filament_status": "Ready",
             "filament_status_led": "#00cc00",
-            "status": "Tool Loading",
+            "status": "None",
             "dist_hub": 60,
             "td1_data": {}
         },
@@ -219,7 +219,7 @@
             "hub": "Hub_4",
             "extruder": "extruder4",
             "buffer": "FPS_buffer1",
-            "buffer_status": "Trailing",
+            "buffer_status": "Neutral",
             "lane": 4,
             "map": "T7",
             "load": true,
@@ -513,7 +513,7 @@
         }
     },
     "system": {
-        "current_load": null,
+        "current_load": "lane4",
         "num_units": 5,
         "num_lanes": 16,
         "num_extruders": 6,
@@ -531,7 +531,7 @@
                 "lane_loaded": null
             },
             "extruder4": {
-                "lane_loaded": null
+                "lane_loaded": "lane4"
             },
             "extruder5": {
                 "lane_loaded": null
