@@ -870,10 +870,6 @@ class afcACE(afcUnit):
 
                 if best is not None and best_score >= 4:
                     filament = best
-                    self.logger.info(
-                        f"Matched existing Spoolman filament #{filament.get('id')} "
-                        f"for {lane.name} by RFID metadata "
-                        f"(brand={brand or '-'}, material={material or '-'}, sku={sku})")
 
             if filament is None:
                 if not allow_create:
@@ -905,12 +901,7 @@ class afcACE(afcUnit):
                     article_number=sku,
                 )
                 if filament is None:
-                    self.logger.error(
-                        f"Failed to create filament in Spoolman for SKU {sku}")
                     return
-                self.logger.info(
-                    f"Created Spoolman filament #{filament['id']}: "
-                    f"{filament_name} ({material})")
 
             filament_id = filament.get("id")
             if filament_id is None:
@@ -930,10 +921,6 @@ class afcACE(afcUnit):
                         best = s
                 if best is not None:
                     spool = best
-                    self.logger.info(
-                        f"Found existing Spoolman spool #{spool['id']} for {lane.name} "
-                        f"(SKU: {sku}, filament #{filament_id}, "
-                        f"remaining: {spool.get('remaining_weight', '?')}g)")
 
             # Create a new spool only if no existing one was found
             if spool is None:
@@ -950,18 +937,22 @@ class afcACE(afcUnit):
                     spool_weight=spool_weight if spool_weight > 0 else None,
                 )
                 if spool is None:
-                    self.logger.error(
-                        f"Failed to create spool in Spoolman for filament #{filament_id}")
                     return
-                self.logger.info(
-                    f"Created Spoolman spool #{spool['id']} for {lane.name} "
-                    f"(SKU: {sku}, filament #{filament_id})")
 
             spool_id = spool.get("id")
+            fil_name = filament.get("name", "")
+            fil_color = (filament.get("color_hex") or "").strip().lstrip("#")
+            remaining = spool.get("remaining_weight")
+            remaining_str = f", {remaining:.0f}g left" if remaining else ""
+            color_str = f", #{fil_color}" if fil_color else ""
+            desc = f"'{fil_name}'{color_str}{remaining_str}"
 
-            # Assign spool_id to lane through AFC's normal flow
             self.afc.spool.set_spoolID(lane, spool_id)
             lane.send_lane_data()
+            tag_desc = f"{brand} {material}".strip() or "Unknown"
+            self.logger.info(f"ACE RFID: tag detected on {lane.name} — {tag_desc}")
+            self.logger.info(
+                f"ACE RFID: spool #{spool_id} ({desc}) assigned to {lane.name}")
 
         except Exception as e:
             self.logger.error(
