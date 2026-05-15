@@ -9,7 +9,6 @@ import traceback
 
 from configparser import Error as error
 from datetime import datetime
-
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -90,51 +89,51 @@ class afcBoxTurtle(afcUnit):
                 self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
                 msg += 'EMPTY READY FOR SPOOL'
             else:
-                self.afc.function.afc_led(cur_lane.led_fault, cur_lane.led_index)
+                self.lane_fault(cur_lane)
                 msg +="<span class=error--text> NOT READY</span>"
                 cur_lane.do_enable(False)
                 msg = '<span class=error--text>CHECK FILAMENT Prep: False - Load: True</span>'
                 succeeded = False
 
         else:
-            self.afc.function.afc_led(cur_lane.led_ready, cur_lane.led_index)
+            self.lane_loaded(cur_lane)
             msg +="<span class=success--text>LOCKED</span>"
             if not loaded:
                 msg +="<span class=error--text> NOT LOADED</span>"
-                self.afc.function.afc_led(cur_lane.led_not_ready, cur_lane.led_index)
+                self.lane_not_ready(cur_lane)
                 succeeded = False
             else:
                 cur_lane.status = AFCLaneState.LOADED
                 msg +="<span class=success--text> AND LOADED</span>"
-                self.afc.function.afc_led(cur_lane.led_spool_illum, cur_lane.led_spool_index)
+                self.lane_illuminate_spool(cur_lane)
 
                 if (cur_lane.tool_loaded
                     and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
                     ramming_loaded = False
                     if cur_lane.extruder_obj.tool_start == "buffer":
                         ramming_loaded = self._buffer_toolhead_load_check(cur_lane)
-                    if (cur_lane.extruder_obj.is_standalone()
-                        or cur_lane.get_toolhead_pre_sensor_state() == True
+                    if (cur_lane.get_toolhead_pre_sensor_state() == True
                         or ramming_loaded
-                        or cur_lane.extruder_obj.tool_end_state
-                        or cur_lane.extruder_obj.on_shuttle()):
+                        or cur_lane.extruder_obj.tool_end_state):
                         if cur_lane.extruder_obj.lane_loaded == cur_lane.name:
-                            self.afc.current = cur_lane.name
                             cur_lane.sync_to_extruder()
                             on_shuttle = ""
-                            if cur_lane.extruder_obj.tc_unit_obj:
+                            if (cur_lane.extruder_obj.tool_obj
+                                and cur_lane.extruder_obj.tc_unit_name):
                                 on_shuttle = " and toolhead on shuttle" if cur_lane.extruder_obj.on_shuttle() else ""
-                            msg +="<span class=primary--text> in ToolHead{}</span>".format(on_shuttle)
+                            msg += f"<span class=primary--text> in ToolHead{on_shuttle}</span>"
+
                             if (cur_lane.extruder_obj.tool_start == "buffer"
                                 and (not self.afc.homing_enabled
                                      or not cur_lane.unit_obj.enable_buffer_tool_check)):
                                 msg += "<span class=warning--text>\n Ram sensor enabled, confirm tool is loaded</span>"
 
-                            if (cur_lane.extruder_obj.lane_loaded == cur_lane.name
-                                    and cur_lane.extruder_obj.on_shuttle()):
+                            if self.afc.current == cur_lane.name:
                                 self.afc.spool.set_active_spool(cur_lane.spool_id)
-                                cur_lane.unit_obj.lane_tool_loaded( cur_lane )
+                                self.lane_tool_loaded(cur_lane)
                                 cur_lane.status = AFCLaneState.TOOLED
+                            else:
+                                self.lane_tool_loaded_idle(cur_lane)
 
                             cur_lane.enable_buffer()
                         else:
@@ -427,8 +426,10 @@ class afcBoxTurtle(afcUnit):
         hub_fault_dis = cur_lane.dist_hub + 150
         checkpoint = 'hub calibration {}'.format(cur_lane.name)
         # move until hub sensor is triggered and get information
-        hub_pos, checkpoint, success = self.move_until_state(cur_lane, lambda: cur_lane.hub_obj.state, cur_lane.hub_obj.move_dis,
-                                                             tol, cur_lane.short_move_dis, hub_pos, hub_fault_dis, checkpoint)
+        hub_pos, checkpoint, success = self.move_until_state(cur_lane, lambda: cur_lane.hub_obj.state,
+                                                             cur_lane.hub_obj.move_dis, tol,
+                                                             cur_lane.short_move_dis, hub_pos,
+                                                             hub_fault_dis, checkpoint)
 
         if not success:
             # fault if check is not successful
@@ -439,8 +440,9 @@ class afcBoxTurtle(afcUnit):
 
         hub_dist = cur_lane.dist_hub + 500
         # verify hub distance
-        tuned_hub_pos, checkpoint, success = self.calc_position(cur_lane, lambda: cur_lane.hub_obj.state, hub_pos,
-                                                                cur_lane.short_move_dis, tol, hub_dist, checkpoint)
+        tuned_hub_pos, checkpoint, success = self.calc_position(cur_lane, lambda: cur_lane.hub_obj.state,
+                                                                hub_pos, cur_lane.short_move_dis,
+                                                                tol, hub_dist, checkpoint)
 
         if not success:
             # fault if check is not successful
@@ -565,6 +567,7 @@ class afcBoxTurtle(afcUnit):
             if self.afc.homing_enabled:
                 success, hub_pos, _ = cur_lane.unit_obj.move_to_hub(cur_lane, move_dis,
                                                                     MoveDirection.POS,
+                                                                    speed_mode=SpeedMode.CALIBRATION,
                                                                     assist_active=AssistActive.NO)
                 message = f'\nFailed to calibrate dist_hub for {cur_lane.name} after moving {hub_pos}mm. '
                 message += 'If filament stopped short of the hub during calibration use the following command to increase dist_hub value'

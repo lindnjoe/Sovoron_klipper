@@ -3051,7 +3051,7 @@ class afcACE(afcUnit):
         title = f"TD-1 Bowden Calibration {self.name}"
         text = (
             f"Select a loaded lane from {self.name} to measure Bowden length to your TD-1 Device. "
-            "Each lane is calibrated individually. "
+            "ONLY CALIBRATE BOWDEN USING 1 LANE PER UNIT/hub. "
             "WARNING: This could take some time to complete. "
             "Config option: td1_bowden_length"
         )
@@ -3072,15 +3072,11 @@ class afcACE(afcUnit):
             buttons.append(list(group_buttons))
 
         total_buttons = sum(len(group) for group in buttons)
-        if total_buttons > 1:
-            all_lanes = [("All lanes", f"CALIBRATE_AFC TD1=all UNIT={self.name}", "default")]
-        else:
-            all_lanes = None
         if total_buttons == 0:
             text = "No lanes are loaded, please load before calibration"
 
         back = [("Back", f"UNIT_CALIBRATION UNIT={self.name}", "info")]
-        prompt.create_custom_p(title, text, all_lanes, True, buttons, back)
+        prompt.create_custom_p(title, text, None, True, buttons, back)
 
     # ---- Calibration ----
 
