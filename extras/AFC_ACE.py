@@ -688,8 +688,13 @@ class afcACE(afcUnit):
         inv["current_weight"] = info.get("current", 0)
         ext_temp = info.get("extruder_temp", {})
         bed_temp = info.get("hotbed_temp", {})
-        inv["extruder_temp_max"] = ext_temp.get("max") if isinstance(ext_temp, dict) else None
-        inv["bed_temp_max"] = bed_temp.get("max") if isinstance(bed_temp, dict) else None
+        if isinstance(ext_temp, dict) and ext_temp.get("min") and ext_temp.get("max"):
+            inv["extruder_temp"] = (ext_temp["min"] + ext_temp["max"]) // 2
+        elif isinstance(ext_temp, dict) and ext_temp.get("max"):
+            inv["extruder_temp"] = ext_temp["max"]
+        else:
+            inv["extruder_temp"] = None
+        inv["bed_temp"] = bed_temp.get("max") if isinstance(bed_temp, dict) else None
 
     def _refresh_slot_inventory(self, slot):
         """Fetch fresh RFID data for a single slot from ACE hardware."""
@@ -744,8 +749,8 @@ class afcACE(afcUnit):
         # Try ACE RFID data from slot inventory
         rfid_material = slot_info.get("material", "") if slot_info else ""
         rfid_color = slot_info.get("color", [0, 0, 0]) if slot_info else [0, 0, 0]
-        rfid_extruder_temp = slot_info.get("extruder_temp_max") if slot_info else None
-        rfid_bed_temp = slot_info.get("bed_temp_max") if slot_info else None
+        rfid_extruder_temp = slot_info.get("extruder_temp") if slot_info else None
+        rfid_bed_temp = slot_info.get("bed_temp") if slot_info else None
 
         # Treat "unknown" material from 3rd-party spools as empty
         if rfid_material and rfid_material.lower() == "unknown":
@@ -816,8 +821,8 @@ class afcACE(afcUnit):
         diameter = slot_info.get("diameter", 1.75)
         # RFID 'total' is the empty spool weight (tare), not filament weight
         spool_weight = slot_info.get("total_weight", 0)
-        ext_temp = slot_info.get("extruder_temp_max")
-        bed_temp = slot_info.get("bed_temp_max")
+        ext_temp = slot_info.get("extruder_temp")
+        bed_temp = slot_info.get("bed_temp")
         # Default filament weight for new spools
         default_filament_weight = 1000
 
