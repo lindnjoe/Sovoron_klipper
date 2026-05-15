@@ -846,6 +846,7 @@ class afcACE(afcUnit):
 
                 best = None
                 best_score = -1
+                best_color_dist = float('inf')
                 for f in fallback_candidates:
                     score = 0
                     f_material = (f.get("material") or "").strip().lower()
@@ -857,8 +858,20 @@ class afcACE(afcUnit):
                         score += 3
                     if brand and f_vendor == brand.strip().lower():
                         score += 3
-                    if color_hex and f_color == color_hex.strip().lower():
-                        score += 2
+
+                    cdist = float('inf')
+                    if color_hex and f_color and len(f_color) >= 6:
+                        cdist = self._color_distance_static(
+                            color_hex.strip().lower(), f_color[:6])
+                        if cdist < 30:
+                            score += 5
+                        elif cdist < 80:
+                            score += 2
+                        else:
+                            score -= 6
+                    elif color_hex and not f_color:
+                        score -= 3
+
                     if diameter and f_diameter is not None:
                         try:
                             if abs(float(f_diameter) - float(diameter)) <= 0.05:
@@ -866,12 +879,18 @@ class afcACE(afcUnit):
                         except Exception:
                             pass
 
-                    if score > best_score:
+                    is_better = (score > best_score or
+                                 (score == best_score and cdist < best_color_dist))
+                    if is_better:
                         best = f
                         best_score = score
+                        best_color_dist = cdist
 
                 if best is not None and best_score >= 4:
-                    filament = best
+                    if color_hex and best_color_dist > 50 and allow_create:
+                        pass
+                    else:
+                        filament = best
 
             if filament is None:
                 if not allow_create:
@@ -4328,6 +4347,14 @@ class afcACE(afcUnit):
         self.logger.info(msg)
 
     # ---- Utilities ----
+
+    @staticmethod
+    @staticmethod
+    def _color_distance_static(hex1: str, hex2: str) -> float:
+        """Euclidean RGB distance between two hex color strings."""
+        r1, g1, b1 = int(hex1[0:2], 16), int(hex1[2:4], 16), int(hex1[4:6], 16)
+        r2, g2, b2 = int(hex2[0:2], 16), int(hex2[2:4], 16), int(hex2[4:6], 16)
+        return ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
 
     @staticmethod
     def _ace_color_to_hex(color_array):
