@@ -93,12 +93,14 @@ class AFC_U1_RFID:
         self._poll_timer = None
         self._poll_count = 0
         self._scanner_channels: list = []
+        self._channel_to_lane: Dict[int, str] = {}
 
     def register_lane(self, lane: AFCLane, channel: int):
         """Register a lane to monitor a specific filament_detect channel."""
         self._lane_channel_map[lane.name] = channel
         self._lane_objects[lane.name] = lane
         self._last_uid[channel] = None
+        self._channel_to_lane[channel] = lane.name
 
     def start(self):
         """Start polling filament_detect for RFID data."""
@@ -141,13 +143,17 @@ class AFC_U1_RFID:
             self._poll_cb, self.reactor.monotonic() + POLL_INTERVAL)
 
     def _on_filament_info_update(self, *args):
-        """Callback fired by filament_detect when RFID data changes."""
-        self.logger.info(f"U1 RFID: filament_info callback fired, args count={len(args)}")
-        if args:
-            self.logger.info(f"U1 RFID: callback arg types: {[type(a).__name__ for a in args]}")
-            for i, a in enumerate(args):
-                if isinstance(a, (dict, list)):
-                    self.logger.info(f"U1 RFID: callback arg[{i}]={a}")
+        """Callback fired by filament_detect with (channel, info_dict, official)."""
+        if len(args) >= 2 and isinstance(args[0], int) and isinstance(args[1], dict):
+            channel = args[0]
+            info = args[1]
+            lane_name = self._channel_to_lane.get(channel)
+            if lane_name is not None:
+                try:
+                    self._check_channel(lane_name, channel, info=info)
+                except Exception:
+                    pass
+            return
         for lane_name, channel in self._lane_channel_map.items():
             try:
                 self._check_channel(lane_name, channel)
@@ -183,12 +189,13 @@ class AFC_U1_RFID:
         "HUB Loading",
     })
 
-    def _check_channel(self, lane_name: str, channel: int):
+    def _check_channel(self, lane_name: str, channel: int, info: dict = None):
         """Check a single channel for new or changed RFID data."""
         if self._filament_detect is None:
             return
 
-        info = self._get_channel_info(channel)
+        if info is None:
+            info = self._get_channel_info(channel)
         lane = self._lane_objects.get(lane_name)
         is_scanner = lane is not None and getattr(lane, 'spool_scanner', False)
 
