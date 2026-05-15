@@ -117,6 +117,17 @@ class AFC_U1_RFID:
             self.logger.info(f"U1 RFID: spool_scanner enabled on: {', '.join(scanner_lanes)}")
         fd_methods = [m for m in dir(self._filament_detect) if not m.startswith('_')]
         self.logger.debug(f"U1 RFID: filament_detect methods: {fd_methods}")
+        ff_objs = getattr(self._filament_detect, 'filament_feed_objects', None)
+        if ff_objs is not None:
+            self.logger.info(f"U1 RFID: filament_feed_objects type={type(ff_objs).__name__}, len={len(ff_objs) if hasattr(ff_objs, '__len__') else '?'}")
+            if isinstance(ff_objs, (list, tuple)) and ff_objs:
+                ff0_methods = [m for m in dir(ff_objs[0]) if not m.startswith('_')]
+                self.logger.info(f"U1 RFID: filament_feed[0] methods: {ff0_methods}")
+            elif isinstance(ff_objs, dict) and ff_objs:
+                key0 = next(iter(ff_objs))
+                ff0_methods = [m for m in dir(ff_objs[key0]) if not m.startswith('_')]
+                self.logger.info(f"U1 RFID: filament_feed[{key0}] methods: {ff0_methods}")
+        self._gcode = self.afc.gcode
         if hasattr(self._filament_detect, 'register_cb_2_update_filament_info'):
             try:
                 self._filament_detect.register_cb_2_update_filament_info(
@@ -150,11 +161,11 @@ class AFC_U1_RFID:
         self._poll_count += 1
         if self._poll_count % 15 == 1:
             self.logger.info(f"U1 RFID: poll tick #{self._poll_count}, uids={dict(self._last_uid)}")
-        if hasattr(self._filament_detect, 'request_update_filament_info'):
-            try:
-                self._filament_detect.request_update_filament_info()
-            except Exception:
-                pass
+        try:
+            self._gcode.run_script_from_command("FILAMENT_DT_UPDATE")
+        except Exception as e:
+            if self._poll_count <= 2:
+                self.logger.info(f"U1 RFID: FILAMENT_DT_UPDATE failed: {e}")
         for lane_name, channel in self._lane_channel_map.items():
             try:
                 self._check_channel(lane_name, channel)
