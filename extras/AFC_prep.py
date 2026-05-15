@@ -291,21 +291,30 @@ class afcPrep:
             self.logger.error(error_str)
 
     def _start_u1_rfid(self):
-        """Initialize U1 RFID polling if any lanes have u1_rfid_channel configured."""
+        """Initialize U1 RFID polling if any lanes/extruders have u1_rfid_channel configured."""
         from extras.AFC_U1_rfid import AFC_U1_RFID
-        has_u1_lanes = False
+
+        # Collect all lanes and extruder tc_lanes that have RFID channels.
+        # Extruder tc_lanes may have been removed from afc.lanes by
+        # check_lanes() when other lanes share the same extruder, but
+        # their RFID reader is still physically present.
+        rfid_sources = {}
         for lane in self.afc.lanes.values():
             channel = getattr(lane, "u1_rfid_channel", -1)
             if channel >= 0:
-                has_u1_lanes = True
-                break
-        if not has_u1_lanes:
+                rfid_sources[lane.name] = (lane, channel)
+        for ext in self.afc.tools.values():
+            tc_lane = getattr(ext, "tc_lane", None)
+            if tc_lane is not None and tc_lane.name not in rfid_sources:
+                channel = getattr(tc_lane, "u1_rfid_channel", -1)
+                if channel >= 0:
+                    rfid_sources[tc_lane.name] = (tc_lane, channel)
+
+        if not rfid_sources:
             return
         rfid = AFC_U1_RFID(self.afc)
-        for lane in self.afc.lanes.values():
-            channel = getattr(lane, "u1_rfid_channel", -1)
-            if channel >= 0:
-                rfid.register_lane(lane, channel)
+        for lane, channel in rfid_sources.values():
+            rfid.register_lane(lane, channel)
         rfid.start()
         self.afc.u1_rfid = rfid
 
