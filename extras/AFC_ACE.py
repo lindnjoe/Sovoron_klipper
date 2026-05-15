@@ -2006,40 +2006,53 @@ class afcACE(afcUnit):
         early_engage = False
 
         if homing_active and lane is not None:
-            # ── home_to_tool: single continuous feed ──────────────────
+            # ── home_to_tool: feed bowden distance, then pulse extra if needed ──
             homing_dist = getattr(afc, 'tool_homing_distance', 200.0)
-            total_distance = feed_length + homing_dist + 20.0
+            pulse_step = 50.0
+            max_pulses = int(homing_dist / pulse_step)
             self.logger.info(
-                f"ACE feed: home_to_tool active — single feed "
-                f"{total_distance:.0f}mm (feed={feed_length:.0f} + "
-                f"homing={homing_dist:.0f} + 20mm margin)"
+                f"ACE feed: home_to_tool active — feeding "
+                f"{feed_length:.0f}mm, then up to "
+                f"{homing_dist:.0f}mm in {pulse_step:.0f}mm pulses"
             )
 
-            ace.feed_filament(slot_index, total_distance, feed_spd)
+            ace.feed_filament(slot_index, feed_length, feed_spd)
             sensor_hit = self._wait_for_feed_complete(
-                slot_index, total_distance, feed_spd, lane=lane,
+                slot_index, feed_length, feed_spd, lane=lane,
                 poll_interval=0.1
             )
 
             sensor_triggered = sensor_hit or lane.get_toolhead_pre_sensor_state()
-            total_fed = total_distance
+            total_fed = feed_length
+
+            if not sensor_triggered:
+                for pulse in range(1, max_pulses + 1):
+                    self.logger.info(
+                        f"ACE feed: sensor not triggered, pulsing "
+                        f"{pulse_step:.0f}mm ({pulse}/{max_pulses})"
+                    )
+                    self._wait_for_ace_ready()
+                    ace.feed_filament(slot_index, pulse_step, feed_spd)
+                    sensor_hit = self._wait_for_feed_complete(
+                        slot_index, pulse_step, feed_spd, lane=lane,
+                        poll_interval=0.1
+                    )
+                    total_fed += pulse_step
+                    if sensor_hit or lane.get_toolhead_pre_sensor_state():
+                        sensor_triggered = True
+                        break
 
             if sensor_triggered:
                 self.logger.info(
-                    f"ACE feed: toolhead sensor triggered during "
-                    f"home_to_tool feed"
+                    f"ACE feed: toolhead sensor triggered at "
+                    f"~{total_fed:.0f}mm"
                 )
-                # When using an FPS buffer, signal early extruder engagement
-                # so the caller starts the extruder immediately without
-                # sending any ACE commands first.  Feed assist will be
-                # started after the extruder has engaged.
                 if self._fps_obj is not None:
                     early_engage = True
                     self.logger.info(
                         "ACE feed: FPS buffer — early extruder engagement"
                     )
                 else:
-                    # Non-FPS sensor: re-enable feed assist now as before.
                     if self._get_feed_assist(slot_index, lane):
                         try:
                             self._wait_for_ace_ready()
