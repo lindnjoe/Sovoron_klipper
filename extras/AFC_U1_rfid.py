@@ -175,7 +175,11 @@ class AFC_U1_RFID:
             return
 
         if card_uid == self._last_uid.get(channel):
-            return
+            if is_scanner:
+                if getattr(self.afc.spool, 'next_spool_id', None):
+                    return
+            else:
+                return
 
         if lane is None:
             return
