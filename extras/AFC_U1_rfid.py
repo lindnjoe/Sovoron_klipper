@@ -128,6 +128,12 @@ class AFC_U1_RFID:
 
     def _on_filament_info_update(self, *args):
         """Callback fired by filament_detect when RFID data changes."""
+        self.logger.info(f"U1 RFID: filament_info callback fired, args count={len(args)}")
+        if args:
+            self.logger.info(f"U1 RFID: callback arg types: {[type(a).__name__ for a in args]}")
+            for i, a in enumerate(args):
+                if isinstance(a, (dict, list)):
+                    self.logger.info(f"U1 RFID: callback arg[{i}]={a}")
         for lane_name, channel in self._lane_channel_map.items():
             try:
                 self._check_channel(lane_name, channel)
@@ -260,18 +266,36 @@ class AFC_U1_RFID:
                 self.logger.debug(f"U1 RFID: get_a_filament_info({channel}) returned non-dict: {type(info)}")
             except Exception as e:
                 self.logger.debug(f"U1 RFID: get_a_filament_info({channel}) raised: {e}")
+        if hasattr(fd, 'get_all_filament_info'):
+            try:
+                all_info = fd.get_all_filament_info()
+                if isinstance(all_info, (list, tuple)) and channel < len(all_info):
+                    entry = all_info[channel]
+                    if isinstance(entry, dict):
+                        return entry
+                elif isinstance(all_info, dict):
+                    entry = all_info.get(channel) or all_info.get(str(channel))
+                    if isinstance(entry, dict):
+                        return entry
+                if self._poll_count % 15 == 1:
+                    self.logger.info(f"U1 RFID: get_all_filament_info() type={type(all_info).__name__}, val={all_info}")
+            except Exception as e:
+                self.logger.debug(f"U1 RFID: get_all_filament_info() raised: {e}")
         if hasattr(fd, 'get_status'):
             try:
                 status = fd.get_status()
                 if isinstance(status, dict):
                     info_list = status.get('info')
                     if info_list and channel < len(info_list):
-                        return info_list[channel]
-                    self.logger.debug(f"U1 RFID: get_status() info_list len={len(info_list) if info_list else 0}, channel={channel}")
+                        entry = info_list[channel]
+                        if isinstance(entry, dict) and entry.get("CARD_UID"):
+                            return entry
+                    if self._poll_count % 15 == 1:
+                        self.logger.info(f"U1 RFID: get_status() keys={list(status.keys())}, info_len={len(info_list) if info_list else 0}")
+                        if info_list and channel < len(info_list):
+                            self.logger.info(f"U1 RFID: get_status() ch{channel} entry={info_list[channel]}")
             except Exception as e:
                 self.logger.debug(f"U1 RFID: get_status() raised: {e}")
-        else:
-            self.logger.debug(f"U1 RFID: filament_detect has neither get_a_filament_info nor get_status")
         return None
 
     def _map_to_slot_info(self, info: dict) -> dict:
