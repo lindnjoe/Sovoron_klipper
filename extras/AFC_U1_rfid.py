@@ -161,12 +161,13 @@ class AFC_U1_RFID:
         self._poll_count += 1
         if self._poll_count % 15 == 1:
             self.logger.info(f"U1 RFID: poll tick #{self._poll_count}, uids={dict(self._last_uid)}")
-        try:
-            self._gcode.run_script_from_command("FILAMENT_DT_UPDATE")
-        except Exception as e:
-            if self._poll_count <= 2:
-                self.logger.info(f"U1 RFID: FILAMENT_DT_UPDATE failed: {e}")
         for lane_name, channel in self._lane_channel_map.items():
+            try:
+                self._gcode.run_script_from_command(
+                    f"FILAMENT_DT_UPDATE CHANNEL={channel}")
+            except Exception as e:
+                if self._poll_count <= 2:
+                    self.logger.info(f"U1 RFID: FILAMENT_DT_UPDATE CHANNEL={channel} failed: {e}")
             try:
                 self._check_channel(lane_name, channel)
             except Exception as e:
