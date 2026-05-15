@@ -91,6 +91,7 @@ class AFC_U1_RFID:
         self._lane_objects: Dict[str, AFCLane] = {}
         self._last_uid: Dict[int, Optional[list]] = {}
         self._poll_timer = None
+        self._poll_count = 0
 
     def register_lane(self, lane: AFCLane, channel: int):
         """Register a lane to monitor a specific filament_detect channel."""
@@ -140,11 +141,14 @@ class AFC_U1_RFID:
 
     def _poll_cb(self, eventtime):
         """Periodic check for new RFID data on registered channels."""
+        self._poll_count += 1
+        if self._poll_count % 15 == 1:
+            self.logger.info(f"U1 RFID: poll tick #{self._poll_count}, uids={dict(self._last_uid)}")
         for lane_name, channel in self._lane_channel_map.items():
             try:
                 self._check_channel(lane_name, channel)
             except Exception as e:
-                self.logger.debug(f"U1 RFID ch{channel} ({lane_name}) poll error: {e}")
+                self.logger.info(f"U1 RFID ch{channel} ({lane_name}) poll error: {e}")
         return eventtime + POLL_INTERVAL
 
     _LOCKED_STATES = frozenset({
@@ -158,13 +162,20 @@ class AFC_U1_RFID:
             return
 
         info = self._get_channel_info(channel)
+        lane = self._lane_objects.get(lane_name)
+        is_scanner = lane is not None and getattr(lane, 'spool_scanner', False)
+
         if info is None:
-            self.logger.debug(f"U1 RFID ch{channel} ({lane_name}): _get_channel_info returned None")
+            if is_scanner and self._poll_count % 15 == 1:
+                self.logger.info(f"U1 RFID scanner ch{channel}: _get_channel_info returned None")
             return
 
         card_uid = info.get("CARD_UID")
-        lane = self._lane_objects.get(lane_name)
-        is_scanner = lane is not None and getattr(lane, 'spool_scanner', False)
+        if is_scanner and self._poll_count % 15 == 1:
+            self.logger.info(
+                f"U1 RFID scanner ch{channel}: CARD_UID={card_uid}, "
+                f"MAIN_TYPE={info.get('MAIN_TYPE')}, last_uid={self._last_uid.get(channel)}, "
+                f"next_spool_id={getattr(self.afc.spool, 'next_spool_id', None)}")
 
         if not card_uid or card_uid == 0:
             if self._last_uid.get(channel) not in (None, 0):
