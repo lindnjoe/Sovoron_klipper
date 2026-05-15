@@ -3208,7 +3208,7 @@ class afcACE(afcUnit):
         if not success:
             return False, msg, distance
 
-        new_feed_length = round(distance, 0)
+        new_feed_length = round(distance + 50, 0)
         new_retract_length = round(distance - 20, 0)
 
         # Update in-memory unit-level values
@@ -3231,7 +3231,7 @@ class afcACE(afcUnit):
 
         msg = (
             f"ACE bowden calibration: toolhead sensor triggered at {distance:.1f}mm.\n"
-            f"feed_length: {new_feed_length:.0f} (was {old_feed:.0f})\n"
+            f"feed_length: {new_feed_length:.0f} ({distance:.0f} + 50mm margin) (was {old_feed:.0f})\n"
             f"retract_length: {new_retract_length:.0f} (was {old_retract:.0f})\n"
             f"Values saved to unit config [{unit_section}]."
         )
@@ -3382,7 +3382,7 @@ class afcACE(afcUnit):
 
         # _measure_bowden_distance already adds dist_hub when filament
         # starts at the hub, so 'distance' is the full ACE-to-extruder path.
-        new_feed_length = round(distance, 0)
+        new_feed_length = round(distance + 50, 0)
         new_retract_length = round(distance - 20, 0)
 
         # Update in-memory per-lane overrides
@@ -3405,7 +3405,7 @@ class afcACE(afcUnit):
 
         msg = (
             f"ACE lane calibration: toolhead sensor triggered at {distance:.1f}mm.\n"
-            f"feed_length: {new_feed_length:.0f} (was {old_feed:.0f})\n"
+            f"feed_length: {new_feed_length:.0f} ({distance:.0f} + 50mm margin) (was {old_feed:.0f})\n"
             f"retract_length: {new_retract_length:.0f} (was {old_retract:.0f})\n"
             f"Values saved to lane config [{lane_section}]."
         )
