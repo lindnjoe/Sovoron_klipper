@@ -16,6 +16,89 @@ if TYPE_CHECKING:
 
 POLL_INTERVAL = 2.0
 
+_COLOR_NAMES = {
+    "ff0000": "Red",       "cc0000": "Red",       "990000": "Dark Red",
+    "00ff00": "Green",     "00cc00": "Green",     "006600": "Dark Green",
+    "0000ff": "Blue",      "0000cc": "Blue",      "000099": "Dark Blue",
+    "ffffff": "White",     "f0f0f0": "White",     "e0e0e0": "Light Gray",
+    "000000": "Black",     "111111": "Black",     "222222": "Black",
+    "ffff00": "Yellow",    "cccc00": "Yellow",    "ffd700": "Gold",
+    "ff8000": "Orange",    "ff6600": "Orange",    "ff4500": "Orange",
+    "800080": "Purple",    "660066": "Purple",    "9900cc": "Purple",
+    "ff00ff": "Magenta",   "cc00cc": "Magenta",
+    "ffc0cb": "Pink",      "ff69b4": "Pink",      "ff1493": "Hot Pink",
+    "808080": "Gray",      "999999": "Gray",      "666666": "Dark Gray",
+    "a0a0a0": "Gray",      "c0c0c0": "Silver",    "b0b0b0": "Silver",
+    "8b4513": "Brown",     "654321": "Brown",     "a0522d": "Brown",
+    "00ffff": "Cyan",      "008b8b": "Teal",      "008080": "Teal",
+    "000080": "Navy",      "191970": "Navy",
+    "f5f5dc": "Beige",     "d2b48c": "Tan",       "ffe4c4": "Bisque",
+    "ff7f50": "Coral",     "fa8072": "Salmon",
+    "7fff00": "Chartreuse","32cd32": "Lime",      "00ff7f": "Mint",
+    "4b0082": "Indigo",    "ee82ee": "Violet",    "dda0dd": "Plum",
+    "40e0d0": "Turquoise", "87ceeb": "Sky Blue",  "4169e1": "Royal Blue",
+    "556b2f": "Olive",     "808000": "Olive",
+    "f0e68c": "Khaki",     "bdb76b": "Dark Khaki",
+    "fffdd0": "Cream",     "fffacd": "Lemon",
+    "e6e6fa": "Lavender",  "d8bfd8": "Thistle",
+    "fff0f5": "Blush",     "ffe4e1": "Misty Rose",
+}
+
+
+def _color_name(hex_str: str) -> str:
+    """Return nearest human-readable color name for a hex color string."""
+    if not hex_str or len(hex_str) < 6:
+        return ""
+    h = hex_str.strip().lstrip("#").lower()[:6]
+    try:
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    except ValueError:
+        return ""
+    best_name = ""
+    best_dist = float('inf')
+    for ref_hex, name in _COLOR_NAMES.items():
+        rr, gg, bb = int(ref_hex[0:2], 16), int(ref_hex[2:4], 16), int(ref_hex[4:6], 16)
+        dist = ((r - rr) ** 2 + (g - gg) ** 2 + (b - bb) ** 2) ** 0.5
+        if dist < best_dist:
+            best_dist = dist
+            best_name = name
+    return best_name
+
+
+def _log_new_filament(logger, prefix, filament, brand, material, color_hex,
+                      diameter, ext_temp, bed_temp, sku=""):
+    """Log a detailed breakdown when a new filament is created in Spoolman."""
+    fid = filament.get("id", "?")
+    parts = [f"{prefix}: created filament #{fid} in Spoolman:"]
+    if brand:
+        parts.append(f"  vendor: {brand}")
+    if material:
+        parts.append(f"  material: {material}")
+    if color_hex:
+        cname = _color_name(color_hex)
+        clabel = f"{cname} #{color_hex}" if cname else f"#{color_hex}"
+        parts.append(f"  color: {clabel}")
+    parts.append(f"  diameter: {diameter}mm")
+    if ext_temp:
+        parts.append(f"  nozzle temp: {ext_temp}°C")
+    if bed_temp:
+        parts.append(f"  bed temp: {bed_temp}°C")
+    if sku:
+        parts.append(f"  SKU: {sku}")
+    logger.info("\n".join(parts))
+
+
+def _log_new_spool(logger, prefix, spool, weight, spool_weight=None):
+    """Log a detailed breakdown when a new spool is created in Spoolman."""
+    sid = spool.get("id", "?")
+    parts = [f"{prefix}: created spool #{sid} in Spoolman:"]
+    parts.append(f"  filament weight: {weight}g")
+    if spool_weight:
+        parts.append(f"  spool weight (tare): {spool_weight}g")
+    parts.append(f"  remaining: {weight}g")
+    logger.info("\n".join(parts))
+
+
 # Material density (g/cm^3) used when creating a Spoolman filament from
 # an RFID tag. Spoolman computes remaining length from weight using this
 # value, so hardcoding PLA here makes length tracking wrong for every
@@ -219,7 +302,8 @@ class AFC_U1_RFID:
         color = slot_info.get('color_hex', '')
         tag_desc = f"{brand} {material}".strip() or "Unknown"
         if color:
-            tag_desc += f" (#{color})"
+            cname = _color_name(color)
+            tag_desc += f" ({cname} #{color})" if cname else f" (#{color})"
 
         if is_scanner:
             self.logger.info(f"U1 RFID: spool scanned — {tag_desc}")
@@ -468,6 +552,9 @@ class AFC_U1_RFID:
                 )
                 if filament is None:
                     return
+                _log_new_filament(self.logger, "U1 RFID", filament,
+                                  brand, material, color_hex, diameter,
+                                  ext_temp, bed_temp, sku)
 
             filament_id = filament.get("id")
             if filament_id is None:
@@ -495,13 +582,19 @@ class AFC_U1_RFID:
                 )
                 if spool is None:
                     return
+                _log_new_spool(self.logger, "U1 RFID", spool,
+                               default_filament_weight)
 
             spool_id = spool.get("id")
             fil_name = filament.get("name", "")
             fil_color = (filament.get("color_hex") or "").strip().lstrip("#")
             remaining = spool.get("remaining_weight")
             remaining_str = f", {remaining:.0f}g left" if remaining else ""
-            color_str = f", #{fil_color}" if fil_color else ""
+            if fil_color:
+                cname = _color_name(fil_color)
+                color_str = f", {cname} #{fil_color}" if cname else f", #{fil_color}"
+            else:
+                color_str = ""
             desc = f"'{fil_name}'{color_str}{remaining_str}"
 
             if set_next:
