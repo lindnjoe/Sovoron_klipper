@@ -29,6 +29,8 @@ except: raise config_error("Error when trying to import AFC_utils.ERROR_STR\n{tr
 try: from extras.AFC_unit import afcUnit
 except: raise config_error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
 
+from extras.AFC_U1_rfid import _color_name, _log_new_filament, _log_new_spool, _density_for_material
+
 try: from extras.AFC_lane import AFCLane, AFCLaneState
 except: raise config_error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
@@ -891,7 +893,7 @@ class afcACE(afcUnit):
                     name=filament_name,
                     vendor_id=vendor_id,
                     material=material or None,
-                    density=1.24,
+                    density=_density_for_material(material),
                     diameter=diameter,
                     color_hex=color_hex,
                     settings_extruder_temp=ext_temp,
@@ -902,6 +904,9 @@ class afcACE(afcUnit):
                 )
                 if filament is None:
                     return
+                _log_new_filament(self.logger, "ACE RFID", filament,
+                                  brand, material, color_hex, diameter,
+                                  ext_temp, bed_temp, sku)
 
             filament_id = filament.get("id")
             if filament_id is None:
@@ -938,18 +943,28 @@ class afcACE(afcUnit):
                 )
                 if spool is None:
                     return
+                _log_new_spool(self.logger, "ACE RFID", spool,
+                               default_filament_weight,
+                               spool_weight if spool_weight > 0 else None)
 
             spool_id = spool.get("id")
             fil_name = filament.get("name", "")
             fil_color = (filament.get("color_hex") or "").strip().lstrip("#")
             remaining = spool.get("remaining_weight")
             remaining_str = f", {remaining:.0f}g left" if remaining else ""
-            color_str = f", #{fil_color}" if fil_color else ""
+            if fil_color:
+                cname = _color_name(fil_color)
+                color_str = f", {cname} #{fil_color}" if cname else f", #{fil_color}"
+            else:
+                color_str = ""
             desc = f"'{fil_name}'{color_str}{remaining_str}"
 
             self.afc.spool.set_spoolID(lane, spool_id)
             lane.send_lane_data()
             tag_desc = f"{brand} {material}".strip() or "Unknown"
+            if color_hex:
+                cname = _color_name(color_hex)
+                tag_desc += f" ({cname} #{color_hex})" if cname else f" (#{color_hex})"
             self.logger.info(f"ACE RFID: tag detected on {lane.name} — {tag_desc}")
             self.logger.info(
                 f"ACE RFID: spool #{spool_id} ({desc}) assigned to {lane.name}")
