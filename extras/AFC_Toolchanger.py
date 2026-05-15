@@ -45,6 +45,7 @@ class AfcToolchanger(afcUnit):
         self.functions: afcFunction = self.printer.load_object(config, 'AFC_functions')
 
         self.transfer_fan_speed: bool = config.getboolean('transfer_fan_speed', True)
+        self.auto_spoolman_create: bool = config.getboolean('auto_spoolman_create', False)
 
         self.active_tool = None
         self.fan_switcher = None
