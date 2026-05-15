@@ -384,6 +384,7 @@ class AfcToolchanger(afcUnit):
             'start_position': self._position_to_xyz(start_pos, 'xyz'),
             'restore_position': self._position_to_xyz(start_pos, 'XYZ'),
         }
+        self._dock_purge_context = extra_context
         self._run_gcode('tool.dropoff_gcode', tool.dropoff_gcode, extra_context)
 
     def cmd_UNDOCK_TOOL(self, gcmd):
@@ -393,16 +394,12 @@ class AfcToolchanger(afcUnit):
         if not self.active_tool:
             raise gcmd.error("UNDOCK_TOOL: no active tool to undock")
         tool = self.active_tool
-        gcode_pos = list(self.gcode_move.get_status()['gcode_position'])
-        start_pos = self._position_with_tool_offset(gcode_pos, None)
-        extra_context = {
-            'dropoff_tool': tool.name,
-            'pickup_tool': tool.name,
-            'dock_purge': True,
-            'start_position': self._position_to_xyz(start_pos, 'xyz'),
-            'restore_position': self._position_to_xyz(start_pos, 'XYZ'),
-        }
+        extra_context = getattr(self, '_dock_purge_context', None)
+        if extra_context is None:
+            raise gcmd.error(
+                "UNDOCK_TOOL: no saved context (run DOCK_TOOL first)")
         self._run_gcode('tool.pickup_gcode', tool.pickup_gcode, extra_context)
+        self._dock_purge_context = None
 
     def _resolve_tool_from_gcmd(self, gcmd):
         """Look up a tool by T=<number> from a gcode command."""
