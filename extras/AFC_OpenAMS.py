@@ -886,7 +886,7 @@ class afcAMS(afcUnit):
                 if buffer_obj is not None and hasattr(buffer_obj, '_advance_latched'):
                     buffer_obj._advance_latched = True
                     buffer_obj.advance_state = True
-                    self.logger.info(
+                    self.logger.debug(
                         f"Forced FPS latch for {cur_lane.name}: "
                         f"advance_state={buffer_obj.advance_state}, "
                         f"latched={buffer_obj._advance_latched}, "
@@ -1503,7 +1503,7 @@ class afcAMS(afcUnit):
         sensor_state = cur_lane.get_toolhead_pre_sensor_state()
         on_shuttle = cur_lane.extruder_obj.on_shuttle()
         buf = getattr(cur_lane, 'buffer_obj', None)
-        self.logger.info(
+        self.logger.debug(
             f"OpenAMS sensor check for {cur_lane.name}: "
             f"sensor_state={sensor_state}, on_shuttle={on_shuttle}, "
             f"tool_start={cur_lane.extruder_obj.tool_start}, "
