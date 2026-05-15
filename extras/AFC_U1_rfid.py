@@ -144,6 +144,11 @@ class AFC_U1_RFID:
         self._poll_count += 1
         if self._poll_count % 15 == 1:
             self.logger.info(f"U1 RFID: poll tick #{self._poll_count}, uids={dict(self._last_uid)}")
+        if hasattr(self._filament_detect, 'request_update_filament_info'):
+            try:
+                self._filament_detect.request_update_filament_info()
+            except Exception:
+                pass
         for lane_name, channel in self._lane_channel_map.items():
             try:
                 self._check_channel(lane_name, channel)
