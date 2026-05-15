@@ -249,9 +249,8 @@ class afc:
             "toolchange_temp_drop", 0
         )  # Degrees to drop the old extruder's temperature (no wait) after a successful toolchange when the extruder changes.
         self.temp_wait_tolerance: float = config.getfloat("temp_wait_tolerance", 2)  # Degrees +/- from target temp to consider extruder "at temperature"
-        self.force_assign_map       = config.getboolean("force_assign_map", False)
-        self.disable_homing_check   = config.getboolean("disable_homing_check", False)
         self.load_to_hub            = config.getboolean("load_to_hub", True)        # Fast loads filament to hub when inserted, set to False to disable. This is a global setting and can be overridden at AFC_stepper
+        self.force_assign_map       = config.getboolean("force_assign_map", False)
         self.disable_homing_check   = config.getboolean("disable_homing_check", False)# Disables homing check when doing toolchanges. Only use this if you are using a toolchanger and don't need to home to unload toolheads
         self.assisted_unload        = config.getboolean("assisted_unload", True)    # If True, the unload retract is assisted to prevent loose windings, especially on full spools. This can prevent loops from slipping off the spool
         self.bypass_pause           = config.getboolean("pause_when_bypass_active", False) # When true AFC pauses print when change tool is called and bypass is loaded
