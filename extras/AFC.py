@@ -1791,7 +1791,6 @@ class afc:
                                  pause=self.function.in_print())
             return False
 
-        self.logger.info("Unloading {}".format(cur_lane.name))
         self._set_u1_display('unloading')
 
         # Lookup current extruder object using the lane's information.
@@ -1799,11 +1798,6 @@ class afc:
 
         # Verify that printer is in absolute mode
         self.function.check_absolute_mode("TOOL_UNLOAD")
-
-        # Perform Z-hop to avoid collisions during unloading.
-        z_target = self.gcode_move.last_position[2] + self.z_hop
-        # toolhead wait is needed here as it will cause TTC for some if wait does not occur
-        self.move_z_pos(z_target, "Tool_Unload quick pull", wait_moves=True)
 
         # Check if the current extruder is loaded with the lane to be unloaded.
         next_lookup_lane_name = cur_lane.name
