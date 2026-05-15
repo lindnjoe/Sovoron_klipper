@@ -19,6 +19,8 @@ POLL_INTERVAL = 2.0
 _COLOR_NAMES = {
     "ff0000": "Red",       "cc0000": "Red",       "990000": "Dark Red",
     "660000": "Dark Red",  "4d0000": "Dark Red",  "330000": "Maroon",
+    "c03020": "Red",       "b02018": "Red",       "cc3333": "Red",
+    "e02020": "Red",       "a01818": "Dark Red",  "801010": "Dark Red",
     "00ff00": "Green",     "00cc00": "Green",     "006600": "Dark Green",
     "003300": "Dark Green","1a3300": "Dark Green",
     "0000ff": "Blue",      "0000cc": "Blue",      "000099": "Dark Blue",
