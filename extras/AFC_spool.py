@@ -341,10 +341,10 @@ class AFCSpool:
             color_hex = info.get("color_hex", "")
             if color_hex:
                 cur_lane.color = f"#{color_hex}"
-            if info.get("extruder_temp_max"):
-                cur_lane.extruder_temp = float(info["extruder_temp_max"])
-            if info.get("bed_temp_max"):
-                cur_lane.bed_temp = float(info["bed_temp_max"])
+            if info.get("extruder_temp"):
+                cur_lane.extruder_temp = float(info["extruder_temp"])
+            if info.get("bed_temp"):
+                cur_lane.bed_temp = float(info["bed_temp"])
             if not getattr(cur_lane, "weight", 0):
                 cur_lane.weight = 1000
 

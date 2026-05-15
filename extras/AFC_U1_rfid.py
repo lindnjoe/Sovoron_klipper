@@ -397,12 +397,19 @@ class AFC_U1_RFID:
             b = rgb_int & 0xFF
             color_hex = f"{r:02x}{g:02x}{b:02x}"
         ext_max = info.get("HOTEND_MAX_TEMP")
+        ext_min = info.get("HOTEND_MIN_TEMP")
         bed_max = info.get("BED_TEMP")
         sku_raw = info.get("SKU", "")
         sku = "" if (not sku_raw or sku_raw == 0) else str(sku_raw)
         vendor = info.get("VENDOR", "")
         if vendor.upper() == "NONE":
             vendor = ""
+        if ext_max and ext_min:
+            ext_temp = (int(ext_max) + int(ext_min)) // 2
+        elif ext_max:
+            ext_temp = int(ext_max)
+        else:
+            ext_temp = None
         return {
             "material": info.get("MAIN_TYPE", ""),
             "color_hex": color_hex,
@@ -410,8 +417,8 @@ class AFC_U1_RFID:
             "brand": vendor,
             "sub_type": info.get("SUB_TYPE", ""),
             "diameter": 1.75,
-            "extruder_temp_max": int(ext_max) if ext_max else None,
-            "bed_temp_max": int(bed_max) if bed_max else None,
+            "extruder_temp": ext_temp,
+            "bed_temp": int(bed_max) if bed_max else None,
         }
 
     def _apply_filament_defaults(self, lane: AFCLane, slot_info: dict):
@@ -424,10 +431,10 @@ class AFC_U1_RFID:
         if color_hex:
             lane.color = f"#{color_hex}"
 
-        ext_temp = slot_info.get("extruder_temp_max")
+        ext_temp = slot_info.get("extruder_temp")
         if ext_temp:
             lane.extruder_temp = float(ext_temp)
-        bed_temp = slot_info.get("bed_temp_max")
+        bed_temp = slot_info.get("bed_temp")
         if bed_temp:
             lane.bed_temp = float(bed_temp)
 
@@ -477,8 +484,8 @@ class AFC_U1_RFID:
         material = slot_info.get("material", "")
         color_hex = slot_info.get("color_hex", "") or None
         diameter = slot_info.get("diameter", 1.75)
-        ext_temp = slot_info.get("extruder_temp_max")
-        bed_temp = slot_info.get("bed_temp_max")
+        ext_temp = slot_info.get("extruder_temp")
+        bed_temp = slot_info.get("bed_temp")
         default_filament_weight = 1000
         allow_create = self._get_auto_spoolman_create(lane)
 
