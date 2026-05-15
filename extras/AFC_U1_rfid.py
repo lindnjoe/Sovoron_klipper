@@ -92,6 +92,7 @@ class AFC_U1_RFID:
         self._last_uid: Dict[int, Optional[list]] = {}
         self._poll_timer = None
         self._poll_count = 0
+        self._scanner_channels: list = []
 
     def register_lane(self, lane: AFCLane, channel: int):
         """Register a lane to monitor a specific filament_detect channel."""
@@ -113,6 +114,8 @@ class AFC_U1_RFID:
         self.logger.info(
             f"U1 RFID: polling {len(channels)} channel(s): "
             + ", ".join(f"{name}=ch{ch}" for name, ch in channels))
+        self._scanner_channels = [ch for name, ch in channels
+                                   if getattr(self._lane_objects.get(name), 'spool_scanner', False)]
         if scanner_lanes:
             self.logger.info(f"U1 RFID: spool_scanner enabled on: {', '.join(scanner_lanes)}")
         fd_methods = [m for m in dir(self._filament_detect) if not m.startswith('_')]
@@ -161,13 +164,14 @@ class AFC_U1_RFID:
         self._poll_count += 1
         if self._poll_count % 15 == 1:
             self.logger.info(f"U1 RFID: poll tick #{self._poll_count}, uids={dict(self._last_uid)}")
-        for lane_name, channel in self._lane_channel_map.items():
+        for ch in self._scanner_channels:
             try:
                 self._gcode.run_script_from_command(
-                    f"FILAMENT_DT_UPDATE CHANNEL={channel}")
+                    f"FILAMENT_DT_UPDATE CHANNEL={ch}")
             except Exception as e:
                 if self._poll_count <= 2:
-                    self.logger.info(f"U1 RFID: FILAMENT_DT_UPDATE CHANNEL={channel} failed: {e}")
+                    self.logger.info(f"U1 RFID: FILAMENT_DT_UPDATE CHANNEL={ch} failed: {e}")
+        for lane_name, channel in self._lane_channel_map.items():
             try:
                 self._check_channel(lane_name, channel)
             except Exception as e:
