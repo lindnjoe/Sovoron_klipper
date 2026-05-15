@@ -152,7 +152,6 @@ class afc:
 
         self.disable_weight_check   = config.getboolean("disable_weight_check", False) # Set to True to disable weight check when loading filament into lane/toolhead
         self.disable_ooze_check     = config.getboolean("disable_ooze_check", False) # Disable ooze check for lanes being on the same extruder in M104/M109 commands
-        self.deadband_auto          = config.getboolean("deadband_auto", True)       # Automatically use extruder's configured deadband for M109 when D is not specified
 
         # Auto spool switch settings
         self.auto_spool_switch: bool              = config.getboolean("auto_spool_switch", False)                    # Trigger spool switch based on remaining filament weight
@@ -2484,66 +2483,27 @@ class afc:
     def _cmd_AFC_M109(self, gcmd, wait=True):
         """
         This function sets the temperature of the specified extruder and waits for it to reach the target temperature.
-        Supports T (tool), S (temp), D (deadband), and EXTRUDER (direct name).
-
-        EXTRUDER= targets a physical extruder by name (e.g. EXTRUDER=extruder5),
-        bypassing the T lane-map lookup. Use this in toolchanger macros where
-        T<n> would be ambiguous between lane map and physical tool number.
+        Supports T (tool), S (temp), and D (deadband).
         """
 
-        # Note: M109 is now handled natively, no longer routed through KTC
-        extruder_name = gcmd.get('EXTRUDER', None)
+        # TODO: this currently does not work correctly when lanes are remapped and KTC calls M109
         toolnum  = gcmd.get_int('T', None, minval=0)
         temp     = gcmd.get_float('S', 0.0)
         deadband = gcmd.get_float('D', None)
 
         curr_extruder = self.function.get_current_extruder_obj()
 
-        if extruder_name is not None:
-            # Klipper single-letter commands (M109) parse parameter values
-            # with a leading '=' for backwards compatibility.
-            extruder_name = extruder_name.lstrip('=')
-            # If empty after stripping (parsing artifact), ignore EXTRUDER
-            # and fall through to T param or current extruder.
-            if not extruder_name:
-                extruder_name = None
-            else:
-                # If just a number was passed (e.g. EXTRUDER=5), prepend 'extruder'
-                if extruder_name.isdigit():
-                    extruder_name = ("extruder" if extruder_name == "0"
-                                     else "extruder" + extruder_name)
-                # Direct extruder name lookup — bypasses lane map and tool_number.
-                # Used by toolchanger macros where T<n> is ambiguous.
-                extruder = self.tools.get(extruder_name)
-                if extruder is not None:
-                    self.logger.debug(
-                        "M109 EXTRUDER=%s: direct lookup -> %s"
-                        % (extruder_name, extruder.name))
-                else:
-                    self.logger.warning(
-                        "M109 EXTRUDER=%s: not found in AFC tools, falling through to T param"
-                        % extruder_name)
-                    extruder_name = None  # Fall through
-
-        if extruder_name is None and toolnum is not None:
-            # First try lane map lookup — this matches how T commands resolve
-            # tool changes (T5 -> lane5 -> extruder4), so M109 T5 heats the
-            # same extruder that a T5 tool change would use.
-            extruder = None
+        if toolnum is not None:
             map = "T{}".format(toolnum)
             lane = self.function.get_lane_by_map(map)
             if lane is not None:
                 extruder = lane.extruder_obj
-                self.logger.debug(
-                    "M109 T%d: lane map %s -> %s -> %s"
-                    % (toolnum, map, lane.name, extruder.name))
 
                 # Checking if slicer is trying to set temperature(ooze prevention) for another lane
                 #   thats connected to the currently loaded extruder. Bypass this check if current
                 #   extruder does not have a lane loaded, so that M109 can set temperature in a
                 #   start macro for the initial tool, prior to loading filament.
                 if (not self.disable_ooze_check
-                    and not self.error_state
                     and curr_extruder
                     and curr_extruder.lane_loaded is not None):
                     for curr_extr_lane in curr_extruder.lanes:
@@ -2558,29 +2518,21 @@ class afc:
                                     f"Not setting temperature for {map} since another lane is loaded for {curr_extruder.name}</span>")
                                 )
                                 return
-
-            # T# must resolve through AFC's lane map. If no lane maps to this
-            # T number, it's an error — we don't fall back to tool_number matching.
-            if extruder is not None:
-                self.logger.debug("Setting temperature for {} to {}".format(extruder, temp))
+                self.logger.debug("Setting temperature for {} to {}".format(lane.extruder_obj, temp))
+                if extruder is None:
+                    self.logger.error("extruder not configured for T{}".format(toolnum))
+                    return
             else:
-                self.logger.error("No lane mapped to T{} — cannot resolve extruder".format(toolnum))
+                self.logger.error("extruder not configured for T{}".format(toolnum))
                 return
-        elif extruder_name is None:
+        else:
             extruder = self.toolhead.get_extruder()
-            self.logger.debug(
-                "M109 (no T param): using current extruder %s"
-                % getattr(extruder, 'name', extruder))
-
-        # Auto-fill deadband from extruder config when D is not specified
-        if deadband is None and self.deadband_auto and hasattr(extruder, 'deadband'):
-            deadband = extruder.deadband
 
         pheaters = self.printer.lookup_object('heaters')
         heater = extruder.get_heater()
         pheaters.set_temperature(heater, temp, False)  # Always set temp, don't wait yet
 
-        # If deadband is specified (or auto-filled), wait for temp within tolerance
+        # If deadband is specified, wait for temp within tolerance
         if wait and deadband is not None and temp > 0:
             self._wait_for_temp_within_tolerance(heater, temp, deadband)
             return
