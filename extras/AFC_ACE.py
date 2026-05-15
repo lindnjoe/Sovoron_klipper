@@ -863,10 +863,8 @@ class afcACE(afcUnit):
                     if color_hex and f_color and len(f_color) >= 6:
                         cdist = self._color_distance_static(
                             color_hex.strip().lower(), f_color[:6])
-                        if cdist < 30:
+                        if cdist < 10:
                             score += 5
-                        elif cdist < 80:
-                            score += 2
                         else:
                             score -= 6
                     elif color_hex and not f_color:
@@ -887,7 +885,7 @@ class afcACE(afcUnit):
                         best_color_dist = cdist
 
                 if best is not None and best_score >= 4:
-                    if color_hex and best_color_dist > 50 and allow_create:
+                    if color_hex and best_color_dist >= 10 and allow_create:
                         pass
                     else:
                         filament = best
