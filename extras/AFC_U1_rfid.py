@@ -322,7 +322,6 @@ class AFC_U1_RFID:
 
         if is_scanner:
             self.logger.info(f"U1 RFID: spool scanned — {tag_desc}")
-            self.afc.spool.next_spool_info = dict(slot_info)
             self._sync_to_spoolman(lane, slot_info, set_next=True)
             return
 
@@ -461,7 +460,13 @@ class AFC_U1_RFID:
 
         When set_next is True, stages the spool as next_spool_id instead of
         assigning it to the lane directly (spool scanner mode).
+        Also stages next_spool_info with raw RFID data for use without Spoolman.
         """
+        if set_next:
+            try:
+                self.afc.spool.next_spool_info = dict(slot_info)
+            except Exception:
+                pass
         if self.afc.spoolman is None or self.afc.moonraker is None:
             return
         if not set_next and getattr(lane, "spool_id", None) not in (None, "", 0):
