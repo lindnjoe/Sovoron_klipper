@@ -471,22 +471,17 @@ class AFCFPSBuffer:
 
         reading = self.smoothed_fps
         deviation = reading - self.set_point  # positive = high/advancing, negative = low/trailing
-        half_db = self.deadband / 2.0
 
-        # Continuous proportional multiplier:
-        #   Above set_point → slow down (multiplier < 1.0)
-        #   Below set_point → speed up (multiplier > 1.0)
-        #   At set_point    → neutral  (multiplier = 1.0)
-        # Full correction reached at the deadband edge (set_point ± half_db),
-        # clamped beyond that so the buffer reacts quickly.
+        # Continuous proportional multiplier across the full sensor range:
+        #   Above set_point → slow down (multiplier < 1.0), max at high_point
+        #   Below set_point → speed up  (multiplier > 1.0), max at low_point
+        #   At set_point    → neutral   (multiplier = 1.0)
         if deviation > 0:
-            # High side: scale from 1.0 at set_point to multiplier_low at neutral_high
-            range_size = half_db if half_db > 0 else 0.01
+            range_size = max(self.high_point - self.set_point, 0.01)
             fraction = min(deviation / range_size, 1.0)
             multiplier = 1.0 - fraction * (1.0 - self.multiplier_low)
         elif deviation < 0:
-            # Low side: scale from 1.0 at set_point to multiplier_high at neutral_low
-            range_size = half_db if half_db > 0 else 0.01
+            range_size = max(self.set_point - self.low_point, 0.01)
             fraction = min(-deviation / range_size, 1.0)
             multiplier = 1.0 + fraction * (self.multiplier_high - 1.0)
             trailing_floor = min(self.trailing_min_multiplier, self.multiplier_high)
