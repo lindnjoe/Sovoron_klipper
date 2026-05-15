@@ -170,7 +170,8 @@ class AFC_U1_RFID:
         if lane is None:
             return
 
-        if getattr(lane, "status", "") in self._LOCKED_STATES:
+        is_scanner = getattr(lane, 'spool_scanner', False)
+        if not is_scanner and getattr(lane, "status", "") in self._LOCKED_STATES:
             return
 
         self._last_uid[channel] = card_uid
@@ -187,7 +188,7 @@ class AFC_U1_RFID:
             f"sku={slot_info.get('sku', '') or 'none'} "
             f"uid={card_uid}")
 
-        if getattr(lane, 'spool_scanner', False):
+        if is_scanner:
             self._sync_to_spoolman(lane, slot_info, set_next=True)
             return
 
