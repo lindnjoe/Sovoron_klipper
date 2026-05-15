@@ -886,6 +886,19 @@ class afcAMS(afcUnit):
                 if buffer_obj is not None and hasattr(buffer_obj, '_advance_latched'):
                     buffer_obj._advance_latched = True
                     buffer_obj.advance_state = True
+                    self.logger.info(
+                        f"Forced FPS latch for {cur_lane.name}: "
+                        f"advance_state={buffer_obj.advance_state}, "
+                        f"latched={buffer_obj._advance_latched}, "
+                        f"latch_enabled={getattr(buffer_obj, '_latch_enabled', '?')}, "
+                        f"fps={getattr(buffer_obj, 'smoothed_fps', '?')}"
+                    )
+                else:
+                    self.logger.warning(
+                        f"Cannot force FPS latch for {cur_lane.name}: "
+                        f"buffer_obj={buffer_obj}, "
+                        f"has_latch={hasattr(buffer_obj, '_advance_latched') if buffer_obj else 'N/A'}"
+                    )
 
                 # Enable follower forward after successful engagement
                 if self._follower is not None:
@@ -1487,7 +1500,19 @@ class afcAMS(afcUnit):
         finally:
             afc._suppress_tool_swap_timer = False
 
-        if not cur_lane.get_toolhead_pre_sensor_state() and not cur_lane.extruder_obj.on_shuttle():
+        sensor_state = cur_lane.get_toolhead_pre_sensor_state()
+        on_shuttle = cur_lane.extruder_obj.on_shuttle()
+        buf = getattr(cur_lane, 'buffer_obj', None)
+        self.logger.info(
+            f"OpenAMS sensor check for {cur_lane.name}: "
+            f"sensor_state={sensor_state}, on_shuttle={on_shuttle}, "
+            f"tool_start={cur_lane.extruder_obj.tool_start}, "
+            f"buffer_obj={buf.name if buf else None}, "
+            f"advance_state={getattr(buf, 'advance_state', '?') if buf else 'N/A'}, "
+            f"latched={getattr(buf, '_advance_latched', '?') if buf else 'N/A'}, "
+            f"fps={getattr(buf, 'smoothed_fps', '?') if buf else 'N/A'}"
+        )
+        if not sensor_state and not on_shuttle:
             message = (
                 "OpenAMS load did not trigger pre extruder gear toolhead sensor, CHECK FILAMENT PATH\n"
                 "||=====||====||==>--||\nTRG   LOAD   HUB   TOOL"
