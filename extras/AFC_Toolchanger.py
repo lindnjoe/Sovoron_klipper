@@ -166,6 +166,7 @@ class AfcToolchanger(afcUnit):
 
         # Gcode offset transform
         self.gcode_transform = ToolGcodeTransform()
+        self._homing_saved_tool = None
 
         # tool_probe_endstop integration (for optotap/probe-based tool detection)
         self.tool_probe_endstop = None
@@ -222,6 +223,10 @@ class AfcToolchanger(afcUnit):
 
         self.printer.register_event_handler("klippy:connect",
                                             self._handle_tc_connect)
+        self.printer.register_event_handler("homing:home_rails_begin",
+                                            self._handle_home_rails_begin)
+        self.printer.register_event_handler("homing:home_rails_end",
+                                            self._handle_home_rails_end)
 
         # AFC-specific commands
         self.functions.register_commands(self.afc.show_macros, "AFC_SELECT_TOOL",
@@ -250,6 +255,14 @@ class AfcToolchanger(afcUnit):
             self.gcode_transform, force=True)
         self.tool_probe_endstop = self.printer.lookup_object(
             'AFC_tool_probe_endstop', None)
+
+    def _handle_home_rails_begin(self, homing_state, rails):
+        self._homing_saved_tool = self.gcode_transform.tool
+        self.gcode_transform.tool = None
+
+    def _handle_home_rails_end(self, homing_state, rails):
+        self.gcode_transform.tool = self._homing_saved_tool
+        self._homing_saved_tool = None
 
     def require_fan_switcher(self):
         """Create fan switcher on demand when a tool has a fan configured."""
