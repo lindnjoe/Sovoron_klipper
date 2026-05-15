@@ -107,9 +107,15 @@ class AFC_U1_RFID:
             self.logger.info("U1 RFID: filament_detect module not found")
             return
         channels = list(self._lane_channel_map.items())
+        scanner_lanes = [name for name, ch in channels
+                         if getattr(self._lane_objects.get(name), 'spool_scanner', False)]
         self.logger.info(
             f"U1 RFID: polling {len(channels)} channel(s): "
             + ", ".join(f"{name}=ch{ch}" for name, ch in channels))
+        if scanner_lanes:
+            self.logger.info(f"U1 RFID: spool_scanner enabled on: {', '.join(scanner_lanes)}")
+        fd_methods = [m for m in dir(self._filament_detect) if not m.startswith('_')]
+        self.logger.debug(f"U1 RFID: filament_detect methods: {fd_methods}")
         if hasattr(self._filament_detect, 'register_cb_2_update_filament_info'):
             try:
                 self._filament_detect.register_cb_2_update_filament_info(
@@ -153,9 +159,11 @@ class AFC_U1_RFID:
 
         info = self._get_channel_info(channel)
         if info is None:
+            self.logger.debug(f"U1 RFID ch{channel} ({lane_name}): _get_channel_info returned None")
             return
 
         card_uid = info.get("CARD_UID")
+        self.logger.debug(f"U1 RFID ch{channel} ({lane_name}): CARD_UID={card_uid}, MAIN_TYPE={info.get('MAIN_TYPE')}, last_uid={self._last_uid.get(channel)}")
         if not card_uid or card_uid == 0:
             if self._last_uid.get(channel) not in (None, 0):
                 self._last_uid[channel] = 0
@@ -230,8 +238,9 @@ class AFC_U1_RFID:
                 info = fd.get_a_filament_info(channel)
                 if isinstance(info, dict):
                     return info
-            except Exception:
-                pass
+                self.logger.debug(f"U1 RFID: get_a_filament_info({channel}) returned non-dict: {type(info)}")
+            except Exception as e:
+                self.logger.debug(f"U1 RFID: get_a_filament_info({channel}) raised: {e}")
         if hasattr(fd, 'get_status'):
             try:
                 status = fd.get_status()
@@ -239,8 +248,11 @@ class AFC_U1_RFID:
                     info_list = status.get('info')
                     if info_list and channel < len(info_list):
                         return info_list[channel]
-            except Exception:
-                pass
+                    self.logger.debug(f"U1 RFID: get_status() info_list len={len(info_list) if info_list else 0}, channel={channel}")
+            except Exception as e:
+                self.logger.debug(f"U1 RFID: get_status() raised: {e}")
+        else:
+            self.logger.debug(f"U1 RFID: filament_detect has neither get_a_filament_info nor get_status")
         return None
 
     def _map_to_slot_info(self, info: dict) -> dict:
