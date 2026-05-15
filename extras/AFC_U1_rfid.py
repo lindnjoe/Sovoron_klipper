@@ -91,7 +91,6 @@ class AFC_U1_RFID:
         self._lane_objects: Dict[str, AFCLane] = {}
         self._last_uid: Dict[int, Optional[list]] = {}
         self._poll_timer = None
-        self._poll_count = 0
         self._scanner_channels: list = []
         self._channel_to_lane: Dict[int, str] = {}
 
@@ -111,27 +110,15 @@ class AFC_U1_RFID:
             self.logger.info("U1 RFID: filament_detect module not found")
             return
         channels = list(self._lane_channel_map.items())
-        scanner_lanes = [name for name, ch in channels
-                         if getattr(self._lane_objects.get(name), 'spool_scanner', False)]
-        self.logger.info(
-            f"U1 RFID: polling {len(channels)} channel(s): "
-            + ", ".join(f"{name}=ch{ch}" for name, ch in channels))
         self._scanner_channels = [ch for name, ch in channels
                                    if getattr(self._lane_objects.get(name), 'spool_scanner', False)]
-        if scanner_lanes:
-            self.logger.info(f"U1 RFID: spool_scanner enabled on: {', '.join(scanner_lanes)}")
-        fd_methods = [m for m in dir(self._filament_detect) if not m.startswith('_')]
-        self.logger.debug(f"U1 RFID: filament_detect methods: {fd_methods}")
-        ff_objs = getattr(self._filament_detect, 'filament_feed_objects', None)
-        if ff_objs is not None:
-            self.logger.info(f"U1 RFID: filament_feed_objects type={type(ff_objs).__name__}, len={len(ff_objs) if hasattr(ff_objs, '__len__') else '?'}")
-            if isinstance(ff_objs, (list, tuple)) and ff_objs:
-                ff0_methods = [m for m in dir(ff_objs[0]) if not m.startswith('_')]
-                self.logger.info(f"U1 RFID: filament_feed[0] methods: {ff0_methods}")
-            elif isinstance(ff_objs, dict) and ff_objs:
-                key0 = next(iter(ff_objs))
-                ff0_methods = [m for m in dir(ff_objs[key0]) if not m.startswith('_')]
-                self.logger.info(f"U1 RFID: filament_feed[{key0}] methods: {ff0_methods}")
+        self.logger.info(
+            f"U1 RFID: monitoring {len(channels)} channel(s): "
+            + ", ".join(f"{name}=ch{ch}" for name, ch in channels))
+        if self._scanner_channels:
+            scanner_names = [name for name, ch in channels
+                             if ch in self._scanner_channels]
+            self.logger.info(f"U1 RFID: spool scanner active on: {', '.join(scanner_names)}")
         self._gcode = self.afc.gcode
         if hasattr(self._filament_detect, 'register_cb_2_update_filament_info'):
             try:
@@ -167,21 +154,17 @@ class AFC_U1_RFID:
 
     def _poll_cb(self, eventtime):
         """Periodic check for new RFID data on registered channels."""
-        self._poll_count += 1
-        if self._poll_count % 15 == 1:
-            self.logger.info(f"U1 RFID: poll tick #{self._poll_count}, uids={dict(self._last_uid)}")
         for ch in self._scanner_channels:
             try:
                 self._gcode.run_script_from_command(
                     f"FILAMENT_DT_UPDATE CHANNEL={ch}")
-            except Exception as e:
-                if self._poll_count <= 2:
-                    self.logger.info(f"U1 RFID: FILAMENT_DT_UPDATE CHANNEL={ch} failed: {e}")
+            except Exception:
+                pass
         for lane_name, channel in self._lane_channel_map.items():
             try:
                 self._check_channel(lane_name, channel)
-            except Exception as e:
-                self.logger.info(f"U1 RFID ch{channel} ({lane_name}) poll error: {e}")
+            except Exception:
+                pass
         return eventtime + POLL_INTERVAL
 
     _LOCKED_STATES = frozenset({
@@ -200,17 +183,9 @@ class AFC_U1_RFID:
         is_scanner = lane is not None and getattr(lane, 'spool_scanner', False)
 
         if info is None:
-            if is_scanner and self._poll_count % 15 == 1:
-                self.logger.info(f"U1 RFID scanner ch{channel}: _get_channel_info returned None")
             return
 
         card_uid = info.get("CARD_UID")
-        if is_scanner and self._poll_count % 15 == 1:
-            self.logger.info(
-                f"U1 RFID scanner ch{channel}: CARD_UID={card_uid}, "
-                f"MAIN_TYPE={info.get('MAIN_TYPE')}, last_uid={self._last_uid.get(channel)}, "
-                f"next_spool_id={getattr(self.afc.spool, 'next_spool_id', None)}")
-
         if not card_uid or card_uid == 0:
             if self._last_uid.get(channel) not in (None, 0):
                 if not is_scanner:
@@ -239,22 +214,20 @@ class AFC_U1_RFID:
             return
 
         slot_info = self._map_to_slot_info(info)
-        self.logger.info(
-            f"U1 RFID ch{channel} → {lane_name}: "
-            f"{slot_info.get('brand', '')} {slot_info.get('material', '')} "
-            f"color={slot_info.get('color_hex', '') or 'none'} "
-            f"sku={slot_info.get('sku', '') or 'none'} "
-            f"uid={card_uid}")
+        brand = slot_info.get('brand', '')
+        material = slot_info.get('material', '')
+        color = slot_info.get('color_hex', '')
+        tag_desc = f"{brand} {material}".strip() or "Unknown"
+        if color:
+            tag_desc += f" (#{color})"
 
         if is_scanner:
+            self.logger.info(f"U1 RFID: spool scanned — {tag_desc}")
             self._sync_to_spoolman(lane, slot_info, set_next=True)
             return
 
-        # New tag detected — clear old spool assignment so sync can rematch
+        self.logger.info(f"U1 RFID: tag detected on {lane_name} — {tag_desc}")
         if getattr(lane, "spool_id", None) not in (None, "", 0):
-            self.logger.info(
-                f"U1 RFID: new tag on {lane_name}, clearing old spool_id "
-                f"{lane.spool_id}")
             self.afc.spool.set_spoolID(lane, "")
         self._apply_filament_defaults(lane, slot_info)
         self._sync_to_spoolman(lane, slot_info)
@@ -286,9 +259,8 @@ class AFC_U1_RFID:
                 info = fd.get_a_filament_info(channel)
                 if isinstance(info, dict):
                     return info
-                self.logger.debug(f"U1 RFID: get_a_filament_info({channel}) returned non-dict: {type(info)}")
-            except Exception as e:
-                self.logger.debug(f"U1 RFID: get_a_filament_info({channel}) raised: {e}")
+            except Exception:
+                pass
         if hasattr(fd, 'get_all_filament_info'):
             try:
                 all_info = fd.get_all_filament_info()
@@ -300,10 +272,8 @@ class AFC_U1_RFID:
                     entry = all_info.get(channel) or all_info.get(str(channel))
                     if isinstance(entry, dict):
                         return entry
-                if self._poll_count % 15 == 1:
-                    self.logger.info(f"U1 RFID: get_all_filament_info() type={type(all_info).__name__}, val={all_info}")
-            except Exception as e:
-                self.logger.debug(f"U1 RFID: get_all_filament_info() raised: {e}")
+            except Exception:
+                pass
         if hasattr(fd, 'get_status'):
             try:
                 status = fd.get_status()
@@ -313,12 +283,8 @@ class AFC_U1_RFID:
                         entry = info_list[channel]
                         if isinstance(entry, dict) and entry.get("CARD_UID"):
                             return entry
-                    if self._poll_count % 15 == 1:
-                        self.logger.info(f"U1 RFID: get_status() keys={list(status.keys())}, info_len={len(info_list) if info_list else 0}")
-                        if info_list and channel < len(info_list):
-                            self.logger.info(f"U1 RFID: get_status() ch{channel} entry={info_list[channel]}")
-            except Exception as e:
-                self.logger.debug(f"U1 RFID: get_status() raised: {e}")
+            except Exception:
+                pass
         return None
 
     def _map_to_slot_info(self, info: dict) -> dict:
@@ -469,22 +435,12 @@ class AFC_U1_RFID:
                         best = f
                         best_score = score
                         best_color_dist = cdist
-                    self.logger.info(
-                        f"U1 RFID: candidate filament #{f.get('id')} "
-                        f"'{f.get('name', '')}' color={f_color or 'none'} "
-                        f"dist={cdist:.0f} score={score} for {lane.name}")
 
                 if best is not None and best_score >= 4:
                     if color_hex and best_color_dist > 60 and allow_create:
-                        self.logger.info(
-                            f"U1 RFID: best match '{best.get('name', '')}' "
-                            f"color dist {best_color_dist:.0f} too far, "
-                            f"creating new filament for {lane.name}")
+                        pass
                     else:
                         filament = best
-                        self.logger.info(
-                            f"U1 RFID: matched filament #{filament.get('id')} "
-                            f"'{filament.get('name', '')}' for {lane.name}")
 
             if filament is None:
                 if not allow_create:
@@ -512,8 +468,6 @@ class AFC_U1_RFID:
                 )
                 if filament is None:
                     return
-                self.logger.info(
-                    f"U1 RFID: created Spoolman filament #{filament['id']} for {lane.name}")
 
             filament_id = filament.get("id")
             if filament_id is None:
@@ -529,16 +483,10 @@ class AFC_U1_RFID:
                         best = s
                 if best is not None:
                     spool = best
-                    self.logger.info(
-                        f"U1 RFID: matched spool #{spool['id']} "
-                        f"(filament #{filament_id}, "
-                        f"{spool.get('remaining_weight', '?')}g remaining) "
-                        f"for {lane.name}")
 
             if spool is None:
                 if not allow_create:
                     return
-
                 spool = moonraker.create_spool(
                     filament_id=filament_id,
                     initial_weight=default_filament_weight,
@@ -547,18 +495,24 @@ class AFC_U1_RFID:
                 )
                 if spool is None:
                     return
-                self.logger.info(
-                    f"U1 RFID: created Spoolman spool #{spool['id']} for {lane.name}")
 
             spool_id = spool.get("id")
+            fil_name = filament.get("name", "")
+            fil_color = (filament.get("color_hex") or "").strip().lstrip("#")
+            remaining = spool.get("remaining_weight")
+            remaining_str = f", {remaining:.0f}g left" if remaining else ""
+            color_str = f", #{fil_color}" if fil_color else ""
+            desc = f"'{fil_name}'{color_str}{remaining_str}"
+
             if set_next:
                 self.afc.spool.next_spool_id = spool_id
                 self.logger.info(
-                    f"U1 RFID scanner: spool #{spool_id} staged as "
-                    f"next_spool_id (scanned on {lane.name})")
+                    f"U1 RFID: spool #{spool_id} ({desc}) staged as next_spool_id")
             else:
                 self.afc.spool.set_spoolID(lane, spool_id)
                 lane.send_lane_data()
+                self.logger.info(
+                    f"U1 RFID: spool #{spool_id} ({desc}) assigned to {lane.name}")
 
         except Exception as e:
             self.logger.error(f"U1 RFID Spoolman sync failed for {lane.name}: {e}")
