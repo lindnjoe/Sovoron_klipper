@@ -946,56 +946,6 @@ class afc:
         """
         return self.resume_z_speed if self.resume_z_speed > 0 else self.speed
 
-    def _notify_lane_loaded(self, lane):
-        """Show a popup and console message when a lane finishes loading to toolhead."""
-        try:
-            from extras.AFC_U1_rfid import _color_name
-            material = getattr(lane, "material", "") or ""
-            color = (getattr(lane, "color", "") or "").lstrip("#")
-            ext = getattr(lane, "extruder_temp", None)
-            bed = getattr(lane, "bed_temp", None)
-            spool_id = getattr(lane, "spool_id", None)
-            cname = _color_name(color) if color else ""
-
-            lines = [f"Loaded {lane.name} to toolhead:"]
-            if material:
-                lines.append(f"  Material: {material}")
-            if color:
-                label = f"{cname} (#{color})" if cname else f"#{color}"
-                lines.append(f"  Color: {label}")
-            if ext:
-                lines.append(f"  Nozzle temp: {ext}°C")
-            if bed:
-                lines.append(f"  Bed temp: {bed}°C")
-            if spool_id:
-                lines.append(f"  Spoolman ID: {spool_id}")
-            self.gcode.respond_info("\n".join(lines))
-
-            raw = self.logger.raw
-            prompt_lines = []
-            if material:
-                prompt_lines.append(f"Material: {material}")
-            if color:
-                label = f"{cname} (#{color})" if cname else f"#{color}"
-                prompt_lines.append(f"Color: {label}")
-            if ext:
-                prompt_lines.append(f"Nozzle: {ext}°C")
-            if bed:
-                prompt_lines.append(f"Bed: {bed}°C")
-            if spool_id:
-                prompt_lines.append(f"Spoolman ID: {spool_id}")
-            raw(f"// action:prompt_begin Loaded — {lane.name}")
-            for pl in prompt_lines:
-                raw(f"// action:prompt_text {pl}")
-            raw("// action:prompt_footer_button OK|RESPOND TYPE=command MSG=action:prompt_end|info")
-            raw("// action:prompt_show")
-
-            self.reactor.register_callback(
-                lambda e: self.logger.raw("// action:prompt_end"),
-                self.reactor.monotonic() + 10.0)
-        except Exception:
-            pass
-
     def move_z_pos(self, z_amount, string="", wait_moves=False):
         """
         Common function helper to move z, also does a check for max z so toolhead does not exceed max height
@@ -1486,7 +1436,6 @@ class afc:
                     cur_lane.get_td1_data_load()
                     load_time = self.afcDeltaTime.log_major_delta("{} is now loaded in toolhead".format(cur_lane.name), False)
                     self.afc_stats.average_tool_load_time.average_time(load_time)
-                    self._notify_lane_loaded(cur_lane)
 
                     # Increment stat counts
                     cur_lane.extruder_obj.estats.tc_tool_load.increase_count()
