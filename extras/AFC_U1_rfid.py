@@ -331,6 +331,7 @@ class AFC_U1_RFID:
             self.afc.spool.set_spoolID(lane, "")
         self._apply_filament_defaults(lane, slot_info)
         self._sync_to_spoolman(lane, slot_info)
+        self._notify_scan(brand, material, color, slot_info, lane_name)
         lane.send_lane_data()
         self.afc.save_vars()
 
@@ -640,16 +641,26 @@ class AFC_U1_RFID:
             self.logger.error(f"U1 RFID Spoolman sync failed for {lane.name}: {e}")
 
     def _notify_scan(self, brand: str, material: str, color: str,
-                     slot_info: dict):
-        """Send a user-visible notification when the scanner reads a spool."""
+                     slot_info: dict, lane_name: str = ""):
+        """Send a user-visible notification when RFID reads a spool."""
         try:
             cname = _color_name(color) if color else ""
             ext = slot_info.get("extruder_temp")
             bed = slot_info.get("bed_temp")
             raw = self.logger.raw
+            is_scanner = not lane_name
 
-            # Console detail
-            lines = ["Spool scanned and staged for next load:"]
+            if is_scanner:
+                title = "Spool Scanned"
+                header = "Spool scanned and staged for next load:"
+                spool_id = getattr(self.afc.spool, 'next_spool_id', None)
+            else:
+                title = f"Spool Loaded — {lane_name}"
+                header = f"Spool loaded on {lane_name}:"
+                lane = self._lane_objects.get(lane_name)
+                spool_id = getattr(lane, "spool_id", None) if lane else None
+
+            lines = [header]
             if brand:
                 lines.append(f"  Brand: {brand}")
             if material:
@@ -661,10 +672,10 @@ class AFC_U1_RFID:
                 lines.append(f"  Nozzle temp: {ext}°C")
             if bed:
                 lines.append(f"  Bed temp: {bed}°C")
+            if spool_id:
+                lines.append(f"  Spoolman ID: {spool_id}")
             self.afc.gcode.respond_info("\n".join(lines))
 
-            # action:prompt dialog — auto-dismisses after 10 seconds
-            spool_id = getattr(self.afc.spool, 'next_spool_id', None)
             prompt_lines = []
             if brand:
                 prompt_lines.append(f"Brand: {brand}")
@@ -678,8 +689,9 @@ class AFC_U1_RFID:
             if bed:
                 prompt_lines.append(f"Bed: {bed}°C")
             if spool_id:
-                prompt_lines.append(f"Set as Spoolman next ID: {spool_id}")
-            raw("// action:prompt_begin Spool Scanned")
+                id_label = "Set as Spoolman next ID" if is_scanner else "Spoolman ID"
+                prompt_lines.append(f"{id_label}: {spool_id}")
+            raw(f"// action:prompt_begin {title}")
             for pl in prompt_lines:
                 raw(f"// action:prompt_text {pl}")
             raw("// action:prompt_footer_button OK|RESPOND TYPE=command MSG=action:prompt_end|info")
