@@ -648,16 +648,6 @@ class AFC_U1_RFID:
             bed = slot_info.get("bed_temp")
             raw = self.logger.raw
 
-            # Toast notification — shows on HelixScreen / KlipperScreen
-            parts = []
-            if brand:
-                parts.append(brand)
-            if material:
-                parts.append(material)
-            if cname:
-                parts.append(cname)
-            raw(f'// action:notify Scanned: {" ".join(parts) or "Unknown"}')
-
             # Console detail
             lines = ["Spool scanned and staged for next load:"]
             if brand:
@@ -673,7 +663,7 @@ class AFC_U1_RFID:
                 lines.append(f"  Bed temp: {bed}°C")
             self.afc.gcode.respond_info("\n".join(lines))
 
-            # action:prompt dialog — dismissable popup with details
+            # action:prompt dialog — auto-dismisses after 10 seconds
             prompt_lines = []
             if brand:
                 prompt_lines.append(f"Brand: {brand}")
@@ -691,6 +681,10 @@ class AFC_U1_RFID:
                 raw(f"// action:prompt_text {pl}")
             raw("// action:prompt_footer_button OK|RESPOND TYPE=command MSG=action:prompt_end|info")
             raw("// action:prompt_show")
+
+            self.reactor.register_callback(
+                lambda e: self.logger.raw("// action:prompt_end"),
+                self.reactor.monotonic() + 10.0)
         except Exception:
             pass
 
