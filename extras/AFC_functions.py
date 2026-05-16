@@ -232,7 +232,9 @@ class afcFunction:
                 manually_assigned = any( cmd == lane._map for lane in self.afc.lanes.values() )
                 if not manually_assigned and cmd not in self.afc.tool_cmds:
                     # Checking if macro already exists, generate next valid cmd if current generated cmd exists
-                    existing = self.afc.gcode.ready_gcode_handlers.get(cmd)
+                    existing = False
+                    if not self.afc.force_assign_map:
+                        existing = self.afc.gcode.ready_gcode_handlers.get(cmd)
                     if not existing:
                         cur_lane._map = cur_lane.map = cmd
                         break
