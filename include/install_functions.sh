@@ -206,6 +206,12 @@ install_afc() {
     update_moonraker_config
   fi
 
+  # For Snapmaker U1 printers need to add /oem/.debug or changes in klipper folder will
+  # be reset on reboot/power cycle
+  if [ "$is_snapmaker" == "True" ]; then
+    su root -c "touch /oem/.debug"
+  fi
+
   export message
   export files_updated_or_installed="True"
 
