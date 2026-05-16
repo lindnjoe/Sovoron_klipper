@@ -644,7 +644,21 @@ class AFC_U1_RFID:
         """Send a user-visible notification when the scanner reads a spool."""
         try:
             cname = _color_name(color) if color else ""
+            ext = slot_info.get("extruder_temp")
+            bed = slot_info.get("bed_temp")
 
+            # M117 status line — shows on HelixScreen print panel
+            parts = []
+            if brand:
+                parts.append(brand)
+            if material:
+                parts.append(material)
+            if cname:
+                parts.append(cname)
+            self.afc.gcode.run_script_from_command(
+                f'M117 Scanned: {" ".join(parts) or "Unknown"}')
+
+            # Console detail
             lines = ["Spool scanned and staged for next load:"]
             if brand:
                 lines.append(f"  Brand: {brand}")
@@ -653,14 +667,13 @@ class AFC_U1_RFID:
             if color:
                 label = f"{cname} (#{color})" if cname else f"#{color}"
                 lines.append(f"  Color: {label}")
-            ext = slot_info.get("extruder_temp")
-            bed = slot_info.get("bed_temp")
             if ext:
                 lines.append(f"  Nozzle temp: {ext}°C")
             if bed:
                 lines.append(f"  Bed temp: {bed}°C")
             self.afc.gcode.respond_info("\n".join(lines))
 
+            # action:prompt popup — shows on Mainsail/Fluidd/KlipperScreen
             prompt_lines = []
             if brand:
                 prompt_lines.append(f"Brand: {brand}")
