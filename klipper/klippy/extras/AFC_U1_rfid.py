@@ -643,18 +643,12 @@ class AFC_U1_RFID:
                      slot_info: dict):
         """Send a user-visible notification when the scanner reads a spool."""
         try:
-            gcode = self.afc.gcode
             cname = _color_name(color) if color else ""
-            parts = []
-            if brand:
-                parts.append(brand)
-            if material:
-                parts.append(material)
-            if cname:
-                parts.append(cname)
-            short = " ".join(parts) or "Unknown"
-            gcode.run_script_from_command(f'M117 Scanned: {short}')
+            ext = slot_info.get("extruder_temp")
+            bed = slot_info.get("bed_temp")
+            raw = self.logger.raw
 
+            # Console detail
             lines = ["Spool scanned and staged for next load:"]
             if brand:
                 lines.append(f"  Brand: {brand}")
@@ -663,13 +657,37 @@ class AFC_U1_RFID:
             if color:
                 label = f"{cname} (#{color})" if cname else f"#{color}"
                 lines.append(f"  Color: {label}")
-            ext = slot_info.get("extruder_temp")
-            bed = slot_info.get("bed_temp")
             if ext:
                 lines.append(f"  Nozzle temp: {ext}°C")
             if bed:
                 lines.append(f"  Bed temp: {bed}°C")
-            gcode.respond_info("\n".join(lines))
+            self.afc.gcode.respond_info("\n".join(lines))
+
+            # action:prompt dialog — auto-dismisses after 10 seconds
+            spool_id = getattr(self.afc.spool, 'next_spool_id', None)
+            prompt_lines = []
+            if brand:
+                prompt_lines.append(f"Brand: {brand}")
+            if material:
+                prompt_lines.append(f"Material: {material}")
+            if color:
+                label = f"{cname} (#{color})" if cname else f"#{color}"
+                prompt_lines.append(f"Color: {label}")
+            if ext:
+                prompt_lines.append(f"Nozzle: {ext}°C")
+            if bed:
+                prompt_lines.append(f"Bed: {bed}°C")
+            if spool_id:
+                prompt_lines.append(f"Set as Spoolman next ID: {spool_id}")
+            raw("// action:prompt_begin Spool Scanned")
+            for pl in prompt_lines:
+                raw(f"// action:prompt_text {pl}")
+            raw("// action:prompt_footer_button OK|RESPOND TYPE=command MSG=action:prompt_end|info")
+            raw("// action:prompt_show")
+
+            self.reactor.register_callback(
+                lambda e: self.logger.raw("// action:prompt_end"),
+                self.reactor.monotonic() + 10.0)
         except Exception:
             pass
 
