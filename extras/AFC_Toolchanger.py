@@ -44,11 +44,8 @@ class AfcToolchanger(afcUnit):
         self.logo_error = '<span class=error--text>Toolchanger Not Ready</span>\n'
         self.functions: afcFunction = self.printer.load_object(config, 'AFC_functions')
 
-        self.transfer_fan_speed: bool = config.getboolean('transfer_fan_speed', True)
         self.auto_spoolman_create: bool = config.getboolean('auto_spoolman_create', False)
-
         self.active_tool = None
-        self.fan_switcher = None
 
         self.functions.register_commands(self.afc.show_macros, "AFC_SELECT_TOOL",
                                          self.cmd_AFC_SELECT_TOOL, self.cmd_AFC_SELECT_TOOL_help,
@@ -72,25 +69,6 @@ class AfcToolchanger(afcUnit):
         self.logger.raw( '{lane_name} tool cmd: {tcmd:3} {msg}'.format(lane_name=cur_lane.name, tcmd=cur_lane.map, msg=msg))
         cur_lane.set_afc_prep_done()
         return True
-
-    def require_fan_switcher(self):
-        """Create fan switcher on demand when a tool has a fan configured."""
-        if not self.fan_switcher:
-            self.fan_switcher = FanSwitcher(self)
-
-    def register_tool(self, extruder, number):
-        """Register an AFC_extruder as a tool with the given number."""
-        pass
-
-    def lookup_tool(self, number):
-        return None
-
-    def get_selected_tool(self):
-        return self.active_tool
-
-    def note_detect_change(self, extruder, eventtime):
-        """Called by AFC_extruder when a detection pin changes state."""
-        pass
 
     def _increase_unselect(self):
         """
@@ -300,68 +278,6 @@ class AfcToolchanger(afcUnit):
 
         if not success:
             raise gcmd.error(error_string)
-
-
-class FanSwitcher:
-    """Manages fan switching between tools during tool changes."""
-    def __init__(self, toolchanger):
-        self.toolchanger = toolchanger
-        self.printer = toolchanger.printer
-        self.gcode = toolchanger.gcode
-        self.active_fan = None
-        self.pending_speed = None
-        self.transfer_fan_speed = toolchanger.transfer_fan_speed
-        self.gcode.register_command("M106", self.cmd_M106)
-        self.gcode.register_command("M107", self.cmd_M107)
-
-    def activate_fan(self, fan):
-        """Switch active fan to the given fan_generic object."""
-        if self.active_fan == fan or not self.transfer_fan_speed:
-            return
-        speed_to_set = self.pending_speed
-        if self.active_fan:
-            curtime = self.printer.get_reactor().monotonic()
-            speed_to_set = self.active_fan.get_status(curtime)['speed']
-            self.gcode.run_script_from_command(
-                "SET_FAN_SPEED FAN='%s' SPEED=%s" % (
-                    self.active_fan.fan_name, 0.0))
-        self.active_fan = fan
-        if speed_to_set is not None:
-            if self.active_fan:
-                self.pending_speed = None
-                self.gcode.run_script_from_command(
-                    "SET_FAN_SPEED FAN='%s' SPEED=%s" % (
-                        self.active_fan.fan_name, speed_to_set))
-            else:
-                self.pending_speed = speed_to_set
-
-    def _resolve_tool(self, gcmd):
-        """Resolve tool from M106/M107 P= parameter."""
-        tool_nr = gcmd.get_int('P', None)
-        if tool_nr is not None:
-            map_name = "T{}".format(tool_nr)
-            lane = self.toolchanger.afc.function.get_lane_by_map(map_name)
-            if lane is not None:
-                return lane.extruder_obj
-            tool = self.toolchanger.lookup_tool(tool_nr)
-            if tool is not None:
-                return tool
-        return self.toolchanger.active_tool
-
-    def cmd_M106(self, gcmd):
-        speed = gcmd.get_float('S', 255., minval=0.) / 255.
-        self._set_speed(speed, self._resolve_tool(gcmd))
-
-    def cmd_M107(self, gcmd):
-        self._set_speed(0.0, self._resolve_tool(gcmd))
-
-    def _set_speed(self, speed, tool):
-        if tool and tool.fan:
-            self.gcode.run_script_from_command(
-                "SET_FAN_SPEED FAN='%s' SPEED=%s" % (
-                    tool.fan.fan_name, speed))
-        else:
-            self.pending_speed = speed
 
 
 def load_config_prefix(config: ConfigWrapper):
