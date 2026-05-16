@@ -990,7 +990,6 @@ class afcACE(afcUnit):
             self.logger.info(f"ACE RFID: tag detected on {lane.name} — {tag_desc}")
             self.logger.info(
                 f"ACE RFID: spool #{spool_id} ({desc}) assigned to {lane.name}")
-            self._notify_rfid_read(lane, slot_info)
 
         except Exception as e:
             self.logger.error(
@@ -1257,6 +1256,7 @@ class afcACE(afcUnit):
                     self._apply_slot_filament_defaults(lane, slot_info)
                     # Auto-create/assign Spoolman spool from RFID data
                     self._sync_rfid_to_spoolman(lane, slot_info)
+                    self._notify_rfid_read(lane, slot_info)
                     self.lane_illuminate_spool(lane)
                     # New filament clears any previous suppression
                     self._hub_load_suppressed.discard(lane.name)
@@ -3889,6 +3889,7 @@ class afcACE(afcUnit):
                     self._apply_slot_filament_defaults(lane, slot_info)
                     # Auto-create/assign Spoolman spool from RFID data
                     self._sync_rfid_to_spoolman(lane, slot_info)
+                    self._notify_rfid_read(lane, slot_info)
                     self.lane_illuminate_spool(lane)
                     # New filament clears any previous suppression
                     self._hub_load_suppressed.discard(lane.name)
