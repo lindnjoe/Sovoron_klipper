@@ -28,6 +28,12 @@ link_extensions() {
 
   if [ -d "${klipper_dir}/klippy/extras" ]; then
     for extension in "${afc_path}"/extras/AFC*.py; do
+      # Snapmaker extended firmware have AFC stubs, copy and rename them so the
+      # files can be restored if someone decides to disable AFC
+      if [[ -f "${klipper_dir}/klippy/extras/$(basename "${extension}")" \
+            && ! -L "${klipper_dir}/klippy/extras/$(basename "${extension}")" ]]; then
+        cp "${klipper_dir}/klippy/extras/$(basename "${extension}")" "${klipper_dir}/klippy/extras/$(basename "${extension}").lite"
+      fi
       ln -sf "${afc_path}/extras/$(basename "${extension}")" "${klipper_dir}/klippy/extras/$(basename "${extension}")"
     done
   else
@@ -196,7 +202,7 @@ install_afc() {
   fi
   check_and_append_prep "${afc_config_dir}/AFC.cfg"
   replace_varfile_path "${afc_config_dir}/AFC.cfg"
-  if [ "$git_install" == "True" ]; then
+  if [ "$git_install" == "True" ] && [ "$is_snapmaker" == "False" ]; then
     update_moonraker_config
   fi
 

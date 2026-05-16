@@ -235,9 +235,18 @@ restart_service() {
 
 restart_klipper() {
   if query_printer_status; then
-    restart_service klipper
+    if [ "$is_snapmaker" == "True" ]; then
+      su root -c "/etc/init.d/S60klipper restart"
+    else
+      restart_service klipper
+    fi
+
   else
-    print_msg WARNING "Your printer is not idle/ready, or its status could not be confirmed. Automatic Klipper restart has been skipped; please restart the Klipper service manually once the printer is idle."
+    if [ "$is_snapmaker" == "True" ]; then
+      print_msg WARNING "Please manually restart klipper through <ip_address>/firmware-config panel, or fully power-cycle printer."
+    else
+      print_msg WARNING "Your printer is not idle/ready, or its status could not be confirmed. Automatic Klipper restart has been skipped; please restart the Klipper service manually once the printer is idle."
+    fi
   fi
 }
 
@@ -315,6 +324,10 @@ del_var_file() {
 check_for_k1() {
   if grep -Fqs "ID=buildroot" /etc/os-release; then
     is_k1_os="True"
+    if grep -Fqs RK_BUILD_INFO=\"snapmaker /etc/os-release; then
+      is_snapmaker="True"
+      klipper_venv="/usr/bin"
+    fi
   fi
 }
 
