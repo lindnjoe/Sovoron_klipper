@@ -108,7 +108,7 @@ class AFCLane:
         self.printer.register_event_handler("afc:moonraker_connect", self.handle_moonraker_connect)
         self.cb_update_weight   = self.reactor.register_timer( self.update_weight_callback )
 
-        self.unit_obj = None
+        self.unit_obj: afcUnit = None
         self.hub_obj: Optional[afc_hub|None] = None
         self.buffer_obj: Optional[AFCTrigger|None] = None
         self.extruder_obj: AFCExtruder
@@ -1145,17 +1145,10 @@ class AFCLane:
                 self.logger.info(f"Cannot get TD-1 data for {self.name}, either toolhead is loaded or hub shows filament in path")
 
     @property
-    def _hub_is_virtual(self) -> bool:
-        """True when the lane's hub uses a virtual sensor (no physical switch_pin)."""
-        hub = getattr(self, "hub_obj", None)
-        if hub is None:
-            return True
-        pin = getattr(hub, "switch_pin", "virtual")
-        return str(pin).lower() == "virtual"
-
-    @property
     def load_state(self) -> bool:
-        if self.unit_obj.type in ("ViViD",) and self._hub_is_virtual:
+        if (self.hub_obj is not None
+            and hasattr(self.hub_obj, 'is_virtual_pin')
+            and self.hub_obj.is_virtual_pin()):
             return self.loaded_to_hub
         else:
             return bool(self._load_state)
