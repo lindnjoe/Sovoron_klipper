@@ -322,8 +322,8 @@ class AFC_U1_RFID:
 
         if is_scanner:
             self.logger.info(f"U1 RFID: spool scanned — {tag_desc}")
-            self.afc.spool.next_spool_info = dict(slot_info)
             self._sync_to_spoolman(lane, slot_info, set_next=True)
+            self._notify_scan(brand, material, color, slot_info)
             return
 
         self.logger.info(f"U1 RFID: tag detected on {lane_name} — {tag_desc}")
@@ -398,12 +398,19 @@ class AFC_U1_RFID:
             b = rgb_int & 0xFF
             color_hex = f"{r:02x}{g:02x}{b:02x}"
         ext_max = info.get("HOTEND_MAX_TEMP")
+        ext_min = info.get("HOTEND_MIN_TEMP")
         bed_max = info.get("BED_TEMP")
         sku_raw = info.get("SKU", "")
         sku = "" if (not sku_raw or sku_raw == 0) else str(sku_raw)
         vendor = info.get("VENDOR", "")
         if vendor.upper() == "NONE":
             vendor = ""
+        if ext_max and ext_min:
+            ext_temp = (int(ext_max) + int(ext_min)) // 2
+        elif ext_max:
+            ext_temp = int(ext_max)
+        else:
+            ext_temp = None
         return {
             "material": info.get("MAIN_TYPE", ""),
             "color_hex": color_hex,
@@ -411,8 +418,8 @@ class AFC_U1_RFID:
             "brand": vendor,
             "sub_type": info.get("SUB_TYPE", ""),
             "diameter": 1.75,
-            "extruder_temp_max": int(ext_max) if ext_max else None,
-            "bed_temp_max": int(bed_max) if bed_max else None,
+            "extruder_temp": ext_temp,
+            "bed_temp": int(bed_max) if bed_max else None,
         }
 
     def _apply_filament_defaults(self, lane: AFCLane, slot_info: dict):
@@ -425,10 +432,10 @@ class AFC_U1_RFID:
         if color_hex:
             lane.color = f"#{color_hex}"
 
-        ext_temp = slot_info.get("extruder_temp_max")
+        ext_temp = slot_info.get("extruder_temp")
         if ext_temp:
             lane.extruder_temp = float(ext_temp)
-        bed_temp = slot_info.get("bed_temp_max")
+        bed_temp = slot_info.get("bed_temp")
         if bed_temp:
             lane.bed_temp = float(bed_temp)
 
@@ -461,7 +468,13 @@ class AFC_U1_RFID:
 
         When set_next is True, stages the spool as next_spool_id instead of
         assigning it to the lane directly (spool scanner mode).
+        Also stages next_spool_info with raw RFID data for use without Spoolman.
         """
+        if set_next:
+            try:
+                self.afc.spool.next_spool_info = dict(slot_info)
+            except Exception:
+                pass
         if self.afc.spoolman is None or self.afc.moonraker is None:
             return
         if not set_next and getattr(lane, "spool_id", None) not in (None, "", 0):
@@ -472,8 +485,8 @@ class AFC_U1_RFID:
         material = slot_info.get("material", "")
         color_hex = slot_info.get("color_hex", "") or None
         diameter = slot_info.get("diameter", 1.75)
-        ext_temp = slot_info.get("extruder_temp_max")
-        bed_temp = slot_info.get("bed_temp_max")
+        ext_temp = slot_info.get("extruder_temp")
+        bed_temp = slot_info.get("bed_temp")
         default_filament_weight = 1000
         allow_create = self._get_auto_spoolman_create(lane)
 
@@ -625,6 +638,40 @@ class AFC_U1_RFID:
 
         except Exception as e:
             self.logger.error(f"U1 RFID Spoolman sync failed for {lane.name}: {e}")
+
+    def _notify_scan(self, brand: str, material: str, color: str,
+                     slot_info: dict):
+        """Send a user-visible notification when the scanner reads a spool."""
+        try:
+            gcode = self.afc.gcode
+            cname = _color_name(color) if color else ""
+            parts = []
+            if brand:
+                parts.append(brand)
+            if material:
+                parts.append(material)
+            if cname:
+                parts.append(cname)
+            short = " ".join(parts) or "Unknown"
+            gcode.run_script_from_command(f'M117 Scanned: {short}')
+
+            lines = ["Spool scanned and staged for next load:"]
+            if brand:
+                lines.append(f"  Brand: {brand}")
+            if material:
+                lines.append(f"  Material: {material}")
+            if color:
+                label = f"{cname} (#{color})" if cname else f"#{color}"
+                lines.append(f"  Color: {label}")
+            ext = slot_info.get("extruder_temp")
+            bed = slot_info.get("bed_temp")
+            if ext:
+                lines.append(f"  Nozzle temp: {ext}°C")
+            if bed:
+                lines.append(f"  Bed temp: {bed}°C")
+            gcode.respond_info("\n".join(lines))
+        except Exception:
+            pass
 
     def force_read(self, lane_name: str):
         """Force an RFID re-read for a specific lane (triggers FILAMENT_DT_UPDATE)."""
