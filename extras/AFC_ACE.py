@@ -990,10 +990,66 @@ class afcACE(afcUnit):
             self.logger.info(f"ACE RFID: tag detected on {lane.name} — {tag_desc}")
             self.logger.info(
                 f"ACE RFID: spool #{spool_id} ({desc}) assigned to {lane.name}")
+            self._notify_rfid_read(lane, slot_info)
 
         except Exception as e:
             self.logger.error(
                 f"RFID-to-Spoolman sync failed for {lane.name}: {e}")
+
+    def _notify_rfid_read(self, lane, slot_info):
+        """Show popup and console notification when ACE reads an RFID tag."""
+        try:
+            brand = slot_info.get("brand", "")
+            material = slot_info.get("material", "")
+            color_rgb = slot_info.get("color", [0, 0, 0])
+            color_hex = self._ace_color_to_hex(color_rgb).lstrip("#") if color_rgb != [0, 0, 0] else ""
+            ext = slot_info.get("extruder_temp")
+            bed = slot_info.get("bed_temp")
+            cname = _color_name(color_hex) if color_hex else ""
+            raw = self.logger.raw
+            spool_id = getattr(lane, "spool_id", None)
+
+            lines = [f"Spool loaded on {lane.name}:"]
+            if brand:
+                lines.append(f"  Brand: {brand}")
+            if material:
+                lines.append(f"  Material: {material}")
+            if color_hex:
+                label = f"{cname} (#{color_hex})" if cname else f"#{color_hex}"
+                lines.append(f"  Color: {label}")
+            if ext:
+                lines.append(f"  Nozzle temp: {ext}°C")
+            if bed:
+                lines.append(f"  Bed temp: {bed}°C")
+            if spool_id:
+                lines.append(f"  Spoolman ID: {spool_id}")
+            self.afc.gcode.respond_info("\n".join(lines))
+
+            prompt_lines = []
+            if brand:
+                prompt_lines.append(f"Brand: {brand}")
+            if material:
+                prompt_lines.append(f"Material: {material}")
+            if color_hex:
+                label = f"{cname} (#{color_hex})" if cname else f"#{color_hex}"
+                prompt_lines.append(f"Color: {label}")
+            if ext:
+                prompt_lines.append(f"Nozzle: {ext}°C")
+            if bed:
+                prompt_lines.append(f"Bed: {bed}°C")
+            if spool_id:
+                prompt_lines.append(f"Spoolman ID: {spool_id}")
+            raw(f"// action:prompt_begin Spool Loaded — {lane.name}")
+            for pl in prompt_lines:
+                raw(f"// action:prompt_text {pl}")
+            raw("// action:prompt_footer_button OK|RESPOND TYPE=command MSG=action:prompt_end|info")
+            raw("// action:prompt_show")
+
+            self.reactor.register_callback(
+                lambda e: self.logger.raw("// action:prompt_end"),
+                self.reactor.monotonic() + 10.0)
+        except Exception:
+            pass
 
     def _restore_tool_loaded_state(self, lane):
         """Restore a lane to TOOLED state after klipper restart.
