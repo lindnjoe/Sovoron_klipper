@@ -323,6 +323,7 @@ class AFC_U1_RFID:
         if is_scanner:
             self.logger.info(f"U1 RFID: spool scanned — {tag_desc}")
             self._sync_to_spoolman(lane, slot_info, set_next=True)
+            self._notify_scan(brand, material, color, slot_info)
             return
 
         self.logger.info(f"U1 RFID: tag detected on {lane_name} — {tag_desc}")
@@ -637,6 +638,40 @@ class AFC_U1_RFID:
 
         except Exception as e:
             self.logger.error(f"U1 RFID Spoolman sync failed for {lane.name}: {e}")
+
+    def _notify_scan(self, brand: str, material: str, color: str,
+                     slot_info: dict):
+        """Send a user-visible notification when the scanner reads a spool."""
+        try:
+            gcode = self.afc.gcode
+            cname = _color_name(color) if color else ""
+            parts = []
+            if brand:
+                parts.append(brand)
+            if material:
+                parts.append(material)
+            if cname:
+                parts.append(cname)
+            short = " ".join(parts) or "Unknown"
+            gcode.run_script_from_command(f'M117 Scanned: {short}')
+
+            lines = ["Spool scanned and staged for next load:"]
+            if brand:
+                lines.append(f"  Brand: {brand}")
+            if material:
+                lines.append(f"  Material: {material}")
+            if color:
+                label = f"{cname} (#{color})" if cname else f"#{color}"
+                lines.append(f"  Color: {label}")
+            ext = slot_info.get("extruder_temp")
+            bed = slot_info.get("bed_temp")
+            if ext:
+                lines.append(f"  Nozzle temp: {ext}°C")
+            if bed:
+                lines.append(f"  Bed temp: {bed}°C")
+            gcode.respond_info("\n".join(lines))
+        except Exception:
+            pass
 
     def force_read(self, lane_name: str):
         """Force an RFID re-read for a specific lane (triggers FILAMENT_DT_UPDATE)."""
