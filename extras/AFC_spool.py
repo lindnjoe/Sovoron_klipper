@@ -327,12 +327,16 @@ class AFCSpool:
             cur_lane.material = self.afc.default_material_type
             cur_lane.weight = 1000 # Defaulting weight to 1000 upon load
 
-        if self.afc.spoolman is not None and self.next_spool_id is not None:
+        # Only consume staged scanner data for lanes that don't already have
+        # a spool assigned — prevents ACE unload/reload from stealing the
+        # scanner's next_spool_id meant for a different lane.
+        has_spool = getattr(cur_lane, "spool_id", None) not in (None, "", 0)
+        if not has_spool and self.afc.spoolman is not None and self.next_spool_id is not None:
             spool_id = self.next_spool_id
             self.next_spool_id = None
             self.next_spool_info = None
             self.set_spoolID(cur_lane, spool_id)
-        elif self.next_spool_info is not None:
+        elif not has_spool and self.next_spool_info is not None:
             info = self.next_spool_info
             self.next_spool_info = None
             self.next_spool_id = None
