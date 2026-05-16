@@ -664,6 +664,7 @@ class AFC_U1_RFID:
             self.afc.gcode.respond_info("\n".join(lines))
 
             # action:prompt dialog — auto-dismisses after 10 seconds
+            spool_id = getattr(self.afc.spool, 'next_spool_id', None)
             prompt_lines = []
             if brand:
                 prompt_lines.append(f"Brand: {brand}")
@@ -676,6 +677,8 @@ class AFC_U1_RFID:
                 prompt_lines.append(f"Nozzle: {ext}°C")
             if bed:
                 prompt_lines.append(f"Bed: {bed}°C")
+            if spool_id:
+                prompt_lines.append(f"Set as Spoolman next ID: {spool_id}")
             raw("// action:prompt_begin Spool Scanned")
             for pl in prompt_lines:
                 raw(f"// action:prompt_text {pl}")
