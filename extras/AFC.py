@@ -412,8 +412,6 @@ class afc:
         self.idle       = self.printer.lookup_object('idle_timeout')
         self.gcode_move = self.printer.lookup_object('gcode_move')
         self.tip        = self.printer.lookup_object('AFC_form_tip')
-        self._msm       = self.printer.lookup_object('machine_state_manager', None)
-
         # Looking up to see if manual_home has probe_pos, this is to make AFC work with klipper
         # starting with new homing update git hash(57c2e0c960f8e25f56a66ba3a1e90e124f207001)
         phoming = self.printer.lookup_object('homing')
@@ -946,38 +944,6 @@ class afc:
         """
         return self.resume_z_speed if self.resume_z_speed > 0 else self.speed
 
-    _U1_DISPLAY_MAP = {
-        'loading':   ('PRINT_AUTO_FEEDING',   'AUTO_LOAD',   'AUTO_LOADING'),
-        'unloading': ('PRINT_AUTO_UNLOADING', 'AUTO_UNLOAD', 'AUTO_UNLOADING'),
-    }
-
-    def _set_u1_display(self, phase):
-        """Update U1 touchscreen during AFC operations. No-op on non-U1 printers.
-
-        :param phase: 'loading', 'unloading', or 'done'
-        """
-        if self._msm is None:
-            return
-        try:
-            state = self._msm.get_status(None).get('main_state', '')
-            if phase == 'done':
-                if state == 'PRINTING':
-                    self.gcode.run_script_from_command('SET_ACTION_CODE ACTION=IDLE')
-                elif state in ('AUTO_LOAD', 'AUTO_UNLOAD'):
-                    self.gcode.run_script_from_command(
-                        'EXIT_TO_IDLE REQ_FROM_STATE={}'.format(state))
-            elif phase in self._U1_DISPLAY_MAP:
-                print_action, idle_state, idle_action = self._U1_DISPLAY_MAP[phase]
-                if state == 'PRINTING':
-                    self.gcode.run_script_from_command(
-                        'SET_ACTION_CODE ACTION={}'.format(print_action))
-                elif state == 'IDLE':
-                    self.gcode.run_script_from_command(
-                        'SET_MAIN_STATE MAIN_STATE={} ACTION={}'.format(
-                            idle_state, idle_action))
-        except Exception:
-            pass
-
     def move_z_pos(self, z_amount, string="", wait_moves=False):
         """
         Common function helper to move z, also does a check for max z so toolhead does not exceed max height
@@ -1404,7 +1370,6 @@ class afc:
             if cur_lane.load_state and (not cur_hub.state or cur_lane.is_direct_hub()):
 
                 self.logger.info("Loading {}".format(cur_lane.name))
-                self._set_u1_display('loading')
 
                 cur_extruder = cur_lane.extruder_obj
 
@@ -1789,7 +1754,7 @@ class afc:
                                  pause=self.function.in_print())
             return False
 
-        self._set_u1_display('unloading')
+        self.logger.info("Unloading {}".format(cur_lane.name))
 
         # Lookup current extruder object using the lane's information.
         cur_extruder = cur_lane.extruder_obj
@@ -2368,7 +2333,6 @@ class afc:
                 pause=self.function.in_print()
             )
         finally:
-            self._set_u1_display('done')
             self.next_lane_load = None
             self.function.log_toolhead_pos("Final Change Tool: Error State: {}, Is Paused {}, Position_saved {}, in toolchange: {}, POS: ".format(
                     self.error_state, self.function.is_paused(), self.position_saved, self.in_toolchange ))
