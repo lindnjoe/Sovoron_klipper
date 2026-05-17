@@ -1144,10 +1144,17 @@ class AFCLane:
                 self.logger.info(f"Cannot get TD-1 data for {self.name}, either toolhead is loaded or hub shows filament in path")
 
     @property
+    def _hub_is_virtual(self) -> bool:
+        """True when the lane's hub uses a virtual sensor (no physical switch_pin)."""
+        hub = getattr(self, "hub_obj", None)
+        if hub is None:
+            return True
+        pin = getattr(hub, "switch_pin", "virtual")
+        return str(pin).lower() == "virtual"
+
+    @property
     def load_state(self) -> bool:
-        if (self.hub_obj is not None
-            and hasattr(self.hub_obj, 'is_virtual_pin')
-            and self.hub_obj.is_virtual_pin()):
+        if self.unit_obj.type in ("ViViD",) and self._hub_is_virtual:
             return self.loaded_to_hub
         else:
             return bool(self._load_state)
