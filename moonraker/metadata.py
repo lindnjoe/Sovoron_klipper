@@ -181,7 +181,10 @@ class BaseSlicer(object):
     def parse_object_height(self) -> Optional[float]:
         return None
 
-    def parse_filament_colour(self) -> Optional[str]:
+    def parse_filament_colours(self) -> Optional[str]:
+        return None
+
+    def parse_filament_colors(self) -> Optional[List[str]]:
         return None
 
     def parse_filament_weights(self) -> Optional[List[float]]:
@@ -431,8 +434,15 @@ class PrusaSlicer(BaseSlicer):
                 return max(matches)
         return regex_find_max_float(r"G1\sZ(%F)\sF", self.footer_data)
 
-    def parse_filament_colour(self) -> Optional[str]:
+    def parse_filament_colours(self) -> Optional[str]:
         return regex_find_string(r";\sfilament_colour\s=\s(%S)", self.footer_data)
+
+    def parse_filament_colors(self) -> Optional[List[str]]:
+        result = regex_find_string(r";\sfilament_colour\s=\s(%S)", self.footer_data)
+        if result:
+            colors = [c.strip() for c in result.split(';') if c.strip()]
+            return colors if colors else None
+        return None
 
     def parse_filament_weights(self) -> Optional[List[float]]:
         line = regex_find_string(r'filament\sused\s\[g\]\s=\s(%S)\n', self.footer_data)
@@ -1124,7 +1134,8 @@ SUPPORTED_DATA = [
     'filament_name',
     'filament_type',
     'filament_weights',
-    'filament_colour',
+    'filament_colours',
+    'filament_colors',
     'filament_total',
     'filament_weight_total',
     'filament_retract_length_toolchange',
