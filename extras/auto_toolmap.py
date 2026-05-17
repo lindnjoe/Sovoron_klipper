@@ -298,11 +298,17 @@ class AutoToolmap:
             colors = [c.strip() for c in fil_color.replace(';', ',').split(',')]
             color_detail = []
             cfg_colors = cfg.get('filament_color', [])
+            cfg_rgba = cfg.get('filament_color_rgba', [])
             for i, fc in enumerate(colors):
                 if i >= MAX_FILAMENTS:
                     break
                 if fc and i < len(cfg_colors):
-                    cfg_colors[i] = fc
+                    hex_rgb = fc.lstrip('#')
+                    if len(hex_rgb) == 6:
+                        rgb_int = int(hex_rgb, 16)
+                        cfg_colors[i] = (0xFF << 24) | rgb_int
+                        if i < len(cfg_rgba):
+                            cfg_rgba[i] = hex_rgb.upper() + 'FF'
                 if fc:
                     color_detail.append('T%d=%s' % (i, fc))
             applied.append('filament_color')
