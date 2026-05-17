@@ -1392,37 +1392,30 @@ class afc:
                     cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                     cur_lane.espooler.do_assist_move()
 
-                    do_poop = cur_extruder.poop if cur_extruder.poop is not None else self.poop
-                    do_wipe = cur_extruder.wipe if cur_extruder.wipe is not None else self.wipe
-                    do_kick = cur_extruder.kick if cur_extruder.kick is not None else self.kick
-                    ext_poop_cmd = cur_extruder.poop_cmd or self.poop_cmd
-                    ext_wipe_cmd = cur_extruder.wipe_cmd or self.wipe_cmd
-                    ext_kick_cmd = cur_extruder.kick_cmd or self.kick_cmd
-
-                    if do_poop:
+                    if self.poop:
                         try:
                             if purge_length is not None:
-                                self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(ext_poop_cmd, purge_length, cur_extruder.name))
+                                self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(self.poop_cmd, purge_length, cur_extruder.name))
                             else:
-                                self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_poop_cmd, cur_extruder.name))
+                                self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.poop_cmd, cur_extruder.name))
                         except Exception:
                             raise
 
                         self.afcDeltaTime.log_with_time("TOOL_LOAD: After poop")
                         self.function.log_toolhead_pos()
 
-                        if do_wipe:
-                            self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_wipe_cmd, cur_extruder.name))
+                        if self.wipe:
+                            self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.wipe_cmd, cur_extruder.name))
                             self.afcDeltaTime.log_with_time("TOOL_LOAD: After first wipe")
                             self.function.log_toolhead_pos()
 
-                    if do_kick:
-                        self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_kick_cmd, cur_extruder.name))
+                    if self.kick:
+                        self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.kick_cmd, cur_extruder.name))
                         self.afcDeltaTime.log_with_time("TOOL_LOAD: After kick")
                         self.function.log_toolhead_pos()
 
-                    if do_wipe:
-                        self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_wipe_cmd, cur_extruder.name))
+                    if self.wipe:
+                        self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.wipe_cmd, cur_extruder.name))
                         self.afcDeltaTime.log_with_time("TOOL_LOAD: After second wipe")
                         self.function.log_toolhead_pos()
 
@@ -1440,9 +1433,8 @@ class afc:
                     cur_lane.lane_load_count.increase_count()
                     cur_lane.espooler.stats.update_database()
 
-                    ext_post_load = cur_extruder.post_load_macro or self.post_load_macro
-                    if ext_post_load is not None:
-                        self.gcode.run_script_from_command(ext_post_load)
+                    if self.post_load_macro is not None:
+                        self.gcode.run_script_from_command(self.post_load_macro)
                 finally:
                     self.restore_toolhead_temp(temp_state)
 
@@ -1472,13 +1464,10 @@ class afc:
         :param cur_hub: The hub object associated with the lane.
         :param cur_extruder: The extruder object associated with the lane.
         """
-        do_park_pre_load = cur_extruder.park_pre_load if cur_extruder.park_pre_load is not None else self.park_pre_load
-        ext_park_pre_load_cmd = cur_extruder.park_pre_load_cmd or self.park_pre_load_cmd
-        ext_post_load_cleanup = cur_extruder.post_load_macro or self.post_load_macro
         parked_pre_load = False
 
-        if do_park_pre_load and ext_park_pre_load_cmd:
-            self.gcode.run_script_from_command(ext_park_pre_load_cmd)
+        if self.park_pre_load and self.park_pre_load_cmd:
+            self.gcode.run_script_from_command(self.park_pre_load_cmd)
             parked_pre_load = True
 
         load_succeeded = False
@@ -1504,10 +1493,10 @@ class afc:
             load_succeeded = self._load_sequence_standard(cur_lane, cur_hub, cur_extruder)
             return load_succeeded
         finally:
-            if parked_pre_load and not load_succeeded and ext_post_load_cleanup:
-                self.logger.info("Load failed after park_pre_load, running cleanup: %s" % ext_post_load_cleanup)
+            if parked_pre_load and not load_succeeded and self.post_load_macro:
+                self.logger.info("Load failed after park_pre_load, running cleanup: %s" % self.post_load_macro)
                 try:
-                    self.gcode.run_script_from_command(ext_post_load_cleanup)
+                    self.gcode.run_script_from_command(self.post_load_macro)
                 except Exception as e:
                     self.logger.error("Cleanup macro failed: %s" % str(e))
 
@@ -1841,38 +1830,31 @@ class afc:
         :param cur_lane: The lane being unloaded.
         :param cur_extruder: The extruder associated with the lane.
         """
-        do_tool_cut = cur_extruder.tool_cut if cur_extruder.tool_cut is not None else self.tool_cut
-        ext_tool_cut_cmd = cur_extruder.tool_cut_cmd or self.tool_cut_cmd
-        do_park = cur_extruder.park if cur_extruder.park is not None else self.park
-        ext_park_cmd = cur_extruder.park_cmd or self.park_cmd
-        do_form_tip = cur_extruder.form_tip if cur_extruder.form_tip is not None else self.form_tip
-        ext_form_tip_cmd = cur_extruder.form_tip_cmd or self.form_tip_cmd
-
-        if do_tool_cut:
+        if self.tool_cut:
             cur_lane.extruder_obj.estats.increase_cut_total()
-            self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_tool_cut_cmd, cur_extruder.name))
+            self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.tool_cut_cmd, cur_extruder.name))
             self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After cut")
             self.function.log_toolhead_pos()
 
-            if do_park:
-                self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_park_cmd, cur_extruder.name))
+            if self.park:
+                self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
                 self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After park")
                 self.function.log_toolhead_pos()
 
-        if do_form_tip:
-            if do_park:
-                self.gcode.run_script_from_command("{} EXTRUDER={}".format(ext_park_cmd, cur_extruder.name))
+        if self.form_tip:
+            if self.park:
+                self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
                 self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After form tip park")
                 self.function.log_toolhead_pos()
 
-            if ext_form_tip_cmd == "AFC":
+            if self.form_tip_cmd == "AFC":
                 self.tip = self.printer.lookup_object('AFC_form_tip')
                 self.tip.tip_form()
                 self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After afc form tip")
                 self.function.log_toolhead_pos()
 
             else:
-                self.gcode.run_script_from_command(ext_form_tip_cmd)
+                self.gcode.run_script_from_command(self.form_tip_cmd)
                 self.afcDeltaTime.log_with_time("TOOL_UNLOAD: After custom form tip")
                 self.function.log_toolhead_pos()
 
@@ -2106,9 +2088,8 @@ class afc:
                                            assist_active=AssistActive.YES)
                 cur_lane.move_advanced(cur_lane.short_move_dis * -5, SpeedMode.SHORT)
 
-            ext_post_unload = cur_extruder.post_unload_macro or self.post_unload_macro
-            if ext_post_unload is not None:
-                self.gcode.run_script_from_command(ext_post_unload)
+            if self.post_unload_macro is not None:
+                self.gcode.run_script_from_command(self.post_unload_macro)
 
             cur_lane.do_enable(False)
             cur_lane.unit_obj.return_to_home()

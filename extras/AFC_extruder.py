@@ -271,36 +271,6 @@ class AFCExtruder:
         self.custom_load_cmd: Optional[str] = config.get("custom_load_cmd", None)
         self.custom_unload_cmd: Optional[str] = config.get("custom_unload_cmd", None)
 
-        # Per-extruder overrides (fall back to global [AFC] settings when None)
-        _poop = config.get("poop", None)
-        self.poop: Optional[bool] = None if _poop is None else _poop.lower() in ('true', '1', 'yes')
-        self.poop_cmd: Optional[str] = config.get("poop_cmd", None)
-        _wipe = config.get("wipe", None)
-        self.wipe: Optional[bool] = None if _wipe is None else _wipe.lower() in ('true', '1', 'yes')
-        self.wipe_cmd: Optional[str] = config.get("wipe_cmd", None)
-        _kick = config.get("kick", None)
-        self.kick: Optional[bool] = None if _kick is None else _kick.lower() in ('true', '1', 'yes')
-        self.kick_cmd: Optional[str] = config.get("kick_cmd", None)
-
-        _park = config.get("park", None)
-        self.park: Optional[bool] = None if _park is None else _park.lower() in ('true', '1', 'yes')
-        self.park_cmd: Optional[str] = config.get("park_cmd", None)
-
-        _park_pre_load = config.get("park_pre_load", None)
-        self.park_pre_load: Optional[bool] = None if _park_pre_load is None else _park_pre_load.lower() in ('true', '1', 'yes')
-        self.park_pre_load_cmd: Optional[str] = config.get("park_pre_load_cmd", None)
-
-        _form_tip = config.get("form_tip", None)
-        self.form_tip: Optional[bool] = None if _form_tip is None else _form_tip.lower() in ('true', '1', 'yes')
-        self.form_tip_cmd: Optional[str] = config.get("form_tip_cmd", None)
-
-        _tool_cut = config.get("tool_cut", None)
-        self.tool_cut: Optional[bool] = None if _tool_cut is None else _tool_cut.lower() in ('true', '1', 'yes')
-        self.tool_cut_cmd: Optional[str] = config.get("tool_cut_cmd", None)
-
-        self.post_load_macro: Optional[str] = config.get("post_load_macro", None)
-        self.post_unload_macro: Optional[str] = config.get("post_unload_macro", None)
-
         self.lane_loaded: Optional[str] = None
         self.lanes: Dict                = {}
         self.load_active                = False
