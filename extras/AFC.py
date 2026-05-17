@@ -1455,7 +1455,7 @@ class afc:
         else:
             use_direct_dist = False
             if (cur_lane.hub_obj
-                and cur_lane.hub_obj.use_dist_hub):
+                and getattr(cur_lane.hub_obj, "use_dist_hub", False)):
                 use_direct_dist = True
 
             if self._check_extruder_temp(cur_lane):
@@ -1790,7 +1790,7 @@ class afc:
         else:
             use_direct_dist = False
             if (cur_lane.hub_obj
-                and cur_lane.hub_obj.use_dist_hub):
+                and getattr(cur_lane.hub_obj, "use_dist_hub", False)):
                 use_direct_dist = True
             # START THE ANIMATION IMMEDIATELY (Plays while heating!)
             # Activate LED indicator for unloading.
