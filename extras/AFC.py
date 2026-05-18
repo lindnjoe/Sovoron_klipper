@@ -1407,14 +1407,13 @@ class afc:
                     load_time = self.afcDeltaTime.log_major_delta("{} is now loaded in toolhead".format(cur_lane.name), False)
                     self.afc_stats.average_tool_load_time.average_time(load_time)
 
+                    if self.post_load_macro is not None:
+                        self.gcode.run_script_from_command(self.post_load_macro)
+
                     # Increment stat counts
                     cur_lane.extruder_obj.estats.tc_tool_load.increase_count()
                     cur_lane.lane_load_count.increase_count()
                     cur_lane.espooler.stats.update_database()
-
-                    if self.post_load_macro is not None:
-                        self.gcode.run_script_from_command(self.post_load_macro)
-                        # TODO: Add afcDeltaTime log
                 finally:
                     self.restore_toolhead_temp(temp_state)
 
