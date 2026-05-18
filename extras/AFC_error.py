@@ -218,6 +218,9 @@ class afcError:
             self.logger.debug("AFC_RESUME: Printer not paused, not executing resume code")
             return
 
+        if self.afc.pre_resume_cmd is not None:
+            self.afc.gcode.run_script_from_command(self.afc.pre_resume_cmd)
+
         # Save current pause state
         temp_is_paused = self.afc.function.is_paused()
 
