@@ -645,6 +645,13 @@ class afc:
 
         return wait
 
+    def _toolhead_pre_unload_pull(self, cur_lane, cur_extruder):
+        """Check extruder temp and perform quick pull to prevent oozing."""
+        if self._check_extruder_temp(cur_lane):
+            self.afcDeltaTime.log_with_time("Done heating toolhead")
+        self.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
+        self.function.log_toolhead_pos("TOOL_UNLOAD quick pull: ")
+
     def capture_toolhead_temp(self, extruder: Optional[AFCExtruder]=None,
                               async_capture: bool=False) -> Optional[dict]:
         """
