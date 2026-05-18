@@ -1364,6 +1364,11 @@ class afc:
                     cur_lane.unit_obj.lane_tool_loaded( cur_lane )
                     cur_lane.espooler.do_assist_move()
                     if self.poop:
+                        if self.park:
+                            self.gcode.run_script_from_command("{} EXTRUDER={}".format(self.park_cmd, cur_extruder.name))
+                            self.afcDeltaTime.log_with_time("TOOL_LOAD: After park")
+                            self.function.log_toolhead_pos()
+
                         if purge_length is not None:
                             self.gcode.run_script_from_command("{} PURGE_LENGTH={} EXTRUDER={}".format(self.poop_cmd, purge_length, cur_extruder.name))
 
