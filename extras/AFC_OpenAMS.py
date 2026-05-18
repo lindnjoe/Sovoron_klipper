@@ -838,14 +838,6 @@ class afcAMS(afcUnit):
         # Wait for MCU to be idle before starting load
         self._wait_oams_idle(oams, context=f"load {cur_lane.name}")
 
-        # Clear stale toolhead sensor state before feeding.
-        # U1 filament_motion_sensors retain filament_present from a previous
-        # load's retract, which can make the sensor check pass prematurely.
-        ext = cur_lane.extruder_obj
-        ext.tool_start_state = False
-        if getattr(ext, 'filament_sensor_obj', None) is not None:
-            ext.filament_sensor_obj.runout_helper.filament_present = False
-
         # Suspend monitor during load to prevent false stuck spool detection
         if self._monitor is not None:
             self._monitor.stop()
