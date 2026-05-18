@@ -1542,20 +1542,6 @@ class afcAMS(afcUnit):
         cur_lane.do_enable(True)
         cur_lane.select_lane()
 
-        if afc.tool_cut:
-            cur_lane.extruder_obj.estats.increase_cut_total()
-            afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.tool_cut_cmd, cur_extruder.name))
-            if afc.park:
-                afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
-        if afc.form_tip:
-            if afc.park:
-                afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
-            if afc.form_tip_cmd == "AFC":
-                tip = afc.printer.lookup_object('AFC_form_tip')
-                tip.tip_form()
-            else:
-                afc.gcode.run_script_from_command(afc.form_tip_cmd)
-
         try:
             # Unsync from extruder before OpenAMS unload
             # After cut/form_tip, lane is synced to extruder. Must unsync before
