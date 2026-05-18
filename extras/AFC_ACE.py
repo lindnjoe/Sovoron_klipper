@@ -1699,7 +1699,8 @@ class afcACE(afcUnit):
         # that needs to be cleared by retracting.
         # internal mode skips this entirely — engagement is verified
         # later via the feed_assist_count delta after tool_stn.
-        if cur_extruder.tool_start and cur_extruder.tool_start != "internal":
+        has_toolhead_sensor = (cur_extruder.tool_start and cur_extruder.tool_start != "internal") or cur_extruder.filament_sensor_obj is not None
+        if has_toolhead_sensor:
             # If the FPS already latched during the feed, the filament is
             # confirmed present — skip the smart-load retry loop.  The FPS
             # is pressure-based: once the ACE stops feeding, pressure drops
