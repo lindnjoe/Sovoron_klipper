@@ -501,3 +501,70 @@ class AFC_moonraker:
             self.logger.debug(f"{e}")
             error = True
         return error
+
+    def _spoolman_proxy(self, method, path, body=None, print_error=True):
+        """Helper for Spoolman API calls via moonraker's proxy."""
+        payload = {"request_method": method, "path": path}
+        if body is not None:
+            payload["body"] = body
+        url = urljoin(self.host, 'server/spoolman/proxy')
+        data = urlencode(payload).encode()
+        req = Request(url, data)
+        return self._get_results(req, print_error)
+
+    def search_filaments(self, article_number=None, vendor_name=None, material=None):
+        parts = []
+        if article_number:
+            parts.append(f"article_number={quote(str(article_number))}")
+        if vendor_name:
+            parts.append(f"vendor.name={quote(str(vendor_name))}")
+        if material:
+            parts.append(f"material={quote(str(material))}")
+        query = "&".join(parts)
+        path = f"/v1/filament?{query}" if query else "/v1/filament"
+        resp = self._spoolman_proxy("GET", path, print_error=False)
+        return resp if isinstance(resp, list) else []
+
+    def search_spools(self, filament_id=None):
+        parts = []
+        if filament_id is not None:
+            parts.append(f"filament.id={filament_id}")
+        query = "&".join(parts)
+        path = f"/v1/spool?{query}" if query else "/v1/spool"
+        resp = self._spoolman_proxy("GET", path, print_error=False)
+        return resp if isinstance(resp, list) else []
+
+    def get_or_create_vendor(self, name):
+        resp = self._spoolman_proxy("GET", f"/v1/vendor?name={quote(str(name))}", print_error=False)
+        if isinstance(resp, list) and resp:
+            for v in resp:
+                if v.get("name", "").strip().lower() == name.strip().lower():
+                    return v
+            return resp[0]
+        body = json.dumps({"name": name})
+        return self._spoolman_proxy("POST", "/v1/vendor", body=body)
+
+    def create_filament(self, name, vendor_id=None, material=None, density=None,
+                        diameter=None, color_hex=None, settings_extruder_temp=None,
+                        settings_bed_temp=None, weight=None, spool_weight=None,
+                        article_number=None):
+        data = {"name": name}
+        if vendor_id is not None: data["vendor_id"] = vendor_id
+        if material is not None: data["material"] = material
+        if density is not None: data["density"] = density
+        if diameter is not None: data["diameter"] = diameter
+        if color_hex is not None: data["color_hex"] = color_hex.lstrip("#")
+        if settings_extruder_temp is not None: data["settings_extruder_temp"] = settings_extruder_temp
+        if settings_bed_temp is not None: data["settings_bed_temp"] = settings_bed_temp
+        if weight is not None: data["weight"] = weight
+        if spool_weight is not None: data["spool_weight"] = spool_weight
+        if article_number is not None: data["article_number"] = article_number
+        return self._spoolman_proxy("POST", "/v1/filament", body=json.dumps(data))
+
+    def create_spool(self, filament_id, initial_weight=None, remaining_weight=None,
+                     spool_weight=None):
+        data = {"filament_id": filament_id}
+        if initial_weight is not None: data["initial_weight"] = initial_weight
+        if remaining_weight is not None: data["remaining_weight"] = remaining_weight
+        if spool_weight is not None: data["spool_weight"] = spool_weight
+        return self._spoolman_proxy("POST", "/v1/spool", body=json.dumps(data))
