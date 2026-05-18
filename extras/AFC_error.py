@@ -237,7 +237,7 @@ class afcError:
 
         self.logger.debug("AFC_RESUME: Before User Restore")
         self.afc.function.log_toolhead_pos()
-        self.afc.gcode.run_script_from_command("{macro_name} {user_params}".format(macro_name=self.AFC_RENAME_RESUME_NAME, user_params=gcmd.get_raw_command_parameters()))
+        self.afc.gcode.run_script_from_command("RESUME_BASE {user_params}".format(user_params=gcmd.get_raw_command_parameters()))
 
         # The only time our resume should restore position is if there was an error that caused the pause
         if self.afc.error_state or temp_is_paused or self.afc.position_saved:
