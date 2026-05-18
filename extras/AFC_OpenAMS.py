@@ -1539,8 +1539,7 @@ class afcAMS(afcUnit):
                     fps_state, self.oams, 1, 0, "before unload cut", force=True)
         self.lane_unloading(cur_lane)
 
-        if afc._check_extruder_temp(cur_lane):
-            afc.afcDeltaTime.log_with_time("Done heating toolhead")
+        afc._toolhead_pre_unload_pull(cur_lane, cur_extruder)
 
         cur_lane.sync_to_extruder()
         cur_lane.do_enable(True)
