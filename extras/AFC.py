@@ -1339,7 +1339,7 @@ class afc:
             cur_hub = cur_lane.hub_obj
 
             # Check if the lane is in a state ready to load and hub is clear.
-            if cur_lane.load_state and (not cur_hub.state or cur_lane.is_direct_hub()):
+            if cur_lane.load_state and (not cur_hub.state or cur_lane.is_direct_hub() or cur_hub.is_virtual_pin()):
 
                 self.logger.info("Loading {}".format(cur_lane.name))
 
