@@ -278,7 +278,7 @@ class afcPrep:
             self.logger.info(f"U1 RFID init error: {e}")
 
     def _start_u1_rfid(self):
-        """Initialize U1 RFID polling if any lanes have u1_rfid_channel configured."""
+        """Initialize U1 RFID polling if any lanes or extruders have u1_rfid_channel configured."""
         from extras.AFC_U1_rfid import AFC_U1_RFID
 
         old_rfid = getattr(self.afc, 'u1_rfid', None)
@@ -291,11 +291,16 @@ class afcPrep:
             if channel >= 0:
                 rfid_sources[lane.name] = (lane, channel)
 
+        for extruder in self.afc.tools.values():
+            channel = getattr(extruder, "u1_rfid_channel", -1)
+            if channel >= 0:
+                rfid_sources[extruder.name] = (extruder, channel)
+
         if not rfid_sources:
             return
         rfid = AFC_U1_RFID(self.afc)
-        for lane, channel in rfid_sources.values():
-            rfid.register_lane(lane, channel)
+        for obj, channel in rfid_sources.values():
+            rfid.register_lane(obj, channel)
         rfid.start()
         self.afc.u1_rfid = rfid
 

@@ -246,6 +246,8 @@ class AFCExtruder:
         # U1 only related variables
         self.filament_sensor_name: str  = config.get('u1_filament_sensor_name', None)
         self.park_detector: str         = config.get("u1_park_detector_name", None)
+        self.u1_rfid_channel: int       = config.getint('u1_rfid_channel', -1)
+        self.spool_scanner: bool        = config.getboolean('spool_scanner', False)
 
         if self.toolhead_status_index:
             self.toolhead_status_index  = self.afc.function._get_led_indexes(self.toolhead_status_index)
