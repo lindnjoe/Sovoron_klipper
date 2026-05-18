@@ -451,9 +451,7 @@ class AFC_U1_RFID:
         return ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
 
     def _get_auto_spoolman_create(self, lane) -> bool:
-        """Check if auto Spoolman creation is enabled — unit, extruder, or object itself."""
-        if getattr(lane, 'auto_spoolman_create', False):
-            return True
+        """Check if auto Spoolman creation is enabled — unit then extruder fallback."""
         unit = getattr(lane, 'unit_obj', None)
         if unit is not None and getattr(unit, 'auto_spoolman_create', False):
             return True
