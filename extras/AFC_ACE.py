@@ -1871,6 +1871,7 @@ class afcACE(afcUnit):
 
         if afc._check_extruder_temp(cur_lane):
             afc.afcDeltaTime.log_with_time("Done heating toolhead")
+        afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
 
         cur_lane.sync_to_extruder()
         cur_lane.do_enable(True)
