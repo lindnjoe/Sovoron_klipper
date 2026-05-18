@@ -67,7 +67,7 @@ class AFC_EMU(afcBoxTurtle):
         :param dir: Direction(+/-) to move filament
         :param use_homing: When enabled home_to logic is used, else move_advance logic is used
         :param speed_mode: SpeedMode type to use when moving stepper
-        :param assist_active: ViViD does not have spoolers, setting this parameter does nothing.
+        :param assist_active: EMU does not have spoolers, setting this parameter does nothing.
 
         :return tuple[bool, float|int, AFCMoveWarning]: A tuple containing:
 

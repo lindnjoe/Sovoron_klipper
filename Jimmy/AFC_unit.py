@@ -286,9 +286,9 @@ class afcUnit:
         # Selection buttons
         buttons.append(("Calibrate Lanes", "UNIT_LANE_CALIBRATION UNIT={}".format(self.name), "primary"))
 
-        direct_hubs = any( lane.is_direct_hub() for lane in self.afc.lanes.values())
-        lanes_loaded = any( lane.load_state and not lane.is_direct_hub() for lane in self.afc.lanes.values())
-        any_lane_has_td1_ids = any( lane.td1_device_id for lane in self.afc.lanes.values())
+        direct_hubs = any( lane.is_direct_hub() or getattr(lane.hub_obj, "use_dist_hub", False) for lane in self.lanes.values())
+        lanes_loaded = any( (lane.load_state and not getattr(lane.hub_obj, "use_dist_hub", False)) and not lane.is_direct_hub() for lane in self.lanes.values())
+        any_lane_has_td1_ids = any( lane.td1_device_id for lane in self.lanes.values())
 
         if not direct_hubs or lanes_loaded:
             buttons.append(("Calibrate afc_bowden_length", "UNIT_BOW_CALIBRATION UNIT={}".format(self.name), "secondary"))
@@ -341,7 +341,8 @@ class afcUnit:
                 and not lane.tool_loaded):
                 button_label = "{}".format(lane)
                 # Do a bowden length calibration for direct hubs, dist_hub length gets set properly this way
-                if lane.is_direct_hub():
+                if (lane.is_direct_hub()
+                    or getattr(lane.hub_obj, "use_dist_hub", False)):
                     button_command = "CALIBRATE_AFC BOWDEN={}".format(lane)
                 else:
                     button_command = "CALIBRATE_AFC LANE={}".format(lane)
@@ -397,7 +398,9 @@ class afcUnit:
                 'Config option: afc_bowden_length').format(self.name)
 
         for lane in self.lanes.values():
-            if lane.load_state and not lane.is_direct_hub():
+            if (lane.load_state
+                and not lane.is_direct_hub()
+                and not getattr(lane.hub_obj, "use_dist_hub", False)):
                 # Create a button for each lane
                 button_label = "{}".format(lane)
                 button_command = "CALIBRATE_AFC BOWDEN={}".format(lane)
@@ -484,7 +487,7 @@ class afcUnit:
         if color is not None and color:
             led_color = self.afc.function.HexToLedString(color.replace("#", ""))
             self.afc.function.afc_led( led_color, self.led_logo_index )
-    
+
     def _stop_led_effects(self):
         try:
             self.gcode.run_script_from_command("STOP_LED_EFFECTS")

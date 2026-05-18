@@ -232,7 +232,9 @@ class afcFunction:
                 manually_assigned = any( cmd == lane._map for lane in self.afc.lanes.values() )
                 if not manually_assigned and cmd not in self.afc.tool_cmds:
                     # Checking if macro already exists, generate next valid cmd if current generated cmd exists
-                    existing = self.afc.gcode.ready_gcode_handlers.get(cmd)
+                    existing = False
+                    if not self.afc.force_assign_map:
+                        existing = self.afc.gcode.ready_gcode_handlers.get(cmd)
                     if not existing:
                         cur_lane._map = cur_lane.map = cmd
                         break
@@ -902,7 +904,14 @@ class afcFunction:
                 checked, msg, pos = lane.unit_obj.calibrate_lane(lane, tol)
             if(not checked):
                 self.afc.error.AFC_error(msg, False)
-                self._afc_cali_fail(cali=lane, dis=pos, reset_lane=(pos!=0),fail_message=msg)
+
+                reset_lane = False
+                # Check to see if lane has hub object and thats its triggered, this will control
+                # if reset lane message is displayed when errors occur.
+                if hasattr(lane, "hub_obj") and hasattr(lane.hub_obj, "state"):
+                    reset_lane = lane.hub_obj.state
+
+                self._afc_cali_fail(cali=lane, dis=abs(pos), reset_lane=(pos!=0 and reset_lane),fail_message=msg)
                 return checked, [], []
             else:
                 if msg == "calibration_lane":
@@ -973,7 +982,10 @@ class afcFunction:
         text = f'{title} for {cali}. '
         if reset_lane:
             text += 'First: reset lane, Second: review messages and take necessary action and re-run calibration.'
-            buttons.append(("Reset lane", "AFC_LANE_RESET LANE={} DISTANCE={}".format(cali, dis), "primary"))
+            if dis is not None:
+                buttons.append(("Reset lane", "AFC_LANE_RESET LANE={} DISTANCE={}".format(cali, dis), "primary"))
+            else:
+                buttons.append(("Reset lane", "AFC_LANE_RESET LANE={}".format(cali), "primary"))
 
         if fail_message:
             text += f"\nFail message: {fail_message}"
@@ -1340,8 +1352,11 @@ class afcFunction:
 
             checked, msg, pos = cur_lane.unit_obj.calibrate_bowden(cur_lane, dis, tol)
             if not checked:
-                self.afc.error.AFC_error('{} failed to calibrate bowden length {}'.format(afc_bl, msg), pause=False)
-                self.afc.gcode.run_script_from_command('AFC_CALI_FAIL FAIL={} DISTANCE={}'.format(afc_bl, pos))
+                msg = '{} failed to calibrate bowden length {}'.format(afc_bl, msg)
+                self.afc.error.AFC_error(msg, pause=False)
+
+                self._afc_cali_fail(cali=cur_lane, dis=abs(pos), reset_lane=(pos!=0),
+                                    title="AFC Bowden Calibration Failed", fail_message=msg)
                 return
             else: calibrated.append('Bowden_length: {}'.format(afc_bl))
 
