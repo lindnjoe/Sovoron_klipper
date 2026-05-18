@@ -1483,7 +1483,6 @@ class afcAMS(afcUnit):
                 return False
 
         try:
-            afc._suppress_tool_swap_timer = True
             self.logger.debug(
                 f"OpenAMS load: loading {cur_lane.name} via OAMS hardware"
             )
@@ -1497,8 +1496,6 @@ class afcAMS(afcUnit):
             message = "OpenAMS load failed for {}: {}".format(cur_lane.name, str(e))
             afc.error.handle_lane_failure(cur_lane, message)
             return False
-        finally:
-            afc._suppress_tool_swap_timer = False
 
         sensor_state = cur_lane.get_toolhead_pre_sensor_state()
         on_shuttle = cur_lane.extruder_obj.on_shuttle()
@@ -1545,7 +1542,19 @@ class afcAMS(afcUnit):
         cur_lane.do_enable(True)
         cur_lane.select_lane()
 
-        afc._toolhead_cut_and_tip(cur_lane, cur_extruder)
+        if afc.tool_cut:
+            cur_lane.extruder_obj.estats.increase_cut_total()
+            afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.tool_cut_cmd, cur_extruder.name))
+            if afc.park:
+                afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
+        if afc.form_tip:
+            if afc.park:
+                afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
+            if afc.form_tip_cmd == "AFC":
+                tip = afc.printer.lookup_object('AFC_form_tip')
+                tip.tip_form()
+            else:
+                afc.gcode.run_script_from_command(afc.form_tip_cmd)
 
         try:
             # Unsync from extruder before OpenAMS unload
