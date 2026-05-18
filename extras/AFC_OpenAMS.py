@@ -1483,7 +1483,6 @@ class afcAMS(afcUnit):
                 return False
 
         try:
-            afc._suppress_tool_swap_timer = True
             self.logger.debug(
                 f"OpenAMS load: loading {cur_lane.name} via OAMS hardware"
             )
@@ -1497,8 +1496,6 @@ class afcAMS(afcUnit):
             message = "OpenAMS load failed for {}: {}".format(cur_lane.name, str(e))
             afc.error.handle_lane_failure(cur_lane, message)
             return False
-        finally:
-            afc._suppress_tool_swap_timer = False
 
         sensor_state = cur_lane.get_toolhead_pre_sensor_state()
         on_shuttle = cur_lane.extruder_obj.on_shuttle()
@@ -1534,8 +1531,6 @@ class afcAMS(afcUnit):
         """
         afc = self.afc
 
-        afc._toolhead_pre_unload_pull(cur_lane, cur_extruder)
-
         # Set follower reverse before cut so it assists all retract phases
         if self._follower is not None and self.oams is not None:
             fps_state = self._get_monitor_state()
@@ -1543,11 +1538,27 @@ class afcAMS(afcUnit):
                 self._follower.set_follower_state(
                     fps_state, self.oams, 1, 0, "before unload cut", force=True)
         self.lane_unloading(cur_lane)
+
+        if afc._check_extruder_temp(cur_lane):
+            afc.afcDeltaTime.log_with_time("Done heating toolhead")
+
         cur_lane.sync_to_extruder()
         cur_lane.do_enable(True)
         cur_lane.select_lane()
 
-        afc._toolhead_cut_and_tip(cur_lane, cur_extruder)
+        if afc.tool_cut:
+            cur_lane.extruder_obj.estats.increase_cut_total()
+            afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.tool_cut_cmd, cur_extruder.name))
+            if afc.park:
+                afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
+        if afc.form_tip:
+            if afc.park:
+                afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
+            if afc.form_tip_cmd == "AFC":
+                tip = afc.printer.lookup_object('AFC_form_tip')
+                tip.tip_form()
+            else:
+                afc.gcode.run_script_from_command(afc.form_tip_cmd)
 
         try:
             # Unsync from extruder before OpenAMS unload

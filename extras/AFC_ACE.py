@@ -1236,9 +1236,9 @@ class afcACE(afcUnit):
                     # we must NOT treat this as new filament.  Restore LOADED
                     # state so the lane isn't stuck in NONE, but keep the
                     # suppression flag so prep_post_load won't re-feed to hub.
-                    self.logger.info(
+                    self.logger.debug(
                         f"ACE callback: {lane.name} slot {local_slot} ready "
-                        f"but hub-load suppressed (ejected), setting loaded "
+                        f"but hub-load suppressed, setting loaded "
                         f"without re-feed"
                     )
                     lane.set_loaded()
@@ -1675,12 +1675,22 @@ class afcACE(afcUnit):
             cur_lane.loaded_to_hub = True
 
         except Exception as e:
-            # Load failed -- clear virtual hub since filament may not be in path
-            self._set_hub_state(cur_lane, False)
-            message = f"ACE load failed for {cur_lane.name}: {e}"
-            self.logger.error(f"{message}\n{traceback.format_exc()}")
-            afc.error.handle_lane_failure(cur_lane, message)
-            return False
+            # ACE serial can drop mid-feed.  If the FPS latched or the
+            # toolhead sensor is currently triggered, filament reached
+            # the toolhead despite the error — continue the load.
+            if self._fps_latched or cur_lane.get_toolhead_pre_sensor_state():
+                self.logger.info(
+                    f"ACE load: error during feed but filament at toolhead "
+                    f"(fps_latched={self._fps_latched}, sensor={cur_lane.get_toolhead_pre_sensor_state()}), "
+                    f"continuing despite: {e}"
+                )
+                cur_lane.loaded_to_hub = True
+            else:
+                self._set_hub_state(cur_lane, False)
+                message = f"ACE load failed for {cur_lane.name}: {e}"
+                self.logger.error(f"{message}\n{traceback.format_exc()}")
+                afc.error.handle_lane_failure(cur_lane, message)
+                return False
 
         # Verify toolhead sensor triggered.
         # ACE lanes with FPS buffers skip the traditional buffer decompress
@@ -1689,7 +1699,8 @@ class afcACE(afcUnit):
         # that needs to be cleared by retracting.
         # internal mode skips this entirely — engagement is verified
         # later via the feed_assist_count delta after tool_stn.
-        if cur_extruder.tool_start and cur_extruder.tool_start != "internal":
+        has_toolhead_sensor = (cur_extruder.tool_start and cur_extruder.tool_start != "internal") or cur_extruder.filament_sensor_obj is not None
+        if has_toolhead_sensor:
             # If the FPS already latched during the feed, the filament is
             # confirmed present — skip the smart-load retry loop.  The FPS
             # is pressure-based: once the ACE stops feeding, pressure drops
@@ -1856,18 +1867,29 @@ class afcACE(afcUnit):
         # Disable buffer before unloading (safe no-op if no buffer)
         cur_lane.disable_buffer()
 
-        afc._toolhead_pre_unload_pull(cur_lane, cur_extruder)
-
         self.lane_unloading(cur_lane)
+
+        if afc._check_extruder_temp(cur_lane):
+            afc.afcDeltaTime.log_with_time("Done heating toolhead")
+
         cur_lane.sync_to_extruder()
         cur_lane.do_enable(True)
         cur_lane.select_lane()
 
-        afc._toolhead_cut_and_tip(cur_lane, cur_extruder)
+        if afc.tool_cut:
+            cur_lane.extruder_obj.estats.increase_cut_total()
+            afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.tool_cut_cmd, cur_extruder.name))
+            if afc.park:
+                afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
+        if afc.form_tip:
+            if afc.park:
+                afc.gcode.run_script_from_command("{} EXTRUDER={}".format(afc.park_cmd, cur_extruder.name))
+            if afc.form_tip_cmd == "AFC":
+                tip = afc.printer.lookup_object('AFC_form_tip')
+                tip.tip_form()
+            else:
+                afc.gcode.run_script_from_command(afc.form_tip_cmd)
 
-        # form_tip_cmd (e.g. SNAPMAKER_MOVE_THEN_UNLOAD) has already retracted
-        # filament out of the toolhead.  Unsync and let ACE unwind pull it back
-        # through the bowden.
         cur_lane.unsync_to_extruder()
 
         local_slot = self._get_local_slot_for_lane(cur_lane)
@@ -2069,6 +2091,7 @@ class afcACE(afcUnit):
 
         # Ensure ACE is not still busy from a previous operation
         self._wait_for_ace_ready()
+
 
         # Determine homing behaviour from AFC global config.  When
         # home_to_tool and homing_enabled are both True we send one
@@ -3869,9 +3892,9 @@ class afcACE(afcUnit):
                     # we must NOT treat this as new filament.  Restore LOADED
                     # state so the lane isn't stuck in NONE, but keep the
                     # suppression flag so prep_post_load won't re-feed to hub.
-                    self.logger.info(
+                    self.logger.debug(
                         f"ACE poll: {lane.name} slot {local_slot} ready "
-                        f"but hub-load suppressed (ejected), setting loaded "
+                        f"but hub-load suppressed, setting loaded "
                         f"without re-feed"
                     )
                     lane.set_loaded()
