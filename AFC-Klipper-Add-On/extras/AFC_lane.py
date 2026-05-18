@@ -1625,6 +1625,8 @@ class AFCLane:
             return self.buffer_obj.advance_state
         elif self.extruder_obj.tool_start == "internal":
             return getattr(self, '_load_confirmed', False)
+        elif self.extruder_obj.tool_start is None and self.extruder_obj.filament_sensor_obj is not None:
+            return self.extruder_obj.filament_sensor_obj.runout_helper.filament_present
         else:
             return self.extruder_obj.tool_start_state
 
