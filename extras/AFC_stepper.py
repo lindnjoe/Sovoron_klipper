@@ -472,13 +472,16 @@ class AFCExtruderStepper(AFCLane):
         if (hub_pin
             and hub_pin.lower() != "virtual"):
             self._add_endstop('hub', hub_pin, 'hub')
-        if tool_start_pin != 'buffer':
+        if tool_start_pin and tool_start_pin not in ('buffer', 'internal'):
             self._add_endstop('tool_start', tool_start_pin, 'tool_start')
-        else:
+        elif tool_start_pin == 'buffer':
             self._add_endstop('tool_start', buffer_adv_pin, 'tool_start')
         self._add_endstop('tool_end', tool_end_pin, 'tool_end')
         self._add_endstop('buffer_advance', buffer_adv_pin, 'buffer_adv')
         self._add_endstop('buffer_trailing', buffer_trail_pin, 'buffer_trailing')
+
+        if buffer_adv_pin is None and buffer_name:
+            self._add_fps_endstop(buffer_name)
 
     def _inherit_from_unit(self, target_key: str) -> Optional[str]:
         """
@@ -536,6 +539,49 @@ class AFCExtruderStepper(AFCLane):
         except Exception as e:
             self.logger.debug(f"Missing or invalid section '{section}': {e}")
             return default
+
+    def _add_fps_endstop(self, buffer_name):
+        """Register FPS buffer software endstops when no hardware advance pin exists."""
+        try:
+            buffer_obj = self.printer.lookup_object(f'AFC_buffer {buffer_name}')
+        except Exception:
+            buffer_obj = None
+        if buffer_obj is None:
+            try:
+                buffer_obj = self.printer.lookup_object(f'AFC_FPS {buffer_name}')
+            except Exception:
+                pass
+        if buffer_obj is None or not hasattr(buffer_obj, 'fps_endstop'):
+            return
+
+        endstop = buffer_obj.fps_endstop
+        name = 'buffer_adv'
+        try:
+            endstop.add_stepper(self.extruder_stepper.stepper)
+        except Exception:
+            self.logger.info(f"Error adding stepper to FPS endstop for {self.name}")
+            return
+        try:
+            self._qes.register_endstop(endstop, name)
+        except Exception:
+            pass
+        self.logger.debug(f"{self.name} adding FPS software endstop buffer_advance:{buffer_name}")
+        self._endstops['buffer_advance'] = (endstop, name)
+
+        if hasattr(buffer_obj, 'fps_trailing_endstop'):
+            trail_endstop = buffer_obj.fps_trailing_endstop
+            trail_name = 'buffer_trailing'
+            try:
+                trail_endstop.add_stepper(self.extruder_stepper.stepper)
+            except Exception:
+                self.logger.info(f"Error adding stepper to FPS trailing endstop for {self.name}")
+                return
+            try:
+                self._qes.register_endstop(trail_endstop, trail_name)
+            except Exception:
+                pass
+            self.logger.debug(f"{self.name} adding FPS software endstop buffer_trailing:{buffer_name}")
+            self._endstops['buffer_trailing'] = (trail_endstop, trail_name)
 
     def _add_endstop(self, key: str, pin: str, suffix: str, fullname:str=None):
         """

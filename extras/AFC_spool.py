@@ -13,6 +13,7 @@ class AFCSpool:
 
         # Temporary status variables
         self.next_spool_id      = None
+        self.next_spool_info    = None
 
     def handle_connect(self):
         """
@@ -330,6 +331,21 @@ class AFCSpool:
             spool_id = self.next_spool_id
             self.next_spool_id = None
             self.set_spoolID(cur_lane, spool_id)
+        elif cur_lane.spool_id is None and self.next_spool_info is not None:
+            info = self.next_spool_info
+            self.next_spool_info = None
+            self.next_spool_id = None
+            if info.get("material"):
+                cur_lane.material = info["material"]
+            color_hex = info.get("color_hex", "")
+            if color_hex:
+                cur_lane.color = f"#{color_hex}"
+            if info.get("extruder_temp"):
+                cur_lane.extruder_temp = float(info["extruder_temp"])
+            if info.get("bed_temp"):
+                cur_lane.bed_temp = float(info["bed_temp"])
+            if not getattr(cur_lane, "weight", 0):
+                cur_lane.weight = 1000
 
     def clear_values(self, cur_lane):
         """
@@ -342,6 +358,7 @@ class AFCSpool:
         cur_lane.auto_switch_triggered = False
         cur_lane.extruder_temp = None
         cur_lane.bed_temp = None
+        self.next_spool_info = None
         cur_lane.clear_lane_data()
 
     def set_spoolID(self, cur_lane, SpoolID, save_vars=True):

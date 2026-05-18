@@ -388,6 +388,15 @@ class afcFunction:
             current_extruder = self.get_current_extruder()
             if current_extruder is not None:
                 return self.afc.tools[current_extruder].lane_loaded
+            current_extruder_name = self.afc.toolhead.get_extruder().name
+            tool_obj = self.afc.tools.get(current_extruder_name, None)
+            if tool_obj is not None:
+                for lane_name, lane_obj in self.afc.lanes.items():
+                    if (getattr(lane_obj, 'extruder_name', None) == current_extruder_name
+                            and getattr(lane_obj, 'unit_obj', None) is not None):
+                        result = lane_obj.unit_obj.get_current_lane_fallback(tool_obj)
+                        if result is not None:
+                            return result
         return None
 
     def get_current_lane_obj(self):
@@ -576,9 +585,11 @@ class afcFunction:
         """
         cur_lane_loaded = self.get_current_lane_obj()
         if cur_lane_loaded is not None:
+            extruder_name = getattr(cur_lane_loaded, 'extruder_name', None)
             cur_lane_loaded.unsync_to_extruder()
             cur_lane_loaded.set_tool_unloaded()
             cur_lane_loaded.unit_obj.return_to_home()
+            cur_lane_loaded.unit_obj.on_lane_unset_loaded(cur_lane_loaded, extruder_name)
             self.afc.function.handle_activate_extruder()
             self.logger.info("Manually removing {} loaded from toolhead".format(cur_lane_loaded.name))
             self.afc.save_vars()
@@ -1499,10 +1510,7 @@ class afcFunction:
         for index, LANE in enumerate(self.afc.lanes.values()):
             if LANE.raw_load_state:
                 button_label = "{}".format(LANE.name)
-                if dis is not None:
-                    button_command = "AFC_LANE_RESET LANE={} DISTANCE={}".format(LANE.name, dis)
-                else:
-                    button_command = "AFC_LANE_RESET LANE={}".format(LANE.name)
+                button_command = self._lane_reset_command(LANE, dis)
 
                 button_style = "primary" if index % 2 == 0 else "secondary"
                 buttons.append((button_label, button_command, button_style))
@@ -1513,6 +1521,15 @@ class afcFunction:
 
         prompt.create_custom_p(title, text, buttons,
                         True, None)
+
+    def _lane_reset_command(self, lane, dis):
+        """Return the GCode command to reset *lane*, using unit override if available."""
+        custom_command = lane.unit_obj.get_lane_reset_command(lane, dis)
+        if custom_command is not None:
+            return custom_command
+        if dis is not None:
+            return "AFC_LANE_RESET LANE={} DISTANCE={}".format(lane.name, dis)
+        return "AFC_LANE_RESET LANE={}".format(lane.name)
 
     cmd_AFC_LANE_RESET_help = 'reset a loaded lane to hub'
     cmd_AFC_LANE_RESET_options = {"DISTANCE": {"default": "50", "type": "float"},
@@ -1564,6 +1581,14 @@ class afcFunction:
                 return
 
         cur_lane: Union[AFCLane, AFCExtruderStepper] = self.afc.lanes[lane]
+
+        custom_reset_command = cur_lane.unit_obj.get_lane_reset_command(cur_lane, long_dis)
+        if custom_reset_command is not None:
+            prompt.p_end()
+            self.logger.info(f"{lane} uses custom lane reset: {custom_reset_command}")
+            self.afc.gcode.run_script_from_command(custom_reset_command)
+            return
+
         CUR_HUB: afc_hub = cur_lane.hub_obj
         short_move = cur_lane.short_move_dis * 2
 

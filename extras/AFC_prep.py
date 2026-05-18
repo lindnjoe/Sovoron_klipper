@@ -272,6 +272,33 @@ class afcPrep:
         if error_str:
             self.logger.error(error_str)
 
+        try:
+            self._start_u1_rfid()
+        except Exception as e:
+            self.logger.info(f"U1 RFID init error: {e}")
+
+    def _start_u1_rfid(self):
+        """Initialize U1 RFID polling if any lanes have u1_rfid_channel configured."""
+        from extras.AFC_U1_rfid import AFC_U1_RFID
+
+        old_rfid = getattr(self.afc, 'u1_rfid', None)
+        if old_rfid is not None:
+            old_rfid.stop()
+
+        rfid_sources = {}
+        for lane in self.afc.lanes.values():
+            channel = getattr(lane, "u1_rfid_channel", -1)
+            if channel >= 0:
+                rfid_sources[lane.name] = (lane, channel)
+
+        if not rfid_sources:
+            return
+        rfid = AFC_U1_RFID(self.afc)
+        for lane, channel in rfid_sources.values():
+            rfid.register_lane(lane, channel)
+        rfid.start()
+        self.afc.u1_rfid = rfid
+
 def load_config(config):
     return afcPrep(config)
 

@@ -99,6 +99,7 @@ class afc:
         self.in_print_timer     = None
         self.activate_cb_done = True
         self.db_backup          = False
+        self.u1_rfid            = None
 
         # Objects for everything configured for AFC
         self.units      = {}
@@ -427,6 +428,7 @@ class afc:
         self.gcode.register_command('_AFC_TEST_MESSAGES',   self.cmd__AFC_TEST_MESSAGES,    desc=self.cmd__AFC_TEST_MESSAGES_help)
         self.gcode.register_command('AFC_M104',             self._cmd_AFC_M104,             desc=self._cmd_AFC_M104_help)
         self.gcode.register_command('AFC_M109',             self._cmd_AFC_M109,             desc=self._cmd_AFC_M109_help)
+        self.gcode.register_command('AFC_RFID_READ',        self._cmd_U1_RFID_READ,         desc=self._cmd_U1_RFID_READ_help)
 
         self._rename_macros()
 
@@ -922,7 +924,7 @@ class afc:
         if abs(distance) >= 200: speed_mode = SpeedMode.LONG
 
         cur_lane.set_load_current() # Making current is set correctly when doing lane moves
-        cur_lane.move_advanced(distance, speed_mode, assist_active = AssistActive.YES)
+        cur_lane.unit_obj.lane_move(cur_lane, distance, speed_mode)
         cur_lane.do_enable(False)
         self.current_state = State.IDLE
         cur_lane.unit_obj.return_to_home()
@@ -1196,6 +1198,10 @@ class afc:
         self.LANE_UNLOAD( cur_lane )
 
     def LANE_UNLOAD(self, cur_lane: AFCLane):
+        custom_result = cur_lane.unit_obj.lane_unload(cur_lane)
+        if custom_result is not None:
+            return custom_result
+
         # TODO: update this to unload from toolhead and move all the way back to load
         # when homing is enabled
 
@@ -2663,3 +2669,14 @@ class afc:
         self.logger.error("Test Message 1")
         self.logger.error("Test Message 2")
         self.logger.error("Test Message 3")
+
+    _cmd_U1_RFID_READ_help = "Force RFID re-read for a U1 lane"
+    def _cmd_U1_RFID_READ(self, gcmd):
+        if self.u1_rfid is None:
+            gcmd.respond_info("U1 RFID not configured")
+            return
+        lane_name = gcmd.get('LANE', None)
+        if lane_name is None:
+            gcmd.respond_info("Usage: AFC_RFID_READ LANE=<lane_name>")
+            return
+        self.u1_rfid.force_read(lane_name)
