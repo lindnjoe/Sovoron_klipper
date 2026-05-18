@@ -1868,6 +1868,10 @@ class afcACE(afcUnit):
         cur_lane.disable_buffer()
 
         self.lane_unloading(cur_lane)
+
+        if afc._check_extruder_temp(cur_lane):
+            afc.afcDeltaTime.log_with_time("Done heating toolhead")
+
         cur_lane.sync_to_extruder()
         cur_lane.do_enable(True)
         cur_lane.select_lane()
