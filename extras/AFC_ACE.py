@@ -1866,8 +1866,6 @@ class afcACE(afcUnit):
         # Disable buffer before unloading (safe no-op if no buffer)
         cur_lane.disable_buffer()
 
-        afc._toolhead_pre_unload_pull(cur_lane, cur_extruder)
-
         self.lane_unloading(cur_lane)
         cur_lane.sync_to_extruder()
         cur_lane.do_enable(True)

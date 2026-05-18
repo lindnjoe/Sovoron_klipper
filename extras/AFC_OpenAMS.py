@@ -1534,8 +1534,6 @@ class afcAMS(afcUnit):
         """
         afc = self.afc
 
-        afc._toolhead_pre_unload_pull(cur_lane, cur_extruder)
-
         # Set follower reverse before cut so it assists all retract phases
         if self._follower is not None and self.oams is not None:
             fps_state = self._get_monitor_state()
