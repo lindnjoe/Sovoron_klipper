@@ -9,9 +9,7 @@
 # (bed mesh, flow calibration, input shaper) and extruder mapping
 # are handled automatically during PRINT_START.
 #
-# This module is instantiated by AFC_Toolchanger when it detects
-# the U1 firmware (machine_state_manager config section present).
-# It does NOT have a load_config — it is never loaded directly.
+# Enable by adding [AFC_U1_bridge] to your printer config.
 
 from __future__ import annotations
 import copy
@@ -19,15 +17,12 @@ import logging
 from typing import TYPE_CHECKING, Optional, Dict
 
 if TYPE_CHECKING:
-    from extras.AFC import afc as AFCMain
-    from extras.AFC_Toolchanger import AfcToolchanger
     from extras.AFC_lane import AFCLane
     from gcode import GCodeCommand
 
 PHYSICAL_EXTRUDER_NUM = 4
 LOGICAL_EXTRUDER_NUM = 32
 
-# AFC material names that the U1 considers "soft" for unload handling
 SOFT_MATERIALS = {"TPU", "TPE", "FLEX"}
 
 
@@ -47,31 +42,34 @@ class AFCU1Bridge:
      10. Pre-extrudes filament for each used logical index
     """
 
-    def __init__(self, toolchanger: AfcToolchanger) -> None:
-        self.printer = toolchanger.printer
-        self.afc: AFCMain = toolchanger.afc
-        self.logger = toolchanger.logger
-        self.functions = toolchanger.functions
+    def __init__(self, config) -> None:
+        self.printer = config.get_printer()
+        self.gcode = self.printer.lookup_object("gcode")
+        self.logger = logging.getLogger("AFC_U1_bridge")
+        self._afc = None
 
-        self.functions.register_commands(
-            self.afc.show_macros,
+        self.gcode.register_command(
             "AFC_PRINT_SETUP_U1",
             self.cmd_AFC_PRINT_SETUP_U1,
-            self.cmd_AFC_PRINT_SETUP_U1_help,
-            self.cmd_AFC_PRINT_SETUP_U1_options,
+            desc="Configure U1 print_task_config from AFC tool mapping "
+                 "and run pre-print calibrations",
         )
-
-        self.functions.register_commands(
-            self.afc.show_macros,
+        self.gcode.register_command(
             "AFC_SYNC_FILAMENT_U1",
             self.cmd_AFC_SYNC_FILAMENT_U1,
-            self.cmd_AFC_SYNC_FILAMENT_U1_help,
+            desc="Sync AFC lane filament info to U1 print_task_config "
+                 "without running calibrations",
         )
+
+    @property
+    def afc(self):
+        if self._afc is None:
+            self._afc = self.printer.lookup_object("AFC")
+        return self._afc
 
     # ── helpers ──────────────────────────────────────────────────────
 
     def _get_physical_index(self, extruder_name: str) -> Optional[int]:
-        """Convert extruder name to physical index (0-3)."""
         if extruder_name == "extruder":
             return 0
         try:
@@ -79,20 +77,15 @@ class AFCU1Bridge:
         except (ValueError, AttributeError):
             return None
 
-    def _build_extruder_map(self) -> tuple[list, list, Dict[int, AFCLane], list]:
+    def _build_extruder_map(self) -> tuple[list, list, Dict[int, "AFCLane"], list]:
         """Build U1 extruder_map_table entries from AFC's tool_cmds.
 
-        Returns (map_entries, used_physical, phys_to_lane, logical_indices):
-          map_entries: list of [logical, physical] pairs
-          used_physical: sorted list of physical extruder indices in use
-          phys_to_lane: dict mapping physical index to the first lane
-                        assigned to it (for filament info)
-          logical_indices: sorted list of logical T-indices in use
+        Returns (map_entries, used_physical, phys_to_lane, logical_indices).
         """
         map_entries = []
         used_physical = set()
         logical_indices = []
-        phys_to_lane: Dict[int, AFCLane] = {}
+        phys_to_lane: Dict[int, "AFCLane"] = {}
 
         for tcmd, lane_name in self.afc.tool_cmds.items():
             if not tcmd.startswith("T"):
@@ -121,11 +114,7 @@ class AFCU1Bridge:
         return map_entries, sorted(used_physical), phys_to_lane, sorted(logical_indices)
 
     def _afc_color_to_u1(self, color: Optional[str]) -> tuple[int, str]:
-        """Convert AFC hex color to U1 ARGB int and RRGGBBAA string.
-
-        AFC stores color as hex RGB (e.g. 'FF0000') or with leading '#'.
-        U1 wants ARGB int and 'RRGGBBAA' string.
-        """
+        """Convert AFC hex color to U1 ARGB int and RRGGBBAA string."""
         if not color:
             return 0xFFFFFFFF, "FFFFFFFF"
         color = color.lstrip("#").upper()
@@ -141,22 +130,14 @@ class AFCU1Bridge:
         except ValueError:
             return 0xFFFFFFFF, "FFFFFFFF"
 
-    def _sync_filament_to_ptc(self, ptc, phys_to_lane: Dict[int, AFCLane]):
-        """Push AFC lane filament info into U1 print_task_config.
-
-        For each physical extruder that has an AFC lane mapped to it,
-        set the filament vendor, type, sub_type, color, and soft flag
-        in print_task_config so the U1 knows what's loaded.
-        """
+    def _sync_filament_to_ptc(self, ptc, phys_to_lane: Dict[int, "AFCLane"]):
+        """Push AFC lane filament info into U1 print_task_config."""
         cfg = ptc.print_task_config
 
         for phys, lane in phys_to_lane.items():
             material = lane.material or "NONE"
             color = lane.color
 
-            # AFC stores material as a single string like "PLA", "PETG", etc.
-            # U1 wants vendor + type + sub_type. We set vendor to "AFC"
-            # and type to the material, sub_type to "Basic".
             cfg["filament_vendor"][phys] = "AFC"
             cfg["filament_type"][phys] = material.upper()
             cfg["filament_sub_type"][phys] = "Basic"
@@ -173,15 +154,13 @@ class AFCU1Bridge:
                 "colors": [rgba_str[:6]],
             }
 
-            # Not an official Snapmaker spool
             cfg["filament_official"][phys] = False
             cfg["filament_sku"][phys] = 0
             cfg["filament_edit"][phys] = True
 
             self.logger.info(
-                "AFC_PRINT_SETUP_U1: extruder{ext} filament={mat} color={col}".format(
-                    ext=phys, mat=material, col=rgba_str[:6]
-                )
+                "AFC_PRINT_SETUP_U1: extruder%d filament=%s color=%s",
+                phys, material, rgba_str[:6]
             )
 
         ptc.backup_filament_info()
@@ -191,16 +170,13 @@ class AFCU1Bridge:
         """Write extruder map + calibration flags directly into print_task_config."""
         cfg = ptc.print_task_config
 
-        # Extruder map table
         for logical, physical in map_entries:
             cfg["extruder_map_table"][logical] = physical
 
-        # Used extruders
         cfg["extruders_used"] = [False] * PHYSICAL_EXTRUDER_NUM
         for phys in used_physical:
             cfg["extruders_used"][phys] = True
 
-        # Calibration flags
         cfg["flow_calibrate"] = bool(flow_calibrate)
         cfg["flow_calib_extruders"] = [False] * PHYSICAL_EXTRUDER_NUM
         if flow_calibrate:
@@ -210,7 +186,6 @@ class AFCU1Bridge:
         cfg["auto_bed_leveling"] = bool(bed_mesh)
         cfg["shaper_calibrate"] = bool(shaper_calibrate)
 
-        # Mirror to reprint_info so reprints use the same settings
         cfg["reprint_info"]["extruder_map_table"] = copy.deepcopy(
             cfg["extruder_map_table"]
         )
@@ -226,26 +201,14 @@ class AFCU1Bridge:
             "time_lapse_camera", False
         )
 
-        # Persist to disk
         if hasattr(ptc, "config_path"):
             self.printer.update_snapmaker_config_file(
                 ptc.config_path, cfg, None
             )
 
-    # ── command ──────────────────────────────────────────────────────
+    # ── commands ─────────────────────────────────────────────────────
 
-    cmd_AFC_PRINT_SETUP_U1_help = (
-        "Configure U1 print_task_config from AFC tool mapping "
-        "and run pre-print calibrations"
-    )
-    cmd_AFC_PRINT_SETUP_U1_options = {
-        "BED_MESH":          {"type": "int", "default": 0},
-        "FLOW_CALIBRATE":    {"type": "int", "default": 0},
-        "SHAPER_CALIBRATE":  {"type": "int", "default": 0},
-    }
-
-    def cmd_AFC_PRINT_SETUP_U1(self, gcmd: GCodeCommand):
-        gcode = self.printer.lookup_object("gcode")
+    def cmd_AFC_PRINT_SETUP_U1(self, gcmd: "GCodeCommand"):
         msm = self.printer.lookup_object("machine_state_manager", None)
         ptc = self.printer.lookup_object("print_task_config", None)
 
@@ -272,9 +235,8 @@ class AFCU1Bridge:
             return
 
         self.logger.info(
-            "AFC_PRINT_SETUP_U1: map={map} used_extruders={used}".format(
-                map=map_entries, used=used_physical
-            )
+            "AFC_PRINT_SETUP_U1: map=%s used_extruders=%s",
+            map_entries, used_physical
         )
 
         # ── 2. Sync filament info from AFC lanes to U1 ──────────
@@ -287,57 +249,46 @@ class AFCU1Bridge:
         )
 
         # ── 4. Detect bed foreign objects ────────────────────────
-        self._run_defect_detection(gcode)
+        self._run_defect_detection()
 
         # ── 5. Preheat all used extruders ────────────────────────
-        self._run_preheat(gcode, used_physical)
+        self._run_preheat(used_physical)
 
         # ── 6. Run calibrations while still in IDLE state ────────
         if bed_mesh:
-            self._run_bed_mesh(gcode)
+            self._run_bed_mesh()
 
         if shaper_calibrate:
-            self._run_shaper_calibrate(gcode)
+            self._run_shaper_calibrate()
 
         # ── 7. Enter PRINTING state ──────────────────────────────
-        gcode.run_script_from_command(
+        self.gcode.run_script_from_command(
             "SET_MAIN_STATE MAIN_STATE=PRINTING"
         )
 
         # ── 8. Verify extruder switching (dock/undock check) ─────
-        self._run_switch_check(gcode)
+        self._run_switch_check()
 
         # ── 9. Flow calibration (runs inside PRINTING state) ────
         if flow_calibrate:
             for ext in used_physical:
                 self.logger.info(
-                    "AFC_PRINT_SETUP_U1: flow calibrating extruder {ext}".format(
-                        ext=ext
-                    )
+                    "AFC_PRINT_SETUP_U1: flow calibrating extruder %d", ext
                 )
-                gcode.run_script_from_command(
+                self.gcode.run_script_from_command(
                     "SM_PRINT_FLOW_CALIBRATE EXTRUDER={ext}".format(ext=ext)
                 )
 
         # ── 10. Pre-extrude filament for each used logical index ─
         for idx in logical_indices:
-            self.logger.info(
-                "AFC_PRINT_SETUP_U1: pre-extruding T{idx}".format(idx=idx)
-            )
-            gcode.run_script_from_command(
+            self.logger.info("AFC_PRINT_SETUP_U1: pre-extruding T%d", idx)
+            self.gcode.run_script_from_command(
                 "SM_PRINT_PREEXTRUDE_FILAMENT INDEX={idx}".format(idx=idx)
             )
 
         self.logger.info("AFC_PRINT_SETUP_U1: complete")
 
-    # ── standalone filament sync ─────────────────────────────────
-
-    cmd_AFC_SYNC_FILAMENT_U1_help = (
-        "Sync AFC lane filament info to U1 print_task_config "
-        "without running calibrations"
-    )
-
-    def cmd_AFC_SYNC_FILAMENT_U1(self, gcmd: GCodeCommand):
+    def cmd_AFC_SYNC_FILAMENT_U1(self, gcmd: "GCodeCommand"):
         """Push current AFC filament data to U1 outside of print setup."""
         ptc = self.printer.lookup_object("print_task_config", None)
         if ptc is None:
@@ -349,45 +300,48 @@ class AFCU1Bridge:
 
     # ── calibration helpers ──────────────────────────────────────
 
-    def _run_bed_mesh(self, gcode):
+    def _run_bed_mesh(self):
         self.logger.info("AFC_PRINT_SETUP_U1: precise Z home before bed mesh")
-        gcode.run_script_from_command("G28 Z")
+        self.gcode.run_script_from_command("G28 Z")
         self.logger.info("AFC_PRINT_SETUP_U1: running bed mesh calibration")
-        gcode.run_script_from_command(
+        self.gcode.run_script_from_command(
             "SET_MAIN_STATE MAIN_STATE=BED_LEVELING ACTION=BED_LEVELING"
         )
-        gcode.run_script_from_command("BED_MESH_CALIBRATE")
-        gcode.run_script_from_command(
+        self.gcode.run_script_from_command("BED_MESH_CALIBRATE")
+        self.gcode.run_script_from_command(
             "EXIT_TO_IDLE REQ_FROM_STATE=BED_LEVELING"
         )
 
-    def _run_shaper_calibrate(self, gcode):
+    def _run_shaper_calibrate(self):
         self.logger.info("AFC_PRINT_SETUP_U1: running fast shaper calibration")
-        gcode.run_script_from_command(
+        self.gcode.run_script_from_command(
             "SET_MAIN_STATE MAIN_STATE=SHAPER_CALIBRATE ACTION=SHAPER_CALIBRATING"
         )
-        gcode.run_script_from_command("SM_FAST_SHAPER_CALIBRATE")
-        gcode.run_script_from_command(
+        self.gcode.run_script_from_command("SM_FAST_SHAPER_CALIBRATE")
+        self.gcode.run_script_from_command(
             "EXIT_TO_IDLE REQ_FROM_STATE=SHAPER_CALIBRATE"
         )
 
-    def _run_defect_detection(self, gcode):
+    def _run_defect_detection(self):
         self.logger.info("AFC_PRINT_SETUP_U1: running bed defect detection")
-        gcode.run_script_from_command("DEFECT_DETECTION_DETECT_BED")
+        self.gcode.run_script_from_command("DEFECT_DETECTION_DETECT_BED")
 
-    def _run_switch_check(self, gcode):
+    def _run_switch_check(self):
         self.logger.info("AFC_PRINT_SETUP_U1: verifying extruder switching")
-        gcode.run_script_from_command("SM_PRINT_CHECK_SWITCH_EXTRUDER")
+        self.gcode.run_script_from_command("SM_PRINT_CHECK_SWITCH_EXTRUDER")
 
-    def _run_preheat(self, gcode, used_physical, preheat_temp=150):
+    def _run_preheat(self, used_physical, preheat_temp=150):
         for ext in used_physical:
             self.logger.info(
-                "AFC_PRINT_SETUP_U1: preheating extruder {ext} to {temp}C".format(
-                    ext=ext, temp=preheat_temp
-                )
+                "AFC_PRINT_SETUP_U1: preheating extruder %d to %dC",
+                ext, preheat_temp
             )
-            gcode.run_script_from_command(
+            self.gcode.run_script_from_command(
                 "SM_PRINT_EXTRUDER_PREHEAT EXTRUDER={ext} TEMP={temp}".format(
                     ext=ext, temp=preheat_temp
                 )
             )
+
+
+def load_config(config):
+    return AFCU1Bridge(config)
