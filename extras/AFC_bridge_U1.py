@@ -137,16 +137,15 @@ class AFCU1Bridge:
             return 0xFFFFFFFF, "FFFFFFFF"
 
     def _sync_filament_to_ptc(self, ptc, phys_to_lane: Dict[int, "AFCLane"]):
-        """Push AFC lane filament info into U1 print_task_config."""
+        """Push AFC lane filament info into U1 print_task_config.
+
+        U1 RFID clear events (triggered by tool dock/undock) asynchronously
+        reset filament_type to NONE.  This method re-pushes the correct
+        values, backs them up, and saves to disk so the data survives clears.
+        """
         cfg = ptc.print_task_config
 
         for phys, lane in phys_to_lane.items():
-            self.logger.info(
-                "AFC_PRINT_SETUP_U1: extruder%d lane=%s lane.material=%s "
-                "existing_filament_type=%s",
-                phys, lane.name, repr(lane.material),
-                repr(cfg["filament_type"][phys])
-            )
             material = lane.material or cfg["filament_type"][phys]
             color = lane.color
 
@@ -170,12 +169,10 @@ class AFCU1Bridge:
             cfg["filament_sku"][phys] = 0
             cfg["filament_edit"][phys] = True
 
-            self.logger.info(
-                "AFC_PRINT_SETUP_U1: extruder%d filament=%s color=%s",
-                phys, material, rgba_str[:6]
-            )
-
         ptc.backup_filament_info()
+        if hasattr(ptc, "config_path"):
+            self.printer.update_snapmaker_config_file(
+                ptc.config_path, cfg, None)
 
     def _apply_print_config(self, ptc, map_entries, used_physical,
                             flow_calibrate, bed_mesh, shaper_calibrate):
@@ -280,7 +277,6 @@ class AFCU1Bridge:
 
         # ── 5c. Precise Z home after nozzle clean ─────────────
         if bed_mesh:
-            self.logger.info("AFC_PRINT_SETUP_U1: precise Z home after nozzle clean")
             self.gcode.run_script_from_command("G28 Z")
 
         # ── 6. Exit PRINTING for calibrations that need IDLE ───
@@ -304,26 +300,14 @@ class AFCU1Bridge:
         self._run_switch_check(used_physical)
 
         # ── 9. Flow calibration (runs inside PRINTING state) ────
+        #    Bypasses SM_PRINT_FLOW_CALIBRATE because its T{ext} A0
+        #    goes through AFC and triggers U1 RFID clear events that
+        #    wipe filament_type to NONE before FLOW_CALIBRATE reads it.
         if flow_calibrate:
-            cfg = ptc.print_task_config
-            self.logger.info(
-                "AFC_PRINT_SETUP_U1: pre-flow filament_type=%s "
-                "flow_calibrate=%s flow_calib_extruders=%s",
-                cfg["filament_type"][:4],
-                cfg["flow_calibrate"],
-                cfg["flow_calib_extruders"][:4],
-            )
-            for ext in used_physical:
-                self.logger.info(
-                    "AFC_PRINT_SETUP_U1: flow calibrating extruder %d", ext
-                )
-                self.gcode.run_script_from_command(
-                    "SM_PRINT_FLOW_CALIBRATE EXTRUDER={ext}".format(ext=ext)
-                )
+            self._run_flow_calibrate(ptc, used_physical, phys_to_lane)
 
         # ── 10. Pre-extrude filament for each used logical index ─
         for idx in logical_indices:
-            self.logger.info("AFC_PRINT_SETUP_U1: pre-extruding T%d", idx)
             self.gcode.run_script_from_command(
                 "SM_PRINT_PREEXTRUDE_FILAMENT INDEX={idx}".format(idx=idx)
             )
@@ -338,37 +322,29 @@ class AFCU1Bridge:
         _, _, phys_to_lane, _ = self._build_extruder_map()
         if phys_to_lane:
             self._sync_filament_to_ptc(ptc, phys_to_lane)
-            self.logger.info("AFC_SYNC_FILAMENT_U1: complete")
 
     # ── calibration helpers ──────────────────────────────────────
 
     def _run_bed_mesh(self):
-        self.logger.info("AFC_PRINT_SETUP_U1: running bed mesh calibration")
         self.gcode.run_script_from_command(
             "BED_MESH_CALIBRATE METHOD=scan ADAPTIVE=1 ADAPTIVE_MARGIN=50"
         )
 
     def _run_shaper_calibrate(self):
-        self.logger.info("AFC_PRINT_SETUP_U1: running fast shaper calibration")
         self.gcode.run_script_from_command("SM_FAST_SHAPER_CALIBRATE")
 
     def _run_defect_detection(self):
-        self.logger.info("AFC_PRINT_SETUP_U1: running bed defect detection")
         self.gcode.run_script_from_command("DEFECT_DETECTION_DETECT_BED")
 
     def _exit_discard_bin(self):
         self.gcode.run_script_from_command("SNAPMAKER_EXIT_DISCARD_BIN")
 
     def _run_switch_check(self, used_physical):
-        self.logger.info("AFC_PRINT_SETUP_U1: verifying extruder switching")
         self.gcode.run_script_from_command(
             "SET_ACTION_CODE ACTION=PRINT_SWITCH_CHECKING"
         )
         for ext in used_physical:
             name = "extruder" if ext == 0 else "extruder{}".format(ext)
-            self.logger.info(
-                "AFC_PRINT_SETUP_U1: switch check %s", name
-            )
             self.gcode.run_script_from_command(
                 "AFC_SELECT_TOOL TOOL={}".format(name)
             )
@@ -376,22 +352,36 @@ class AFCU1Bridge:
         self.gcode.run_script_from_command("SET_ACTION_CODE ACTION=IDLE")
 
     def _run_nozzle_clean(self):
-        self.logger.info("AFC_PRINT_SETUP_U1: cleaning nozzle after preheat")
         self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
         self.gcode.run_script_from_command("ROUGHLY_CLEAN_NOZZLE")
         self._exit_discard_bin()
 
     def _run_preheat(self, used_physical, preheat_temp=150):
         for ext in used_physical:
-            self.logger.info(
-                "AFC_PRINT_SETUP_U1: preheating extruder %d to %dC",
-                ext, preheat_temp
-            )
             self.gcode.run_script_from_command(
                 "SM_PRINT_EXTRUDER_PREHEAT EXTRUDER={ext} TEMP={temp}".format(
                     ext=ext, temp=preheat_temp
                 )
             )
+
+    def _run_flow_calibrate(self, ptc, used_physical, phys_to_lane):
+        """Run flow calibration for each used physical extruder.
+
+        Bypasses SM_PRINT_FLOW_CALIBRATE to avoid its T{ext} A0 command
+        which goes through AFC tool mapping and triggers U1 RFID clear
+        events that asynchronously reset filament_type to NONE.
+
+        Instead: select tool via AFC_SELECT_TOOL (physical dock only),
+        exit the dock area, re-sync filament data right before the check,
+        then call FLOW_CALIBRATE directly.
+        """
+        for ext in used_physical:
+            name = "extruder" if ext == 0 else "extruder{}".format(ext)
+            self.gcode.run_script_from_command(
+                "AFC_SELECT_TOOL TOOL={}".format(name))
+            self._exit_discard_bin()
+            self._sync_filament_to_ptc(ptc, {ext: phys_to_lane[ext]})
+            self.gcode.run_script_from_command("FLOW_CALIBRATE")
 
 
 def load_config(config):
