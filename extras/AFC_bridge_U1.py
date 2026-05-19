@@ -269,6 +269,11 @@ class AFCU1Bridge:
         # ── 5b. Clean nozzles after preheat ──────────────────────
         self._run_nozzle_clean()
 
+        # ── 5c. Precise Z home after nozzle clean ─────────────
+        if bed_mesh:
+            self.logger.info("AFC_PRINT_SETUP_U1: precise Z home after nozzle clean")
+            self.gcode.run_script_from_command("G28 Z")
+
         # ── 6. Exit PRINTING for calibrations that need IDLE ───
         if bed_mesh or shaper_calibrate:
             self.gcode.run_script_from_command(
@@ -321,8 +326,6 @@ class AFCU1Bridge:
     # ── calibration helpers ──────────────────────────────────────
 
     def _run_bed_mesh(self):
-        self.logger.info("AFC_PRINT_SETUP_U1: precise Z home before bed mesh")
-        self.gcode.run_script_from_command("G28 Z")
         self.logger.info("AFC_PRINT_SETUP_U1: running bed mesh calibration")
         self.gcode.run_script_from_command(
             "SET_MAIN_STATE MAIN_STATE=BED_LEVELING ACTION=BED_LEVELING"
