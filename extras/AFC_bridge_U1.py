@@ -141,6 +141,12 @@ class AFCU1Bridge:
         cfg = ptc.print_task_config
 
         for phys, lane in phys_to_lane.items():
+            self.logger.info(
+                "AFC_PRINT_SETUP_U1: extruder%d lane=%s lane.material=%s "
+                "existing_filament_type=%s",
+                phys, lane.name, repr(lane.material),
+                repr(cfg["filament_type"][phys])
+            )
             material = lane.material or cfg["filament_type"][phys]
             color = lane.color
 
