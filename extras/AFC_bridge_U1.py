@@ -305,6 +305,14 @@ class AFCU1Bridge:
 
         # ── 9. Flow calibration (runs inside PRINTING state) ────
         if flow_calibrate:
+            cfg = ptc.print_task_config
+            self.logger.info(
+                "AFC_PRINT_SETUP_U1: pre-flow filament_type=%s "
+                "flow_calibrate=%s flow_calib_extruders=%s",
+                cfg["filament_type"][:4],
+                cfg["flow_calibrate"],
+                cfg["flow_calib_extruders"][:4],
+            )
             for ext in used_physical:
                 self.logger.info(
                     "AFC_PRINT_SETUP_U1: flow calibrating extruder %d", ext
