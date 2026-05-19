@@ -350,6 +350,8 @@ class AFCU1Bridge:
     # ── calibration helpers ──────────────────────────────────────
 
     def _run_bed_mesh(self, gcode):
+        self.logger.info("AFC_PRINT_SETUP_U1: precise Z home before bed mesh")
+        gcode.run_script_from_command("G28 Z")
         self.logger.info("AFC_PRINT_SETUP_U1: running bed mesh calibration")
         gcode.run_script_from_command(
             "SET_MAIN_STATE MAIN_STATE=BED_LEVELING ACTION=BED_LEVELING"
