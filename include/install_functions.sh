@@ -27,7 +27,7 @@ link_extensions() {
   local message
 
   if [ -d "${klipper_dir}/klippy/extras" ]; then
-    for extension in "${afc_path}"/extras/AFC*.py "${afc_path}"/extras/afc_*.py; do
+    for extension in "${afc_path}"/extras/AFC*.py; do
       # Snapmaker extended firmware have AFC stubs, copy and rename them so the
       # files can be restored if someone decides to disable AFC
       if [[ -f "${klipper_dir}/klippy/extras/$(basename "${extension}")" \
