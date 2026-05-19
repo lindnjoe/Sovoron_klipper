@@ -308,8 +308,6 @@ class AFCExtruder:
                 raise error(error_str)
             self.orig_note_filament_present = self.filament_sensor_obj.runout_helper.note_filament_present
             self.filament_sensor_obj.runout_helper.note_filament_present = self.note_tool_start_callback
-            self.filament_sensor_obj.runout_helper.runout_pause = False
-            self.filament_sensor_obj.runout_helper._runout_event_handler = self.handle_u1_sensor_runout
 
         self.tool_end_state = False
         if self.tool_end is not None:
@@ -487,10 +485,6 @@ class AFCExtruder:
         """
         self._handle_toolhead_sensor_runout(self.fila_tool_start.runout_helper.filament_present, "tool_start")
         self.fila_tool_start.runout_helper.min_event_systime = self.reactor.monotonic() + self.fila_tool_start.runout_helper.event_delay
-
-    def handle_u1_sensor_runout(self, eventtime):
-        self._handle_toolhead_sensor_runout(self.filament_sensor_obj.runout_helper.filament_present, "tool_start")
-        self.filament_sensor_obj.runout_helper.min_event_systime = self.reactor.monotonic() + self.filament_sensor_obj.runout_helper.event_delay
 
     def note_tool_start_callback(self, state, force=False):
         self.orig_note_filament_present(state, force)
