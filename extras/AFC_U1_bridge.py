@@ -57,6 +57,13 @@ class AFCU1Bridge:
             self.cmd_AFC_U1_PRINT_SETUP_options,
         )
 
+        self.functions.register_commands(
+            self.afc.show_macros,
+            "AFC_U1_SYNC_FILAMENT",
+            self.cmd_AFC_U1_SYNC_FILAMENT,
+            self.cmd_AFC_U1_SYNC_FILAMENT_help,
+        )
+
     # ── helpers ──────────────────────────────────────────────────────
 
     def _get_physical_index(self, extruder_name: str) -> Optional[int]:
@@ -68,17 +75,19 @@ class AFCU1Bridge:
         except (ValueError, AttributeError):
             return None
 
-    def _build_extruder_map(self) -> tuple[list, list, Dict[int, AFCLane]]:
+    def _build_extruder_map(self) -> tuple[list, list, Dict[int, AFCLane], list]:
         """Build U1 extruder_map_table entries from AFC's tool_cmds.
 
-        Returns (map_entries, used_physical, phys_to_lane) where:
+        Returns (map_entries, used_physical, phys_to_lane, logical_indices):
           map_entries: list of [logical, physical] pairs
           used_physical: sorted list of physical extruder indices in use
           phys_to_lane: dict mapping physical index to the first lane
                         assigned to it (for filament info)
+          logical_indices: sorted list of logical T-indices in use
         """
         map_entries = []
         used_physical = set()
+        logical_indices = []
         phys_to_lane: Dict[int, AFCLane] = {}
 
         for tcmd, lane_name in self.afc.tool_cmds.items():
@@ -101,10 +110,11 @@ class AFCU1Bridge:
 
             map_entries.append([logical_index, phys])
             used_physical.add(phys)
+            logical_indices.append(logical_index)
             if phys not in phys_to_lane:
                 phys_to_lane[phys] = lane
 
-        return map_entries, sorted(used_physical), phys_to_lane
+        return map_entries, sorted(used_physical), phys_to_lane, sorted(logical_indices)
 
     def _afc_color_to_u1(self, color: Optional[str]) -> tuple[int, str]:
         """Convert AFC hex color to U1 ARGB int and RRGGBBAA string.
@@ -247,7 +257,9 @@ class AFCU1Bridge:
         shaper_calibrate = gcmd.get_int("SHAPER_CALIBRATE", 0, minval=0, maxval=1)
 
         # ── 1. Build extruder map from AFC tool assignments ──────
-        map_entries, used_physical, phys_to_lane = self._build_extruder_map()
+        map_entries, used_physical, phys_to_lane, logical_indices = (
+            self._build_extruder_map()
+        )
         if not map_entries:
             self.logger.info(
                 "AFC_U1_PRINT_SETUP: No AFC tool mappings found, "
@@ -294,7 +306,33 @@ class AFCU1Bridge:
                     "SM_PRINT_FLOW_CALIBRATE EXTRUDER={ext}".format(ext=ext)
                 )
 
+        # ── 7. Pre-extrude filament for each used logical index ──
+        for idx in logical_indices:
+            self.logger.info(
+                "AFC_U1_PRINT_SETUP: pre-extruding T{idx}".format(idx=idx)
+            )
+            gcode.run_script_from_command(
+                "SM_PRINT_PREEXTRUDE_FILAMENT INDEX={idx}".format(idx=idx)
+            )
+
         self.logger.info("AFC_U1_PRINT_SETUP: complete")
+
+    # ── standalone filament sync ─────────────────────────────────
+
+    cmd_AFC_U1_SYNC_FILAMENT_help = (
+        "Sync AFC lane filament info to U1 print_task_config "
+        "without running calibrations"
+    )
+
+    def cmd_AFC_U1_SYNC_FILAMENT(self, gcmd: GCodeCommand):
+        """Push current AFC filament data to U1 outside of print setup."""
+        ptc = self.printer.lookup_object("print_task_config", None)
+        if ptc is None:
+            return
+        _, _, phys_to_lane, _ = self._build_extruder_map()
+        if phys_to_lane:
+            self._sync_filament_to_ptc(ptc, phys_to_lane)
+            self.logger.info("AFC_U1_SYNC_FILAMENT: complete")
 
     # ── calibration helpers ──────────────────────────────────────
 
