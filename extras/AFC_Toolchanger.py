@@ -57,7 +57,8 @@ class AfcToolchanger(afcUnit):
                                          self.cmd_AFC_SET_TOOLHEAD_LED_options)
 
         if config.fileconfig.has_section("machine_state_manager"):
-            self.printer.load_object(config, 'AFC_bridge_U1')
+            from extras.AFC_bridge_U1 import AFCU1Bridge
+            self._u1_bridge = AFCU1Bridge(config)
 
     def system_Test(self, cur_lane: AFCLane, delay: float, assignTcmd: str, enable_movement: bool):
         if assignTcmd: self.afc.function.TcmdAssign(cur_lane)
