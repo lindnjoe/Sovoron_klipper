@@ -301,7 +301,7 @@ class AFCU1Bridge:
         )
 
         # ── 8. Verify extruder switching (dock/undock check) ─────
-        self._run_switch_check()
+        self._run_switch_check(used_physical)
 
         # ── 9. Flow calibration (runs inside PRINTING state) ────
         if flow_calibrate:
@@ -351,9 +351,21 @@ class AFCU1Bridge:
     def _exit_discard_bin(self):
         self.gcode.run_script_from_command("SNAPMAKER_EXIT_DISCARD_BIN")
 
-    def _run_switch_check(self):
+    def _run_switch_check(self, used_physical):
         self.logger.info("AFC_PRINT_SETUP_U1: verifying extruder switching")
-        self.gcode.run_script_from_command("SM_PRINT_CHECK_SWITCH_EXTRUDER")
+        self.gcode.run_script_from_command(
+            "SET_ACTION_CODE ACTION=PRINT_SWITCH_CHECKING"
+        )
+        for ext in used_physical:
+            name = "extruder" if ext == 0 else "extruder{}".format(ext)
+            self.logger.info(
+                "AFC_PRINT_SETUP_U1: switch check %s", name
+            )
+            self.gcode.run_script_from_command(
+                "AFC_SELECT_TOOL TOOL={}".format(name)
+            )
+            self._exit_discard_bin()
+        self.gcode.run_script_from_command("SET_ACTION_CODE ACTION=IDLE")
 
     def _run_nozzle_clean(self):
         self.logger.info("AFC_PRINT_SETUP_U1: cleaning nozzle after preheat")
