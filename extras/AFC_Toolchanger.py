@@ -56,11 +56,15 @@ class AfcToolchanger(afcUnit):
                                          self.cmd_AFC_SET_TOOLHEAD_LED_help,
                                          self.cmd_AFC_SET_TOOLHEAD_LED_options)
 
+        sections = [s for s in config.fileconfig.sections()]
+        self.logger.info("AFC_Toolchanger checking U1 bridge, sections: {}".format(
+            [s for s in sections if 'extruder' in s.lower()][:5]))
         has_u1 = any(
             config.fileconfig.has_option(s, 'u1_park_detector_name')
-            for s in config.fileconfig.sections()
+            for s in sections
             if s.lower().startswith('afc_extruder')
         )
+        self.logger.info("AFC_Toolchanger has_u1={}".format(has_u1))
         if has_u1:
             try:
                 from extras.AFC_bridge_U1 import AFCU1Bridge
