@@ -59,7 +59,7 @@ class AfcToolchanger(afcUnit):
         has_u1 = any(
             config.fileconfig.has_option(s, 'u1_park_detector_name')
             for s in config.fileconfig.sections()
-            if s.startswith('afc_extruder')
+            if s.lower().startswith('afc_extruder')
         )
         if has_u1:
             try:
