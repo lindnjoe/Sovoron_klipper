@@ -56,15 +56,18 @@ class AfcToolchanger(afcUnit):
                                          self.cmd_AFC_SET_TOOLHEAD_LED_help,
                                          self.cmd_AFC_SET_TOOLHEAD_LED_options)
 
-        if config.fileconfig.has_section("machine_state_manager"):
+        has_u1 = any(
+            config.fileconfig.has_option(s, 'u1_park_detector_name')
+            for s in config.fileconfig.sections()
+            if s.startswith('afc_extruder')
+        )
+        if has_u1:
             try:
                 from extras.AFC_bridge_U1 import AFCU1Bridge
                 self._u1_bridge = AFCU1Bridge(config)
             except Exception as e:
                 self.logger.error("AFC_bridge_U1 failed to load: {}".format(
                     traceback.format_exc()))
-        else:
-            self.logger.info("machine_state_manager not found, skipping U1 bridge")
 
     def system_Test(self, cur_lane: AFCLane, delay: float, assignTcmd: str, enable_movement: bool):
         if assignTcmd: self.afc.function.TcmdAssign(cur_lane)
