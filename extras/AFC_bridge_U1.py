@@ -47,19 +47,25 @@ class AFCU1Bridge:
         self.gcode = self.printer.lookup_object("gcode")
         self.logger = logging.getLogger("AFC_bridge_U1")
         self._afc = None
+        self.functions = self.printer.load_object(config, 'AFC_functions')
 
-        self.gcode.register_command(
+        afc = self.printer.lookup_object("AFC")
+        self.functions.register_commands(
+            afc.show_macros,
             "AFC_PRINT_SETUP_U1",
             self.cmd_AFC_PRINT_SETUP_U1,
-            desc="Configure U1 print_task_config from AFC tool mapping "
-                 "and run pre-print calibrations",
+            "Configure U1 print_task_config from AFC tool mapping "
+            "and run pre-print calibrations",
+            self.cmd_AFC_PRINT_SETUP_U1_options,
         )
-        self.gcode.register_command(
+        self.functions.register_commands(
+            afc.show_macros,
             "AFC_SYNC_FILAMENT_U1",
             self.cmd_AFC_SYNC_FILAMENT_U1,
-            desc="Sync AFC lane filament info to U1 print_task_config "
-                 "without running calibrations",
+            "Sync AFC lane filament info to U1 print_task_config "
+            "without running calibrations",
         )
+        self.logger.info("AFC_bridge_U1 initialized")
 
     @property
     def afc(self):
@@ -207,6 +213,12 @@ class AFCU1Bridge:
             )
 
     # ── commands ─────────────────────────────────────────────────────
+
+    cmd_AFC_PRINT_SETUP_U1_options = {
+        "BED_MESH":          {"type": "int", "default": 0},
+        "FLOW_CALIBRATE":    {"type": "int", "default": 0},
+        "SHAPER_CALIBRATE":  {"type": "int", "default": 0},
+    }
 
     def cmd_AFC_PRINT_SETUP_U1(self, gcmd: "GCodeCommand"):
         msm = self.printer.lookup_object("machine_state_manager", None)
