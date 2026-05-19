@@ -14,16 +14,21 @@
 # It does NOT have a load_config — it is never loaded directly.
 
 from __future__ import annotations
+import copy
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Dict
 
 if TYPE_CHECKING:
     from extras.AFC import afc as AFCMain
     from extras.AFC_Toolchanger import AfcToolchanger
+    from extras.AFC_lane import AFCLane
     from gcode import GCodeCommand
 
 PHYSICAL_EXTRUDER_NUM = 4
 LOGICAL_EXTRUDER_NUM = 32
+
+# AFC material names that the U1 considers "soft" for unload handling
+SOFT_MATERIALS = {"TPU", "TPE", "FLEX"}
 
 
 class AFCU1Bridge:
@@ -31,10 +36,11 @@ class AFCU1Bridge:
 
     Provides AFC_U1_PRINT_SETUP which:
       1. Builds the U1 extruder_map_table from AFC's tool_cmds
-      2. Configures print_task_config (calibration flags, used extruders)
-      3. Runs pre-print calibrations (bed mesh, shaper) while IDLE
-      4. Enters PRINTING state
-      5. Runs flow calibration for each used physical extruder
+      2. Syncs AFC lane filament info to U1 print_task_config
+      3. Configures calibration flags and used extruders
+      4. Runs pre-print calibrations (bed mesh, shaper) while IDLE
+      5. Enters PRINTING state
+      6. Runs flow calibration for each used physical extruder
     """
 
     def __init__(self, toolchanger: AfcToolchanger) -> None:
@@ -42,7 +48,6 @@ class AFCU1Bridge:
         self.afc: AFCMain = toolchanger.afc
         self.logger = toolchanger.logger
         self.functions = toolchanger.functions
-        self.config = toolchanger.printer.lookup_object('configfile')
 
         self.functions.register_commands(
             self.afc.show_macros,
@@ -51,6 +56,8 @@ class AFCU1Bridge:
             self.cmd_AFC_U1_PRINT_SETUP_help,
             self.cmd_AFC_U1_PRINT_SETUP_options,
         )
+
+    # ── helpers ──────────────────────────────────────────────────────
 
     def _get_physical_index(self, extruder_name: str) -> Optional[int]:
         """Convert extruder name to physical index (0-3)."""
@@ -61,15 +68,18 @@ class AFCU1Bridge:
         except (ValueError, AttributeError):
             return None
 
-    def _build_extruder_map(self) -> tuple[list, list]:
+    def _build_extruder_map(self) -> tuple[list, list, Dict[int, AFCLane]]:
         """Build U1 extruder_map_table entries from AFC's tool_cmds.
 
-        Returns (map_entries, used_physical) where:
+        Returns (map_entries, used_physical, phys_to_lane) where:
           map_entries: list of [logical, physical] pairs
           used_physical: sorted list of physical extruder indices in use
+          phys_to_lane: dict mapping physical index to the first lane
+                        assigned to it (for filament info)
         """
         map_entries = []
         used_physical = set()
+        phys_to_lane: Dict[int, AFCLane] = {}
 
         for tcmd, lane_name in self.afc.tool_cmds.items():
             if not tcmd.startswith("T"):
@@ -91,8 +101,122 @@ class AFCU1Bridge:
 
             map_entries.append([logical_index, phys])
             used_physical.add(phys)
+            if phys not in phys_to_lane:
+                phys_to_lane[phys] = lane
 
-        return map_entries, sorted(used_physical)
+        return map_entries, sorted(used_physical), phys_to_lane
+
+    def _afc_color_to_u1(self, color: Optional[str]) -> tuple[int, str]:
+        """Convert AFC hex color to U1 ARGB int and RRGGBBAA string.
+
+        AFC stores color as hex RGB (e.g. 'FF0000') or with leading '#'.
+        U1 wants ARGB int and 'RRGGBBAA' string.
+        """
+        if not color:
+            return 0xFFFFFFFF, "FFFFFFFF"
+        color = color.lstrip("#").upper()
+        if len(color) == 6:
+            color += "FF"
+        if len(color) != 8:
+            return 0xFFFFFFFF, "FFFFFFFF"
+        try:
+            rgb = int(color[:6], 16)
+            alpha = int(color[6:8], 16)
+            argb = (alpha << 24) | rgb
+            return argb, color
+        except ValueError:
+            return 0xFFFFFFFF, "FFFFFFFF"
+
+    def _sync_filament_to_ptc(self, ptc, phys_to_lane: Dict[int, AFCLane]):
+        """Push AFC lane filament info into U1 print_task_config.
+
+        For each physical extruder that has an AFC lane mapped to it,
+        set the filament vendor, type, sub_type, color, and soft flag
+        in print_task_config so the U1 knows what's loaded.
+        """
+        cfg = ptc.print_task_config
+
+        for phys, lane in phys_to_lane.items():
+            material = lane.material or "NONE"
+            color = lane.color
+
+            # AFC stores material as a single string like "PLA", "PETG", etc.
+            # U1 wants vendor + type + sub_type. We set vendor to "AFC"
+            # and type to the material, sub_type to "Basic".
+            cfg["filament_vendor"][phys] = "AFC"
+            cfg["filament_type"][phys] = material.upper()
+            cfg["filament_sub_type"][phys] = "Basic"
+            cfg["filament_soft"][phys] = material.upper() in SOFT_MATERIALS
+            cfg["filament_exist"][phys] = True
+
+            argb, rgba_str = self._afc_color_to_u1(color)
+            cfg["filament_color"][phys] = argb
+            cfg["filament_color_rgba"][phys] = rgba_str
+            cfg["filament_color_multi"][phys] = {
+                "nums": 1,
+                "alpha": (argb >> 24) & 0xFF,
+                "mode": 0,
+                "colors": [rgba_str[:6]],
+            }
+
+            # Not an official Snapmaker spool
+            cfg["filament_official"][phys] = False
+            cfg["filament_sku"][phys] = 0
+            cfg["filament_edit"][phys] = True
+
+            self.logger.info(
+                "AFC_U1_PRINT_SETUP: extruder{ext} filament={mat} color={col}".format(
+                    ext=phys, mat=material, col=rgba_str[:6]
+                )
+            )
+
+        ptc.backup_filament_info()
+
+    def _apply_print_config(self, ptc, map_entries, used_physical,
+                            flow_calibrate, bed_mesh, shaper_calibrate):
+        """Write extruder map + calibration flags directly into print_task_config."""
+        cfg = ptc.print_task_config
+
+        # Extruder map table
+        for logical, physical in map_entries:
+            cfg["extruder_map_table"][logical] = physical
+
+        # Used extruders
+        cfg["extruders_used"] = [False] * PHYSICAL_EXTRUDER_NUM
+        for phys in used_physical:
+            cfg["extruders_used"][phys] = True
+
+        # Calibration flags
+        cfg["flow_calibrate"] = bool(flow_calibrate)
+        cfg["flow_calib_extruders"] = [False] * PHYSICAL_EXTRUDER_NUM
+        if flow_calibrate:
+            for phys in used_physical:
+                cfg["flow_calib_extruders"][phys] = True
+
+        cfg["auto_bed_leveling"] = bool(bed_mesh)
+        cfg["shaper_calibrate"] = bool(shaper_calibrate)
+
+        # Mirror to reprint_info so reprints use the same settings
+        cfg["reprint_info"]["extruder_map_table"] = copy.deepcopy(
+            cfg["extruder_map_table"]
+        )
+        cfg["reprint_info"]["extruders_used"] = copy.deepcopy(
+            cfg["extruders_used"]
+        )
+        cfg["reprint_info"]["flow_calibrate"] = cfg["flow_calibrate"]
+        cfg["reprint_info"]["flow_calib_extruders"] = copy.deepcopy(
+            cfg["flow_calib_extruders"]
+        )
+        cfg["reprint_info"]["auto_bed_leveling"] = cfg["auto_bed_leveling"]
+        cfg["reprint_info"]["time_lapse_camera"] = cfg.get(
+            "time_lapse_camera", False
+        )
+
+        # Persist to disk
+        if hasattr(ptc, "config_path"):
+            self.printer.update_snapmaker_config_file(
+                ptc.config_path, cfg, None
+            )
 
     # ── command ──────────────────────────────────────────────────────
 
@@ -123,7 +247,7 @@ class AFCU1Bridge:
         shaper_calibrate = gcmd.get_int("SHAPER_CALIBRATE", 0, minval=0, maxval=1)
 
         # ── 1. Build extruder map from AFC tool assignments ──────
-        map_entries, used_physical = self._build_extruder_map()
+        map_entries, used_physical, phys_to_lane = self._build_extruder_map()
         if not map_entries:
             self.logger.info(
                 "AFC_U1_PRINT_SETUP: No AFC tool mappings found, "
@@ -137,37 +261,28 @@ class AFCU1Bridge:
             )
         )
 
-        # ── 2. Configure print_task_config via SET_PRINT_TASK_PARAMETERS ─
-        flow_calib_ext_str = str(used_physical) if flow_calibrate else "[]"
+        # ── 2. Sync filament info from AFC lanes to U1 ──────────
+        self._sync_filament_to_ptc(ptc, phys_to_lane)
 
-        gcode.run_script_from_command(
-            "SET_PRINT_TASK_PARAMETERS"
-            " MAP_TABLE={map_table}"
-            " FLOW_CALIBRATE={flow_cal}"
-            " FLOW_CALIBRATE_EXTRUDERS={flow_ext}"
-            " BED_LEVEL={bed}"
-            " SHAPER_CALIBRATE={shaper}".format(
-                map_table=str(map_entries),
-                flow_cal=1 if flow_calibrate else 0,
-                flow_ext=flow_calib_ext_str,
-                bed=1 if bed_mesh else 0,
-                shaper=1 if shaper_calibrate else 0,
-            )
+        # ── 3. Configure extruder map + calibration flags ────────
+        self._apply_print_config(
+            ptc, map_entries, used_physical,
+            flow_calibrate, bed_mesh, shaper_calibrate,
         )
 
-        # ── 3. Run calibrations while still in IDLE state ────────
+        # ── 4. Run calibrations while still in IDLE state ────────
         if bed_mesh:
             self._run_bed_mesh(gcode)
 
         if shaper_calibrate:
             self._run_shaper_calibrate(gcode)
 
-        # ── 4. Enter PRINTING state ──────────────────────────────
+        # ── 5. Enter PRINTING state ──────────────────────────────
         gcode.run_script_from_command(
             "SET_MAIN_STATE MAIN_STATE=PRINTING"
         )
 
-        # ── 5. Flow calibration (runs inside PRINTING state) ────
+        # ── 6. Flow calibration (runs inside PRINTING state) ────
         if flow_calibrate:
             for ext in used_physical:
                 self.logger.info(
