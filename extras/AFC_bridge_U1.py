@@ -327,23 +327,11 @@ class AFCU1Bridge:
 
     def _run_bed_mesh(self):
         self.logger.info("AFC_PRINT_SETUP_U1: running bed mesh calibration")
-        self.gcode.run_script_from_command(
-            "SET_MAIN_STATE MAIN_STATE=BED_LEVELING ACTION=BED_LEVELING"
-        )
         self.gcode.run_script_from_command("BED_MESH_CALIBRATE")
-        self.gcode.run_script_from_command(
-            "EXIT_TO_IDLE REQ_FROM_STATE=BED_LEVELING"
-        )
 
     def _run_shaper_calibrate(self):
         self.logger.info("AFC_PRINT_SETUP_U1: running fast shaper calibration")
-        self.gcode.run_script_from_command(
-            "SET_MAIN_STATE MAIN_STATE=SHAPER_CALIBRATE ACTION=SHAPER_CALIBRATING"
-        )
         self.gcode.run_script_from_command("SM_FAST_SHAPER_CALIBRATE")
-        self.gcode.run_script_from_command(
-            "EXIT_TO_IDLE REQ_FROM_STATE=SHAPER_CALIBRATE"
-        )
 
     def _run_defect_detection(self):
         self.logger.info("AFC_PRINT_SETUP_U1: running bed defect detection")
