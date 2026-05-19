@@ -141,7 +141,7 @@ class AFCU1Bridge:
         cfg = ptc.print_task_config
 
         for phys, lane in phys_to_lane.items():
-            material = lane.material or cfg["filament_type"][phys] or "PLA"
+            material = lane.material or cfg["filament_type"][phys]
             color = lane.color
 
             cfg["filament_vendor"][phys] = "AFC"
