@@ -29,7 +29,12 @@ except: raise config_error("Error when trying to import AFC_utils.ERROR_STR\n{tr
 try: from extras.AFC_unit import afcUnit
 except: raise config_error(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
 
-from extras.AFC_U1_rfid import _color_name, _log_new_filament, _log_new_spool, _density_for_material
+from extras.AFC_RFID import (
+    color_name, color_distance, density_for_material,
+    log_new_filament, log_new_spool, rgb_array_to_hex,
+    get_auto_spoolman_create, apply_filament_defaults,
+    sync_rfid_to_spoolman,
+)
 
 try: from extras.AFC_lane import AFCLane, AFCLaneState
 except: raise config_error(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
@@ -759,7 +764,7 @@ class afcACE(afcUnit):
         if not has_material and rfid_material:
             lane.material = rfid_material
         if not has_color and rfid_color != [0, 0, 0]:
-            lane.color = self._ace_color_to_hex(rfid_color)
+            lane.color = rgb_array_to_hex(rfid_color)
         if not has_extruder_temp and rfid_extruder_temp is not None:
             try:
                 lane.extruder_temp = int(rfid_extruder_temp)
@@ -794,206 +799,26 @@ class afcACE(afcUnit):
         return self.auto_spoolman_create
 
     def _sync_rfid_to_spoolman(self, lane, slot_info):
-        """Sync ACE RFID tag data to Spoolman: match existing or create new filament + spool.
-
-        Always searches for existing filaments (by SKU) and spools to match.
-        Only creates new filaments/spools when auto_spoolman_create is enabled
-        (unit-level or lane-level override).
-
-        Silently skips if Spoolman is not configured.
-        """
-        # Skip silently if Spoolman is not configured — no error for users without it
+        """Sync ACE RFID tag data to Spoolman via common infrastructure."""
         if self.afc.spoolman is None or self.afc.moonraker is None:
             return
-        # Skip if lane already has a spool assigned
         if getattr(lane, "spool_id", None) not in (None, "", 0):
             return
         sku = slot_info.get("sku", "")
         if not sku:
             return
 
-        moonraker = self.afc.moonraker
-        allow_create = self._get_auto_spoolman_create(lane)
-        brand = slot_info.get("brand", "")
-        material = slot_info.get("material", "")
         color_rgb = slot_info.get("color", [0, 0, 0])
-        color_hex = self._ace_color_to_hex(color_rgb).lstrip("#") if color_rgb != [0, 0, 0] else None
-        diameter = slot_info.get("diameter", 1.75)
-        # RFID 'total' is the empty spool weight (tare), not filament weight
-        spool_weight = slot_info.get("total_weight", 0)
-        ext_temp = slot_info.get("extruder_temp")
-        bed_temp = slot_info.get("bed_temp")
-        # Default filament weight for new spools
-        default_filament_weight = 1000
+        color_hex = rgb_array_to_hex(color_rgb).lstrip("#") if color_rgb != [0, 0, 0] else ""
+        spool_wt = slot_info.get("total_weight", 0)
 
-        try:
-            # Search for existing filament by SKU (article_number)
-            filaments = moonraker.search_filaments(article_number=sku)
-            filament = None
-            for f in filaments:
-                if f.get("article_number", "") == sku:
-                    filament = f
-                    break
+        normalized = dict(slot_info)
+        normalized["color_hex"] = color_hex
 
-            # If no exact SKU match exists, try to match by RFID metadata
-            # before creating a new filament record.
-            if filament is None:
-                fallback_candidates = []
-                if brand and material:
-                    fallback_candidates = moonraker.search_filaments(
-                        vendor_name=brand, material=material)
-                elif material:
-                    fallback_candidates = moonraker.search_filaments(
-                        material=material)
-                elif brand:
-                    fallback_candidates = moonraker.search_filaments(
-                        vendor_name=brand)
-
-                best = None
-                best_score = -1
-                best_color_dist = float('inf')
-                for f in fallback_candidates:
-                    score = 0
-                    f_material = (f.get("material") or "").strip().lower()
-                    f_vendor = (f.get("vendor", {}).get("name") or "").strip().lower()
-                    f_color = (f.get("color_hex") or "").strip().lstrip("#").lower()
-                    f_diameter = f.get("diameter")
-
-                    if material and f_material == material.strip().lower():
-                        score += 3
-                    if brand and f_vendor == brand.strip().lower():
-                        score += 3
-
-                    cdist = float('inf')
-                    if color_hex and f_color and len(f_color) >= 6:
-                        cdist = self._color_distance_static(
-                            color_hex.strip().lower(), f_color[:6])
-                        if cdist < 10:
-                            score += 5
-                        else:
-                            score -= 6
-                    elif color_hex and not f_color:
-                        score -= 3
-
-                    if diameter and f_diameter is not None:
-                        try:
-                            if abs(float(f_diameter) - float(diameter)) <= 0.05:
-                                score += 1
-                        except Exception:
-                            pass
-
-                    is_better = (score > best_score or
-                                 (score == best_score and cdist < best_color_dist))
-                    if is_better:
-                        best = f
-                        best_score = score
-                        best_color_dist = cdist
-
-                if best is not None and best_score >= 4:
-                    if color_hex and best_color_dist >= 10 and allow_create:
-                        pass
-                    else:
-                        filament = best
-
-            if filament is None:
-                if not allow_create:
-                    self.logger.debug(
-                        f"No Spoolman filament for SKU {sku} and "
-                        f"auto_spoolman_create is disabled for {lane.name}")
-                    return
-
-                # Resolve or create vendor
-                vendor_id = None
-                if brand:
-                    vendor = moonraker.get_or_create_vendor(brand)
-                    if vendor:
-                        vendor_id = vendor.get("id")
-
-                # Create new filament
-                filament_name = f"{material} {sku}" if material else sku
-                filament = moonraker.create_filament(
-                    name=filament_name,
-                    vendor_id=vendor_id,
-                    material=material or None,
-                    density=_density_for_material(material),
-                    diameter=diameter,
-                    color_hex=color_hex,
-                    settings_extruder_temp=ext_temp,
-                    settings_bed_temp=bed_temp,
-                    weight=default_filament_weight,
-                    spool_weight=spool_weight if spool_weight > 0 else None,
-                    article_number=sku,
-                )
-                if filament is None:
-                    return
-                _log_new_filament(self.logger, "ACE RFID", filament,
-                                  brand, material, color_hex, diameter,
-                                  ext_temp, bed_temp, sku)
-
-            filament_id = filament.get("id")
-            if filament_id is None:
-                return
-
-            # Search for an existing spool using this filament before creating a new one.
-            # Pick the spool with the most remaining weight (most likely a fresh/partial spool
-            # that was previously assigned by this same RFID flow).
-            spool = None
-            existing_spools = moonraker.search_spools(filament_id=filament_id)
-            if existing_spools:
-                # Prefer spools with remaining weight, sorted descending
-                best = None
-                for s in existing_spools:
-                    remaining = s.get("remaining_weight") or 0
-                    if best is None or remaining > (best.get("remaining_weight") or 0):
-                        best = s
-                if best is not None:
-                    spool = best
-
-            # Create a new spool only if no existing one was found
-            if spool is None:
-                if not allow_create:
-                    self.logger.debug(
-                        f"No existing Spoolman spool for filament #{filament_id} and "
-                        f"auto_spoolman_create is disabled for {lane.name}")
-                    return
-
-                spool = moonraker.create_spool(
-                    filament_id=filament_id,
-                    initial_weight=default_filament_weight,
-                    remaining_weight=default_filament_weight,
-                    spool_weight=spool_weight if spool_weight > 0 else None,
-                )
-                if spool is None:
-                    return
-                _log_new_spool(self.logger, "ACE RFID", spool,
-                               default_filament_weight,
-                               spool_weight if spool_weight > 0 else None)
-
-            spool_id = spool.get("id")
-            fil_name = filament.get("name", "")
-            fil_color = (filament.get("color_hex") or "").strip().lstrip("#")
-            remaining = spool.get("remaining_weight")
-            remaining_str = f", {remaining:.0f}g left" if remaining else ""
-            if fil_color:
-                cname = _color_name(fil_color)
-                color_str = f", {cname} #{fil_color}" if cname else f", #{fil_color}"
-            else:
-                color_str = ""
-            desc = f"'{fil_name}'{color_str}{remaining_str}"
-
-            self.afc.spool.set_spoolID(lane, spool_id)
-            lane.send_lane_data()
-            tag_desc = f"{brand} {material}".strip() or "Unknown"
-            if color_hex:
-                cname = _color_name(color_hex)
-                tag_desc += f" ({cname} #{color_hex})" if cname else f" (#{color_hex})"
-            self.logger.info(f"ACE RFID: tag detected on {lane.name} — {tag_desc}")
-            self.logger.info(
-                f"ACE RFID: spool #{spool_id} ({desc}) assigned to {lane.name}")
-
-        except Exception as e:
-            self.logger.error(
-                f"RFID-to-Spoolman sync failed for {lane.name}: {e}")
+        sync_rfid_to_spoolman(
+            self.afc, lane, normalized, self.logger, "ACE RFID",
+            allow_create=self._get_auto_spoolman_create(lane),
+            spool_weight=spool_wt if spool_wt > 0 else None)
 
     def _notify_rfid_read(self, lane, slot_info):
         """Show popup and console notification when ACE reads an RFID tag."""
@@ -1001,10 +826,10 @@ class afcACE(afcUnit):
             brand = slot_info.get("brand", "")
             material = slot_info.get("material", "")
             color_rgb = slot_info.get("color", [0, 0, 0])
-            color_hex = self._ace_color_to_hex(color_rgb).lstrip("#") if color_rgb != [0, 0, 0] else ""
+            color_hex = rgb_array_to_hex(color_rgb).lstrip("#") if color_rgb != [0, 0, 0] else ""
             ext = slot_info.get("extruder_temp")
             bed = slot_info.get("bed_temp")
-            cname = _color_name(color_hex) if color_hex else ""
+            cname = color_name(color_hex) if color_hex else ""
             raw = self.logger.raw
             spool_id = getattr(lane, "spool_id", None)
 
@@ -1869,7 +1694,9 @@ class afcACE(afcUnit):
 
         self.lane_unloading(cur_lane)
 
-        afc._toolhead_pre_unload_pull(cur_lane, cur_extruder)
+        if afc._check_extruder_temp(cur_lane):
+            afc.afcDeltaTime.log_with_time("Done heating toolhead")
+        afc.move_e_pos(-2, cur_extruder.tool_unload_speed, "Quick Pull", wait_tool=False)
 
         cur_lane.sync_to_extruder()
         cur_lane.do_enable(True)
@@ -4279,7 +4106,7 @@ class afcACE(afcUnit):
                 status = info.get("status", "unknown")
                 material = info.get("material", "")
                 color = info.get("color", [0, 0, 0])
-                hex_color = self._ace_color_to_hex(color)
+                hex_color = rgb_array_to_hex(color)
                 lines.append(
                     f"  Slot {slot + 1}: {status} | {material} | {hex_color}"
                 )
@@ -4429,22 +4256,6 @@ class afcACE(afcUnit):
         self.logger.info(msg)
 
     # ---- Utilities ----
-
-    @staticmethod
-    @staticmethod
-    def _color_distance_static(hex1: str, hex2: str) -> float:
-        """Euclidean RGB distance between two hex color strings."""
-        r1, g1, b1 = int(hex1[0:2], 16), int(hex1[2:4], 16), int(hex1[4:6], 16)
-        r2, g2, b2 = int(hex2[0:2], 16), int(hex2[2:4], 16), int(hex2[4:6], 16)
-        return ((r1 - r2) ** 2 + (g1 - g2) ** 2 + (b1 - b2) ** 2) ** 0.5
-
-    @staticmethod
-    def _ace_color_to_hex(color_array):
-        """Convert ACE RGB array [r, g, b] to hex color string."""
-        if isinstance(color_array, (list, tuple)) and len(color_array) >= 3:
-            r, g, b = int(color_array[0]), int(color_array[1]), int(color_array[2])
-            return f"#{r:02x}{g:02x}{b:02x}"
-        return "#000000"
 
 
 def load_config_prefix(config):
