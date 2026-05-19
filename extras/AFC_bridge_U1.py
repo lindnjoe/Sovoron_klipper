@@ -291,7 +291,6 @@ class AFCU1Bridge:
 
         if bed_mesh:
             self._run_bed_mesh()
-            ptc.print_task_config["auto_bed_leveling"] = False
 
         if shaper_calibrate:
             self._run_shaper_calibrate()
