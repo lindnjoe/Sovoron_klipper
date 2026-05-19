@@ -56,6 +56,30 @@ class AfcToolchanger(afcUnit):
                                          self.cmd_AFC_SET_TOOLHEAD_LED_help,
                                          self.cmd_AFC_SET_TOOLHEAD_LED_options)
 
+        self._init_u1_bridge(config)
+
+    def _init_u1_bridge(self, config: ConfigWrapper):
+        """Create the U1 bridge if running on Snapmaker U1 firmware.
+
+        Detection: check whether the machine_state_manager config section
+        exists. The bridge is stored on the AFC object so only one instance
+        is created even if multiple Toolchanger units exist.
+        """
+        if getattr(self.afc, "u1_bridge", None) is not None:
+            return
+        if not config.fileconfig.has_section("machine_state_manager"):
+            return
+        try:
+            from extras.AFC_U1_bridge import AFCU1Bridge
+            self.afc.u1_bridge = AFCU1Bridge(self)
+            self.logger.info("U1 detected — AFC_U1_bridge initialized")
+        except Exception:
+            import traceback as tb
+            self.logger.error(
+                "Failed to initialize AFC_U1_bridge: "
+                + tb.format_exc()
+            )
+
     def system_Test(self, cur_lane: AFCLane, delay: float, assignTcmd: str, enable_movement: bool):
         if assignTcmd: self.afc.function.TcmdAssign(cur_lane)
         # Now that a T command is assigned, send lane data to moonraker
