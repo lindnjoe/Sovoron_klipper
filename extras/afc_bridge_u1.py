@@ -9,7 +9,7 @@
 # (bed mesh, flow calibration, input shaper) and extruder mapping
 # are handled automatically during PRINT_START.
 #
-# Enable by adding [AFC_U1_bridge] to your printer config.
+# Enable by adding [afc_bridge_u1] to your printer config.
 
 from __future__ import annotations
 import copy
@@ -45,7 +45,7 @@ class AFCU1Bridge:
     def __init__(self, config) -> None:
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object("gcode")
-        self.logger = logging.getLogger("AFC_U1_bridge")
+        self.logger = logging.getLogger("afc_bridge_u1")
         self._afc = None
 
         self.gcode.register_command(
