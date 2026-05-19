@@ -266,6 +266,9 @@ class AFCU1Bridge:
         # ── 5. Preheat all used extruders ────────────────────────
         self._run_preheat(used_physical)
 
+        # ── 5b. Clean nozzles after preheat ──────────────────────
+        self._run_nozzle_clean()
+
         # ── 6. Exit PRINTING for calibrations that need IDLE ───
         if bed_mesh or shaper_calibrate:
             self.gcode.run_script_from_command(
@@ -346,6 +349,10 @@ class AFCU1Bridge:
     def _run_switch_check(self):
         self.logger.info("AFC_PRINT_SETUP_U1: verifying extruder switching")
         self.gcode.run_script_from_command("SM_PRINT_CHECK_SWITCH_EXTRUDER")
+
+    def _run_nozzle_clean(self):
+        self.logger.info("AFC_PRINT_SETUP_U1: cleaning nozzle after preheat")
+        self.gcode.run_script_from_command("ROUGHLY_CLEAN_NOZZLE")
 
     def _run_preheat(self, used_physical, preheat_temp=150):
         for ext in used_physical:
