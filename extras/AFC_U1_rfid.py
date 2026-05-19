@@ -73,8 +73,42 @@ class AFC_U1_RFID:
                     self._on_filament_info_update)
             except Exception:
                 pass
+        if self._scanner_channels:
+            self._guard_ptc_rfid_clears()
         self._poll_timer = self.reactor.register_timer(
             self._poll_cb, self.reactor.monotonic() + POLL_INTERVAL)
+
+    def _guard_ptc_rfid_clears(self):
+        """Patch print_task_config's RFID callback to block clear events
+        on spool_scanner channels.
+
+        The U1 fires is_clear=True when a tool docks/undocks and the RFID
+        reader loses contact.  That wipes filament_type to NONE in
+        print_task_config, breaking flow calibration.  For channels where
+        spool_scanner is True, AFC owns the filament identity — let the
+        original callback handle reads but suppress clears.
+        """
+        ptc = self.printer.lookup_object('print_task_config', None)
+        if ptc is None or not hasattr(ptc, '_rfid_filament_info_update_cb'):
+            return
+        fd = self._filament_detect
+        if not hasattr(fd, '_notify_data_update_cb'):
+            return
+        original_cb = ptc._rfid_filament_info_update_cb
+        guarded = self._scanner_channels
+
+        def guarded_cb(channel, info, is_clear=False):
+            if is_clear and channel in guarded:
+                return
+            original_cb(channel, info, is_clear)
+
+        cb_list = fd._notify_data_update_cb
+        for i, cb in enumerate(cb_list):
+            if cb is original_cb:
+                cb_list[i] = guarded_cb
+                break
+        self.logger.info(
+            f"U1 RFID: blocking RFID clears on scanner channels {guarded}")
 
     def _on_filament_info_update(self, *args):
         """Callback fired by filament_detect with (channel, info_dict, official)."""
