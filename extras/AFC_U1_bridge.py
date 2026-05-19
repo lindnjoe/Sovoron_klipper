@@ -38,9 +38,13 @@ class AFCU1Bridge:
       1. Builds the U1 extruder_map_table from AFC's tool_cmds
       2. Syncs AFC lane filament info to U1 print_task_config
       3. Configures calibration flags and used extruders
-      4. Runs pre-print calibrations (bed mesh, shaper) while IDLE
-      5. Enters PRINTING state
-      6. Runs flow calibration for each used physical extruder
+      4. Runs bed defect detection
+      5. Preheats all used extruders
+      6. Runs pre-print calibrations (bed mesh, shaper) while IDLE
+      7. Enters PRINTING state
+      8. Verifies extruder switching (dock/undock)
+      9. Runs flow calibration for each used physical extruder
+     10. Pre-extrudes filament for each used logical index
     """
 
     def __init__(self, toolchanger: AfcToolchanger) -> None:
@@ -282,19 +286,28 @@ class AFCU1Bridge:
             flow_calibrate, bed_mesh, shaper_calibrate,
         )
 
-        # ── 4. Run calibrations while still in IDLE state ────────
+        # ── 4. Detect bed foreign objects ────────────────────────
+        self._run_defect_detection(gcode)
+
+        # ── 5. Preheat all used extruders ────────────────────────
+        self._run_preheat(gcode, used_physical)
+
+        # ── 6. Run calibrations while still in IDLE state ────────
         if bed_mesh:
             self._run_bed_mesh(gcode)
 
         if shaper_calibrate:
             self._run_shaper_calibrate(gcode)
 
-        # ── 5. Enter PRINTING state ──────────────────────────────
+        # ── 7. Enter PRINTING state ──────────────────────────────
         gcode.run_script_from_command(
             "SET_MAIN_STATE MAIN_STATE=PRINTING"
         )
 
-        # ── 6. Flow calibration (runs inside PRINTING state) ────
+        # ── 8. Verify extruder switching (dock/undock check) ─────
+        self._run_switch_check(gcode)
+
+        # ── 9. Flow calibration (runs inside PRINTING state) ────
         if flow_calibrate:
             for ext in used_physical:
                 self.logger.info(
@@ -306,7 +319,7 @@ class AFCU1Bridge:
                     "SM_PRINT_FLOW_CALIBRATE EXTRUDER={ext}".format(ext=ext)
                 )
 
-        # ── 7. Pre-extrude filament for each used logical index ──
+        # ── 10. Pre-extrude filament for each used logical index ─
         for idx in logical_indices:
             self.logger.info(
                 "AFC_U1_PRINT_SETUP: pre-extruding T{idx}".format(idx=idx)
@@ -355,3 +368,24 @@ class AFCU1Bridge:
         gcode.run_script_from_command(
             "EXIT_TO_IDLE REQ_FROM_STATE=SHAPER_CALIBRATE"
         )
+
+    def _run_defect_detection(self, gcode):
+        self.logger.info("AFC_U1_PRINT_SETUP: running bed defect detection")
+        gcode.run_script_from_command("DEFECT_DETECTION_DETECT_BED")
+
+    def _run_switch_check(self, gcode):
+        self.logger.info("AFC_U1_PRINT_SETUP: verifying extruder switching")
+        gcode.run_script_from_command("SM_PRINT_CHECK_SWITCH_EXTRUDER")
+
+    def _run_preheat(self, gcode, used_physical, preheat_temp=150):
+        for ext in used_physical:
+            self.logger.info(
+                "AFC_U1_PRINT_SETUP: preheating extruder {ext} to {temp}C".format(
+                    ext=ext, temp=preheat_temp
+                )
+            )
+            gcode.run_script_from_command(
+                "SM_PRINT_EXTRUDER_PREHEAT EXTRUDER={ext} TEMP={temp}".format(
+                    ext=ext, temp=preheat_temp
+                )
+            )
