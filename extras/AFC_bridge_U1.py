@@ -352,6 +352,7 @@ class AFCU1Bridge:
 
     def _run_nozzle_clean(self):
         self.logger.info("AFC_PRINT_SETUP_U1: cleaning nozzle after preheat")
+        self.gcode.run_script_from_command("MOVE_TO_DISCARD_FILAMENT_POSITION")
         self.gcode.run_script_from_command("ROUGHLY_CLEAN_NOZZLE")
 
     def _run_preheat(self, used_physical, preheat_temp=150):
