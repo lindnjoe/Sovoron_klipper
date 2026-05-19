@@ -266,6 +266,9 @@ class AFCU1Bridge:
         # ── 5. Preheat all used extruders ────────────────────────
         self._run_preheat(used_physical)
 
+        # ── 5a. Home Z before nozzle clean ───────────────────────
+        self.gcode.run_script_from_command("G28 Z")
+
         # ── 5b. Clean nozzles after preheat ──────────────────────
         self._run_nozzle_clean()
 
