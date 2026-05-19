@@ -330,7 +330,9 @@ class AFCU1Bridge:
 
     def _run_bed_mesh(self):
         self.logger.info("AFC_PRINT_SETUP_U1: running bed mesh calibration")
-        self.gcode.run_script_from_command("BED_MESH_CALIBRATE")
+        self.gcode.run_script_from_command(
+            "BED_MESH_CALIBRATE METHOD=scan ADAPTIVE=1 ADAPTIVE_MARGIN=50"
+        )
 
     def _run_shaper_calibrate(self):
         self.logger.info("AFC_PRINT_SETUP_U1: running fast shaper calibration")
