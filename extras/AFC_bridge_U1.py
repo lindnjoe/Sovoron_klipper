@@ -266,7 +266,12 @@ class AFCU1Bridge:
         # ── 5. Preheat all used extruders ────────────────────────
         self._run_preheat(used_physical)
 
-        # ── 6. Run calibrations while still in IDLE state ────────
+        # ── 6. Exit PRINTING for calibrations that need IDLE ───
+        if bed_mesh or shaper_calibrate:
+            self.gcode.run_script_from_command(
+                "EXIT_TO_IDLE REQ_FROM_STATE=PRINTING"
+            )
+
         if bed_mesh:
             self._run_bed_mesh()
 
