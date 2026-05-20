@@ -48,6 +48,7 @@ class AFCU1Bridge:
         self.gcode = self.printer.lookup_object("gcode")
         self.logger = logging.getLogger("AFC_bridge_U1")
         self._afc = None
+        self._lane_flow_k = {}
         self.physical_extruder_num = PHYSICAL_EXTRUDER_NUM
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
 
@@ -68,6 +69,12 @@ class AFCU1Bridge:
             self.cmd_AFC_SYNC_FILAMENT_U1,
             "Sync AFC lane filament info to U1 print_task_config "
             "without running calibrations",
+        )
+        self.functions.register_commands(
+            afc.show_macros,
+            "AFC_APPLY_LANE_FLOW_K_U1",
+            self.cmd_AFC_APPLY_LANE_FLOW_K_U1,
+            "Apply per-lane flow calibration K for the current lane",
         )
         self.logger.info("AFC_bridge_U1 initialized")
 
@@ -335,25 +342,9 @@ class AFCU1Bridge:
             map_entries, used_physical
         )
 
-        # ── 1b. Build per-extruder lane usage for smart flow cal ─
+        # ── 1b. Build per-extruder lane usage for flow cal ──────
         lanes_per_ext = self._build_lanes_per_extruder(used_tools)
-        flow_calib_phys = set()
-        if flow_calibrate:
-            if used_tools is not None:
-                for ext in used_physical:
-                    ext_lanes = lanes_per_ext.get(ext, [])
-                    if len(ext_lanes) > 1:
-                        lane_names = [l.name for _, l in ext_lanes]
-                        self.logger.info(
-                            "AFC_PRINT_SETUP_U1: Disabling flow cal for "
-                            "extruder%s — %d lanes used (%s), per-filament "
-                            "pressure advance will apply",
-                            ext if ext > 0 else "",
-                            len(ext_lanes), ", ".join(lane_names))
-                    else:
-                        flow_calib_phys.add(ext)
-            else:
-                flow_calib_phys = set(used_physical)
+        flow_calib_phys = set(used_physical) if flow_calibrate else set()
 
         # ── 2. Sync filament info from AFC lanes to U1 ──────────
         self._sync_filament_to_ptc(ptc, phys_to_lane)
@@ -474,41 +465,92 @@ class AFCU1Bridge:
 
     def _run_flow_calibrate(self, ptc, flow_calib_phys, phys_to_lane,
                             lanes_per_ext):
-        """Run flow calibration with smart per-extruder lane awareness.
+        """Run per-lane flow calibration and store K values.
 
-        For each physical extruder that passed the multi-lane check:
-        - Standalone extruder: dock and calibrate (filament always present)
-        - Multi-lane, 1 lane used: load that specific lane, then calibrate
-        - Multi-lane, >1 used: already filtered out by caller
+        Calibrates each used lane individually on its physical extruder.
+        For multi-lane extruders the calibrated-in-printing flag is reset
+        between lanes so the flow calibrator allows re-calibration.
+        Each lane's resulting pressure advance K is stored in
+        _lane_flow_k and applied on tool changes via
+        AFC_APPLY_LANE_FLOW_K_U1.
 
         Bypasses SM_PRINT_FLOW_CALIBRATE to avoid its T{ext} A0 command
         which triggers U1 RFID clear events that wipe filament_type.
         """
+        flow_cal = self.printer.lookup_object("flow_calibrator", None)
+        self._lane_flow_k = {}
+
         for ext in sorted(flow_calib_phys):
             name = "extruder" if ext == 0 else "extruder{}".format(ext)
             ext_lanes = lanes_per_ext.get(ext, [])
 
-            if len(ext_lanes) == 1:
-                logical_idx, lane = ext_lanes[0]
-            else:
-                logical_idx, lane = None, phys_to_lane.get(ext)
+            if not ext_lanes:
+                lane = phys_to_lane.get(ext)
+                if lane is None:
+                    continue
+                ext_lanes = [(None, lane)]
 
-            if lane is None:
-                continue
+            for logical_idx, lane in ext_lanes:
+                if (not lane.extruder_obj.is_standalone()
+                        and logical_idx is not None):
+                    self.logger.info(
+                        "Loading %s (T%d) for flow calibration on %s",
+                        lane.name, logical_idx, name)
+                    self.gcode.run_script_from_command(
+                        "T{}".format(logical_idx))
+                else:
+                    self.gcode.run_script_from_command(
+                        "AFC_SELECT_TOOL TOOL={}".format(name))
 
-            if not lane.extruder_obj.is_standalone() and logical_idx is not None:
-                self.logger.info(
-                    "Loading %s (T%d) for flow calibration on %s",
-                    lane.name, logical_idx, name)
-                self.gcode.run_script_from_command(
-                    "T{}".format(logical_idx))
-            else:
-                self.gcode.run_script_from_command(
-                    "AFC_SELECT_TOOL TOOL={}".format(name))
+                self._exit_discard_bin()
+                self._sync_filament_to_ptc(ptc, {ext: lane})
 
-            self._exit_discard_bin()
-            self._sync_filament_to_ptc(ptc, {ext: lane})
-            self.gcode.run_script_from_command("FLOW_CALIBRATE")
+                if flow_cal:
+                    flow_cal._calibrated_in_printing[name] = False
+
+                self.gcode.run_script_from_command("FLOW_CALIBRATE")
+
+                if (flow_cal
+                        and flow_cal._calibrated_in_printing.get(name)):
+                    k = flow_cal._current_k.get(name)
+                    if k is not None:
+                        self._lane_flow_k[lane.name] = k
+                        self.logger.info(
+                            "Stored flow K=%.6f for %s (T%s) on %s",
+                            k, lane.name,
+                            logical_idx if logical_idx is not None
+                            else "?", name)
+
+    def cmd_AFC_APPLY_LANE_FLOW_K_U1(self, gcmd: "GCodeCommand"):
+        """Apply the calibrated flow K for the currently loaded AFC lane.
+
+        Called during tool changes (from the purge macro) to ensure each
+        lane's individually calibrated pressure advance is active.  No-ops
+        when no per-lane K data exists (flow cal was disabled or not yet run).
+        """
+        if not self._lane_flow_k:
+            return
+
+        toolhead = self.printer.lookup_object("toolhead")
+        printer_ext = toolhead.get_extruder()
+        ext_name = printer_ext.get_name()
+        ext_obj = self.afc.tools.get(ext_name)
+
+        if ext_obj is None or not ext_obj.lane_loaded:
+            return
+
+        lane_name = ext_obj.lane_loaded
+        k = self._lane_flow_k.get(lane_name)
+        if k is None:
+            return
+
+        flow_cal = self.printer.lookup_object("flow_calibrator", None)
+        if flow_cal:
+            flow_cal._set_pressure_advance(printer_ext, k)
+            flow_cal._current_k[ext_name] = k
+            self.logger.info(
+                "Applied flow K=%.6f for lane %s on %s",
+                k, lane_name, ext_name)
 
 
 def load_config(config):
