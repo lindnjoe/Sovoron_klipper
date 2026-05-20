@@ -161,6 +161,35 @@ class AFCU1Bridge:
 
         return map_entries, sorted(used_physical), phys_to_lane, sorted(logical_indices)
 
+    def _build_lanes_per_extruder(self, used_tools: Optional[set] = None) -> Dict[int, list]:
+        """Map each physical extruder to its lanes used in this print.
+
+        Returns {phys_index: [(logical_index, lane_obj), ...]} filtered
+        by used_tools when available.
+        """
+        result: Dict[int, list] = {}
+        for tcmd, lane_name in self.afc.tool_cmds.items():
+            if not tcmd.startswith("T"):
+                continue
+            try:
+                logical_index = int(tcmd[1:])
+            except ValueError:
+                continue
+            if logical_index >= LOGICAL_EXTRUDER_NUM:
+                continue
+            if used_tools is not None and logical_index not in used_tools:
+                continue
+            lane = self.afc.lanes.get(lane_name)
+            if lane is None:
+                continue
+            phys = self._get_physical_index(lane.extruder_obj.name)
+            if phys is None or phys >= self.physical_extruder_num:
+                continue
+            if phys not in result:
+                result[phys] = []
+            result[phys].append((logical_index, lane))
+        return result
+
     def _afc_color_to_u1(self, color: Optional[str]) -> tuple[int, str]:
         """Convert AFC hex color to U1 ARGB int and RRGGBBAA string."""
         if not color:
@@ -217,7 +246,8 @@ class AFCU1Bridge:
                 ptc.config_path, cfg, None)
 
     def _apply_print_config(self, ptc, map_entries, used_physical,
-                            flow_calibrate, bed_mesh, shaper_calibrate):
+                            flow_calibrate, bed_mesh, shaper_calibrate,
+                            flow_calib_phys=None):
         """Write extruder map + calibration flags directly into print_task_config."""
         cfg = ptc.print_task_config
 
@@ -228,10 +258,11 @@ class AFCU1Bridge:
         for phys in used_physical:
             cfg["extruders_used"][phys] = True
 
-        cfg["flow_calibrate"] = bool(flow_calibrate)
+        calib_set = flow_calib_phys if flow_calib_phys is not None else set(used_physical)
+        cfg["flow_calibrate"] = bool(flow_calibrate) and len(calib_set) > 0
         cfg["flow_calib_extruders"] = [False] * self.physical_extruder_num
-        if flow_calibrate:
-            for phys in used_physical:
+        if cfg["flow_calibrate"]:
+            for phys in calib_set:
                 cfg["flow_calib_extruders"][phys] = True
 
         cfg["auto_bed_leveling"] = bool(bed_mesh)
@@ -304,6 +335,26 @@ class AFCU1Bridge:
             map_entries, used_physical
         )
 
+        # ── 1b. Build per-extruder lane usage for smart flow cal ─
+        lanes_per_ext = self._build_lanes_per_extruder(used_tools)
+        flow_calib_phys = set()
+        if flow_calibrate:
+            if used_tools is not None:
+                for ext in used_physical:
+                    ext_lanes = lanes_per_ext.get(ext, [])
+                    if len(ext_lanes) > 1:
+                        lane_names = [l.name for _, l in ext_lanes]
+                        self.logger.info(
+                            "AFC_PRINT_SETUP_U1: Disabling flow cal for "
+                            "extruder%s — %d lanes used (%s), per-filament "
+                            "pressure advance will apply",
+                            ext if ext > 0 else "",
+                            len(ext_lanes), ", ".join(lane_names))
+                    else:
+                        flow_calib_phys.add(ext)
+            else:
+                flow_calib_phys = set(used_physical)
+
         # ── 2. Sync filament info from AFC lanes to U1 ──────────
         self._sync_filament_to_ptc(ptc, phys_to_lane)
 
@@ -311,6 +362,7 @@ class AFCU1Bridge:
         self._apply_print_config(
             ptc, map_entries, used_physical,
             flow_calibrate, bed_mesh, shaper_calibrate,
+            flow_calib_phys,
         )
 
         # ── 4. Detect bed foreign objects ────────────────────────
@@ -350,11 +402,9 @@ class AFCU1Bridge:
         self._run_switch_check(used_physical)
 
         # ── 9. Flow calibration (runs inside PRINTING state) ────
-        #    Bypasses SM_PRINT_FLOW_CALIBRATE because its T{ext} A0
-        #    goes through AFC and triggers U1 RFID clear events that
-        #    wipe filament_type to NONE before FLOW_CALIBRATE reads it.
-        if flow_calibrate:
-            self._run_flow_calibrate(ptc, used_physical, phys_to_lane)
+        if flow_calibrate and flow_calib_phys:
+            self._run_flow_calibrate(ptc, flow_calib_phys, phys_to_lane,
+                                     lanes_per_ext)
 
         # ── 10. Pre-extrude filament for each used logical index ─
         for idx in logical_indices:
@@ -422,23 +472,42 @@ class AFCU1Bridge:
                 )
             )
 
-    def _run_flow_calibrate(self, ptc, used_physical, phys_to_lane):
-        """Run flow calibration for each used physical extruder.
+    def _run_flow_calibrate(self, ptc, flow_calib_phys, phys_to_lane,
+                            lanes_per_ext):
+        """Run flow calibration with smart per-extruder lane awareness.
+
+        For each physical extruder that passed the multi-lane check:
+        - Standalone extruder: dock and calibrate (filament always present)
+        - Multi-lane, 1 lane used: load that specific lane, then calibrate
+        - Multi-lane, >1 used: already filtered out by caller
 
         Bypasses SM_PRINT_FLOW_CALIBRATE to avoid its T{ext} A0 command
-        which goes through AFC tool mapping and triggers U1 RFID clear
-        events that asynchronously reset filament_type to NONE.
-
-        Instead: select tool via AFC_SELECT_TOOL (physical dock only),
-        exit the dock area, re-sync filament data right before the check,
-        then call FLOW_CALIBRATE directly.
+        which triggers U1 RFID clear events that wipe filament_type.
         """
-        for ext in used_physical:
+        for ext in sorted(flow_calib_phys):
             name = "extruder" if ext == 0 else "extruder{}".format(ext)
-            self.gcode.run_script_from_command(
-                "AFC_SELECT_TOOL TOOL={}".format(name))
+            ext_lanes = lanes_per_ext.get(ext, [])
+
+            if len(ext_lanes) == 1:
+                logical_idx, lane = ext_lanes[0]
+            else:
+                logical_idx, lane = None, phys_to_lane.get(ext)
+
+            if lane is None:
+                continue
+
+            if not lane.extruder_obj.is_standalone() and logical_idx is not None:
+                self.logger.info(
+                    "Loading %s (T%d) for flow calibration on %s",
+                    lane.name, logical_idx, name)
+                self.gcode.run_script_from_command(
+                    "T{}".format(logical_idx))
+            else:
+                self.gcode.run_script_from_command(
+                    "AFC_SELECT_TOOL TOOL={}".format(name))
+
             self._exit_discard_bin()
-            self._sync_filament_to_ptc(ptc, {ext: phys_to_lane[ext]})
+            self._sync_filament_to_ptc(ptc, {ext: lane})
             self.gcode.run_script_from_command("FLOW_CALIBRATE")
 
 
