@@ -522,32 +522,41 @@ class AFCU1Bridge:
                             else "?", name)
 
     def cmd_AFC_APPLY_LANE_FLOW_K_U1(self, gcmd: "GCodeCommand"):
-        """Apply the calibrated flow K for the currently loaded AFC lane.
+        """Apply the calibrated flow K for the currently loading/loaded lane.
 
-        Called during tool changes (from the purge macro) to ensure each
-        lane's individually calibrated pressure advance is active.  No-ops
-        when no per-lane K data exists (flow cal was disabled or not yet run).
+        Uses AFC's current_loading (set before poop_cmd runs) since
+        lane_loaded isn't updated until after purge completes.  Falls
+        back to lane_loaded for calls outside the load sequence.
         """
         if not self._lane_flow_k:
+            return
+
+        lane_name = self.afc.current_loading
+        if not lane_name:
+            toolhead = self.printer.lookup_object("toolhead")
+            ext_name = toolhead.get_extruder().get_name()
+            ext_obj = self.afc.tools.get(ext_name)
+            if ext_obj is not None:
+                lane_name = ext_obj.lane_loaded
+
+        if not lane_name:
+            return
+
+        k = self._lane_flow_k.get(lane_name)
+        if k is None:
             return
 
         toolhead = self.printer.lookup_object("toolhead")
         printer_ext = toolhead.get_extruder()
         ext_name = printer_ext.get_name()
-        ext_obj = self.afc.tools.get(ext_name)
-
-        if ext_obj is None or not ext_obj.lane_loaded:
-            return
-
-        lane_name = ext_obj.lane_loaded
-        k = self._lane_flow_k.get(lane_name)
-        if k is None:
-            return
 
         flow_cal = self.printer.lookup_object("flow_calibrator", None)
         if flow_cal:
             flow_cal._set_pressure_advance(printer_ext, k)
             flow_cal._current_k[ext_name] = k
+            gcmd.respond_info(
+                "AFC flow calibration: K=%.6f for lane %s on %s"
+                % (k, lane_name, ext_name))
             self.logger.info(
                 "Applied flow K=%.6f for lane %s on %s",
                 k, lane_name, ext_name)
