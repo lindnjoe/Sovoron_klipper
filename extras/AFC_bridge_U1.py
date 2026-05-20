@@ -9,7 +9,7 @@
 # (bed mesh, flow calibration, input shaper) and extruder mapping
 # are handled automatically during PRINT_START.
 #
-# Add [AFC_bridge_U1] to your config to enable.
+# Loaded automatically by AFC_Toolchanger on Snapmaker U1 printers.
 
 from __future__ import annotations
 import copy
@@ -48,12 +48,10 @@ class AFCU1Bridge:
         self.gcode = self.printer.lookup_object("gcode")
         self.logger = logging.getLogger("AFC_bridge_U1")
         self._afc = None
-        self.physical_extruder_num = config.getint("physical_extruder_num", PHYSICAL_EXTRUDER_NUM)
+        self.physical_extruder_num = PHYSICAL_EXTRUDER_NUM
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
-        logging.info("AFC_bridge_U1: __init__ complete")
 
     def _handle_connect(self):
-        logging.info("AFC_bridge_U1: _handle_connect starting")
         self.functions = self.printer.lookup_object('AFC_functions')
         afc = self.printer.lookup_object("AFC")
         self.functions.register_commands(
@@ -442,7 +440,3 @@ class AFCU1Bridge:
             self._exit_discard_bin()
             self._sync_filament_to_ptc(ptc, {ext: phys_to_lane[ext]})
             self.gcode.run_script_from_command("FLOW_CALIBRATE")
-
-
-def load_config(config):
-    return AFCU1Bridge(config)
